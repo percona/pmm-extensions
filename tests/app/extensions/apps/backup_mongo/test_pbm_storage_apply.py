@@ -13,14 +13,18 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Exercise the ``pbm config`` storage-apply step in the backup payloads.
+"""Exercise the ``pbm config`` storage-apply step, which the config payload owns alone.
 
-The logical and physical payloads apply the per-task PBM config (``pbm config
---file``) before running ``pbm backup``, so a per-task S3 bucket/region is honored
-end-to-end rather than the backup landing in PBM's cluster-wide storage. These
-tests exec the real payloads with ``subprocess.Popen`` stubbed to capture the full
-command sequence, and assert each payload's generated ``_apply_pbm_config`` region
-matches the one canonical source in ``pbm_creds_common.py``.
+``pbm config --file`` replaces PBM's cluster-wide configuration rather than merging
+into it, so applying it from a backup rewrote deployment-wide state on every run and
+blanked whatever the task form could not express -- S3 credentials among them. Only
+``pbm_config_payload`` applies config now; the logical, physical and incremental
+payloads just take backups.
+
+These tests exec the real payloads with ``subprocess.Popen`` stubbed to capture the
+full command sequence, assert the config payload's generated ``_apply_pbm_config``
+region matches the one canonical source in ``pbm_creds_common.py``, and assert the
+backup payloads carry neither that region nor a call to it.
 """
 
 import importlib.util
@@ -61,13 +65,14 @@ _BACKUP_PAYLOADS = {
     "logical": _APP_DIR / "pbm_logical_payload",
     "physical": _APP_DIR / "pbm_physical_payload",
 }
+# The only payload that carries the config-apply region, and so the only one the
+# generator syncs it into.
+_CONFIG_PAYLOADS = {"config": _APP_DIR / "pbm_config_payload"}
 _ALL_PAYLOADS = {
-    "config": _APP_DIR / "pbm_config_payload",
+    **_CONFIG_PAYLOADS,
     **_BACKUP_PAYLOADS,
 }
 _PARAMETRIZE_BACKUP = pytest.mark.parametrize("payload", ["logical", "physical"])
-# An s3 backup runs two commands: apply the config, then take the backup.
-_APPLY_THEN_BACKUP = 2
 # Arbitrary non-zero code PBM reports when it rejects the applied config.
 _PBM_REJECT_CODE = 3
 
@@ -137,25 +142,25 @@ def _exec_payload_capture_cmds(
     return captured
 
 
-class TestStorageAppliedBeforeBackup:
-    """Assert the backup payloads apply the config before running ``pbm backup``."""
+class TestBackupsDoNotRewriteConfig:
+    """Assert the backup payloads never write PBM config, whatever the task carries.
+
+    PBM config is cluster-wide, so a backup that applied it rewrote state belonging to
+    the whole deployment on every run -- and blanked any field the form cannot express,
+    S3 credentials among them, because ``pbm config --file`` replaces rather than
+    merges. Applying config is now the config payload's job alone (its own tab in the
+    UI), so these assert the *absence* of that behaviour.
+    """
 
     @_PARAMETRIZE_BACKUP
-    def test_config_applied_before_backup_for_s3(
+    def test_s3_storage_does_not_trigger_a_config_apply(
         self, payload: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ):
-        """Run ``pbm config --file`` before ``pbm backup`` when storage is set."""
+        """Run only ``pbm backup``, even when the task config carries S3 storage."""
         cmds = _exec_payload_capture_cmds(payload, _S3_CONFIG, monkeypatch, tmp_path)
 
-        assert len(cmds) == _APPLY_THEN_BACKUP
-        assert cmds[0][:3] == ["pbm", "config", "--file"]
-        assert cmds[1] == [
-            "pbm",
-            "backup",
-            "--type",
-            payload,
-            "--wait",
-        ]
+        assert cmds == [["pbm", "backup", "--type", payload, "--wait"]]
+        assert not any(cmd[:2] == ["pbm", "config"] for cmd in cmds)
 
     @_PARAMETRIZE_BACKUP
     def test_no_config_apply_without_storage(
@@ -187,94 +192,11 @@ class TestStorageAppliedBeforeBackup:
 
         assert cmds == [["pbm", "backup", "--type", payload, "--wait"]]
 
-    @_PARAMETRIZE_BACKUP
-    def test_config_failure_aborts_before_backup(
-        self,
-        payload: str,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: pathlib.Path,
-        capsys: pytest.CaptureFixture,
-    ):
-        """Exit non-zero with an actionable error and never reach ``pbm backup``."""
-        with pytest.raises(SystemExit) as exc:
-            _exec_payload_capture_cmds(
-                payload, _S3_CONFIG, monkeypatch, tmp_path, config_ret=1
-            )
-
-        assert exc.value.code == 1
-        err = capsys.readouterr().err
-        assert "storage configuration" in err
-        assert "bucket/region/endpoint" in err
-
-    @_PARAMETRIZE_BACKUP
-    def test_config_failure_only_runs_config_command(
-        self, payload: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-    ):
-        """Do not run ``pbm backup`` after a failed config apply."""
-        captured: list[list[str]] = []
-        with pytest.raises(SystemExit):
-            _exec_payload_capture_cmds(
-                payload,
-                _S3_CONFIG,
-                monkeypatch,
-                tmp_path,
-                config_ret=1,
-                captured=captured,
-            )
-
-        assert captured == [captured[0]]
-        assert captured[0][:2] == ["pbm", "config"]
-
-    @_PARAMETRIZE_BACKUP
-    def test_missing_task_dir_aborts_before_backup(
-        self,
-        payload: str,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: pathlib.Path,
-        capsys: pytest.CaptureFixture,
-    ):
-        """Exit non-zero when NOMAD_TASK_DIR is unset so the config file can't be written."""
-        captured: list[list[str]] = []
-        with pytest.raises(SystemExit) as exc:
-            _exec_payload_capture_cmds(
-                payload,
-                _S3_CONFIG,
-                monkeypatch,
-                tmp_path,
-                captured=captured,
-                set_task_dir=False,
-            )
-
-        assert exc.value.code == 1
-        assert "cannot write the PBM config file" in capsys.readouterr().err
-        assert captured == []
-
-    @_PARAMETRIZE_BACKUP
-    def test_pbm_binary_missing_aborts_before_backup(
-        self,
-        payload: str,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: pathlib.Path,
-        capsys: pytest.CaptureFixture,
-    ):
-        """Exit non-zero with an actionable error when the ``pbm`` binary can't be run."""
-        with pytest.raises(SystemExit) as exc:
-            _exec_payload_capture_cmds(
-                payload,
-                _S3_CONFIG,
-                monkeypatch,
-                tmp_path,
-                popen_error=OSError("No such file or directory: 'pbm'"),
-            )
-
-        assert exc.value.code == 1
-        assert "Failed to run pbm config" in capsys.readouterr().err
-
 
 class TestRealSpecThreadsStorageIntoConfigFile:
     """Assert the real spec output applies its S3 storage through the payload's config file."""
 
-    @_PARAMETRIZE_BACKUP
+    @pytest.mark.parametrize("payload", ["config"])
     def test_s3_storage_reaches_applied_config_file(
         self, payload: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ):
@@ -316,10 +238,23 @@ class TestApplyHelperNoDrift:
         end = lines.index(CONFIG_APPLY_END, begin + 1)
         return "\n".join(lines[begin + 1 : end]).strip("\n")
 
-    @pytest.mark.parametrize("payload", sorted(_ALL_PAYLOADS))
+    @pytest.mark.parametrize("payload", sorted(_CONFIG_PAYLOADS))
     def test_region_matches_canonical(self, payload: str) -> None:
         """Require each payload's ``_apply_pbm_config`` to equal the canonical source."""
-        assert self._region(_ALL_PAYLOADS[payload]) == config_apply_source()
+        assert self._region(_CONFIG_PAYLOADS[payload]) == config_apply_source()
+
+    @pytest.mark.parametrize("payload", sorted(_BACKUP_PAYLOADS))
+    def test_backup_payloads_carry_no_config_apply(self, payload: str) -> None:
+        """Keep the config-apply region out of the payloads that only take backups.
+
+        The generator syncs a region into whichever payloads carry its BEGIN marker, so
+        dropping the marker is what opts a payload out. Asserting on the helper name too
+        catches a call left behind without its definition.
+        """
+        source = _BACKUP_PAYLOADS[payload].read_text()
+
+        assert CONFIG_APPLY_BEGIN not in source
+        assert "_apply_pbm_config" not in source
 
     def test_check_mode_reports_no_drift(self) -> None:
         """Accept the checked-in config-apply region under ``gen_pbm_payloads.py --check``."""

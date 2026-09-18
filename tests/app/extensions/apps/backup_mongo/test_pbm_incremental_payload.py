@@ -230,10 +230,16 @@ class TestIncrementalCommandExtras:
             "6",
         ]
 
-    def test_applies_storage_config_before_backup(
+    def test_does_not_apply_storage_config_before_backup(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ) -> None:
-        """Run ``pbm config --file`` when storage is present, stripping selective keys."""
+        """Take the backup without touching PBM's cluster-wide config.
+
+        Applying it here rewrote configuration belonging to the whole deployment on
+        every incremental run -- ``pbm config --file`` replaces rather than merges, so
+        anything the task form cannot express was blanked. Only the config payload
+        applies config now.
+        """
         captured = _run_incremental(
             monkeypatch,
             tmp_path,
@@ -249,11 +255,8 @@ class TestIncrementalCommandExtras:
                 },
             },
         )
-        assert ["pbm", "config", "--file", f"{tmp_path}/script_config"] in captured
-        written = yaml.safe_load((tmp_path / "script_config").read_text())
-        assert written["storage"]["type"] == "filesystem"
-        assert written["backup"] == {"compression": "s2"}
-        assert "namespaces" not in written["backup"]
+        assert not any(cmd[:2] == ["pbm", "config"] for cmd in captured)
+        assert not (tmp_path / "script_config").exists()
 
     def test_bad_config_aborts(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path

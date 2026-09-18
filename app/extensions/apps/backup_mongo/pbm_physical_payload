@@ -136,69 +136,6 @@ def _compression_flags(config):
     return flags
 
 
-# --- BEGIN GENERATED PBM CONFIG APPLY ---
-def _apply_pbm_config(config: dict) -> None:
-    """Apply the PMM Extensions managed PBM config to the cluster via ``pbm config --file``.
-
-    PBM storage is cluster-wide with no per-backup flag, so the per-task config
-    (storage, priority, pitr) is applied here, before the backup runs, rather than
-    relying on the separate Sync-config task having run. Writes the full config
-    (minus PMM Extensions only keys) to the task dir and runs ``pbm config --file``.
-
-    Terminates the process (``sys.exit`` non-zero) rather than raising when the task
-    dir is unset, ``pbm`` cannot be run, or PBM rejects the config -- for example an
-    unreachable or non-existent S3 bucket -- so the backup never silently falls back
-    to PBM's pre-existing cluster-wide storage.
-
-    :param config: The parsed task config; PMM Extensions only and ``None``-valued keys are
-        dropped before it is written to the PBM config file.
-    """
-    extensions_only_keys = frozenset({"credentials_path", "credentialsPath"})
-    # Selective --ns flags live under backup for NOMAD_META_CONFIG readers but are
-    # not valid PBM config keys, so strip them before ``pbm config --file``.
-    extensions_only_backup_keys = frozenset({"namespaces", "withUsersAndRoles"})
-    pbm_config = {}
-    for key, value in config.items():
-        if key in extensions_only_keys or value is None:
-            continue
-        if key == "backup" and isinstance(value, dict):
-            backup_value = {
-                backup_key: nested_value
-                for backup_key, nested_value in value.items()
-                if backup_key not in extensions_only_backup_keys
-            }
-            pbm_config[key] = backup_value
-            continue
-        pbm_config[key] = value
-    task_dir = os.environ.get("NOMAD_TASK_DIR")
-    if not task_dir:
-        print(
-            "NOMAD_TASK_DIR is not set; cannot write the PBM config file.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    config_file = f"{task_dir}/script_config"
-    with open(config_file, "w", encoding="utf-8") as f:
-        yaml.dump(pbm_config, f, default_flow_style=False, allow_unicode=True)
-    cmd = ["pbm", "config", "--file", config_file]
-    try:
-        proc = subprocess.Popen(cmd)  # noqa: S603 # nosec B603
-        proc.wait()
-        ret_code = proc.poll()
-        if ret_code != 0:
-            print(
-                "Failed to apply the task storage configuration to PBM "
-                f"(pbm config --file exited {ret_code}). Verify the configured S3 "
-                "bucket/region/endpoint exist and are reachable.",
-                file=sys.stderr,
-            )
-            sys.exit(ret_code)
-    except OSError as err:
-        print(f"Failed to run pbm config: {err}", file=sys.stderr)
-        sys.exit(1)
-# --- END GENERATED PBM CONFIG APPLY ---
-
-
 # --- BEGIN GENERATED PBM TEXTFILE COLLECTOR ---
 _TEXTFILE_COLLECTOR_DEFAULT_SUBPATH = "pmm/collectors/textfile-collector/low-resolution"
 
@@ -380,15 +317,13 @@ def pbm():
     try:
         os.environ['PBM_MONGODB_URI'] = pbm_creds(_creds_path('backup'))
         config = _load_config()
-        if isinstance(config.get('storage'), dict):
-            _apply_pbm_config(config)
         # Selective --ns is logical-only in PBM; ignore namespaces on physical runs.
         cmd = ['pbm', 'backup', '--type', 'physical', '--wait'] + _compression_flags(config)
         proc = subprocess.Popen(cmd)
         proc.wait()
         ret_code = proc.poll()
     except SystemExit:
-        # Credential resolution or config-apply aborted via sys.exit before the
+        # Credential resolution aborted via sys.exit before the
         # backup ran; record the failure so PMM sees a failed status/timestamp,
         # then propagate to preserve the original exit code.
         write_backup_status(PBM_METRIC_TYPE, 1)
