@@ -104,6 +104,13 @@ backup_mongo_schema = derive_app_schema(
     detail_view=backup_mongo_views.detail_view,
     derived=BACKUP_MONGO_DERIVED,
     related_apps=[
+        # Tab order is the order an operator meets them: configure the cluster's
+        # PBM storage first, then take backups, then restore from one.
+        RelatedApp(
+            app_key="backup_mongo/config",
+            label="Configuration",
+            route_segment="config",
+        ),
         RelatedApp(
             app_key="backup_mongo/restore",
             label="Restores",
