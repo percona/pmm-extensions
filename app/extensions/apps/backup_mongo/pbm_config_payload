@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import subprocess
+import contextlib
+import json
 import os
 import sys
 import yaml
+from pathlib import Path
 
 
 # --- BEGIN GENERATED PBM CREDS PREAMBLE ---
@@ -91,21 +94,106 @@ def pbm_creds(creds_path: str) -> str:
 
 
 # --- BEGIN GENERATED PBM CONFIG APPLY ---
-def _apply_pbm_config(config: dict) -> None:
-    """Apply the PMM Extensions managed PBM config to the cluster via ``pbm config --file``.
+#: What ``pbm config`` prints in place of a secret on a whole-document read. A
+#: targeted ``pbm config <dotted.key>`` returns the real value instead, which is the
+#: only way to carry credentials through a read-merge-write cycle.
+_PBM_SECRET_MASK = "***"  # noqa: S105 - a mask PBM prints, not a credential
 
-    PBM storage is cluster-wide with no per-backup flag, so the per-task config
-    (storage, priority, pitr) is applied here, before the backup runs, rather than
-    relying on the separate Sync-config task having run. Writes the full config
-    (minus PMM Extensions only keys) to the task dir and runs ``pbm config --file``.
+
+def _pbm_config_read(*args: str) -> object | None:
+    """Return ``pbm config [args] -o json`` parsed, or None when it cannot be read.
+
+    None covers "PBM has no config yet" and "PBM answered something unparseable"
+    alike: both mean there is nothing to merge onto, which is the first-run case.
+
+    :param args: Extra arguments, e.g. a single dotted key to read one value.
+    :return: The parsed answer, or None.
+    """
+    try:
+        read_cmd = ["pbm", "config", *args, "-o", "json"]
+        proc = subprocess.Popen(  # noqa: S603 # nosec B603
+            read_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout, _ = proc.communicate()
+    except OSError as err:
+        print(f"Failed to run pbm config: {err}", file=sys.stderr)
+        sys.exit(1)
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(stdout.decode())
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def _pbm_config_unmask(node: object, path: tuple, masked: list) -> object:
+    """Return ``node`` with every masked secret replaced by its real value.
+
+    Walks the document PBM returned and, for each value equal to the mask, reads
+    that one key back on its own. Paths that cannot be recovered are collected in
+    ``masked`` so the caller can refuse to write rather than persist the literal
+    ``***`` over a working credential.
+
+    :param node: The current node of the parsed config document.
+    :param path: The dotted-key path to ``node``, as a tuple of segments.
+    :param masked: Out-list of dotted keys whose real value could not be read.
+    :return: The node with secrets restored.
+    """
+    if isinstance(node, dict):
+        return {
+            key: _pbm_config_unmask(value, (*path, key), masked)
+            for key, value in node.items()
+        }
+    if node != _PBM_SECRET_MASK:
+        return node
+    dotted = ".".join(path)
+    answer = _pbm_config_read(dotted)
+    value = answer.get("value") if isinstance(answer, dict) else None
+    if not isinstance(value, str) or value == _PBM_SECRET_MASK:
+        masked.append(dotted)
+        return node
+    return value
+
+
+def _pbm_config_merge(base: dict, over: dict) -> dict:
+    """Return ``base`` deep-merged with ``over``, with ``over`` winning.
+
+    Only keys ``over`` names are touched, so anything PMM Extensions does not model -- the S3
+    credentials above all -- survives untouched.
+
+    :param base: The document already on the cluster.
+    :param over: The PMM Extensions-managed values to lay over it.
+    :return: The merged document.
+    """
+    merged = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _pbm_config_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _apply_pbm_config(config: dict) -> None:
+    """Apply the PMM Extensions-managed PBM config, merged onto what the cluster already has.
+
+    PBM's configuration is cluster-wide and ``pbm config --file`` *replaces* the
+    whole document, so writing only what PMM Extensions models would delete everything else --
+    S3 credentials included, which is exactly what used to happen on every backup.
+    This reads the current document first, restores the secrets PBM masks on a bulk
+    read, lays the PMM Extensions-managed values over it, and writes the result. Credentials
+    therefore round-trip untouched: OM never changes them, and they stay the
+    business of whoever has the ``pbm`` CLI on the host.
 
     Terminates the process (``sys.exit`` non-zero) rather than raising when the task
-    dir is unset, ``pbm`` cannot be run, or PBM rejects the config -- for example an
-    unreachable or non-existent S3 bucket -- so the backup never silently falls back
-    to PBM's pre-existing cluster-wide storage.
+    dir is unset, ``pbm`` cannot be run, a masked secret cannot be recovered, or PBM
+    rejects the config -- for example an unreachable or non-existent S3 bucket -- so
+    a caller never silently continues against the wrong storage.
 
     :param config: The parsed task config; PMM Extensions only and ``None``-valued keys are
-        dropped before it is written to the PBM config file.
+        dropped before it is merged into the PBM config file.
     """
     extensions_only_keys = frozenset({"credentials_path", "credentialsPath"})
     # Selective --ns flags live under backup for NOMAD_META_CONFIG readers but are
@@ -124,6 +212,20 @@ def _apply_pbm_config(config: dict) -> None:
             pbm_config[key] = backup_value
             continue
         pbm_config[key] = value
+    current = _pbm_config_read()
+    if isinstance(current, dict):
+        masked = []
+        current = _pbm_config_unmask(current, (), masked)
+        if masked:
+            print(
+                "Refusing to apply the configuration: PBM masks "
+                f"{', '.join(sorted(masked))} and the real value could not be read "
+                "back, so writing this document would overwrite the stored "
+                "credential with '***'. Check the pbm CLI on this host.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        pbm_config = _pbm_config_merge(current, pbm_config)
     task_dir = os.environ.get("NOMAD_TASK_DIR")
     if not task_dir:
         print(
@@ -132,7 +234,12 @@ def _apply_pbm_config(config: dict) -> None:
         )
         sys.exit(1)
     config_file = f"{task_dir}/script_config"
-    with open(config_file, "w", encoding="utf-8") as f:
+    # 0600 and removed below: unlike the pre-merge version this document carries the
+    # real S3 secret, so it must not outlive the command or be readable by anyone
+    # else on the host. A file rather than ``--set`` arguments precisely because
+    # process arguments are world-readable through /proc.
+    fd = os.open(config_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         yaml.dump(pbm_config, f, default_flow_style=False, allow_unicode=True)
     cmd = ["pbm", "config", "--file", config_file]
     try:
@@ -150,6 +257,9 @@ def _apply_pbm_config(config: dict) -> None:
     except OSError as err:
         print(f"Failed to run pbm config: {err}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        with contextlib.suppress(OSError):
+            Path(config_file).unlink()
 # --- END GENERATED PBM CONFIG APPLY ---
 
 

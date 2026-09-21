@@ -28,6 +28,7 @@ backup payloads carry neither that region nor a call to it.
 """
 
 import importlib.util
+import json
 import pathlib
 import subprocess
 import sys
@@ -75,6 +76,8 @@ _ALL_PAYLOADS = {
 _PARAMETRIZE_BACKUP = pytest.mark.parametrize("payload", ["logical", "physical"])
 # Arbitrary non-zero code PBM reports when it rejects the applied config.
 _PBM_REJECT_CODE = 3
+# A value the form cannot express, used to prove a merge keeps what PBM already had.
+_UNMODELLED_MAX_UPLOAD_PARTS = 10000
 
 _S3_CONFIG = {
     "storage": {
@@ -94,6 +97,7 @@ def _exec_payload_capture_cmds(
     captured: list[list[str]] | None = None,
     set_task_dir: bool = True,
     popen_error: Exception | None = None,
+    snapshots: dict[str, str] | None = None,
 ) -> list[list[str]]:
     """Exec a payload with a stubbed ``Popen`` and capture every command it runs.
 
@@ -109,6 +113,10 @@ def _exec_payload_capture_cmds(
         missing-task-dir abort path.
     :param popen_error: Exception the stubbed ``Popen`` raises on construction, to
         exercise the "``pbm`` binary cannot be run" path. None runs normally.
+    :param snapshots: Receives the config file's contents as they were when
+        ``pbm config --file`` ran. The config payload deletes that file afterwards,
+        because a merged document carries the real S3 secret, so it cannot be read
+        off disk after the call.
     :return: The list of argument lists passed to ``subprocess.Popen``, in order.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -127,6 +135,8 @@ def _exec_payload_capture_cmds(
         captured = []
 
     def _stub(cmd: list[str], *args: object, **kwargs: object) -> FakePopen:
+        if snapshots is not None and cmd[:3] == ["pbm", "config", "--file"]:
+            snapshots["script_config"] = pathlib.Path(cmd[3]).read_text()
         return FakePopen(
             cmd,
             *args,
@@ -218,9 +228,12 @@ class TestRealSpecThreadsStorageIntoConfigFile:
         ]
         config = yaml.safe_load(config_yaml)
 
-        _exec_payload_capture_cmds(payload, config, monkeypatch, tmp_path)
+        snapshots: dict[str, str] = {}
+        _exec_payload_capture_cmds(
+            payload, config, monkeypatch, tmp_path, snapshots=snapshots
+        )
 
-        applied = yaml.safe_load((tmp_path / "script_config").read_text())
+        applied = yaml.safe_load(snapshots["script_config"])
         assert applied["storage"]["s3"]["bucket"] == "backups"
         assert applied["storage"]["s3"]["region"] == "eu-west-1"
         # PMM Extensions only keys must not leak into the PBM config file; ``pbm config``
@@ -275,15 +288,37 @@ class TestApplyPbmConfigCanonical:
         captured: list[list[str]],
         *,
         ret_code: int = 0,
+        snapshots: dict[str, str] | None = None,
+        reads: dict[str, str] | None = None,
     ) -> None:
-        """Patch ``subprocess.Popen`` to record commands and report ``ret_code``."""
-        monkeypatch.setattr(
-            subprocess,
-            "Popen",
-            lambda cmd, *a, **kw: FakePopen(
-                cmd, *a, captured=captured, returncode=ret_code, **kw
-            ),
-        )
+        """Patch ``subprocess.Popen`` to record commands and report ``ret_code``.
+
+        :param snapshots: Receives the config file's contents as they were when
+            ``pbm config --file`` ran. The helper deletes that file afterwards --
+            it carries the real S3 secret once credentials are merged back in -- so
+            a test cannot read it off disk after the call.
+        :param reads: Maps a read command's joined arguments to the stdout it should
+            answer with, so a test can stand in for ``pbm config -o json`` and the
+            per-key credential reads. Unlisted reads answer empty, which the helper
+            treats as "no config yet".
+        """
+
+        def _factory(cmd: list[str], *a: object, **kw: object) -> FakePopen:
+            if snapshots is not None and cmd[:3] == ["pbm", "config", "--file"]:
+                snapshots["script_config"] = pathlib.Path(cmd[3]).read_text()
+            return FakePopen(
+                cmd,
+                *a,
+                captured=captured,
+                returncode=ret_code,
+                communicate_result=lambda c: (
+                    (reads or {}).get(" ".join(c), "").encode(),
+                    b"",
+                ),
+                **kw,
+            )
+
+        monkeypatch.setattr(subprocess, "Popen", _factory)
 
     def test_writes_config_file_and_runs_pbm_config(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
@@ -291,7 +326,8 @@ class TestApplyPbmConfigCanonical:
         """Write the config (minus PMM Extensions only/None keys) and run ``pbm config --file``."""
         monkeypatch.setenv("NOMAD_TASK_DIR", str(tmp_path))
         captured: list[list[str]] = []
-        self._stub_popen(monkeypatch, captured)
+        snapshots: dict[str, str] = {}
+        self._stub_popen(monkeypatch, captured, snapshots=snapshots)
 
         pbm_creds_common._apply_pbm_config(
             {
@@ -301,11 +337,19 @@ class TestApplyPbmConfigCanonical:
             }
         )
 
-        assert captured == [["pbm", "config", "--file", f"{tmp_path}/script_config"]]
-        written = yaml.safe_load((tmp_path / "script_config").read_text())
+        # Reads the current document before writing: the write replaces the whole
+        # config, so what is already there has to be merged in first.
+        assert captured == [
+            ["pbm", "config", "-o", "json"],
+            ["pbm", "config", "--file", f"{tmp_path}/script_config"],
+        ]
+        written = yaml.safe_load(snapshots["script_config"])
         assert written == {"storage": {"type": "s3", "s3": {"bucket": "backups"}}}
         assert "credentials_path" not in written
         assert "pitr" not in written
+        # The document carried a secret in the merge case, so it must not be left
+        # lying in the task dir.
+        assert not (tmp_path / "script_config").exists()
 
     def test_strips_selective_backup_keys_before_pbm_config(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
@@ -317,7 +361,8 @@ class TestApplyPbmConfigCanonical:
         """
         monkeypatch.setenv("NOMAD_TASK_DIR", str(tmp_path))
         captured: list[list[str]] = []
-        self._stub_popen(monkeypatch, captured)
+        snapshots: dict[str, str] = {}
+        self._stub_popen(monkeypatch, captured, snapshots=snapshots)
 
         pbm_creds_common._apply_pbm_config(
             {
@@ -330,14 +375,146 @@ class TestApplyPbmConfigCanonical:
             }
         )
 
-        assert captured == [["pbm", "config", "--file", f"{tmp_path}/script_config"]]
-        written = yaml.safe_load((tmp_path / "script_config").read_text())
+        assert captured == [
+            ["pbm", "config", "-o", "json"],
+            ["pbm", "config", "--file", f"{tmp_path}/script_config"],
+        ]
+        written = yaml.safe_load(snapshots["script_config"])
         assert written == {
             "storage": {"type": "filesystem", "filesystem": {"path": "/tmp/pbm"}},
             "backup": {"compression": "gzip"},
         }
         assert "namespaces" not in written["backup"]
         assert "withUsersAndRoles" not in written["backup"]
+
+    def test_merges_onto_the_document_already_on_the_cluster(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ):
+        """Keep keys PBM already holds that SEP does not model.
+
+        ``pbm config --file`` replaces the document, so anything absent from the
+        written file is deleted. The form cannot express ``maxUploadParts`` or the
+        S3 credentials, and both must survive an apply.
+        """
+        monkeypatch.setenv("NOMAD_TASK_DIR", str(tmp_path))
+        captured: list[list[str]] = []
+        snapshots: dict[str, str] = {}
+        current = {
+            "storage": {
+                "type": "s3",
+                "s3": {
+                    "bucket": "old-bucket",
+                    "maxUploadParts": _UNMODELLED_MAX_UPLOAD_PARTS,
+                    "credentials": {"access-key-id": "***"},
+                },
+            },
+            "backup": {"priority": {"host:27017": 2}},
+        }
+        self._stub_popen(
+            monkeypatch,
+            captured,
+            snapshots=snapshots,
+            reads={
+                "pbm config -o json": json.dumps(current),
+                "pbm config storage.s3.credentials.access-key-id -o json": json.dumps(
+                    {"key": "storage.s3.credentials.access-key-id", "value": "REAL"}
+                ),
+            },
+        )
+
+        pbm_creds_common._apply_pbm_config(
+            {"storage": {"type": "s3", "s3": {"bucket": "new-bucket"}}}
+        )
+
+        written = yaml.safe_load(snapshots["script_config"])
+        s3 = written["storage"]["s3"]
+        # The form's value wins where it has one.
+        assert s3["bucket"] == "new-bucket"
+        # Everything the form cannot express is carried through untouched.
+        assert s3["maxUploadParts"] == _UNMODELLED_MAX_UPLOAD_PARTS
+        assert written["backup"]["priority"] == {"host:27017": 2}
+        # The real secret is restored, never the mask PBM reports.
+        assert s3["credentials"]["access-key-id"] == "REAL"
+
+    def test_reads_each_masked_secret_back_on_its_own(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ):
+        """Resolve every masked value via a targeted read, whatever its path.
+
+        The walk is generic rather than a hardcoded list of S3 keys, so a provider
+        whose secrets sit elsewhere in the document is covered too.
+        """
+        monkeypatch.setenv("NOMAD_TASK_DIR", str(tmp_path))
+        captured: list[list[str]] = []
+        snapshots: dict[str, str] = {}
+        self._stub_popen(
+            monkeypatch,
+            captured,
+            snapshots=snapshots,
+            reads={
+                "pbm config -o json": json.dumps(
+                    {"storage": {"s3": {"credentials": {"a": "***", "b": "***"}}}}
+                ),
+                "pbm config storage.s3.credentials.a -o json": json.dumps(
+                    {"value": "A"}
+                ),
+                "pbm config storage.s3.credentials.b -o json": json.dumps(
+                    {"value": "B"}
+                ),
+            },
+        )
+
+        pbm_creds_common._apply_pbm_config({"pitr": {"enabled": True}})
+
+        written = yaml.safe_load(snapshots["script_config"])
+        assert written["storage"]["s3"]["credentials"] == {"a": "A", "b": "B"}
+        assert ["pbm", "config", "storage.s3.credentials.a", "-o", "json"] in captured
+        assert ["pbm", "config", "storage.s3.credentials.b", "-o", "json"] in captured
+
+    def test_refuses_to_write_when_a_secret_cannot_be_recovered(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: pathlib.Path,
+        capsys: pytest.CaptureFixture,
+    ):
+        """Abort rather than persist the literal mask over a working credential.
+
+        Writing ``***`` back would leave PBM authenticating with that string, which
+        fails later and far from here -- so refuse the whole apply instead.
+        """
+        monkeypatch.setenv("NOMAD_TASK_DIR", str(tmp_path))
+        captured: list[list[str]] = []
+        self._stub_popen(
+            monkeypatch,
+            captured,
+            reads={
+                "pbm config -o json": json.dumps(
+                    {"storage": {"s3": {"credentials": {"access-key-id": "***"}}}}
+                ),
+            },
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            pbm_creds_common._apply_pbm_config({"pitr": {"enabled": True}})
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "storage.s3.credentials.access-key-id" in err
+        assert not any(cmd[:3] == ["pbm", "config", "--file"] for cmd in captured)
+        assert not (tmp_path / "script_config").exists()
+
+    def test_first_run_writes_without_a_document_to_merge(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ):
+        """Apply the SEP config as-is when PBM has nothing configured yet."""
+        monkeypatch.setenv("NOMAD_TASK_DIR", str(tmp_path))
+        captured: list[list[str]] = []
+        snapshots: dict[str, str] = {}
+        self._stub_popen(monkeypatch, captured, snapshots=snapshots, reads={})
+
+        pbm_creds_common._apply_pbm_config({"pitr": {"enabled": True}})
+
+        assert yaml.safe_load(snapshots["script_config"]) == {"pitr": {"enabled": True}}
 
     def test_exits_when_task_dir_unset(
         self,
