@@ -39,7 +39,12 @@ cluster-wide PBM config stops being a side effect of creating a backup and
 becomes something an operator asks for.
 """
 
-from app.sep.apps.backup_mongo.config.models import ADVANCED_SECTION, BackupConfigForm
+from app.sep.apps.backup_mongo.config.models import (
+    ADVANCED_SECTION,
+    BackupConfigForm,
+    RESTORE_SECTION,
+    STORAGE_TUNING_SECTION,
+)
 from app.sep.apps.backup_mongo.views import backup_mongo_views
 from app.sep.apps.framework.form_dsl import (
     derive_app_schema,
@@ -63,10 +68,28 @@ backup_mongo_config_layout = FormLayout(
             collapsed_by_default=True,
         ),
         SectionLayout(
+            key=STORAGE_TUNING_SECTION,
+            title="Storage Tuning",
+            advanced=True,
+            description=(
+                "Retry, encryption and chunking. PBM's defaults are right for most "
+                "deployments."
+            ),
+        ),
+        SectionLayout(
             key="BackupOptions",
             title="Backup Options",
             collapsible=True,
             collapsed_by_default=True,
+        ),
+        SectionLayout(
+            key=RESTORE_SECTION,
+            title="Restore Tuning",
+            advanced=True,
+            description=(
+                "PBM's restore section: how a restore runs, cluster-wide. Restores "
+                "themselves are created on the Restores tab."
+            ),
         ),
         SectionLayout(
             key=ADVANCED_SECTION,

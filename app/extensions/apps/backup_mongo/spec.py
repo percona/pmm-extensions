@@ -39,11 +39,14 @@ from app.extensions.apps.backup_mongo.models import (
     BackupConfig,
     BackupConfigBackup,
     BackupConfigPITR,
+    BackupConfigRestore,
     BackupConfigStorage,
     BackupCreate,
     CompressionAlgorithm,
     OWNER,
     parse_backup_priority,
+    parse_pbm_string_map,
+    StorageType,
 )
 from app.extensions.apps.framework.spec import build_run_python_task
 from app.tasks.models import TaskWrite
@@ -63,31 +66,131 @@ class BackupMongoResolved:
     service_name: str | None = None
 
 
+def _drop_unset(values: dict[str, Any]) -> dict[str, Any]:
+    """Return ``values`` without its ``None`` entries.
+
+    An unset form field must not reach the PBM document, because the apply merges
+    rather than replaces: a ``None`` written here would land on the cluster and
+    clear whatever the operator had set for that key with the CLI. Only keys the
+    form actually carries a value for are laid over what PBM already has.
+
+    :param values: Candidate config keys, some unset.
+    :return: The subset that carries a value.
+    """
+    return {key: value for key, value in values.items() if value is not None}
+
+
 def _build_pitr_config(form: BackupCreate) -> dict[str, Any]:
-    """Build PITR configuration from form data."""
-    return {
-        "enabled": form.pitr_enabled,
-        "oplogSpanMin": form.pitr_oplog_span_min,
-        "compression": form.pitr_compression or CompressionAlgorithm.GZIP.value,
-    }
+    """Build PITR configuration from form data.
+
+    :param form: The validated create body.
+    :return: The ``pitr`` section, or ``{}`` when the form declares none.
+    """
+    pitr = _drop_unset(
+        {
+            "oplogSpanMin": form.pitr_oplog_span_min,
+            "compressionLevel": form.pitr_compression_level,
+            "priority": parse_backup_priority(form.pitr_priority)
+            if form.pitr_priority
+            else None,
+        }
+    )
+    if form.pitr_oplog_only:
+        pitr["oplogOnly"] = True
+    if form.pitr_enabled is None and not pitr and not form.pitr_compression:
+        # Nothing about PITR was asked for -- a backup, which no longer carries
+        # configuration. Emitting `enabled: false` regardless would look like a
+        # decision and, through the merge, would switch PITR off on a cluster where
+        # someone had turned it on.
+        return {}
+    pitr["enabled"] = bool(form.pitr_enabled)
+    pitr["compression"] = form.pitr_compression or CompressionAlgorithm.GZIP.value
+    return pitr
 
 
 def _build_storage_config(form: BackupCreate) -> dict[str, Any]:
-    """Build storage configuration from form data."""
+    """Build storage configuration from form data.
+
+    :param form: The validated create body.
+    :return: The ``storage`` section, or ``{}`` when the form names no storage.
+    """
     if form.storage_type is None:
-        raise ValueError("storage_type is required to build a storage config")
-    storage_config = {}
-    if form.storage_type == "s3":
-        storage_config = {
-            "region": form.storage_s3_region,
-            "bucket": form.storage_s3_bucket,
-            "prefix": form.storage_s3_prefix,
-            "endpointUrl": form.storage_s3_endpoint_url,
-        }
-    elif form.storage_type == "filesystem":
-        storage_config = {"path": form.storage_filesystem_path}
+        # Since configuration split away from backups, a backup carries no storage:
+        # it is a property of the cluster, applied from the Configuration tab. This
+        # used to raise, which turned every backup create into a 500.
+        return {}
+    if form.storage_type == StorageType.S3.value:
+        sse = _drop_unset(
+            {
+                "sseAlgorithm": form.storage_s3_sse_algorithm,
+                "kmsKeyID": form.storage_s3_sse_kms_key_id,
+                "sseCustomerAlgorithm": form.storage_s3_sse_customer_algorithm,
+            }
+        )
+        retryer = _drop_unset(
+            {
+                "numMaxRetries": form.storage_s3_retryer_num_max_retries,
+                "minRetryDelay": form.storage_s3_retryer_min_retry_delay,
+                "maxRetryDelay": form.storage_s3_retryer_max_retry_delay,
+            }
+        )
+        storage_config = _drop_unset(
+            {
+                "region": form.storage_s3_region,
+                "bucket": form.storage_s3_bucket,
+                "prefix": form.storage_s3_prefix,
+                "endpointUrl": form.storage_s3_endpoint_url,
+                "endpointUrlMap": parse_pbm_string_map(form.storage_s3_endpoint_url_map)
+                if form.storage_s3_endpoint_url_map
+                else None,
+                "forcePathStyle": form.storage_s3_force_path_style,
+                "uploadPartSize": form.storage_s3_upload_part_size,
+                "maxUploadParts": form.storage_s3_max_upload_parts,
+                "storageClass": form.storage_s3_storage_class,
+                "insecureSkipTLSVerify": form.storage_s3_insecure_skip_tls_verify,
+                "debugLogLevels": form.storage_s3_debug_log_levels,
+                "maxObjSizeGB": form.storage_s3_max_obj_size_gb,
+                "serverSideEncryption": sse or None,
+                "retryer": retryer or None,
+            }
+        )
+    else:
+        storage_config = _drop_unset(
+            {
+                "path": form.storage_filesystem_path,
+                "maxObjSizeGB": form.storage_filesystem_max_obj_size_gb,
+            }
+        )
 
     return {"type": form.storage_type, form.storage_type: storage_config}
+
+
+def _build_restore_config(form: BackupCreate) -> dict[str, Any]:
+    """Build PBM's ``restore`` section from form data.
+
+    :param form: The validated create body.
+    :return: The ``restore`` section, or ``{}`` when the form declares none.
+    """
+    timeouts = _drop_unset({"balancerStop": form.restore_timeouts_balancer_stop})
+    return _drop_unset(
+        {
+            "batchSize": form.restore_batch_size,
+            "numInsertionWorkers": form.restore_num_insertion_workers,
+            "numParallelCollections": form.restore_num_parallel_collections,
+            "numParallelFiles": form.restore_num_parallel_files,
+            "numDownloadWorkers": form.restore_num_download_workers,
+            "maxDownloadBufferMb": form.restore_max_download_buffer_mb,
+            "downloadChunkMb": form.restore_download_chunk_mb,
+            "indexCommitQuorum": form.restore_index_commit_quorum,
+            "mongodLocation": form.restore_mongod_location,
+            "mongodLocationMap": parse_pbm_string_map(form.restore_mongod_location_map)
+            if form.restore_mongod_location_map
+            else None,
+            "fallbackEnabled": form.restore_fallback_enabled,
+            "allowPartlyDone": form.restore_allow_partly_done,
+            "timeouts": timeouts or None,
+        }
+    )
 
 
 def _build_backup_config_dict(form: BackupCreate) -> dict[str, Any]:
@@ -105,8 +208,10 @@ def _build_backup_config_dict(form: BackupCreate) -> dict[str, Any]:
             form.backup_compression,
             form.backup_compression_level is not None,
             form.backup_timeouts_starting_status is not None,
+            form.backup_timeouts_balancer_stop is not None,
             form.backup_oplog_span_min is not None,
             form.backup_num_parallel_collections is not None,
+            form.backup_num_parallel_files is not None,
             form.backup_namespaces,
             form.backup_with_users_and_roles,
         )
@@ -115,38 +220,31 @@ def _build_backup_config_dict(form: BackupCreate) -> dict[str, Any]:
     if not has_backup_config:
         return {}
 
-    backup_config_dict = {}
-
-    if form.backup_priority:
-        # Already validated at create time (BackupPriorityYaml), so this won't raise.
-        backup_config_dict["priority"] = parse_backup_priority(form.backup_priority)
-
-    if form.backup_compression:
-        backup_config_dict["compression"] = form.backup_compression
-
-    if form.backup_compression_level is not None:
-        backup_config_dict["compressionLevel"] = form.backup_compression_level
-
-    if form.backup_timeouts_starting_status is not None:
-        backup_config_dict["timeouts"] = {
-            "startingStatus": form.backup_timeouts_starting_status
+    timeouts = _drop_unset(
+        {
+            "startingStatus": form.backup_timeouts_starting_status,
+            "balancerStop": form.backup_timeouts_balancer_stop,
         }
-
-    if form.backup_oplog_span_min is not None:
-        backup_config_dict["oplogSpanMin"] = form.backup_oplog_span_min
-
-    if form.backup_num_parallel_collections is not None:
-        backup_config_dict["numParallelCollections"] = (
-            form.backup_num_parallel_collections
-        )
-
-    if form.backup_namespaces:
-        backup_config_dict["namespaces"] = form.backup_namespaces
-
-    if form.backup_with_users_and_roles:
-        backup_config_dict["withUsersAndRoles"] = True
-
-    return backup_config_dict
+    )
+    return _drop_unset(
+        {
+            # Already validated at create time (BackupPriorityYaml), so this
+            # cannot raise here.
+            "priority": parse_backup_priority(form.backup_priority)
+            if form.backup_priority
+            else None,
+            "compression": form.backup_compression or None,
+            "compressionLevel": form.backup_compression_level,
+            "timeouts": timeouts or None,
+            "oplogSpanMin": form.backup_oplog_span_min,
+            "numParallelCollections": form.backup_num_parallel_collections,
+            "numParallelFiles": form.backup_num_parallel_files,
+            "namespaces": form.backup_namespaces or None,
+            # Only ever emitted as an opt-in: False here means "not asked for",
+            # and PBM's own default is off.
+            "withUsersAndRoles": True if form.backup_with_users_and_roles else None,
+        }
+    )
 
 
 def build_backup_mongo_spec(
@@ -167,13 +265,19 @@ def build_backup_mongo_spec(
     pitr = _build_pitr_config(form)
     storage = _build_storage_config(form)
     backup_config_dict = _build_backup_config_dict(form)
+    restore = _build_restore_config(form)
 
+    # Each section is omitted entirely when the form declared nothing for it. The
+    # apply merges into the document already on the cluster, so an empty section
+    # written here would not be a no-op -- it would lay defaults over settings an
+    # operator had made with the CLI.
     backup_config = BackupConfig(
-        storage=BackupConfigStorage.model_validate(storage),
-        pitr=BackupConfigPITR.model_validate(pitr),
+        storage=BackupConfigStorage.model_validate(storage) if storage else None,
+        pitr=BackupConfigPITR.model_validate(pitr) if pitr else None,
         backup=BackupConfigBackup.model_validate(backup_config_dict)
         if backup_config_dict
         else None,
+        restore=BackupConfigRestore.model_validate(restore) if restore else None,
         credentials_path=form.credentials_path or None,
     )
 

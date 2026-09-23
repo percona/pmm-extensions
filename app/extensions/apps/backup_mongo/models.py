@@ -155,6 +155,48 @@ BackupNamespacesList = Annotated[
 ]
 
 
+def parse_pbm_string_map(value: str) -> dict[str, str]:
+    """Parse a YAML mapping of string to string, as PBM's per-node maps are written.
+
+    Backs ``storage.s3.endpointUrlMap`` and ``restore.mongodLocationMap``, both of
+    which key a plain string by node address. Validated at create time so a typo
+    surfaces as a 422 on the field rather than as a PBM parse error on the host.
+
+    :param value: Raw YAML from the form field.
+    :return: The parsed mapping, with keys and values coerced to ``str``.
+    :raises ValueError: On invalid YAML, a non-mapping result, or an empty mapping.
+    """
+    try:
+        parsed = yaml.safe_load(value)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Value is not valid YAML: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(  # noqa: TRY004
+            "Value must be a YAML mapping of node address to string"
+        )
+    if not parsed:
+        raise ValueError("Mapping is empty; provide at least one entry")
+    return {str(key): str(item) for key, item in parsed.items()}
+
+
+def _validate_pbm_string_map_yaml(value: str) -> str:
+    """Validate the YAML mapping at create time and keep the operator's text.
+
+    Mirrors ``BackupPriorityYaml``: the field carries the raw YAML and the spec
+    builder parses it, so what a user typed survives a round-trip through the
+    form instead of being reformatted by a dump.
+
+    :param value: Raw YAML from the form field.
+    :return: ``value`` unchanged.
+    :raises ValueError: When it is not a non-empty YAML mapping.
+    """
+    parse_pbm_string_map(value)
+    return value
+
+
+PbmStringMapYaml = Annotated[NonEmptyStr, AfterValidator(_validate_pbm_string_map_yaml)]
+
+
 class StorageType(StrEnum):
     """Represents whe PBM should keep datafiles."""
 
@@ -451,6 +493,19 @@ class BackupConfigPITR(BaseCaseInsensitiveModel):
     compression: Annotated[
         NonEmptyStr, Field(validation_alias=AliasChoices("compression", "COMPRESSION"))
     ]
+    compression_level: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("compressionLevel", "COMPRESSIONLEVEL"),
+        serialization_alias="compressionLevel",
+    )
+    oplog_only: bool | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("oplogOnly", "OPLOGONLY"),
+        serialization_alias="oplogOnly",
+    )
+    priority: dict[str, float] | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("priority", "PRIORITY")
+    )
 
 
 class BackupConfigBackupTimeouts(BaseCaseInsensitiveModel):
@@ -466,6 +521,11 @@ class BackupConfigBackupTimeouts(BaseCaseInsensitiveModel):
         None,
         validation_alias=AliasChoices("startingStatus", "STARTINGSTATUS"),
         serialization_alias="startingStatus",
+    )
+    balancer_stop: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("balancerStop", "BALANCERSTOP"),
+        serialization_alias="balancerStop",
     )
 
 
@@ -518,6 +578,11 @@ class BackupConfigBackup(BaseCaseInsensitiveModel):
         ),
         serialization_alias="numParallelCollections",
     )
+    num_parallel_files: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("numParallelFiles", "NUMPARALLELFILES"),
+        serialization_alias="numParallelFiles",
+    )
     namespaces: NonEmptyStr | EmptyStrToNone = Field(
         None, validation_alias=AliasChoices("namespaces", "NAMESPACES")
     )
@@ -528,6 +593,155 @@ class BackupConfigBackup(BaseCaseInsensitiveModel):
     )
 
 
+class BackupConfigRestoreTimeouts(BaseCaseInsensitiveModel):
+    """Represent restore timeout configuration.
+
+    :param balancerStop: Seconds to wait for the sharded-cluster balancer to stop.
+    """
+
+    model_config = ConfigDict(alias_generator=None)
+
+    balancer_stop: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("balancerStop", "BALANCERSTOP"),
+        serialization_alias="balancerStop",
+    )
+
+
+class BackupConfigRestore(BaseCaseInsensitiveModel):
+    """Represent PBM's ``restore`` configuration section.
+
+    Cluster-wide tuning for how a restore runs, not a description of any one
+    restore: the Restores app builds its own task and reads none of this. It is
+    here because ``restore`` is part of the document ``pbm config --file`` writes,
+    and a configuration panel that omitted it would silently drop whatever an
+    operator had set the last time they used the CLI.
+    """
+
+    model_config = ConfigDict(alias_generator=None)
+
+    batch_size: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("batchSize", "BATCHSIZE"),
+        serialization_alias="batchSize",
+    )
+    num_insertion_workers: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("numInsertionWorkers", "NUMINSERTIONWORKERS"),
+        serialization_alias="numInsertionWorkers",
+    )
+    num_parallel_collections: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices(
+            "numParallelCollections", "NUMPARALLELCOLLECTIONS"
+        ),
+        serialization_alias="numParallelCollections",
+    )
+    num_parallel_files: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("numParallelFiles", "NUMPARALLELFILES"),
+        serialization_alias="numParallelFiles",
+    )
+    num_download_workers: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("numDownloadWorkers", "NUMDOWNLOADWORKERS"),
+        serialization_alias="numDownloadWorkers",
+    )
+    max_download_buffer_mb: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("maxDownloadBufferMb", "MAXDOWNLOADBUFFERMB"),
+        serialization_alias="maxDownloadBufferMb",
+    )
+    download_chunk_mb: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("downloadChunkMb", "DOWNLOADCHUNKMB"),
+        serialization_alias="downloadChunkMb",
+    )
+    index_commit_quorum: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("indexCommitQuorum", "INDEXCOMMITQUORUM"),
+        serialization_alias="indexCommitQuorum",
+    )
+    mongod_location: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("mongodLocation", "MONGODLOCATION"),
+        serialization_alias="mongodLocation",
+    )
+    mongod_location_map: dict[str, str] | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("mongodLocationMap", "MONGODLOCATIONMAP"),
+        serialization_alias="mongodLocationMap",
+    )
+    fallback_enabled: bool | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("fallbackEnabled", "FALLBACKENABLED"),
+        serialization_alias="fallbackEnabled",
+    )
+    allow_partly_done: bool | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("allowPartlyDone", "ALLOWPARTLYDONE"),
+        serialization_alias="allowPartlyDone",
+    )
+    timeouts: BackupConfigRestoreTimeouts | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("timeouts", "TIMEOUTS")
+    )
+
+
+class BackupConfigStorageS3SSE(BaseCaseInsensitiveModel):
+    """Represent S3 server-side encryption settings.
+
+    ``sseCustomerKey`` is deliberately absent. It is the encryption key itself, so
+    it falls under the same rule as the access keys beside it: SEP has nowhere safe
+    to keep it, and read-merge-write carries whatever the CLI set through untouched.
+    ``kmsKeyID`` is an identifier rather than a secret, so it is settable here.
+    """
+
+    model_config = ConfigDict(alias_generator=None)
+
+    sse_algorithm: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("sseAlgorithm", "SSEALGORITHM"),
+        serialization_alias="sseAlgorithm",
+    )
+    kms_key_id: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("kmsKeyID", "KMSKEYID"),
+        serialization_alias="kmsKeyID",
+    )
+    sse_customer_algorithm: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("sseCustomerAlgorithm", "SSECUSTOMERALGORITHM"),
+        serialization_alias="sseCustomerAlgorithm",
+    )
+
+
+class BackupConfigStorageS3Retryer(BaseCaseInsensitiveModel):
+    """Represent S3 upload retry settings.
+
+    The delays are Go durations on the wire (``30ms``, ``5m``), so they are carried
+    as strings rather than numbers -- PBM parses them, and coercing to seconds here
+    would lose the unit the operator wrote.
+    """
+
+    model_config = ConfigDict(alias_generator=None)
+
+    num_max_retries: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("numMaxRetries", "NUMMAXRETRIES"),
+        serialization_alias="numMaxRetries",
+    )
+    min_retry_delay: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("minRetryDelay", "MINRETRYDELAY"),
+        serialization_alias="minRetryDelay",
+    )
+    max_retry_delay: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("maxRetryDelay", "MAXRETRYDELAY"),
+        serialization_alias="maxRetryDelay",
+    )
+
+
 class BackupConfigStorageFilesystem(BaseCaseInsensitiveModel):
     """Represents a filesystem storage configuration."""
 
@@ -535,6 +749,11 @@ class BackupConfigStorageFilesystem(BaseCaseInsensitiveModel):
 
     path: NonEmptyStr | EmptyStrToNone = Field(
         None, validation_alias=AliasChoices("path", "PATH")
+    )
+    max_obj_size_gb: float | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("maxObjSizeGB", "MAXOBJSIZEGB"),
+        serialization_alias="maxObjSizeGB",
     )
 
 
@@ -556,6 +775,54 @@ class BackupConfigStorageS3(BaseCaseInsensitiveModel):
         None,
         validation_alias=AliasChoices("endpointUrl", "ENDPOINTURL"),
         serialization_alias="endpointUrl",
+    )
+    endpoint_url_map: dict[str, str] | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("endpointUrlMap", "ENDPOINTURLMAP"),
+        serialization_alias="endpointUrlMap",
+    )
+    force_path_style: bool | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("forcePathStyle", "FORCEPATHSTYLE"),
+        serialization_alias="forcePathStyle",
+    )
+    upload_part_size: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("uploadPartSize", "UPLOADPARTSIZE"),
+        serialization_alias="uploadPartSize",
+    )
+    max_upload_parts: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("maxUploadParts", "MAXUPLOADPARTS"),
+        serialization_alias="maxUploadParts",
+    )
+    storage_class: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("storageClass", "STORAGECLASS"),
+        serialization_alias="storageClass",
+    )
+    insecure_skip_tls_verify: bool | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("insecureSkipTLSVerify", "INSECURESKIPTLSVERIFY"),
+        serialization_alias="insecureSkipTLSVerify",
+    )
+    debug_log_levels: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("debugLogLevels", "DEBUGLOGLEVELS"),
+        serialization_alias="debugLogLevels",
+    )
+    max_obj_size_gb: float | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("maxObjSizeGB", "MAXOBJSIZEGB"),
+        serialization_alias="maxObjSizeGB",
+    )
+    server_side_encryption: BackupConfigStorageS3SSE | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("serverSideEncryption", "SERVERSIDEENCRYPTION"),
+        serialization_alias="serverSideEncryption",
+    )
+    retryer: BackupConfigStorageS3Retryer | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("retryer", "RETRYER")
     )
 
 
@@ -590,6 +857,9 @@ class BackupConfig(BaseCaseInsensitiveModel):
     )
     backup: BackupConfigBackup | EmptyStrToNone = Field(
         None, validation_alias=AliasChoices("backup", "BACKUP")
+    )
+    restore: BackupConfigRestore | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("restore", "RESTORE")
     )
     pbm_config_yaml_payload: NonEmptyStr | EmptyStrToNone = Field(
         None,
@@ -688,7 +958,12 @@ class BackupCreate(
     backup_type: BackupType
     alert_on_fail: bool = False
     pitr_oplog_span_min: int | EmptyStrToNone = None
-    pitr_enabled: bool = False
+    # Tri-state on purpose: None means the body said nothing about PITR, which
+    # is what a backup sends now that configuration is a separate form. False
+    # means an operator actually cleared the box on the Configuration tab and
+    # wants PITR off. The apply merges, so writing `enabled: false` for the
+    # first case would switch PITR off on a cluster where someone had enabled it.
+    pitr_enabled: bool | EmptyStrToNone = None
     pitr_compression: NonEmptyStr | EmptyStrToNone = None
     storage_type: NonEmptyStr | EmptyStrToNone = None
     storage_s3_region: StrippedNonEmptyStr | EmptyStrToNone = None
@@ -705,6 +980,44 @@ class BackupCreate(
     backup_num_parallel_collections: int | EmptyStrToNone = None
     backup_namespaces: BackupNamespacesList | EmptyStrToNone = None
     backup_with_users_and_roles: bool = False
+    # --- the rest of PBM's config file -------------------------------------
+    # Credentials are absent by design throughout: storage.*.credentials and
+    # serverSideEncryption.sseCustomerKey are the secrets SEP has nowhere safe to
+    # keep. Read-merge-write carries whatever the pbm CLI set for them through an
+    # apply untouched.
+    pitr_oplog_only: bool = False
+    pitr_compression_level: int | EmptyStrToNone = None
+    pitr_priority: BackupPriorityYaml | EmptyStrToNone = None
+    backup_num_parallel_files: int | EmptyStrToNone = None
+    backup_timeouts_balancer_stop: int | EmptyStrToNone = None
+    storage_s3_force_path_style: bool | EmptyStrToNone = None
+    storage_s3_upload_part_size: int | EmptyStrToNone = None
+    storage_s3_max_upload_parts: int | EmptyStrToNone = None
+    storage_s3_storage_class: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_s3_insecure_skip_tls_verify: bool | EmptyStrToNone = None
+    storage_s3_debug_log_levels: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_s3_max_obj_size_gb: float | EmptyStrToNone = None
+    storage_s3_endpoint_url_map: PbmStringMapYaml | EmptyStrToNone = None
+    storage_s3_sse_algorithm: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_s3_sse_kms_key_id: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_s3_sse_customer_algorithm: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_s3_retryer_num_max_retries: int | EmptyStrToNone = None
+    storage_s3_retryer_min_retry_delay: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_s3_retryer_max_retry_delay: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_filesystem_max_obj_size_gb: float | EmptyStrToNone = None
+    restore_batch_size: int | EmptyStrToNone = None
+    restore_num_insertion_workers: int | EmptyStrToNone = None
+    restore_num_parallel_collections: int | EmptyStrToNone = None
+    restore_num_parallel_files: int | EmptyStrToNone = None
+    restore_num_download_workers: int | EmptyStrToNone = None
+    restore_max_download_buffer_mb: int | EmptyStrToNone = None
+    restore_download_chunk_mb: int | EmptyStrToNone = None
+    restore_index_commit_quorum: StrippedNonEmptyStr | EmptyStrToNone = None
+    restore_mongod_location: StrippedNonEmptyStr | EmptyStrToNone = None
+    restore_mongod_location_map: PbmStringMapYaml | EmptyStrToNone = None
+    restore_fallback_enabled: bool | EmptyStrToNone = None
+    restore_allow_partly_done: bool | EmptyStrToNone = None
+    restore_timeouts_balancer_stop: int | EmptyStrToNone = None
     # Path to MongoDB URI credentials file on the Nomad node (passed as task meta, used by payloads).
     credentials_path: NonEmptyStr | EmptyStrToNone = None
 
@@ -841,8 +1154,9 @@ class BackupTaskWrite(
     :type alert_on_fail: bool
     :param pitr_oplog_span_min: PITR oplog span in minutes.
     :type pitr_oplog_span_min: int | None
-    :param pitr_enabled: Whether PITR is enabled.
-    :type pitr_enabled: bool
+    :param pitr_enabled: Whether PITR is enabled, or ``None`` when the body says
+        nothing about it.
+    :type pitr_enabled: bool | None
     :param pitr_compression: PITR compression algorithm.
     :type pitr_compression: str | None
     :param storage_type: Storage backend type (``s3`` or ``filesystem``); required.
@@ -883,7 +1197,12 @@ class BackupTaskWrite(
     service_id: int
     alert_on_fail: bool = False
     pitr_oplog_span_min: int | None = None
-    pitr_enabled: bool = False
+    # Tri-state on purpose: None means the body said nothing about PITR, which
+    # is what a backup sends now that configuration is a separate form. False
+    # means an operator actually cleared the box on the Configuration tab and
+    # wants PITR off. The apply merges, so writing `enabled: false` for the
+    # first case would switch PITR off on a cluster where someone had enabled it.
+    pitr_enabled: bool | EmptyStrToNone = None
     pitr_compression: str | None = None
     storage_type: str
     storage_s3_region: StrippedNonEmptyStr | EmptyStrToNone = None

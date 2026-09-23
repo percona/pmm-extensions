@@ -57,20 +57,25 @@ class TestCredentialsPathPlacement:
             "credentials_path"
         ]
 
-    def test_advanced_section_is_marked_advanced_and_comes_last(self) -> None:
-        """Hide it behind "Show advanced options" rather than below the ordinary sections."""
-        sections = backup_mongo_config_schema.forms
-        assert sections[-1].title == "Advanced"
-        assert sections[-1].advanced is True
-        assert [s.advanced for s in sections[:-1]] == [False] * (len(sections) - 1)
+    def test_expert_sections_share_one_disclosure(self) -> None:
+        """Mark the three expert sections advanced and leave the everyday ones plain.
+
+        The renderer collects every advanced section behind a single "Show advanced
+        options" control, so marking three costs one row at rest rather than three.
+        """
+        advanced = [s.title for s in backup_mongo_config_schema.forms if s.advanced]
+
+        assert advanced == ["Storage Tuning", "Restore Tuning", "Advanced"]
 
     def test_config_owns_every_cluster_wide_section(self) -> None:
         """Hold the whole of PBM's cluster-wide configuration, in reading order."""
         assert [section.title for section in backup_mongo_config_schema.forms] == [
             "Task",
             "Storage",
+            "Storage Tuning",
             "Point-in-Time Recovery",
             "Backup Options",
+            "Restore Tuning",
             "Advanced",
         ]
 
@@ -129,6 +134,8 @@ class TestCredentialsPathPlacement:
             "backup_timeouts_starting_status",
             "backup_oplog_span_min",
             "backup_num_parallel_collections",
+            "backup_num_parallel_files",
+            "backup_timeouts_balancer_stop",
         ]
         assert backup_options == [
             "backup_compression",

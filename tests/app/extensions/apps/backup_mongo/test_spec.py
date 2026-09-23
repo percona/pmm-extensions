@@ -114,15 +114,48 @@ def test_build_spec_s3_storage():
 
 
 def test_build_spec_defaults_pitr_compression_when_omitted():
-    """Default PITR compression to gzip when pitr_compression is omitted."""
+    """Default PITR compression to gzip when pitr_compression is omitted.
+
+    ``pitr_enabled`` is set explicitly because the section is only emitted when
+    the body says something about PITR -- see the two tests below.
+    """
     config = _config(
         build_backup_mongo_spec(
-            _s3_form(pitr_compression=None),
+            _s3_form(pitr_enabled=True, pitr_compression=None),
             BackupMongoResolved(),
         )
     )
 
     assert config["pitr"]["compression"] == CompressionAlgorithm.GZIP.value
+
+
+def test_build_spec_omits_pitr_when_the_body_says_nothing_about_it():
+    """Write no ``pitr`` section for a body that never mentions PITR.
+
+    A backup is such a body now that configuration is a separate form. Since the
+    apply merges rather than replaces, emitting ``enabled: false`` here would not
+    be inert -- it would switch point-in-time recovery off on a cluster where an
+    operator had turned it on. ``pitr_compression`` is cleared because the shared
+    fixture sets it, and setting it is itself saying something about PITR.
+    """
+    config = _config(
+        build_backup_mongo_spec(_s3_form(pitr_compression=None), BackupMongoResolved())
+    )
+
+    assert "pitr" not in config
+
+
+def test_build_spec_writes_pitr_disabled_when_explicitly_cleared():
+    """Write ``enabled: false`` when an operator actually cleared the box.
+
+    The counterpart to the test above: the Configuration tab sends ``False``, which
+    has to reach the cluster, so the tri-state cannot collapse to a bare bool.
+    """
+    config = _config(
+        build_backup_mongo_spec(_s3_form(pitr_enabled=False), BackupMongoResolved())
+    )
+
+    assert config["pitr"]["enabled"] is False
 
 
 def test_build_spec_omits_backup_block_when_no_options():

@@ -37,6 +37,15 @@ from app.sep.apps.framework.form_dsl import (
 )
 
 ADVANCED_SECTION = "Advanced"
+#: Expert storage knobs -- retry, encryption, chunking -- kept out of the common
+#: Storage section so the four fields that actually point PBM at a bucket stay
+#: visible. Marked ``advanced`` in the layout, so it shares one disclosure control
+#: with :data:`ADVANCED_SECTION` rather than adding a second.
+STORAGE_TUNING_SECTION = "StorageTuning"
+#: PBM's ``restore`` section: cluster-wide tuning for how a restore runs. Not to be
+#: confused with the Restores app, which creates restore *tasks* and reads none of
+#: this -- these are keys in the config document ``pbm config --file`` writes.
+RESTORE_SECTION = "RestoreTuning"
 
 
 class BackupConfigForm(_BackupMongoTaskForm):
@@ -98,9 +107,134 @@ class BackupConfigForm(_BackupMongoTaskForm):
     storage_s3_endpoint_url: Annotated[
         str | None, _NOT_S3_STORAGE, Ui(label="S3 Endpoint URL", section="Storage")
     ] = None
+    storage_s3_force_path_style: Annotated[
+        bool | None,
+        _NOT_S3_STORAGE,
+        Ui(
+            label="Force Path-Style URLs",
+            section="Storage",
+            description=(
+                "Address the bucket as a path rather than a subdomain. Required by "
+                "MinIO and most S3-compatible servers."
+            ),
+        ),
+    ] = None
     storage_filesystem_path: Annotated[
         str, _NOT_FILESYSTEM_STORAGE, Ui(label="Filesystem Path", section="Storage")
     ]
+    storage_s3_upload_part_size: Annotated[
+        int | None,
+        _NOT_S3_STORAGE,
+        Ui(
+            label="Upload Part Size (bytes)",
+            section=STORAGE_TUNING_SECTION,
+            description="Chunk size for multipart uploads. PBM defaults to 10MB.",
+        ),
+    ] = None
+    storage_s3_max_upload_parts: Annotated[
+        int | None,
+        _NOT_S3_STORAGE,
+        Ui(label="Max Upload Parts", section=STORAGE_TUNING_SECTION),
+    ] = None
+    storage_s3_storage_class: Annotated[
+        str | None,
+        _NOT_S3_STORAGE,
+        Ui(label="Storage Class", section=STORAGE_TUNING_SECTION),
+    ] = None
+    storage_s3_insecure_skip_tls_verify: Annotated[
+        bool | None,
+        _NOT_S3_STORAGE,
+        Ui(
+            label="Skip TLS Verification",
+            section=STORAGE_TUNING_SECTION,
+            description="Accept any certificate from the endpoint. Test use only.",
+        ),
+    ] = None
+    storage_s3_debug_log_levels: Annotated[
+        str | None,
+        _NOT_S3_STORAGE,
+        Ui(
+            label="Debug Log Levels",
+            section=STORAGE_TUNING_SECTION,
+            description=(
+                "Comma-separated AWS SDK log flags: Signing, Retries, Request, "
+                "RequestWithBody, Response, ResponseWithBody, DeprecatedUsage."
+            ),
+        ),
+    ] = None
+    storage_s3_max_obj_size_gb: Annotated[
+        float | None,
+        _NOT_S3_STORAGE,
+        Ui(label="Max Object Size (GB)", section=STORAGE_TUNING_SECTION),
+    ] = None
+    storage_s3_endpoint_url_map: Annotated[
+        str | None,
+        _NOT_S3_STORAGE,
+        Ui(
+            label="Per-Node Endpoint URLs (YAML)",
+            section=STORAGE_TUNING_SECTION,
+            widget=FieldWidget.TEXTAREA,
+            description=(
+                "YAML mapping of node address to the endpoint that node should use, "
+                "e.g.:\n"
+                '"host1:27018": "http://minio-a:9000"'
+            ),
+        ),
+    ] = None
+    storage_s3_sse_algorithm: Annotated[
+        str | None,
+        _NOT_S3_STORAGE,
+        Ui(
+            label="SSE Algorithm",
+            section=STORAGE_TUNING_SECTION,
+            description="Server-side encryption algorithm, e.g. aws:kms.",
+        ),
+    ] = None
+    storage_s3_sse_kms_key_id: Annotated[
+        str | None,
+        _NOT_S3_STORAGE,
+        Ui(label="SSE KMS Key ID", section=STORAGE_TUNING_SECTION),
+    ] = None
+    storage_s3_sse_customer_algorithm: Annotated[
+        str | None,
+        _NOT_S3_STORAGE,
+        Ui(
+            label="SSE Customer Algorithm",
+            section=STORAGE_TUNING_SECTION,
+            description=(
+                "AES256 for customer-provided keys. The key itself is not settable "
+                "here -- set it with the pbm CLI, as with the access keys."
+            ),
+        ),
+    ] = None
+    storage_s3_retryer_num_max_retries: Annotated[
+        int | None,
+        _NOT_S3_STORAGE,
+        Ui(label="Upload Retries", section=STORAGE_TUNING_SECTION),
+    ] = None
+    storage_s3_retryer_min_retry_delay: Annotated[
+        str | None,
+        _NOT_S3_STORAGE,
+        Ui(
+            label="Min Retry Delay",
+            section=STORAGE_TUNING_SECTION,
+            description="Go duration, e.g. 30ms.",
+        ),
+    ] = None
+    storage_s3_retryer_max_retry_delay: Annotated[
+        str | None,
+        _NOT_S3_STORAGE,
+        Ui(
+            label="Max Retry Delay",
+            section=STORAGE_TUNING_SECTION,
+            description="Go duration, e.g. 5m.",
+        ),
+    ] = None
+    storage_filesystem_max_obj_size_gb: Annotated[
+        float | None,
+        _NOT_FILESYSTEM_STORAGE,
+        Ui(label="Max Object Size (GB)", section=STORAGE_TUNING_SECTION),
+    ] = None
     pitr_enabled: Annotated[bool, Ui(label="Enable PITR", section="PITR")] = False
     pitr_oplog_span_min: Annotated[
         int | None, Ui(label="Oplog Span (minutes)", section="PITR")
@@ -108,6 +242,32 @@ class BackupConfigForm(_BackupMongoTaskForm):
     pitr_compression: Annotated[
         str, _COMPRESSION_CHOICES, Ui(label="PITR Compression", section="PITR")
     ] = CompressionAlgorithm.GZIP.value
+    pitr_compression_level: Annotated[
+        int | None, Ui(label="PITR Compression Level", section="PITR")
+    ] = None
+    pitr_oplog_only: Annotated[
+        bool,
+        Ui(
+            label="Oplog Only",
+            section="PITR",
+            description=(
+                "Replicate the oplog without taking the base backup PITR normally "
+                "requires."
+            ),
+        ),
+    ] = False
+    pitr_priority: Annotated[
+        str | None,
+        Ui(
+            label="PITR Node Priority (YAML)",
+            section="PITR",
+            widget=FieldWidget.TEXTAREA,
+            description=(
+                "YAML mapping of mongod addresses to oplog-slicing priority "
+                "(highest wins), in the same shape as the backup priority below."
+            ),
+        ),
+    ] = None
     backup_priority: Annotated[
         str | None,
         Ui(
@@ -131,6 +291,82 @@ class BackupConfigForm(_BackupMongoTaskForm):
     ] = None
     backup_num_parallel_collections: Annotated[
         int | None, Ui(label="Parallel Collections", section="BackupOptions")
+    ] = None
+    backup_num_parallel_files: Annotated[
+        int | None, Ui(label="Parallel Files", section="BackupOptions")
+    ] = None
+    backup_timeouts_balancer_stop: Annotated[
+        int | None,
+        Ui(
+            label="Balancer Stop Timeout (seconds)",
+            section="BackupOptions",
+            description="Sharded clusters only: how long to wait for the balancer to stop.",
+        ),
+    ] = None
+    restore_batch_size: Annotated[
+        int | None, Ui(label="Batch Size", section=RESTORE_SECTION)
+    ] = None
+    restore_num_insertion_workers: Annotated[
+        int | None, Ui(label="Insertion Workers", section=RESTORE_SECTION)
+    ] = None
+    restore_num_parallel_collections: Annotated[
+        int | None, Ui(label="Parallel Collections", section=RESTORE_SECTION)
+    ] = None
+    restore_num_parallel_files: Annotated[
+        int | None, Ui(label="Parallel Files", section=RESTORE_SECTION)
+    ] = None
+    restore_num_download_workers: Annotated[
+        int | None, Ui(label="Download Workers", section=RESTORE_SECTION)
+    ] = None
+    restore_max_download_buffer_mb: Annotated[
+        int | None, Ui(label="Max Download Buffer (MB)", section=RESTORE_SECTION)
+    ] = None
+    restore_download_chunk_mb: Annotated[
+        int | None, Ui(label="Download Chunk (MB)", section=RESTORE_SECTION)
+    ] = None
+    restore_index_commit_quorum: Annotated[
+        str | None,
+        Ui(
+            label="Index Commit Quorum",
+            section=RESTORE_SECTION,
+            description='"votingMembers", "majority", a number, or a tag name.',
+        ),
+    ] = None
+    restore_mongod_location: Annotated[
+        str | None,
+        Ui(
+            label="mongod Binary Path",
+            section=RESTORE_SECTION,
+            description="Physical restores only: where the mongod binary lives.",
+        ),
+    ] = None
+    restore_mongod_location_map: Annotated[
+        str | None,
+        Ui(
+            label="Per-Node mongod Paths (YAML)",
+            section=RESTORE_SECTION,
+            widget=FieldWidget.TEXTAREA,
+            description=(
+                "YAML mapping of node address to that node's mongod path, e.g.:\n"
+                '"host1:27018": "/usr/bin/mongod"'
+            ),
+        ),
+    ] = None
+    restore_fallback_enabled: Annotated[
+        bool | None,
+        Ui(
+            label="Enable Fallback",
+            section=RESTORE_SECTION,
+            description="Keep a copy of the current data so a failed physical restore can roll back.",
+        ),
+    ] = None
+    restore_allow_partly_done: Annotated[
+        bool | None,
+        Ui(label="Allow Partly Done", section=RESTORE_SECTION),
+    ] = None
+    restore_timeouts_balancer_stop: Annotated[
+        int | None,
+        Ui(label="Balancer Stop Timeout (seconds)", section=RESTORE_SECTION),
     ] = None
     credentials_path: Annotated[
         str | None,
