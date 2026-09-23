@@ -208,34 +208,22 @@ class TestBackupMongoAppSchemaEndpoint:
             "-incremental",
         ]
 
-    def test_schema_declares_restore_related_app(self, test_client):
-        """Link the backups schema to the separately registered restore app."""
-        response = test_client.get(f"{API_BASE}/schema")
+    def test_schema_offers_only_per_run_sections(self, test_client):
+        """Ask only what one backup decides.
 
-        assert response.json()["related_apps"] == [
-            {
-                "app_key": "backup_mongo/restore",
-                "label": "Restores",
-                "route_segment": "restores",
-            },
-        ]
+        Storage, Point-in-Time Recovery and the configuration-shaped backup options
+        moved to the PBM Configuration tab; the gates that used to be asserted here
+        are covered against that schema instead. What a run still chooses is how to
+        compress it and which namespaces to include.
+        """
+        forms = test_client.get(f"{API_BASE}/schema").json()["forms"]
 
-    def test_schema_storage_fields_use_forbidden_gates(self, test_client):
-        """Storage sub-fields hide via forbidden gates keyed on storage_type."""
-        response = test_client.get(f"{API_BASE}/schema")
-        storage = next(
-            section
-            for section in response.json()["forms"]
-            if section["title"] == "Storage"
-        )
-        fields = {field["name"]: field for field in storage["fields"]}
-
-        assert fields["storage_type"]["default"] == "s3"
-        assert fields["storage_s3_bucket"]["forbidden"] == [
-            {"when": {"not_equals": {"storage_type": "s3"}}}
-        ]
-        assert fields["storage_filesystem_path"]["forbidden"] == [
-            {"when": {"not_equals": {"storage_type": "filesystem"}}}
+        assert [section["title"] for section in forms] == ["Task", "Backup Options"]
+        assert [field["name"] for field in forms[1]["fields"]] == [
+            "backup_compression",
+            "backup_compression_level",
+            "backup_namespaces",
+            "backup_with_users_and_roles",
         ]
 
 

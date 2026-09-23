@@ -33,8 +33,8 @@ to keep that secret in OM or SEP, so they stay readable-but-not-writable here an
 are changed with the ``pbm`` CLI on the host.
 """
 
+from app.sep.apps.backup_mongo.config.deps import build_config_task_payload
 from app.sep.apps.backup_mongo.config.schema import backup_mongo_config_schema
-from app.sep.apps.backup_mongo.deps import build_backup_task_payload
 from app.sep.apps.backup_mongo.models import OWNER
 from app.sep.apps.framework.apps import AppCapabilities, TaskExecutionApp
 
@@ -60,7 +60,7 @@ app = TaskExecutionApp(
     # ``build_backup_mongo_spec`` already selects the ``pbm_config`` payload from
     # ``backup_type``. What differs is the absence of a ``derived`` block, so this
     # creates the config task alone instead of fanning out four backup siblings.
-    payload_builder=build_backup_task_payload,
+    payload_builder=build_config_task_payload,
     capabilities=AppCapabilities(
         execute=True,
         update=False,

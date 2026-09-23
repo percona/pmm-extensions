@@ -27,7 +27,8 @@ from pydantic import ValidationError
 
 from app.extensions.apps.alters.models import AltersCreate
 from app.extensions.apps.archives.models import ArchivesCreate
-from app.extensions.apps.backup_mongo.models import BackupForm
+from app.extensions.apps.backup_mongo.config.models import BackupConfigForm
+from app.extensions.apps.backup_mongo.models import _BackupMongoTaskForm, BackupForm
 from app.extensions.apps.backup_mongo.restore.models import RestoreForm
 from app.extensions.apps.backup_pg.models import BackupPgForm
 from app.extensions.apps.checksums.models import ChecksumsForm
@@ -49,7 +50,7 @@ from app.extensions.apps.mysql_backups.restore.models import RestoreCreate
 
 _TASK_LAYOUT = FormLayout(sections=[SectionLayout(key="Task", title="Task")])
 
-# The 7 task-based plugin create forms that should inherit the identity fields.
+# The task-based plugin create forms that should inherit the identity fields.
 _PLUGIN_FORMS = [
     ArchivesCreate,
     BackupPgForm,
@@ -57,6 +58,7 @@ _PLUGIN_FORMS = [
     BackupCreate,
     RestoreCreate,
     BackupForm,
+    BackupConfigForm,
     RestoreForm,
 ]
 
@@ -68,7 +70,13 @@ _PLUGIN_FORMS_WITH_TASK_NAME_DEFAULT = (RestoreForm,)
 # Forms that inherit ``TaskFormModel`` but redeclare both identity fields: a
 # ``task_name`` presentation default plus a ``hostname`` ``HostRef`` cascade
 # (``Ui(depends_on=...)``) and Task-section field order.
-_PLUGIN_FORMS_WITH_IDENTITY_REDECLARE = (BackupForm,)
+#
+# ``_BackupMongoTaskForm`` rather than ``BackupForm``: MongoDB Backups and PBM
+# Configuration are two forms now, disjoint below the Task section, so the
+# redeclared trio moved to the base they share. Both remain plain inheritors in
+# ``_PLUGIN_FORMS`` above, which is what the redeclaration was extracted to make
+# true again.
+_PLUGIN_FORMS_WITH_IDENTITY_REDECLARE = (_BackupMongoTaskForm,)
 
 # ``AltersCreate`` is a deliberate carve-out, NOT an inheritor. It is also a
 # model-first task form, but it redeclares its identity fields locally

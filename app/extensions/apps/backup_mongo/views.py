@@ -44,18 +44,12 @@ backup_mongo_views = Views(
     layout=FormLayout(
         sections=(
             TASK_SECTION_LAYOUT,
-            SectionLayout(
-                key="Storage",
-                title="Storage",
-                collapsible=True,
-                collapsed_by_default=True,
-            ),
-            SectionLayout(
-                key="PITR",
-                title="Point-in-Time Recovery",
-                collapsible=True,
-                collapsed_by_default=True,
-            ),
+            # Storage and Point-in-Time Recovery are gone: they are cluster-wide PBM
+            # configuration, and restating them on every backup is what let a backup
+            # overwrite the cluster's config. They live on the PBM Configuration tab
+            # now, together with the backup options that are also configuration
+            # (priority, timeouts, oplog span, parallel collections). What is left
+            # here is what one run actually decides.
             SectionLayout(
                 key="BackupOptions",
                 title="Backup Options",

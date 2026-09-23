@@ -39,7 +39,6 @@ from app.core.utils.fields import (
 )
 from app.extensions.apps.framework.form_dsl import (
     Choices,
-    FieldWidget,
     Forbidden,
     HostRef,
     Requires,
@@ -615,7 +614,27 @@ class _StorageConfigValidatorMixin:
 
     @model_validator(mode="after")
     def _validate_storage(self) -> "_StorageConfigValidatorMixin":
-        """Reject an incomplete or unsupported per-task storage config at create time."""
+        """Reject an incomplete or unsupported per-task storage config at create time.
+
+        A body that names no storage at all is not incomplete -- it is a backup,
+        which since the config split no longer carries storage. Storage belongs to
+        the cluster's PBM configuration and is applied from the Configuration tab.
+        Validating an absent block would reject every backup on ``storage_type``,
+        a field the backups form no longer has. A body that sets *some* storage
+        field without a type is still wrong, and still rejected.
+        """
+        storage_fields = (
+            self.storage_type,
+            self.storage_s3_bucket,
+            self.storage_s3_region,
+            self.storage_s3_prefix,
+            self.storage_s3_endpoint_url,
+            self.storage_filesystem_path,
+        )
+        if not any(
+            value is not None and str(value).strip() for value in storage_fields
+        ):
+            return self
         validate_storage_config(
             self.storage_type,
             s3_bucket=self.storage_s3_bucket,
@@ -703,21 +722,19 @@ _COMPRESSION_CHOICES = Choices(
 )
 
 
-class BackupForm(TaskFormModel):
-    """Define the model-first schema source for the MongoDB Backups ``GET /schema``.
+class _BackupMongoTaskForm(TaskFormModel):
+    """Carry the Task section both MongoDB Backups forms present identically.
 
-    The single source the derived ``GET /schema`` form renders from, driven by the
-    :class:`Ui` / reference / :class:`Choices` / :class:`Forbidden` markers. It is
-    *not* the JSON request body — :class:`BackupTaskWrite` is — and is never validated
-    as one; field-declaration order reproduces the schema's section and field order
-    (Task, Storage, Point-in-Time Recovery, Backup Options). ``task_name`` and
-    ``hostname`` are redeclared here (still ``NonEmptyStr``) so the form can carry a
-    presentation default for the task name, cascade the executor host from
-    ``service_id``, and order the Task section as service → host. The
-    ``alert_on_fail`` capability control stays inherited from
-    :class:`TaskFormModel` (``Hidden``, off-schema). ``NonEmptyStr`` string
-    fields emit ``min_length: 1`` on the wire schema (e.g. ``task_name``);
-    ``HostRef`` selectors do not inherit string length constraints.
+    The backups form and the PBM Configuration form diverge completely below the
+    Task section -- one asks what to back up now, the other what the cluster's PBM
+    configuration should be -- but both open by naming the task and choosing the
+    MongoDB service and the executor host. Declaring that trio once here keeps the
+    two from drifting on the part a user sees first.
+
+    Order matters twice over: ``Ui(order=...)`` fixes the fields' order *within*
+    the Task section, and this being the first block of fields on either subclass
+    is what makes Task the first section -- ``derive_form_sections`` orders
+    sections by where each one's first field is declared.
     """
 
     task_name: Annotated[
@@ -739,69 +756,35 @@ class BackupForm(TaskFormModel):
             order=2,
         ),
     ]
-    credentials_path: Annotated[
-        str | None,
-        Ui(
-            section="Task",
-            order=3,
-            description="Optional path to MongoDB URI credentials on the Nomad node",
-        ),
-    ] = None
-    storage_type: Annotated[
-        str,
-        Choices((("s3", "S3-compatible"), ("filesystem", "Filesystem"))),
-        Ui(section="Storage"),
-    ] = StorageType.S3.value
-    storage_s3_region: Annotated[
-        str | None,
-        _S3_STORAGE,
-        _NOT_S3_STORAGE,
-        Ui(
-            label="S3 Region",
-            section="Storage",
-            description="Required for S3 storage.",
-        ),
-    ] = None
-    storage_s3_bucket: Annotated[
-        str | None,
-        _S3_STORAGE,
-        _NOT_S3_STORAGE,
-        Ui(
-            label="S3 Bucket",
-            section="Storage",
-            description="Required for S3 storage.",
-        ),
-    ] = None
-    storage_s3_prefix: Annotated[
-        str | None, _NOT_S3_STORAGE, Ui(label="S3 Prefix", section="Storage")
-    ] = None
-    storage_s3_endpoint_url: Annotated[
-        str | None, _NOT_S3_STORAGE, Ui(label="S3 Endpoint URL", section="Storage")
-    ] = None
-    storage_filesystem_path: Annotated[
-        str, _NOT_FILESYSTEM_STORAGE, Ui(label="Filesystem Path", section="Storage")
-    ]
-    pitr_enabled: Annotated[bool, Ui(label="Enable PITR", section="PITR")] = False
-    pitr_oplog_span_min: Annotated[
-        int | None, Ui(label="Oplog Span (minutes)", section="PITR")
-    ] = None
-    pitr_compression: Annotated[
-        str, _COMPRESSION_CHOICES, Ui(label="PITR Compression", section="PITR")
-    ] = CompressionAlgorithm.GZIP.value
-    backup_priority: Annotated[
-        str | None,
-        Ui(
-            label="Node Priority (YAML)",
-            section="BackupOptions",
-            widget=FieldWidget.TEXTAREA,
-            description=(
-                "YAML mapping of mongod addresses to backup priority (highest wins). "
-                "One entry per line, e.g.:\n"
-                '"host1:27018": 2\n'
-                '"host2:27018": 1'
-            ),
-        ),
-    ] = None
+
+
+class BackupForm(_BackupMongoTaskForm):
+    """Define the model-first schema source for the MongoDB Backups ``GET /schema``.
+
+    The single source the derived ``GET /schema`` form renders from, driven by the
+    :class:`Ui` / reference / :class:`Choices` / :class:`Forbidden` markers. It is
+    *not* the JSON request body — :class:`BackupTaskWrite` is — and is never validated
+    as one; field-declaration order reproduces the schema's section and field order
+    (Task, Storage, Point-in-Time Recovery, Backup Options). ``task_name`` and
+    ``hostname`` are redeclared here (still ``NonEmptyStr``) so the form can carry a
+    presentation default for the task name, cascade the executor host from
+    ``service_id``, and order the Task section as service → host. The
+    ``alert_on_fail`` capability control stays inherited from
+    :class:`TaskFormModel` (``Hidden``, off-schema). ``NonEmptyStr`` string
+    fields emit ``min_length: 1`` on the wire schema (e.g. ``task_name``);
+    ``HostRef`` selectors do not inherit string length constraints.
+
+    ``credentials_path`` is deliberately absent: it is a property of the host the
+    task runs on, not of one backup, and asking for it beside the database service
+    reads as something the operator must fill in per run. It is declared once, as
+    an advanced setting, on
+    :class:`~app.sep.apps.backup_mongo.config.models.BackupConfigForm`. The field
+    survives on :class:`BackupCreate` and :class:`BackupTaskWrite`, so a caller
+    that sends it still gets it -- what changed is that the backups *form* no
+    longer offers it, and an unset value falls back to ``$HOME/.mongodb_uri``
+    exactly as an empty box did.
+    """
+
     backup_compression: Annotated[
         str,
         _COMPRESSION_CHOICES,
@@ -812,16 +795,6 @@ class BackupForm(TaskFormModel):
     ] = CompressionAlgorithm.S2.value
     backup_compression_level: Annotated[
         int | None, Ui(label="Compression Level", section="BackupOptions")
-    ] = None
-    backup_timeouts_starting_status: Annotated[
-        int | None,
-        Ui(label="Starting Status Timeout (seconds)", section="BackupOptions"),
-    ] = None
-    backup_oplog_span_min: Annotated[
-        float | None, Ui(label="Backup Oplog Span (minutes)", section="BackupOptions")
-    ] = None
-    backup_num_parallel_collections: Annotated[
-        int | None, Ui(label="Parallel Collections", section="BackupOptions")
     ] = None
     backup_namespaces: Annotated[
         str | None,
