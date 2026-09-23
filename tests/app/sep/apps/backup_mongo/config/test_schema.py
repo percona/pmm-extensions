@@ -15,6 +15,8 @@
 
 """Cover where ``credentials_path`` is offered, and where it deliberately is not."""
 
+import pytest
+
 from app.sep.apps.backup_mongo.config.schema import backup_mongo_config_schema
 from app.sep.apps.backup_mongo.models import BackupCreate, BackupTaskWrite
 from app.sep.apps.backup_mongo.schema import backup_mongo_schema
@@ -58,21 +60,39 @@ class TestCredentialsPathPlacement:
         ]
 
     def test_expert_sections_share_one_disclosure(self) -> None:
-        """Mark the three expert sections advanced and leave the everyday ones plain.
+        """Mark the expert sections advanced and leave the everyday ones plain.
 
         The renderer collects every advanced section behind a single "Show advanced
-        options" control, so marking three costs one row at rest rather than three.
+        options" control, so five of them cost one row at rest rather than five --
+        which is what makes per-backend tuning sections affordable at all.
         """
         advanced = [s.title for s in backup_mongo_config_schema.forms if s.advanced]
 
-        assert advanced == ["Storage Tuning", "Restore Tuning", "Advanced"]
+        assert advanced == [
+            "S3 Tuning",
+            "MinIO Tuning",
+            "GCS Tuning",
+            "Restore Tuning",
+            "Advanced",
+        ]
 
     def test_config_owns_every_cluster_wide_section(self) -> None:
-        """Hold the whole of PBM's cluster-wide configuration, in reading order."""
+        """Hold the whole of PBM's cluster-wide configuration, in reading order.
+
+        One section per storage backend rather than one Storage section holding
+        every backend's keys: all but the selected backend's are hidden, so the
+        list is long here and short on screen.
+        """
         assert [section.title for section in backup_mongo_config_schema.forms] == [
             "Task",
             "Storage",
-            "Storage Tuning",
+            "S3 Storage",
+            "S3 Tuning",
+            "MinIO Storage",
+            "MinIO Tuning",
+            "GCS Storage",
+            "GCS Tuning",
+            "Filesystem Storage",
             "Point-in-Time Recovery",
             "Backup Options",
             "Restore Tuning",
@@ -100,8 +120,8 @@ class TestCredentialsPathPlacement:
 
         assert backups & config == {"task_name", "service_id", "hostname"}
 
-    def test_storage_lives_on_config_with_its_gates_intact(self) -> None:
-        """Carry the storage-type gates over with the fields they hide."""
+    def test_storage_section_offers_every_registered_backend(self) -> None:
+        """Let the type selector reach each backend the validator accepts."""
         storage = next(
             section
             for section in backup_mongo_config_schema.forms
@@ -110,14 +130,39 @@ class TestCredentialsPathPlacement:
         fields = {field.name: field for field in storage.fields}
 
         assert fields["storage_type"].default == "s3"
-        assert [
-            gate.model_dump(exclude_none=True)
-            for gate in fields["storage_s3_bucket"].forbidden
-        ] == [{"when": {"not_equals": {"storage_type": "s3"}}}]
-        assert [
-            gate.model_dump(exclude_none=True)
-            for gate in fields["storage_filesystem_path"].forbidden
-        ] == [{"when": {"not_equals": {"storage_type": "filesystem"}}}]
+        assert [choice.value for choice in fields["storage_type"].choices] == [
+            "s3",
+            "minio",
+            "gcs",
+            "filesystem",
+        ]
+
+    @pytest.mark.parametrize(
+        ("title", "storage_type"),
+        [
+            ("S3 Storage", "s3"),
+            ("S3 Tuning", "s3"),
+            ("MinIO Storage", "minio"),
+            ("MinIO Tuning", "minio"),
+            ("GCS Storage", "gcs"),
+            ("GCS Tuning", "gcs"),
+            ("Filesystem Storage", "filesystem"),
+        ],
+    )
+    def test_each_backend_section_is_gated_on_its_type(
+        self, title: str, storage_type: str
+    ) -> None:
+        """Hide a backend's whole section unless ``storage_type`` selects it.
+
+        Gating the section rather than each field is what keeps the form legible:
+        a user picking GCS never renders the other backends' keys, and a key can
+        only be sent for the backend that owns it.
+        """
+        section = next(s for s in backup_mongo_config_schema.forms if s.title == title)
+
+        assert [gate.model_dump(exclude_none=True) for gate in section.forbidden] == [
+            {"when": {"not_equals": {"storage_type": storage_type}}}
+        ]
 
     def test_backup_options_split_by_who_owns_the_value(self) -> None:
         """Keep per-run choices on backups and deployment properties on config.

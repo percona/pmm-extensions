@@ -42,9 +42,16 @@ becomes something an operator asks for.
 from app.sep.apps.backup_mongo.config.models import (
     ADVANCED_SECTION,
     BackupConfigForm,
+    FILESYSTEM_SECTION,
+    GCS_SECTION,
+    GCS_TUNING_SECTION,
+    MINIO_SECTION,
+    MINIO_TUNING_SECTION,
     RESTORE_SECTION,
-    STORAGE_TUNING_SECTION,
+    S3_SECTION,
+    S3_TUNING_SECTION,
 )
+from app.sep.apps.backup_mongo.models import StorageType
 from app.sep.apps.backup_mongo.views import backup_mongo_views
 from app.sep.apps.framework.form_dsl import (
     derive_app_schema,
@@ -52,6 +59,22 @@ from app.sep.apps.framework.form_dsl import (
     SectionLayout,
     TASK_SECTION_LAYOUT,
 )
+from app.sep.apps.framework.rules import F, FieldGate
+
+
+def _only_for(storage_type: StorageType) -> tuple[FieldGate, ...]:
+    """Return the gate hiding a section unless ``storage_type`` is selected.
+
+    One section per backend, each gated, rather than every backend's fields in a
+    single Storage section each carrying its own ``Forbidden``: seven backends'
+    worth of keys in one section would be ~80 fields showing ten. The same shape
+    ``mysql_backups`` uses for its per-tool sections.
+
+    :param storage_type: The backend whose section this gates.
+    :return: A one-gate tuple for ``SectionLayout.forbidden``.
+    """
+    return (FieldGate(when=F("storage_type") != storage_type.value),)
+
 
 backup_mongo_config_layout = FormLayout(
     sections=(
@@ -60,21 +83,63 @@ backup_mongo_config_layout = FormLayout(
             key="Storage",
             title="Storage",
             collapsible=True,
+            description="Pick a backend; its settings appear below.",
+        ),
+        SectionLayout(
+            key=S3_SECTION,
+            title="S3 Storage",
+            collapsible=True,
+            forbidden=_only_for(StorageType.S3),
+        ),
+        SectionLayout(
+            key=S3_TUNING_SECTION,
+            title="S3 Tuning",
+            advanced=True,
+            forbidden=_only_for(StorageType.S3),
+            description=(
+                "Retry, encryption and chunking. PBM's defaults are right for most "
+                "deployments."
+            ),
+        ),
+        SectionLayout(
+            key=MINIO_SECTION,
+            title="MinIO Storage",
+            collapsible=True,
+            forbidden=_only_for(StorageType.MINIO),
+            description=(
+                "PBM's native MinIO backend. Pointing S3-compatible storage at a "
+                "MinIO endpoint also works and is the more common choice."
+            ),
+        ),
+        SectionLayout(
+            key=MINIO_TUNING_SECTION,
+            title="MinIO Tuning",
+            advanced=True,
+            forbidden=_only_for(StorageType.MINIO),
+        ),
+        SectionLayout(
+            key=GCS_SECTION,
+            title="GCS Storage",
+            collapsible=True,
+            forbidden=_only_for(StorageType.GCS),
+        ),
+        SectionLayout(
+            key=GCS_TUNING_SECTION,
+            title="GCS Tuning",
+            advanced=True,
+            forbidden=_only_for(StorageType.GCS),
+        ),
+        SectionLayout(
+            key=FILESYSTEM_SECTION,
+            title="Filesystem Storage",
+            collapsible=True,
+            forbidden=_only_for(StorageType.FILESYSTEM),
         ),
         SectionLayout(
             key="PITR",
             title="Point-in-Time Recovery",
             collapsible=True,
             collapsed_by_default=True,
-        ),
-        SectionLayout(
-            key=STORAGE_TUNING_SECTION,
-            title="Storage Tuning",
-            advanced=True,
-            description=(
-                "Retry, encryption and chunking. PBM's defaults are right for most "
-                "deployments."
-            ),
         ),
         SectionLayout(
             key="BackupOptions",

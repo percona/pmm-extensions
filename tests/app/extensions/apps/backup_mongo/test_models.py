@@ -19,6 +19,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.extensions.apps.backup_mongo.models import (
+    _STORAGE_BACKENDS,
     BackupCreate,
     BackupTaskDetailResponse,
     BackupTaskResponse,
@@ -191,7 +192,11 @@ def _call_validate(**overrides: object) -> None:
     }
     kwargs.update(overrides)
     storage_type = kwargs.pop("storage_type")
-    return validate_storage_config(storage_type, **kwargs)
+    # The helper keeps its short override names; the validator now takes the create
+    # body's field mapping, attributing each field to a backend by its ``storage_``
+    # prefix rather than by being named in a per-backend signature.
+    values = {f"storage_{name}": value for name, value in kwargs.items()}
+    return validate_storage_config(storage_type, values)
 
 
 class TestValidateStorageConfig:
@@ -220,11 +225,25 @@ class TestValidateStorageConfig:
             is None
         )
 
-    @pytest.mark.parametrize("storage_type", [None, "", "gcs", "azure"])
-    def test_rejects_unsupported_type(self, storage_type: str | None) -> None:
-        """Raise ValueError for an absent or unsupported storage type."""
+    @pytest.mark.parametrize("storage_type", [None, ""])
+    def test_rejects_absent_type(self, storage_type: str | None) -> None:
+        """Raise ValueError when no storage type is named at all."""
         with pytest.raises(ValueError, match="storage_type"):
             _call_validate(storage_type=storage_type)
+
+    def test_rejects_type_outside_the_backend_registry(self) -> None:
+        """Raise ValueError for a type no backend is registered for.
+
+        The value is derived from the registry rather than hardcoded. Naming a
+        plausible non-backend ("sftp", "swift") only guesses at what PBM will never
+        support, and would start passing for the wrong reason the day one of those
+        guesses became real.
+        """
+        unregistered = "x" + "".join(sorted(_STORAGE_BACKENDS))
+        assert unregistered not in _STORAGE_BACKENDS
+
+        with pytest.raises(ValueError, match="storage_type"):
+            _call_validate(storage_type=unregistered)
 
     @pytest.mark.parametrize("bucket", [None, "", "   "])
     def test_rejects_s3_without_bucket(self, bucket: str | None) -> None:
@@ -256,7 +275,7 @@ class TestValidateStorageConfig:
 
     def test_rejects_filesystem_path_set_for_s3(self) -> None:
         """Raise ValueError when a filesystem path is set alongside S3 storage."""
-        with pytest.raises(ValueError, match="Filesystem path must not be set"):
+        with pytest.raises(ValueError, match="must not be set for S3 storage"):
             _call_validate(filesystem_path="/var/backups/mongo")
 
     @pytest.mark.parametrize(
@@ -277,7 +296,7 @@ class TestValidateStorageConfig:
             "filesystem_path": "/var/backups/mongo",
             field: value,
         }
-        with pytest.raises(ValueError, match="must not be set for filesystem"):
+        with pytest.raises(ValueError, match="must not be set for Filesystem storage"):
             _call_validate(**overrides)
 
     @pytest.mark.parametrize("path", [None, "", "   "])

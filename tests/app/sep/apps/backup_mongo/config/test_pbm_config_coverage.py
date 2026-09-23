@@ -24,8 +24,17 @@ key by key, in PBM's own camelCase.
 import yaml
 
 from app.sep.apps.backup_mongo.config.models import BackupConfigForm
-from app.sep.apps.backup_mongo.models import BackupCreate, BackupType
-from app.sep.apps.backup_mongo.spec import BackupMongoResolved, build_backup_mongo_spec
+from app.sep.apps.backup_mongo.config.schema import backup_mongo_config_schema
+from app.sep.apps.backup_mongo.models import (
+    _STORAGE_BACKENDS,
+    BackupCreate,
+    BackupType,
+)
+from app.sep.apps.backup_mongo.spec import (
+    _STORAGE_BUILDERS,
+    BackupMongoResolved,
+    build_backup_mongo_spec,
+)
 
 #: Every configuration field the panel offers, with a value distinguishable from
 #: both PBM's default and its neighbours, so a key crossing wires is visible.
@@ -167,22 +176,11 @@ class TestEveryFormFieldReachesPbm:
                 "storage_type": "filesystem",
                 "storage_filesystem_path": "/var/lib/mongo/pbm-backups",
                 "storage_filesystem_max_obj_size_gb": 42.0,
+                # Every S3 field, cleared by prefix rather than by name. Naming them
+                # missed the booleans and numbers, which the validator now rejects as
+                # a cross-wired body -- correctly, since PBM would ignore them.
                 **dict.fromkeys(
-                    (
-                        "storage_s3_region",
-                        "storage_s3_bucket",
-                        "storage_s3_prefix",
-                        "storage_s3_endpoint_url",
-                        "storage_s3_endpoint_url_map",
-                        "storage_s3_storage_class",
-                        "storage_s3_debug_log_levels",
-                        "storage_s3_sse_algorithm",
-                        "storage_s3_sse_kms_key_id",
-                        "storage_s3_sse_customer_algorithm",
-                        "storage_s3_retryer_min_retry_delay",
-                        "storage_s3_retryer_max_retry_delay",
-                    ),
-                    None,
+                    (key for key in FULL_FORM if key.startswith("storage_s3_")), None
                 ),
             }
         )
@@ -249,3 +247,169 @@ class TestCredentialsAreNotSettable:
     def test_no_credentials_reach_the_document(self) -> None:
         """Write no ``credentials`` key, so the merge preserves what PBM stored."""
         assert "credentials" not in _document()["storage"]["s3"]
+
+    def test_no_backend_offers_a_credentials_field(self) -> None:
+        """Keep every backend's credentials out of the form, not just S3's.
+
+        The rule is uniform rather than per-backend, which is what makes it one
+        sentence and this one assertion: GCS's ``clientEmail``, Azure's
+        ``credentials.key`` and OCI's principal are as absent as S3's access keys.
+        ``credentials_path`` is unrelated -- it locates the MongoDB URI on the
+        execution host and holds no secret itself.
+        """
+        offered = [
+            name
+            for name in BackupConfigForm.model_fields
+            if "credentials" in name and name != "credentials_path"
+        ]
+
+        assert offered == []
+
+
+def _for_backend(storage_type: str, **fields: object) -> dict:
+    """Return a ``FULL_FORM`` override selecting ``storage_type`` alone.
+
+    Every ``storage_s3_*`` key is cleared: the validator rejects fields belonging to
+    a backend other than the selected one, which is the point of the prefix table.
+    """
+    return {
+        "storage_type": storage_type,
+        **dict.fromkeys(
+            (key for key in FULL_FORM if key.startswith("storage_s3_")), None
+        ),
+        **fields,
+    }
+
+
+class TestMinioBackend:
+    """Cover PBM's native MinIO backend, which is not the S3 backend.
+
+    Verified against the real binary: ``pbm profile add`` accepted exactly this key
+    set against the sandbox MinIO.
+    """
+
+    def test_serialises_under_pbm_s_own_key_names(self) -> None:
+        """Emit ``endpoint`` / ``endpointMap``, not S3's ``endpointUrl`` spellings."""
+        document = _document(
+            _for_backend(
+                "minio",
+                storage_minio_region="us-east-1",
+                storage_minio_bucket="pbm",
+                storage_minio_prefix="mongo",
+                storage_minio_endpoint="https://minio.example.com",
+                storage_minio_endpoint_map='"host1:27018": "http://minio-a:9000"',
+                storage_minio_secure=True,
+                storage_minio_force_path_style=True,
+                storage_minio_insecure_skip_tls_verify=False,
+                storage_minio_part_size=10485760,
+                storage_minio_max_obj_size_gb=5018.0,
+                storage_minio_debug_trace=True,
+                storage_minio_retryer_num_max_retries=10,
+            )
+        )
+
+        assert document["storage"] == {
+            "type": "minio",
+            "minio": {
+                "region": "us-east-1",
+                "bucket": "pbm",
+                "prefix": "mongo",
+                "endpoint": "https://minio.example.com",
+                "endpointMap": {"host1:27018": "http://minio-a:9000"},
+                "secure": True,
+                "forcePathStyle": True,
+                "insecureSkipTLSVerify": False,
+                "partSize": 10485760,
+                "maxObjSizeGB": 5018.0,
+                "debugTrace": True,
+                "retryer": {"numMaxRetries": 10},
+            },
+        }
+
+
+class TestGcsBackend:
+    """Cover Google Cloud Storage, whose retryer backs off rather than delaying.
+
+    Verified against the real binary: PBM parsed exactly this key set and failed
+    only on the credentials it will not take from OM, which is how the key names
+    were confirmed without a GCS account.
+    """
+
+    def test_serialises_bucket_and_backoff_retryer(self) -> None:
+        """Emit the GCS block with its own retryer shape."""
+        document = _document(
+            _for_backend(
+                "gcs",
+                storage_gcs_bucket="pbm",
+                storage_gcs_prefix="mongo",
+                storage_gcs_chunk_size=10485760,
+                storage_gcs_max_obj_size_gb=5018.0,
+                storage_gcs_retryer_backoff_initial="1s",
+                storage_gcs_retryer_backoff_max="30s",
+                storage_gcs_retryer_backoff_multiplier=2,
+                storage_gcs_retryer_max_attempts=5,
+                storage_gcs_retryer_chunk_retry_deadline="32s",
+            )
+        )
+
+        assert document["storage"] == {
+            "type": "gcs",
+            "gcs": {
+                "bucket": "pbm",
+                "prefix": "mongo",
+                "chunkSize": 10485760,
+                "maxObjSizeGB": 5018.0,
+                "retryer": {
+                    "backoffInitial": "1s",
+                    "backoffMax": "30s",
+                    "backoffMultiplier": 2,
+                    "maxAttempts": 5,
+                    "chunkRetryDeadline": "32s",
+                },
+            },
+        }
+
+
+class TestStorageBackendRegistry:
+    """Guard the invariants that let one table drive validation and serialisation."""
+
+    def test_no_prefix_is_a_prefix_of_another(self) -> None:
+        """Keep every field attributable to exactly one backend.
+
+        Fields are assigned by prefix alone. If one prefix were a prefix of another,
+        a field would belong to two backends at once and the "no foreign field is
+        set" check would start rejecting valid bodies.
+        """
+        prefixes = [backend.prefix for backend in _STORAGE_BACKENDS.values()]
+
+        for prefix in prefixes:
+            assert not [
+                other
+                for other in prefixes
+                if other != prefix and other.startswith(prefix)
+            ]
+
+    def test_every_registered_backend_can_be_serialised(self) -> None:
+        """Pair each validated backend with a builder.
+
+        A backend the validator accepts but no builder covers would pass create and
+        then vanish from the document -- the silent-no-op failure this panel exists
+        to remove.
+        """
+        assert set(_STORAGE_BUILDERS) == set(_STORAGE_BACKENDS)
+
+    def test_the_type_selector_offers_exactly_the_registered_backends(self) -> None:
+        """Keep the form's choices and the registry from drifting apart.
+
+        A backend registered but not offered is unreachable; one offered but not
+        registered is a 422 on submit. Asserted against the derived schema, which is
+        what the UI actually renders from.
+        """
+        storage = next(
+            section
+            for section in backup_mongo_config_schema.forms
+            if section.title == "Storage"
+        )
+        field = next(f for f in storage.fields if f.name == "storage_type")
+
+        assert {choice.value for choice in field.choices} == set(_STORAGE_BACKENDS)

@@ -108,6 +108,115 @@ def _build_pitr_config(form: BackupCreate) -> dict[str, Any]:
     return pitr
 
 
+def _build_s3_storage(form: BackupCreate) -> dict[str, Any]:
+    """Build the ``storage.s3`` block."""
+    sse = _drop_unset(
+        {
+            "sseAlgorithm": form.storage_s3_sse_algorithm,
+            "kmsKeyID": form.storage_s3_sse_kms_key_id,
+            "sseCustomerAlgorithm": form.storage_s3_sse_customer_algorithm,
+        }
+    )
+    retryer = _drop_unset(
+        {
+            "numMaxRetries": form.storage_s3_retryer_num_max_retries,
+            "minRetryDelay": form.storage_s3_retryer_min_retry_delay,
+            "maxRetryDelay": form.storage_s3_retryer_max_retry_delay,
+        }
+    )
+    return _drop_unset(
+        {
+            "region": form.storage_s3_region,
+            "bucket": form.storage_s3_bucket,
+            "prefix": form.storage_s3_prefix,
+            "endpointUrl": form.storage_s3_endpoint_url,
+            "endpointUrlMap": parse_pbm_string_map(form.storage_s3_endpoint_url_map)
+            if form.storage_s3_endpoint_url_map
+            else None,
+            "forcePathStyle": form.storage_s3_force_path_style,
+            "uploadPartSize": form.storage_s3_upload_part_size,
+            "maxUploadParts": form.storage_s3_max_upload_parts,
+            "storageClass": form.storage_s3_storage_class,
+            "insecureSkipTLSVerify": form.storage_s3_insecure_skip_tls_verify,
+            "debugLogLevels": form.storage_s3_debug_log_levels,
+            "maxObjSizeGB": form.storage_s3_max_obj_size_gb,
+            "serverSideEncryption": sse or None,
+            "retryer": retryer or None,
+        }
+    )
+
+
+def _build_minio_storage(form: BackupCreate) -> dict[str, Any]:
+    """Build the ``storage.minio`` block.
+
+    Note ``endpoint`` / ``endpointMap``, not the ``endpointUrl`` / ``endpointUrlMap``
+    the S3 block uses -- PBM names them differently for this backend.
+    """
+    retryer = _drop_unset({"numMaxRetries": form.storage_minio_retryer_num_max_retries})
+    return _drop_unset(
+        {
+            "region": form.storage_minio_region,
+            "bucket": form.storage_minio_bucket,
+            "prefix": form.storage_minio_prefix,
+            "endpoint": form.storage_minio_endpoint,
+            "endpointMap": parse_pbm_string_map(form.storage_minio_endpoint_map)
+            if form.storage_minio_endpoint_map
+            else None,
+            "secure": form.storage_minio_secure,
+            "insecureSkipTLSVerify": form.storage_minio_insecure_skip_tls_verify,
+            "forcePathStyle": form.storage_minio_force_path_style,
+            "partSize": form.storage_minio_part_size,
+            "maxObjSizeGB": form.storage_minio_max_obj_size_gb,
+            "debugTrace": form.storage_minio_debug_trace,
+            "retryer": retryer or None,
+        }
+    )
+
+
+def _build_gcs_storage(form: BackupCreate) -> dict[str, Any]:
+    """Build the ``storage.gcs`` block."""
+    retryer = _drop_unset(
+        {
+            "backoffInitial": form.storage_gcs_retryer_backoff_initial,
+            "backoffMax": form.storage_gcs_retryer_backoff_max,
+            "backoffMultiplier": form.storage_gcs_retryer_backoff_multiplier,
+            "maxAttempts": form.storage_gcs_retryer_max_attempts,
+            "chunkRetryDeadline": form.storage_gcs_retryer_chunk_retry_deadline,
+        }
+    )
+    return _drop_unset(
+        {
+            "bucket": form.storage_gcs_bucket,
+            "prefix": form.storage_gcs_prefix,
+            "chunkSize": form.storage_gcs_chunk_size,
+            "maxObjSizeGB": form.storage_gcs_max_obj_size_gb,
+            "retryer": retryer or None,
+        }
+    )
+
+
+def _build_filesystem_storage(form: BackupCreate) -> dict[str, Any]:
+    """Build the ``storage.filesystem`` block."""
+    return _drop_unset(
+        {
+            "path": form.storage_filesystem_path,
+            "maxObjSizeGB": form.storage_filesystem_max_obj_size_gb,
+        }
+    )
+
+
+#: One block builder per registered backend. Keyed by the same ``storage_type``
+#: values as ``_STORAGE_BACKENDS`` in models.py, and asserted to cover them: a
+#: backend the validator accepts but nothing here can serialise would be accepted
+#: at create time and then silently dropped from the document.
+_STORAGE_BUILDERS = {
+    StorageType.S3.value: _build_s3_storage,
+    StorageType.MINIO.value: _build_minio_storage,
+    StorageType.GCS.value: _build_gcs_storage,
+    StorageType.FILESYSTEM.value: _build_filesystem_storage,
+}
+
+
 def _build_storage_config(form: BackupCreate) -> dict[str, Any]:
     """Build storage configuration from form data.
 
@@ -119,48 +228,7 @@ def _build_storage_config(form: BackupCreate) -> dict[str, Any]:
         # it is a property of the cluster, applied from the Configuration tab. This
         # used to raise, which turned every backup create into a 500.
         return {}
-    if form.storage_type == StorageType.S3.value:
-        sse = _drop_unset(
-            {
-                "sseAlgorithm": form.storage_s3_sse_algorithm,
-                "kmsKeyID": form.storage_s3_sse_kms_key_id,
-                "sseCustomerAlgorithm": form.storage_s3_sse_customer_algorithm,
-            }
-        )
-        retryer = _drop_unset(
-            {
-                "numMaxRetries": form.storage_s3_retryer_num_max_retries,
-                "minRetryDelay": form.storage_s3_retryer_min_retry_delay,
-                "maxRetryDelay": form.storage_s3_retryer_max_retry_delay,
-            }
-        )
-        storage_config = _drop_unset(
-            {
-                "region": form.storage_s3_region,
-                "bucket": form.storage_s3_bucket,
-                "prefix": form.storage_s3_prefix,
-                "endpointUrl": form.storage_s3_endpoint_url,
-                "endpointUrlMap": parse_pbm_string_map(form.storage_s3_endpoint_url_map)
-                if form.storage_s3_endpoint_url_map
-                else None,
-                "forcePathStyle": form.storage_s3_force_path_style,
-                "uploadPartSize": form.storage_s3_upload_part_size,
-                "maxUploadParts": form.storage_s3_max_upload_parts,
-                "storageClass": form.storage_s3_storage_class,
-                "insecureSkipTLSVerify": form.storage_s3_insecure_skip_tls_verify,
-                "debugLogLevels": form.storage_s3_debug_log_levels,
-                "maxObjSizeGB": form.storage_s3_max_obj_size_gb,
-                "serverSideEncryption": sse or None,
-                "retryer": retryer or None,
-            }
-        )
-    else:
-        storage_config = _drop_unset(
-            {
-                "path": form.storage_filesystem_path,
-                "maxObjSizeGB": form.storage_filesystem_max_obj_size_gb,
-            }
-        )
+    storage_config = _STORAGE_BUILDERS[form.storage_type](form)
 
     return {"type": form.storage_type, form.storage_type: storage_config}
 

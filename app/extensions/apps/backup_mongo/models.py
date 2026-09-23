@@ -16,8 +16,12 @@
 """Define models for the Backups plugin."""
 
 import re
+from dataclasses import dataclass
 from enum import nonmember, StrEnum
-from typing import Annotated
+from typing import Annotated, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 import yaml
 from pydantic import (
@@ -198,11 +202,22 @@ PbmStringMapYaml = Annotated[NonEmptyStr, AfterValidator(_validate_pbm_string_ma
 
 
 class StorageType(StrEnum):
-    """Represents whe PBM should keep datafiles."""
+    """Represent where PBM should keep datafiles.
+
+    Every backend ``pbm`` 2.15.0 accepts. ``minio`` is a backend in its own right
+    rather than a label for S3-compatible storage: PBM gives it its own key set
+    (``endpoint`` rather than ``endpointUrl``, a ``secure`` flag, a signature
+    version). Pointing the ``s3`` backend at a MinIO endpoint still works and
+    remains the usual choice for S3-compatible servers generally.
+    """
 
     S3 = "s3"
-    FILESYSTEM = "filesystem"
+    MINIO = "minio"
+    GCS = "gcs"
     AZURE = "azure"
+    OCI = "oci"
+    OSS = "oss"
+    FILESYSTEM = "filesystem"
 
 
 class S3Provider(StrEnum):
@@ -290,11 +305,15 @@ def _validate_priority_yaml(value: str) -> str:
 # A non-empty Node Priority YAML string, validated as a node -> number mapping.
 BackupPriorityYaml = Annotated[NonEmptyStr, AfterValidator(_validate_priority_yaml)]
 
-# Storage backends PMM Extensions builds a PBM config for; the ``azure`` backend has no
-# builder support and is not offered in the form, so it is rejected at create time.
-_SUPPORTED_STORAGE_TYPES = frozenset(
-    {StorageType.S3.value, StorageType.FILESYSTEM.value}
-)
+#: Storage backends SEP builds a PBM config for, each declaring the form-field
+#: prefix that identifies its fields and which of them PBM requires. Validation is
+#: driven off this table rather than written per pair of backends: the old shape
+#: asserted "none of the *other* backend's fields are set" by naming them, which is
+#: quadratic and was already awkward at two backends.
+#:
+#: No prefix may be a prefix of another, or a field would be attributed to two
+#: backends; a test asserts that.
+_STORAGE_BACKENDS: dict[str, "_StorageBackend"] = {}
 
 # DNS-compliant S3 bucket names: 3-63 chars, dot-separated labels of lowercase
 # letters, digits and hyphens, each label starting and ending alphanumeric -- so no
@@ -342,85 +361,88 @@ def _validate_s3_bucket_name(value: str) -> str:
 S3BucketName = Annotated[StrippedNonEmptyStr, AfterValidator(_validate_s3_bucket_name)]
 
 
-def _validate_s3_storage(
-    *,
-    bucket: str | None,
-    region: str | None,
-    endpoint_url: str | None,
-    filesystem_path: str | None,
-) -> None:
-    """Validate the cross-field rules of the ``s3`` branch of :func:`validate_storage_config`.
+def _is_unset(value: object) -> bool:
+    """Return whether a form value carries nothing.
 
-    Value-only checks (DNS-compliant bucket, ``http(s)`` endpoint URL) live on the
-    field annotations; this helper covers only the rules that need cross-field
-    context: the other backend's fields being unset, the required fields being
-    present, and the AWS-region format being enforced only when no custom endpoint
-    marks the storage as S3-compatible (non-AWS).
+    Broader than :func:`_is_blank`, which only knows about strings: storage fields
+    are now booleans and numbers as well, and ``False`` and ``0`` are answers rather
+    than absences.
 
-    :param bucket: The S3 bucket; required.
-    :param region: The S3 region; required, and a valid AWS region unless a custom
-        endpoint marks the storage as S3-compatible (non-AWS).
-    :param endpoint_url: The optional S3 endpoint URL; its presence relaxes the
-        AWS-region format check.
-    :param filesystem_path: The filesystem path, which must not be set for S3.
-    :raises ValueError: When a required field is missing or the region is malformed.
+    :param value: Any form field value.
+    :return: Whether the field was left empty.
     """
-    if not _is_blank(filesystem_path):
-        raise ValueError("Filesystem path must not be set for S3 storage")
-    if _is_blank(bucket):
-        raise ValueError("S3 storage requires a non-empty bucket")
-    if _is_blank(region):
-        raise ValueError("S3 storage requires a non-empty region")
-    if _is_blank(endpoint_url) and not _AWS_REGION_RE.match(region):
+    if value is None:
+        return True
+    return isinstance(value, str) and not value.strip()
+
+
+@dataclass(frozen=True)
+class _StorageBackend:
+    """Describe one PBM storage backend to the create-time validator.
+
+    :param prefix: The form-field prefix owning this backend's fields, e.g.
+        ``storage_s3_``. Fields are attributed to a backend by this alone.
+    :param label: How the backend is named in an error message.
+    :param required: Field suffixes (after ``prefix``) PBM will not work without.
+    :param cross_check: Optional cross-field check for rules the table cannot express,
+        taking the whole field mapping.
+    """
+
+    prefix: str
+    label: str
+    required: tuple[str, ...] = ()
+    cross_check: "Callable[[Mapping[str, object]], None] | None" = None
+
+
+def _validate_s3_region(values: "Mapping[str, object]") -> None:
+    """Require a native-AWS region shape unless a custom endpoint marks it otherwise.
+
+    With an endpoint URL the storage is S3-compatible rather than AWS, and the
+    region is whatever that provider calls it -- MinIO ignores it entirely.
+
+    :param values: The create body's field mapping.
+    :raises ValueError: When an AWS-shaped region is required and missing.
+    """
+    region = values.get("storage_s3_region")
+    if _is_unset(values.get("storage_s3_endpoint_url")) and not _AWS_REGION_RE.match(
+        str(region)
+    ):
         raise ValueError(
             f"S3 region {region!r} is not a valid AWS region (e.g. us-east-1); "
             "set an endpoint URL for S3-compatible (non-AWS) storage"
         )
 
 
-def _validate_filesystem_storage(
-    *,
-    path: str | None,
-    s3_bucket: str | None,
-    s3_region: str | None,
-    s3_prefix: str | None,
-    s3_endpoint_url: str | None,
-) -> None:
-    """Validate the ``filesystem`` branch of :func:`validate_storage_config`.
-
-    :param path: The filesystem path; required and non-blank.
-    :param s3_bucket: The S3 bucket, which must not be set for filesystem storage.
-    :param s3_region: The S3 region, which must not be set for filesystem storage.
-    :param s3_prefix: The S3 prefix, which must not be set for filesystem storage.
-    :param s3_endpoint_url: The S3 endpoint URL, which must not be set for filesystem.
-    :raises ValueError: When the path is missing or an S3 field is set.
-    """
-    forbidden = [
-        name
-        for name, value in (
-            ("bucket", s3_bucket),
-            ("region", s3_region),
-            ("prefix", s3_prefix),
-            ("endpoint_url", s3_endpoint_url),
-        )
-        if not _is_blank(value)
-    ]
-    if forbidden:
-        raise ValueError(
-            f"S3 fields must not be set for filesystem storage: {forbidden}"
-        )
-    if _is_blank(path):
-        raise ValueError("Filesystem storage requires a non-empty path")
+_STORAGE_BACKENDS.update(
+    {
+        StorageType.S3.value: _StorageBackend(
+            prefix="storage_s3_",
+            label="S3",
+            required=("bucket", "region"),
+            cross_check=_validate_s3_region,
+        ),
+        StorageType.MINIO.value: _StorageBackend(
+            prefix="storage_minio_",
+            label="MinIO",
+            required=("bucket", "endpoint"),
+        ),
+        StorageType.GCS.value: _StorageBackend(
+            prefix="storage_gcs_",
+            label="GCS",
+            required=("bucket",),
+        ),
+        StorageType.FILESYSTEM.value: _StorageBackend(
+            prefix="storage_filesystem_",
+            label="Filesystem",
+            required=("path",),
+        ),
+    }
+)
 
 
 def validate_storage_config(
     storage_type: str | None,
-    *,
-    s3_bucket: str | None,
-    s3_region: str | None,
-    s3_prefix: str | None,
-    s3_endpoint_url: str | None,
-    filesystem_path: str | None,
+    values: "Mapping[str, object]",
 ) -> None:
     """Validate a per-task PBM storage configuration at create time.
 
@@ -434,39 +456,45 @@ def validate_storage_config(
     are structural; bucket reachability is surfaced later, when the config is applied
     to PBM.
 
-    :param storage_type: The selected storage backend (``s3`` or ``filesystem``).
-    :param s3_bucket: The S3 bucket; required (non-blank) when ``storage_type`` is
-        ``s3``, forbidden otherwise.
-    :param s3_region: The S3 region; required when ``storage_type`` is ``s3`` (and
-        a valid AWS region unless a custom endpoint is set), forbidden otherwise.
-    :param s3_prefix: The S3 key prefix; forbidden unless ``storage_type`` is ``s3``.
-    :param s3_endpoint_url: The S3 endpoint URL; its presence relaxes the AWS-region
-        format check, forbidden unless ``storage_type`` is ``s3``.
-    :param filesystem_path: The filesystem path; required when ``storage_type`` is
-        ``filesystem``, forbidden otherwise.
+    :param storage_type: The selected storage backend.
+    :param values: The create body's fields, by name. Storage fields are attributed
+        to a backend by their prefix, so a backend added to
+        :data:`_STORAGE_BACKENDS` is validated with no change here.
     :raises ValueError: When the storage type is unsupported, a required field is
-        missing, the region is malformed, or a field of the other backend is set.
+        missing, or a field belonging to a different backend is set.
     """
-    if storage_type not in _SUPPORTED_STORAGE_TYPES:
+    if storage_type not in _STORAGE_BACKENDS:
         raise ValueError(
             "storage_type must be one of "
-            f"{sorted(_SUPPORTED_STORAGE_TYPES)}, got {storage_type!r}"
+            f"{sorted(_STORAGE_BACKENDS)}, got {storage_type!r}"
         )
-    if storage_type == StorageType.S3.value:
-        _validate_s3_storage(
-            bucket=s3_bucket,
-            region=s3_region,
-            endpoint_url=s3_endpoint_url,
-            filesystem_path=filesystem_path,
+    backend = _STORAGE_BACKENDS[storage_type]
+
+    missing = [
+        field
+        for field in backend.required
+        if _is_unset(values.get(f"{backend.prefix}{field}"))
+    ]
+    if missing:
+        raise ValueError(
+            f"{backend.label} storage requires {', '.join(sorted(missing))}"
         )
-    else:
-        _validate_filesystem_storage(
-            path=filesystem_path,
-            s3_bucket=s3_bucket,
-            s3_region=s3_region,
-            s3_prefix=s3_prefix,
-            s3_endpoint_url=s3_endpoint_url,
+
+    foreign = sorted(
+        name
+        for other_type, other in _STORAGE_BACKENDS.items()
+        if other_type != storage_type
+        for name, value in values.items()
+        if name.startswith(other.prefix) and not _is_unset(value)
+    )
+    if foreign:
+        raise ValueError(
+            f"Fields of another storage backend must not be set for "
+            f"{backend.label} storage: {foreign}"
         )
+
+    if backend.cross_check is not None:
+        backend.cross_check(values)
 
 
 class BackupConfigPITR(BaseCaseInsensitiveModel):
@@ -826,6 +854,147 @@ class BackupConfigStorageS3(BaseCaseInsensitiveModel):
     )
 
 
+class BackupConfigStorageMinioRetryer(BaseCaseInsensitiveModel):
+    """Represent MinIO upload retry settings."""
+
+    model_config = ConfigDict(alias_generator=None)
+
+    num_max_retries: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("numMaxRetries", "NUMMAXRETRIES"),
+        serialization_alias="numMaxRetries",
+    )
+
+
+class BackupConfigStorageMinio(BaseCaseInsensitiveModel):
+    """Represent PBM's native MinIO storage backend.
+
+    Not the same shape as pointing ``s3`` at a MinIO endpoint, which also works and
+    is the usual choice: PBM names this backend's endpoint ``endpoint`` rather than
+    ``endpointUrl``, adds a ``secure`` flag, and carries a signature version under
+    ``credentials`` (absent here, as every backend's credentials are).
+    """
+
+    model_config = ConfigDict(alias_generator=None)
+
+    region: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("region", "REGION")
+    )
+    bucket: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("bucket", "BUCKET")
+    )
+    prefix: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("prefix", "PREFIX")
+    )
+    endpoint: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("endpoint", "ENDPOINT")
+    )
+    endpoint_map: dict[str, str] | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("endpointMap", "ENDPOINTMAP"),
+        serialization_alias="endpointMap",
+    )
+    secure: bool | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("secure", "SECURE")
+    )
+    insecure_skip_tls_verify: bool | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("insecureSkipTLSVerify", "INSECURESKIPTLSVERIFY"),
+        serialization_alias="insecureSkipTLSVerify",
+    )
+    force_path_style: bool | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("forcePathStyle", "FORCEPATHSTYLE"),
+        serialization_alias="forcePathStyle",
+    )
+    part_size: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("partSize", "PARTSIZE"),
+        serialization_alias="partSize",
+    )
+    max_obj_size_gb: float | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("maxObjSizeGB", "MAXOBJSIZEGB"),
+        serialization_alias="maxObjSizeGB",
+    )
+    debug_trace: bool | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("debugTrace", "DEBUGTRACE"),
+        serialization_alias="debugTrace",
+    )
+    retryer: BackupConfigStorageMinioRetryer | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("retryer", "RETRYER")
+    )
+
+
+class BackupConfigStorageGcsRetryer(BaseCaseInsensitiveModel):
+    """Represent GCS upload retry settings.
+
+    GCS backs off rather than delaying a fixed amount, so its knobs are unlike the
+    S3 retryer's beside it: the backoff values are Go durations, the multiplier and
+    attempt count are plain numbers.
+    """
+
+    model_config = ConfigDict(alias_generator=None)
+
+    backoff_initial: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("backoffInitial", "BACKOFFINITIAL"),
+        serialization_alias="backoffInitial",
+    )
+    backoff_max: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("backoffMax", "BACKOFFMAX"),
+        serialization_alias="backoffMax",
+    )
+    backoff_multiplier: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("backoffMultiplier", "BACKOFFMULTIPLIER"),
+        serialization_alias="backoffMultiplier",
+    )
+    max_attempts: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("maxAttempts", "MAXATTEMPTS"),
+        serialization_alias="maxAttempts",
+    )
+    chunk_retry_deadline: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("chunkRetryDeadline", "CHUNKRETRYDEADLINE"),
+        serialization_alias="chunkRetryDeadline",
+    )
+
+
+class BackupConfigStorageGcs(BaseCaseInsensitiveModel):
+    """Represent Google Cloud Storage.
+
+    ``credentials.clientEmail`` and ``credentials.privateKey`` are absent under the
+    same rule as every other backend's: they are set with the ``pbm`` CLI and the
+    apply's read-merge-write carries them through untouched.
+    """
+
+    model_config = ConfigDict(alias_generator=None)
+
+    bucket: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("bucket", "BUCKET")
+    )
+    prefix: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("prefix", "PREFIX")
+    )
+    chunk_size: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("chunkSize", "CHUNKSIZE"),
+        serialization_alias="chunkSize",
+    )
+    max_obj_size_gb: float | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("maxObjSizeGB", "MAXOBJSIZEGB"),
+        serialization_alias="maxObjSizeGB",
+    )
+    retryer: BackupConfigStorageGcsRetryer | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("retryer", "RETRYER")
+    )
+
+
 class BackupConfigStorage(BaseCaseInsensitiveModel):
     """Represent Storage configuration."""
 
@@ -834,6 +1003,12 @@ class BackupConfigStorage(BaseCaseInsensitiveModel):
     type: StorageType = Field(..., validation_alias=AliasChoices("type", "TYPE"))
     s3: BackupConfigStorageS3 | EmptyStrToNone = Field(
         None, validation_alias=AliasChoices("s3", "S3")
+    )
+    minio: BackupConfigStorageMinio | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("minio", "MINIO")
+    )
+    gcs: BackupConfigStorageGcs | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("gcs", "GCS")
     )
     filesystem: BackupConfigStorageFilesystem | EmptyStrToNone = Field(
         None, validation_alias=AliasChoices("filesystem", "FILESYSTEM")
@@ -893,26 +1068,14 @@ class _StorageConfigValidatorMixin:
         a field the backups form no longer has. A body that sets *some* storage
         field without a type is still wrong, and still rejected.
         """
-        storage_fields = (
-            self.storage_type,
-            self.storage_s3_bucket,
-            self.storage_s3_region,
-            self.storage_s3_prefix,
-            self.storage_s3_endpoint_url,
-            self.storage_filesystem_path,
-        )
-        if not any(
-            value is not None and str(value).strip() for value in storage_fields
-        ):
+        values = {
+            name: getattr(self, name, None)
+            for name in type(self).model_fields
+            if name.startswith("storage_")
+        }
+        if all(_is_unset(value) for value in values.values()):
             return self
-        validate_storage_config(
-            self.storage_type,
-            s3_bucket=self.storage_s3_bucket,
-            s3_region=self.storage_s3_region,
-            s3_prefix=self.storage_s3_prefix,
-            s3_endpoint_url=self.storage_s3_endpoint_url,
-            filesystem_path=self.storage_filesystem_path,
-        )
+        validate_storage_config(self.storage_type, values)
         return self
 
 
@@ -1005,6 +1168,29 @@ class BackupCreate(
     storage_s3_retryer_min_retry_delay: StrippedNonEmptyStr | EmptyStrToNone = None
     storage_s3_retryer_max_retry_delay: StrippedNonEmptyStr | EmptyStrToNone = None
     storage_filesystem_max_obj_size_gb: float | EmptyStrToNone = None
+    storage_minio_region: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_minio_bucket: S3BucketName | EmptyStrToNone = None
+    storage_minio_prefix: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_minio_endpoint: StrHttpUrl | EmptyStrToNone = None
+    storage_minio_endpoint_map: PbmStringMapYaml | EmptyStrToNone = None
+    storage_minio_secure: bool | EmptyStrToNone = None
+    storage_minio_insecure_skip_tls_verify: bool | EmptyStrToNone = None
+    storage_minio_force_path_style: bool | EmptyStrToNone = None
+    storage_minio_part_size: int | EmptyStrToNone = None
+    storage_minio_max_obj_size_gb: float | EmptyStrToNone = None
+    storage_minio_debug_trace: bool | EmptyStrToNone = None
+    storage_minio_retryer_num_max_retries: int | EmptyStrToNone = None
+    storage_gcs_bucket: S3BucketName | EmptyStrToNone = None
+    storage_gcs_prefix: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_gcs_chunk_size: int | EmptyStrToNone = None
+    storage_gcs_max_obj_size_gb: float | EmptyStrToNone = None
+    storage_gcs_retryer_backoff_initial: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_gcs_retryer_backoff_max: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_gcs_retryer_backoff_multiplier: int | EmptyStrToNone = None
+    storage_gcs_retryer_max_attempts: int | EmptyStrToNone = None
+    storage_gcs_retryer_chunk_retry_deadline: StrippedNonEmptyStr | EmptyStrToNone = (
+        None
+    )
     restore_batch_size: int | EmptyStrToNone = None
     restore_num_insertion_workers: int | EmptyStrToNone = None
     restore_num_parallel_collections: int | EmptyStrToNone = None

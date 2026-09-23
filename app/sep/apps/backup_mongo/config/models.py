@@ -37,11 +37,17 @@ from app.sep.apps.framework.form_dsl import (
 )
 
 ADVANCED_SECTION = "Advanced"
-#: Expert storage knobs -- retry, encryption, chunking -- kept out of the common
-#: Storage section so the four fields that actually point PBM at a bucket stay
-#: visible. Marked ``advanced`` in the layout, so it shares one disclosure control
-#: with :data:`ADVANCED_SECTION` rather than adding a second.
-STORAGE_TUNING_SECTION = "StorageTuning"
+#: One section per storage backend, each hidden unless ``storage_type`` selects it.
+#: The alternative -- every backend's fields in one Storage section, each carrying
+#: its own ``Forbidden`` -- puts ~80 fields in a section showing ten. Mirrors the
+#: per-variant sections in ``app/sep/apps/mysql_backups/views.py``.
+S3_SECTION = "StorageS3"
+S3_TUNING_SECTION = "StorageS3Tuning"
+MINIO_SECTION = "StorageMinio"
+MINIO_TUNING_SECTION = "StorageMinioTuning"
+GCS_SECTION = "StorageGcs"
+GCS_TUNING_SECTION = "StorageGcsTuning"
+FILESYSTEM_SECTION = "StorageFilesystem"
 #: PBM's ``restore`` section: cluster-wide tuning for how a restore runs. Not to be
 #: confused with the Restores app, which creates restore *tasks* and reads none of
 #: this -- these are keys in the config document ``pbm config --file`` writes.
@@ -78,7 +84,14 @@ class BackupConfigForm(_BackupMongoTaskForm):
     ]
     storage_type: Annotated[
         str,
-        Choices((("s3", "S3-compatible"), ("filesystem", "Filesystem"))),
+        Choices(
+            (
+                ("s3", "S3-compatible"),
+                ("minio", "MinIO"),
+                ("gcs", "Google Cloud Storage"),
+                ("filesystem", "Filesystem"),
+            )
+        ),
         Ui(section="Storage"),
     ] = StorageType.S3.value
     storage_s3_region: Annotated[
@@ -86,8 +99,8 @@ class BackupConfigForm(_BackupMongoTaskForm):
         _S3_STORAGE,
         _NOT_S3_STORAGE,
         Ui(
-            label="S3 Region",
-            section="Storage",
+            label="Region",
+            section=S3_SECTION,
             description="Required for S3 storage.",
         ),
     ] = None
@@ -96,57 +109,54 @@ class BackupConfigForm(_BackupMongoTaskForm):
         _S3_STORAGE,
         _NOT_S3_STORAGE,
         Ui(
-            label="S3 Bucket",
-            section="Storage",
+            label="Bucket",
+            section=S3_SECTION,
             description="Required for S3 storage.",
         ),
     ] = None
     storage_s3_prefix: Annotated[
-        str | None, _NOT_S3_STORAGE, Ui(label="S3 Prefix", section="Storage")
+        str | None, _NOT_S3_STORAGE, Ui(label="Prefix", section=S3_SECTION)
     ] = None
     storage_s3_endpoint_url: Annotated[
-        str | None, _NOT_S3_STORAGE, Ui(label="S3 Endpoint URL", section="Storage")
+        str | None, _NOT_S3_STORAGE, Ui(label="Endpoint URL", section=S3_SECTION)
     ] = None
     storage_s3_force_path_style: Annotated[
         bool | None,
         _NOT_S3_STORAGE,
         Ui(
             label="Force Path-Style URLs",
-            section="Storage",
+            section=S3_SECTION,
             description=(
                 "Address the bucket as a path rather than a subdomain. Required by "
                 "MinIO and most S3-compatible servers."
             ),
         ),
     ] = None
-    storage_filesystem_path: Annotated[
-        str, _NOT_FILESYSTEM_STORAGE, Ui(label="Filesystem Path", section="Storage")
-    ]
     storage_s3_upload_part_size: Annotated[
         int | None,
         _NOT_S3_STORAGE,
         Ui(
             label="Upload Part Size (bytes)",
-            section=STORAGE_TUNING_SECTION,
+            section=S3_TUNING_SECTION,
             description="Chunk size for multipart uploads. PBM defaults to 10MB.",
         ),
     ] = None
     storage_s3_max_upload_parts: Annotated[
         int | None,
         _NOT_S3_STORAGE,
-        Ui(label="Max Upload Parts", section=STORAGE_TUNING_SECTION),
+        Ui(label="Max Upload Parts", section=S3_TUNING_SECTION),
     ] = None
     storage_s3_storage_class: Annotated[
         str | None,
         _NOT_S3_STORAGE,
-        Ui(label="Storage Class", section=STORAGE_TUNING_SECTION),
+        Ui(label="Storage Class", section=S3_TUNING_SECTION),
     ] = None
     storage_s3_insecure_skip_tls_verify: Annotated[
         bool | None,
         _NOT_S3_STORAGE,
         Ui(
             label="Skip TLS Verification",
-            section=STORAGE_TUNING_SECTION,
+            section=S3_TUNING_SECTION,
             description="Accept any certificate from the endpoint. Test use only.",
         ),
     ] = None
@@ -155,7 +165,7 @@ class BackupConfigForm(_BackupMongoTaskForm):
         _NOT_S3_STORAGE,
         Ui(
             label="Debug Log Levels",
-            section=STORAGE_TUNING_SECTION,
+            section=S3_TUNING_SECTION,
             description=(
                 "Comma-separated AWS SDK log flags: Signing, Retries, Request, "
                 "RequestWithBody, Response, ResponseWithBody, DeprecatedUsage."
@@ -165,14 +175,14 @@ class BackupConfigForm(_BackupMongoTaskForm):
     storage_s3_max_obj_size_gb: Annotated[
         float | None,
         _NOT_S3_STORAGE,
-        Ui(label="Max Object Size (GB)", section=STORAGE_TUNING_SECTION),
+        Ui(label="Max Object Size (GB)", section=S3_TUNING_SECTION),
     ] = None
     storage_s3_endpoint_url_map: Annotated[
         str | None,
         _NOT_S3_STORAGE,
         Ui(
             label="Per-Node Endpoint URLs (YAML)",
-            section=STORAGE_TUNING_SECTION,
+            section=S3_TUNING_SECTION,
             widget=FieldWidget.TEXTAREA,
             description=(
                 "YAML mapping of node address to the endpoint that node should use, "
@@ -186,21 +196,21 @@ class BackupConfigForm(_BackupMongoTaskForm):
         _NOT_S3_STORAGE,
         Ui(
             label="SSE Algorithm",
-            section=STORAGE_TUNING_SECTION,
+            section=S3_TUNING_SECTION,
             description="Server-side encryption algorithm, e.g. aws:kms.",
         ),
     ] = None
     storage_s3_sse_kms_key_id: Annotated[
         str | None,
         _NOT_S3_STORAGE,
-        Ui(label="SSE KMS Key ID", section=STORAGE_TUNING_SECTION),
+        Ui(label="SSE KMS Key ID", section=S3_TUNING_SECTION),
     ] = None
     storage_s3_sse_customer_algorithm: Annotated[
         str | None,
         _NOT_S3_STORAGE,
         Ui(
             label="SSE Customer Algorithm",
-            section=STORAGE_TUNING_SECTION,
+            section=S3_TUNING_SECTION,
             description=(
                 "AES256 for customer-provided keys. The key itself is not settable "
                 "here -- set it with the pbm CLI, as with the access keys."
@@ -210,14 +220,14 @@ class BackupConfigForm(_BackupMongoTaskForm):
     storage_s3_retryer_num_max_retries: Annotated[
         int | None,
         _NOT_S3_STORAGE,
-        Ui(label="Upload Retries", section=STORAGE_TUNING_SECTION),
+        Ui(label="Upload Retries", section=S3_TUNING_SECTION),
     ] = None
     storage_s3_retryer_min_retry_delay: Annotated[
         str | None,
         _NOT_S3_STORAGE,
         Ui(
             label="Min Retry Delay",
-            section=STORAGE_TUNING_SECTION,
+            section=S3_TUNING_SECTION,
             description="Go duration, e.g. 30ms.",
         ),
     ] = None
@@ -226,14 +236,128 @@ class BackupConfigForm(_BackupMongoTaskForm):
         _NOT_S3_STORAGE,
         Ui(
             label="Max Retry Delay",
-            section=STORAGE_TUNING_SECTION,
+            section=S3_TUNING_SECTION,
             description="Go duration, e.g. 5m.",
         ),
     ] = None
+    storage_minio_region: Annotated[
+        str | None, Ui(label="Region", section=MINIO_SECTION)
+    ] = None
+    storage_minio_bucket: Annotated[
+        str | None,
+        Ui(label="Bucket", section=MINIO_SECTION, description="Required for MinIO."),
+    ] = None
+    storage_minio_prefix: Annotated[
+        str | None, Ui(label="Prefix", section=MINIO_SECTION)
+    ] = None
+    storage_minio_endpoint: Annotated[
+        str | None,
+        Ui(
+            label="Endpoint",
+            section=MINIO_SECTION,
+            description=(
+                "Required. PBM names this backend's endpoint `endpoint`, not "
+                "`endpointUrl` as the S3 backend does."
+            ),
+        ),
+    ] = None
+    storage_minio_secure: Annotated[
+        bool | None, Ui(label="Use HTTPS", section=MINIO_SECTION)
+    ] = None
+    storage_minio_force_path_style: Annotated[
+        bool | None, Ui(label="Force Path-Style URLs", section=MINIO_SECTION)
+    ] = None
+    storage_minio_insecure_skip_tls_verify: Annotated[
+        bool | None,
+        Ui(
+            label="Skip TLS Verification",
+            section=MINIO_TUNING_SECTION,
+            description="Accept any certificate from the endpoint. Test use only.",
+        ),
+    ] = None
+    storage_minio_part_size: Annotated[
+        int | None,
+        Ui(
+            label="Part Size (bytes)",
+            section=MINIO_TUNING_SECTION,
+            description="Chunk size for multipart uploads. PBM defaults to 10MB.",
+        ),
+    ] = None
+    storage_minio_max_obj_size_gb: Annotated[
+        float | None, Ui(label="Max Object Size (GB)", section=MINIO_TUNING_SECTION)
+    ] = None
+    storage_minio_debug_trace: Annotated[
+        bool | None, Ui(label="HTTP Trace Logging", section=MINIO_TUNING_SECTION)
+    ] = None
+    storage_minio_retryer_num_max_retries: Annotated[
+        int | None, Ui(label="Upload Retries", section=MINIO_TUNING_SECTION)
+    ] = None
+    storage_minio_endpoint_map: Annotated[
+        str | None,
+        Ui(
+            label="Per-Node Endpoints (YAML)",
+            section=MINIO_TUNING_SECTION,
+            widget=FieldWidget.TEXTAREA,
+            description=(
+                "YAML mapping of node address to the endpoint that node should use."
+            ),
+        ),
+    ] = None
+    storage_gcs_bucket: Annotated[
+        str | None,
+        Ui(label="Bucket", section=GCS_SECTION, description="Required for GCS."),
+    ] = None
+    storage_gcs_prefix: Annotated[
+        str | None, Ui(label="Prefix", section=GCS_SECTION)
+    ] = None
+    storage_gcs_chunk_size: Annotated[
+        int | None,
+        Ui(
+            label="Chunk Size (bytes)",
+            section=GCS_TUNING_SECTION,
+            description="Upload chunk size. PBM defaults to 10MB.",
+        ),
+    ] = None
+    storage_gcs_max_obj_size_gb: Annotated[
+        float | None, Ui(label="Max Object Size (GB)", section=GCS_TUNING_SECTION)
+    ] = None
+    storage_gcs_retryer_backoff_initial: Annotated[
+        str | None,
+        Ui(
+            label="Initial Backoff",
+            section=GCS_TUNING_SECTION,
+            description="Go duration, e.g. 1s.",
+        ),
+    ] = None
+    storage_gcs_retryer_backoff_max: Annotated[
+        str | None,
+        Ui(
+            label="Max Backoff",
+            section=GCS_TUNING_SECTION,
+            description="Go duration, e.g. 30s.",
+        ),
+    ] = None
+    storage_gcs_retryer_backoff_multiplier: Annotated[
+        int | None, Ui(label="Backoff Multiplier", section=GCS_TUNING_SECTION)
+    ] = None
+    storage_gcs_retryer_max_attempts: Annotated[
+        int | None, Ui(label="Max Attempts", section=GCS_TUNING_SECTION)
+    ] = None
+    storage_gcs_retryer_chunk_retry_deadline: Annotated[
+        str | None,
+        Ui(
+            label="Chunk Retry Deadline",
+            section=GCS_TUNING_SECTION,
+            description="Go duration, e.g. 32s.",
+        ),
+    ] = None
+    storage_filesystem_path: Annotated[
+        str, _NOT_FILESYSTEM_STORAGE, Ui(label="Path", section=FILESYSTEM_SECTION)
+    ]
     storage_filesystem_max_obj_size_gb: Annotated[
         float | None,
         _NOT_FILESYSTEM_STORAGE,
-        Ui(label="Max Object Size (GB)", section=STORAGE_TUNING_SECTION),
+        Ui(label="Max Object Size (GB)", section=FILESYSTEM_SECTION),
     ] = None
     pitr_enabled: Annotated[bool, Ui(label="Enable PITR", section="PITR")] = False
     pitr_oplog_span_min: Annotated[
