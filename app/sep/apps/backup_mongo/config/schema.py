@@ -41,12 +41,15 @@ becomes something an operator asks for.
 
 from app.sep.apps.backup_mongo.config.models import (
     ADVANCED_SECTION,
+    AZURE_SECTION,
+    AZURE_TUNING_SECTION,
     BackupConfigForm,
     FILESYSTEM_SECTION,
     GCS_SECTION,
     GCS_TUNING_SECTION,
     MINIO_SECTION,
     MINIO_TUNING_SECTION,
+    OCI_SECTION,
     RESTORE_SECTION,
     S3_SECTION,
     S3_TUNING_SECTION,
@@ -128,6 +131,28 @@ backup_mongo_config_layout = FormLayout(
             title="GCS Tuning",
             advanced=True,
             forbidden=_only_for(StorageType.GCS),
+        ),
+        SectionLayout(
+            key=AZURE_SECTION,
+            title="Azure Storage",
+            collapsible=True,
+            forbidden=_only_for(StorageType.AZURE),
+        ),
+        SectionLayout(
+            key=AZURE_TUNING_SECTION,
+            title="Azure Tuning",
+            advanced=True,
+            forbidden=_only_for(StorageType.AZURE),
+        ),
+        SectionLayout(
+            key=OCI_SECTION,
+            title="OCI Storage",
+            collapsible=True,
+            forbidden=_only_for(StorageType.OCI),
+            description=(
+                "Authentication is CLI-only for OCI: the tenancy, user, fingerprint "
+                "and private key all live under credentials, which OM never writes."
+            ),
         ),
         SectionLayout(
             key=FILESYSTEM_SECTION,

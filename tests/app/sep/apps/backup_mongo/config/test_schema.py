@@ -72,6 +72,7 @@ class TestCredentialsPathPlacement:
             "S3 Tuning",
             "MinIO Tuning",
             "GCS Tuning",
+            "Azure Tuning",
             "Restore Tuning",
             "Advanced",
         ]
@@ -92,6 +93,9 @@ class TestCredentialsPathPlacement:
             "MinIO Tuning",
             "GCS Storage",
             "GCS Tuning",
+            "Azure Storage",
+            "Azure Tuning",
+            "OCI Storage",
             "Filesystem Storage",
             "Point-in-Time Recovery",
             "Backup Options",
@@ -134,6 +138,8 @@ class TestCredentialsPathPlacement:
             "s3",
             "minio",
             "gcs",
+            "azure",
+            "oci",
             "filesystem",
         ]
 
@@ -146,6 +152,9 @@ class TestCredentialsPathPlacement:
             ("MinIO Tuning", "minio"),
             ("GCS Storage", "gcs"),
             ("GCS Tuning", "gcs"),
+            ("Azure Storage", "azure"),
+            ("Azure Tuning", "azure"),
+            ("OCI Storage", "oci"),
             ("Filesystem Storage", "filesystem"),
         ],
     )

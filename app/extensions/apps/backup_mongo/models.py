@@ -431,6 +431,16 @@ _STORAGE_BACKENDS.update(
             label="GCS",
             required=("bucket",),
         ),
+        StorageType.AZURE.value: _StorageBackend(
+            prefix="storage_azure_",
+            label="Azure",
+            required=("account", "container"),
+        ),
+        StorageType.OCI.value: _StorageBackend(
+            prefix="storage_oci_",
+            label="OCI",
+            required=("region", "namespace", "bucket"),
+        ),
         StorageType.FILESYSTEM.value: _StorageBackend(
             prefix="storage_filesystem_",
             label="Filesystem",
@@ -438,6 +448,14 @@ _STORAGE_BACKENDS.update(
         ),
     }
 )
+# ``StorageType.OSS`` is deliberately absent. PBM accepts the backend, but its
+# published key reference does not match the 2.15.0 binary -- the documented
+# ``serverSideEncryption`` names (``sseAlgorithm``, ``kmsMasterKeyId``,
+# ``kmsDataEncryption``) are all rejected, the real ones being ``encryptionMethod``,
+# ``encryptionAlgorithm`` and ``encryptionKeyId``. Its remaining keys have not been
+# checked against the binary, and a field that looks settable but reaches nothing is
+# the failure this panel exists to prevent. Not registered means not offered and not
+# accepted, rather than offered and quietly broken.
 
 
 def validate_storage_config(
@@ -995,6 +1013,111 @@ class BackupConfigStorageGcs(BaseCaseInsensitiveModel):
     )
 
 
+class BackupConfigStorageAzureRetryer(BaseCaseInsensitiveModel):
+    """Represent Azure upload retry settings."""
+
+    model_config = ConfigDict(alias_generator=None)
+
+    num_max_retries: int | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("numMaxRetries", "NUMMAXRETRIES"),
+        serialization_alias="numMaxRetries",
+    )
+    min_retry_delay: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("minRetryDelay", "MINRETRYDELAY"),
+        serialization_alias="minRetryDelay",
+    )
+    max_retry_delay: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("maxRetryDelay", "MAXRETRYDELAY"),
+        serialization_alias="maxRetryDelay",
+    )
+
+
+class BackupConfigStorageAzure(BaseCaseInsensitiveModel):
+    """Represent Azure Blob Storage.
+
+    ``account`` and ``container`` locate the storage and are settable; the access
+    key under ``credentials`` is not, like every other backend's.
+    """
+
+    model_config = ConfigDict(alias_generator=None)
+
+    account: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("account", "ACCOUNT")
+    )
+    container: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("container", "CONTAINER")
+    )
+    prefix: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("prefix", "PREFIX")
+    )
+    endpoint_url: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("endpointUrl", "ENDPOINTURL"),
+        serialization_alias="endpointUrl",
+    )
+    endpoint_url_map: dict[str, str] | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("endpointUrlMap", "ENDPOINTURLMAP"),
+        serialization_alias="endpointUrlMap",
+    )
+    max_obj_size_gb: float | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("maxObjSizeGB", "MAXOBJSIZEGB"),
+        serialization_alias="maxObjSizeGB",
+    )
+    retryer: BackupConfigStorageAzureRetryer | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("retryer", "RETRYER")
+    )
+
+
+class BackupConfigStorageOciSSE(BaseCaseInsensitiveModel):
+    """Represent OCI server-side encryption.
+
+    ``sseCustomerKey`` is absent: it is the encryption key itself, so it falls under
+    the credentials rule. ``kmsKeyID`` names a key rather than being one.
+    """
+
+    model_config = ConfigDict(alias_generator=None)
+
+    kms_key_id: NonEmptyStr | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("kmsKeyID", "KMSKEYID"),
+        serialization_alias="kmsKeyID",
+    )
+
+
+class BackupConfigStorageOci(BaseCaseInsensitiveModel):
+    """Represent Oracle Cloud Infrastructure Object Storage.
+
+    The whole of ``credentials`` -- the auth type and the user principal's tenancy,
+    user, fingerprint and private key -- is set with the ``pbm`` CLI, so OCI is
+    configured here only after it has been credentialed there once.
+    """
+
+    model_config = ConfigDict(alias_generator=None)
+
+    region: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("region", "REGION")
+    )
+    namespace: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("namespace", "NAMESPACE")
+    )
+    bucket: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("bucket", "BUCKET")
+    )
+    prefix: NonEmptyStr | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("prefix", "PREFIX")
+    )
+    server_side_encryption: BackupConfigStorageOciSSE | EmptyStrToNone = Field(
+        None,
+        validation_alias=AliasChoices("serverSideEncryption", "SERVERSIDEENCRYPTION"),
+        serialization_alias="serverSideEncryption",
+    )
+
+
 class BackupConfigStorage(BaseCaseInsensitiveModel):
     """Represent Storage configuration."""
 
@@ -1009,6 +1132,12 @@ class BackupConfigStorage(BaseCaseInsensitiveModel):
     )
     gcs: BackupConfigStorageGcs | EmptyStrToNone = Field(
         None, validation_alias=AliasChoices("gcs", "GCS")
+    )
+    azure: BackupConfigStorageAzure | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("azure", "AZURE")
+    )
+    oci: BackupConfigStorageOci | EmptyStrToNone = Field(
+        None, validation_alias=AliasChoices("oci", "OCI")
     )
     filesystem: BackupConfigStorageFilesystem | EmptyStrToNone = Field(
         None, validation_alias=AliasChoices("filesystem", "FILESYSTEM")
@@ -1191,6 +1320,20 @@ class BackupCreate(
     storage_gcs_retryer_chunk_retry_deadline: StrippedNonEmptyStr | EmptyStrToNone = (
         None
     )
+    storage_azure_account: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_azure_container: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_azure_prefix: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_azure_endpoint_url: StrHttpUrl | EmptyStrToNone = None
+    storage_azure_endpoint_url_map: PbmStringMapYaml | EmptyStrToNone = None
+    storage_azure_max_obj_size_gb: float | EmptyStrToNone = None
+    storage_azure_retryer_num_max_retries: int | EmptyStrToNone = None
+    storage_azure_retryer_min_retry_delay: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_azure_retryer_max_retry_delay: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_oci_region: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_oci_namespace: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_oci_bucket: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_oci_prefix: StrippedNonEmptyStr | EmptyStrToNone = None
+    storage_oci_sse_kms_key_id: StrippedNonEmptyStr | EmptyStrToNone = None
     restore_batch_size: int | EmptyStrToNone = None
     restore_num_insertion_workers: int | EmptyStrToNone = None
     restore_num_parallel_collections: int | EmptyStrToNone = None

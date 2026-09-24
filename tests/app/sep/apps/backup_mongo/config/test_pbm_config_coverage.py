@@ -21,7 +21,9 @@ drive the whole panel through the spec builder and assert the resulting document
 key by key, in PBM's own camelCase.
 """
 
+import pytest
 import yaml
+from pydantic import ValidationError
 
 from app.sep.apps.backup_mongo.config.models import BackupConfigForm
 from app.sep.apps.backup_mongo.config.schema import backup_mongo_config_schema
@@ -269,13 +271,25 @@ class TestCredentialsAreNotSettable:
 def _for_backend(storage_type: str, **fields: object) -> dict:
     """Return a ``FULL_FORM`` override selecting ``storage_type`` alone.
 
-    Every ``storage_s3_*`` key is cleared: the validator rejects fields belonging to
-    a backend other than the selected one, which is the point of the prefix table.
+    Every *other* backend's fields are cleared, by prefix rather than by name: the
+    validator rejects fields belonging to a backend other than the selected one,
+    which is the point of the prefix table. Clearing by name was how an earlier
+    version of this helper missed the boolean and numeric S3 fields.
     """
+    foreign = [
+        backend.prefix
+        for key, backend in _STORAGE_BACKENDS.items()
+        if key != storage_type
+    ]
     return {
         "storage_type": storage_type,
         **dict.fromkeys(
-            (key for key in FULL_FORM if key.startswith("storage_s3_")), None
+            (
+                key
+                for key in FULL_FORM
+                if any(key.startswith(prefix) for prefix in foreign)
+            ),
+            None,
         ),
         **fields,
     }
@@ -413,3 +427,104 @@ class TestStorageBackendRegistry:
         field = next(f for f in storage.fields if f.name == "storage_type")
 
         assert {choice.value for choice in field.choices} == set(_STORAGE_BACKENDS)
+
+
+class TestAzureBackend:
+    """Cover Azure Blob Storage.
+
+    Key names verified against the real binary: PBM parsed this document and got as
+    far as an authentication failure, which only happens past the decoder.
+    """
+
+    def test_serialises_account_container_and_retryer(self) -> None:
+        """Emit the Azure block, locators and retry settings included."""
+        document = _document(
+            _for_backend(
+                "azure",
+                storage_azure_account="acct",
+                storage_azure_container="pbm",
+                storage_azure_prefix="mongo",
+                storage_azure_endpoint_url="https://acct.blob.example.test",
+                storage_azure_endpoint_url_map='"host1:27018": "https://a.example.test"',
+                storage_azure_max_obj_size_gb=194560.0,
+                storage_azure_retryer_num_max_retries=3,
+                storage_azure_retryer_min_retry_delay="800ms",
+                storage_azure_retryer_max_retry_delay="60s",
+            )
+        )
+
+        assert document["storage"] == {
+            "type": "azure",
+            "azure": {
+                "account": "acct",
+                "container": "pbm",
+                "prefix": "mongo",
+                "endpointUrl": "https://acct.blob.example.test",
+                "endpointUrlMap": {"host1:27018": "https://a.example.test"},
+                "maxObjSizeGB": 194560.0,
+                "retryer": {
+                    "numMaxRetries": 3,
+                    "minRetryDelay": "800ms",
+                    "maxRetryDelay": "60s",
+                },
+            },
+        }
+
+
+class TestOciBackend:
+    """Cover OCI Object Storage.
+
+    Key names verified against the real binary: PBM parsed this document and failed
+    on ``credentials.userPrincipal is required``, which is the half OM never sends.
+    """
+
+    def test_serialises_locators_and_kms_key(self) -> None:
+        """Emit the OCI block with its namespace and KMS key reference."""
+        document = _document(
+            _for_backend(
+                "oci",
+                storage_oci_region="eu-frankfurt-1",
+                storage_oci_namespace="ns",
+                storage_oci_bucket="pbm",
+                storage_oci_prefix="mongo",
+                storage_oci_sse_kms_key_id="ocid1.key.oc1..example",
+            )
+        )
+
+        assert document["storage"] == {
+            "type": "oci",
+            "oci": {
+                "region": "eu-frankfurt-1",
+                "namespace": "ns",
+                "bucket": "pbm",
+                "prefix": "mongo",
+                "serverSideEncryption": {"kmsKeyID": "ocid1.key.oc1..example"},
+            },
+        }
+
+
+class TestAlibabaOssIsNotOffered:
+    """Pin the one backend deliberately left out.
+
+    PBM accepts ``oss``, but its published key reference does not match the 2.15.0
+    binary -- the documented ``serverSideEncryption`` names are all rejected. Rather
+    than ship fields that look settable and reach nothing, the backend is absent
+    from the registry, which makes it unselectable and rejected at create time.
+    """
+
+    def test_oss_is_not_registered(self) -> None:
+        """Keep ``oss`` out of the registry until its keys are verified."""
+        assert "oss" not in _STORAGE_BACKENDS
+
+    def test_oss_is_rejected_at_create_time(self) -> None:
+        """Reject an ``oss`` body rather than accepting and silently dropping it."""
+        with pytest.raises(ValidationError, match="storage_type"):
+            BackupCreate.model_validate(
+                {
+                    "task_name": "pbm-config",
+                    "hostname": "mongo-host",
+                    "service_id": 1,
+                    "backup_type": BackupType.PBM_CONFIG,
+                    "storage_type": "oss",
+                }
+            )

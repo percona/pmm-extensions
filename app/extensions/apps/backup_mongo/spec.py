@@ -195,6 +195,44 @@ def _build_gcs_storage(form: BackupCreate) -> dict[str, Any]:
     )
 
 
+def _build_azure_storage(form: BackupCreate) -> dict[str, Any]:
+    """Build the ``storage.azure`` block."""
+    retryer = _drop_unset(
+        {
+            "numMaxRetries": form.storage_azure_retryer_num_max_retries,
+            "minRetryDelay": form.storage_azure_retryer_min_retry_delay,
+            "maxRetryDelay": form.storage_azure_retryer_max_retry_delay,
+        }
+    )
+    return _drop_unset(
+        {
+            "account": form.storage_azure_account,
+            "container": form.storage_azure_container,
+            "prefix": form.storage_azure_prefix,
+            "endpointUrl": form.storage_azure_endpoint_url,
+            "endpointUrlMap": parse_pbm_string_map(form.storage_azure_endpoint_url_map)
+            if form.storage_azure_endpoint_url_map
+            else None,
+            "maxObjSizeGB": form.storage_azure_max_obj_size_gb,
+            "retryer": retryer or None,
+        }
+    )
+
+
+def _build_oci_storage(form: BackupCreate) -> dict[str, Any]:
+    """Build the ``storage.oci`` block."""
+    sse = _drop_unset({"kmsKeyID": form.storage_oci_sse_kms_key_id})
+    return _drop_unset(
+        {
+            "region": form.storage_oci_region,
+            "namespace": form.storage_oci_namespace,
+            "bucket": form.storage_oci_bucket,
+            "prefix": form.storage_oci_prefix,
+            "serverSideEncryption": sse or None,
+        }
+    )
+
+
 def _build_filesystem_storage(form: BackupCreate) -> dict[str, Any]:
     """Build the ``storage.filesystem`` block."""
     return _drop_unset(
@@ -213,6 +251,8 @@ _STORAGE_BUILDERS = {
     StorageType.S3.value: _build_s3_storage,
     StorageType.MINIO.value: _build_minio_storage,
     StorageType.GCS.value: _build_gcs_storage,
+    StorageType.AZURE.value: _build_azure_storage,
+    StorageType.OCI.value: _build_oci_storage,
     StorageType.FILESYSTEM.value: _build_filesystem_storage,
 }
 

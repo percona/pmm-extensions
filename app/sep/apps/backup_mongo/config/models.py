@@ -47,6 +47,10 @@ MINIO_SECTION = "StorageMinio"
 MINIO_TUNING_SECTION = "StorageMinioTuning"
 GCS_SECTION = "StorageGcs"
 GCS_TUNING_SECTION = "StorageGcsTuning"
+AZURE_SECTION = "StorageAzure"
+AZURE_TUNING_SECTION = "StorageAzureTuning"
+#: OCI carries few enough keys to need no tuning section of its own.
+OCI_SECTION = "StorageOci"
 FILESYSTEM_SECTION = "StorageFilesystem"
 #: PBM's ``restore`` section: cluster-wide tuning for how a restore runs. Not to be
 #: confused with the Restores app, which creates restore *tasks* and reads none of
@@ -89,6 +93,8 @@ class BackupConfigForm(_BackupMongoTaskForm):
                 ("s3", "S3-compatible"),
                 ("minio", "MinIO"),
                 ("gcs", "Google Cloud Storage"),
+                ("azure", "Azure Blob Storage"),
+                ("oci", "OCI Object Storage"),
                 ("filesystem", "Filesystem"),
             )
         ),
@@ -349,6 +355,95 @@ class BackupConfigForm(_BackupMongoTaskForm):
             label="Chunk Retry Deadline",
             section=GCS_TUNING_SECTION,
             description="Go duration, e.g. 32s.",
+        ),
+    ] = None
+    storage_azure_account: Annotated[
+        str | None,
+        Ui(
+            label="Storage Account",
+            section=AZURE_SECTION,
+            description="Required. The Azure storage account name.",
+        ),
+    ] = None
+    storage_azure_container: Annotated[
+        str | None,
+        Ui(label="Container", section=AZURE_SECTION, description="Required."),
+    ] = None
+    storage_azure_prefix: Annotated[
+        str | None, Ui(label="Prefix", section=AZURE_SECTION)
+    ] = None
+    storage_azure_endpoint_url: Annotated[
+        str | None,
+        Ui(
+            label="Endpoint URL",
+            section=AZURE_SECTION,
+            description=(
+                "Defaults to the public blob endpoint for the account. Set it for "
+                "sovereign clouds or a private endpoint."
+            ),
+        ),
+    ] = None
+    storage_azure_max_obj_size_gb: Annotated[
+        float | None, Ui(label="Max Object Size (GB)", section=AZURE_TUNING_SECTION)
+    ] = None
+    storage_azure_retryer_num_max_retries: Annotated[
+        int | None, Ui(label="Upload Retries", section=AZURE_TUNING_SECTION)
+    ] = None
+    storage_azure_retryer_min_retry_delay: Annotated[
+        str | None,
+        Ui(
+            label="Min Retry Delay",
+            section=AZURE_TUNING_SECTION,
+            description="Go duration, e.g. 800ms.",
+        ),
+    ] = None
+    storage_azure_retryer_max_retry_delay: Annotated[
+        str | None,
+        Ui(
+            label="Max Retry Delay",
+            section=AZURE_TUNING_SECTION,
+            description="Go duration, e.g. 60s.",
+        ),
+    ] = None
+    storage_azure_endpoint_url_map: Annotated[
+        str | None,
+        Ui(
+            label="Per-Node Endpoint URLs (YAML)",
+            section=AZURE_TUNING_SECTION,
+            widget=FieldWidget.TEXTAREA,
+            description=(
+                "YAML mapping of node address to the endpoint that node should use."
+            ),
+        ),
+    ] = None
+    storage_oci_region: Annotated[
+        str | None,
+        Ui(label="Region", section=OCI_SECTION, description="Required."),
+    ] = None
+    storage_oci_namespace: Annotated[
+        str | None,
+        Ui(
+            label="Namespace",
+            section=OCI_SECTION,
+            description="Required. The Object Storage namespace for the tenancy.",
+        ),
+    ] = None
+    storage_oci_bucket: Annotated[
+        str | None,
+        Ui(label="Bucket", section=OCI_SECTION, description="Required."),
+    ] = None
+    storage_oci_prefix: Annotated[
+        str | None, Ui(label="Prefix", section=OCI_SECTION)
+    ] = None
+    storage_oci_sse_kms_key_id: Annotated[
+        str | None,
+        Ui(
+            label="KMS Key OCID",
+            section=OCI_SECTION,
+            description=(
+                "Names a key for server-side encryption. The customer-supplied key "
+                "itself is set with the pbm CLI, as credentials are."
+            ),
         ),
     ] = None
     storage_filesystem_path: Annotated[
