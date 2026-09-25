@@ -52,9 +52,14 @@ backup_mongo_views = Views(
             # here is what one run actually decides.
             SectionLayout(
                 key="BackupOptions",
-                title="Backup Options",
+                title="Options for this backup",
                 collapsible=True,
                 collapsed_by_default=True,
+                description=(
+                    "Command-line flags for this run only. They are passed to "
+                    "pbm backup and override the cluster's defaults, which are set "
+                    "on the PBM Configuration tab."
+                ),
             ),
         )
     ),

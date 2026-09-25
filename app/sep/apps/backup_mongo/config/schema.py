@@ -168,9 +168,14 @@ backup_mongo_config_layout = FormLayout(
         ),
         SectionLayout(
             key="BackupOptions",
-            title="Backup Options",
+            title="Backup Defaults",
             collapsible=True,
             collapsed_by_default=True,
+            description=(
+                "Written into PBM's configuration and applied to every backup on "
+                "this cluster. A single run can override some of them from the "
+                "Backups tab."
+            ),
         ),
         SectionLayout(
             key=RESTORE_SECTION,

@@ -218,7 +218,10 @@ class TestBackupMongoAppSchemaEndpoint:
         """
         forms = test_client.get(f"{API_BASE}/schema").json()["forms"]
 
-        assert [section["title"] for section in forms] == ["Task", "Backup Options"]
+        assert [section["title"] for section in forms] == [
+            "Task",
+            "Options for this backup",
+        ]
         assert [field["name"] for field in forms[1]["fields"]] == [
             "backup_compression",
             "backup_compression_level",

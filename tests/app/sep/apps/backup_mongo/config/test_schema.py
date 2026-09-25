@@ -98,7 +98,7 @@ class TestCredentialsPathPlacement:
             "OCI Storage",
             "Filesystem Storage",
             "Point-in-Time Recovery",
-            "Backup Options",
+            "Backup Defaults",
             "Restore Tuning",
             "Advanced",
         ]
@@ -174,14 +174,19 @@ class TestCredentialsPathPlacement:
         ]
 
     def test_backup_options_split_by_who_owns_the_value(self) -> None:
-        """Keep per-run choices on backups and deployment properties on config.
+        """Keep per-run choices on backups and cluster defaults on config.
 
-        ``compression`` and the selective-namespace flags are read by the backup
-        payload on each run; ``priority``, ``timeouts``, ``oplogSpanMin`` and
-        ``numParallelCollections`` are PBM config keys that describe the cluster.
+        The two are different layers of PBM, not the same setting in two places.
+        The backups form's fields become command-line flags -- ``pbm backup
+        --compression`` / ``--ns`` / ``--with-users-and-roles`` -- for that run
+        alone, and never reach ``pbm config --file``. The config form's fields are
+        keys in the stored document that apply to every backup.
+
+        The section titles say so, which is why they are asserted here: calling
+        both "Backup Options" made one look like a duplicate of the other.
         """
-        config_options = _field_names(backup_mongo_config_schema, "Backup Options")
-        backup_options = _field_names(backup_mongo_schema, "Backup Options")
+        config_options = _field_names(backup_mongo_config_schema, "Backup Defaults")
+        backup_options = _field_names(backup_mongo_schema, "Options for this backup")
 
         assert config_options == [
             "backup_priority",
