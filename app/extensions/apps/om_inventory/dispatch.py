@@ -32,6 +32,7 @@ batching by host is both fewer Nomad jobs and less duplicated work.
 import asyncio
 import json
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -71,6 +72,12 @@ _CAPACITY_RETRY_BASE_DELAY_SECONDS = 1.0
 #: state") still fails immediately instead of being retried into a longer hang.
 _DISPATCH_LOCK_CONFLICT_MARKER = "DispatchLock"
 
+#: Matches the 409 `_guard_identical_queue_item` (app/tasks/celery.py) raises when
+#: an active queue item already carries this exact request, capturing that item's
+#: id. Parsed out of the message because the id is not returned as a field; see
+#: `_adopted_queue_item_id` for why it is worth parsing anyway.
+_IDENTICAL_QUEUE_ITEM_RE = re.compile(r"Identical queue item already running \((\d+)\)")
+
 T = TypeVar("T")
 
 
@@ -101,6 +108,39 @@ def _is_dispatch_lock_race(err: Exception) -> bool:
     return isinstance(
         err, HTTPConflictException
     ) and _DISPATCH_LOCK_CONFLICT_MARKER in str(err.detail)
+
+
+def _adopted_queue_item_id(err: Exception) -> int | None:
+    """Return the id of an in-flight queue item this dispatch should adopt.
+
+    ``_guard_identical_queue_item`` refuses a request an active queue item
+    already carries, naming that item. It is not a failure of this host's probe:
+    it says the exact probe being asked for is already running, so the answer is
+    on its way and this call need only wait for it.
+
+    Adopting is sound because of what the guard compares before raising -- same
+    ``task``, same ``target``, the same meta clauses, and
+    ``_encrypted_leaves_match`` over the payload -- so the item it names produces
+    the byte-identical result this dispatch would have produced itself.
+
+    Worth handling rather than retrying: a retry cannot make the conflict go
+    away, since the item stays active for as long as the probe takes, so the
+    attempts are spent waiting for a result already being computed and the host
+    is recorded failed anyway. This is reachable in ordinary operation, not only
+    under a race: ``with_capacity_retry`` retries the pool's 503, that retry is
+    not idempotent -- the enqueue can land while the client sees the refusal --
+    and the next attempt then collides with its own earlier item. Observed
+    2026-09-24: item 130 probed ``pmm-client-node02`` successfully in 5s while
+    the run that asked for it recorded the host unanswered and came back
+    PARTIAL.
+
+    :param err: The exception the dispatch call raised.
+    :return: The queue item id to adopt, or None if this is not that conflict.
+    """
+    if not isinstance(err, HTTPConflictException):
+        return None
+    match = _IDENTICAL_QUEUE_ITEM_RE.search(str(err.detail))
+    return int(match.group(1)) if match else None
 
 
 async def with_capacity_retry(call: Callable[[], Awaitable[T]]) -> T:
@@ -402,21 +442,33 @@ async def probe_host(
     # duration, and this number is only ever read as an interval.
     started = monotonic()
     try:
-        created = await with_capacity_retry(
-            lambda: tasks_api.post(
-                f"/execute/{RUN_PYTHON_TASK}",
-                json={
-                    "meta": {
-                        "target": executor_host,
-                        "config": build_config(entries),
-                        "requirements": REQUIREMENTS,
-                        "_job_id_prefix": JOB_ID_PREFIX,
+        try:
+            created = await with_capacity_retry(
+                lambda: tasks_api.post(
+                    f"/execute/{RUN_PYTHON_TASK}",
+                    json={
+                        "meta": {
+                            "target": executor_host,
+                            "config": build_config(entries),
+                            "requirements": REQUIREMENTS,
+                            "_job_id_prefix": JOB_ID_PREFIX,
+                        },
+                        "payload": f"file://{PROBE_PAYLOAD_PATH}",
+                        "anonymize_mask": 0,
                     },
-                    "payload": f"file://{PROBE_PAYLOAD_PATH}",
-                    "anonymize_mask": 0,
-                },
+                )
             )
-        )
+        except Exception as err:
+            adopted = _adopted_queue_item_id(err)
+            if adopted is None:
+                raise
+            logger.info(
+                "OM inventory: %s already has an identical probe in flight, "
+                "adopting history %s instead of dispatching a second one",
+                executor_host,
+                adopted,
+            )
+            created = {"id": adopted}
         if not isinstance(created, dict) or "id" not in created:
             result.error = "Tasks API did not return a task history id"
             return result

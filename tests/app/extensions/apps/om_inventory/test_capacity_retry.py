@@ -34,6 +34,7 @@ import pytest
 
 from app.core.exceptions import HTTPConflictException, HTTPServiceUnavailableException
 from app.extensions.apps.om_inventory.dispatch import (
+    _adopted_queue_item_id,
     CAPACITY_RETRY_ATTEMPTS,
     probe_host,
     with_capacity_retry,
@@ -44,6 +45,8 @@ from app.extensions.apps.om_inventory.models import NodeResolution
 from tests.app.extensions.apps.om_inventory.conftest import HOST
 
 HISTORY_ID = 901
+#: The id the guard names in its 409, adopted rather than dispatched again.
+ADOPTED_ID = 130
 
 
 def entries() -> list[MappedService]:
@@ -252,3 +255,75 @@ class TestProbeHostAbsorbsATransientRefusal:
         assert "HTTPServiceUnavailableException" in (result.error or "")
         # Nothing reached the queue, so there is nothing for probe_host to release.
         assert result.task_history_id is None
+
+
+class TestAdoptedQueueItemId:
+    """Pin which 409 names an item to adopt, apart from any dispatch machinery."""
+
+    def test_recognises_the_identical_item_conflict(self) -> None:
+        """Read the id out of the message the guard raises."""
+        err = HTTPConflictException(
+            f"409: Identical queue item already running ({ADOPTED_ID})."
+        )
+
+        assert _adopted_queue_item_id(err) == ADOPTED_ID
+
+    def test_ignores_a_conflict_that_names_no_item(self) -> None:
+        """Leave every other 409 to the ordinary failure path.
+
+        Adopting is only sound for the guard that compares task, target, meta
+        and payload before raising; nothing else promises an equivalent result.
+        """
+        assert _adopted_queue_item_id(HTTPConflictException("DispatchLock")) is None
+        assert (
+            _adopted_queue_item_id(
+                HTTPConflictException("Queue item is not in a pending state.")
+            )
+            is None
+        )
+        assert _adopted_queue_item_id(HTTPServiceUnavailableException()) is None
+
+
+class TestProbeHostAdoptsAnInFlightItem:
+    """Cover the case that made a successful probe report a failed host."""
+
+    @pytest.mark.asyncio
+    async def test_an_identical_in_flight_probe_is_adopted(self) -> None:
+        """Wait on the item the guard named instead of failing the host.
+
+        The conflict says this exact probe is already running, so its result is
+        this dispatch's result. Retrying cannot help -- the item stays active for
+        as long as the probe takes -- and failing the host loses an answer that
+        was on its way. Observed 2026-09-24: item 130 probed the host
+        successfully in 5s while the run recorded it unanswered and came back
+        PARTIAL.
+        """
+        post_calls = 0
+
+        async def post(_path: str, **_: Any) -> dict[str, Any]:
+            nonlocal post_calls
+            post_calls += 1
+            raise HTTPConflictException(
+                f"409: Identical queue item already running ({ADOPTED_ID})."
+            )
+
+        async def get(_path: str, **_: Any) -> dict[str, Any]:
+            return {"id": ADOPTED_ID, "status": "success"}
+
+        api = MagicMock()
+        api.post = AsyncMock(side_effect=post)
+        api.get = AsyncMock(side_effect=get)
+
+        async def stream(*_a: Any, **_kw: Any) -> Any:
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+        api.stream = stream
+
+        result = await probe_host(api, HOST, entries())
+
+        # Adopted, not retried: asking again cannot clear a conflict that means
+        # the answer is already being computed.
+        assert post_calls == 1
+        assert result.error is None
+        assert result.task_history_id == ADOPTED_ID
