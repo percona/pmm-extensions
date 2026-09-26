@@ -410,6 +410,34 @@ class TestBuildStep:
         assert "authorization" not in command
         assert "keyFile" not in command
 
+    def test_start_service_restarts_rather_than_enable_now(self) -> None:
+        """Force a restart, since install_package may have started mongod already.
+
+        On Ubuntu, percona-server-mongodb's .deb postinst starts mongod itself
+        during install_package, before configure_mongod ever runs. `enable
+        --now` is a no-op against a unit that's already active, so it would
+        leave that process running on the package's default config forever -
+        never picking up configure_mongod's rewrite of mongod.conf. Only an
+        explicit restart guarantees the config just written actually takes
+        effect, matching a real run where rs.initiate failed with "This node
+        was not started with replication enabled" for exactly this reason.
+        """
+        action = PackagesInstallStrategy().build_step(
+            "start_service", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+
+        command = " ".join(action.command)
+        assert "systemctl restart mongod" in command
+        assert "--now" not in command
+
+    def test_start_service_still_enables_mongod_at_boot(self) -> None:
+        """Keep mongod enabled at boot, restart alone would not persist that."""
+        action = PackagesInstallStrategy().build_step(
+            "start_service", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+
+        assert "systemctl enable mongod" in " ".join(action.command)
+
     def test_distribute_keyfile_requires_params(self) -> None:
         """Reject a missing keyFile as a programming error, not a blank file."""
         with pytest.raises(ValueError, match="key_file_content"):

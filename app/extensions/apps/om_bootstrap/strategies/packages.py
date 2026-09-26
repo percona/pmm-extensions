@@ -479,7 +479,7 @@ class PackagesInstallStrategy:
         assuming the package's own post-install already did — confirmed
         against a real failure that it does not: mongod exits immediately on
         first start with ``NonExistentPath: Data directory /var/lib/mongo not
-        found``, and ``start_service`` (``systemctl enable --now``) reports
+        found``, and ``start_service`` (``systemctl restart``) reports
         success regardless, since ``Type=forking`` only waits for the initial
         fork, not for mongod's own startup logic to run. ``verify``, a step
         later, is what actually surfaces the failure — by then the run has
@@ -541,13 +541,28 @@ class PackagesInstallStrategy:
         return _shell_step(command)
 
     def _start_service(self, spec: BootstrapSpec) -> StepAction:  # noqa: ARG002
-        """Enable and start the ``mongod`` systemd unit.
+        """Enable the ``mongod`` systemd unit and (re)start it on the config just written.
+
+        Explicitly ``restart``, not ``enable --now``: on Ubuntu,
+        ``percona-server-mongodb``'s ``.deb`` postinst starts ``mongod`` itself as
+        part of ``install_package``, before this step ever runs — confirmed
+        against a real run where the seed member's ``rs.initiate`` failed with
+        ``This node was not started with replication enabled``. ``enable --now``
+        only starts a unit that isn't already active; against one the package
+        already started, it is a no-op, so the process stays live on whatever
+        config it booted with — the package's own default, with no
+        ``replication`` block — never picking up :meth:`_configure_mongod`'s
+        rewrite of :data:`CONFIG_PATH` a step earlier. ``verify``, right after,
+        only pings the server, so it passes regardless. Rocky/RPM's ``%post``
+        does not auto-start the service, so the bug is Ubuntu-only — but
+        ``restart`` is correct on both, since restarting a unit that
+        ``install_package`` never started behaves exactly like starting it.
 
         :param spec: The host's bootstrap spec. Unused.
         :return: The step action.
         """
-        return StepAction(
-            command=["systemctl", "enable", "--now", "mongod"], timeout_s=60
+        return _shell_step(
+            "systemctl enable mongod && systemctl restart mongod", timeout_s=60
         )
 
     def _verify(self, spec: BootstrapSpec) -> StepAction:
