@@ -70,8 +70,8 @@ PROBE_PAYLOAD_PATH = Path(payload_pkg.__file__).parent / "probe.py"
 # four orders of magnitude: an attempt refused by an existing lock row returns a
 # 409 in milliseconds, while one that ends in the pool's own connection timeout
 # costs a full 10 seconds. The same three attempts therefore span anywhere from
-# ~3s to ~33s -- the old budget of three attempts and 1+2s of backoff could not
-# reach 30 seconds by any path.
+# ~3s to ~33s, and the previous budget of three attempts over 1+2s of backoff
+# could not reach 30 seconds by any path.
 CAPACITY_RETRY_BUDGET_SECONDS = 40.0
 # The attempt cap is the secondary bound, and stops a refusal that returns
 # instantly from spinning through the budget.
@@ -87,10 +87,15 @@ _CAPACITY_RETRY_MAX_DELAY_SECONDS = 8.0
 #: state") still fails immediately instead of being retried into a longer hang.
 _DISPATCH_LOCK_CONFLICT_MARKER = "DispatchLock"
 
-#: Matches the 409 `_guard_identical_queue_item` (app/tasks/celery.py) raises when
-#: an active queue item already carries this exact request, capturing that item's
-#: id. Parsed out of the message because the id is not returned as a field; see
-#: `_adopted_queue_item_id` for why it is worth parsing anyway.
+#: Matches the 409 `_raise_if_identical_task_conflict` (app/tasks/celery.py) raises
+#: when an active queue item already carries this exact request, capturing that
+#: item's id. Parsed out of the message because the id is not returned as a field;
+#: see `_adopted_queue_item_id` for why it is worth parsing anyway.
+#:
+#: Deliberately matched on the whole phrase, not on a bare `\((\d+)\)`: the same
+#: guard raises a second 409 that also names an id, "In-flight queue item (N)
+#: cannot be compared ...", and that one means the requests could *not* be shown
+#: identical, so adopting the item it names would be unsound.
 _IDENTICAL_QUEUE_ITEM_RE = re.compile(r"Identical queue item already running \((\d+)\)")
 
 T = TypeVar("T")
@@ -110,9 +115,9 @@ def _is_dispatch_lock_race(err: Exception) -> bool:
 
     ``_dispatch_queue_item`` computes its lock name as a hash of exactly
     ``{task_id, task, target, payload, meta}``, so a collision means a request
-    with byte-identical content -- this same host, dispatched again -- is
-    contending with this one, not that a real conflict is being hidden. Waiting
-    and asking again is the correct response either way.
+    with byte-identical content, this same host dispatched again, is contending
+    with this one rather than a real conflict being hidden. Waiting and asking
+    again is the correct response either way.
 
     What the wait has to cover is not obvious, and is why
     :data:`CAPACITY_RETRY_BUDGET_SECONDS` is sized the way it is. The lock is
@@ -123,7 +128,7 @@ def _is_dispatch_lock_race(err: Exception) -> bool:
     pool. When the pool is exhausted that refresh raises, the row is already
     committed, and the ``try`` that would have released it was never entered.
     The lock is then orphaned, and nothing clears it until the caller's own
-    30-second stale-row sweep -- so the collision a retry meets here can just as
+    30-second stale-row sweep. So the collision a retry meets here can just as
     easily be this probe's own failed first attempt as another dispatch, and it
     can outlive that attempt by the full 30 seconds.
 
@@ -138,29 +143,26 @@ def _is_dispatch_lock_race(err: Exception) -> bool:
 def _adopted_queue_item_id(err: Exception) -> int | None:
     """Return the id of an in-flight queue item this dispatch should adopt.
 
-    ``_guard_identical_queue_item`` refuses a request an active queue item
+    ``_raise_if_identical_task_conflict`` refuses a request an active queue item
     already carries, naming that item. It is not a failure of this host's probe:
     it says the exact probe being asked for is already running, so the answer is
     on its way and this call need only wait for it.
 
-    Adopting is sound because of what the guard compares before raising -- same
+    Adopting is sound because of what the guard compares before raising: same
     ``task``, same ``target``, the same meta clauses, and
-    ``_encrypted_leaves_match`` over the payload -- so the item it names produces
-    the byte-identical result this dispatch would have produced itself.
+    ``_encrypted_leaves_match`` over the payload. The item it names therefore
+    produces the byte-identical result this dispatch would have produced itself.
 
-    Worth handling rather than retrying: a retry cannot make the conflict go
-    away, since the item stays active for as long as the probe takes, so the
-    attempts are spent waiting for a result already being computed and the host
-    is recorded failed anyway. This is reachable in ordinary operation, not only
-    under a race: ``with_capacity_retry`` retries the pool's 503, that retry is
-    not idempotent -- the enqueue can land while the client sees the refusal --
-    and the next attempt then collides with its own earlier item. Observed
-    2026-09-24: item 130 probed ``pmm-client-node02`` successfully in 5s while
-    the run that asked for it recorded the host unanswered and came back
-    PARTIAL.
+    Worth handling rather than retrying, because a retry cannot make the
+    conflict go away: the item stays active for as long as the probe takes, so
+    the attempts are spent waiting for a result already being computed and the
+    host is recorded failed anyway. It is also reachable without a second
+    caller, since ``with_capacity_retry`` retries the pool's 503 and that retry
+    is not idempotent; the enqueue can land while the client sees the refusal,
+    and the next attempt then collides with its own earlier item.
 
     :param err: The exception the dispatch call raised.
-    :return: The queue item id to adopt, or None if this is not that conflict.
+    :return: The queue item id to adopt, or ``None`` if this is not that conflict.
     """
     if not isinstance(err, HTTPConflictException):
         return None

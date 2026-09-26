@@ -286,16 +286,33 @@ class TestAdoptedQueueItemId:
 
         assert _adopted_queue_item_id(err) == ADOPTED_ID
 
-    def test_ignores_a_conflict_that_names_no_item(self) -> None:
+    def test_ignores_a_conflict_that_is_not_an_identical_item(self) -> None:
         """Leave every other 409 to the ordinary failure path.
 
         Adopting is only sound for the guard that compares task, target, meta
         and payload before raising; nothing else promises an equivalent result.
+
+        The "cannot be compared" case is the one worth pinning.
+        ``_raise_if_identical_task_conflict`` raises that 409 when a candidate's
+        stored request could not be *read*, so the two were never shown to be
+        identical and its item may be running something else entirely. It names
+        an id all the same, so a pattern matching only the parenthesised digits
+        would adopt it and still pass every other test here.
         """
         assert _adopted_queue_item_id(HTTPConflictException("DispatchLock")) is None
         assert (
             _adopted_queue_item_id(
                 HTTPConflictException("Queue item is not in a pending state.")
+            )
+            is None
+        )
+        assert (
+            _adopted_queue_item_id(
+                HTTPConflictException(
+                    f"In-flight queue item ({ADOPTED_ID}) cannot be compared: its "
+                    "stored execution request could not be read with the "
+                    "configured ENCRYPTION_KEY."
+                )
             )
             is None
         )
@@ -310,13 +327,17 @@ class TestProbeHostAdoptsAnInFlightItem:
         """Wait on the item the guard named instead of failing the host.
 
         The conflict says this exact probe is already running, so its result is
-        this dispatch's result. Retrying cannot help -- the item stays active for
-        as long as the probe takes -- and failing the host loses an answer that
-        was on its way. Observed 2026-09-24: item 130 probed the host
-        successfully in 5s while the run recorded it unanswered and came back
-        PARTIAL.
+        this dispatch's result. Retrying cannot help, because the item stays
+        active for as long as the probe takes, and failing the host loses an
+        answer that was on its way.
+
+        Adoption is only worth anything if the *adopted* id is the one polled
+        and read, so both downstream paths are asserted rather than ignored: a
+        version that fell back to some other history would otherwise pass here.
         """
         post_calls = 0
+        polled: list[str] = []
+        streamed: list[str] = []
 
         async def post(_path: str, **_: Any) -> dict[str, Any]:
             nonlocal post_calls
@@ -325,14 +346,16 @@ class TestProbeHostAdoptsAnInFlightItem:
                 f"409: Identical queue item already running ({ADOPTED_ID})."
             )
 
-        async def get(_path: str, **_: Any) -> dict[str, Any]:
+        async def get(path: str, **_: Any) -> dict[str, Any]:
+            polled.append(path)
             return {"id": ADOPTED_ID, "status": "success"}
 
         api = MagicMock()
         api.post = AsyncMock(side_effect=post)
         api.get = AsyncMock(side_effect=get)
 
-        async def stream(*_a: Any, **_kw: Any) -> Any:
+        async def stream(path: str, *_a: Any, **_kw: Any) -> Any:
+            streamed.append(path)
             return
             yield  # pragma: no cover - makes this an async generator
 
@@ -345,6 +368,10 @@ class TestProbeHostAdoptsAnInFlightItem:
         assert post_calls == 1
         assert result.error is None
         assert result.task_history_id == ADOPTED_ID
+        # Adopted end to end: the id from the 409 is the one polled to terminal
+        # and the one whose logs are read, not merely the one reported back.
+        assert polled == [f"/history/{ADOPTED_ID}"]
+        assert streamed == [f"/history/{ADOPTED_ID}/logs/"]
 
 
 class TestTheBudgetOutlastsAnOrphanedLock:
@@ -397,14 +424,14 @@ class TestTheBudgetOutlastsAnOrphanedLock:
         assert sum(waited) <= CAPACITY_RETRY_BUDGET_SECONDS
 
     @pytest.mark.asyncio
-    async def test_the_observed_live_sequence_resolves(self) -> None:
-        """Replay the sequence that failed a host on 2026-09-25.
+    async def test_a_503_followed_by_its_own_orphan_resolves(self) -> None:
+        """Absorb a pool timeout and the lock row it strands behind it.
 
         A pool timeout inside ``DispatchLockManager.create`` answers 503 with the
         lock row already committed, and every later attempt is refused by that
         orphan until the sweep removes it. One dispatch, one host, no second
-        party -- the collision is entirely self-inflicted, which is why widening
-        the budget is what resolves it.
+        party: the collision is entirely self-inflicted, which is why a wider
+        budget is what resolves it and adopting cannot.
         """
         calls = 0
 
