@@ -18,15 +18,21 @@
 A sweep dispatches up to ``MAX_CONCURRENT_PROBES`` hosts at once, each making its
 own requests to the Tasks API — exactly the burst that can transiently exhaust
 that process's own database connection pool (sized at 5 connections, surfaced as
-a 503) or race two byte-identical dispatches against the same
-dispatch-lock row (surfaced as a 409 — the lock's whole lifetime is one dispatch
-call, per ``_dispatch_queue_item``'s own ``finally``, not this probe's).
-``with_capacity_retry`` absorbs either queueing accident with a bounded retry
-instead of letting it count as a dispatch or collection failure, and stays
-bounded both in attempt count and in total added wait so a refusal that does not
-clear still gives up and lets the ordinary failure path record it.
+a 503) or collide two byte-identical dispatches on the same dispatch-lock row
+(surfaced as a 409). ``with_capacity_retry`` absorbs either queueing accident
+with a bounded retry instead of letting it count as a dispatch or collection
+failure, and stays bounded in both attempt count and wall clock so a refusal
+that does not clear still gives up and lets the ordinary failure path record it.
+
+The two are not independent, which is what sizes the budget. A 503 raised from
+inside ``DispatchLockManager.create`` leaves the lock row committed and nobody
+holding it, so the retry that follows collides with the orphan its own first
+attempt left behind, and only ``_dispatch_queue_item``'s 30-second stale-row
+sweep can clear it. Anything shorter than that sweep cannot resolve the
+collision by waiting, however many attempts it spends.
 """
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -36,6 +42,7 @@ from app.core.exceptions import HTTPConflictException, HTTPServiceUnavailableExc
 from app.extensions.apps.om_inventory.dispatch import (
     _adopted_queue_item_id,
     CAPACITY_RETRY_ATTEMPTS,
+    CAPACITY_RETRY_BUDGET_SECONDS,
     probe_host,
     with_capacity_retry,
 )
@@ -47,6 +54,17 @@ from tests.app.extensions.apps.om_inventory.conftest import HOST
 HISTORY_ID = 901
 #: The id the guard names in its 409, adopted rather than dispatched again.
 ADOPTED_ID = 130
+#: ``_dispatch_queue_item``'s own stale-row threshold: it deletes a lock row only
+#: once it is older than this, so this is how long an orphaned lock can refuse an
+#: otherwise valid dispatch, and the floor the retry budget has to clear.
+STALE_DISPATCH_LOCK_SECONDS = 30
+#: Lock refusals to serve after the 503 in the live-sequence test. Any number past
+#: the two the old three-attempt budget could absorb reproduces the failure; this
+#: keeps a margin so the test is about the budget, not about an exact count.
+OBSERVED_LOCK_REFUSALS = 4
+#: The 409 an orphaned lock row answers an identical dispatch with, verbatim from
+#: ``CRUDBase.save``'s unique-violation branch.
+DISPATCH_LOCK_409 = "409: DispatchLock with the same name already exists."
 
 
 def entries() -> list[MappedService]:
@@ -327,3 +345,76 @@ class TestProbeHostAdoptsAnInFlightItem:
         assert post_calls == 1
         assert result.error is None
         assert result.task_history_id == ADOPTED_ID
+
+
+class TestTheBudgetOutlastsAnOrphanedLock:
+    """Pin the property that makes a lock collision survivable: waiting long enough.
+
+    An orphaned lock row is cleared by nothing except ``_dispatch_queue_item``'s
+    30-second stale-row sweep, so a budget that cannot reach 30 seconds converts
+    every orphaned lock into a failed host, no matter how many attempts it makes
+    along the way.
+    """
+
+    @pytest.mark.asyncio
+    async def test_retrying_spans_the_stale_lock_sweep(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keep retrying past the sweep's horizon, and still stop at the budget.
+
+        Driven off a fake clock rather than real sleeps: the assertion is about
+        the wait the algorithm intends, which a suite that sleeps for real could
+        only check by taking 40 seconds to do it.
+        """
+        from app.extensions.apps.om_inventory import dispatch
+
+        clock = 0.0
+        waited: list[float] = []
+
+        async def fake_sleep(delay: float) -> None:
+            nonlocal clock
+            waited.append(delay)
+            clock += delay
+
+        # Patched on the module rather than on `asyncio` itself, so nothing else
+        # sharing this event loop loses its sleep.
+        monkeypatch.setattr(dispatch, "asyncio", SimpleNamespace(sleep=fake_sleep))
+        monkeypatch.setattr(dispatch, "monotonic", lambda: clock)
+        # Undo the suite-wide zeroing: this test is about the real delays.
+        monkeypatch.setattr(dispatch, "_CAPACITY_RETRY_BASE_DELAY_SECONDS", 1.0)
+
+        async def orphaned() -> str:
+            raise HTTPConflictException(DISPATCH_LOCK_409)
+
+        with pytest.raises(HTTPConflictException):
+            await with_capacity_retry(orphaned)
+
+        # The point of the change: a lock orphaned at t=0 is gone by the time the
+        # last attempt asks, where the old 1+2s budget gave up at t=3 with 27
+        # seconds still to run.
+        assert sum(waited) > STALE_DISPATCH_LOCK_SECONDS
+        # Still bounded, and never having slept past the deadline to find out.
+        assert sum(waited) <= CAPACITY_RETRY_BUDGET_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_the_observed_live_sequence_resolves(self) -> None:
+        """Replay the sequence that failed a host on 2026-09-25.
+
+        A pool timeout inside ``DispatchLockManager.create`` answers 503 with the
+        lock row already committed, and every later attempt is refused by that
+        orphan until the sweep removes it. One dispatch, one host, no second
+        party -- the collision is entirely self-inflicted, which is why widening
+        the budget is what resolves it.
+        """
+        calls = 0
+
+        async def as_observed() -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise HTTPServiceUnavailableException
+            if calls <= OBSERVED_LOCK_REFUSALS + 1:
+                raise HTTPConflictException(DISPATCH_LOCK_409)
+            return "ok"
+
+        assert await with_capacity_retry(as_observed) == "ok"

@@ -60,11 +60,26 @@ REQUIREMENTS = "pymongo>=4.6,<5"
 JOB_ID_PREFIX = "om"
 PROBE_PAYLOAD_PATH = Path(payload_pkg.__file__).parent / "probe.py"
 
-# Bounds with_capacity_retry both ways: at most this many tries, and -- since the
-# backoff is 1, 2, 4, ... seconds -- at most a handful of seconds of extra wait
-# before it gives up and lets the caller's own failure handling take over.
-CAPACITY_RETRY_ATTEMPTS = 3
+# Bounds with_capacity_retry both ways, whichever runs out first.
+#
+# The wall-clock budget is the one that has to be sized deliberately: what a retry
+# has to outlast here is the dispatch lock's stale-row sweep in
+# `_dispatch_queue_item` (app/tasks/celery.py), which only clears a lock older
+# than 30 seconds, so a shorter budget cannot clear an orphaned one at all. An
+# attempt count on its own cannot express that, because attempt cost varies by
+# four orders of magnitude: an attempt refused by an existing lock row returns a
+# 409 in milliseconds, while one that ends in the pool's own connection timeout
+# costs a full 10 seconds. The same three attempts therefore span anywhere from
+# ~3s to ~33s -- the old budget of three attempts and 1+2s of backoff could not
+# reach 30 seconds by any path.
+CAPACITY_RETRY_BUDGET_SECONDS = 40.0
+# The attempt cap is the secondary bound, and stops a refusal that returns
+# instantly from spinning through the budget.
+CAPACITY_RETRY_ATTEMPTS = 8
 _CAPACITY_RETRY_BASE_DELAY_SECONDS = 1.0
+# Caps the doubling, so the tail of the budget is spent on several late attempts
+# rather than on one long sleep that ends just as the budget does.
+_CAPACITY_RETRY_MAX_DELAY_SECONDS = 8.0
 
 #: Substring `_dispatch_queue_item` (app/tasks/celery.py) puts in a 409's detail
 #: when its own dispatch-lock row collided. Matched rather than the bare status
@@ -94,13 +109,23 @@ def _is_dispatch_lock_race(err: Exception) -> bool:
     """Return whether ``err`` is a same-content dispatch racing its own lock row.
 
     ``_dispatch_queue_item`` computes its lock name as a hash of exactly
-    ``{task_id, task, target, payload, meta}`` and deletes the row in a
-    ``finally`` right after dispatching — the lock's whole lifetime is one
-    dispatch call, not this probe's. So a collision here means another request
-    with byte-identical content (this same host, dispatched again before the
-    first attempt's ``finally`` ran) is racing this one, not that a long-running
-    duplicate is genuinely still in flight. Waiting a moment and asking again
-    is correct, not a way of hiding a real conflict.
+    ``{task_id, task, target, payload, meta}``, so a collision means a request
+    with byte-identical content -- this same host, dispatched again -- is
+    contending with this one, not that a real conflict is being hidden. Waiting
+    and asking again is the correct response either way.
+
+    What the wait has to cover is not obvious, and is why
+    :data:`CAPACITY_RETRY_BUDGET_SECONDS` is sized the way it is. The lock is
+    deleted in a ``finally``, but that ``finally`` guards only the dispatch
+    itself: the lock row is committed one frame earlier, inside
+    ``DispatchLockManager.create``, and ``CRUDBase.save`` then issues a
+    post-commit ``session.refresh`` needing a *second* checkout from the same
+    pool. When the pool is exhausted that refresh raises, the row is already
+    committed, and the ``try`` that would have released it was never entered.
+    The lock is then orphaned, and nothing clears it until the caller's own
+    30-second stale-row sweep -- so the collision a retry meets here can just as
+    easily be this probe's own failed first attempt as another dispatch, and it
+    can outlive that attempt by the full 30 seconds.
 
     :param err: The exception a retried call raised.
     :return: Whether it is worth retrying.
@@ -157,16 +182,21 @@ async def with_capacity_retry(call: Callable[[], Awaitable[T]]) -> T:
 
     Left uncapped this would be indistinguishable from a hang: retrying forever
     on a pool that stays saturated blocks the semaphore slot this host holds,
-    which is exactly what starves the *other* queued hosts of a turn. Bounded
-    both ways — a fixed attempt count, and an exponential backoff that is itself
-    bounded by that count — caps how long one host can hold its slot before this
-    gives up and lets the ordinary failure path record it.
+    which is exactly what starves the *other* queued hosts of a turn. So it is
+    bounded two ways and stops at whichever runs out first — a wall-clock budget
+    sized to outlast the dispatch lock's own stale-row sweep (see
+    :data:`CAPACITY_RETRY_BUDGET_SECONDS`), and an attempt cap for a refusal that
+    returns too fast for that budget to bound anything on its own.
+
+    The budget is checked against the *next* sleep rather than after it, so this
+    never sleeps past the deadline only to give up on waking.
 
     :param call: Zero-argument async callable to retry.
     :return: Whatever ``call`` returns, once it stops raising.
-    :raises Exception: Whatever ``call`` last raised, once every attempt is spent,
+    :raises Exception: Whatever ``call`` last raised, once either bound is spent,
         or immediately for any exception neither predicate recognises.
     """
+    deadline = monotonic() + CAPACITY_RETRY_BUDGET_SECONDS
     for attempt in range(CAPACITY_RETRY_ATTEMPTS):
         try:
             return await call()
@@ -174,7 +204,13 @@ async def with_capacity_retry(call: Callable[[], Awaitable[T]]) -> T:
             transient = _is_pool_capacity_error(err) or _is_dispatch_lock_race(err)
             if not transient or attempt == CAPACITY_RETRY_ATTEMPTS - 1:
                 raise
-            await asyncio.sleep(_CAPACITY_RETRY_BASE_DELAY_SECONDS * 2**attempt)
+            delay = min(
+                _CAPACITY_RETRY_BASE_DELAY_SECONDS * 2**attempt,
+                _CAPACITY_RETRY_MAX_DELAY_SECONDS,
+            )
+            if monotonic() + delay >= deadline:
+                raise
+            await asyncio.sleep(delay)
     raise AssertionError("unreachable: the loop above always returns or raises")
 
 
