@@ -23,9 +23,14 @@ from typing import Any, ClassVar, NoReturn
 
 from aiohttp import ClientResponse, ClientResponseError
 from async_lru import _LRUCacheWrapper, alru_cache
-from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from app.core.requests import as_json_array, as_json_object, RemoteAPI
+from app.core.requests import (
+    as_json_array,
+    as_json_object,
+    RemoteAPI,
+    StoredCredentialHeaderMixin,
+)
 from app.core.requests.connectivity import (
     build_connectivity_result,
     classify_connectivity_error,
@@ -38,7 +43,7 @@ from app.core.requests.remote_api import (
     UPSTREAM_NON_JSON_HEADER,
 )
 from app.core.utils.dict import remove_falsy_values_from_dict
-from app.core.utils.fields import NonEmptyStr
+from app.core.utils.fields import AuthCredentialSecretStr, NonEmptyStr
 from app.extensions.inventory import Node, Schema, Service
 from app.inventory.models import SourceEnum
 
@@ -218,7 +223,7 @@ class PMMInventorySnapshot(BaseModel):
     diagnostics: PMMFetchDiagnostics
 
 
-class PMMRemoteAPI(RemoteAPI):
+class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
     """Handle remote API interactions specific to PMM.
 
     Provides methods to interact with the PMM inventory system, including fetching nodes
@@ -230,7 +235,9 @@ class PMMRemoteAPI(RemoteAPI):
     :param ssl_keyfile: Path to the SSL key file. Defaults to None.
     :param ssl_certfile: Path to the SSL certificate file. Defaults to None.
     :param logger_name: Name to use for the logger. Defaults to `__name__`.
-    :param api_key: The API key for authentication. Defaults to None.
+    :param api_key: The API key for authentication.
+    :param auth_scheme: Scheme the ``Authorization`` header announces ahead of
+        ``api_key``. Defaults to ``"Bearer"``.
     :param error_detail_key: The key to expect errors details to be. Defaults to
         "message".
     :param error_code_key: The key to expect error codes to be, or None if no error
@@ -244,24 +251,10 @@ class PMMRemoteAPI(RemoteAPI):
 
     model_config = ConfigDict(ignored_types=(_LRUCacheWrapper,))
     CONNECTIVITY_CHECK_PATH: ClassVar[str] = "/v1/version"
-    api_key: SecretStr
+    api_key: AuthCredentialSecretStr
     error_detail_key: NonEmptyStr = "message"
     error_code_key: NonEmptyStr | None = "code"
     default_to_v3: bool = True
-
-    @property
-    def headers(self) -> dict[str, str]:
-        """Return the headers to be used in PMM requests.
-
-        Includes content type, accept headers, and authorization with the API key.
-
-        :return: A dictionary containing the headers for PMM API requests.
-        :rtype: dict[str, str]
-        """
-        return {
-            **super().headers,
-            "Authorization": f"Bearer {self.api_key.get_secret_value()}",
-        }
 
     @alru_cache(ttl=600)
     async def is_older_than_v3(self) -> bool:

@@ -37,43 +37,64 @@ def test_casdoor_credentials_masked_in_repr():
     assert "my-client-secret" not in repr_str
 
 
-def test_casdoor_api_key_decodes_secret_values():
-    """Test that api_key correctly encodes the secret credentials."""
+def test_casdoor_headers_encode_secret_values():
+    """Assert Authorization encodes the secret credentials."""
     sdk = CasdoorSDK(
         endpoint="https://casdoor.example.com",
         client_id="test-id",
         client_secret="test-secret",
     )
     expected = base64.b64encode(b"test-id:test-secret").decode("utf-8")
-    assert sdk.api_key == expected
+    assert sdk.headers["Authorization"] == f"Basic {expected}"
 
 
-def test_casdoor_api_key_with_empty_credentials():
-    """Test that empty credentials encode without raising (no validation guard)."""
+def test_casdoor_headers_with_empty_credentials():
+    """Assert empty credentials encode without raising (no validation guard)."""
     sdk = CasdoorSDK(
         endpoint="https://casdoor.example.com",
         client_id="",
         client_secret="",
     )
     expected = base64.b64encode(b":").decode("utf-8")
-    assert sdk.api_key == expected
+    assert sdk.headers["Authorization"] == f"Basic {expected}"
 
 
-def test_casdoor_api_key_recomputes_after_credentials_change():
-    """Test that api_key reflects mutated credentials (it is not cached)."""
+def test_casdoor_headers_recompute_after_credentials_change():
+    """Assert Authorization reflects mutated credentials (it is not cached)."""
     sdk = CasdoorSDK(
         endpoint="https://casdoor.example.com",
         client_id="test-id",
         client_secret="test-secret",
     )
-    original = sdk.api_key
+    original = sdk.headers["Authorization"]
 
     sdk.client_id = SecretStr("new-id")
     sdk.client_secret = SecretStr("new-secret")
 
     expected = base64.b64encode(b"new-id:new-secret").decode("utf-8")
-    assert sdk.api_key == expected
-    assert sdk.api_key != original
+    assert sdk.headers["Authorization"] == f"Basic {expected}"
+    assert sdk.headers["Authorization"] != original
+
+
+def test_casdoor_headers_carry_basic_authorization():
+    """Assert the complete headers including Basic Authorization."""
+    sdk = CasdoorSDK(
+        endpoint="https://casdoor.example.com",
+        client_id="test-id",
+        client_secret="test-secret",
+    )
+    expected = base64.b64encode(b"test-id:test-secret").decode("utf-8")
+    assert sdk.headers == {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Basic {expected}",
+    }
+
+
+def test_casdoor_declares_no_stored_credential_settings():
+    """Assert ``api_key`` and ``auth_scheme`` are absent from Casdoor provider settings."""
+    assert "api_key" not in CasdoorSDK.model_fields
+    assert "auth_scheme" not in CasdoorSDK.model_fields
 
 
 @pytest.mark.asyncio
