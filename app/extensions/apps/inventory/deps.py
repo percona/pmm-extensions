@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from app.core.config import settings
 from app.core.exceptions import HTTPServiceUnavailableException
 from app.core.requests import RemoteAPI
-from app.core.security import require_internal_token
+from app.core.security import get_internal_token
 from app.core.utils import import_var
 from app.extensions.apps.inventory.models import SyncRunSummary
 from app.extensions.config import extensions_settings, SyncOptions
@@ -319,4 +319,4 @@ async def get_syncers_standalone() -> list[BaseSyncer]:
     return _build_syncers(inventory_api, tasks_api)
 
 
-InternalTokenDep = Annotated[str, Depends(require_internal_token)]
+InternalTokenDep = Annotated[str, Depends(get_internal_token)]

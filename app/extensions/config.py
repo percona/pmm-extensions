@@ -16,6 +16,7 @@
 """Define PMM Extensions settings."""
 
 import logging
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from string import Template
@@ -34,6 +35,7 @@ from pydantic import (
     model_validator,
     PositiveFloat,
     PositiveInt,
+    PrivateAttr,
     SecretStr,
     ValidationError,
 )
@@ -733,6 +735,9 @@ class ExtensionsSettings(BaseYamlAppSettings):
         advanced=True,
     )
 
+    _pre_merge_syncers: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+    _merged_syncers: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+
     @model_validator(mode="before")
     @classmethod
     def _warn_removed_pmm_frontend(cls, data: Any) -> Any:
@@ -851,19 +856,29 @@ class ExtensionsSettings(BaseYamlAppSettings):
         Merge additional keyword arguments from ``SYNCER_EXTRA_KWARGS`` into each
         synchronizer in ``SYNCERS`` and update the list accordingly. Every override
         surface lands in this merge, so it is also where a constrained threshold is
-        checked against the type its syncer field declares.
+        checked against the type its syncer field declares. Merging again with the
+        same ``SYNCER_EXTRA_KWARGS`` leaves ``SYNCERS`` as it was.
 
         :return: The updated ``ExtensionsSettings`` instance with modified ``SYNCERS``.
         :raises ValueError: When a merged threshold carries an unusable value.
         """
+        # ``model_validate`` runs an after-validator twice, and ``deep_dict_update``
+        # prepends for a list, so re-merging a merged value concatenates it with
+        # itself. Each run re-derives from the pre-merge payloads instead, re-taking
+        # them only when SYNCERS holds something this merge did not produce.
+        current = [syncer.model_dump() for syncer in self.SYNCERS]
+        if current != self._merged_syncers:
+            self._pre_merge_syncers = current
         syncers = UniqueList()
         extra_kwargs = self.SYNCER_EXTRA_KWARGS.model_dump(exclude_none=True)
-        for syncer in self.SYNCERS:
-            syncer_data = syncer.model_dump()
-            deep_dict_update(syncer_data, extra_kwargs)
-            _validate_constrained_syncer_extras(syncer_data, extra_kwargs)
-            syncers.append(SyncOptions.model_validate(syncer_data))
+        for syncer_data in self._pre_merge_syncers:
+            # deep_dict_update mutates nested dicts in place; keep the snapshot intact.
+            merged = deepcopy(syncer_data)
+            deep_dict_update(merged, extra_kwargs)
+            _validate_constrained_syncer_extras(merged, extra_kwargs)
+            syncers.append(SyncOptions.model_validate(merged))
         self.SYNCERS = syncers
+        self._merged_syncers = [syncer.model_dump() for syncer in syncers]
         return self
 
 

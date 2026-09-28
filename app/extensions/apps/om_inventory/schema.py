@@ -31,7 +31,6 @@ om_inventory_schema = AppSchema(
     name="om_inventory",
     display_name="OpenManager Inventory",
     item_display_name="sweep",
-    item_display_name_plural="sweeps",
     description=(
         "Probes MongoDB nodes over Nomad for the facts no metric carries — the "
         "installed binary version, the command line, the config file — and serves "

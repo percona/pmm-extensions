@@ -34,6 +34,7 @@ from app.inventory.main import inventory_app
 from app.inventory.models import (
     IdentityLinkDecisionEnum,
     Node,
+    Schema,
     Service,
     SyncOutcomeEnum,
     Table,
@@ -177,18 +178,16 @@ def test_node_and_service_writes_are_refused_for_an_admin(
     assert response.status_code == status.HTTP_403_FORBIDDEN
 
 
-@pytest.mark.parametrize("token_setting", [None, SecretStr("")], ids=["unset", "empty"])
-def test_an_unconfigured_internal_token_admits_nobody(
+def test_an_empty_internal_token_admits_nobody(
     admin_bearer_client: TestClient,
     mocker: MockerFixture,
-    token_setting: SecretStr | None,
 ) -> None:
     """Refuse the would-be principal's own token while the setting carries none.
 
     With nothing to compare a credential against, no caller can resolve to the
     principal, so the restricted routes close rather than fall open.
     """
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", token_setting)
+    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(""))
 
     response = admin_bearer_client.post(
         "/nodes/", json={}, headers={"Authorization": f"Bearer {SERVICE_TOKEN}"}
@@ -677,5 +676,43 @@ def test_the_observation_collection_requires_a_credential(
     ``IsAuthenticatedDep`` like its per-node sibling rather than being open.
     """
     response = bearer_client.get("/nodes/system-observations")
+
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/nodes/{node_id}/services/",
+        "/services/{service_id}/schemas/",
+        "/schemas/{schema_id}/tables/",
+    ],
+)
+@pytest.mark.parametrize("existing", [True, False], ids=["retired", "missing"])
+def test_a_retired_parent_listing_requires_a_credential(
+    bearer_client: TestClient,
+    retired_node: Node,
+    retired_service: Service,
+    retired_schema: Schema,
+    path: str,
+    *,
+    existing: bool,
+) -> None:
+    """Refuse an anonymous retired-parent listing before the parent is looked up.
+
+    A retired parent and a missing one answer the same 401, so the opt-in gives
+    an anonymous caller no way to probe which identifiers were ever issued.
+    """
+    ids = (
+        {
+            "node_id": retired_node.id,
+            "service_id": retired_service.id,
+            "schema_id": retired_schema.id,
+        }
+        if existing
+        else dict.fromkeys(("node_id", "service_id", "schema_id"), 99999)
+    )
+
+    response = bearer_client.get(path.format(**ids), params={"include_retired": True})
 
     assert response.status_code == status.HTTP_401_UNAUTHORIZED

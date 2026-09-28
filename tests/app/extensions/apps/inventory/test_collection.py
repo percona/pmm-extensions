@@ -15,7 +15,6 @@
 
 """Test the scheduled inventory-collection job."""
 
-import re
 from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
@@ -455,15 +454,6 @@ async def test_an_undocumented_collect_response_aborts_the_run(
         await run_inventory_collection(API_KEY)
 
     assert client.real_calls == []
-
-
-@pytest.mark.asyncio
-async def test_a_missing_internal_token_is_refused(mocker: MockerFixture) -> None:
-    """Refuse to run without the credential the Inventory API requires."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", None)
-
-    with pytest.raises(ValueError, match=re.escape("EXTENSIONS_INTERNAL_TOKEN")):
-        await run_scheduled_inventory_collection()
 
 
 @pytest.mark.asyncio

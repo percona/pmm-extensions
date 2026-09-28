@@ -74,8 +74,8 @@ For development purposes, you can also [start Celery with PMM Extensions](#start
 
 1. Clone the repository and enter the cloned folder:
 ```shell
-git clone https://github.com/percona/SEP.git
-cd SEP
+git clone https://github.com/percona/pmm-extensions.git
+cd pmm-extensions
 ```
 
 2. Create and activate a virtualenv with the required packages:
@@ -121,7 +121,7 @@ Secret files are read from the directory named by `SECRETS_DIR`, which is unset 
 default; when unset, no secret files are read. See the
 [secrets section](#secrets) for how to name them.
 
-The [settings.yaml](https://github.com/percona/SEP/blob/main/settings.yaml) has base settings that you can (but don't need to) change.
+The [settings.yaml](https://github.com/percona/pmm-extensions/blob/main/settings.yaml) has base settings that you can (but don't need to) change.
 
 Some settings are app-specific and you might not need them for running another app.
 These are some, but not all, the possible settings you can have, per app:
@@ -651,7 +651,7 @@ If you started PMM with the Docker command in [Prerequisites](#prerequisites), i
 
 1. Enter the project folder:
 ```shell
-cd SEP
+cd pmm-extensions
 ```
 
 2. Activate your virtualenv:
@@ -688,7 +688,7 @@ LOGGING=debug python3 -m app.main --start-celery
 
 ## Contributing
 
-See our [CONTRIBUTING](https://github.com/percona/SEP/blob/main/CONTRIBUTING.md) guide.
+See our [CONTRIBUTING](https://github.com/percona/pmm-extensions/blob/main/CONTRIBUTING.md) guide.
 
 ## Deployment
 

@@ -187,6 +187,7 @@ async def test_refresh_all_falls_back_when_a_row_becomes_undecryptable(
     async with session_maker() as session:
         stored = await SettingsOverrideManager.first(session, key="PMM__api_key")
         stored.value = foreign
+        stored.updated_by = "tester"
         await SettingsOverrideManager.save(session, stored)
 
     await refresh_all(lambda: session_maker, registry)

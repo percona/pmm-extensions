@@ -220,27 +220,6 @@ async def test_run_scheduled_inventory_sync(mocker, mock_base_syncer_factory):
     mock_run.assert_awaited_once_with("test-api-key", syncer)
 
 
-@pytest.mark.asyncio
-async def test_run_scheduled_inventory_sync_no_token(mocker):
-    """Assert run_scheduled_inventory_sync raises when EXTENSIONS_INTERNAL_TOKEN unset."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", None)
-    with pytest.raises(
-        ValueError,
-        match=r"EXTENSIONS_INTERNAL_TOKEN must be configured.*openssl rand -hex 32",
-    ):
-        await run_scheduled_inventory_sync()
-
-
-@pytest.mark.asyncio
-async def test_run_scheduled_inventory_sync_empty_token(mocker):
-    """Assert run_scheduled_inventory_sync raises when EXTENSIONS_INTERNAL_TOKEN is empty."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(""))
-    with pytest.raises(
-        ValueError, match=r"EXTENSIONS_INTERNAL_TOKEN must be configured"
-    ):
-        await run_scheduled_inventory_sync()
-
-
 def _patch_scheduled_sync_env(mocker, syncers):
     """Patch the internal token and syncer-construction hooks for scheduled-sync tests."""
     mocker.patch.object(

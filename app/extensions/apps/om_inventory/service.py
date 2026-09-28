@@ -42,7 +42,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.requests import RemoteAPI
-from app.core.security import require_internal_token
+from app.core.security import get_internal_token
 from app.core.utils.date_time import utc_now
 from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.crud import (
@@ -429,7 +429,7 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
     # borrow, so the sweep rides the internal service token the same way the scheduled
     # inventory sync does. ``auth`` is a sync context manager setting a header for its
     # block, so every call that needs it has to be made inside.
-    token = require_internal_token()
+    token = get_internal_token()
     with inventory_api.auth(token), tasks_api.auth(token):
         services, nodes, executor_states = await enumerate_estate(
             inventory_api, tasks_api

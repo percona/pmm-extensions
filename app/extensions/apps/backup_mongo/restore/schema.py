@@ -32,7 +32,6 @@ restore_mongo_schema = derive_app_schema(
     name="backup_mongo_restores",
     display_name="MongoDB Restores",
     item_display_name="restore",
-    item_display_name_plural="restores",
     description=(
         "Configure and run Percona Backup for MongoDB (PBM) logical or "
         "physical restore operations."

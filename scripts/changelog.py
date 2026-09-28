@@ -72,7 +72,7 @@ FRAGMENT_RE: re.Pattern[str] = re.compile(
 )
 TICKET_RE: re.Pattern[str] = re.compile(rf"^({PROJECT_PATTERN})-(\d+)$")
 UNRELEASED_COMPARE_RE: re.Pattern[str] = re.compile(
-    r"^\[Unreleased\]: (?P<url>https://github\.com/percona/SEP/compare/"
+    r"^\[Unreleased\]: (?P<url>https://github\.com/percona/pmm-extensions/compare/"
     r"v(?P<previous>[\w.\-]+)\.\.\.HEAD)$",
 )
 VERSION_FOOTER_LINE_RE: re.Pattern[str] = re.compile(
@@ -83,7 +83,7 @@ VERSION_FOOTER_LINE_RE: re.Pattern[str] = re.compile(
 RESERVED_FILENAMES: frozenset[str] = frozenset({"README.md", ".gitkeep"})
 CHANGELOG_D: Path = Path("changelog.d")
 CHANGELOG_MD: Path = Path("CHANGELOG.md")
-REPO_COMPARE_URL: str = "https://github.com/percona/SEP/compare"
+REPO_COMPARE_URL: str = "https://github.com/percona/pmm-extensions/compare"
 
 
 class FragmentError(Exception):

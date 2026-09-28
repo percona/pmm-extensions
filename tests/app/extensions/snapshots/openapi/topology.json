@@ -66,9 +66,6 @@
           },
           "type": {
             "const": "cluster",
-            "enum": [
-              "cluster"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -146,9 +143,6 @@
           },
           "type": {
             "const": "dual_primary",
-            "enum": [
-              "dual_primary"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -221,9 +215,6 @@
           },
           "type": {
             "const": "mysql",
-            "enum": [
-              "mysql"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -578,9 +569,6 @@
           },
           "type": {
             "const": "replication",
-            "enum": [
-              "replication"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -904,9 +892,6 @@
           },
           "type": {
             "const": "unknown_source",
-            "enum": [
-              "unknown_source"
-            ],
             "title": "Type",
             "type": "string"
           }

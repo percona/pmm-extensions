@@ -903,11 +903,11 @@ def test_trigger_jenkins_routes_by_tag_prefix(
     curl_args = _run_trigger_jenkins_with_fake_curl(tmp_path, tag, *make_args)
 
     assert (
-        f"https://jenkins.example/job/SEP/job/{expected_job}/buildWithParameters"
+        f"https://jenkins.example/job/PMM-Extensions/job/{expected_job}/buildWithParameters"
         in curl_args
     )
     assert (
-        f"https://jenkins.example/job/SEP/job/{unexpected_job}/buildWithParameters"
+        f"https://jenkins.example/job/PMM-Extensions/job/{unexpected_job}/buildWithParameters"
         not in curl_args
     )
     assert f"releaseTag={tag}" in curl_args

@@ -576,15 +576,107 @@ class TestListSchemasByService:
         assert data["offset"] == 0
         assert data["limit"] == DEFAULT_PAGINATION_LIMIT
 
+    @pytest.mark.parametrize(
+        "params", [{}, {"include_retired": False}], ids=["omitted", "false"]
+    )
     def test_list_schemas_by_service_excludes_retired(
-        self, test_client: TestClient, retired_schema: Schema
+        self,
+        test_client: TestClient,
+        retired_schema: Schema,
+        params: dict[str, bool],
     ) -> None:
         """Omit a retired schema from an active service's schemas."""
-        response = test_client.get(f"/services/{retired_schema.service_id}/schemas/")
+        response = test_client.get(
+            f"/services/{retired_schema.service_id}/schemas/", params=params
+        )
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["items"] == []
         assert data["total"] == 0
+
+    def test_list_schemas_by_service_include_retired_resolves_retired_service(
+        self, test_client: TestClient, schema: Schema, retired_service: Service
+    ) -> None:
+        """List a retired service's schemas through the opt-in."""
+        response = test_client.get(
+            f"/services/{retired_service.id}/schemas/",
+            params={"include_retired": True},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert [item["id"] for item in data["items"]] == [schema.id]
+        assert data["total"] == 1
+
+    @pytest.mark.parametrize(
+        "params", [{}, {"include_retired": False}], ids=["omitted", "false"]
+    )
+    def test_list_schemas_by_service_hides_retired_service_by_default(
+        self,
+        test_client: TestClient,
+        schema: Schema,
+        retired_service: Service,
+        params: dict[str, bool],
+    ) -> None:
+        """Return 404 for a retired service unless the opt-in is set."""
+        response = test_client.get(
+            f"/services/{retired_service.id}/schemas/", params=params
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_list_schemas_by_service_include_retired_after_retire_route(
+        self, test_client: TestClient, service: Service, schema: Schema
+    ) -> None:
+        """List the schemas the retire route cascaded into, marked retired."""
+        assert (
+            test_client.delete(f"/services/{service.id}").status_code
+            == status.HTTP_204_NO_CONTENT
+        )
+
+        hidden = test_client.get(f"/services/{service.id}/schemas/")
+        assert hidden.status_code == status.HTTP_404_NOT_FOUND
+
+        response = test_client.get(
+            f"/services/{service.id}/schemas/", params={"include_retired": True}
+        )
+        assert response.status_code == status.HTTP_200_OK
+        items = response.json()["items"]
+        assert [item["id"] for item in items] == [schema.id]
+        assert items[0]["retired_at"] is not None
+
+    def test_list_schemas_by_service_include_retired_nests_tables(
+        self,
+        test_client: TestClient,
+        table: Table,
+        retired_service: Service,
+    ) -> None:
+        """Nest a retired service's tables when include_tables is also set."""
+        response = test_client.get(
+            f"/services/{retired_service.id}/schemas/",
+            params={"include_retired": True, "include_tables": "true"},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        items = response.json()["items"]
+        assert [t["id"] for t in items[0]["tables"]] == [table.id]
+
+    def test_list_schemas_by_service_include_retired_on_active_service(
+        self, test_client: TestClient, retired_schema: Schema
+    ) -> None:
+        """Include a retired schema of an active service through the opt-in."""
+        response = test_client.get(
+            f"/services/{retired_schema.service_id}/schemas/",
+            params={"include_retired": True},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert [item["id"] for item in response.json()["items"]] == [retired_schema.id]
+
+    def test_list_schemas_by_service_rejects_invalid_include_retired(
+        self, test_client: TestClient, service: Service
+    ) -> None:
+        """Reject a non-boolean include_retired with HTTP 422."""
+        response = test_client.get(
+            f"/services/{service.id}/schemas/", params={"include_retired": "maybe"}
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
     def test_list_schemas_by_service_rejects_unknown_sort_key(
         self, test_client: TestClient, service: Service
@@ -649,9 +741,14 @@ class TestListSchemasByService:
         assert data["items"][0]["id"] == schema.id
         assert "tables" in data["items"][0]
 
-    def test_list_schemas_by_service_not_found(self, test_client: TestClient) -> None:
-        """Return 404 for a nonexistent service ID."""
-        response = test_client.get("/services/9999/schemas/")
+    @pytest.mark.parametrize(
+        "params", [{}, {"include_retired": True}], ids=["active", "include_retired"]
+    )
+    def test_list_schemas_by_service_not_found(
+        self, test_client: TestClient, params: dict[str, bool]
+    ) -> None:
+        """Return 404 for a nonexistent service ID in either retirement scope."""
+        response = test_client.get("/services/9999/schemas/", params=params)
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_list_schemas_by_service_custom_offset(
@@ -805,6 +902,18 @@ class TestCreateSchemaForService:
         payload = SchemaWriteFactory.build()
         response = test_client.post(
             "/services/9999/schemas/",
+            json=payload.model_dump(mode="json"),
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_create_schema_for_retired_service_ignores_include_retired(
+        self, test_client: TestClient, retired_service: Service
+    ) -> None:
+        """Refuse a schema under a retired service, whatever the read opt-in says."""
+        payload = SchemaWriteFactory.build()
+        response = test_client.post(
+            f"/services/{retired_service.id}/schemas/",
+            params={"include_retired": True},
             json=payload.model_dump(mode="json"),
         )
         assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -1070,7 +1179,7 @@ class TestServiceSyncHealthReads:
     def test_detail_exposes_the_columns(
         self, test_client: TestClient, service: Service, schema: Schema
     ) -> None:
-        """Carry the four fields on the service detail response.
+        """Carry the sync-health fields on the service detail response.
 
         The nested schemas carry them through the table model the response
         nests, so a schema read from inside a service reports the same state.
@@ -1085,7 +1194,7 @@ class TestServiceSyncHealthReads:
     def test_list_items_expose_the_columns(
         self, test_client: TestClient, service: Service
     ) -> None:
-        """Carry the four fields on every row of the paginated list."""
+        """Carry the sync-health fields on every row of the paginated list."""
         response = test_client.get("/services/")
 
         assert response.status_code == status.HTTP_200_OK
