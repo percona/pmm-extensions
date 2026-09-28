@@ -227,7 +227,6 @@ def _build_form_schema(script: _DiskScript, *, name: str) -> AppSchema:
         name=name,
         display_name=snippet.title,
         item_display_name="run",
-        item_display_name_plural="runs",
         description=snippet.description or None,
         forms=forms,
         list_view=_list_view(),

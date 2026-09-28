@@ -148,8 +148,11 @@ class ScaffoldConfig:
         ``base`` and ``script`` flavors render ``forms=[]`` at the app level and
         are skipped, and a ``script_source`` app's schema can never gain form
         sections, so for it the app-level noun is unenforced rather than deferred.
-    :param item_display_name_plural: The name for several such records, defaulted
-        the same way and enforced under the same limits.
+    :param item_display_name_plural: The name for several such records. Defaults
+        by pluralising a declared singular (same Django-style rules as
+        :func:`~app.extensions.apps.framework.schema.pluralize_item_display_name`);
+        when the singular is also unset, defaults to ``display_name`` so the
+        conformance detector still trips an unedited task scaffold.
     :param description: The plugin description; ``None`` for the ``base`` flavor,
         whose ``BaseApp`` has no description field.
     :param service_type: The ``ServiceTypeEnum`` member name for the task form's
@@ -927,6 +930,30 @@ def _validate_script_path(parser: argparse.ArgumentParser, value: str) -> Path:
     return path
 
 
+def _default_item_display_name_plural(
+    display_name: str, item_display_name: str, *, singular_declared: bool
+) -> str:
+    """Return the scaffold plural default for an unresolved plural flag/prompt.
+
+    Mirrors :func:`~app.extensions.apps.framework.schema._fill_item_display_names`:
+    pluralise only when the author declared a singular; otherwise keep
+    ``display_name`` so an unedited scaffold still trips the conformance
+    detector. Imports the pluraliser lazily so this module's import graph
+    stays stdlib-only until a config is actually resolved.
+
+    :param display_name: The resolved app title.
+    :param item_display_name: The resolved singular (declared or title fallback).
+    :param singular_declared: Whether the resolved singular differs from
+        ``display_name`` (the same signal both resolve paths use).
+    :return: The plural to seed into the generated app.
+    """
+    if not singular_declared:
+        return display_name
+    from app.extensions.apps.framework.schema import pluralize_item_display_name
+
+    return pluralize_item_display_name(item_display_name)
+
+
 def _resolve_non_interactive(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> ScaffoldConfig:
@@ -945,7 +972,13 @@ def _resolve_non_interactive(
     _reject_flavor_incompatible_flags(parser, args, flavor)
     display_name = args.display_name or _derive_display_name(args.name)
     item_display_name = args.item_display_name or display_name
-    item_display_name_plural = args.item_display_name_plural or display_name
+    item_display_name_plural = args.item_display_name_plural or (
+        _default_item_display_name_plural(
+            display_name,
+            item_display_name,
+            singular_declared=item_display_name != display_name,
+        )
+    )
     description = (
         args.description
         if args.description is not None
@@ -1039,8 +1072,13 @@ def _resolve_interactive(
         item_display_name = args.item_display_name or prompt_cls.ask(
             "Record name (singular)", default=display_name
         )
+        plural_default = _default_item_display_name_plural(
+            display_name,
+            item_display_name,
+            singular_declared=item_display_name != display_name,
+        )
         item_display_name_plural = args.item_display_name_plural or prompt_cls.ask(
-            "Record name (plural)", default=display_name
+            "Record name (plural)", default=plural_default
         )
         description = None
         if flavor is not Flavor.BASE:

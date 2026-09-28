@@ -596,9 +596,9 @@ class TestRecordDisplayNames:
         assert source.static_schema.item_display_name == "kit script"
         assert source.static_schema.item_display_name_plural == "kit scripts"
 
-    async def test_static_schema_record_names_default_to_display_name(
+    async def test_static_schema_record_names_default_when_omitted(
         self, source: ScriptSource
     ) -> None:
-        """Leave both app-level nouns defaulted when the caller passes neither."""
+        """Leave both app-level nouns as ``display_name`` when the caller passes neither."""
         assert source.static_schema.item_display_name == "Test Kit"
         assert source.static_schema.item_display_name_plural == "Test Kit"

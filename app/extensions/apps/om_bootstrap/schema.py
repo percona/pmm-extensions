@@ -32,7 +32,6 @@ om_bootstrap_schema = AppSchema(
     name="om_bootstrap",
     display_name="OpenManager Bootstrap",
     item_display_name="bootstrap run",
-    item_display_name_plural="bootstrap runs",
     description=(
         "Provisions MongoDB replica sets on inventory hosts over Nomad -- "
         "pre-flight checks, install, configuration, and rs.initiate -- and "

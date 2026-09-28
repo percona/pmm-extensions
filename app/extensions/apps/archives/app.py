@@ -41,7 +41,6 @@ app = TaskExecutionApp(
     name="archives",
     display_name="Archives",
     item_display_name="archive",
-    item_display_name_plural="archives",
     uri_path="/archives",
     css_class="archive",
     nav_order=11,

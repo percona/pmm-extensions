@@ -1322,8 +1322,8 @@ class TestDeriveAppSchemaItemDisplayNames:
         assert schema.item_display_name == "backup"
         assert schema.item_display_name_plural == "backups"
 
-    def test_omitted_record_names_default_from_display_name(self) -> None:
-        """Leave the model's defaulting to fill both when the caller passes neither."""
+    def test_omitted_record_names_default_via_model_fill(self) -> None:
+        """Leave the model's fill: both keys fall back to ``display_name`` when omitted."""
         schema = derive_app_schema(
             _ScopeModel,
             _SINGLE_SECTION,
