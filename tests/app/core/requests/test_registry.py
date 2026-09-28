@@ -106,7 +106,7 @@ class _FailingCloseRemoteAPI(RemoteAPI):
         """Raise instead of closing, so the registry has a failure to report."""
         raise RuntimeError(_CLOSE_FAILURE)
 
-    async def close_when_idle(self) -> None:
+    async def close_when_idle(self, pending=None) -> None:
         """Raise on the eviction path the same way."""
         raise RuntimeError(_CLOSE_FAILURE)
 

@@ -23,7 +23,7 @@ from collections import defaultdict
 from collections.abc import Hashable
 from typing import Any, ClassVar, TypeVar
 
-from app.core.requests.remote_api import BaseRemoteAPI, RemoteAPI
+from app.core.requests.remote_api import BaseRemoteAPI, PendingCloses, RemoteAPI
 
 T = TypeVar("T", bound=BaseRemoteAPI)
 logger = logging.getLogger(__name__)
@@ -56,6 +56,7 @@ class ClientRegistry:
         )
         self._close_lock: asyncio.Lock = asyncio.Lock()
         self._closed: bool = False
+        self._pending_closes = PendingCloses()
 
     @property
     def closed(self) -> bool:
@@ -126,9 +127,11 @@ class ClientRegistry:
 
         Eviction is immediate; the close is not. A client with consumers still
         in flight stays open until its last one releases, so an SSE stream or a
-        file download that resolved it survives the rebind. This method
-        therefore does not guarantee the client is closed by the time it
-        returns, only that no new work is handed it.
+        file download that resolved it survives the rebind. Deferred closes are
+        registered on this registry's :class:`PendingCloses` so
+        :meth:`close_all` can still force-close them at shutdown if a holder
+        never unwinds. This method therefore does not guarantee the client is
+        closed by the time it returns, only that no new work is handed it.
 
         :param endpoint: The endpoint URL whose cached clients to evict.
             Compared trailing-slash-insensitively against each client's
@@ -150,7 +153,10 @@ class ClientRegistry:
         if not matching:
             return
         results = await asyncio.gather(
-            *(client.close_when_idle() for _key, client in matching),
+            *(
+                client.close_when_idle(pending=self._pending_closes)
+                for _key, client in matching
+            ),
             return_exceptions=True,
         )
         for (_key, client), result in zip(matching, results, strict=False):
@@ -162,9 +168,10 @@ class ClientRegistry:
     async def close_all(self) -> None:
         """Close all RemoteAPI clients and clear the registry.
 
-        This method closes all clients in the registry and clears the internal cache.
-        It is safe to call this method multiple times; subsequent calls will have no
-        effect if the registry is already closed.
+        Closes every client still in the cache, then force-closes any clients
+        :meth:`invalidate` deferred via :class:`PendingCloses`. Safe to call
+        multiple times; subsequent calls have no effect once the registry is
+        closed.
         """
         async with self._close_lock:
             if self.closed:
@@ -183,6 +190,7 @@ class ClientRegistry:
                         client.redacted_base_url,
                         result,
                     )
+            await self._pending_closes.force_close()
         finally:
             self._clients.clear()
             self._locks.clear()
