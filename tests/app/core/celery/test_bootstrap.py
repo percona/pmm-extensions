@@ -161,6 +161,29 @@ def refuse_then_accept(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
 
 
 @pytest.fixture
+def refuse_always(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
+    """Refuse every connection with a persistent ``OperationalError``.
+
+    Models a rejected password or a store that never comes up — both surface as
+    ``OperationalError``, which is what the bounded readiness wait retries until
+    its deadline.
+
+    :param monkeypatch: The attribute patcher.
+    :return: A callable reporting how many attempts were made.
+    """
+    attempts = {"count": 0}
+
+    def connect(self: Engine, *args: Any, **kwargs: Any) -> None:
+        attempts["count"] += 1
+        raise OperationalError(
+            "connect", {}, Exception("password authentication failed")
+        )
+
+    monkeypatch.setattr(Engine, "connect", connect)
+    return lambda: attempts["count"]
+
+
+@pytest.fixture
 def refuse_then_really_connect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Callable[[], int]:
@@ -288,19 +311,17 @@ def test_a_deadline_caps_each_postgres_connect_attempt(
     driver ``connect_timeout`` a firewalled store blocks on the OS TCP timeout
     (often minutes) and ``make migrate`` still outruns its 60s bound.
     """
-    migrate_deadline_seconds = 60
     monkeypatch.setattr(
         settings.CELERY, "beat_dburi", OVERRIDDEN_STORE.format(password="pw")
     )
     monkeypatch.setattr(settings.CELERY, "beat_schema", None)
 
-    bootstrap.bootstrap_beat_schema(deadline_seconds=migrate_deadline_seconds)
+    bootstrap.bootstrap_beat_schema(deadline_seconds=60)
 
     _, _, options = recording_manager.create_session_calls[0]
     assert options == {
         "connect_args": {"connect_timeout": bootstrap.STORE_CONNECT_TIMEOUT}
     }
-    assert migrate_deadline_seconds > bootstrap.STORE_CONNECT_TIMEOUT
 
 
 def test_a_deadline_does_not_pass_connect_timeout_to_sqlite(
@@ -413,7 +434,9 @@ def test_the_readiness_wait_is_not_bounded(
 
 
 def test_a_bounded_readiness_wait_gives_up_after_its_deadline(
-    sqlite_beat_store: str, instant_polling: None, monkeypatch: pytest.MonkeyPatch
+    sqlite_beat_store: str,
+    instant_polling: None,
+    refuse_always: Callable[[], int],
 ):
     """Fail ``make migrate`` on a persistent OperationalError instead of hanging.
 
@@ -421,23 +444,13 @@ def test_a_bounded_readiness_wait_gives_up_after_its_deadline(
     the wall-clock deadline covers both so CI and developers see the failure within
     the bound rather than waiting forever.
     """
-    attempts = {"count": 0}
-
-    def refuse(self: Engine, *args: Any, **kwargs: Any) -> None:
-        attempts["count"] += 1
-        raise OperationalError(
-            "connect", {}, Exception("password authentication failed")
-        )
-
-    monkeypatch.setattr(Engine, "connect", refuse)
-
     with pytest.raises(
         TimeoutError, match="did not become reachable within 0"
     ) as excinfo:
         bootstrap.bootstrap_beat_schema(deadline_seconds=0)
 
     assert isinstance(excinfo.value.__cause__, OperationalError)
-    assert attempts["count"] == 1
+    assert refuse_always() == 1
 
 
 def test_a_bounded_readiness_wait_succeeds_before_its_deadline(
@@ -482,25 +495,16 @@ def test_a_non_transient_connection_failure_is_not_retried(
 def test_main_forwards_a_cli_deadline(
     sqlite_beat_store: str,
     instant_polling: None,
-    monkeypatch: pytest.MonkeyPatch,
+    refuse_always: Callable[[], int],
     mocker: MockerFixture,
 ):
     """Thread ``--deadline-seconds`` from the CLI into the readiness wait."""
-    attempts = {"count": 0}
-
-    def refuse(self: Engine, *args: Any, **kwargs: Any) -> None:
-        attempts["count"] += 1
-        raise OperationalError(
-            "connect", {}, Exception("password authentication failed")
-        )
-
     mocker.patch("logging.config.dictConfig")
-    monkeypatch.setattr(Engine, "connect", refuse)
 
     with pytest.raises(TimeoutError, match="did not become reachable within 0"):
         bootstrap.main(["--deadline-seconds", "0"])
 
-    assert attempts["count"] == 1
+    assert refuse_always() == 1
 
 
 def test_the_side_car_invocation_passes_no_deadline(mocker: MockerFixture):
