@@ -15,7 +15,6 @@
 
 """Define routes for the Tasks API."""
 
-import hashlib
 import json
 import logging
 import os
@@ -103,7 +102,10 @@ from app.tasks.models import (
 )
 from app.tasks.periodic.crud import PeriodicTaskManager
 from app.tasks.periodic.models import PeriodicTaskCreate, PeriodicTaskResponse
-from app.tasks.periodic.utils import attach_last_run_status
+from app.tasks.periodic.utils import (
+    attach_last_run_status,
+    generate_periodic_task_name,
+)
 from app.tasks.run_result import maybe_record_run
 
 logger = logging.getLogger(__name__)
@@ -222,33 +224,6 @@ async def list_periodic_tasks_by_task_name(
     return await attach_last_run_status(session, periodic_tasks)
 
 
-def _generate_periodic_task_name(task_name: str, period: str, kwargs: str) -> str:
-    """Derive a stable auto-generated name for an unnamed periodic task.
-
-    Digest rather than :func:`hash`: the builtin is salted per process, so two
-    processes computing the same unnamed create request would derive two
-    different names and the database's uniqueness check would never catch
-    the duplicate. Eight digest bytes, not the four
-    :func:`~app.core.db.utils.advisory_lock_key` uses — that size fits a
-    signed 32-bit PostgreSQL advisory-lock key, a constraint that doesn't
-    apply here, and ``PeriodicTask.name`` is a 255-character column that also
-    has to fit ``task_name``. The digest covers all three inputs, not just
-    ``kwargs``: the returned name's visible prefix collapses every space to
-    an underscore, so two task names differing only by that character
-    (``"a b"`` vs ``"a_b"``) would otherwise render identically once a
-    digest over ``kwargs`` alone happened to match.
-
-    :param task_name: Name of the task the periodic schedule executes.
-    :param period: The schedule's period.
-    :param kwargs: The periodic task's JSON-encoded ``kwargs`` string.
-    :return: A name stable across processes and ``PYTHONHASHSEED`` values for
-        this ``(task_name, period, kwargs)`` triple.
-    """
-    digest_input = f"{task_name}\x00{period}\x00{kwargs}".encode()
-    digest = hashlib.blake2b(digest_input, digest_size=8).hexdigest()
-    return f"run_{task_name}_{period}_{digest}".replace(" ", "_")
-
-
 @router.post(
     "/{task_name}/periodic/",
     dependencies=[IsAuthenticatedDep],
@@ -270,7 +245,7 @@ async def create_periodic_task_for_task_name(
     kwargs = json.loads(periodic_task.kwargs)
     kwargs["task_name"] = task.name
     if not periodic_task.name:
-        periodic_task.name = _generate_periodic_task_name(
+        periodic_task.name = generate_periodic_task_name(
             task.name, periodic_task.period, periodic_task.kwargs
         )
     kwargs["periodic_task_name"] = periodic_task.name

@@ -16,7 +16,6 @@
 """Define test cases for periodic task routes."""
 
 import json
-import re
 from datetime import datetime, timedelta
 
 import pytest
@@ -38,8 +37,6 @@ from app.tasks.models import (
     TaskHistoryStatusEnum,
     TaskWrite,
 )
-from app.tasks.periodic.models import PeriodicTaskCreate
-from app.tasks.routes import _generate_periodic_task_name
 from tests.app.factories import TaskFactory
 
 CELERY_TASK_NAME = "app.tasks.celery.execute_task_by_name"
@@ -1025,85 +1022,6 @@ class TestCreatePeriodicTaskChainValidation:
         assert response.status_code == status.HTTP_201_CREATED
 
 
-#: ``blake2b`` digest-based name generated for ``("my-task", "every 10
-#: minutes", '{"task_name": null}')``, pinned so a derivation that varies per
-#: process cannot pass the stability test by agreeing with itself.
-_STABLE_GENERATED_NAME = "run_my-task_every_10_minutes_01263f4315fc8f0f"
-
-
-class TestGeneratedPeriodicTaskName:
-    """Test the auto-generated name for an unnamed periodic task."""
-
-    def test_name_is_stable_across_processes(self):
-        """Pin the generated name so two processes agree on it.
-
-        A ``hash()``-based derivation would vary with ``PYTHONHASHSEED`` and
-        give each process its own name, letting the database's uniqueness
-        check silently miss the duplicate instead of raising a conflict.
-        """
-        name = _generate_periodic_task_name(
-            "my-task", "every 10 minutes", '{"task_name": null}'
-        )
-
-        assert name == _STABLE_GENERATED_NAME
-
-    def test_varying_task_name_changes_the_name(self):
-        """Give distinct tasks distinct auto-generated names."""
-        name = _generate_periodic_task_name(
-            "other-task", "every 10 minutes", '{"task_name": null}'
-        )
-
-        assert name != _STABLE_GENERATED_NAME
-
-    def test_varying_period_changes_the_name(self):
-        """Give distinct schedules on the same task distinct names."""
-        name = _generate_periodic_task_name(
-            "my-task", "every 20 minutes", '{"task_name": null}'
-        )
-
-        assert name != _STABLE_GENERATED_NAME
-
-    def test_varying_kwargs_changes_the_name(self):
-        """Give distinct executions of the same task distinct names."""
-        name = _generate_periodic_task_name(
-            "my-task", "every 10 minutes", '{"task_name": "x"}'
-        )
-
-        assert name != _STABLE_GENERATED_NAME
-
-    def test_empty_and_empty_object_kwargs_do_not_collide(self):
-        """Assert an empty string and an empty JSON object digest differently."""
-        empty_string_name = _generate_periodic_task_name("t", "every 10 minutes", "")
-        empty_object_name = _generate_periodic_task_name("t", "every 10 minutes", "{}")
-
-        assert empty_string_name != empty_object_name
-
-    def test_unicode_kwargs_produce_a_valid_digest_suffix(self):
-        """Assert non-ASCII kwargs still digest to a fixed-width hex suffix."""
-        name = _generate_periodic_task_name(
-            "t", "every 10 minutes", '{"note": "héllo wörld 世界"}'
-        )
-
-        assert re.search(r"_[0-9a-f]{16}$", name)
-
-    def test_space_and_underscore_task_names_do_not_collide(self):
-        """Give task names differing only by a space vs. an underscore distinct names.
-
-        The returned name's visible prefix collapses every space to an
-        underscore, so ``"foo bar"`` and ``"foo_bar"`` render identically
-        there; only a digest computed over the raw, un-collapsed task name
-        keeps their generated names apart.
-        """
-        space_name = _generate_periodic_task_name(
-            "foo bar", "every 10 minutes", '{"task_name": null}'
-        )
-        underscore_name = _generate_periodic_task_name(
-            "foo_bar", "every 10 minutes", '{"task_name": null}'
-        )
-
-        assert space_name != underscore_name
-
-
 class TestDuplicateUnnamedPeriodicTaskAttach:
     """Test that a repeat unnamed create request is rejected, not duplicated."""
 
@@ -1116,18 +1034,15 @@ class TestDuplicateUnnamedPeriodicTaskAttach:
     ):
         """Assert a second process's identical unnamed request collides.
 
-        A row already named after the digest this process would independently
-        derive stands in for a prior process (a worker restart, a deploy, or a
-        second operator) having already attached the same schedule.
+        A row seeded with the literal name this payload generates stands in for
+        a prior process (a worker restart, a deploy, or a second operator)
+        having already attached the same schedule.
         """
         await TaskManager.create(
             tasks_session, TaskWrite.model_validate(TaskFactory.build(name="my-task"))
         )
         payload = {"interval": {"every": 10, "period": "minutes"}}
-        validated = PeriodicTaskCreate.model_validate(payload)
-        expected_name = _generate_periodic_task_name(
-            "my-task", validated.period, validated.kwargs
-        )
+        expected_name = "run_my-task_every_10_minutes_01263f4315fc8f0f"
         await _add_periodic_task(
             celery_beat_session, name=expected_name, task_name="my-task"
         )
