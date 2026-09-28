@@ -569,10 +569,8 @@ class RetirableManagerMixin(BaseSQLModelManager):
         :param limit: The most ids to return.
         :return: The eligible ids, lowest first.
         """
-        whereclause = [
-            col(cls.Model.retired_at).is_not(None),
-            col(cls.Model.retired_at) < retired_before,
-        ]
+        retired_at = col(cls.Model.retired_at)
+        whereclause = [retired_at.is_not(None), retired_at < retired_before]
         if keep_ids := keep_by_model.get(cls.Model, ()):
             whereclause.append(col(cls.Model.id).not_in(keep_ids))
         if (
@@ -585,9 +583,7 @@ class RetirableManagerMixin(BaseSQLModelManager):
         ) is not None:
             whereclause.append(~pinned)
         if (linked := cls._identity_link_pin()) is not None:
-            whereclause.append(
-                or_(~linked, col(cls.Model.retired_at) < link_pin_retired_before)
-            )
+            whereclause.append(or_(~linked, retired_at < link_pin_retired_before))
         query = cls._filter_query(select(col(cls.Model.id)), *whereclause)
         result = await cls._exec(
             session, query.order_by(col(cls.Model.id)).limit(limit)
