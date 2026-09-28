@@ -452,8 +452,12 @@ def test_a_bounded_readiness_wait_succeeds_before_its_deadline(
     assert table_names(sqlite_beat_store) >= BEAT_TABLES
 
 
+@pytest.mark.parametrize("deadline_seconds", [None, 60])
 def test_a_non_transient_connection_failure_is_not_retried(
-    sqlite_beat_store: str, instant_polling: None, monkeypatch: pytest.MonkeyPatch
+    sqlite_beat_store: str,
+    instant_polling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    deadline_seconds: float | None,
 ):
     """Surface anything that is not "not up yet" on the first attempt.
 
@@ -470,7 +474,7 @@ def test_a_non_transient_connection_failure_is_not_retried(
     monkeypatch.setattr(Engine, "connect", refuse)
 
     with pytest.raises(InterfaceError):
-        bootstrap.bootstrap_beat_schema(deadline_seconds=60)
+        bootstrap.bootstrap_beat_schema(deadline_seconds=deadline_seconds)
 
     assert attempts["count"] == 1
 
@@ -497,6 +501,16 @@ def test_main_forwards_a_cli_deadline(
         bootstrap.main(["--deadline-seconds", "0"])
 
     assert attempts["count"] == 1
+
+
+def test_the_side_car_invocation_passes_no_deadline(mocker: MockerFixture):
+    """Keep ``migrate-beat``'s flagless invocation unbounded."""
+    mocker.patch("logging.config.dictConfig")
+    run = mocker.patch.object(bootstrap, "bootstrap_beat_schema")
+
+    bootstrap.main([])
+
+    run.assert_called_once_with(deadline_seconds=None)
 
 
 def test_readiness_follows_an_overridden_store(
