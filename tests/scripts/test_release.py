@@ -18,6 +18,7 @@
 import os
 import subprocess
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -401,6 +402,7 @@ def test_stable_invokes_make_trigger_jenkins_with_release_webhook_envs(monkeypat
         "TAG=v0.12.0",
         f"WEBHOOK_URL_ENV={release.WEBHOOK_RELEASE_URL_ENV}",
         f"WEBHOOK_AUTH_ENV={release.WEBHOOK_RELEASE_AUTH_ENV}",
+        "JENKINS_OPTIONAL=1",
     ) in run_cmds
 
 
@@ -735,6 +737,7 @@ def test_prep_happy_path(monkeypatch):
         "trigger-jenkins",
         "TAG=abc1234deadbeef",
         "PUSH_IMAGE_DOCKER=false",
+        "JENKINS_OPTIONAL=1",
     ) in run_cmds
 
 
@@ -850,37 +853,72 @@ def test_prep_passes_head_sha_to_internal_jenkins(monkeypatch):
         "trigger-jenkins",
         "TAG=deadbeefcafe1234",
         "PUSH_IMAGE_DOCKER=false",
+        "JENKINS_OPTIONAL=1",
     ) in run_cmds
 
 
-def _run_trigger_jenkins_with_fake_curl(tmp_path, tag, *make_args):
-    """Run the real Makefile target and return recorded curl arguments."""
+_JENKINS_CREDENTIALS = MappingProxyType(
+    {
+        "JENKINS_API_TOKEN": "token",
+        "JENKINS_URL": "https://jenkins.example",
+        "JENKINS_USER": "user",
+    }
+)
+_MAKE_INHERITED_ENV = frozenset(
+    {"MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "GNUMAKEFLAGS", "MAKEFILES"}
+)
+
+
+def _run_make_with_fake_curl(
+    tmp_path, *make_args, credentials=_JENKINS_CREDENTIALS, curl_exit=0
+):
+    """Run a real Makefile target against a fake curl that records its arguments.
+
+    The caller's own ``JENKINS_*`` variables and the flags and variable
+    overrides an outer ``make`` passes down (``MAKEFLAGS`` and friends) are
+    dropped, so only ``credentials`` and ``make_args`` reach the recipe.
+    """
     curl_args = tmp_path / "curl-args.txt"
     fake_curl = tmp_path / "curl"
     fake_curl.write_text(
-        '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$CURL_ARGS_FILE"\n',
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$CURL_ARGS_FILE"\n'
+        f"exit {curl_exit}\n",
         encoding="utf-8",
     )
     fake_curl.chmod(0o755)
     env = {
-        **os.environ,
-        "CURL_ARGS_FILE": str(curl_args),
-        "JENKINS_API_TOKEN": "token",
-        "JENKINS_URL": "https://jenkins.example",
-        "JENKINS_USER": "user",
-        "WEBHOOK_AUTH_ENV": "",
-        "WEBHOOK_URL_ENV": "",
-        "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("JENKINS_") and k not in _MAKE_INHERITED_ENV
     }
-    subprocess.run(
-        ["make", "trigger-jenkins", f"TAG={tag}", *make_args],
+    env.update(
+        {
+            **credentials,
+            "CURL_ARGS_FILE": str(curl_args),
+            "WEBHOOK_AUTH_ENV": "",
+            "WEBHOOK_URL_ENV": "",
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+        }
+    )
+    result = subprocess.run(
+        ["make", *make_args],
         cwd=_PROJECT_ROOT,
         env=env,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
-    return curl_args.read_text(encoding="utf-8")
+    recorded = curl_args.read_text(encoding="utf-8") if curl_args.exists() else None
+    return result, recorded
+
+
+def _run_trigger_jenkins_with_fake_curl(tmp_path, tag, *make_args):
+    """Run the real Makefile target and return recorded curl arguments."""
+    result, curl_args = _run_make_with_fake_curl(
+        tmp_path, "trigger-jenkins", f"TAG={tag}", *make_args
+    )
+    assert result.returncode == 0, result.stderr
+    return curl_args
 
 
 @pytest.mark.parametrize(
@@ -911,6 +949,78 @@ def test_trigger_jenkins_routes_by_tag_prefix(
         not in curl_args
     )
     assert f"releaseTag={tag}" in curl_args
+
+
+_NO_JENKINS_USER = {
+    "JENKINS_API_TOKEN": "token",
+    "JENKINS_URL": "https://jenkins.example",
+}
+
+
+def test_trigger_jenkins_fails_naming_missing_credentials(tmp_path):
+    """Exit non-zero, instead of skipping, when a bare trigger lacks credentials."""
+    result, curl_args = _run_make_with_fake_curl(
+        tmp_path, "trigger-jenkins", "TAG=v0.13.0", credentials=_NO_JENKINS_USER
+    )
+
+    assert result.returncode != 0
+    assert "trigger-jenkins needs JENKINS_USER" in result.stderr
+    assert "JENKINS_OPTIONAL=1" in result.stderr
+    assert curl_args is None
+
+
+def test_trigger_jenkins_optional_warns_on_missing_credentials(tmp_path):
+    """Skip the trigger with a WARNING, not silently, under ``JENKINS_OPTIONAL=1``."""
+    result, curl_args = _run_make_with_fake_curl(
+        tmp_path,
+        "trigger-jenkins",
+        "TAG=v0.13.0",
+        "JENKINS_OPTIONAL=1",
+        credentials=_NO_JENKINS_USER,
+    )
+
+    assert result.returncode == 0
+    assert "WARNING: Jenkins build NOT triggered for v0.13.0: JENKINS_USER" in (
+        result.stderr
+    )
+    assert curl_args is None
+
+
+@pytest.mark.parametrize(
+    ("make_args", "expected_exit", "expected_message"),
+    [
+        ((), 2, "error: failed to trigger the Jenkins build for v0.13.0."),
+        (
+            ("JENKINS_OPTIONAL=1",),
+            0,
+            "WARNING: Failed to trigger the Jenkins build for v0.13.0.",
+        ),
+    ],
+)
+def test_trigger_jenkins_curl_failure(
+    tmp_path, make_args, expected_exit, expected_message
+):
+    """Fail the target on a failed trigger unless the caller opted out."""
+    result, _ = _run_make_with_fake_curl(
+        tmp_path, "trigger-jenkins", "TAG=v0.13.0", *make_args, curl_exit=22
+    )
+
+    assert result.returncode == expected_exit
+    assert expected_message in result.stderr
+
+
+def test_lint_pipelines_fails_naming_missing_credentials(tmp_path):
+    """Exit non-zero instead of reporting a skipped Declarative lint."""
+    result, curl_args = _run_make_with_fake_curl(
+        tmp_path, "lint-pipelines", credentials={}
+    )
+
+    assert result.returncode != 0
+    assert (
+        "lint-pipelines needs JENKINS_URL JENKINS_USER JENKINS_API_TOKEN"
+        in result.stderr
+    )
+    assert curl_args is None
 
 
 def test_prep_via_github_api_errors_without_gh(monkeypatch, capsys):
@@ -1155,7 +1265,12 @@ def test_rc1_after_prep_still_bumps_and_tags(monkeypatch):
     # Trigger-jenkins for rc1 uses the rc tag, not a SHA, and inherits the
     # default ``PUSH_IMAGE_DOCKER=true`` (not passed explicitly).
     run_cmds = [c[1] for c in call_order if c[0] == "run"]
-    assert ("make", "trigger-jenkins", "TAG=v0.12.0rc1") in run_cmds
+    assert (
+        "make",
+        "trigger-jenkins",
+        "TAG=v0.12.0rc1",
+        "JENKINS_OPTIONAL=1",
+    ) in run_cmds
 
 
 def test_rc1_after_prep_does_not_create_branch_on_origin(monkeypatch):

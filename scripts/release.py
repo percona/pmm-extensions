@@ -41,7 +41,12 @@ Subcommands:
 
 All webhook dispatch is best-effort: ``scripts/post_jira_webhook.py`` exits
 non-zero on failure with a redacted warning on stderr, and the "Next steps"
-output always carries the manual reminder.
+output always carries the manual reminder. The Jenkins trigger is best-effort
+too, but explicitly: every flow passes ``JENKINS_OPTIONAL=1``, so unset
+``JENKINS_*`` credentials or a failed trigger print a ``WARNING`` on stderr
+instead of aborting a flow that has already pushed its release branch
+(``prep``) or its tag (``rc``, ``stable``). A bare
+``make trigger-jenkins`` fails on either.
 """
 
 from __future__ import annotations
@@ -863,6 +868,7 @@ def cmd_prep(version: str, *, sign_via_github_api: bool) -> int:
             "trigger-jenkins",
             f"TAG={head_sha}",
             "PUSH_IMAGE_DOCKER=false",
+            "JENKINS_OPTIONAL=1",
         ],
     )
 
@@ -985,7 +991,7 @@ def cmd_rc(version: str, rc: int, *, sign_via_github_api: bool) -> int:
     print()
     print(f"=== RC {rc_version} released successfully ===")
     print()
-    _run(["make", "trigger-jenkins", f"TAG={rc_tag}"])
+    _run(["make", "trigger-jenkins", f"TAG={rc_tag}", "JENKINS_OPTIONAL=1"])
 
     dev_bump_exit_code = 0
     # Only minor RC1 opens the next dev-bump PR. Patch releases already cut
@@ -1308,6 +1314,7 @@ def cmd_stable(version: str, *, sign_via_github_api: bool) -> int:
             f"TAG={tag}",
             f"WEBHOOK_URL_ENV={WEBHOOK_RELEASE_URL_ENV}",
             f"WEBHOOK_AUTH_ENV={WEBHOOK_RELEASE_AUTH_ENV}",
+            "JENKINS_OPTIONAL=1",
         ],
     )
 
