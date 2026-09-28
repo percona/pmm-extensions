@@ -531,12 +531,12 @@
 | app/tasks/periodic/deps.py                                                                                                          |       11 |        0 |        0 |        0 |    100% |           |
 | app/tasks/periodic/models.py                                                                                                        |      124 |        4 |       26 |        4 |     95% |299, 346, 360, 407 |
 | app/tasks/periodic/routes.py                                                                                                        |       69 |        4 |       12 |        2 |     93% |94, 168-\>170, 190-193, 206 |
-| app/tasks/periodic/utils.py                                                                                                         |       28 |        0 |        8 |        1 |     97% |   97-\>98 |
-| app/tasks/routes.py                                                                                                                 |      250 |       14 |       48 |        4 |     94% |155-159, 244-\>248, 281, 331-340, 347, 460, 503, 518, 678, 692, 697, 724, 727-\>729 |
+| app/tasks/periodic/utils.py                                                                                                         |       33 |        0 |        8 |        1 |     98% | 125-\>126 |
+| app/tasks/routes.py                                                                                                                 |      250 |       14 |       48 |        4 |     94% |158-162, 247-\>251, 284, 334-343, 350, 463, 506, 521, 681, 695, 700, 727, 730-\>732 |
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33729** | **1920** | **8150** |  **680** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33734** | **1920** | **8150** |  **680** | **93%** |           |
 
 
 ## Setup coverage badge
