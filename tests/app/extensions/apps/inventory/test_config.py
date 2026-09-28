@@ -97,3 +97,44 @@ def test_the_batch_bounds_reject_zero(field: str) -> None:
     """Refuse a zero batch bound — an unset interval is how you disable the job."""
     with pytest.raises(ValidationError):
         InventoryAppSettings(**{field: 0})
+
+
+class TestIdentityLinkPinRetention:
+    """Test the bound on how long a standing identity link pins its successor."""
+
+    def test_the_default_holds_a_link_for_180_days(self) -> None:
+        """Hold a reversible link's successor for 180 days before collection."""
+        assert timedelta(days=180) == InventoryAppSettings().IDENTITY_LINK_PIN_RETENTION
+
+    @pytest.mark.parametrize(
+        "retention",
+        [timedelta(0), timedelta(seconds=-1), timedelta(days=-180)],
+    )
+    def test_a_non_positive_retention_is_rejected(self, retention: timedelta) -> None:
+        """Refuse a bound that would release every pinned tombstone in one pass.
+
+        :param retention: The retention under test.
+        """
+        with pytest.raises(ValidationError):
+            InventoryAppSettings(IDENTITY_LINK_PIN_RETENTION=retention)
+
+    def test_a_runtime_override_is_held_to_the_same_bound(self) -> None:
+        """Re-check the positive bound on the override path, not only on YAML load."""
+        field = InventoryAppSettings.model_fields["IDENTITY_LINK_PIN_RETENTION"]
+
+        assert coerce_field_value(field, "90 days") == timedelta(days=90)
+        with pytest.raises(ValidationError):
+            coerce_field_value(field, "0 days")
+
+    def test_a_bound_shorter_than_collection_retention_is_accepted(self) -> None:
+        """Treat the pin bound as an axis independent of ``COLLECTION_RETENTION``.
+
+        The two are overridden separately at runtime, so a cross-field check
+        could reject an operator's first override before the second lands.
+        """
+        settings = InventoryAppSettings(
+            COLLECTION_RETENTION=timedelta(days=30),
+            IDENTITY_LINK_PIN_RETENTION=timedelta(days=7),
+        )
+
+        assert timedelta(days=7) == settings.IDENTITY_LINK_PIN_RETENTION

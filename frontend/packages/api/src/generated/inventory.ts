@@ -179,7 +179,7 @@ export interface paths {
      *     ``remaining`` asks for.
      *
      *     :param session: The asynchronous database session.
-     *     :param body: The cutoff, the retained ids, and the batch controls.
+     *     :param body: The cutoffs, the retained ids, and the batch controls.
      *     :return: The collected ids per entity type, and whether more are waiting.
      */
     post: operations['collection_collect_retired_entities_collection_collect_post'];
@@ -1273,6 +1273,10 @@ export interface components {
      *     :param retired_before: The cutoff a tombstone must predate to be eligible.
      *         The caller pins one value for a whole run so successive batches cannot
      *         drift into collecting a tombstone that was too young a moment earlier.
+     *     :param link_pin_retired_before: The cutoff a linked tombstone must predate
+     *         for its link to stop pinning it. Required rather than defaulted: either
+     *         extreme a default could pick silently keeps every link's successor
+     *         forever or releases it at once.
      *     :param keep: The ids the caller knows are still referenced, per entity type.
      *         Ancestors of a kept entity are retained without being listed.
      *     :param limit: The most entities to collect per type in this call.
@@ -1298,6 +1302,11 @@ export interface components {
        * @default 500
        */
       limit: number;
+      /**
+       * Link Pin Retired Before
+       * Format: date-time
+       */
+      link_pin_retired_before: string;
       /**
        * Retired Before
        * Format: date-time

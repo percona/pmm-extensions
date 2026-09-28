@@ -361,7 +361,7 @@
       },
       "InventoryCollectWrite": {
         "additionalProperties": false,
-        "description": "Ask the inventory service to collect the tombstones nothing resolves.\n\nUnknown fields are rejected with HTTP 422. This request deletes rows\nirreversibly, so a client typo must never be read as an omitted field: a\nmisspelled ``keep`` would otherwise arrive as an empty retained set and a\nmisspelled ``dry_run`` as a real delete.\n\n:param retired_before: The cutoff a tombstone must predate to be eligible.\n    The caller pins one value for a whole run so successive batches cannot\n    drift into collecting a tombstone that was too young a moment earlier.\n:param keep: The ids the caller knows are still referenced, per entity type.\n    Ancestors of a kept entity are retained without being listed.\n:param limit: The most entities to collect per type in this call.\n:param dry_run: Whether to report the eligible ids without deleting them.\n    Defaults to reporting: on an irreversible endpoint the mode a caller\n    reaches by omission is the one that cannot destroy anything.",
+        "description": "Ask the inventory service to collect the tombstones nothing resolves.\n\nUnknown fields are rejected with HTTP 422. This request deletes rows\nirreversibly, so a client typo must never be read as an omitted field: a\nmisspelled ``keep`` would otherwise arrive as an empty retained set and a\nmisspelled ``dry_run`` as a real delete.\n\n:param retired_before: The cutoff a tombstone must predate to be eligible.\n    The caller pins one value for a whole run so successive batches cannot\n    drift into collecting a tombstone that was too young a moment earlier.\n:param link_pin_retired_before: The cutoff a linked tombstone must predate\n    for its link to stop pinning it. Required rather than defaulted: either\n    extreme a default could pick silently keeps every link's successor\n    forever or releases it at once.\n:param keep: The ids the caller knows are still referenced, per entity type.\n    Ancestors of a kept entity are retained without being listed.\n:param limit: The most entities to collect per type in this call.\n:param dry_run: Whether to report the eligible ids without deleting them.\n    Defaults to reporting: on an irreversible endpoint the mode a caller\n    reaches by omission is the one that cannot destroy anything.",
         "properties": {
           "dry_run": {
             "default": true,
@@ -388,6 +388,11 @@
             "title": "Limit",
             "type": "integer"
           },
+          "link_pin_retired_before": {
+            "format": "date-time",
+            "title": "Link Pin Retired Before",
+            "type": "string"
+          },
           "retired_before": {
             "format": "date-time",
             "title": "Retired Before",
@@ -395,7 +400,8 @@
           }
         },
         "required": [
-          "retired_before"
+          "retired_before",
+          "link_pin_retired_before"
         ],
         "title": "InventoryCollectWrite",
         "type": "object"
@@ -3278,7 +3284,7 @@
     },
     "/collection/collect": {
       "post": {
-        "description": "Delete the tombstones the caller's retained set does not cover.\n\nEntities are walked deepest-first — table, schema, service, node — so an\ninterrupted run can only leave deleted descendants under a surviving\nancestor rather than an orphan.\n\nA type that fills its ``limit`` ends the walk. Deleting an ancestor cascades\nto descendants the cap had excluded, and those ids would then be missing from\n``deleted`` — leaving the caller unable to clear their bookkeeping and making\nthe reported set a false record of what was removed. Stopping keeps\n``deleted`` exhaustive; the ancestors are collected on the next batch, which\n``remaining`` asks for.\n\n:param session: The asynchronous database session.\n:param body: The cutoff, the retained ids, and the batch controls.\n:return: The collected ids per entity type, and whether more are waiting.",
+        "description": "Delete the tombstones the caller's retained set does not cover.\n\nEntities are walked deepest-first — table, schema, service, node — so an\ninterrupted run can only leave deleted descendants under a surviving\nancestor rather than an orphan.\n\nA type that fills its ``limit`` ends the walk. Deleting an ancestor cascades\nto descendants the cap had excluded, and those ids would then be missing from\n``deleted`` — leaving the caller unable to clear their bookkeeping and making\nthe reported set a false record of what was removed. Stopping keeps\n``deleted`` exhaustive; the ancestors are collected on the next batch, which\n``remaining`` asks for.\n\n:param session: The asynchronous database session.\n:param body: The cutoffs, the retained ids, and the batch controls.\n:return: The collected ids per entity type, and whether more are waiting.",
         "operationId": "collection_collect_retired_entities_collection_collect_post",
         "requestBody": {
           "content": {

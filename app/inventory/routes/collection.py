@@ -55,7 +55,7 @@ async def collect_retired_entities(
     ``remaining`` asks for.
 
     :param session: The asynchronous database session.
-    :param body: The cutoff, the retained ids, and the batch controls.
+    :param body: The cutoffs, the retained ids, and the batch controls.
     :return: The collected ids per entity type, and whether more are waiting.
     """
     keep_by_model = {
@@ -67,6 +67,7 @@ async def collect_retired_entities(
         entity_ids = await manager.collectible_ids(
             session,
             retired_before=body.retired_before,
+            link_pin_retired_before=body.link_pin_retired_before,
             keep_by_model=keep_by_model,
             limit=body.limit,
         )
