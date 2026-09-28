@@ -1581,6 +1581,27 @@ class TestBoundedIdentityLinkPin:
         )
 
     @pytest.mark.asyncio
+    async def test_the_restamp_leaves_the_successors_subtree_alone(
+        self,
+        session: AsyncSession,
+        split_nodes_with_services: tuple[Node, Node, Service, Service],
+    ) -> None:
+        """Restart only the linked row's pin, not its descendants' tombstones.
+
+        Reversing the node link never revives the subtree, so a descendant's
+        older stamp has no reversal to protect and must keep aging.
+        """
+        predecessor, successor, _, successor_service = split_nodes_with_services
+        await retire_in_place(session, successor_service, retired_at=RETIRED_AT)
+        already_retired_at = successor_service.retired_at
+        await NodeManager.confirm_identity_link(
+            session, predecessor, successor.id, principal=PRINCIPAL
+        )
+        await session.refresh(successor_service)
+
+        assert successor_service.retired_at == already_retired_at
+
+    @pytest.mark.asyncio
     async def test_a_service_link_restarts_the_pin_its_node_link_began(
         self,
         session: AsyncSession,
