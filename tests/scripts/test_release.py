@@ -18,6 +18,7 @@
 import os
 import subprocess
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -856,11 +857,16 @@ def test_prep_passes_head_sha_to_internal_jenkins(monkeypatch):
     ) in run_cmds
 
 
-_JENKINS_CREDENTIALS = {
-    "JENKINS_API_TOKEN": "token",
-    "JENKINS_URL": "https://jenkins.example",
-    "JENKINS_USER": "user",
-}
+_JENKINS_CREDENTIALS = MappingProxyType(
+    {
+        "JENKINS_API_TOKEN": "token",
+        "JENKINS_URL": "https://jenkins.example",
+        "JENKINS_USER": "user",
+    }
+)
+_MAKE_INHERITED_ENV = frozenset(
+    {"MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "GNUMAKEFLAGS", "MAKEFILES"}
+)
 
 
 def _run_make_with_fake_curl(
@@ -868,8 +874,9 @@ def _run_make_with_fake_curl(
 ):
     """Run a real Makefile target against a fake curl that records its arguments.
 
-    The caller's own ``JENKINS_*`` and ``JENKINS_OPTIONAL`` are dropped so only
-    ``credentials`` reach the recipe.
+    The caller's own ``JENKINS_*`` variables and the flags and variable
+    overrides an outer ``make`` passes down (``MAKEFLAGS`` and friends) are
+    dropped, so only ``credentials`` and ``make_args`` reach the recipe.
     """
     curl_args = tmp_path / "curl-args.txt"
     fake_curl = tmp_path / "curl"
@@ -879,7 +886,11 @@ def _run_make_with_fake_curl(
         encoding="utf-8",
     )
     fake_curl.chmod(0o755)
-    env = {k: v for k, v in os.environ.items() if not k.startswith("JENKINS_")}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("JENKINS_") and k not in _MAKE_INHERITED_ENV
+    }
     env.update(
         {
             **credentials,
