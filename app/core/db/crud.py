@@ -906,9 +906,16 @@ class BaseManager:
                 logger.exception("DatabaseError saving instance %s", instance)
                 raise HTTPBadRequestException from None
             # Drop columns marked exclude=True (e.g. retirement_key) so the
-            # conflict message only names caller-visible fields. Plain
-            # SQLAlchemy models (celery-beat) have no model_fields — treat
-            # every column as visible so their conflict messages stay unchanged.
+            # conflict message only names caller-visible fields.
+            #
+            # Caller audit: the only SQLModel unique keys that include an
+            # exclude=True column today are RetirableSQLModel's indexes on
+            # Node, Service, Schema, and Table (retirement_key). Every other
+            # BaseSQLModelManager unique key has no excluded members, so its
+            # 409 wording is unchanged. Plain SQLAlchemy managers
+            # (celery-beat IntervalSchedule / CrontabSchedule / PeriodicTask)
+            # have no model_fields — treat every column as visible so their
+            # conflict messages stay unchanged too.
             fields = getattr(cls.Model, "model_fields", {})
             visible_columns = [
                 name
