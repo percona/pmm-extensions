@@ -24,7 +24,7 @@
 | app/core/auth/providers/grafana/provider.py                                                                                         |       25 |        0 |        4 |        0 |    100% |           |
 | app/core/auth/providers/grafana/sdk.py                                                                                              |      141 |        0 |       22 |        0 |    100% |           |
 | app/core/auth/utils.py                                                                                                              |        6 |        1 |        0 |        0 |     83% |        35 |
-| app/core/celery/bootstrap.py                                                                                                        |       94 |        6 |       26 |        2 |     93% |148-150, 201, 284, 288 |
+| app/core/celery/bootstrap.py                                                                                                        |      115 |        5 |       32 |        2 |     95% |198-200, 251, 378 |
 | app/core/celery/config.py                                                                                                           |       35 |        0 |        2 |        0 |    100% |           |
 | app/core/celery/crud.py                                                                                                             |       26 |        1 |        4 |        0 |     97% |        97 |
 | app/core/celery/db.py                                                                                                               |        8 |        0 |        0 |        0 |    100% |           |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33645** | **1919** | **8120** |  **676** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33666** | **1918** | **8126** |  **676** | **93%** |           |
 
 
 ## Setup coverage badge
