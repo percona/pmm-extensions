@@ -1377,7 +1377,7 @@ class TestTaskHistoryResponseDisplayName:
             target="node-1",
             config="{}",
             requirements="",
-            payload="file:///opt/sep/scripts/backup_mongo/mongo_backup.py",
+            payload="file:///usr/src/extensions/scripts/backup_mongo/mongo_backup.py",
         )
         proxy = TaskFactory.build(id=6, **write.model_dump())
         req = TaskExecutionRequest(

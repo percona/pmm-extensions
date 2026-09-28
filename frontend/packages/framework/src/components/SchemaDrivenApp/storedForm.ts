@@ -16,19 +16,19 @@
  */
 
 /**
- * Reserved key under a task's ``data`` that holds the verbatim create-form body
+ * Reserved key under a task's `data` that holds the verbatim create-form body
  * the backend stamps on the JSON create path. Mirrors the backend
- * ``RESERVED_FORM_KEY`` in ``app/extensions/plugins/framework/spec.py``.
+ * `RESERVED_FORM_KEY` in `app/extensions/apps/framework/spec.py`.
  */
 export const STORED_FORM_KEY = '_form';
 
 /**
- * Read a task's stored create-form body from ``data[_form]``, centralising the
+ * Read a task's stored create-form body from `data[_form]`, centralising the
  * cast and presence guard.
  *
- * The typed client exposes ``data`` as an open string-keyed map, so consumers
+ * The typed client exposes `data` as an open string-keyed map, so consumers
  * still route through this guard rather than assuming a fixed shape. Returns
- * ``undefined`` for a task with no stored form — a legacy task or one created
+ * `undefined` for a task with no stored form — a legacy task or one created
  * through a still-live legacy form — so the Edit affordance can treat the key
  * as optional.
  */

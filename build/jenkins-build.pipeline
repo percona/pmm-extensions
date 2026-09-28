@@ -71,7 +71,7 @@ pipeline {
 					userRemoteConfigs: [
 						[
 							credentialsId: '9024f3ea-4c7e-46a6-acf5-4b2c768f0930',
-							url: 'https://github.com/percona/SEP.git'
+							url: 'https://github.com/percona/pmm-extensions.git'
 						]
 					]
 				)
@@ -201,13 +201,13 @@ pipeline {
 						set -o errexit
 						set -o pipefail
 
-						podman image push extensions:${GIT_TAG} labbox-mini.tp.int.percona.com:5555/sep:${GIT_TAG}
+						podman image push extensions:${GIT_TAG} labbox-mini.tp.int.percona.com:5555/pmm-extensions:${GIT_TAG}
 
 						if [ "${PUSH_LATEST}" = "true" ]; then
 							podman image tag extensions:${GIT_TAG} extensions:${GIT_TAG_SHORT}
-							podman image push extensions:${GIT_TAG_SHORT} labbox-mini.tp.int.percona.com:5555/sep:${GIT_TAG_SHORT}
-							echo "Pushing labbox-mini.tp.int.percona.com:5555/sep:latest"
-							podman image push extensions:${GIT_TAG} labbox-mini.tp.int.percona.com:5555/sep:latest
+							podman image push extensions:${GIT_TAG_SHORT} labbox-mini.tp.int.percona.com:5555/pmm-extensions:${GIT_TAG_SHORT}
+							echo "Pushing labbox-mini.tp.int.percona.com:5555/pmm-extensions:latest"
+							podman image push extensions:${GIT_TAG} labbox-mini.tp.int.percona.com:5555/pmm-extensions:latest
 						else
 							echo "Skipping internal :${GIT_TAG_SHORT} and :latest push (not a stable release tag): ${GIT_TAG}"
 						fi
@@ -220,12 +220,12 @@ pipeline {
 							set -o pipefail
 
 							echo -n "${DOCKER_TOKEN}" | podman login --authfile .dockerhub --username percona --password-stdin docker.io
-							podman image push --authfile .dockerhub extensions:${GIT_TAG} docker.io/percona/percona-sep:${GIT_TAG}
+							podman image push --authfile .dockerhub extensions:${GIT_TAG} docker.io/percona/pmm-extensions:${GIT_TAG}
 
 							if [ "${PUSH_LATEST}" = "true" ]; then
-								podman image push --authfile .dockerhub extensions:${GIT_TAG_SHORT} docker.io/percona/percona-sep:${GIT_TAG_SHORT}
-								echo "Pushing docker.io/percona/percona-sep:latest"
-								podman image push --authfile .dockerhub extensions:${GIT_TAG} docker.io/percona/percona-sep:latest
+								podman image push --authfile .dockerhub extensions:${GIT_TAG_SHORT} docker.io/percona/pmm-extensions:${GIT_TAG_SHORT}
+								echo "Pushing docker.io/percona/pmm-extensions:latest"
+								podman image push --authfile .dockerhub extensions:${GIT_TAG} docker.io/percona/pmm-extensions:latest
 							else
 								echo "Skipping Docker Hub :${GIT_TAG_SHORT} and :latest push (not a stable release tag): ${GIT_TAG}"
 							fi

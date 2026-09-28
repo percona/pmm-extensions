@@ -29,6 +29,7 @@ from app.extensions.apps.framework.form_dsl import (
     SectionLayout,
     TASK_SECTION_LAYOUT,
 )
+from app.extensions.apps.framework.rules import FieldGate, truthy
 from app.extensions.apps.framework.schema import (
     Capabilities,
     default_columns,
@@ -39,14 +40,28 @@ from app.extensions.apps.framework.schema import (
     ListView,
 )
 
+#: A delete-only run is reachable only with both destination groups gated out: the
+#: create model rejects a destination alongside ``delete_data``, and hiding a section
+#: unregisters its fields, so the payload omits them rather than the segmented
+#: control forcing a branch choice the model then refuses.
+_HIDDEN_WHEN_DELETE_ONLY = (FieldGate(when=truthy("delete_data")),)
+
 archives_views = Views(
     layout=FormLayout(
         sections=(
             TASK_SECTION_LAYOUT,
             SectionLayout(key="Archive Type", title="Archive Type"),
             SectionLayout(key="Source", title="Source"),
-            SectionLayout(key="Destination", title="Destination"),
-            SectionLayout(key="Destination Host", title="Destination Host"),
+            SectionLayout(
+                key="Destination",
+                title="Destination",
+                forbidden=_HIDDEN_WHEN_DELETE_ONLY,
+            ),
+            SectionLayout(
+                key="Destination Host",
+                title="Destination Host",
+                forbidden=_HIDDEN_WHEN_DELETE_ONLY,
+            ),
             SectionLayout(key="Options", title="Options"),
             SectionLayout(
                 key="Advanced",

@@ -37,6 +37,7 @@ __all__ = [
     "chain_is_locked",
     "coerce_field_value",
     "coerce_nested_field_value",
+    "computed_field_info",
     "dump_field_value",
     "field_materializer",
     "field_reload_classification",
@@ -69,6 +70,7 @@ from typing import Annotated, Any, NamedTuple, TYPE_CHECKING, TypedDict, Union
 
 from pydantic import BaseModel, SecretBytes, SecretStr, TypeAdapter, WrapSerializer
 from pydantic.errors import PydanticSchemaGenerationError
+from pydantic.fields import ComputedFieldInfo, FieldInfo
 from pydantic_core import PydanticUndefined
 
 from app.core.settings_override.policy import (
@@ -85,8 +87,6 @@ from app.core.utils.pydantic import (
 )
 
 if TYPE_CHECKING:
-    from pydantic.fields import FieldInfo
-
     # Imported only for annotations: the override substrate must not depend on
     # the concrete settings classes at runtime, which lets ``app.core.config``
     # import this module at top level without a circular import.
@@ -470,7 +470,7 @@ def annotated_type(field_info: FieldInfo) -> Any:
     ``field_info.annotation`` alone is a bare type carrying none of the markers
     that decide how a leaf is stored. A field typed
     :data:`~app.core.utils.fields.CredentialHttpUrl` presents as a bare
-    :class:`pydantic_core.Url`, and a classifier reading ``.annotation``
+    :class:`~pydantic.HttpUrl`, and a classifier reading ``.annotation``
     silently misses it. A second re-assembly there would drift from this one.
 
     :param field_info: The Pydantic field metadata for the target attribute.
@@ -1182,7 +1182,7 @@ def _stable_collection_sort_key(item: Any) -> tuple[Any, ...]:
     """
     if isinstance(item, BaseModel):
         field_parts: list[tuple[str, str]] = []
-        for name in sorted(item.model_fields):
+        for name in sorted(type(item).model_fields):
             value = getattr(item, name, None)
             unwrapped = _unwrap_secret_value(value)
             if unwrapped is not None:
@@ -1230,10 +1230,68 @@ def _field_is_complex(annotation: Any) -> bool:
     return False
 
 
+def _docstring_summary(description: str | None) -> str | None:
+    """Return the first line of a description Pydantic took from a docstring.
+
+    A computed field declared without an explicit ``description`` inherits the
+    property's whole docstring, reST field list included. Only the summary line
+    is prose an operator reading the settings page can use.
+
+    :param description: The description Pydantic recorded, if any.
+    :return: The summary line, or ``None`` when there is no prose.
+    """
+    if description is None:
+        return None
+    return description.strip().split("\n", 1)[0].strip() or None
+
+
+def _computed_field_info(info: ComputedFieldInfo) -> FieldInfo:
+    """Return a :class:`FieldInfo` standing in for a computed field.
+
+    A :class:`ComputedFieldInfo` is not a :class:`FieldInfo`, so none of the
+    classification helpers below accept one. The stand-in carries the
+    property's return type and summary description and nothing else: no
+    default, and no marker metadata, which is what makes a computed field
+    classify :attr:`ReloadClassification.NOT_OVERRIDABLE` through the same code
+    path as an unmarked declared field.
+
+    :param info: The computed-field metadata Pydantic recorded for the property.
+    :return: Field metadata describing the same field.
+    """
+    return FieldInfo(
+        annotation=info.return_type, description=_docstring_summary(info.description)
+    )
+
+
+def computed_field_info(settings_cls: type[BaseModel], key: str) -> FieldInfo | None:
+    """Return stand-in field metadata for a computed field, or ``None``.
+
+    The companion lookup to ``settings_cls.model_fields.get(key)`` for the call
+    sites that must also serve the computed keys :func:`iter_class_fields`
+    enumerates.
+
+    :param settings_cls: The Pydantic model class to look the key up on.
+    :param key: The top-level key, which may name a computed field.
+    :return: Stand-in metadata when ``key`` names a computed field on
+        ``settings_cls``, ``None`` otherwise.
+    """
+    info = settings_cls.model_computed_fields.get(key)
+    return None if info is None else _computed_field_info(info)
+
+
 def iter_class_fields(
     settings_cls: type[BaseYamlSettings],
 ) -> Iterator[FieldMetadata]:
-    """Yield introspected metadata for every field on a settings class.
+    """Yield introspected metadata for every field a settings class exposes.
+
+    The key set matches the one ``model_dump()`` produces: every declared field
+    except those marked ``exclude=True``, followed by every computed field. A
+    field excluded from the dump is deliberately not part of the model's public
+    surface, and a computed field is, so the settings API advertises the keys
+    the model itself does rather than diverging whenever a class hides a
+    settable input behind a computed accessor. A computed field carries no
+    marker metadata and no default, so it always classifies
+    :attr:`ReloadClassification.NOT_OVERRIDABLE`.
 
     Each entry exposes the public attributes the settings API needs without
     leaking :class:`FieldInfo` into the response layer: ``key``, ``annotation``,
@@ -1244,25 +1302,39 @@ def iter_class_fields(
     display-only advanced).
 
     :param settings_cls: The Pydantic settings class to introspect.
-    :type settings_cls: type[BaseYamlSettings]
-    :return: An iterator yielding one :class:`FieldMetadata` per declared field.
-    :rtype: Iterator[FieldMetadata]
+    :return: An iterator yielding one :class:`FieldMetadata` per exposed field.
     """
     for name, field in settings_cls.model_fields.items():
-        yield FieldMetadata(
-            key=name,
-            annotation=field.annotation,
-            default=_resolve_default(field),
-            description=field.description,
-            reload=field_reload_classification(
-                field, owner_cls=settings_cls, field_name=name
-            ),
-            is_secret=_field_contains_secret(field),
-            is_complex=_field_is_complex(field.annotation),
-            is_advanced=is_advanced_field(
-                field, owner_cls=settings_cls, field_name=name
-            ),
-        )
+        if field.exclude:
+            continue
+        yield _field_metadata(settings_cls, name, field)
+    for name, computed in settings_cls.model_computed_fields.items():
+        yield _field_metadata(settings_cls, name, _computed_field_info(computed))
+
+
+def _field_metadata(
+    settings_cls: type[BaseYamlSettings], name: str, field: FieldInfo
+) -> FieldMetadata:
+    """Return the introspected metadata for one field of a settings class.
+
+    :param settings_cls: The Pydantic settings class owning the field.
+    :param name: The field's key on the settings class.
+    :param field: The field metadata, declared or synthesised for a computed
+        field by :func:`_computed_field_info`.
+    :return: The metadata entry the settings API renders.
+    """
+    return FieldMetadata(
+        key=name,
+        annotation=field.annotation,
+        default=_resolve_default(field),
+        description=field.description,
+        reload=field_reload_classification(
+            field, owner_cls=settings_cls, field_name=name
+        ),
+        is_secret=_field_contains_secret(field),
+        is_complex=_field_is_complex(field.annotation),
+        is_advanced=is_advanced_field(field, owner_cls=settings_cls, field_name=name),
+    )
 
 
 def iter_nested_leaf_keys(

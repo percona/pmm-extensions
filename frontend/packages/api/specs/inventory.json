@@ -341,6 +341,9 @@
               },
               "type": "array"
             },
+            "propertyNames": {
+              "$ref": "#/components/schemas/RetirableEntityName"
+            },
             "title": "Deleted",
             "type": "object"
           },
@@ -373,6 +376,9 @@
               "type": "array"
             },
             "default": {},
+            "propertyNames": {
+              "$ref": "#/components/schemas/RetirableEntityName"
+            },
             "title": "Keep",
             "type": "object"
           },
@@ -405,7 +411,7 @@
         "type": "string"
       },
       "Node": {
-        "description": "Represent a node in the inventory.\n\n:param address: The network address of the node.\n:param name: The name of the node.\n:param external_id: An external identifier for the node. Must be unique for source,\n    as defined by composite index ix_node_external_id_source.\n:param source: The source from which the node information is derived. Must be unique\n    for external_id, as defined by composite index ix_node_external_id_source.\n:param type: The type of the node (e.g., remote, generic).\n:param retired_at: When the node stopped being reported upstream, or None while\n    it is active.\n:param retirement_key: The discriminator carried inside every unique index.\n:param last_synced_at: When a syncer last confirmed the node against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the node is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param services: A list of services associated with the node.",
+        "description": "Represent a node in the inventory.\n\n:param address: The network address of the node.\n:param name: The name of the node.\n:param external_id: An external identifier for the node. Must be unique for source,\n    as defined by composite index ix_node_external_id_source.\n:param source: The source from which the node information is derived. Must be unique\n    for external_id, as defined by composite index ix_node_external_id_source.\n:param type: The type of the node (e.g., remote, generic).\n:param retired_at: When the node stopped being reported upstream, or None while\n    it is active.\n:param retirement_key: The discriminator carried inside every unique index.\n:param last_synced_at: When a syncer last confirmed the node against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the node is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param newest_attempt_at: When the newest accepted attempt began, whatever\n    its outcome, or ``None`` if none has been reported, or the upgrade\n    time for a row that was failing when the column was added.\n:param services: A list of services associated with the node.",
         "properties": {
           "address": {
             "minLength": 1,
@@ -466,6 +472,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
           },
           "retired_at": {
             "anyOf": [
@@ -549,7 +567,7 @@
         "type": "object"
       },
       "NodeResponse": {
-        "description": "Represent a node API response.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param address: The network address of the node.\n:param name: The name of the node.\n:param external_id: An external identifier for the node.\n:param source: The source from which the node information is derived.\n:param type: The type of the node (e.g., remote, generic).\n:param retired_at: When the node stopped being reported upstream, or None while\n    it is active.\n:param last_synced_at: When a syncer last confirmed the node against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the node is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param services: A list of services associated with the node.",
+        "description": "Represent a node API response.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param address: The network address of the node.\n:param name: The name of the node.\n:param external_id: An external identifier for the node.\n:param source: The source from which the node information is derived.\n:param type: The type of the node (e.g., remote, generic).\n:param retired_at: When the node stopped being reported upstream, or None while\n    it is active.\n:param last_synced_at: When a syncer last confirmed the node against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the node is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param newest_attempt_at: When the newest accepted attempt began, whatever\n    its outcome, or ``None`` if none has been reported, or the upgrade\n    time for a row that was failing when the column was added.\n:param services: A list of services associated with the node.",
         "properties": {
           "address": {
             "minLength": 1,
@@ -610,6 +628,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
           },
           "retired_at": {
             "anyOf": [
@@ -1020,7 +1050,7 @@
         "type": "string"
       },
       "Schema": {
-        "description": "Represent a database schema within a service.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param name: The name of the schema. Must be unique for service_id, as defined by\n    composite index ix_schema_name_service_id.\n:param service_id: The unique identifier of the service to which the schema belongs.\n    Must be unique for name, as defined by composite index\n    ix_schema_name_service_id.\n:param service: The service to which the schema is associated.\n:param retired_at: When the schema stopped being reported upstream, or None\n    while it is active.\n:param retirement_key: The discriminator carried inside every unique index.\n:param last_synced_at: When a syncer last confirmed the schema against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the schema is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param tables: A list of tables within the schema.",
+        "description": "Represent a database schema within a service.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param name: The name of the schema. Must be unique for service_id, as defined by\n    composite index ix_schema_name_service_id.\n:param service_id: The unique identifier of the service to which the schema belongs.\n    Must be unique for name, as defined by composite index\n    ix_schema_name_service_id.\n:param service: The service to which the schema is associated.\n:param retired_at: When the schema stopped being reported upstream, or None\n    while it is active.\n:param retirement_key: The discriminator carried inside every unique index.\n:param last_synced_at: When a syncer last confirmed the schema against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the schema is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param newest_attempt_at: When the newest accepted attempt began, whatever\n    its outcome, or ``None`` if none has been reported, or the upgrade\n    time for a row that was failing when the column was added.\n:param tables: A list of tables within the schema.",
         "properties": {
           "consecutive_failures": {
             "default": 0,
@@ -1071,6 +1101,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
           },
           "retired_at": {
             "anyOf": [
@@ -1122,7 +1164,7 @@
         "type": "object"
       },
       "SchemaCompactResponse": {
-        "description": "Define a compact schema response without nested tables.\n\n:param id: The primary key for the schema. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param name: The name of the schema.\n:param service_id: The unique identifier of the service to which the schema belongs.\n:param retired_at: When the schema stopped being reported upstream, or None while\n    it is active.\n:param last_synced_at: When a syncer last confirmed the schema against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the schema is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.",
+        "description": "Define a compact schema response without nested tables.\n\n:param id: The primary key for the schema. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param name: The name of the schema.\n:param service_id: The unique identifier of the service to which the schema belongs.\n:param retired_at: When the schema stopped being reported upstream, or None while\n    it is active.\n:param last_synced_at: When a syncer last confirmed the schema against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the schema is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param newest_attempt_at: When the newest accepted attempt began, whatever\n    its outcome, or ``None`` if none has been reported, or the upgrade\n    time for a row that was failing when the column was added.",
         "properties": {
           "consecutive_failures": {
             "default": 0,
@@ -1173,6 +1215,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
           },
           "retired_at": {
             "anyOf": [
@@ -1276,6 +1330,18 @@
             "title": "Name",
             "type": "string"
           },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
+          },
           "retired_at": {
             "anyOf": [
               {
@@ -1338,7 +1404,7 @@
         "type": "object"
       },
       "SchemaResponse": {
-        "description": "Define the schema API response.\n\n:param id: The primary key for the schema. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param name: The name of the schema.\n:param service_id: The unique identifier of the service to which the schema belongs.\n:param retired_at: When the schema stopped being reported upstream, or None while\n    it is active.\n:param last_synced_at: When a syncer last confirmed the schema against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the schema is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param tables: A list of tables within the schema.",
+        "description": "Define the schema API response.\n\n:param id: The primary key for the schema. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param name: The name of the schema.\n:param service_id: The unique identifier of the service to which the schema belongs.\n:param retired_at: When the schema stopped being reported upstream, or None while\n    it is active.\n:param last_synced_at: When a syncer last confirmed the schema against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the schema is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param newest_attempt_at: When the newest accepted attempt began, whatever\n    its outcome, or ``None`` if none has been reported, or the upgrade\n    time for a row that was failing when the column was added.\n:param tables: A list of tables within the schema.",
         "properties": {
           "consecutive_failures": {
             "default": 0,
@@ -1389,6 +1455,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
           },
           "retired_at": {
             "anyOf": [
@@ -1474,7 +1552,7 @@
         "type": "object"
       },
       "Service": {
-        "description": "Represent a service running on a node in the inventory.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param external_id: An external identifier for the service. Must be unique for\n    node_id, as defined by composite index ix_service_external_id_node_id.\n:param name: The name of the service.\n:param type: The type of the service (e.g., MYSQL, POSTGRESQL).\n:param port: The port number on which the service is running.\n:param environment: The environment in which the service is running, if set.\n:param cluster: The cluster in which the service is running, if set.\n:param replication_set: The replication set in which the service is running, if set.\n:param custom_labels: Custom labels associated with the service, if set.\n:param node_id: The unique identifier of the node on which the service is running.\n    Must be unique for external_id, as defined by composite index\n    ix_service_external_id_node_id.\n:param node: The node to which the service is associated.\n:param retired_at: When the service stopped being reported upstream, or None\n    while it is active.\n:param retirement_key: The discriminator carried inside every unique index.\n:param last_synced_at: When a syncer last confirmed the service against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the service is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param schemas: A list of schemas associated with the service.",
+        "description": "Represent a service running on a node in the inventory.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param external_id: An external identifier for the service. Must be unique for\n    node_id, as defined by composite index ix_service_external_id_node_id.\n:param name: The name of the service.\n:param type: The type of the service (e.g., MYSQL, POSTGRESQL).\n:param port: The port number on which the service is running.\n:param environment: The environment in which the service is running, if set.\n:param cluster: The cluster in which the service is running, if set.\n:param replication_set: The replication set in which the service is running, if set.\n:param custom_labels: Custom labels associated with the service, if set.\n:param node_id: The unique identifier of the node on which the service is running.\n    Must be unique for external_id, as defined by composite index\n    ix_service_external_id_node_id.\n:param node: The node to which the service is associated.\n:param retired_at: When the service stopped being reported upstream, or None\n    while it is active.\n:param retirement_key: The discriminator carried inside every unique index.\n:param last_synced_at: When a syncer last confirmed the service against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the service is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param newest_attempt_at: When the newest accepted attempt began, whatever\n    its outcome, or ``None`` if none has been reported, or the upgrade\n    time for a row that was failing when the column was added.\n:param schemas: A list of schemas associated with the service.",
         "properties": {
           "cluster": {
             "anyOf": [
@@ -1564,6 +1642,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
           },
           "node_id": {
             "title": "Node Id",
@@ -1733,6 +1823,18 @@
             "title": "Name",
             "type": "string"
           },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
+          },
           "node": {
             "$ref": "#/components/schemas/Node"
           },
@@ -1847,7 +1949,7 @@
         "type": "object"
       },
       "ServiceResponse": {
-        "description": "Define the service API response.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param external_id: An external identifier for the service.\n:param name: The name of the service.\n:param type: The type of the service (e.g., MYSQL, POSTGRESQL).\n:param port: The port number on which the service is running.\n:param environment: The environment in which the service is running, if set.\n:param cluster: The cluster in which the service is running, if set.\n:param replication_set: The replication set in which the service is running, if set.\n:param custom_labels: Custom labels associated with the service, if set.\n:param node_id: The unique identifier of the node on which the service is running.\n:param schemas: A list of schemas associated with the service.\n:param node: The node to which the service is associated.\n:param retired_at: When the service stopped being reported upstream, or None\n    while it is active.\n:param last_synced_at: When a syncer last confirmed the service against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the service is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.",
+        "description": "Define the service API response.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param external_id: An external identifier for the service.\n:param name: The name of the service.\n:param type: The type of the service (e.g., MYSQL, POSTGRESQL).\n:param port: The port number on which the service is running.\n:param environment: The environment in which the service is running, if set.\n:param cluster: The cluster in which the service is running, if set.\n:param replication_set: The replication set in which the service is running, if set.\n:param custom_labels: Custom labels associated with the service, if set.\n:param node_id: The unique identifier of the node on which the service is running.\n:param schemas: A list of schemas associated with the service.\n:param node: The node to which the service is associated.\n:param retired_at: When the service stopped being reported upstream, or None\n    while it is active.\n:param last_synced_at: When a syncer last confirmed the service against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the service is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param newest_attempt_at: When the newest accepted attempt began, whatever\n    its outcome, or ``None`` if none has been reported, or the upgrade\n    time for a row that was failing when the column was added.",
         "properties": {
           "cluster": {
             "anyOf": [
@@ -1937,6 +2039,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
           },
           "node": {
             "$ref": "#/components/schemas/Node"
@@ -2441,7 +2555,6 @@
         "type": "object"
       },
       "SourceEnum": {
-        "const": "pmm",
         "description": "Enumeration of possible data sources for a node.\n\n:cvar PMM: Represents the PMM data source.\n:vartype PMM: str",
         "enum": [
           "pmm"
@@ -2450,7 +2563,7 @@
         "type": "string"
       },
       "SyncHealthWrite": {
-        "description": "Define the body reporting one entity's sync outcome.\n\n:param outcome: Whether the attempt succeeded or failed.\n:param error: The failure's message, never empty. Required on FAILURE,\n    absent on SUCCESS.\n:param attempted_at: When the syncer began this attempt. Stamped as\n    ``last_synced_at`` on success, and compared against the row's current\n    ``last_synced_at`` so a late-arriving report from an older attempt\n    cannot overwrite a newer one. Refused when it sits further ahead of this\n    service's clock than the tolerated skew, since nothing later could then\n    supersede it.",
+        "description": "Define the body reporting one entity's sync outcome.\n\n:param outcome: Whether the attempt succeeded or failed.\n:param error: The failure's message, never empty. Required on FAILURE,\n    absent on SUCCESS.\n:param attempted_at: When the syncer began this attempt. Stamped as\n    ``last_synced_at`` on success and as ``newest_attempt_at`` when newer,\n    and used to order reports so a late-arriving one from an older attempt\n    cannot overwrite a newer one. Refused when it sits further ahead of\n    this service's clock than the tolerated skew, since nothing later could\n    then supersede it.",
         "properties": {
           "attempted_at": {
             "format": "date-time",
@@ -2490,7 +2603,7 @@
         "type": "string"
       },
       "Table": {
-        "description": "Represent a table within a schema.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param name: The name of the table. Must be unique for schema_id, as defined by\n    composite index ix_table_name_schema_id.\n:param create: The SQL statement used to create the table.\n:param schema_id: The unique identifier of the schema to which the table belongs.\n    Must be unique for name, as defined by composite index ix_table_name_schema_id.\n:param retired_at: When the table stopped being reported upstream, or None while\n    it is active.\n:param retirement_key: The discriminator carried inside every unique index.\n:param last_synced_at: When a syncer last confirmed the table against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the table is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param database: The schema to which the table is associated.",
+        "description": "Represent a table within a schema.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param name: The name of the table. Must be unique for schema_id, as defined by\n    composite index ix_table_name_schema_id.\n:param create: The SQL statement used to create the table.\n:param schema_id: The unique identifier of the schema to which the table belongs.\n    Must be unique for name, as defined by composite index ix_table_name_schema_id.\n:param retired_at: When the table stopped being reported upstream, or None while\n    it is active.\n:param retirement_key: The discriminator carried inside every unique index.\n:param last_synced_at: When a syncer last confirmed the table against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the table is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param newest_attempt_at: When the newest accepted attempt began, whatever\n    its outcome, or ``None`` if none has been reported, or the upgrade\n    time for a row that was failing when the column was added.\n:param database: The schema to which the table is associated.",
         "properties": {
           "consecutive_failures": {
             "default": 0,
@@ -2551,6 +2664,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
           },
           "retired_at": {
             "anyOf": [
@@ -2669,6 +2794,18 @@
             "title": "Name",
             "type": "string"
           },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
+          },
           "retired_at": {
             "anyOf": [
               {
@@ -2722,7 +2859,7 @@
         "type": "object"
       },
       "TableResponse": {
-        "description": "Define the table API response.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param name: The name of the table.\n:param create: The SQL statement used to create the table.\n:param schema_id: The foreign key referencing the schema to which the table belongs.\n:param retired_at: When the table stopped being reported upstream, or None while\n    it is active.\n:param last_synced_at: When a syncer last confirmed the table against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the table is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.",
+        "description": "Define the table API response.\n\n:param id: The primary key for the table. Auto-incremented and not nullable.\n:param created_at: The timestamp when the record is created. Defaults to the current\n    time in UTC.\n:param updated_at: The timestamp when the record is last updated. Automatically\n    updated on changes.\n:param name: The name of the table.\n:param create: The SQL statement used to create the table.\n:param schema_id: The foreign key referencing the schema to which the table belongs.\n:param retired_at: When the table stopped being reported upstream, or None while\n    it is active.\n:param last_synced_at: When a syncer last confirmed the table against its\n    source, or None if that has never happened.\n:param last_sync_error: The message from the most recent failed attempt, or\n    None while the table is syncing cleanly.\n:param sync_failing_since: When the current run of failures began, or None\n    while not failing.\n:param consecutive_failures: Failed attempts since the last success.\n:param newest_attempt_at: When the newest accepted attempt began, whatever\n    its outcome, or ``None`` if none has been reported, or the upgrade\n    time for a row that was failing when the column was added.",
         "properties": {
           "consecutive_failures": {
             "default": 0,
@@ -2783,6 +2920,18 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "newest_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Attempt At"
           },
           "retired_at": {
             "anyOf": [
@@ -3819,7 +3968,7 @@
     },
     "/nodes/{node_id}/services/": {
       "get": {
-        "description": "List Services by Node.",
+        "description": "List Services by Node.\n\n:param session: The async database session.\n:param node: The node addressed by the path, resolved within the request's\n    retirement scope.\n:param pagination: Validated offset/limit query parameters.\n:param list_query: The resolved sort/search produced at the request\n    boundary.\n:param manager: The service manager the request's retirement scope selected.\n:param service_type: Restrict the listing to services of this type.\n:return: A paginated response of the node's services.",
         "operationId": "nodes_list_services_by_node_nodes__node_id__services__get",
         "parameters": [
           {
@@ -3845,6 +3994,16 @@
                 }
               ],
               "title": "Service Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_retired",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Retired",
+              "type": "boolean"
             }
           },
           {
@@ -3904,16 +4063,6 @@
               ],
               "description": "Case-insensitive search across the searchable columns.",
               "title": "Search"
-            }
-          },
-          {
-            "in": "query",
-            "name": "include_retired",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Include Retired",
-              "type": "boolean"
             }
           }
         ],
@@ -4518,7 +4667,7 @@
     },
     "/schemas/{schema_id}/tables/": {
       "get": {
-        "description": "List Tables by Schema.",
+        "description": "List Tables by Schema.\n\n:param session: The async database session.\n:param schema: The schema addressed by the path, resolved within the\n    request's retirement scope.\n:param pagination: Validated offset/limit query parameters.\n:param list_query: The resolved sort/search produced at the request\n    boundary.\n:param manager: The table manager the request's retirement scope selected.\n:return: A paginated response of the schema's tables.",
         "operationId": "schemas_list_tables_by_schema_schemas__schema_id__tables__get",
         "parameters": [
           {
@@ -4528,6 +4677,16 @@
             "schema": {
               "title": "Schema Id",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_retired",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Retired",
+              "type": "boolean"
             }
           },
           {
@@ -4589,16 +4748,6 @@
               ],
               "description": "Case-insensitive search across the searchable columns.",
               "title": "Search"
-            }
-          },
-          {
-            "in": "query",
-            "name": "include_retired",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Include Retired",
-              "type": "boolean"
             }
           }
         ],
@@ -5212,7 +5361,7 @@
     },
     "/services/{service_id}/schemas/": {
       "get": {
-        "description": "List Schemas by Service.\n\nReturn ``SchemaResponse`` (with nested tables) when ``include_tables``\nis set, otherwise return ``SchemaCompactResponse`` (without tables).\n\n:param session: The async database session.\n:param service: The resolved service dependency.\n:param pagination: Validated offset/limit query parameters.\n:param list_query: The resolved sort/search produced at the request\n    boundary.\n:param manager: The schema manager the request's retirement scope selected.\n:param include_tables: Include nested tables in the response when set to\n    any non-empty value. Defaults to compact mode (no tables).\n:return: A paginated response of schema responses.",
+        "description": "List Schemas by Service.\n\nReturn ``SchemaResponse`` (with nested tables) when ``include_tables``\nis set, otherwise return ``SchemaCompactResponse`` (without tables).\n\n:param session: The async database session.\n:param service: The service addressed by the path, resolved within the\n    request's retirement scope.\n:param pagination: Validated offset/limit query parameters.\n:param list_query: The resolved sort/search produced at the request\n    boundary.\n:param manager: The schema manager the request's retirement scope selected.\n:param include_tables: Include nested tables in the response when set to\n    any non-empty value. Defaults to compact mode (no tables).\n:return: A paginated response of schema responses.",
         "operationId": "services_list_schemas_by_service_services__service_id__schemas__get",
         "parameters": [
           {
@@ -5238,6 +5387,16 @@
                 }
               ],
               "title": "Include Tables"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_retired",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Retired",
+              "type": "boolean"
             }
           },
           {
@@ -5299,16 +5458,6 @@
               ],
               "description": "Case-insensitive search across the searchable columns.",
               "title": "Search"
-            }
-          },
-          {
-            "in": "query",
-            "name": "include_retired",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Include Retired",
-              "type": "boolean"
             }
           }
         ],

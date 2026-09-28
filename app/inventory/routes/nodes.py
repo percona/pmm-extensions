@@ -34,6 +34,7 @@ from app.inventory.crud import (
 )
 from app.inventory.deps import (
     HostSystemObservationDep,
+    InScopeNodeDep,
     NodeDep,
     NodeListQueryDep,
     NodeScopeDep,
@@ -333,13 +334,24 @@ async def upsert_host_system_observation(
 @router.get("/{node_id}/services/", dependencies=[IsAuthenticatedDep])
 async def list_services_by_node(
     session: SessionDep,
-    node: NodeDep,
+    node: InScopeNodeDep,
     pagination: PaginationDep,
     list_query: ServiceListQueryDep,
     manager: ServiceScopeDep,
     service_type: ServiceTypeEnum | None = None,
 ) -> PaginatedResponse[ServiceResponse]:
-    """List Services by Node."""
+    """List Services by Node.
+
+    :param session: The async database session.
+    :param node: The node addressed by the path, resolved within the request's
+        retirement scope.
+    :param pagination: Validated offset/limit query parameters.
+    :param list_query: The resolved sort/search produced at the request
+        boundary.
+    :param manager: The service manager the request's retirement scope selected.
+    :param service_type: Restrict the listing to services of this type.
+    :return: A paginated response of the node's services.
+    """
     logger.debug(
         "Listing services for node '%s' and type '%s'",
         node.id,

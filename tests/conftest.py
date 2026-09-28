@@ -22,10 +22,36 @@ modules beneath it, and it is minted rather than pinned in
 ``[tool.pytest.ini_options] env`` so no working key is committed. Test data is
 per-run and never leaves the process, so a key that differs between runs and
 between parallel workers costs nothing.
+
+It also hosts the opt-in per-process peak-RSS report (:mod:`tests.peak_rss`),
+because this is the one conftest every xdist worker loads whichever test tree
+it runs.
 """
 
 import os
 
+import pytest
 from cryptography.fernet import Fernet
 
+from tests.peak_rss import peak_rss_summary, record_peak_rss
+
 os.environ.setdefault("ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """Record this process's peak RSS when ``PYTEST_PEAK_RSS_FILE`` is set."""
+    record_peak_rss(session.config)
+
+
+def pytest_terminal_summary(
+    terminalreporter: pytest.TerminalReporter, config: pytest.Config
+) -> None:
+    """Print every process's peak RSS and the worker median on the controller."""
+    if hasattr(config, "workerinput"):
+        return
+    lines = peak_rss_summary()
+    if not lines:
+        return
+    terminalreporter.section("peak RSS")
+    for line in lines:
+        terminalreporter.write_line(line)

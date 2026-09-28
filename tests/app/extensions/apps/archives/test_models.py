@@ -31,6 +31,7 @@ from app.extensions.apps.archives.models import (
 )
 from app.extensions.apps.archives.views import archives_views
 from app.extensions.apps.framework.form_dsl.derivation import derive_form_sections
+from app.extensions.apps.framework.schema import FormSection, OneOfGroup
 
 _MANUAL_PORT = 3307
 _SCHEMA_ID = 5
@@ -143,6 +144,26 @@ class TestArchivesCreateRules:
         assert form.destination is None
         assert form.delete_data is True
 
+    def test_explicit_false_delete_data_still_requires_destination(self) -> None:
+        """Reject an archiving run whose delete flag is submitted as ``False``."""
+        body = _valid(delete_data=False)
+        del body["destination"]
+        with pytest.raises(ValidationError, match="destination"):
+            ArchivesCreate.model_validate(body)
+
+    def test_delete_data_allows_a_destination_host(self) -> None:
+        """Accept a delete-only run that still carries a destination host.
+
+        The form gates the host group out alongside the destination, but the
+        contract stays permissive so cloning a legacy task that stored a host
+        beside the delete flag keeps working.
+        """
+        body = _valid(delete_data=True, host={"mode": "manual", "dest_host": "remote"})
+        del body["destination"]
+        form = ArchivesCreate.model_validate(body)
+        assert isinstance(form.host, HostManual)
+        assert form.destination is None
+
     def test_where_required_for_purge(self) -> None:
         """Require a WHERE clause for a Purge Only run."""
         body = _valid()
@@ -181,10 +202,28 @@ class TestArchivesCreateDsnDelimiters:
             )
 
 
+def _derived_sections() -> list[FormSection]:
+    """Return the create model's derived form sections."""
+    return derive_form_sections(ArchivesCreate, archives_views.layout)
+
+
+def _section(title: str) -> FormSection:
+    """Return the derived form section titled ``title``."""
+    return next(section for section in _derived_sections() if section.title == title)
+
+
+def _one_of(title: str, name: str) -> OneOfGroup:
+    """Return the one-of group named ``name`` from the section titled ``title``."""
+    return next(
+        field
+        for field in _section(title).fields
+        if isinstance(field, OneOfGroup) and field.name == name
+    )
+
+
 def _field_by_name(name: str) -> Any:
     """Return the derived schema field with ``name`` from the Advanced section."""
-    sections = derive_form_sections(ArchivesCreate, archives_views.layout)
-    advanced = next(section for section in sections if section.title == "Advanced")
+    advanced = _section("Advanced")
     return next(field for field in advanced.fields if field.name == name)
 
 
@@ -213,13 +252,7 @@ class TestArchivesCreateDefaults:
 
 def _dest_port_schema_field() -> Any:
     """Return the derived ``dest_port`` field from the manual destination-host branch."""
-    sections = derive_form_sections(ArchivesCreate, archives_views.layout)
-    host = next(
-        field
-        for section in sections
-        for field in section.fields
-        if field.name == "host"
-    )
+    host = _one_of("Destination Host", "host")
     manual = next(branch for branch in host.branches if branch.value == "manual")
     return next(field for field in manual.fields if field.name == "host.dest_port")
 
@@ -234,3 +267,45 @@ def test_dest_port_derived_schema_bounds_preserved() -> None:
     field = _dest_port_schema_field()
     assert field.ge == TCP_PORT_MIN
     assert field.le == TCP_PORT_MAX
+
+
+_DELETE_ONLY_GATE = {"when": {"truthy": "delete_data"}}
+_GATED_SECTIONS = {"Destination", "Destination Host"}
+
+
+class TestArchivesDestinationGates:
+    """Cover the section gates that make a delete-only run reachable from the form."""
+
+    @pytest.mark.parametrize("title", sorted(_GATED_SECTIONS))
+    def test_destination_sections_hide_on_delete_data(self, title: str) -> None:
+        """Gate both destination groups out while deleting without archiving."""
+        section = _section(title)
+        assert [
+            gate.model_dump(mode="json", exclude_none=True)
+            for gate in section.forbidden or []
+        ] == [_DELETE_ONLY_GATE]
+
+    def test_no_other_section_is_gated(self) -> None:
+        """Leave every other section unconditionally visible."""
+        assert {
+            section.title for section in _derived_sections() if section.forbidden
+        } == _GATED_SECTIONS
+
+    @pytest.mark.parametrize(
+        ("title", "name", "expected"),
+        [
+            ("Destination", "destination", ("table", "file")),
+            ("Destination Host", "host", ("service", "manual")),
+        ],
+    )
+    def test_gated_groups_keep_their_branches(
+        self, title: str, name: str, expected: tuple[str, ...]
+    ) -> None:
+        """Keep the gated groups' branch set and default untouched by the gate."""
+        group = _one_of(title, name)
+        assert tuple(branch.value for branch in group.branches) == expected
+        assert group.default == expected[0]
+
+    def test_source_group_stays_ungated(self) -> None:
+        """Leave the required source group reachable on a delete-only run."""
+        assert _section("Source").forbidden is None

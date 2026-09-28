@@ -19,7 +19,7 @@
  * Shared types for the snippets app frontend package.
  *
  * Mirrors the Pydantic API models defined in
- * `app/extensions/plugins/snippets/models.py`.
+ * `app/extensions/snippets/models/`.
  */
 
 import type { ExtensionsComponents } from '@pmm-extensions/api';

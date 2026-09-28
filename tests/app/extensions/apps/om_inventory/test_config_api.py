@@ -17,11 +17,12 @@
 
 The app serves its configuration rather than pointing callers at
 ``/api/extensions/admin/settings`` because that router is admin-gated and **PMM's principal
-is not an admin**: ``--sep-token`` resolves to the synthetic ``extensions-service`` user,
-built with ``is_admin=False`` on purpose since it is a deployment-level shared secret
-with nobody behind it. That is asserted here rather than described, because it is the
-whole reason this endpoint exists and a later change making the principal an admin
-would silently remove the reason.
+is not an admin**: the principal behind the pmm-managed ``--extensions-token`` flag
+resolves to the synthetic ``extensions-service`` user, built with ``is_admin=False``
+on purpose since it is a deployment-level shared secret with nobody behind it. That
+is asserted here rather than described, because it is the whole reason this endpoint
+exists and a later change making the principal an admin would silently remove the
+reason.
 
 The second decision is ``CREDENTIALS_PATH`` staying cold. It names a file the payload
 reads on every database *host* and hands to a driver as a URI, so an overridable one
@@ -73,7 +74,7 @@ class TestWhyThisEndpointExists:
     """Assert the premise: the settings router is closed to PMM's principal."""
 
     def test_the_extensions_token_principal_is_not_an_admin(self) -> None:
-        """Confirm ``--sep-token`` cannot reach ``/api/extensions/admin/settings``.
+        """Confirm the ``--extensions-token`` principal is shut out of admin settings.
 
         Not a statement about the current deployment's configuration — the service
         principal is constructed in code with no ``is_admin`` argument, so this holds

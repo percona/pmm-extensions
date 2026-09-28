@@ -305,7 +305,6 @@ async def run_inventory_collection(api_key: str) -> None:
 async def run_scheduled_inventory_collection() -> None:
     """Run inventory collection using the configured internal token.
 
-    :raises ValueError: If ``EXTENSIONS_INTERNAL_TOKEN`` is not configured.
     :raises HTTPException: Whatever the Inventory API's non-2xx answers raise.
     :raises ValidationError: If the Inventory API answers a collect call with
         something other than the documented object.
@@ -314,14 +313,8 @@ async def run_scheduled_inventory_collection() -> None:
         the task's failure alert fires; aborting deletes nothing, except in the
         window between clearing a batch's ledger rows and its delete.
     """
-    if (api_key := get_internal_token()) is None:
-        raise ValueError(
-            "EXTENSIONS_INTERNAL_TOKEN must be configured for scheduled inventory "
-            "collection. Set it in .env to a long random secret "
-            "(e.g. `openssl rand -hex 32`)."
-        )
     try:
-        await run_inventory_collection(api_key)
+        await run_inventory_collection(get_internal_token())
     except Exception:
         logger.exception("Scheduled inventory collection failed")
         raise

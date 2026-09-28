@@ -237,6 +237,9 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/framework__DetailHighlightLanguage"
             },
+            "propertyNames": {
+              "minLength": 1
+            },
             "title": "Detail Highlights",
             "type": "object"
           },
@@ -599,9 +602,6 @@
           "type": {
             "const": "bool",
             "default": "bool",
-            "enum": [
-              "bool"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -901,9 +901,6 @@
           "type": {
             "const": "choice",
             "default": "choice",
-            "enum": [
-              "choice"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -951,6 +948,9 @@
                 "additionalProperties": {
                   "minLength": 1,
                   "type": "string"
+                },
+                "propertyNames": {
+                  "minLength": 1
                 },
                 "type": "object"
               },
@@ -1091,9 +1091,6 @@
           "type": {
             "const": "datetime",
             "default": "datetime",
-            "enum": [
-              "datetime"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -1197,6 +1194,9 @@
                 "additionalProperties": {
                   "minLength": 1,
                   "type": "string"
+                },
+                "propertyNames": {
+                  "minLength": 1
                 },
                 "type": "object"
               },
@@ -1453,9 +1453,6 @@
           "type": {
             "const": "file",
             "default": "file",
-            "enum": [
-              "file"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -1608,9 +1605,6 @@
           "type": {
             "const": "float",
             "default": "float",
-            "enum": [
-              "float"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -1683,6 +1677,32 @@
           },
           "fields": {
             "items": {
+              "discriminator": {
+                "mapping": {
+                  "bool": "#/components/schemas/framework__BoolField",
+                  "choice": "#/components/schemas/framework__ChoiceField",
+                  "datetime": "#/components/schemas/framework__DateTimeField",
+                  "file": "#/components/schemas/framework__FileField",
+                  "float": "#/components/schemas/framework__FloatField",
+                  "host": "#/components/schemas/framework__HostField",
+                  "integer": "#/components/schemas/framework__IntegerField",
+                  "multi_choice": "#/components/schemas/framework__MultiChoiceField",
+                  "multi_host": "#/components/schemas/framework__MultiHostField",
+                  "multi_schema": "#/components/schemas/framework__MultiSchemaField",
+                  "multi_service": "#/components/schemas/framework__MultiServiceField",
+                  "multi_table": "#/components/schemas/framework__MultiTableField",
+                  "one_of": "#/components/schemas/framework__OneOfGroup",
+                  "remote_choice": "#/components/schemas/framework__RemoteChoiceField",
+                  "schema": "#/components/schemas/framework__SchemaField",
+                  "script_preview": "#/components/schemas/framework__ScriptPreviewField",
+                  "service": "#/components/schemas/framework__ServiceField",
+                  "string": "#/components/schemas/framework__StringField",
+                  "table": "#/components/schemas/framework__TableField",
+                  "textarea": "#/components/schemas/framework__TextAreaField",
+                  "yaml": "#/components/schemas/framework__YamlField"
+                },
+                "propertyName": "type"
+              },
               "oneOf": [
                 {
                   "$ref": "#/components/schemas/framework__BoolField"
@@ -1936,9 +1956,6 @@
           "type": {
             "const": "host",
             "default": "host",
-            "enum": [
-              "host"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -2091,9 +2108,6 @@
           "type": {
             "const": "integer",
             "default": "integer",
-            "enum": [
-              "integer"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -2271,9 +2285,6 @@
           "type": {
             "const": "multi_choice",
             "default": "multi_choice",
-            "enum": [
-              "multi_choice"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -2429,9 +2440,6 @@
           "type": {
             "const": "multi_host",
             "default": "multi_host",
-            "enum": [
-              "multi_host"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -2567,9 +2575,6 @@
           "type": {
             "const": "multi_schema",
             "default": "multi_schema",
-            "enum": [
-              "multi_schema"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -2708,9 +2713,6 @@
           "type": {
             "const": "multi_service",
             "default": "multi_service",
-            "enum": [
-              "multi_service"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -2847,9 +2849,6 @@
           "type": {
             "const": "multi_table",
             "default": "multi_table",
-            "enum": [
-              "multi_table"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -3035,9 +3034,6 @@
           "type": {
             "const": "one_of",
             "default": "one_of",
-            "enum": [
-              "one_of"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -3216,9 +3212,6 @@
           "type": {
             "const": "remote_choice",
             "default": "remote_choice",
-            "enum": [
-              "remote_choice"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -3355,9 +3348,6 @@
           "type": {
             "const": "schema",
             "default": "schema",
-            "enum": [
-              "schema"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -3503,9 +3493,6 @@
           "type": {
             "const": "script_preview",
             "default": "script_preview",
-            "enum": [
-              "script_preview"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -3668,9 +3655,6 @@
           "type": {
             "const": "service",
             "default": "service",
-            "enum": [
-              "service"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -3839,9 +3823,6 @@
           "type": {
             "const": "string",
             "default": "string",
-            "enum": [
-              "string"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -3977,9 +3958,6 @@
           "type": {
             "const": "table",
             "default": "table",
-            "enum": [
-              "table"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -4148,9 +4126,6 @@
           "type": {
             "const": "textarea",
             "default": "textarea",
-            "enum": [
-              "textarea"
-            ],
             "title": "Type",
             "type": "string"
           }
@@ -4294,9 +4269,6 @@
           "type": {
             "const": "yaml",
             "default": "yaml",
-            "enum": [
-              "yaml"
-            ],
             "title": "Type",
             "type": "string"
           }

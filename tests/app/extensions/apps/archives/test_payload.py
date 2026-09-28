@@ -103,6 +103,16 @@ class TestPtArchiveRunnerBulkInsert:
         assert "--bulk-delete" in args
         assert "--purge" in args
 
+    def test_purge_branch_writes_nowhere(self, payload):
+        """The purge-only branch archives to no destination at all."""
+        conf = _base_conf({"prg_purge": 1})
+        with patch.object(payload, "run_cmd", return_value=0) as mock_run:
+            payload.pt_archive_runner("pt-archiver", "mydb", "mytable", conf)
+
+        args = mock_run.call_args[0]
+        assert not any(a.startswith("--dest=") for a in args)
+        assert not any(a.startswith("--file=") for a in args)
+
     def test_bulk_insert_not_in_dest_file_branch(self, payload):
         """--bulk-insert is never added in the dest-file branch; --bulk-delete and --buffer are."""
         conf = _base_conf(

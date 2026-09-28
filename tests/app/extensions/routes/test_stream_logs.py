@@ -130,7 +130,7 @@ def test_sync_hop_is_authenticated_as_the_service_principal(
     admits that identity is asserted elsewhere, not here.
     """
     mocker.patch(
-        "app.extensions.routes.stream_logs.require_internal_token",
+        "app.extensions.routes.stream_logs.get_internal_token",
         return_value="internal-token",
     )
     active_tokens: list[str] = []

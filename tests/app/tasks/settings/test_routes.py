@@ -813,7 +813,7 @@ class TestTasksSettingsCredentialUrlAtRest:
     The Tasks service has its own settings router, so PMM Extensions side coverage proves
     nothing about this wiring. ``NomadExecutor.endpoint`` is also the inherited
     non-``Optional`` case whose ``Annotated`` Pydantic hoists onto ``FieldInfo``
-    and which the route coerces to a :class:`pydantic_core.Url` — the two
+    and which the route coerces to a :class:`~pydantic.HttpUrl` — the two
     properties that make a classifier reading ``.annotation``, or a leaf branch
     guarded on ``isinstance(value, str)``, silently skip it.
     """

@@ -186,7 +186,7 @@ QUERY="${QUERY%%[;[:space:]]}"
 QUERY="${QUERY%%;}"
 QUERY="${QUERY%%[[:space:]]}"
 
-[ "$SEPDEBUG" ] && echo "Using query: '${QUERY}'"
+[ "$EXTENSIONS_DEBUG" ] && echo "Using query: '${QUERY}'"
 
 # We can only define MYSQL command after we have defaults-file
 MYSQL="mysql $DEFAULTS_FILE -B"
@@ -215,7 +215,7 @@ fi
 
 # 6. Write safe statements to the query file
 QUERY_FILE="${DEST}/queries.sql"
-[ "$SEPDEBUG" ] && echo "Writing diagnostic queries to: ${QUERY_FILE}"
+[ "$EXTENSIONS_DEBUG" ] && echo "Writing diagnostic queries to: ${QUERY_FILE}"
 {
     echo "-- Diagnostic queries for: ${QUERY}"
     if [[ -n $DATABASE ]]; then
@@ -267,7 +267,7 @@ fi
 
 # 9. If --execute is set, execute the diagnostic queries and write results to results.txt
 if [ $EXECUTE -eq 1 ]; then
-    [ "$SEPDEBUG" ] && echo "Writing results to: ${DEST}/results.txt"
+    [ "$EXTENSIONS_DEBUG" ] && echo "Writing results to: ${DEST}/results.txt"
     if ! $MYSQL < "${QUERY_FILE}" > "${DEST}/results.txt" 2>&1; then
         echo "Error executing diagnostic queries, check results.txt for details."
         exit 1
@@ -275,5 +275,5 @@ if [ $EXECUTE -eq 1 ]; then
 fi
 
 # 10. Compress the results into a tar.gz file
-[ "$SEPDEBUG" ] && echo "Compressing results to: ${DEST}.tar.gz"
+[ "$EXTENSIONS_DEBUG" ] && echo "Compressing results to: ${DEST}.tar.gz"
 compress_data

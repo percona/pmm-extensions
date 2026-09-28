@@ -1498,7 +1498,7 @@ class TestTaskPathRoundTrip:
     """Test that every name the guard admits addresses the task it names."""
 
     @staticmethod
-    def _compose(base: str, task_name: str) -> str:
+    def _compose(api: RemoteAPI, base: str, task_name: str) -> str:
         """Return the upstream path a guarded name composes to, decoded.
 
         Walks the same layers a real request does — :func:`task_path`, then
@@ -1506,11 +1506,13 @@ class TestTaskPathRoundTrip:
         join aiohttp performs against the session base URL — so a character either
         layer interprets or drops shows up as a path that is not the name.
 
-        :param base: The Tasks API endpoint to compose against.
+        :param api: The client whose ``prepare_path`` composes the path; the
+            caller builds it once, since constructing one per name dominates a
+            full sweep of the BMP.
+        :param base: The Tasks API endpoint ``api`` was built for.
         :param task_name: The name to compose.
         :return: The composed path with percent-escapes decoded.
         """
-        api = RemoteAPI(endpoint=base)
         return unquote(URL(base).join(URL(api.prepare_path(task_path(task_name)))).path)
 
     @pytest.mark.parametrize("base", ROUND_TRIP_BASE_PATHS)
@@ -1523,7 +1525,8 @@ class TestTaskPathRoundTrip:
         the round trip rather than to a list means the next such character fails
         here instead of reaching the Tasks API.
         """
-        base_path = RemoteAPI(endpoint=base).base_path.rstrip("/")
+        api = RemoteAPI(endpoint=base)
+        base_path = api.base_path.rstrip("/")
         mismatches = []
         for code in range(0x10000):
             character = chr(code)
@@ -1533,7 +1536,7 @@ class TestTaskPathRoundTrip:
                 f"task{character}",
             ):
                 try:
-                    composed = self._compose(base, task_name)
+                    composed = self._compose(api, base, task_name)
                 except HTTPUnprocessableEntityException:
                     continue
                 if composed != f"{base_path}/{task_name}":

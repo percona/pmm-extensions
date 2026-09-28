@@ -295,6 +295,7 @@ SYNC_HEALTH_RESPONSE_KEYS = frozenset(
         "last_sync_error",
         "sync_failing_since",
         "consecutive_failures",
+        "newest_attempt_at",
     }
 )
 

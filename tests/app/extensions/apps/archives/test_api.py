@@ -26,6 +26,7 @@ from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pytest
+import yaml
 from fastapi import status
 from fastapi.testclient import TestClient
 
@@ -45,6 +46,7 @@ from tests.app.factories import MOCK_DESTINATION_TABLE_ID
 
 _BASE = app_base_url(archives_app)
 _SEEDED = "existing-archive"
+_DELETE_ONLY_GATE = {"when": {"truthy": "delete_data"}}
 
 
 def _inventory() -> MockInventoryAPI:
@@ -122,10 +124,27 @@ class TestArchivesApiReads:
         """Serve a derived schema carrying the source/destination/host one-of groups."""
         response = client.get(f"{_BASE}/schema")
         assert response.status_code == status.HTTP_200_OK
-        body = response.text
-        assert "source.mode" in body
-        assert "destination.mode" in body
-        assert "host.mode" in body
+        discriminators = {
+            field["discriminator"]
+            for section in response.json()["forms"]
+            for field in section["fields"]
+            if field["type"] == "one_of"
+        }
+        assert discriminators == {"source.mode", "destination.mode", "host.mode"}
+
+    def test_schema_gates_destination_sections_on_delete_data(
+        self, client: Any
+    ) -> None:
+        """Publish the delete-only hide gate the form needs on both destination groups."""
+        response = client.get(f"{_BASE}/schema")
+        assert response.status_code == status.HTTP_200_OK
+        gates = {
+            section["title"]: section.get("forbidden")
+            for section in response.json()["forms"]
+        }
+        assert gates["Destination"] == [_DELETE_ONLY_GATE]
+        assert gates["Destination Host"] == [_DELETE_ONLY_GATE]
+        assert gates["Source"] is None
 
     def test_list_returns_seeded_task(self, client: Any) -> None:
         """List the archive tasks owned by the archiver."""
@@ -191,6 +210,46 @@ class TestArchivesApiCreate:
         body = _create_body()
         del body["destination"]
         response = client.post(f"{_BASE}/", json=body)
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+    def test_create_delete_only_returns_201(self, client: Any) -> None:
+        """Create a delete-without-archiving task carrying no destination."""
+        body = _create_body(delete_data=True)
+        del body["destination"]
+        response = client.post(f"{_BASE}/", json=body)
+        assert response.status_code == status.HTTP_201_CREATED
+
+    def test_create_delete_only_emits_a_purge_config_with_no_destination(
+        self, regular_user: CasdoorUser
+    ) -> None:
+        """Generate a delete-only purge config: the flag set, no destination keys.
+
+        The delete-only run only became reachable from the form once the
+        destination sections were gated, so pin what the generated config
+        actually carries — ``pt-archiver`` purges in place, and any destination
+        key surviving here would send the rows somewhere instead.
+        """
+        tasks_api = MockTaskAPI()
+        client = build_contract_client(
+            archives_app,
+            user=regular_user,
+            tasks_api=tasks_api,
+            inventory_api=_inventory(),
+        )
+        body = _create_body(delete_data=True)
+        del body["destination"]
+
+        response = client.post(f"{_BASE}/", json=body)
+
+        assert response.status_code == status.HTTP_201_CREATED
+        config = yaml.safe_load(tasks_api.last_create_payload["data"]["meta"]["config"])
+        purge_item = config["PURGE_LIST"][0]
+        assert purge_item["DELETE_DATA"] == 1
+        assert not {"DEST_TABLE", "DEST_DB", "DEST_FILE"} & purge_item.keys()
+
+    def test_create_rejects_destination_with_delete_data(self, client: Any) -> None:
+        """Reject a create that both deletes without archiving and names a destination."""
+        response = client.post(f"{_BASE}/", json=_create_body(delete_data=True))
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
     def test_create_rejects_dsn_delimiter_in_manual_host(self, client: Any) -> None:

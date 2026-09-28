@@ -2505,6 +2505,181 @@ describe('SchemaFormRenderer — one_of groups', () => {
     expect(payload).not.toHaveProperty('target');
     expect(payload).not.toHaveProperty('target_mode');
   });
+
+  // A group whose leaves live under a dotted path — the shape every
+  // discriminated-union create model derives — leaves the payload only if the
+  // whole nested object goes, not just its mode key. A surviving
+  // `{ mode: 'table' }` is what a backend cross-field validator rejects.
+  const gatedOneOfSections = (): FormSection[] => [
+    {
+      title: 'Advanced',
+      fields: [{ type: 'bool', name: 'delete_data', label: 'Delete Without Archiving' }],
+    },
+    {
+      title: 'Destination',
+      forbidden: [{ when: { truthy: 'delete_data' } }],
+      fields: [
+        {
+          type: 'one_of',
+          name: 'destination',
+          label: 'Destination',
+          discriminator: 'destination.mode',
+          default: 'table',
+          branches: [
+            {
+              value: 'table',
+              label: 'Table',
+              fields: [
+                {
+                  type: 'string',
+                  name: 'destination.dest_table',
+                  label: 'Destination table',
+                  required: true,
+                },
+              ],
+            },
+            {
+              value: 'file',
+              label: 'File',
+              fields: [
+                {
+                  type: 'string',
+                  name: 'destination.dest_file',
+                  label: 'Destination file',
+                  required: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      title: 'Destination Host',
+      forbidden: [{ when: { truthy: 'delete_data' } }],
+      fields: [
+        {
+          type: 'one_of',
+          name: 'host',
+          label: 'Destination Host',
+          discriminator: 'host.mode',
+          default: 'service',
+          branches: [
+            {
+              value: 'service',
+              label: 'Service',
+              fields: [{ type: 'string', name: 'host.dest_service', label: 'Destination service' }],
+            },
+            {
+              value: 'manual',
+              label: 'Manual',
+              fields: [{ type: 'string', name: 'host.dest_host', label: 'Destination host' }],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  it('drops a dotted-path one_of object entirely when its section is hidden', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderWithProviders(<SchemaFormRenderer sections={gatedOneOfSections()} onSubmit={onSubmit} />);
+
+    await user.type(screen.getByTestId('text-input-destination.dest_table'), 'archive_tbl');
+    await user.type(screen.getByTestId('text-input-host.dest_service'), 'svc-1');
+    await user.click(screen.getByLabelText('Delete Without Archiving'));
+    await waitFor(() => expect(screen.queryByTestId('one-of-destination')).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId('one-of-host')).toBeNull());
+
+    await user.click(screen.getByRole('button', { name: 'Run' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const payload = onSubmit.mock.calls[0]?.[0];
+    expect(payload).toMatchObject({ delete_data: true });
+    expect(payload).not.toHaveProperty('destination');
+    expect(payload).not.toHaveProperty('host');
+  });
+
+  // Hiding a section unregisters the discriminator along with the seeded
+  // default that fed it, while the segmented control keeps rendering off
+  // `group.default` — so a re-shown group reads as answered. Without the
+  // discriminator back in form state the payload ships an untagged object and
+  // the backend rejects it on a path the form has no input mounted for.
+  it('restores each one_of discriminator when its section is shown again', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderWithProviders(<SchemaFormRenderer sections={gatedOneOfSections()} onSubmit={onSubmit} />);
+
+    const toggle = screen.getByLabelText('Delete Without Archiving');
+    await user.click(toggle);
+    await waitFor(() => expect(screen.queryByTestId('one-of-destination')).toBeNull());
+    await user.click(toggle);
+    await waitFor(() => expect(screen.getByTestId('one-of-destination')).toBeInTheDocument());
+
+    await user.type(screen.getByTestId('text-input-destination.dest_table'), 'archive_tbl');
+    await user.type(screen.getByTestId('text-input-host.dest_service'), 'svc-1');
+    await user.click(screen.getByRole('button', { name: 'Run' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
+      destination: { mode: 'table', dest_table: 'archive_tbl' },
+      host: { mode: 'service', dest_service: 'svc-1' },
+    });
+  });
+
+  // A clone of a delete-only run opens with the flag already on, so both
+  // sections are gated out before they ever mount — a different path from the
+  // toggle, and the one where `buildFormDefaults` has already seeded every
+  // discriminator and leaf default into form state with no unmount to drop them.
+  it('omits a one_of whose section is gated out before its first render', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderWithProviders(
+      <SchemaFormRenderer
+        sections={gatedOneOfSections()}
+        defaultValues={{ delete_data: true }}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.queryByTestId('one-of-destination')).toBeNull();
+    expect(screen.queryByTestId('one-of-host')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Run' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const payload = onSubmit.mock.calls[0]?.[0];
+    expect(payload).toMatchObject({ delete_data: true });
+    expect(payload).not.toHaveProperty('destination');
+    expect(payload).not.toHaveProperty('host');
+  });
+
+  // Re-showing resets the branch choice as well as the leaves, so the value a
+  // reader last saw on the non-default branch cannot ship under the default
+  // branch's tag — an object the backend would discriminate as the wrong member.
+  it('returns a re-shown one_of to its default branch with the prior branch dropped', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderWithProviders(<SchemaFormRenderer sections={gatedOneOfSections()} onSubmit={onSubmit} />);
+
+    await user.click(screen.getByTestId('one-of-option-file'));
+    await user.type(screen.getByTestId('text-input-destination.dest_file'), '/tmp/dump.csv');
+
+    const toggle = screen.getByLabelText('Delete Without Archiving');
+    await user.click(toggle);
+    await waitFor(() => expect(screen.queryByTestId('one-of-destination')).toBeNull());
+    await user.click(toggle);
+    await waitFor(() => expect(screen.getByTestId('one-of-destination')).toBeInTheDocument());
+
+    expect(screen.getByTestId('one-of-option-table')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('text-input-destination.dest_table')).toHaveValue('');
+
+    await user.type(screen.getByTestId('text-input-destination.dest_table'), 'archive_tbl');
+    await user.click(screen.getByRole('button', { name: 'Run' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const payload = onSubmit.mock.calls[0]?.[0] as { destination: Record<string, unknown> };
+    expect(payload.destination).toEqual({ mode: 'table', dest_table: 'archive_tbl' });
+  });
 });
 
 // ── Advanced sections ─────────────────────────────────────────────────────
