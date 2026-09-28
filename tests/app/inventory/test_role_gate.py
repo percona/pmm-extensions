@@ -959,6 +959,26 @@ class TestServicePrincipalDefault:
         assert router.route_class is ServicePrincipalWriteRoute
 
     @pytest.mark.parametrize(
+        "router", PRINCIPAL_ROUTERS.values(), ids=PRINCIPAL_ROUTERS
+    )
+    def test_every_route_is_built_by_the_restricting_class(
+        self, router: APIRouter
+    ) -> None:
+        """Refuse a route of another class, such as one a nested router brings.
+
+        ``include_router`` rebuilds a route with the class it was declared with,
+        not the including router's, so a nested plain router's writes would skip
+        the default.
+        """
+        foreign = [
+            route.name
+            for route in router.routes
+            if not isinstance(route, ServicePrincipalWriteRoute)
+        ]
+
+        assert not foreign
+
+    @pytest.mark.parametrize(
         "router", [schemas.router, tables.router], ids=["schemas", "tables"]
     )
     def test_a_mixed_access_router_keeps_the_plain_route_class(

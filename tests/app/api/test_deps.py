@@ -1149,7 +1149,7 @@ class TestServicePrincipalWriteRouteRequests:
 
     @pytest.fixture
     def client(self, casdoor_mock, mocker: MockerFixture) -> TestClient:
-        """Return a client over one restricted route, one exempt and one read."""
+        """Return a client over each restricted shape, an exempt write and a read."""
         mocker.patch.object(
             settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(SERVICE_TOKEN)
         )
@@ -1172,6 +1172,14 @@ class TestServicePrincipalWriteRouteRequests:
         @router.post("/exempt", dependencies=[ExemptFromServicePrincipalDep])
         async def exempt() -> dict[str, str]:
             return {"ok": "exempt"}
+
+        @router.patch("/patched")
+        async def patched() -> dict[str, str]:
+            return {"ok": "patched"}
+
+        @router.api_route("/mixed", methods=["GET", "POST"])
+        async def mixed() -> dict[str, str]:
+            return {"ok": "mixed"}
 
         @router.get("/read")
         async def read() -> dict[str, str]:
@@ -1216,6 +1224,42 @@ class TestServicePrincipalWriteRouteRequests:
         response = client.post("/restricted", headers=as_role(role))
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [("PATCH", "/patched"), ("POST", "/mixed"), ("GET", "/mixed")],
+        ids=["patch", "mixed_post", "mixed_get"],
+    )
+    def test_a_human_is_refused_on_every_restricted_shape(
+        self,
+        client: TestClient,
+        as_role: Callable[[UserRole], dict[str, str]],
+        method: str,
+        path: str,
+    ) -> None:
+        """Refuse a human on a PATCH, and on both methods of a mixed route.
+
+        The restriction is a dependency of the whole route, so a route that
+        also writes restricts its reads too.
+        """
+        response = client.request(method, path, headers=as_role(UserRole.ADMIN))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [("PATCH", "/patched"), ("POST", "/mixed"), ("GET", "/mixed")],
+        ids=["patch", "mixed_post", "mixed_get"],
+    )
+    def test_the_principal_is_served_on_every_restricted_shape(
+        self, client: TestClient, method: str, path: str
+    ) -> None:
+        """Serve the principal on a PATCH, and on both methods of a mixed route."""
+        response = client.request(
+            method, path, headers={"Authorization": f"Bearer {SERVICE_TOKEN}"}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
 
     def test_an_anonymous_caller_is_unauthorized(self, client: TestClient) -> None:
         """Answer a missing credential 401, not the 403 kept for a wrong one."""

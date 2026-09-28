@@ -247,6 +247,10 @@ class ServicePrincipalWriteRoute(APIRoute):
     FastAPI's per-request cache, and runs ahead of every other dependency and the
     path lookups — a refused caller gets 403 before any 404 could tell it which
     identifiers exist.
+
+    ``include_router`` rebuilds a route with the class it was declared with, not
+    the including router's, so a router nested into one built on this class has
+    to set it as its ``route_class`` too, or its writes skip the default.
     """
 
     def __init__(
