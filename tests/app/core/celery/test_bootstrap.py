@@ -438,9 +438,9 @@ def test_a_bounded_readiness_wait_gives_up_after_its_deadline(
     instant_polling: None,
     refuse_always: Callable[[], int],
 ):
-    """Fail ``make migrate`` on a persistent OperationalError instead of hanging.
+    """Fail ``make migrate`` on a persistent ``OperationalError`` instead of hanging.
 
-    A rejected password and a refused connection both surface as OperationalError;
+    A rejected password and a refused connection both surface as ``OperationalError``;
     the wall-clock deadline covers both so CI and developers see the failure within
     the bound rather than waiting forever.
     """
@@ -476,7 +476,7 @@ def test_a_non_transient_connection_failure_is_not_retried(
 
     Only ``OperationalError`` means a store that may still appear. Retrying every
     failure class would turn a misconfiguration into an unbounded wait; a deadline
-    on the OperationalError path does not change that.
+    on the ``OperationalError`` path does not change that.
     """
     attempts = {"count": 0}
 
@@ -591,7 +591,7 @@ def test_the_migrate_target_bootstraps_the_beat_tables():
     first ``--start-celery`` against a freshly migrated store otherwise waits out
     the API readiness timeout on tables only beat itself would create.
 
-    The recipe passes a 60s readiness deadline so a persistent OperationalError
+    The recipe passes a 60s readiness deadline so a persistent ``OperationalError``
     fails the command instead of hanging; the side-car one-shot omits that flag.
 
     This asserts the recipe's text; no test runs the target, so a shell-level
