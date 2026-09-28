@@ -44,7 +44,8 @@ non-zero on failure with a redacted warning on stderr, and the "Next steps"
 output always carries the manual reminder. The Jenkins trigger is best-effort
 too, but explicitly: every flow passes ``JENKINS_OPTIONAL=1``, so unset
 ``JENKINS_*`` credentials or a failed trigger print a ``WARNING`` on stderr
-instead of aborting a release whose tag is already pushed. A bare
+instead of aborting a flow that has already pushed its release branch
+(``prep``) or its tag (``rc``, ``stable``). A bare
 ``make trigger-jenkins`` fails on either.
 """
 
