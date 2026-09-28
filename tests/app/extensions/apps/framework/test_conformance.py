@@ -995,7 +995,7 @@ def test_item_display_names_fire_on_the_singular_alone():
 
 
 def test_item_display_names_pass_when_singular_is_declared_and_plural_derived():
-    """A declared singular with a derived plural is healthy — plural ≠ title."""
+    """Pass a declared singular whose derived plural differs from the title."""
     payload = {
         "name": "mysql_backups",
         "display_name": "MySQL Backups",

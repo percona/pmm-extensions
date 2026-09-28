@@ -2885,17 +2885,12 @@ class TestAppSchemaRecordDisplayNames:
         assert schema.item_display_name == "backup"
         assert schema.item_display_name_plural == "backups"
 
-    def test_record_names_stay_required_on_the_wire_schema(self) -> None:
-        """Constructor defaults must not weaken the OpenAPI required contract."""
-        schema = AppSchema.model_json_schema()
-
-        assert set(ITEM_DISPLAY_NAME_KEYS).issubset(schema["required"])
-        for key in ITEM_DISPLAY_NAME_KEYS:
-            assert "default" not in schema["properties"][key]
-
-    def test_entity_record_names_stay_required_on_the_wire_schema(self) -> None:
-        """Entity schemas keep the same wire-required contract as the app schema."""
-        schema = AppEntitySchema.model_json_schema()
+    @pytest.mark.parametrize("model", [AppSchema, AppEntitySchema])
+    def test_record_names_stay_required_on_the_wire_schema(
+        self, model: type[AppSchema | AppEntitySchema]
+    ) -> None:
+        """Keep both record names required and default-free in the OpenAPI schema."""
+        schema = model.model_json_schema()
 
         assert set(ITEM_DISPLAY_NAME_KEYS).issubset(schema["required"])
         for key in ITEM_DISPLAY_NAME_KEYS:

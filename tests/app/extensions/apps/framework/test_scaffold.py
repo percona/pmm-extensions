@@ -1356,6 +1356,24 @@ def test_singular_flag_alone_derives_the_plural(flavor: scaffold.Flavor) -> None
     assert config.display_name == "Demo"
 
 
+def test_wizard_singular_prompt_derives_the_plural_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Derive the plural prompt default from a typed singular record name."""
+    _force_wizard(
+        monkeypatch,
+        prompt_answers={"Record name (singular)": "node"},
+    )
+    parser = scaffold.build_parser()
+    config = scaffold.resolve_config(
+        parser, parser.parse_args(["--name", "demo", "--type", "task"])
+    )
+
+    assert config.item_display_name == "node"
+    assert config.item_display_name_plural == "nodes"
+    assert config.display_name == "Demo"
+
+
 @pytest.mark.parametrize("flavor", list(scaffold.Flavor))
 def test_record_display_names_rendered_into_every_declaration_site(
     tmp_settings: Path, flavor: scaffold.Flavor
