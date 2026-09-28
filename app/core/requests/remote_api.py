@@ -58,7 +58,7 @@ from aiohttp import (
 )
 from aiohttp.abc import AbstractCookieJar
 from fastapi import HTTPException, status
-from pydantic import BaseModel, computed_field, Field, PrivateAttr
+from pydantic import computed_field, Field, PrivateAttr
 
 from app.core.exceptions import (
     HTTPBadGatewayException,
@@ -1103,7 +1103,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         return context
 
 
-class CredentialHeaderMixin(BaseModel):
+class CredentialHeaderMixin(BaseRemoteAPI):
     """Opt-in persistent ``Authorization`` header for :class:`BaseRemoteAPI` subclasses.
 
     Apply leftmost in the MRO (e.g. ``CredentialHeaderMixin, RemoteAPI``) so
@@ -1153,9 +1153,7 @@ class CredentialHeaderMixin(BaseModel):
         :return: The inherited headers, plus ``Authorization`` when
             :attr:`_credential_value` is non-``None``.
         """
-        # Concrete MRO places BaseRemoteAPI next; statically this mixin only
-        # subclasses BaseModel.
-        base_headers = super().headers  # ty: ignore[unresolved-attribute]
+        base_headers = super().headers
         credential = self._credential_value
         if credential is None:
             return base_headers
