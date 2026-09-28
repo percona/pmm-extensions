@@ -22,7 +22,6 @@
     "@types/react": "^19.1.0",
     "@vitejs/plugin-react": "^6.0.1",
     "jsdom": "^29.1.1",
-    "material-react-table": "1.15.1",
     "typescript": "~6.0.3",
     "vitest": "^4.1.11"
   },
