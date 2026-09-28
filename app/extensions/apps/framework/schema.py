@@ -1601,7 +1601,6 @@ def pluralize_item_display_name(singular: str) -> str:
     if not word:
         return singular
     lower = word.lower()
-    # Slice is empty when the word is shorter than two characters.
     penult = lower[-2:-1]
     if lower.endswith("y") and penult and penult not in _VOWELS:
         plural_word = f"{word[:-1]}ies"
@@ -1630,8 +1629,8 @@ def _fill_item_display_names(data: Any) -> Any:
         returned untouched so Pydantic reports it as a ``model_type`` error
         rather than this function raising ``AttributeError`` out of the
         validator; input whose ``display_name`` is absent or not a string is
-        returned untouched for the same reason, leaving the two record names to
-        be reported ``missing`` alongside it. A non-string
+        returned untouched for the same reason, leaving Pydantic to report the
+        ``display_name`` error alone. A non-string
         ``item_display_name`` is likewise left untouched so the pluraliser is
         never called on a non-str and Pydantic surfaces the field type error.
     :return: A mapping with either record name filled, or the input unchanged
@@ -1643,8 +1642,6 @@ def _fill_item_display_names(data: Any) -> Any:
     if not isinstance(display_name, str):
         return data
     declared_singular = data.get("item_display_name")
-    # Only a real string counts as declared; a non-str would crash the
-    # pluraliser and turn a normal ValidationError into an unexpected raise.
     if declared_singular is not None and not isinstance(declared_singular, str):
         return data
     singular = display_name if declared_singular is None else declared_singular
@@ -1699,9 +1696,6 @@ class AppEntitySchema(SchemaBaseModel):
 
     name: Annotated[NonEmptyStr, Field(pattern=_FIELD_NAME_PATTERN)]
     display_name: NonEmptyStr
-    # Constructor defaults are None so authors/ty may omit either key; the
-    # before-validator fills strings, and json_schema_extra keeps both
-    # required and non-nullable on the wire.
     item_display_name: NonEmptyStr = Field(default=None)
     item_display_name_plural: NonEmptyStr = Field(default=None)
     description: NonEmptyStr | None = None
@@ -1844,9 +1838,6 @@ class AppSchema(SchemaBaseModel):
 
     name: Annotated[NonEmptyStr, Field(pattern=_FIELD_NAME_PATTERN)]
     display_name: NonEmptyStr
-    # Constructor defaults are None so authors/ty may omit either key; the
-    # before-validator fills strings, and json_schema_extra keeps both
-    # required and non-nullable on the wire.
     item_display_name: NonEmptyStr = Field(default=None)
     item_display_name_plural: NonEmptyStr = Field(default=None)
     description: NonEmptyStr | None = None
