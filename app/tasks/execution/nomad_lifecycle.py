@@ -24,6 +24,7 @@ from typing import Any, Self, TYPE_CHECKING
 
 from fastapi import FastAPI
 
+from app.core.requests.remote_api import PendingCloses
 from app.core.utils.fields import PRESERVE_CREDENTIALS_CONTEXT
 from app.tasks.config import tasks_settings
 
@@ -79,8 +80,10 @@ class NomadLifecycle:
 
     :meth:`reconcile` is wired as the ``(TASKS_SETTINGS, NOMAD)`` rebind
     callback by ``tasks_lifespan``; it opens the new executor before swapping
-    and closes the old one afterwards, so a reader resolving :attr:`current`
-    after the swap sees the new open session.
+    and retires the old one afterwards, so a reader resolving :attr:`current`
+    after the swap sees the new open session. Deferred retirements are tracked
+    on this holder's :class:`PendingCloses` so :meth:`__aexit__` can still
+    force-close them at shutdown if a holder never unwinds.
 
     :param app: The FastAPI application whose ``state`` exposes the holder to
         request-scoped readers via ``get_executor``.
@@ -91,6 +94,7 @@ class NomadLifecycle:
         self._current: NomadExecutor | None = None
         self._current_config: dict[str, Any] | None = None
         self._lock = asyncio.Lock()
+        self._pending_closes = PendingCloses()
 
     @property
     def current(self) -> NomadExecutor:
@@ -140,11 +144,12 @@ class NomadLifecycle:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
-        """Exit the entered executor and unpublish the holder on shutdown."""
+        """Exit the entered executor and force-close any still-deferred retirees."""
         async with self._lock:
             if self._current is not None:
                 await self._current.__aexit__(None, None, None)
                 self._current = None
+        await self._pending_closes.force_close()
         self._app.state.nomad_lifecycle = None
 
     async def reconcile(self) -> None:
@@ -165,7 +170,9 @@ class NomadLifecycle:
 
         The old executor is retired rather than closed outright: routes that
         resolved it stream off that instance for the whole response, so it stays
-        open until the last of them releases it.
+        open until the last of them releases it. The retirement is registered so
+        :meth:`__aexit__` can force-close it at shutdown if a holder never
+        unwinds.
 
         :raises ValidationError: If the overridden config fingerprint cannot be
             reconstructed into a :class:`NomadExecutor` (propagated from
@@ -185,4 +192,4 @@ class NomadLifecycle:
             old, self._current = self._current, new
             self._current_config = desired_config
         if old is not None:
-            await old.close_when_idle()
+            await old.close_when_idle(pending=self._pending_closes)
