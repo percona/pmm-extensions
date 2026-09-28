@@ -102,7 +102,10 @@ from app.tasks.models import (
 )
 from app.tasks.periodic.crud import PeriodicTaskManager
 from app.tasks.periodic.models import PeriodicTaskCreate, PeriodicTaskResponse
-from app.tasks.periodic.utils import attach_last_run_status
+from app.tasks.periodic.utils import (
+    attach_last_run_status,
+    generate_periodic_task_name,
+)
 from app.tasks.run_result import maybe_record_run
 
 logger = logging.getLogger(__name__)
@@ -242,8 +245,8 @@ async def create_periodic_task_for_task_name(
     kwargs = json.loads(periodic_task.kwargs)
     kwargs["task_name"] = task.name
     if not periodic_task.name:
-        periodic_task.name = f"run_{task.name}_{periodic_task.period}_{hash(periodic_task.kwargs)}".replace(
-            " ", "_"
+        periodic_task.name = generate_periodic_task_name(
+            task.name, periodic_task.period, periodic_task.kwargs
         )
     kwargs["periodic_task_name"] = periodic_task.name
     return await PeriodicTaskManager.create(

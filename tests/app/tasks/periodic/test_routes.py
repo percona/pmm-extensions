@@ -1022,6 +1022,40 @@ class TestCreatePeriodicTaskChainValidation:
         assert response.status_code == status.HTTP_201_CREATED
 
 
+class TestDuplicateUnnamedPeriodicTaskAttach:
+    """Test that a repeat unnamed create request is rejected, not duplicated."""
+
+    @pytest.mark.asyncio
+    async def test_second_unnamed_request_after_restart_gets_409(
+        self,
+        periodic_test_client,
+        celery_beat_session: AsyncSession,
+        tasks_session: AsyncSession,
+    ):
+        """Assert a second process's identical unnamed request collides.
+
+        A row seeded with the literal name this payload generates stands in for
+        a prior process (a worker restart, a deploy, or a second operator)
+        having already attached the same schedule.
+        """
+        await TaskManager.create(
+            tasks_session, TaskWrite.model_validate(TaskFactory.build(name="my-task"))
+        )
+        payload = {"interval": {"every": 10, "period": "minutes"}}
+        expected_name = "run_my-task_every_10_minutes_01263f4315fc8f0f"
+        await _add_periodic_task(
+            celery_beat_session, name=expected_name, task_name="my-task"
+        )
+
+        response = periodic_test_client.post("/my-task/periodic/", json=payload)
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        rows = await celery_beat_session.exec(
+            select(PeriodicTask).where(PeriodicTask.name == expected_name)
+        )
+        assert len(rows.all()) == 1
+
+
 class TestDeletePeriodicTask:
     """Test the DELETE /periodic/{periodic_task_id} endpoint."""
 
