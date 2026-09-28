@@ -431,9 +431,12 @@ def test_a_bounded_readiness_wait_gives_up_after_its_deadline(
 
     monkeypatch.setattr(Engine, "connect", refuse)
 
-    with pytest.raises(TimeoutError, match="did not become reachable within 0"):
+    with pytest.raises(
+        TimeoutError, match="did not become reachable within 0"
+    ) as excinfo:
         bootstrap.bootstrap_beat_schema(deadline_seconds=0)
 
+    assert isinstance(excinfo.value.__cause__, OperationalError)
     assert attempts["count"] == 1
 
 

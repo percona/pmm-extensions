@@ -126,12 +126,12 @@ def _wait_for_store(engine: Engine, *, deadline_seconds: float | None = None) ->
         try:
             with engine.connect():
                 return
-        except OperationalError:
+        except OperationalError as exc:
             if deadline is not None and monotonic() >= deadline:
                 raise TimeoutError(
                     f"Celery beat store at {engine.url.host}:{engine.url.port} "
                     f"did not become reachable within {deadline_seconds} seconds"
-                ) from None
+                ) from exc
             # Host and port only: the resolved URL carries the store's password.
             logger.info(
                 "Waiting for the Celery beat store at %s:%s",
