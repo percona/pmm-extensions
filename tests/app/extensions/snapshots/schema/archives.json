@@ -210,6 +210,13 @@
           "type": "one_of"
         }
       ],
+      "forbidden": [
+        {
+          "when": {
+            "truthy": "delete_data"
+          }
+        }
+      ],
       "render_after_submit": false,
       "title": "Destination"
     },
@@ -265,6 +272,13 @@
           "label": "Destination Host",
           "name": "host",
           "type": "one_of"
+        }
+      ],
+      "forbidden": [
+        {
+          "when": {
+            "truthy": "delete_data"
+          }
         }
       ],
       "render_after_submit": false,

@@ -41,7 +41,7 @@ def _file(name: str, additions: int = 0, deletions: int = 0):
     )
 
 
-_REPOSITORY = "percona/SEP"
+_REPOSITORY = "percona/pmm-extensions"
 _HUMAN_PULL = sync_pr_labels.PullRequest(
     author_login="yyyyyyyan", head_repository=_REPOSITORY
 )
@@ -225,14 +225,14 @@ def test_sync_blast_radius_labels_adds_and_removes_labels():
     )
 
     sync_pr_labels.sync_blast_radius_labels(
-        client, "percona", "SEP", 42, result, log=lambda _message: None
+        client, "percona", "pmm-extensions", 42, result, log=lambda _message: None
     )
 
     client.add_issue_labels.assert_called_once_with(
-        "percona", "SEP", 42, ["app-isolated"]
+        "percona", "pmm-extensions", 42, ["app-isolated"]
     )
     client.remove_issue_label.assert_called_once_with(
-        "percona", "SEP", 42, "large-diff"
+        "percona", "pmm-extensions", 42, "large-diff"
     )
 
 
@@ -266,7 +266,7 @@ def _sync_qa_not_required(client, *, eligible):
     sync_pr_labels.sync_qa_not_required_label(
         client,
         "percona",
-        "SEP",
+        "pmm-extensions",
         42,
         eligible=eligible,
         log=lambda _message: None,
@@ -288,7 +288,7 @@ def test_qa_not_required_not_eligible_for_a_human_author():
 
 
 @pytest.mark.parametrize(
-    "head_repository", ["someone/SEP", ""], ids=["fork", "deleted"]
+    "head_repository", ["someone/pmm-extensions", ""], ids=["fork", "deleted"]
 )
 def test_qa_not_required_not_eligible_for_dependabot_from_another_repository(
     head_repository,
@@ -305,7 +305,7 @@ def test_qa_not_required_not_eligible_for_dependabot_from_another_repository(
 def test_dependabot_repository_match_ignores_case():
     """Match the head repository against the base without regard to case."""
     pull = sync_pr_labels.PullRequest(
-        author_login="dependabot[bot]", head_repository="Percona/sep"
+        author_login="dependabot[bot]", head_repository="Percona/pmm-extensions"
     )
     assert sync_pr_labels.is_dependabot_pull_request(pull, _REPOSITORY)
 
@@ -468,7 +468,7 @@ def test_sync_qa_not_required_adds_when_eligible_and_absent():
     _sync_qa_not_required(client, eligible=True)
 
     client.add_issue_labels.assert_called_once_with(
-        "percona", "SEP", 42, ["qa not required"]
+        "percona", "pmm-extensions", 42, ["qa not required"]
     )
     client.remove_issue_label.assert_not_called()
 
@@ -482,7 +482,7 @@ def test_sync_qa_not_required_removes_a_bot_applied_stale_label():
     _sync_qa_not_required(client, eligible=False)
 
     client.remove_issue_label.assert_called_once_with(
-        "percona", "SEP", 42, "qa not required"
+        "percona", "pmm-extensions", 42, "qa not required"
     )
     client.add_issue_labels.assert_not_called()
 
@@ -515,7 +515,7 @@ def test_qa_not_required_bypass_reads_no_label_when_eligible():
     client = _qa_not_required_client(present=())
 
     assert sync_pr_labels.qa_not_required_bypass(
-        client, "percona", "SEP", 42, eligible=True
+        client, "percona", "pmm-extensions", 42, eligible=True
     )
     client.list_issue_labels.assert_not_called()
     client.list_issue_events.assert_not_called()
@@ -561,7 +561,7 @@ def test_main_requires_github_token(tmp_path, monkeypatch, capsys):
                 "--owner",
                 "percona",
                 "--repo",
-                "SEP",
+                "pmm-extensions",
                 "--pr-number",
                 "1",
                 "--labeler",
@@ -582,7 +582,7 @@ def test_main_reports_missing_labeler_cleanly(monkeypatch, capsys):
                 "--owner",
                 "percona",
                 "--repo",
-                "SEP",
+                "pmm-extensions",
                 "--pr-number",
                 "1",
                 "--labeler",
@@ -665,7 +665,7 @@ def test_list_pr_files_walks_every_page(monkeypatch):
     requested = _patch_urlopen_pages(monkeypatch, [full_page, last_page])
 
     client = sync_pr_labels.UrllibGitHubClient("token")
-    files = client.list_pr_files("percona", "SEP", 1)
+    files = client.list_pr_files("percona", "pmm-extensions", 1)
 
     assert len(files) == page_size + 1
     assert files[-1] == sync_pr_labels.PrFile(
@@ -682,7 +682,7 @@ def test_list_issue_labels_walks_every_page(monkeypatch):
     requested = _patch_urlopen_pages(monkeypatch, [full_page, last_page])
 
     client = sync_pr_labels.UrllibGitHubClient("token")
-    labels = client.list_issue_labels("percona", "SEP", 1)
+    labels = client.list_issue_labels("percona", "pmm-extensions", 1)
 
     assert len(labels) == page_size + 1
     assert "large-diff" in labels
@@ -729,7 +729,7 @@ def test_list_issue_events_walks_every_page(monkeypatch):
     requested = _patch_urlopen_pages(monkeypatch, [full_page, last_page])
 
     client = sync_pr_labels.UrllibGitHubClient("token")
-    events = client.list_issue_events("percona", "SEP", 1)
+    events = client.list_issue_events("percona", "pmm-extensions", 1)
 
     assert [_requested_page(url) for url in requested] == ["1", "2"]
     assert len(events) == page_size - unfiltered_on_first_page + 1
@@ -757,7 +757,7 @@ def test_list_issue_events_treats_a_missing_actor_as_non_bot(monkeypatch):
     _patch_urlopen_pages(monkeypatch, [page])
 
     client = sync_pr_labels.UrllibGitHubClient("token")
-    events = client.list_issue_events("percona", "SEP", 1)
+    events = client.list_issue_events("percona", "pmm-extensions", 1)
 
     assert events[0].actor_type == ""
     assert sync_pr_labels.qa_not_required_manually_applied(events)
@@ -769,7 +769,7 @@ def test_request_raises_on_unexpected_not_found(monkeypatch):
     client = sync_pr_labels.UrllibGitHubClient("token")
 
     with pytest.raises(sync_pr_labels.urllib.error.HTTPError):
-        client.list_pr_files("percona", "SEP", 1)
+        client.list_pr_files("percona", "pmm-extensions", 1)
 
 
 def test_get_pull_request_reads_author_and_head_repository(monkeypatch):
@@ -777,10 +777,10 @@ def test_get_pull_request_reads_author_and_head_repository(monkeypatch):
     requested = _patch_urlopen_pages(monkeypatch, [_pull_payload("dependabot[bot]")])
 
     client = sync_pr_labels.UrllibGitHubClient("token")
-    pull = client.get_pull_request("percona", "SEP", 7)
+    pull = client.get_pull_request("percona", "pmm-extensions", 7)
 
     assert pull == _DEPENDABOT_PULL
-    assert requested == ["https://api.github.com/repos/percona/SEP/pulls/7"]
+    assert requested == ["https://api.github.com/repos/percona/pmm-extensions/pulls/7"]
 
 
 def test_get_pull_request_maps_a_deleted_head_repository_to_empty(monkeypatch):
@@ -791,7 +791,7 @@ def test_get_pull_request_maps_a_deleted_head_repository_to_empty(monkeypatch):
 
     client = sync_pr_labels.UrllibGitHubClient("token")
 
-    assert client.get_pull_request("percona", "SEP", 7).head_repository == ""
+    assert client.get_pull_request("percona", "pmm-extensions", 7).head_repository == ""
 
 
 def test_remove_issue_label_tolerates_a_missing_label(monkeypatch):
@@ -799,7 +799,7 @@ def test_remove_issue_label_tolerates_a_missing_label(monkeypatch):
     _patch_urlopen_not_found(monkeypatch)
     client = sync_pr_labels.UrllibGitHubClient("token")
 
-    client.remove_issue_label("percona", "SEP", 1, "large-diff")
+    client.remove_issue_label("percona", "pmm-extensions", 1, "large-diff")
 
 
 def _patch_urlopen_routes(monkeypatch, routes):
@@ -878,7 +878,7 @@ def test_main_fetches_the_file_list_once_and_feeds_both_label_syncs(
                 "--owner",
                 "percona",
                 "--repo",
-                "SEP",
+                "pmm-extensions",
                 "--pr-number",
                 "7",
                 "--labeler",
@@ -923,7 +923,7 @@ def test_print_eligibility_reports_true_and_writes_no_label(monkeypatch, capsys)
                 "--owner",
                 "percona",
                 "--repo",
-                "SEP",
+                "pmm-extensions",
                 "--pr-number",
                 "7",
                 "--print-eligibility",
@@ -957,7 +957,7 @@ def test_print_eligibility_reports_false_for_a_code_diff(monkeypatch, capsys):
                 "--owner",
                 "percona",
                 "--repo",
-                "SEP",
+                "pmm-extensions",
                 "--pr-number",
                 "7",
                 "--print-eligibility",
@@ -1013,7 +1013,7 @@ def test_print_eligibility_honours_only_a_hand_applied_label(
                 "--owner",
                 "percona",
                 "--repo",
-                "SEP",
+                "pmm-extensions",
                 "--pr-number",
                 "7",
                 "--print-eligibility",
@@ -1049,7 +1049,7 @@ def test_print_eligibility_needs_no_labeler_file(monkeypatch, capsys):
                 "--owner",
                 "percona",
                 "--repo",
-                "SEP",
+                "pmm-extensions",
                 "--pr-number",
                 "7",
                 "--labeler",

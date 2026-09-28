@@ -163,7 +163,7 @@ async def run_sweep(
     base = "app.extensions.apps.om_inventory.service"
     with (
         patch(f"{base}._build_clients", AsyncMock(return_value=clients)),
-        patch(f"{base}.require_internal_token", return_value="token"),
+        patch(f"{base}.get_internal_token", return_value="token"),
         patch(f"{base}.list_mongodb_services", AsyncMock(return_value=[])),
         # The host half of enumeration, stubbed empty for the same reason as the
         # service half: these tests are about what a sweep concludes from a mapping,

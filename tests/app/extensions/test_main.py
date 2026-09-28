@@ -355,7 +355,7 @@ async def _refresher_proxy_map(mocker) -> dict[SettingClassEnum, ProxyEntry]:
     """Return the proxy map ``extensions_overrides_lifespan`` hands to the refresher.
 
     :param mocker: The ``pytest-mock`` fixture used to stub the refresher.
-    :return: The composed app-owned-plus-SEP proxy map.
+    :return: The composed proxy map: the app-owned entries plus the PMM Extensions ones.
     """
     captured: dict[SettingClassEnum, ProxyEntry] = {}
 

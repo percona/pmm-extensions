@@ -411,7 +411,10 @@ def _setting_class_check_haystack(sync_url) -> str:
 @pytest.mark.xdist_group("shared_postgres_db")
 @pytest.mark.postgres
 def test_shared_db_extensions_then_tasks_upgrade_is_clean(shared_postgres_db):
-    """Apply the PMM Extensions then-Tasks upgrade on one shared database with no duplicate-table error."""
+    """Apply PMM Extensions, then Tasks, on one shared database cleanly.
+
+    Neither upgrade may raise a duplicate-table error.
+    """
     sync_url = shared_postgres_db
     extensions_cfg = Config(str(ALEMBIC_INI), ini_section="extensions")
     tasks_cfg = Config(str(ALEMBIC_INI), ini_section="tasks")
@@ -441,7 +444,7 @@ def test_shared_db_extensions_then_tasks_upgrade_is_clean(shared_postgres_db):
 @pytest.mark.xdist_group("shared_postgres_db")
 @pytest.mark.postgres
 def test_shared_db_tasks_then_extensions_upgrade_is_clean(shared_postgres_db):
-    """Apply the Tasks-then-SEP upgrade — the reverse order must be equally clean."""
+    """Apply Tasks, then PMM Extensions — the reverse order must be equally clean."""
     sync_url = shared_postgres_db
     extensions_cfg = Config(str(ALEMBIC_INI), ini_section="extensions")
     tasks_cfg = Config(str(ALEMBIC_INI), ini_section="tasks")

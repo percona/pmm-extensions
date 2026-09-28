@@ -246,10 +246,9 @@ class PMMSyncer(BaseSyncer):
 
         An entity excluded by the caller's filter is held without its counter moving:
         an operator exclusion is evidence in neither direction, exactly like an
-        incomplete generation. An entity that is *already* retired is held the same
-        way: it is in the state this method exists to reach, so advancing its counter
-        would only re-issue an idempotent retirement on every run, for as long as the
-        tombstone is kept.
+        incomplete generation. An entity that is *already* retired is skipped
+        outright, neither held nor counted: it is in the state this method exists to
+        reach, and it has no ``SyncItem`` in this run to close.
 
         :param entity_type: The type of the absent entities.
         :param absent_entities: The local entities this generation did not report.
@@ -261,8 +260,10 @@ class PMMSyncer(BaseSyncer):
         :raises HTTPBadRequestException: If a ledger write hits a database error.
         """
         for created_entity in absent_entities:
+            if created_entity.is_retired:
+                continue
             excluded = created_entity.external_id in filtered_external_ids
-            if not permitted or excluded or created_entity.retired_at is not None:
+            if not permitted or excluded:
                 await self.hold_entity(entity_type, created_entity)
                 continue
             missing = await SyncEntityAbsenceManager.record_missing(
@@ -299,8 +300,7 @@ class PMMSyncer(BaseSyncer):
         """
         # Keyed by primary key, not external id: a tombstone and the replacement
         # that took its external id both come back from a retired-inclusive read,
-        # and a row that lost an external-id slot would never reach _retire_absent,
-        # leaving the SyncItem prepare_sync opened for it hanging.
+        # and an external-id key would let whichever came last shadow the other.
         syncable_nodes: dict[int | None, CreatedNode] = {}
         external_id_to_id: dict[str, int | None] = {}
         for node in await self.get_inventory_nodes():

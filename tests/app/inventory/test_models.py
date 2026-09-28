@@ -19,6 +19,7 @@ from datetime import timedelta
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.utils.date_time import utc_now
@@ -26,8 +27,10 @@ from app.inventory.constants import ACTIVE_RETIREMENT_KEY, SYNC_ATTEMPT_MAX_CLOC
 from app.inventory.crud import RetiredInclusiveServiceManager, ServiceManager
 from app.inventory.models import (
     ExternalIdentityAlias,
+    HostSystemObservation,
     HostSystemObservationWrite,
     IdentityLinkDecision,
+    Node,
     NodeWrite,
     Service,
     ServiceSystemObservationWrite,
@@ -149,6 +152,50 @@ class TestHostSystemObservationBaseValidator:
             observed_at=utc_now(),
         )
         assert observation.config == {"kernel": "5.15"}
+
+
+class TestHostSystemObservationTableGuard:
+    """Test the at-least-one-fact CHECK on the ``hostsystemobservation`` table.
+
+    ``HostSystemObservation`` is a table model, so SQLModel skips the validator
+    ``HostSystemObservationWrite`` runs. Anything reaching the table through the
+    ORM rather than through the write model — a fixture, a script, a future
+    caller — meets the CHECK and nothing else.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fact_less_row_is_rejected(
+        self, session: AsyncSession, node: Node
+    ) -> None:
+        """Refuse a row whose every observed fact is unset.
+
+        The two JSON facts are what make this a real test rather than a
+        tautology: they reach the database as SQL NULL only because they are
+        declared ``JSON(none_as_null=True)``. Under SQLAlchemy's default they
+        would arrive as the JSON text ``null``, and the CHECK would pass.
+        """
+        session.add(HostSystemObservation(node_id=node.id, observed_at=utc_now()))
+        with pytest.raises(IntegrityError):
+            await session.flush()
+
+    @pytest.mark.asyncio
+    async def test_row_with_one_fact_is_admitted(
+        self, session: AsyncSession, node: Node
+    ) -> None:
+        """Accept a row carrying a single fact, leaving the rest unset."""
+        observation = HostSystemObservation(
+            node_id=node.id,
+            observed_at=utc_now(),
+            os_version="Ubuntu 24.04",
+        )
+        session.add(observation)
+        await session.commit()
+
+        await session.refresh(observation)
+        assert observation.id is not None
+        assert observation.installed_packages is None
+        assert observation.config is None
+        assert observation.can_elevate is None
 
 
 class TestServiceSystemObservationBaseValidator:

@@ -168,7 +168,8 @@ def test_backup_pg_form_strips_stanza_whitespace() -> None:
 
 
 @pytest.mark.parametrize(
-    "invalid_stanza", ["../extensions", "sep/test", "extensions.test", "_extensions"]
+    "invalid_stanza",
+    ["../extensions", "extensions/test", "extensions.test", "_extensions"],
 )
 def test_backup_pg_form_rejects_unsafe_stanza(invalid_stanza: str) -> None:
     """Stanza only allows [A-Za-z0-9][A-Za-z0-9_-]*."""

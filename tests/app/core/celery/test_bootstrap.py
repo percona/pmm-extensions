@@ -594,8 +594,8 @@ def test_the_migrate_target_bootstraps_the_beat_tables():
     The recipe passes a 60s readiness deadline so a persistent ``OperationalError``
     fails the command instead of hanging; the side-car one-shot omits that flag.
 
-    This asserts the recipe's text; no test runs the target, so a shell-level
-    fault in the line would still reach CI.
+    This fast smoke check asserts the recipe's text; the PostgreSQL tests in
+    ``tests/app/migrations/test_make_migrate.py`` exercise its shell-level wiring.
     """
     recipe = makefile_recipe("migrate")
     upgrades = [index for index, line in enumerate(recipe) if "alembic --name" in line]

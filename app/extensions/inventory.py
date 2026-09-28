@@ -65,6 +65,14 @@ class CreatedEntityBase(BaseSQLModel):
     retired_at: UTCDatetime | None = None
 
     @property
+    def is_retired(self) -> bool:
+        """Return whether the entity is tombstoned.
+
+        :return: ``True`` once ``retired_at`` is set.
+        """
+        return self.retired_at is not None
+
+    @property
     def children(self) -> list[CreatedEntityBase]:
         """Retrieve the list of child entities associated with the entity.
 

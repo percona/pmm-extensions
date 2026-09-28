@@ -36,7 +36,7 @@ from sqlmodel import col
 
 from app.core.exceptions import HTTPNotFoundException
 from app.core.requests import as_json_object, RemoteAPI
-from app.core.security import require_internal_token
+from app.core.security import get_internal_token
 from app.core.utils.date_time import utc_now
 from app.core.utils.fields import UTCDatetime
 from app.extensions.apps.atw.crud import AtwIncidentExecutionManager
@@ -160,9 +160,6 @@ async def reconcile_executions(batch_size: int) -> None:
     through and request each of them a second time.
 
     :param batch_size: The most executions this tick may examine.
-    :raises RuntimeError: Propagated from ``require_internal_token`` when no internal
-        token is configured. Every per-row upstream failure is absorbed and retried,
-        but a sweep that cannot authenticate at all has nothing to reconcile with.
     """
     async with get_async_session_maker()() as session:
         rows = await AtwIncidentExecutionManager.unresolved_batch(session, batch_size)
@@ -180,7 +177,7 @@ async def reconcile_executions(batch_size: int) -> None:
     if not targets:
         return
     client = await get_tasks_api()
-    with client.auth(require_internal_token()) as tasks_api:
+    with client.auth(get_internal_token()) as tasks_api:
         for execution_id, task_history_id in targets:
             await _reconcile_one(tasks_api, execution_id, task_history_id)
     logger.info("Examined %d unresolved ATW execution(s).", len(targets))

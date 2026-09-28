@@ -2362,10 +2362,11 @@ export interface paths {
      *
      *     Served here rather than pointing the caller at ``/api/extensions/admin/settings``
      *     because that router is admin-gated and PMM's principal is not an admin: the
-     *     ``--sep-token`` bearer resolves to the synthetic ``extensions-service`` user, built
-     *     with ``is_admin=False`` deliberately, since it is a deployment-level shared
-     *     secret with no person behind it. An app-owned endpoint keeps a schedule change
-     *     scoped to this app instead of requiring PMM Extensions wide administrative access.
+     *     bearer of the pmm-managed ``--extensions-token`` flag resolves to the synthetic
+     *     ``extensions-service`` user, built with ``is_admin=False`` deliberately, since
+     *     it is a deployment-level shared secret with no person behind it. An app-owned
+     *     endpoint keeps a schedule change scoped to this app instead of requiring PMM
+     *     Extensions wide administrative access.
      *
      *     Every field is listed, not only the overridden ones, and each row carries
      *     whether an override is in effect - so "why is it sweeping every 10 minutes"
@@ -2402,10 +2403,10 @@ export interface paths {
      *     settings refresher rather than through this request.
      *
      *     ``ENABLED`` is what PMM's OpenManager switch calls, via this same route with
-     *     its ``--sep-token`` credential (see ``require_minimum_role``'s service-principal
-     *     bypass): it flips independently of ``SCHEDULE``, so the configured cadence
-     *     survives OpenManager being turned off and back on rather than being
-     *     overwritten each time.
+     *     the credential of the pmm-managed ``--extensions-token`` flag (see
+     *     ``require_minimum_role``'s service-principal bypass): it flips independently
+     *     of ``SCHEDULE``, so the configured cadence survives OpenManager being turned
+     *     off and back on rather than being overwritten each time.
      *
      *     :param request: The incoming request; its ``app.state`` carries the rebind
      *         callbacks fired for the keys this changed.
@@ -4781,6 +4782,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param services: A list of services associated with the node.
      */
     Node: {
@@ -4806,6 +4810,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       source: components['schemas']['SourceEnum'];
@@ -4913,6 +4919,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param tables: A list of tables within the schema.
      */
     Schema: {
@@ -4934,6 +4943,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       /** Service Id */
@@ -5289,7 +5300,6 @@ export interface components {
      *
      *     :cvar PMM: Represents the PMM data source.
      *     :vartype PMM: str
-     * @constant
      * @enum {string}
      */
     SourceEnum: 'pmm';
@@ -5778,7 +5788,6 @@ export interface components {
       /**
        * Status
        * @constant
-       * @enum {string}
        */
       status: 'success';
     };
@@ -6042,6 +6051,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      */
     app__inventory__models__ServiceResponse: {
       /** Cluster */
@@ -6072,6 +6084,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       node: components['schemas']['Node'];
       /** Node Id */
       node_id: number;
@@ -10992,7 +11006,9 @@ export interface components {
       /** Node Id */
       node_id: string;
       /** Observed */
-      observed?: Record<string, never>;
+      observed?: {
+        [key: string]: unknown;
+      };
       /** Services */
       services?: components['schemas']['om_inventory__ServiceResponse'][];
     };
@@ -11265,7 +11281,9 @@ export interface components {
       /** Node Id */
       node_id: string;
       /** Observed */
-      observed?: Record<string, never>;
+      observed?: {
+        [key: string]: unknown;
+      };
       /** Port */
       port?: number | null;
       /** Role */

@@ -32,6 +32,7 @@ from app.inventory.crud import (
     ServiceSystemObservationManager,
 )
 from app.inventory.deps import (
+    InScopeServiceDep,
     RetirableServiceDep,
     SchemaListQueryDep,
     SchemaScopeDep,
@@ -252,7 +253,7 @@ async def upsert_service_system_observation(
 @router.get("/{service_id}/schemas/", dependencies=[IsAuthenticatedDep])
 async def list_schemas_by_service(
     session: SessionDep,
-    service: ServiceDep,
+    service: InScopeServiceDep,
     pagination: PaginationDep,
     list_query: SchemaListQueryDep,
     manager: SchemaScopeDep,
@@ -264,7 +265,8 @@ async def list_schemas_by_service(
     is set, otherwise return ``SchemaCompactResponse`` (without tables).
 
     :param session: The async database session.
-    :param service: The resolved service dependency.
+    :param service: The service addressed by the path, resolved within the
+        request's retirement scope.
     :param pagination: Validated offset/limit query parameters.
     :param list_query: The resolved sort/search produced at the request
         boundary.

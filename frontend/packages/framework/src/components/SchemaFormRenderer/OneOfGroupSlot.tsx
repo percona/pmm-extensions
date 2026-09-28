@@ -59,6 +59,18 @@ export const OneOfGroupSlot = memo(function OneOfGroupSlot({
     }
   }, [activeValue, group.branches, unregister]);
 
+  // The segmented control renders off `group.default` whether or not the form
+  // holds a discriminator value, so a group whose section was gated out and
+  // then shown again comes back looking answered while submitting an untagged
+  // object the backend cannot discriminate. Re-seed on mount to keep what the
+  // reader sees and what ships in agreement.
+  useEffect(() => {
+    if (activeValue === '' || (watchedMode !== undefined && watchedMode !== null)) {
+      return;
+    }
+    setValue(group.discriminator, activeValue);
+  }, [activeValue, group.discriminator, setValue, watchedMode]);
+
   const handleModeChange = (_event: MouseEvent<HTMLElement>, next: string | null) => {
     if (!next || next === activeValue) {
       return;

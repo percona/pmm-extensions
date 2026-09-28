@@ -353,7 +353,7 @@ endif
 		echo "==> Triggering Jenkins $${jenkins_job} build for $${tag}..."; \
 		if printf 'user = "%s:%s"\n' "$${JENKINS_USER}" "$${JENKINS_API_TOKEN}" \
 			| curl -sSf -k --config - \
-				-X POST "$${JENKINS_URL}/job/SEP/job/$${jenkins_job}/buildWithParameters" \
+				-X POST "$${JENKINS_URL}/job/PMM-Extensions/job/$${jenkins_job}/buildWithParameters" \
 				--data-urlencode "releaseTag=$${tag}" \
 				--data-urlencode "pushImage=true" \
 				--data-urlencode "pushImageDocker=$(PUSH_IMAGE_DOCKER)" 2>&1; then \

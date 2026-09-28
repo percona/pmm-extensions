@@ -2382,7 +2382,7 @@ class TestExtensionsSettingsSecretsEncryptedAtRest:
 
         Driven through a real PATCH with no override on the body model, so the
         walker receives whatever the route's own coercion produces — a
-        :class:`pydantic_core.Url` for this field, which is the runtime type a
+        :class:`~pydantic.HttpUrl` for this field, which is the runtime type a
         hand-written string payload cannot reproduce.
         """
         response = api_admin_client.patch(
@@ -2751,6 +2751,74 @@ class TestExtensionsSettingsProvenance:
         assert entry["updated_by"] == admin_user.username
         assert datetime.fromisoformat(entry["updated_at"]) > stale
 
+    async def test_consecutive_patches_by_the_same_admin_are_accepted(
+        self,
+        api_admin_client: TestClient,
+        override_session: AsyncSession,
+        admin_user: CasdoorUser,
+    ) -> None:
+        """Accept a second PATCH whose actor restamp equals the stored actor.
+
+        The second write changes ``value`` while assigning ``updated_by`` the
+        value it already holds, which the model's actor-stamp guard must still
+        count as a restamp.
+        """
+        values = (10, 20)
+        for value in values:
+            response = api_admin_client.patch(
+                "/api/extensions/admin/settings/ExtensionsSettings",
+                json={"SYNC_REFRESH_TIME": value},
+            )
+            assert response.status_code == status.HTTP_200_OK
+
+        rows = await SettingsOverrideManager.list(
+            override_session,
+            setting_class=EXTENSIONS_SETTINGS_TOKEN,
+            key="SYNC_REFRESH_TIME",
+        )
+        assert len(rows) == 1
+        assert rows[0].value == values[-1]
+        assert rows[0].updated_by == admin_user.username
+
+    @pytest.mark.parametrize(
+        "stored_keys",
+        [("sync_refresh_time",), ("sync_refresh_time", "SYNC_REFRESH_TIME")],
+    )
+    async def test_patch_collapsing_a_legacy_spelling_restamps(
+        self,
+        api_admin_client: TestClient,
+        override_session: AsyncSession,
+        admin_user: CasdoorUser,
+        stored_keys: tuple[str, ...],
+    ) -> None:
+        """Rename or delete legacy-spelled rows and stamp the survivor with the caller.
+
+        Renaming a row changes the tracked ``key`` column, so the collapse must
+        restamp ``updated_by`` in the same flush to pass the actor-stamp guard.
+        """
+        for key in stored_keys:
+            await insert_override_row(
+                override_session,
+                setting_class=EXTENSIONS_SETTINGS_TOKEN,
+                key=key,
+                value=5,
+                updated_by="someone-else",
+            )
+
+        response = api_admin_client.patch(
+            "/api/extensions/admin/settings/ExtensionsSettings",
+            json={"SYNC_REFRESH_TIME": 10},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        override_session.expunge_all()
+        rows = await SettingsOverrideManager.list(
+            override_session, setting_class=EXTENSIONS_SETTINGS_TOKEN
+        )
+        assert [(row.key, row.value, row.updated_by) for row in rows] == [
+            ("SYNC_REFRESH_TIME", 10, admin_user.username)
+        ]
+
     async def test_detail_reports_the_stamp_the_patch_returned(
         self, api_admin_client: TestClient, admin_user: CasdoorUser
     ) -> None:
@@ -2928,3 +2996,88 @@ class TestExtensionsSettingsProvenance:
         assert body["has_override"] is False
         assert body["updated_at"] is None
         assert body["updated_by"] is None
+
+
+def _class_keys(payload: dict[str, Any], setting_class: str) -> set[str]:
+    """Return every key the LIST payload carries for one settings class."""
+    for group in payload["groups"]:
+        if group["setting_class"] == setting_class:
+            return {entry["key"] for entry in group["settings"]}
+    raise AssertionError(f"setting class {setting_class} not in payload")
+
+
+@pytest.mark.asyncio
+class TestSettingsComputedKeys:
+    """Cover the computed keys ``Settings`` exposes on the admin settings API."""
+
+    async def test_list_advertises_the_resolved_token(
+        self, api_admin_client: TestClient
+    ) -> None:
+        """Serve the computed ``EXTENSIONS_INTERNAL_TOKEN``, never its excluded input."""
+        response = api_admin_client.get("/api/extensions/admin/settings/")
+        keys = _class_keys(response.json(), SettingClassEnum.SETTINGS.value)
+        assert "EXTENSIONS_INTERNAL_TOKEN" in keys
+        assert "EXTENSIONS_INTERNAL_TOKEN_INPUT" not in keys
+
+    async def test_list_advertises_base_dir(self, api_admin_client: TestClient) -> None:
+        """Serve ``BASE_DIR`` too: every computed key is part of the public surface."""
+        response = api_admin_client.get("/api/extensions/admin/settings/")
+        assert "BASE_DIR" in _class_keys(
+            response.json(), SettingClassEnum.SETTINGS.value
+        )
+
+    async def test_detail_masks_the_token_and_refuses_overrides(
+        self, api_admin_client: TestClient
+    ) -> None:
+        """Return the computed token masked and classified NOT_OVERRIDABLE."""
+        response = api_admin_client.get(
+            "/api/extensions/admin/settings/Settings/EXTENSIONS_INTERNAL_TOKEN"
+        )
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert body["value"] == SECRET_STR_MASK
+        assert body["is_secret"] is True
+        assert body["reload"] == ReloadClassification.NOT_OVERRIDABLE.value
+
+    async def test_detail_serialises_base_dir(
+        self, api_admin_client: TestClient
+    ) -> None:
+        """Serialise a computed non-secret value rather than raising on lookup."""
+        response = api_admin_client.get(
+            "/api/extensions/admin/settings/Settings/BASE_DIR"
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["value"] == str(settings.BASE_DIR)
+
+    async def test_detail_on_the_excluded_input_returns_404(
+        self, api_admin_client: TestClient
+    ) -> None:
+        """Reject the excluded input key; it is not part of the public surface."""
+        response = api_admin_client.get(
+            "/api/extensions/admin/settings/Settings/EXTENSIONS_INTERNAL_TOKEN_INPUT"
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_patch_of_a_computed_key_returns_422(
+        self, api_admin_client: TestClient
+    ) -> None:
+        """Refuse a PATCH of a computed key as not-overridable, not as unknown."""
+        response = api_admin_client.patch(
+            "/api/extensions/admin/settings/Settings",
+            json={"EXTENSIONS_INTERNAL_TOKEN": "rotated"},
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        detail = response.json()["detail"]
+        assert any(
+            entry["type"] == ReloadClassification.NOT_OVERRIDABLE.value
+            for entry in detail
+        )
+
+    async def test_delete_of_a_computed_key_returns_409(
+        self, api_admin_client: TestClient
+    ) -> None:
+        """Refuse a DELETE of a computed key; no override row can ever exist."""
+        response = api_admin_client.delete(
+            "/api/extensions/admin/settings/Settings/EXTENSIONS_INTERNAL_TOKEN"
+        )
+        assert response.status_code == status.HTTP_409_CONFLICT

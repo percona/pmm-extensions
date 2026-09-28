@@ -124,7 +124,7 @@ class TestInventorySettingsBootstrap:
 
         @asynccontextmanager
         async def _no_op_lifespan(_app: FastAPI) -> AsyncIterator[None]:
-            """Stub the SEP/Tasks lifespans so the test stays hermetic."""
+            """Stub the PMM Extensions and Tasks lifespans to keep the test hermetic."""
             yield
 
         monkeypatch.setattr(

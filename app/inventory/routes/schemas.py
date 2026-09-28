@@ -27,6 +27,7 @@ from app.inventory.crud import (
     TableManager,
 )
 from app.inventory.deps import (
+    InScopeSchemaDep,
     RetirableSchemaDep,
     SchemaDep,
     SchemaListQueryDep,
@@ -166,12 +167,22 @@ async def record_schema_sync_health(
 @router.get("/{schema_id}/tables/", dependencies=[IsAuthenticatedDep])
 async def list_tables_by_schema(
     session: SessionDep,
-    schema: SchemaDep,
+    schema: InScopeSchemaDep,
     pagination: PaginationDep,
     list_query: TableListQueryDep,
     manager: TableScopeDep,
 ) -> PaginatedResponse[TableResponse]:
-    """List Tables by Schema."""
+    """List Tables by Schema.
+
+    :param session: The async database session.
+    :param schema: The schema addressed by the path, resolved within the
+        request's retirement scope.
+    :param pagination: Validated offset/limit query parameters.
+    :param list_query: The resolved sort/search produced at the request
+        boundary.
+    :param manager: The table manager the request's retirement scope selected.
+    :return: A paginated response of the schema's tables.
+    """
     logger.debug("Listing tables for schema '%s'", schema.id)
     return await manager.list_query_paginated(
         session,

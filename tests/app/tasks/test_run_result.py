@@ -824,7 +824,9 @@ class TestDispatchFailureCarveOut:
                     query_options=[undefer(TaskHistory.execution_request)],
                     id=history_id,
                 )
-                queue_item.execution_request.payload = "file:///sep/missing-payload.py"
+                queue_item.execution_request.payload = (
+                    "file:///usr/src/extensions/missing-payload.py"
+                )
                 queue_item = await TaskHistoryManager.save(
                     session, queue_item, flag_modified_fields=["execution_request"]
                 )
