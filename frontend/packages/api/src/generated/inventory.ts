@@ -375,10 +375,9 @@ export interface paths {
      *     The path names the **predecessor** — the survivor of a confirmation, and the
      *     row the operator is acting on in all three decisions.
      *
-     *     Carries ``IsAuthenticatedDep`` and deliberately not ``IsServicePrincipalDep``:
-     *     an identity link is an operator judgement, not a row the syncer owns. The
-     *     app-wide unsafe-method gate already makes the route admin-only for a human
-     *     while admitting the principal by identity.
+     *     Open to an admin as well as the service principal, unlike the other node
+     *     writes: an identity link is an operator judgement, not a row the syncer
+     *     owns.
      *
      *     :param session: The async database session.
      *     :param node: The predecessor addressed by the path, retired or not.
@@ -790,8 +789,9 @@ export interface paths {
      *
      *     The path names the **predecessor** — the survivor of a confirmation.
      *
-     *     Carries ``IsAuthenticatedDep`` and deliberately not ``IsServicePrincipalDep``:
-     *     an identity link is an operator judgement, not a row the syncer owns.
+     *     Open to an admin as well as the service principal, unlike the other
+     *     service writes: an identity link is an operator judgement, not a row the
+     *     syncer owns.
      *
      *     :param session: The async database session.
      *     :param service: The predecessor addressed by the path, retired or not.
