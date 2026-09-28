@@ -192,7 +192,7 @@
 | app/extensions/apps/dipper/constants.py                                                                                             |       11 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/dipper/deps.py                                                                                                  |      120 |       14 |       34 |        8 |     83% |120-122, 143-144, 184-187, 188-\>195, 218, 219-\>221, 278, 280, 282, 391 |
 | app/extensions/apps/dipper/models.py                                                                                                |       17 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/dipper/schema.py                                                                                                |       36 |        1 |       10 |        1 |     96% |       240 |
+| app/extensions/apps/dipper/schema.py                                                                                                |       36 |        1 |       10 |        1 |     96% |       239 |
 | app/extensions/apps/field\_names.py                                                                                                 |        6 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/framework/api.py                                                                                                |      334 |       10 |      130 |        8 |     96% |148-\>146, 203-208, 749, 756, 884, 890, 895, 901, 916, 1325 |
 | app/extensions/apps/framework/apps.py                                                                                               |      362 |        7 |      148 |        7 |     97% |588, 781, 797, 814, 874, 888, 895 |
@@ -216,8 +216,8 @@
 | app/extensions/apps/framework/registry.py                                                                                           |      206 |        3 |      108 |        3 |     98% |460, 462, 481 |
 | app/extensions/apps/framework/responses.py                                                                                          |       96 |        1 |       20 |        1 |     98% |        64 |
 | app/extensions/apps/framework/rules.py                                                                                              |      538 |        7 |      130 |        5 |     98% |323, 328, 333, 545, 861, 1348, 1368 |
-| app/extensions/apps/framework/scaffold.py                                                                                           |      438 |       29 |      150 |       20 |     91% |305, 316, 328, 447, 544, 547, 567-\>574, 570, 621-623, 657, 698, 702, 910, 1151-1154, 1180, 1182, 1196-1199, 1225, 1230-1233, 1254, 1294 |
-| app/extensions/apps/framework/schema.py                                                                                             |      440 |        2 |      126 |        2 |     99% |1379, 1983 |
+| app/extensions/apps/framework/scaffold.py                                                                                           |      444 |       29 |      152 |       20 |     91% |308, 319, 331, 450, 547, 550, 570-\>577, 573, 624-626, 660, 701, 705, 913, 1189-1192, 1218, 1220, 1234-1237, 1263, 1268-1271, 1292, 1332 |
+| app/extensions/apps/framework/schema.py                                                                                             |      486 |        3 |      148 |        6 |     99% |1380, 1584, 1588-\>1581, 1594-\>1581, 1597-\>1581, 2088 |
 | app/extensions/apps/framework/script\_helpers.py                                                                                    |       45 |        0 |        6 |        0 |    100% |           |
 | app/extensions/apps/framework/script\_source.py                                                                                     |       63 |        0 |       14 |        0 |    100% |           |
 | app/extensions/apps/framework/spec.py                                                                                               |      151 |        0 |       68 |        0 |    100% |           |
@@ -300,7 +300,7 @@
 | app/extensions/apps/shared/backups/columns.py                                                                                       |        5 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/shared/backups/edit\_form.py                                                                                    |       17 |        0 |       10 |        0 |    100% |           |
 | app/extensions/apps/shared/backups/responses.py                                                                                     |        3 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/shared/disk\_script\_source.py                                                                                  |       82 |        2 |       18 |        2 |     96% |  216, 263 |
+| app/extensions/apps/shared/disk\_script\_source.py                                                                                  |       82 |        2 |       18 |        2 |     96% |  216, 262 |
 | app/extensions/apps/shared/om/config.py                                                                                             |        5 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/snippets/app.py                                                                                                 |       11 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/snippets/extra\_routes.py                                                                                       |       71 |        6 |       10 |        0 |     93% |80-82, 99, 183, 214 |
@@ -376,7 +376,7 @@
 | app/extensions/snippets/models/meta.py                                                                                              |      233 |        1 |       74 |        3 |     99% |593, 741-\>743, 743-\>745 |
 | app/extensions/snippets/models/responses.py                                                                                         |       28 |        0 |        0 |        0 |    100% |           |
 | app/extensions/snippets/models/snippet.py                                                                                           |      338 |        5 |       78 |        3 |     98% |241-\>264, 265-266, 671-673 |
-| app/extensions/snippets/schema.py                                                                                                   |       97 |        4 |       34 |        1 |     96% |159-161, 376 |
+| app/extensions/snippets/schema.py                                                                                                   |       97 |        4 |       34 |        1 |     96% |158-160, 375 |
 | app/extensions/snippets/script\_source.py                                                                                           |       96 |        1 |       22 |        1 |     98% |       358 |
 | app/extensions/snippets/utils.py                                                                                                    |       32 |        0 |       10 |        0 |    100% |           |
 | app/extensions/sync/constants.py                                                                                                    |        4 |        0 |        0 |        0 |    100% |           |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33666** | **1918** | **8126** |  **676** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33718** | **1919** | **8150** |  **680** | **93%** |           |
 
 
 ## Setup coverage badge
