@@ -19,7 +19,7 @@
 | app/core/auth/models.py                                                                                                             |       97 |        0 |        2 |        0 |    100% |           |
 | app/core/auth/providers/casdoor/models.py                                                                                           |       95 |        6 |       18 |        1 |     90% |229-235, 265 |
 | app/core/auth/providers/casdoor/provider.py                                                                                         |       14 |        0 |        0 |        0 |    100% |           |
-| app/core/auth/providers/casdoor/sdk.py                                                                                              |      123 |       49 |       26 |        3 |     56% |51, 106-107, 145-\>147, 161-170, 190-191, 210-217, 243-265, 273, 292-300, 316-319, 355-\>354, 373-378, 386-387, 416-422, 432-438 |
+| app/core/auth/providers/casdoor/sdk.py                                                                                              |      123 |       49 |       26 |        3 |     56% |62, 117-118, 155-\>157, 171-180, 200-201, 220-227, 253-275, 283, 302-310, 326-329, 365-\>364, 383-388, 396-397, 426-432, 442-448 |
 | app/core/auth/providers/grafana/models.py                                                                                           |      228 |        4 |       44 |        2 |     98% |459, 804, 825-826 |
 | app/core/auth/providers/grafana/provider.py                                                                                         |       25 |        0 |        4 |        0 |    100% |           |
 | app/core/auth/providers/grafana/sdk.py                                                                                              |      141 |        0 |       22 |        0 |    100% |           |
@@ -55,7 +55,7 @@
 | app/core/pmm.py                                                                                                                     |       51 |        1 |       10 |        1 |     97% |        53 |
 | app/core/requests/connectivity.py                                                                                                   |       33 |        0 |        8 |        0 |    100% |           |
 | app/core/requests/registry.py                                                                                                       |       64 |        3 |       22 |        3 |     93% |101, 112, 171 |
-| app/core/requests/remote\_api.py                                                                                                    |      359 |        1 |       76 |        2 |     99% |365, 1018-\>1017 |
+| app/core/requests/remote\_api.py                                                                                                    |      382 |        3 |       78 |        2 |     99% |369, 1022-\>1021, 1135, 1147 |
 | app/core/security.py                                                                                                                |       10 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/alembic\_ops.py                                                                                         |      154 |       15 |       56 |       14 |     86% |93, 96, 98, 100-\>102, 120, 122, 158, 160, 174, 176, 217, 261, 306, 335, 361-362 |
 | app/core/settings\_override/api/export.py                                                                                           |        9 |        0 |        0 |        0 |    100% |           |
@@ -318,7 +318,7 @@
 | app/extensions/bundle\_upload/plan.py                                                                                               |      302 |        2 |       90 |        2 |     99% |1071, 1220 |
 | app/extensions/bundle\_upload/resolver.py                                                                                           |       56 |        0 |       14 |        0 |    100% |           |
 | app/extensions/bundle\_upload/seam.py                                                                                               |       12 |        0 |        0 |        0 |    100% |           |
-| app/extensions/clients/pmm.py                                                                                                       |      292 |        2 |       74 |        3 |     99% |565, 567, 980-\>982 |
+| app/extensions/clients/pmm.py                                                                                                       |      289 |        2 |       74 |        3 |     99% |558, 560, 973-\>975 |
 | app/extensions/config.py                                                                                                            |      248 |        3 |       60 |        3 |     98% |183, 441, 752 |
 | app/extensions/connectivity.py                                                                                                      |       39 |        4 |        2 |        1 |     88% |84, 163-169 |
 | app/extensions/crud.py                                                                                                              |      157 |        0 |       28 |        0 |    100% |           |
@@ -457,7 +457,7 @@
 | app/tasks/execution/executors/celery/models.py                                                                                      |       90 |        0 |       16 |        0 |    100% |           |
 | app/tasks/execution/executors/nomad/constants.py                                                                                    |        1 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/executors/nomad/exceptions.py                                                                                   |        4 |        0 |        0 |        0 |    100% |           |
-| app/tasks/execution/executors/nomad/models.py                                                                                       |      947 |       66 |      326 |       16 |     93% |197, 376, 446-449, 450-\>exit, 490, 492-\>486, 541, 584, 918, 980-\>982, 1250-\>1255, 1259, 1265, 1300-1305, 1543-\>1565, 1850, 1941, 2325-2327, 2353-2354, 2391-2392, 2426-2427, 2784, 2882-2883, 2957-2958, 2981-3037 |
+| app/tasks/execution/executors/nomad/models.py                                                                                       |      938 |       65 |      324 |       16 |     93% |197, 376, 446-449, 450-\>exit, 490, 492-\>486, 541, 584, 886, 948-\>950, 1218-\>1223, 1227, 1233, 1268-1273, 1511-\>1533, 1818, 1909, 2293-2295, 2321-2322, 2359-2360, 2394-2395, 2751-\>2752, 2850-2851, 2925-2926, 2949-3005 |
 | app/tasks/execution/executors/nomad/steps.py                                                                                        |       20 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/models.py                                                                                                       |       73 |        2 |       14 |        0 |     98% |  233, 288 |
 | app/tasks/execution/nomad\_lifecycle.py                                                                                             |       54 |        0 |       12 |        2 |     97% |145-\>148, 187-\>exit |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33718** | **1919** | **8150** |  **680** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33729** | **1920** | **8150** |  **680** | **93%** |           |
 
 
 ## Setup coverage badge
