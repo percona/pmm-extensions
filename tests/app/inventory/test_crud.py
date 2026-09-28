@@ -1876,6 +1876,7 @@ _SYNC_HEALTH_COLUMNS = frozenset(
         "last_sync_error",
         "sync_failing_since",
         "consecutive_failures",
+        "newest_attempt_at",
         "updated_at",
     }
 )
@@ -2034,17 +2035,11 @@ class TestRecordSyncHealth:
     async def test_out_of_order_failures_still_open_the_run_at_the_earlier_one(
         self, session: AsyncSession, sync_health_target: SyncHealthTarget
     ) -> None:
-        """Keep ``sync_failing_since`` at the earlier attempt whichever lands first.
+        """Keep the run start at the earlier attempt and the message at the newer.
 
         Reports cross the service boundary over HTTP, so two failures of one run
-        can arrive newest-first. Coalescing alone would leave the run opened at
-        whichever landed first, which is not the run's start.
-
-        ``last_sync_error`` is the residual gap: it is assigned unconditionally,
-        so the late older report leaves its own message behind. Naming the newest
-        failure would take a column recording the newest attempt seen, which the
-        entity does not carry; the assertion states today's behaviour so a future
-        fix has a failing test to flip.
+        can arrive newest-first. The late older report still counts toward the
+        run and moves its start back, but must not replace the newer message.
         """
         manager, entity = sync_health_target
         earlier = utc_now() - timedelta(minutes=10)
@@ -2058,7 +2053,8 @@ class TestRecordSyncHealth:
         await session.refresh(entity)
         assert _as_utc(entity.sync_failing_since) == earlier
         assert entity.consecutive_failures == SECOND_CONSECUTIVE_FAILURE
-        assert entity.last_sync_error == "old"
+        assert entity.last_sync_error == "new"
+        assert _as_utc(entity.newest_attempt_at) == later
 
     @pytest.mark.parametrize(
         "outcome", [_success, _failure], ids=["success", "failure"]
@@ -2219,28 +2215,216 @@ class TestRecordSyncHealth:
         assert entity.last_synced_at is None
 
     @pytest.mark.asyncio
-    async def test_success_between_two_failures_of_one_run_still_clears_it(
+    async def test_success_between_two_failures_of_one_run_is_rejected(
         self, session: AsyncSession, sync_health_target: SyncHealthTarget
     ) -> None:
-        """Pin the residual gap the failure-run guard does not close.
+        """Refuse a success attempted inside a run whose newest attempt failed.
 
-        ``sync_failing_since`` names the *first* failure of the run, so a
-        success attempted after it but before a later failure passes the guard
-        and clears a run whose newest attempt failed. Closing this would take a
-        column recording the newest attempt seen, which the entity does not
-        carry; the assertion states today's behaviour so a future fix has a
-        failing test to flip.
+        The success postdates the run's first failure, so only the newest
+        attempt seen — not the run start — can tell it is stale.
         """
         manager, entity = sync_health_target
         opened_at = utc_now() - timedelta(minutes=10)
+        newest_failure = utc_now()
         await manager.record_sync_health(session, entity, _failure(opened_at))
-        await manager.record_sync_health(session, entity, _failure(utc_now()))
+        await manager.record_sync_health(
+            session, entity, _failure(newest_failure, error="newest")
+        )
 
         await manager.record_sync_health(
             session, entity, _success(opened_at + timedelta(minutes=5))
         )
 
         await session.refresh(entity)
+        assert _as_utc(entity.sync_failing_since) == opened_at
+        assert entity.consecutive_failures == SECOND_CONSECUTIVE_FAILURE
+        assert entity.last_sync_error == "newest"
+        assert entity.last_synced_at is None
+        assert _as_utc(entity.newest_attempt_at) == newest_failure
+
+    @pytest.mark.parametrize(
+        "outcome", [_success, _failure], ids=["success", "failure"]
+    )
+    @pytest.mark.asyncio
+    async def test_accepted_write_records_the_newest_attempt(
+        self,
+        session: AsyncSession,
+        sync_health_target: SyncHealthTarget,
+        outcome: Callable[[datetime], SyncHealthWrite],
+    ) -> None:
+        """Stamp the attempt time whatever the outcome on a row never reported on."""
+        manager, entity = sync_health_target
+        attempted_at = utc_now()
+
+        await manager.record_sync_health(session, entity, outcome(attempted_at))
+
+        await session.refresh(entity)
+        assert _as_utc(entity.newest_attempt_at) == attempted_at
+
+    @pytest.mark.asyncio
+    async def test_success_advances_the_newest_attempt_past_a_failure(
+        self, session: AsyncSession, sync_health_target: SyncHealthTarget
+    ) -> None:
+        """Move the newest attempt forward when a later success closes the run."""
+        manager, entity = sync_health_target
+        await manager.record_sync_health(
+            session, entity, _failure(utc_now() - timedelta(minutes=5))
+        )
+        succeeded_at = utc_now()
+
+        await manager.record_sync_health(session, entity, _success(succeeded_at))
+
+        await session.refresh(entity)
+        assert _as_utc(entity.newest_attempt_at) == succeeded_at
         assert entity.sync_failing_since is None
+
+    @pytest.mark.parametrize(
+        "outcome", [_success, _failure], ids=["success", "failure"]
+    )
+    @pytest.mark.asyncio
+    async def test_rejected_write_leaves_the_newest_attempt_alone(
+        self,
+        session: AsyncSession,
+        sync_health_target: SyncHealthTarget,
+        outcome: Callable[[datetime], SyncHealthWrite],
+    ) -> None:
+        """Leave the newest attempt untouched by a report a later success superseded."""
+        manager, entity = sync_health_target
+        newer = utc_now()
+        await manager.record_sync_health(session, entity, _success(newer))
+
+        await manager.record_sync_health(
+            session, entity, outcome(newer - timedelta(minutes=5))
+        )
+
+        await session.refresh(entity)
+        assert _as_utc(entity.newest_attempt_at) == newer
+        assert _as_utc(entity.last_synced_at) == newer
         assert entity.consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_failure_on_a_row_predating_the_column_sets_it(
+        self, session: AsyncSession, sync_health_target: SyncHealthTarget
+    ) -> None:
+        """Treat a missing newest attempt as none seen, so the message is stored."""
+        manager, entity = sync_health_target
+        await _stamp_sync_health(
+            session,
+            entity,
+            last_sync_error="previous",
+            sync_failing_since=utc_now() - timedelta(days=1),
+            consecutive_failures=1,
+            newest_attempt_at=None,
+        )
+        failed_at = utc_now()
+
+        await manager.record_sync_health(
+            session, entity, _failure(failed_at, error="current")
+        )
+
+        await session.refresh(entity)
+        assert entity.last_sync_error == "current"
+        assert _as_utc(entity.newest_attempt_at) == failed_at
+
+    @pytest.mark.asyncio
+    async def test_failure_tied_with_the_newest_attempt_replaces_the_message(
+        self, session: AsyncSession, sync_health_target: SyncHealthTarget
+    ) -> None:
+        """Let arrival order break a tie between two failures of the same instant."""
+        manager, entity = sync_health_target
+        failed_at = utc_now()
+        await manager.record_sync_health(
+            session, entity, _failure(failed_at, error="first")
+        )
+
+        await manager.record_sync_health(
+            session, entity, _failure(failed_at, error="second")
+        )
+
+        await session.refresh(entity)
+        assert entity.last_sync_error == "second"
+        assert _as_utc(entity.newest_attempt_at) == failed_at
+
+    @pytest.mark.asyncio
+    async def test_success_tied_with_the_newest_failure_clears_the_run(
+        self, session: AsyncSession, sync_health_target: SyncHealthTarget
+    ) -> None:
+        """Let arrival order break a tie between a failure and a success."""
+        manager, entity = sync_health_target
+        attempted_at = utc_now()
+        await manager.record_sync_health(session, entity, _failure(attempted_at))
+
+        await manager.record_sync_health(session, entity, _success(attempted_at))
+
+        await session.refresh(entity)
+        assert _as_utc(entity.last_synced_at) == attempted_at
+        assert entity.sync_failing_since is None
         assert entity.last_sync_error is None
+        assert _as_utc(entity.newest_attempt_at) == attempted_at
+
+    @pytest.mark.asyncio
+    async def test_newest_attempt_reaches_a_retired_row(
+        self, session: AsyncSession, sync_health_target: SyncHealthTarget
+    ) -> None:
+        """Record the newest attempt even once the entity was retired concurrently."""
+        manager, entity = sync_health_target
+        await retire_in_place(session, entity)
+        failed_at = utc_now()
+
+        await manager.record_sync_health(session, entity, _failure(failed_at))
+
+        await session.refresh(entity)
+        assert _as_utc(entity.newest_attempt_at) == failed_at
+
+
+class TestRecordSyncHealthOnPostgreSQL:
+    """Test the out-of-order guards against real ``timestamptz`` comparisons.
+
+    SQLite stores these columns as offset-less text, so the ``CASE`` guards are
+    string comparisons there; only PostgreSQL proves them as timestamp ones.
+    """
+
+    @pytest.mark.postgres
+    @pytest.mark.asyncio
+    async def test_success_between_two_failures_of_one_run_is_rejected(
+        self, postgres_session: AsyncSession
+    ) -> None:
+        """Keep the run open when a success older than the newest failure lands."""
+        node = await NodeManager.create(postgres_session, NodeWriteFactory.build())
+        opened_at = utc_now() - timedelta(minutes=10)
+        await NodeManager.record_sync_health(
+            postgres_session, node, _failure(opened_at)
+        )
+        await NodeManager.record_sync_health(
+            postgres_session, node, _failure(utc_now())
+        )
+
+        await NodeManager.record_sync_health(
+            postgres_session, node, _success(opened_at + timedelta(minutes=5))
+        )
+
+        await postgres_session.refresh(node)
+        assert node.sync_failing_since == opened_at
+        assert node.last_synced_at is None
+
+    @pytest.mark.postgres
+    @pytest.mark.asyncio
+    async def test_out_of_order_failures_keep_the_newest_message(
+        self, postgres_session: AsyncSession
+    ) -> None:
+        """Keep the newer message and newest attempt when failures arrive reversed."""
+        node = await NodeManager.create(postgres_session, NodeWriteFactory.build())
+        earlier = utc_now() - timedelta(minutes=10)
+        later = utc_now()
+
+        await NodeManager.record_sync_health(
+            postgres_session, node, _failure(later, error="new")
+        )
+        await NodeManager.record_sync_health(
+            postgres_session, node, _failure(earlier, error="old")
+        )
+
+        await postgres_session.refresh(node)
+        assert node.last_sync_error == "new"
+        assert node.newest_attempt_at == later
+        assert node.sync_failing_since == earlier

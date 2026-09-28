@@ -105,7 +105,7 @@ def claim_identity(
     :param by_id: The primary-key-keyed index holding every candidate.
     """
     incumbent = by_id.get(identities.get(identity))
-    if incumbent is None or incumbent.retired_at is not None:
+    if incumbent is None or incumbent.is_retired:
         identities[identity] = entity.id
 
 
@@ -374,13 +374,13 @@ class BaseSyncer(BaseCaseInsensitiveModel):
         """Prepare synchronization for a given entity and its children.
 
         This method sets up SyncItems for the specified entity and recursively prepares
-        synchronization for any child entities if applicable.
+        synchronization for any child entities if applicable. A retired child is
+        skipped together with its subtree, whatever the syncer's ``can_sync_*``
+        predicates say about it.
 
         :param entity_type: The type of the entity to synchronize.
-        :type entity_type: SyncInventoryEntityTypeEnum
         :param created_entity: The entity instance to synchronize, or None for top-level
             (inventory) synchronization.
-        :type created_entity: CreatedEntity | None
         """
         entity_id = None if created_entity is None else created_entity.id
         logger.debug("Preparing sync for %s with ID %s", entity_type.name, entity_id)
@@ -390,8 +390,13 @@ class BaseSyncer(BaseCaseInsensitiveModel):
         )
         next_entity_type = entity_type + 1
         if self.can_sync_entity_type(next_entity_type):
+            can_sync = self.can_sync_mapping.get(next_entity_type)
             for child in await self.get_children_entities(entity_type, created_entity):
-                can_sync = self.can_sync_mapping.get(next_entity_type)
+                # Retired-inclusive reads exist for the match sites, where a
+                # tombstone can be recognised as reappearing. This walk has nothing
+                # to sync for one, so an item opened here would only ever hang.
+                if child.is_retired:
+                    continue
                 if can_sync is not None and can_sync(child):
                     await self.prepare_sync(next_entity_type, child)
         logger.debug(
@@ -850,7 +855,7 @@ class BaseSyncer(BaseCaseInsensitiveModel):
             ``manage_sync_item`` block propagate it and abort the whole run rather
             than failing the one item.
         """
-        if created_entity.retired_at is None:
+        if not created_entity.is_retired:
             return
         logger.info(
             "Reviving %s %s: reported again by its source",

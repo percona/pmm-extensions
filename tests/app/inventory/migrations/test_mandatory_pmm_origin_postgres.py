@@ -33,7 +33,8 @@ from alembic import command
 from sqlalchemy import text
 
 from tests.app.inventory.legacy_origin import PRE_RENAME_LEGACY_PREFIX
-from tests.app.inventory.migrations.conftest import run_on_postgres, SEED_TIMESTAMPS
+from tests.app.inventory.migrations.conftest import SEED_TIMESTAMPS
+from tests.app.inventory.migrations.postgres_support import run_on_postgres
 
 # The head immediately before the PMM origin becomes mandatory.
 _PRE_ORIGIN_REVISION = "c7d1e94ab3f2"

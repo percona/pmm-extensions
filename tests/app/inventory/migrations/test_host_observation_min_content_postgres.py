@@ -37,9 +37,9 @@ from sqlalchemy.exc import IntegrityError
 from app.inventory.models import HOST_OBSERVATION_MIN_CONTENT_CONSTRAINT
 from tests.app.inventory.migrations.conftest import (
     HOST_OBSERVATION_PRE_CONSTRAINT_REVISION,
-    run_on_postgres,
     SEED_TIMESTAMPS,
 )
+from tests.app.inventory.migrations.postgres_support import run_on_postgres
 
 _OBSERVED_AT = "'2026-01-01 00:00:00+00'"
 

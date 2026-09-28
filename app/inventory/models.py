@@ -83,6 +83,9 @@ class SyncHealthBase(SQLModel):
     :param sync_failing_since: When the current run of failures began — the
         first failure after the last success — or None while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     """
 
     last_synced_at: UTCDatetime | None = SQLField(
@@ -93,6 +96,9 @@ class SyncHealthBase(SQLModel):
         default=None, sa_type=DateTimeWithTimezone
     )
     consecutive_failures: NonNegativeInt = SQLField(default=0, nullable=False)
+    newest_attempt_at: UTCDatetime | None = SQLField(
+        default=None, sa_type=DateTimeWithTimezone
+    )
 
 
 class RetirableSQLModel(RetiredAtBase, BaseSQLModel):
@@ -209,11 +215,11 @@ class SyncHealthWrite(SQLModel):
     :param error: The failure's message, never empty. Required on FAILURE,
         absent on SUCCESS.
     :param attempted_at: When the syncer began this attempt. Stamped as
-        ``last_synced_at`` on success, and compared against the row's current
-        ``last_synced_at`` so a late-arriving report from an older attempt
-        cannot overwrite a newer one. Refused when it sits further ahead of this
-        service's clock than the tolerated skew, since nothing later could then
-        supersede it.
+        ``last_synced_at`` on success and as ``newest_attempt_at`` when newer,
+        and used to order reports so a late-arriving one from an older attempt
+        cannot overwrite a newer one. Refused when it sits further ahead of
+        this service's clock than the tolerated skew, since nothing later could
+        then supersede it.
     """
 
     outcome: SyncOutcomeEnum
@@ -281,6 +287,9 @@ class Node(NodeBase, SyncHealthBase, RetirableSQLModel, table=True):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param services: A list of services associated with the node.
     """
 
@@ -336,6 +345,9 @@ class NodeResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, NodeBase):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param services: A list of services associated with the node.
     """
 
@@ -432,6 +444,9 @@ class Service(RetirableSQLModel, SyncHealthBase, ServiceBase, table=True):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param schemas: A list of schemas associated with the service.
     """
 
@@ -486,6 +501,9 @@ class ServiceResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, ServiceBase):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     """
 
     schemas: list["Schema"]
@@ -552,6 +570,9 @@ class Schema(RetirableSQLModel, SyncHealthBase, SchemaBase, table=True):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param tables: A list of tables within the schema.
     """
 
@@ -611,6 +632,9 @@ class SchemaCompactResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, SchemaB
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     """
 
 
@@ -633,6 +657,9 @@ class SchemaResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, SchemaBase):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param tables: A list of tables within the schema.
     """
 
@@ -697,6 +724,9 @@ class Table(RetirableSQLModel, SyncHealthBase, TableBase, table=True):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param database: The schema to which the table is associated.
     """
 
@@ -754,6 +784,9 @@ class TableResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, TableBase):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     """
 
 

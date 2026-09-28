@@ -16,7 +16,7 @@
 """Define tests for the app.extensions.sync.model module."""
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import ClassVar, TypeVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -58,7 +58,11 @@ from app.extensions.sync.models import BaseSyncer, BaseTaskSyncer, TaskRunResult
 from app.inventory.models import ServiceTypeEnum, SyncOutcomeEnum
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.extensions.path_unsafe_task_names import PATH_UNSAFE_TASKS
-from tests.app.extensions.sync.conftest import sync_health_posts
+from tests.app.extensions.sync.conftest import (
+    close_run,
+    local_nodes_payload,
+    sync_health_posts,
+)
 from tests.app.factories import (
     CreatedNodeFactory,
     CreatedSchemaFactory,
@@ -329,9 +333,7 @@ async def test_prepare_sync(session: AsyncSession, created_node, mock_remote_api
         inventory_api=mock_remote_api,
         sync_instance=sync_instance,
     )
-    mock_remote_api.get.side_effect = [
-        {"items": [created_node.model_dump()], "total": 1, "offset": 0, "limit": 50},
-    ]
+    mock_remote_api.get.side_effect = [local_nodes_payload(created_node)]
 
     await syncer.prepare_sync(SyncInventoryEntityTypeEnum.INVENTORY, None)
 
@@ -342,6 +344,246 @@ async def test_prepare_sync(session: AsyncSession, created_node, mock_remote_api
         (SyncInventoryEntityTypeEnum.INVENTORY, None),
         (SyncInventoryEntityTypeEnum.NODE, created_node.id),
     }
+
+
+class TestPrepareSyncSkipsRetiredEntities:
+    """Test that ``prepare_sync`` opens no SyncItem for a tombstoned entity."""
+
+    @staticmethod
+    def _tree(retired: SyncInventoryEntityTypeEnum | None = None) -> CreatedNode:
+        """Build a single-branch node → service → schema → table tree.
+
+        :param retired: The one level to tombstone, or ``None`` for an all-active tree.
+        :return: The node at the root of the tree.
+        """
+        retired_at = utc_now()
+
+        def retired_at_for(level: SyncInventoryEntityTypeEnum) -> datetime | None:
+            return retired_at if level == retired else None
+
+        table = CreatedTableFactory.build(
+            id=40, retired_at=retired_at_for(SyncInventoryEntityTypeEnum.TABLE)
+        )
+        schema = CreatedSchemaFactory.build(
+            id=30,
+            tables=[table],
+            retired_at=retired_at_for(SyncInventoryEntityTypeEnum.SCHEMA),
+        )
+        service = CreatedServiceFactory.build(
+            id=20,
+            schemas=[schema],
+            retired_at=retired_at_for(SyncInventoryEntityTypeEnum.SERVICE),
+        )
+        return CreatedNodeFactory.build(
+            id=10,
+            services=[service],
+            retired_at=retired_at_for(SyncInventoryEntityTypeEnum.NODE),
+        )
+
+    @staticmethod
+    def _serve(mock_remote_api: AsyncMock, *nodes: CreatedNode) -> None:
+        """Answer the node list and per-service reads from ``nodes``.
+
+        :param mock_remote_api: The inventory client the syncer reads through.
+        :param nodes: The nodes the inventory reports, services nested.
+        """
+        services = {
+            f"/services/{service.id}": service.model_dump()
+            for node in nodes
+            for service in node.services
+        }
+
+        async def get(path: str, **_kwargs) -> dict:
+            if path == "/nodes/":
+                return local_nodes_payload(*nodes)
+            return services[path]
+
+        mock_remote_api.get.side_effect = get
+
+    @staticmethod
+    async def _prepared(
+        session: AsyncSession,
+        syncer_cls: type[BaseSyncer],
+        mock_remote_api: AsyncMock,
+    ) -> set[tuple[SyncInventoryEntityTypeEnum, int | None]]:
+        """Run one generation's ``prepare_sync`` and return the items it opened.
+
+        :param session: The session the run writes through.
+        :param syncer_cls: The syncer to prepare with.
+        :param mock_remote_api: The inventory client the syncer reads through.
+        :return: The ``(entity_type, entity_id)`` of every item the run persisted.
+        """
+        sync_instance = await _create_sync_instance(session, syncer_cls)
+        syncer = _build_syncer(
+            syncer_cls,
+            session,
+            inventory_api=mock_remote_api,
+            sync_instance=sync_instance,
+        )
+        await syncer.prepare_sync(SyncInventoryEntityTypeEnum.INVENTORY, None)
+        await close_run(session, sync_instance.id, snapshot_complete=None)
+        items = await SyncItemManager.list(session, sync_instance_id=sync_instance.id)
+        return {(item.entity_type, item.entity_id) for item in items}
+
+    @pytest.mark.asyncio
+    async def test_retired_node_subtree_is_not_walked(
+        self, session: AsyncSession, mock_remote_api
+    ) -> None:
+        """Skip an active service under a tombstoned node, without reading it."""
+
+        class ServiceSyncer(StubTestSyncer):
+            SYNC_TO_LIMIT = SyncInventoryEntityTypeEnum.SERVICE
+
+        self._serve(mock_remote_api, self._tree(SyncInventoryEntityTypeEnum.NODE))
+
+        assert await self._prepared(session, ServiceSyncer, mock_remote_api) == {
+            (SyncInventoryEntityTypeEnum.INVENTORY, None),
+        }
+        assert [call.args[0] for call in mock_remote_api.get.await_args_list] == [
+            "/nodes/"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_retired_service_under_active_node_gets_no_item(
+        self, session: AsyncSession, mock_remote_api
+    ) -> None:
+        """Open the active node's item but not its tombstoned service's."""
+
+        class ServiceSyncer(StubTestSyncer):
+            SYNC_TO_LIMIT = SyncInventoryEntityTypeEnum.SERVICE
+
+        self._serve(mock_remote_api, self._tree(SyncInventoryEntityTypeEnum.SERVICE))
+
+        assert await self._prepared(session, ServiceSyncer, mock_remote_api) == {
+            (SyncInventoryEntityTypeEnum.INVENTORY, None),
+            (SyncInventoryEntityTypeEnum.NODE, 10),
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("retired_position", [0, 1])
+    async def test_only_active_siblings_get_items(
+        self, session: AsyncSession, mock_remote_api, retired_position: int
+    ) -> None:
+        """Open items for the active sibling whichever order the read returns."""
+
+        class NodeSyncer(StubTestSyncer):
+            SYNC_TO_LIMIT = SyncInventoryEntityTypeEnum.NODE
+
+        retired = CreatedNodeFactory.build(id=11, services=[], retired_at=utc_now())
+        active = CreatedNodeFactory.build(id=12, services=[])
+        siblings = [active]
+        siblings.insert(retired_position, retired)
+        self._serve(mock_remote_api, *siblings)
+
+        assert await self._prepared(session, NodeSyncer, mock_remote_api) == {
+            (SyncInventoryEntityTypeEnum.INVENTORY, None),
+            (SyncInventoryEntityTypeEnum.NODE, active.id),
+        }
+
+    @pytest.mark.asyncio
+    async def test_guard_does_not_defer_to_can_sync(
+        self, session: AsyncSession, mock_remote_api
+    ) -> None:
+        """Skip a tombstone even when the syncer's own predicate admits it."""
+
+        class PermissiveSyncer(StubTestSyncer):
+            SYNC_TO_LIMIT = SyncInventoryEntityTypeEnum.NODE
+
+            @classmethod
+            def can_sync_node(cls, node: CreatedNode) -> bool:  # noqa: ARG003
+                return True
+
+        self._serve(mock_remote_api, self._tree(SyncInventoryEntityTypeEnum.NODE))
+
+        assert await self._prepared(session, PermissiveSyncer, mock_remote_api) == {
+            (SyncInventoryEntityTypeEnum.INVENTORY, None),
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("retired", "expected_levels"),
+        [
+            (
+                SyncInventoryEntityTypeEnum.SCHEMA,
+                {
+                    SyncInventoryEntityTypeEnum.INVENTORY,
+                    SyncInventoryEntityTypeEnum.NODE,
+                    SyncInventoryEntityTypeEnum.SERVICE,
+                },
+            ),
+            (
+                SyncInventoryEntityTypeEnum.TABLE,
+                {
+                    SyncInventoryEntityTypeEnum.INVENTORY,
+                    SyncInventoryEntityTypeEnum.NODE,
+                    SyncInventoryEntityTypeEnum.SERVICE,
+                    SyncInventoryEntityTypeEnum.SCHEMA,
+                },
+            ),
+        ],
+    )
+    async def test_guard_applies_at_every_level(
+        self,
+        session: AsyncSession,
+        mock_remote_api,
+        retired: SyncInventoryEntityTypeEnum,
+        expected_levels: set[SyncInventoryEntityTypeEnum],
+    ) -> None:
+        """Stop the walk at a tombstone wherever it sits in the tree."""
+        self._serve(mock_remote_api, self._tree(retired))
+
+        prepared = await self._prepared(session, StubTestSyncer, mock_remote_api)
+
+        assert {entity_type for entity_type, _ in prepared} == expected_levels
+
+    @pytest.mark.asyncio
+    async def test_item_count_is_stable_across_generations(
+        self, session: AsyncSession, mock_remote_api
+    ) -> None:
+        """Open the same items each generation while a tombstone persists."""
+
+        class NodeSyncer(StubTestSyncer):
+            SYNC_TO_LIMIT = SyncInventoryEntityTypeEnum.NODE
+
+        retired = CreatedNodeFactory.build(id=11, services=[], retired_at=utc_now())
+        active = CreatedNodeFactory.build(id=12, services=[])
+        self._serve(mock_remote_api, retired, active)
+
+        first = await self._prepared(session, NodeSyncer, mock_remote_api)
+        second = await self._prepared(session, NodeSyncer, mock_remote_api)
+
+        assert (
+            first
+            == second
+            == {
+                (SyncInventoryEntityTypeEnum.INVENTORY, None),
+                (SyncInventoryEntityTypeEnum.NODE, active.id),
+            }
+        )
+
+
+class TestManageSyncItemOnRetiredEntity:
+    """Test that an explicit sync of a tombstone still tracks its own item."""
+
+    @pytest.mark.asyncio
+    async def test_explicitly_managed_retired_entity_still_gets_an_item(
+        self, session: AsyncSession, mock_remote_api
+    ) -> None:
+        """Open and close an item for a tombstone synced by explicit request."""
+        sync_instance = await _create_sync_instance(session, StubTestSyncer)
+        syncer = _build_syncer(
+            StubTestSyncer,
+            session,
+            inventory_api=mock_remote_api,
+            sync_instance=sync_instance,
+        )
+        retired = CreatedNodeFactory.build(id=11, services=[], retired_at=utc_now())
+
+        async with syncer.manage_sync_item(SyncInventoryEntityTypeEnum.NODE, retired):
+            pass
+
+        item = syncer.sync_items[(SyncInventoryEntityTypeEnum.NODE, retired.id)]
+        assert item.status == SyncStatusEnum.SUCCESS
 
 
 @pytest.mark.asyncio

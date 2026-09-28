@@ -18,8 +18,10 @@
 __all__ = [
     "UPSTREAM_NON_JSON_HEADER",
     "BaseRemoteAPI",
+    "CredentialHeaderMixin",
     "JSONBody",
     "RemoteAPI",
+    "StoredCredentialHeaderMixin",
     "as_json_array",
     "as_json_object",
     "exception_for_status",
@@ -79,6 +81,8 @@ from app.core.requests.connectivity import (
 )
 from app.core.utils import json_serializer
 from app.core.utils.fields import (
+    AuthCredentialSecretStr,
+    AuthSchemeStr,
     CREDENTIAL_URL_MASK,
     CREDENTIAL_URL_STR_JSON_SERIALIZER,
     CredentialHttpUrl,
@@ -1097,6 +1101,100 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 keyfile=keyfile,
             )
         return context
+
+
+class CredentialHeaderMixin(BaseRemoteAPI):
+    """Emit a persistent ``Authorization`` header for :class:`BaseRemoteAPI` subclasses.
+
+    Apply leftmost in the MRO (e.g. ``CredentialHeaderMixin, RemoteAPI``) so
+    :attr:`headers` wins over the base. Formats ``Authorization`` from
+    :attr:`_authorization_scheme` and :attr:`_credential_value` without each
+    client reimplementing the string.
+
+    This base declares no settings fields: subclasses with a derived credential
+    and a fixed scheme (e.g. Casdoor Basic) override the two properties only.
+    Clients that store a secret and a configurable scheme use
+    :class:`StoredCredentialHeaderMixin` instead.
+
+    Clients that deliberately carry no session-lifetime credential — GrafanaSDK,
+    bare :class:`RemoteAPI` instances — simply do not apply this mixin.
+    """
+
+    @property
+    def _authorization_scheme(self) -> str:
+        """Return the scheme spliced ahead of the credential in ``Authorization``.
+
+        Defaults to ``Bearer`` so a future client that supplies a credential but
+        forgets to set a scheme still builds a valid header rather than failing
+        on every request. Subclasses with a fixed scheme (e.g. Casdoor Basic)
+        override this. Stored-credential clients inherit
+        :class:`StoredCredentialHeaderMixin`, which reads ``auth_scheme``.
+
+        :return: The authentication scheme token.
+        """
+        return "Bearer"
+
+    @property
+    def _credential_value(self) -> str | None:
+        """Return the plain credential for the ``Authorization`` header, or ``None``.
+
+        Subclasses with a derived credential override this. Stored-credential
+        clients inherit :class:`StoredCredentialHeaderMixin`, which reads
+        ``api_key`` (empty secret counts as unset).
+
+        :return: The plain credential when one should be sent, else ``None``.
+        """
+        return None
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """Return request headers, adding ``Authorization`` when a credential is set.
+
+        :return: The inherited headers, plus ``Authorization`` when
+            :attr:`_credential_value` is non-``None``.
+        """
+        base_headers = super().headers
+        credential = self._credential_value
+        if credential is None:
+            return base_headers
+        return {
+            **base_headers,
+            "Authorization": f"{self._authorization_scheme} {credential}",
+        }
+
+
+class StoredCredentialHeaderMixin(CredentialHeaderMixin):
+    """Back the ``Authorization`` header with a stored ``api_key`` and ``auth_scheme``.
+
+    Use for clients whose credential is session-lifetime config (PMM, Nomad).
+    Do not use for clients that derive the credential or hard-code the scheme
+    (Casdoor): those fields would become operator settings that either do nothing
+    or can break authentication.
+    """
+
+    api_key: AuthCredentialSecretStr | None = None
+    auth_scheme: AuthSchemeStr = "Bearer"
+
+    @property
+    def _authorization_scheme(self) -> str:
+        """Return the configured ``auth_scheme``.
+
+        :return: The authentication scheme token.
+        """
+        return self.auth_scheme
+
+    @property
+    def _credential_value(self) -> str | None:
+        """Return the plain ``api_key``, or ``None`` when unset.
+
+        An empty secret counts as unset: :class:`~pydantic.SecretStr` defines
+        ``__len__``, so a blank value is falsy and would otherwise emit a header
+        with no credential.
+
+        :return: The plain API key when a non-empty one is configured, else
+            ``None``.
+        """
+        return self.api_key.get_secret_value() if self.api_key else None
 
 
 class RemoteAPI(BaseRemoteAPI):

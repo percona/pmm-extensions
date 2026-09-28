@@ -15,25 +15,22 @@
 
 """Shared fixtures for the Inventory-track migration tests."""
 
-import asyncio
-import os
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, TypeVar
 
 import pytest
 from alembic.config import Config
 from pydantic import SecretStr
-from sqlalchemy import text
-from sqlalchemy.engine import make_url, URL
-from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy import URL
+from sqlalchemy.engine import make_url
 
 from app.core.utils.fields import AsyncDatabaseEngine
 from app.inventory.config import inventory_settings
 from tests.app.alembic_paths import ALEMBIC_INI
-from tests.app.conftest import POSTGRES_DSN_ENV
-
-_T = TypeVar("_T")
+from tests.app.conftest import postgres_dsn_or_skip, postgres_worker_schema
+from tests.app.inventory.migrations.postgres_support import (
+    recreate_database,
+)
 
 #: The ``created_at`` / ``updated_at`` pair every real-PostgreSQL seed needs,
 #: spelled with the offset ``timestamptz`` requires.
@@ -72,23 +69,27 @@ def postgres_async_url() -> URL:
     Skip when ``$EXTENSIONS_TEST_POSTGRES_DSN`` is unset (local runs without
     PostgreSQL); the dedicated ``test_postgres`` CI job supplies it.
     """
-    dsn = os.environ.get(POSTGRES_DSN_ENV)
-    if not dsn:
-        pytest.skip(f"{POSTGRES_DSN_ENV} not set; skipping real-PostgreSQL tests")
-    return make_url(dsn).set(drivername="postgresql+asyncpg")
+    return make_url(postgres_dsn_or_skip()).set(drivername="postgresql+asyncpg")
 
 
 @pytest.fixture
 def inventory_postgres_config(
     postgres_async_url: URL, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[tuple[Config, URL]]:
-    """Point the inventory track at real PostgreSQL and yield its Alembic config.
+    """Point the inventory track at a per-worker PostgreSQL database.
 
     ``command.upgrade`` builds its own engine inside the track's ``env.py`` from
     ``inventory_settings.DATABASE`` rather than accepting one, so the settings
-    are what must be redirected. Drop the schema on teardown so sibling tests
-    inherit a clean database.
+    are what must be redirected. That engine takes no ``schema_translate_map``,
+    so the per-worker *schema* the other PostgreSQL fixtures use cannot isolate
+    it; a database per xdist worker does, and is dropped on teardown.
+
+    :return: The Alembic config and the ``asyncpg`` URL of the worker database.
     """
+    worker_url = postgres_async_url.set(
+        database=f"{postgres_async_url.database}_{postgres_worker_schema()}"
+    )
+    recreate_database(postgres_async_url, worker_url.database)
     database = inventory_settings.DATABASE
     monkeypatch.setattr(database, "ENGINE", AsyncDatabaseEngine.POSTGRESQL)
     monkeypatch.setattr(database, "USER", postgres_async_url.username)
@@ -99,41 +100,10 @@ def inventory_postgres_config(
     )
     monkeypatch.setattr(database, "HOST", postgres_async_url.host)
     monkeypatch.setattr(database, "PORT", postgres_async_url.port)
-    monkeypatch.setattr(database, "NAME", postgres_async_url.database)
+    monkeypatch.setattr(database, "NAME", worker_url.database)
 
     cfg = Config(str(ALEMBIC_INI), ini_section="inventory")
     try:
-        yield cfg, postgres_async_url
+        yield cfg, worker_url
     finally:
-        run_on_postgres(postgres_async_url, _drop_schema)
-
-
-def run_on_postgres(
-    url: URL,
-    coroutine_factory: Callable[[AsyncConnection], Coroutine[Any, Any, _T]],
-) -> _T:
-    """Run ``coroutine_factory`` against a fresh async engine and dispose of it.
-
-    Each call opens its own engine and transaction, so a case that expects an
-    ``IntegrityError`` leaves nothing poisoned behind for the next one.
-
-    :param url: The ``asyncpg`` URL to connect through.
-    :param coroutine_factory: A callable taking the open connection.
-    :return: Whatever ``coroutine_factory`` returned.
-    """
-
-    async def _run() -> _T:
-        engine = create_async_engine(url)
-        try:
-            async with engine.begin() as conn:
-                return await coroutine_factory(conn)
-        finally:
-            await engine.dispose()
-
-    return asyncio.run(_run())
-
-
-async def _drop_schema(conn: AsyncConnection) -> None:
-    """Drop and recreate the ``public`` schema."""
-    await conn.execute(text("DROP SCHEMA public CASCADE"))
-    await conn.execute(text("CREATE SCHEMA public"))
+        recreate_database(postgres_async_url, worker_url.database, create=False)

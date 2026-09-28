@@ -132,25 +132,46 @@ def _not_superseded(
     )
 
 
-def _no_newer_failure(
+def _no_newer_attempt(
     model: type[SyncHealthBase], attempted_at: datetime
 ) -> ColumnElement[bool]:
-    """Match only rows whose open failure run did not start after this attempt.
+    """Test whether a row's newest recorded attempt is not newer than this one.
 
-    A failure never moves ``last_synced_at``, so :func:`_not_superseded` cannot
+    Guards a success's ``WHERE`` and a failure's message ``SET`` alike. A
+    failure never moves ``last_synced_at``, so :func:`_not_superseded` cannot
     see one: an older success arriving late would otherwise clear a run a newer
-    attempt had just opened, reporting a clean row whose latest attempt failed.
-    ``sync_failing_since`` names the *earliest* failure of the run, so a success
-    landing between two failures of one run is still admitted — closing that
-    would take a column recording the newest attempt seen.
+    attempt had failed in. ``sync_failing_since`` names only the run's *first*
+    failure, so it would still admit a success attempted between two failures
+    of one run. A tie passes, leaving arrival order to break it.
 
     :param model: The table being written.
     :param attempted_at: When the reporting syncer began its attempt.
     :return: The guard predicate.
     """
     return or_(
-        col(model.sync_failing_since).is_(None),
-        col(model.sync_failing_since) <= attempted_at,
+        col(model.newest_attempt_at).is_(None),
+        col(model.newest_attempt_at) <= attempted_at,
+    )
+
+
+def _newest_attempt(
+    model: type[SyncHealthBase], attempted_at: datetime
+) -> ColumnElement[datetime]:
+    """Build the later of the stored newest attempt and this one.
+
+    Spelled as ``CASE`` rather than ``greatest``: SQLite has no ``greatest``,
+    and its two-argument ``max`` returns NULL when either side is NULL.
+
+    :param model: The table being written.
+    :param attempted_at: When the reporting syncer began its attempt.
+    :return: The expression to assign to ``newest_attempt_at``.
+    """
+    return case(
+        (
+            col(model.newest_attempt_at) > attempted_at,
+            col(model.newest_attempt_at),
+        ),
+        else_=attempted_at,
     )
 
 
@@ -174,7 +195,7 @@ def _record_sync_success(
         update(model)
         .where(
             _not_superseded(model, synced_at),
-            _no_newer_failure(model, synced_at),
+            _no_newer_attempt(model, synced_at),
             *whereclause,
         )
         .values(
@@ -182,6 +203,7 @@ def _record_sync_success(
             last_sync_error=None,
             sync_failing_since=None,
             consecutive_failures=0,
+            newest_attempt_at=_newest_attempt(model, synced_at),
         )
         .execution_options(**_UNSYNCHRONIZED)
     )
@@ -200,12 +222,13 @@ def _record_sync_failure(
     the last success even when two failures of one run arrive out of order —
     coalescing alone would leave it on whichever landed first. The counter is
     incremented in SQL so concurrent runs cannot lose an increment to a
-    read-modify-write. ``last_sync_error`` is still assigned unconditionally,
-    so an out-of-order pair leaves the older message there; naming the newest
-    failure would take a column recording the newest attempt seen, which the
-    entity does not carry. ``last_synced_at`` is deliberately absent: a failure
-    never moves it — which is also why the guard compares against it rather
-    than being skipped here.
+    read-modify-write. ``last_sync_error`` is replaced only when this attempt
+    is not older than ``newest_attempt_at``, so an out-of-order pair keeps the
+    newer message; the ``SET`` expressions all read the row as it stood before
+    the statement, so that comparison sees the stored value rather than the
+    one this statement writes. ``last_synced_at`` is deliberately absent: a
+    failure never moves it — which is also why the guard compares against it
+    rather than being skipped here.
 
     :param model: The table to record the failure in.
     :param whereclause: Clauses narrowing the rows to write.
@@ -217,7 +240,10 @@ def _record_sync_failure(
         update(model)
         .where(_not_superseded(model, failed_at), *whereclause)
         .values(
-            last_sync_error=error,
+            last_sync_error=case(
+                (_no_newer_attempt(model, failed_at), error),
+                else_=col(model.last_sync_error),
+            ),
             consecutive_failures=col(model.consecutive_failures) + 1,
             sync_failing_since=case(
                 (
@@ -226,6 +252,7 @@ def _record_sync_failure(
                 ),
                 else_=failed_at,
             ),
+            newest_attempt_at=_newest_attempt(model, failed_at),
         )
         .execution_options(**_UNSYNCHRONIZED)
     )
@@ -301,7 +328,7 @@ class SyncHealthManagerMixin(BaseSQLModelManager):
         instance: RetirableSQLModel,
         outcome: SyncHealthWrite,
     ) -> None:
-        """Apply one sync outcome to an entity's four sync-health columns.
+        """Apply one sync outcome to an entity's sync-health columns.
 
         The statement is hand-built rather than routed through ``update``, for
         the reason :meth:`RetirableManagerMixin.retire`'s is: the transitions

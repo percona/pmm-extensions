@@ -1179,7 +1179,7 @@ class TestServiceSyncHealthReads:
     def test_detail_exposes_the_columns(
         self, test_client: TestClient, service: Service, schema: Schema
     ) -> None:
-        """Carry the four fields on the service detail response.
+        """Carry the sync-health fields on the service detail response.
 
         The nested schemas carry them through the table model the response
         nests, so a schema read from inside a service reports the same state.
@@ -1194,7 +1194,7 @@ class TestServiceSyncHealthReads:
     def test_list_items_expose_the_columns(
         self, test_client: TestClient, service: Service
     ) -> None:
-        """Carry the four fields on every row of the paginated list."""
+        """Carry the sync-health fields on every row of the paginated list."""
         response = test_client.get("/services/")
 
         assert response.status_code == status.HTTP_200_OK

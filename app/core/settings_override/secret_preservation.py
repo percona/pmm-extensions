@@ -239,7 +239,7 @@ def _collection_item_value_score(
     :return: A higher score means a better identity match.
     """
     score = 0
-    for name in current.model_fields:
+    for name in type(current).model_fields:
         if name not in incoming:
             continue
         incoming_val = incoming[name]
@@ -425,7 +425,7 @@ def _match_by_field_name_overlap(
         current = current_items[index]
         if not isinstance(current, BaseModel):
             continue
-        overlap = len(set(current.model_fields) & incoming_keys)
+        overlap = len(set(type(current).model_fields) & incoming_keys)
         if overlap > best_overlap:
             best_overlap = overlap
             best_index = index

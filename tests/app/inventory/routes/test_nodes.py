@@ -15,6 +15,8 @@
 
 """Define tests for inventory node routes."""
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import event
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -42,6 +44,7 @@ from tests.app.inventory.conftest import (
     INVALID_SYNC_HEALTH_BODIES,
     INVALID_SYNC_HEALTH_BODY_IDS,
     retire_in_place,
+    SYNC_HEALTH_ATTEMPTED_AT,
     sync_health_payload,
     SYNC_HEALTH_RESPONSE_KEYS,
 )
@@ -1403,7 +1406,7 @@ class TestNodeSyncHealthReads:
     def test_detail_and_nested_service_expose_the_columns(
         self, test_client: TestClient, node: Node, service: Service
     ) -> None:
-        """Carry the four fields on the node and on the service nested inside it."""
+        """Carry the sync-health fields on the node and on the service nested inside it."""
         response = test_client.get(f"/nodes/{node.id}")
 
         assert response.status_code == status.HTTP_200_OK
@@ -1414,10 +1417,30 @@ class TestNodeSyncHealthReads:
     def test_list_items_expose_the_columns(
         self, test_client: TestClient, node: Node
     ) -> None:
-        """Carry the four fields on every row of the paginated list."""
+        """Carry the sync-health fields on every row of the paginated list."""
         response = test_client.get("/nodes/")
 
         assert response.status_code == status.HTTP_200_OK
         items = response.json()["items"]
         assert items, "the node fixture should have produced a row to read back"
         assert items[0].keys() >= SYNC_HEALTH_RESPONSE_KEYS
+
+    @pytest.mark.asyncio
+    async def test_reported_attempt_is_served_as_the_newest_attempt(
+        self, test_client: TestClient, session: AsyncSession, node: Node
+    ) -> None:
+        """Serve the reported attempt time back on the detail response."""
+        posted = test_client.post(
+            f"/nodes/{node.id}/sync-health",
+            json=sync_health_payload(SyncOutcomeEnum.FAILURE, "boom"),
+        )
+        assert posted.status_code == status.HTTP_204_NO_CONTENT
+        # The suite shares one session across requests, and the health write
+        # bypasses its identity map, so the read would serve the stale instance.
+        await session.refresh(node)
+
+        response = test_client.get(f"/nodes/{node.id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        served = datetime.fromisoformat(response.json()["newest_attempt_at"])
+        assert served == datetime.fromisoformat(SYNC_HEALTH_ATTEMPTED_AT)

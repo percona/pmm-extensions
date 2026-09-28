@@ -161,6 +161,29 @@ def refuse_then_accept(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
 
 
 @pytest.fixture
+def refuse_always(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
+    """Refuse every connection with a persistent ``OperationalError``.
+
+    Models a rejected password or a store that never comes up — both surface as
+    ``OperationalError``, which is what the bounded readiness wait retries until
+    its deadline.
+
+    :param monkeypatch: The attribute patcher.
+    :return: A callable reporting how many attempts were made.
+    """
+    attempts = {"count": 0}
+
+    def connect(self: Engine, *args: Any, **kwargs: Any) -> None:
+        attempts["count"] += 1
+        raise OperationalError(
+            "connect", {}, Exception("password authentication failed")
+        )
+
+    monkeypatch.setattr(Engine, "connect", connect)
+    return lambda: attempts["count"]
+
+
+@pytest.fixture
 def refuse_then_really_connect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Callable[[], int]:
@@ -277,6 +300,62 @@ def test_the_bootstrap_forwards_no_engine_options(
     assert options == {}
 
 
+def test_a_deadline_caps_each_postgres_connect_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    recording_manager: RecordingSessionManager,
+    store_accepts: None,
+):
+    """Bound each dial when a deadline is set so a dropped-packet host cannot hang.
+
+    The wall-clock deadline is only checked after ``connect`` returns; without a
+    driver ``connect_timeout`` a firewalled store blocks on the OS TCP timeout
+    (often minutes) and ``make migrate`` still outruns its 60s bound.
+    """
+    monkeypatch.setattr(
+        settings.CELERY, "beat_dburi", OVERRIDDEN_STORE.format(password="pw")
+    )
+    monkeypatch.setattr(settings.CELERY, "beat_schema", None)
+
+    bootstrap.bootstrap_beat_schema(deadline_seconds=60)
+
+    _, _, options = recording_manager.create_session_calls[0]
+    assert options == {
+        "connect_args": {"connect_timeout": bootstrap.STORE_CONNECT_TIMEOUT}
+    }
+
+
+def test_a_deadline_does_not_pass_connect_timeout_to_sqlite(
+    sqlite_beat_store: str,
+    recording_manager: RecordingSessionManager,
+    store_accepts: None,
+):
+    """Omit ``connect_timeout`` for SQLite: the driver rejects the argument.
+
+    Development and CI ``make migrate`` resolve the beat store to a local SQLite
+    file; forwarding the Postgres-only kwarg would fail the step on the happy path.
+    """
+    bootstrap.bootstrap_beat_schema(deadline_seconds=60)
+
+    _, _, options = recording_manager.create_session_calls[0]
+    assert options == {}
+
+
+def test_an_unbounded_wait_forwards_no_connect_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    recording_manager: RecordingSessionManager,
+    store_accepts: None,
+):
+    """Leave the side-car's engine creation unchanged when no deadline is set."""
+    monkeypatch.setattr(
+        settings.CELERY, "beat_dburi", OVERRIDDEN_STORE.format(password="pw")
+    )
+
+    bootstrap.bootstrap_beat_schema()
+
+    _, _, options = recording_manager.create_session_calls[0]
+    assert options == {}
+
+
 def test_a_rejected_engine_option_would_fail_the_step(sqlite_beat_store: str):
     """Pin why the options are withheld: the library forwards this one verbatim.
 
@@ -354,14 +433,50 @@ def test_the_readiness_wait_is_not_bounded(
     assert attempts["count"] == refusals + 1
 
 
+def test_a_bounded_readiness_wait_gives_up_after_its_deadline(
+    sqlite_beat_store: str,
+    instant_polling: None,
+    refuse_always: Callable[[], int],
+):
+    """Fail ``make migrate`` on a persistent ``OperationalError`` instead of hanging.
+
+    A rejected password and a refused connection both surface as ``OperationalError``;
+    the wall-clock deadline covers both so CI and developers see the failure within
+    the bound rather than waiting forever.
+    """
+    with pytest.raises(
+        TimeoutError, match="did not become reachable within 0"
+    ) as excinfo:
+        bootstrap.bootstrap_beat_schema(deadline_seconds=0)
+
+    assert isinstance(excinfo.value.__cause__, OperationalError)
+    assert refuse_always() == 1
+
+
+def test_a_bounded_readiness_wait_succeeds_before_its_deadline(
+    sqlite_beat_store: str,
+    instant_polling: None,
+    refuse_then_really_connect: Callable[[], int],
+):
+    """Accept the store once it answers, without waiting out the full budget."""
+    bootstrap.bootstrap_beat_schema(deadline_seconds=60)
+
+    assert refuse_then_really_connect() > REFUSALS_BEFORE_THE_STORE_ANSWERS
+    assert table_names(sqlite_beat_store) >= BEAT_TABLES
+
+
+@pytest.mark.parametrize("deadline_seconds", [None, 60])
 def test_a_non_transient_connection_failure_is_not_retried(
-    sqlite_beat_store: str, instant_polling: None, monkeypatch: pytest.MonkeyPatch
+    sqlite_beat_store: str,
+    instant_polling: None,
+    monkeypatch: pytest.MonkeyPatch,
+    deadline_seconds: float | None,
 ):
     """Surface anything that is not "not up yet" on the first attempt.
 
     Only ``OperationalError`` means a store that may still appear. Retrying every
-    failure class would turn a misconfiguration into an unbounded wait, which is
-    what now bounds this loop in place of a deadline.
+    failure class would turn a misconfiguration into an unbounded wait; a deadline
+    on the ``OperationalError`` path does not change that.
     """
     attempts = {"count": 0}
 
@@ -372,9 +487,34 @@ def test_a_non_transient_connection_failure_is_not_retried(
     monkeypatch.setattr(Engine, "connect", refuse)
 
     with pytest.raises(InterfaceError):
-        bootstrap.bootstrap_beat_schema()
+        bootstrap.bootstrap_beat_schema(deadline_seconds=deadline_seconds)
 
     assert attempts["count"] == 1
+
+
+def test_main_forwards_a_cli_deadline(
+    sqlite_beat_store: str,
+    instant_polling: None,
+    refuse_always: Callable[[], int],
+    mocker: MockerFixture,
+):
+    """Thread ``--deadline-seconds`` from the CLI into the readiness wait."""
+    mocker.patch("logging.config.dictConfig")
+
+    with pytest.raises(TimeoutError, match="did not become reachable within 0"):
+        bootstrap.main(["--deadline-seconds", "0"])
+
+    assert refuse_always() == 1
+
+
+def test_the_side_car_invocation_passes_no_deadline(mocker: MockerFixture):
+    """Keep ``migrate-beat``'s flagless invocation unbounded."""
+    mocker.patch("logging.config.dictConfig")
+    run = mocker.patch.object(bootstrap, "bootstrap_beat_schema")
+
+    bootstrap.main([])
+
+    run.assert_called_once_with(deadline_seconds=None)
 
 
 def test_readiness_follows_an_overridden_store(
@@ -451,17 +591,22 @@ def test_the_migrate_target_bootstraps_the_beat_tables():
     first ``--start-celery`` against a freshly migrated store otherwise waits out
     the API readiness timeout on tables only beat itself would create.
 
+    The recipe passes a 60s readiness deadline so a persistent ``OperationalError``
+    fails the command instead of hanging; the side-car one-shot omits that flag.
+
     This fast smoke check asserts the recipe's text; the PostgreSQL tests in
     ``tests/app/migrations/test_make_migrate.py`` exercise its shell-level wiring.
     """
     recipe = makefile_recipe("migrate")
     upgrades = [index for index, line in enumerate(recipe) if "alembic --name" in line]
     bootstraps = [
-        index for index, line in enumerate(recipe) if f"-m {bootstrap.__name__}" in line
+        index
+        for index, line in enumerate(recipe)
+        if f"-m {bootstrap.__name__}" in line and "--deadline-seconds 60" in line
     ]
 
     assert upgrades, recipe
-    assert len(bootstraps) == 1
+    assert len(bootstraps) == 1, recipe
     assert bootstraps[0] > max(upgrades)
 
 

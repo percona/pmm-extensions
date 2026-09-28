@@ -645,7 +645,7 @@ class MySQLSyncer(BaseTaskSyncer):
         # active-only, so prepare_sync never opened a SyncItem for a tombstone and
         # there is none to close.
         for schema in syncable_schemas.values():
-            if schema.retired_at is None:
+            if not schema.is_retired:
                 await self.retire_schema(schema)
 
     async def fetch_schema(self, created_schema: CreatedSchema) -> MySQLSchema:
@@ -744,7 +744,7 @@ class MySQLSyncer(BaseTaskSyncer):
                 )
             await self.sync_table(created_table, table)
         for table in syncable_tables.values():
-            if table.retired_at is None:
+            if not table.is_retired:
                 await self.retire_table(table)
 
     async def fetch_table(self, created_table: CreatedTable) -> Table:

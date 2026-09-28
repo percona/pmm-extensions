@@ -30,8 +30,19 @@ from app.core.auth.exceptions import (
     BaseAuthProviderException,
     HTTPUnauthorizedException,
 )
-from app.core.requests import as_json_array, as_json_object, JSONBody, RemoteAPI
-from app.core.utils.fields import NonEmptyStr, RelativeFilePathField, StrHttpUrl, URL
+from app.core.requests import (
+    as_json_array,
+    as_json_object,
+    CredentialHeaderMixin,
+    JSONBody,
+    RemoteAPI,
+)
+from app.core.utils.fields import (
+    NonEmptyStr,
+    RelativeFilePathField,
+    StrHttpUrl,
+    URL,
+)
 
 
 class CasdoorException(BaseAuthProviderException):
@@ -51,7 +62,7 @@ class CasdoorException(BaseAuthProviderException):
         super().__init__(status_code=status_code, detail=detail)
 
 
-class CasdoorSDK(RemoteAPI):
+class CasdoorSDK(CredentialHeaderMixin, RemoteAPI):
     """Interact with Casdoor's authentication and user management APIs.
 
     The ``CasdoorSDK`` class extends ``RemoteAPI`` to provide methods for managing OAuth
@@ -108,25 +119,24 @@ class CasdoorSDK(RemoteAPI):
         return None
 
     @property
-    def headers(self) -> dict[str, str]:
-        """Return the headers to be used in Casdoor requests.
+    def _authorization_scheme(self) -> str:
+        """Return the fixed Basic scheme Casdoor's Management API expects.
 
-        Includes content type, accept headers, and authorization with the API key.
+        Not a settings field: an operator-configurable scheme would let a typo
+        (e.g. Bearer) break every Casdoor request.
 
-        :return: A dictionary containing the headers for Casdoor API requests.
+        :return: ``"Basic"``.
         """
-        return {
-            **super().headers,
-            "Authorization": f"Basic {self.api_key}",
-        }
+        return "Basic"
 
     @property
-    def api_key(self) -> str:
-        """Return the API key by encoding client credentials.
+    def _credential_value(self) -> str:
+        """Return the Base64-encoded client credentials for Basic auth.
 
-        Encodes the ``client_id`` and ``client_secret`` into a Base64 string and returns it.
+        Encodes ``client_id`` and ``client_secret`` as
+        ``client_id:client_secret`` into a Base64 string.
 
-        :return: The Base64-encoded API key.
+        :return: The Base64-encoded credential.
         """
         return b64encode(
             f"{self.client_id.get_secret_value()}:{self.client_secret.get_secret_value()}".encode(),
