@@ -118,11 +118,16 @@ class TestIdentityLinkPinRetention:
         with pytest.raises(ValidationError):
             InventoryAppSettings(IDENTITY_LINK_PIN_RETENTION=retention)
 
+    def test_a_runtime_override_is_accepted(self) -> None:
+        """Coerce an override the way the YAML load reads the default."""
+        field = InventoryAppSettings.model_fields["IDENTITY_LINK_PIN_RETENTION"]
+
+        assert coerce_field_value(field, "90 days") == timedelta(days=90)
+
     def test_a_runtime_override_is_held_to_the_same_bound(self) -> None:
         """Re-check the positive bound on the override path, not only on YAML load."""
         field = InventoryAppSettings.model_fields["IDENTITY_LINK_PIN_RETENTION"]
 
-        assert coerce_field_value(field, "90 days") == timedelta(days=90)
         with pytest.raises(ValidationError):
             coerce_field_value(field, "0 days")
 

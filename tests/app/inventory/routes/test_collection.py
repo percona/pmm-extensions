@@ -36,7 +36,11 @@ from app.inventory.crud import (
     RetiredInclusiveTableManager,
 )
 from app.inventory.models import HostSystemObservation, Node, Schema, Service, Table
-from tests.app.inventory.conftest import confirmed_split, retire_in_place
+from tests.app.inventory.conftest import (
+    confirmed_split,
+    PIN_BOUNDARY_CASES,
+    retire_in_place,
+)
 
 COLLECT_URL = "/collection/collect"
 RETIRED_AT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -394,13 +398,7 @@ class TestLinkPinRetiredBefore:
             pytest.param(lambda at: at.astimezone(BRAZIL).isoformat(), id="offset"),
         ],
     )
-    @pytest.mark.parametrize(
-        ("offset", "pinned"),
-        [
-            pytest.param(timedelta(0), True, id="at-the-cutoff"),
-            pytest.param(timedelta(seconds=1), False, id="past-the-cutoff"),
-        ],
-    )
+    @pytest.mark.parametrize(("offset", "pinned"), PIN_BOUNDARY_CASES)
     async def test_the_cutoff_is_compared_in_utc(
         self,
         test_client: TestClient,

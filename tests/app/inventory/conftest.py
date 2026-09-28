@@ -191,6 +191,13 @@ async def retire_in_place(
 
 PRINCIPAL = "operator@example.com"
 
+#: How far past the successor's own ``retired_at`` a pin cutoff lands in the
+#: pinned and released cases: the pin holds at the boundary and ends past it.
+PIN_BOUNDARY_CASES = [
+    pytest.param(timedelta(0), True, id="at-the-cutoff-stays-pinned"),
+    pytest.param(timedelta(seconds=1), False, id="past-the-cutoff-is-released"),
+]
+
 LinkableT = TypeVar("LinkableT", Node, Service)
 
 

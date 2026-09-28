@@ -67,7 +67,12 @@ from app.inventory.models import (
     Table,
 )
 from tests.app.factories import NodeWriteFactory, ServiceWriteFactory
-from tests.app.inventory.conftest import confirmed_split, PRINCIPAL, retire_in_place
+from tests.app.inventory.conftest import (
+    confirmed_split,
+    PIN_BOUNDARY_CASES,
+    PRINCIPAL,
+    retire_in_place,
+)
 
 PAGE = Pagination(offset=0, limit=50)
 
@@ -1452,14 +1457,6 @@ class TestIdentityLinkAndCollection:
         assert collectible == [node.id]
 
 
-#: How far past the successor's own ``retired_at`` a pin cutoff lands in the
-#: pinned and released cases: the pin holds at the boundary and ends past it.
-PIN_BOUNDARY_CASES = [
-    pytest.param(timedelta(0), True, id="at-the-cutoff-stays-pinned"),
-    pytest.param(timedelta(seconds=1), False, id="past-the-cutoff-is-released"),
-]
-
-
 class TestBoundedIdentityLinkPin:
     """Test that a standing link pins its successor only until the pin cutoff."""
 
@@ -1584,6 +1581,36 @@ class TestBoundedIdentityLinkPin:
         )
 
     @pytest.mark.asyncio
+    async def test_a_service_link_restarts_the_pin_its_node_link_began(
+        self,
+        session: AsyncSession,
+        split_nodes_with_services: tuple[Node, Node, Service, Service],
+    ) -> None:
+        """Measure a service link's pin from its own confirmation.
+
+        The node link already retired the service, so the service link finds a
+        tombstone; an old node link must not cut the new link's window short.
+        """
+        pred_node, succ_node, predecessor, successor = split_nodes_with_services
+        await NodeManager.confirm_identity_link(
+            session, pred_node, succ_node.id, principal=PRINCIPAL
+        )
+        await retire_in_place(session, successor, retired_at=RETIRED_AT)
+        await session.refresh(predecessor)
+        await ServiceManager.confirm_identity_link(
+            session, predecessor, successor.id, principal=PRINCIPAL
+        )
+
+        collectible = await collectible_ids_of(
+            RetiredInclusiveServiceManager,
+            session,
+            retired_before=FAR_FUTURE,
+            link_pin_retired_before=RETIRED_AT + timedelta(days=1),
+        )
+
+        assert successor.id not in collectible
+
+    @pytest.mark.asyncio
     async def test_an_expired_pin_does_not_bypass_age(
         self, session: AsyncSession, split_nodes: tuple[Node, Node]
     ) -> None:
@@ -1595,15 +1622,6 @@ class TestBoundedIdentityLinkPin:
         _, successor = await confirmed_split(session, split_nodes)
         assert successor.retired_at is not None
 
-        assert (
-            await collectible_ids_of(
-                RetiredInclusiveNodeManager,
-                session,
-                retired_before=LINK_CUTOFF,
-                link_pin_retired_before=FAR_FUTURE,
-            )
-            == []
-        )
         assert successor.id not in await collectible_ids_of(
             RetiredInclusiveNodeManager,
             session,
@@ -1647,19 +1665,30 @@ class TestBoundedIdentityLinkPin:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "link_pin_retired_before",
+        [
+            pytest.param(LINK_CUTOFF, id="cutoff-before-the-tombstone"),
+            pytest.param(FAR_FUTURE, id="cutoff-after-the-tombstone"),
+        ],
+    )
     async def test_the_pin_cutoff_leaves_unlinked_tombstones_alone(
-        self, session: AsyncSession, node: Node
+        self, session: AsyncSession, node: Node, link_pin_retired_before: datetime
     ) -> None:
-        """Select an unlinked tombstone whichever side of the pin cutoff it sits."""
+        """Select an unlinked tombstone whichever side of the pin cutoff it sits.
+
+        :param link_pin_retired_before: The pin cutoff under test.
+        """
         await retire_in_place(session, node, retired_at=RETIRED_AT)
 
-        for link_pin_retired_before in (LINK_CUTOFF, FAR_FUTURE):
-            assert await collectible_ids_of(
-                RetiredInclusiveNodeManager,
-                session,
-                retired_before=FAR_FUTURE,
-                link_pin_retired_before=link_pin_retired_before,
-            ) == [node.id]
+        collectible = await collectible_ids_of(
+            RetiredInclusiveNodeManager,
+            session,
+            retired_before=FAR_FUTURE,
+            link_pin_retired_before=link_pin_retired_before,
+        )
+
+        assert collectible == [node.id]
 
     @pytest.mark.asyncio
     async def test_a_reversal_after_collection_fails_as_for_a_deleted_row(

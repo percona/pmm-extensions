@@ -499,11 +499,11 @@ class RetirableManagerMixin(BaseSQLModelManager):
     def _identity_link_pin(cls) -> ColumnElement[bool] | None:
         """Return the predicate matching a row a standing identity link pins.
 
-        None for an entity type that carries no external identity of its own, so
-        collection pays nothing for a clause that could never match. The pin is
-        bounded rather than permanent; :meth:`collectible_ids` owns the bound.
+        ``None`` for an entity type that carries no external identity of its own,
+        so collection pays nothing for a clause that could never match. The pin
+        is bounded rather than permanent; :meth:`collectible_ids` owns the bound.
 
-        :return: The predicate, or None when this entity type cannot be linked.
+        :return: The predicate, or ``None`` when this entity type cannot be linked.
         """
         return None
 
@@ -556,10 +556,11 @@ class RetirableManagerMixin(BaseSQLModelManager):
         retired-inclusive subclasses: the default managers' ``retired_at IS
         NULL`` guard makes the underlying read match nothing.
 
-        The pin is bounded by the row's own ``retired_at``, which a confirmation
-        stamps and nothing moves while the link stands, so it already says how
-        long the link has stood. The bound only narrows the exemption: a
-        released row must still satisfy every other condition.
+        The pin is bounded by the row's own ``retired_at``, which every
+        confirmation restamps, even on an already-retired successor, and nothing
+        moves while the link stands, so it already says how long the link has
+        stood. The bound only narrows the exemption: a released row must still
+        satisfy every other condition.
 
         :param session: The asynchronous database session to use.
         :param retired_before: The cutoff a tombstone must predate.
@@ -1029,7 +1030,7 @@ class AliasableManagerMixin(RetirableManagerMixin):
 
         Narrowed from the base's optional return: an aliasable entity always has
         a pin, which is what lets a subclass widen this one by ``or_``-ing onto
-        ``super()`` without re-testing for None.
+        ``super()`` without re-testing for ``None``.
 
         :return: The ``EXISTS`` predicate.
         """
@@ -1427,6 +1428,12 @@ class AliasableManagerMixin(RetirableManagerMixin):
         confirmed_at = utc_now()
         statements = [
             *cls._retirement_statements(successor.id, confirmed_at),
+            # _retire leaves an already-retired successor's stamp alone — a
+            # service its node's link took — yet that stamp is what bounds this
+            # link's pin in collectible_ids, so it must restart here.
+            update(cls.Model)
+            .where(col(cls.Model.id) == successor.id)
+            .values(retired_at=confirmed_at),
             *cls._revival_statements(predecessor.id),
             update(cls.Model)
             .where(col(cls.Model.id) == predecessor.id)
