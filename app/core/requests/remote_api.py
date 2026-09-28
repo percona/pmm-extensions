@@ -1104,7 +1104,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
 
 
 class CredentialHeaderMixin(BaseRemoteAPI):
-    """Opt-in persistent ``Authorization`` header for :class:`BaseRemoteAPI` subclasses.
+    """Emit a persistent ``Authorization`` header for :class:`BaseRemoteAPI` subclasses.
 
     Apply leftmost in the MRO (e.g. ``CredentialHeaderMixin, RemoteAPI``) so
     :attr:`headers` wins over the base. Formats ``Authorization`` from
@@ -1164,7 +1164,7 @@ class CredentialHeaderMixin(BaseRemoteAPI):
 
 
 class StoredCredentialHeaderMixin(CredentialHeaderMixin):
-    """Persistent ``Authorization`` header backed by stored ``api_key`` / ``auth_scheme``.
+    """Back the ``Authorization`` header with a stored ``api_key`` and ``auth_scheme``.
 
     Use for clients whose credential is session-lifetime config (PMM, Nomad).
     Do not use for clients that derive the credential or hard-code the scheme

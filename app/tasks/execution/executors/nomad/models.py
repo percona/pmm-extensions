@@ -730,19 +730,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
 
     _sync_session: requests.Session | None = None
 
-    @property
-    def _configured_api_key(self) -> str | None:
-        """Return the configured API key's plain value, or ``None`` when unset.
-
-        Delegates to :attr:`~app.core.requests.remote_api.StoredCredentialHeaderMixin._credential_value`
-        so header emission, ``base_url`` stripping, and the sync ``backend`` session
-        all agree on what counts as configured. An empty secret counts as unset.
-
-        :return: The plain API key when a non-empty one is configured, else
-            ``None``.
-        """
-        return self._credential_value
-
     def _compute_base_url(self) -> str:
         """Compute the base URL, dropping userinfo once an API key is configured.
 
@@ -757,7 +744,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :return: The base URL of the Nomad endpoint.
         """
         url = super()._compute_base_url()
-        if self._configured_api_key is None:
+        if self._credential_value is None:
             return url
         return strip_credential_url_userinfo(url)
 
@@ -777,7 +764,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 cert = (self.ssl_certfile,)
         address = str(self.endpoint).rstrip("/")
         session = requests.Session()
-        if self._configured_api_key is not None:
+        if self._credential_value is not None:
             address = strip_credential_url_userinfo(address)
             session.headers.update(self.headers)
         self._sync_session = session
