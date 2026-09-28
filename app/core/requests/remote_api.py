@@ -20,6 +20,7 @@ __all__ = [
     "BaseRemoteAPI",
     "CredentialHeaderMixin",
     "JSONBody",
+    "PendingCloses",
     "RemoteAPI",
     "StoredCredentialHeaderMixin",
     "as_json_array",
@@ -370,6 +371,61 @@ async def _iter_lines_from_chunks(
         yield bytes(buffer)
 
 
+class PendingCloses:
+    """Owner-scoped set of clients whose :meth:`BaseRemoteAPI.close_when_idle` deferred.
+
+    Each owner (``ClientRegistry``, the extensions ``app.state`` holder,
+    ``NomadLifecycle``) keeps its own instance so a shutdown sweep only reaches
+    clients that owner itself retired. A client that drains normally before
+    shutdown is removed here and is not force-closed again.
+
+    Clients are keyed by identity: :class:`BaseRemoteAPI` compares by field
+    values, so a value-keyed set would collapse two retired instances that
+    shared an endpoint.
+    """
+
+    def __init__(self) -> None:
+        self._clients: dict[int, BaseRemoteAPI] = {}
+
+    def add(self, client: "BaseRemoteAPI") -> None:
+        """Remember ``client`` until it drains or :meth:`force_close` runs.
+
+        :param client: The client whose close was deferred.
+        """
+        self._clients[id(client)] = client
+
+    def discard(self, client: "BaseRemoteAPI") -> None:
+        """Drop ``client`` after a normal deferred close.
+
+        :param client: The client that closed (or was force-closed).
+        """
+        self._clients.pop(id(client), None)
+
+    async def force_close(self) -> None:
+        """Close every still-deferred client and clear the set.
+
+        Safe to call when empty. A client already closed by its last holder is
+        not present. Concurrent with an in-flight hold, ``close`` races the
+        holder; :meth:`BaseRemoteAPI.__aexit__` guards on ``session.closed``
+        and clears deferred-close bookkeeping.
+        """
+        clients = list(self._clients.values())
+        self._clients.clear()
+        if not clients:
+            return
+        results = await asyncio.gather(
+            *(client.close() for client in clients),
+            return_exceptions=True,
+        )
+        for client, result in zip(clients, results, strict=False):
+            if isinstance(result, Exception):
+                client.logger.warning(
+                    "Error force-closing client %s: %s",
+                    client.redacted_base_url,
+                    result,
+                )
+
+
 class BaseRemoteAPI(BaseCaseInsensitiveModel):
     """Base class for interacting with external APIs.
 
@@ -404,6 +460,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     _session: ClientSession | None = None
     _in_flight: int = 0
     _close_when_idle: bool = False
+    _pending_closes: PendingCloses | None = None
     _extra_headers: ContextVar[dict[str, str] | None] = PrivateAttr(
         default_factory=lambda: ContextVar("api_extra_headers", default=None)
     )
@@ -505,7 +562,10 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ) -> None:
         """Exit the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized.
+        Closes the aiohttp `ClientSession` if it was initialized. Also clears
+        deferred-close bookkeeping so an owner's :class:`PendingCloses` no
+        longer tracks this client after any path that closes it (normal drain,
+        unconditional ``close``, or shutdown ``force_close``).
 
         :param exc_type: The exception type, if any.
         :type exc_type: type[BaseException] | None
@@ -514,6 +574,11 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         :param exc_tb: The traceback, if any.
         :type exc_tb: TracebackType | None
         """
+        pending = self._pending_closes
+        if pending is not None:
+            pending.discard(self)
+            self._pending_closes = None
+        self._close_when_idle = False
         if self._session and not self._session.closed:
             self.logger.debug("Closing ClientSession for %s", self.redacted_base_url)
             await self._session.close()
@@ -548,7 +613,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         including the ones it issues after an earlier response finished, so the
         accounting unit is the hold rather than the individual HTTP call. The
         releaser that drops the count to zero performs a close that
-        :meth:`close_when_idle` deferred.
+        :meth:`close_when_idle` deferred, and removes this client from the
+        owner's :class:`PendingCloses` so a later shutdown sweep will not
+        force-close it again.
 
         The release runs during cancellation too, when the consuming task is
         cancelled by a client disconnecting mid-response, so the deferred close
@@ -563,19 +630,28 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         finally:
             self._in_flight -= 1
             if not self._in_flight and self._close_when_idle:
-                self._close_when_idle = False
                 await asyncio.shield(self.close())
 
-    async def close_when_idle(self) -> None:
+    async def close_when_idle(self, pending: PendingCloses | None = None) -> None:
         """Close the session now when idle, or once the last consumer releases.
 
         Unlike :meth:`close`, which closes unconditionally, this waits on the
         consumers registered by :meth:`hold`, and imposes no deadline on them.
         Callers that retire a client on a settings rebind use this so an
         in-flight stream or download is not cut off mid-response.
+
+        When the close is deferred and ``pending`` is given, this client is
+        registered there so the owner's shutdown path can still force-close it
+        if the holder never unwinds.
+
+        :param pending: The calling owner's deferred-close collection, or
+            ``None`` when the caller does not track retirements for shutdown.
         """
         if self._in_flight:
             self._close_when_idle = True
+            if pending is not None:
+                self._pending_closes = pending
+                pending.add(self)
             return
         await self.close()
 
