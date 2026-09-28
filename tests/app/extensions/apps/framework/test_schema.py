@@ -2894,7 +2894,10 @@ class TestAppSchemaRecordDisplayNames:
 
         assert set(ITEM_DISPLAY_NAME_KEYS).issubset(schema["required"])
         for key in ITEM_DISPLAY_NAME_KEYS:
-            assert "default" not in schema["properties"][key]
+            prop = schema["properties"][key]
+            assert "default" not in prop
+            assert prop.get("type") == "string"
+            assert "anyOf" not in prop
 
     @pytest.mark.parametrize(
         "field_name", ["item_display_name", "item_display_name_plural"]

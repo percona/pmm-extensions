@@ -1559,13 +1559,14 @@ _VOWELS = frozenset("aeiou")
 def _require_item_display_names_in_json_schema(
     json_schema: dict[str, Any],
 ) -> None:
-    """Keep record-name fields required on the wire despite constructor defaults.
+    """Keep record-name fields required and non-nullable on the wire.
 
-    Both fields default to ``None`` at construction so authors (and ty) may omit
-    them; :func:`_fill_item_display_names` always writes a string before the
-    instance exists. Without this patch, Pydantic would drop them from
-    ``required`` and advertise a null default in OpenAPI, breaking the
-    generated client's non-nullable ``string`` contract.
+    Both fields are ``NonEmptyStr | None = None`` at construction so authors
+    (and ty) may omit them; :func:`_fill_item_display_names` always writes a
+    string before the instance exists. Without this patch, Pydantic would drop
+    them from ``required``, advertise a null default, and emit an ``anyOf``
+    with ``null``, breaking the generated client's non-nullable ``string``
+    contract.
 
     Bound as ``json_schema_extra`` on :class:`AppSchema` and
     :class:`AppEntitySchema` (mutating callable form).
@@ -1579,8 +1580,22 @@ def _require_item_display_names_in_json_schema(
     json_schema["required"] = [key for key in properties if key in required]
     for key in ITEM_DISPLAY_NAME_KEYS:
         prop = properties.get(key)
-        if isinstance(prop, dict):
-            prop.pop("default", None)
+        if not isinstance(prop, dict):
+            continue
+        title = prop.get("title")
+        prop.pop("default", None)
+        alternatives = prop.get("anyOf")
+        if isinstance(alternatives, list):
+            non_null = [
+                alt
+                for alt in alternatives
+                if isinstance(alt, dict) and alt.get("type") != "null"
+            ]
+            if len(non_null) == 1:
+                prop.clear()
+                prop.update(non_null[0])
+                if title is not None:
+                    prop["title"] = title
 
 
 def pluralize_item_display_name(singular: str) -> str:
@@ -1700,8 +1715,8 @@ class AppEntitySchema(SchemaBaseModel):
 
     name: Annotated[NonEmptyStr, Field(pattern=_FIELD_NAME_PATTERN)]
     display_name: NonEmptyStr
-    item_display_name: NonEmptyStr = Field(default=None)
-    item_display_name_plural: NonEmptyStr = Field(default=None)
+    item_display_name: NonEmptyStr | None = None
+    item_display_name_plural: NonEmptyStr | None = None
     description: NonEmptyStr | None = None
     forms: list[FormSection]
     list_view: ListView
@@ -1839,8 +1854,8 @@ class AppSchema(SchemaBaseModel):
 
     name: Annotated[NonEmptyStr, Field(pattern=_FIELD_NAME_PATTERN)]
     display_name: NonEmptyStr
-    item_display_name: NonEmptyStr = Field(default=None)
-    item_display_name_plural: NonEmptyStr = Field(default=None)
+    item_display_name: NonEmptyStr | None = None
+    item_display_name_plural: NonEmptyStr | None = None
     description: NonEmptyStr | None = None
     task_type: NonEmptyStr | None = None
     forms: list[FormSection] = Field(default_factory=list)
