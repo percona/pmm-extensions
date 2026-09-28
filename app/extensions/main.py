@@ -35,6 +35,7 @@ from app.core.config import create_app, default_lifespan, settings
 from app.core.exceptions import HTTPBadGatewayException, HTTPServiceUnavailableException
 from app.core.health import build_health_router
 from app.core.requests import RemoteAPI
+from app.core.requests.remote_api import PendingCloses
 from app.core.settings_override.lifecycle import (
     CallbackRegistry,
     previous_or_base,
@@ -118,6 +119,8 @@ def _make_remote_api_rebinder(
     name: str,
     proxy: OverridableSettingsProxy,
     key: Literal["INVENTORY_ENDPOINT", "TASKS_ENDPOINT"],
+    *,
+    pending: PendingCloses | None = None,
     **ssl: Any,
 ) -> RefreshCallback:
     """Build a rebind callback for an ``app.state`` RemoteAPI endpoint override.
@@ -136,13 +139,17 @@ def _make_remote_api_rebinder(
     Both shapes retire the outgoing client rather than closing it outright: the
     swap and the eviction stop it being handed to new work, and it closes once
     the consumers still holding it (an open log stream, a running download)
-    release.
+    release. App-state retirements register on ``pending`` so
+    :func:`extensions_lifespan` can force-close them at shutdown if a holder
+    never unwinds.
 
     :param app: The FastAPI application whose ``state`` holds the client.
     :param name: The ``app.state`` attribute name (``inventory_api`` /
         ``tasks_api``).
     :param proxy: The overridable settings proxy that owns the endpoint field.
     :param key: The top-level snapshot key for the endpoint field.
+    :param pending: Owner-scoped deferred-close collection for app-state
+        retirements, or ``None`` when the caller does not track them.
     :param ssl: SSL keyword arguments forwarded to :class:`RemoteAPI` (not HOT,
         captured once at wiring time).
     :return: The rebind callback.
@@ -164,7 +171,7 @@ def _make_remote_api_rebinder(
             logger.exception("Failed to rebind %s; keeping previous client", name)
             return
         setattr(app.state, name, new_api)
-        await old.close_when_idle()
+        await old.close_when_idle(pending=pending)
 
     return _rebind
 
@@ -246,6 +253,8 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
         when an activated app's declaration is invalid; that function
         enumerates the cases.
     """
+    pending = PendingCloses()
+    app.state.retired_remote_apis = pending
     callbacks: CallbackRegistry = {
         (entry.setting_class, key): _reseed_system_periodic_tasks
         for entry in collect_app_owned_settings_classes()
@@ -261,6 +270,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
                 "inventory_api",
                 extensions_settings,
                 "INVENTORY_ENDPOINT",
+                pending=pending,
                 ssl_cafile=settings.SSL_CAFILE,
                 ssl_keyfile=inventory_settings.SSL_KEYFILE,
                 ssl_certfile=inventory_settings.SSL_CERTFILE,
@@ -273,6 +283,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
                 "tasks_api",
                 extensions_settings,
                 "TASKS_ENDPOINT",
+                pending=pending,
                 ssl_cafile=settings.SSL_CAFILE,
                 ssl_keyfile=tasks_settings.SSL_KEYFILE,
                 ssl_certfile=tasks_settings.SSL_CERTFILE,
@@ -328,8 +339,9 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     The clients are closed via ``app.state`` (not via the originals captured
     at startup) on shutdown, so a client a rebind callback swapped in mid-run is
-    the one that gets closed -- the swapped-out original was already closed by
-    the rebinder.
+    the one that gets closed. Clients a rebind retired while still held are
+    tracked on ``app.state.retired_remote_apis`` and force-closed here if their
+    holders never unwound.
 
     :param app: The FastAPI application instance.
     :return: ``None``, once the lifespans have been entered.
@@ -354,6 +366,7 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         finally:
             await app.state.tasks_api.__aexit__(None, None, None)
             await app.state.inventory_api.__aexit__(None, None, None)
+            await app.state.retired_remote_apis.force_close()
 
 
 lifespan = extensions_lifespan
