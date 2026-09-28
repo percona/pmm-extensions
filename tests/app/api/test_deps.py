@@ -1021,14 +1021,18 @@ class TestServicePrincipalWriteRoute:
         assert calls == [get_service_principal_exempt_caller]
 
     def test_the_route_keeps_its_own_dependencies(self, router: APIRouter) -> None:
-        """Add the restriction alongside the route's dependencies, not instead."""
+        """Add the restriction ahead of the route's dependencies, not instead.
+
+        FastAPI resolves decorator dependencies in order, so one that looks up
+        the path's row could otherwise answer 404 before the refusal.
+        """
 
         @router.post("/", dependencies=[IsAuthenticatedDep])
         async def write() -> None: ...
 
         calls = _dependency_calls(_only_route(router.routes))
 
-        assert calls == [get_current_user, get_current_service_principal]
+        assert calls == [get_current_service_principal, get_current_user]
 
     def test_including_the_router_restricts_the_route_once(
         self, router: APIRouter
@@ -1047,6 +1051,22 @@ class TestServicePrincipalWriteRoute:
 
         assert _dependency_calls(_only_route(app.routes)) == [
             get_current_service_principal
+        ]
+
+    def test_including_the_router_keeps_the_restriction_first(
+        self, router: APIRouter
+    ) -> None:
+        """Keep the restriction ahead of the dependencies inclusion prepends."""
+
+        @router.post("/")
+        async def write() -> None: ...
+
+        app = FastAPI()
+        app.include_router(router, dependencies=[IsAuthenticatedDep])
+
+        assert _dependency_calls(_only_route(app.routes)) == [
+            get_current_service_principal,
+            get_current_user,
         ]
 
     def test_including_the_router_keeps_an_exemption(self, router: APIRouter) -> None:
@@ -1144,6 +1164,11 @@ class TestServicePrincipalWriteRouteRequests:
             row: Annotated[None, Depends(_missing_row)],
         ) -> None: ...
 
+        @router.post(
+            "/restricted/{row_id}/looked-up", dependencies=[Depends(_missing_row)]
+        )
+        async def restricted_looked_up_row() -> None: ...
+
         @router.post("/exempt", dependencies=[ExemptFromServicePrincipalDep])
         async def exempt() -> dict[str, str]:
             return {"ok": "exempt"}
@@ -1210,16 +1235,39 @@ class TestServicePrincipalWriteRouteRequests:
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
+    @pytest.mark.parametrize(
+        "path",
+        ["/restricted/99999", "/restricted/99999/looked-up"],
+        ids=["parameter_lookup", "decorator_lookup"],
+    )
     def test_the_refusal_precedes_the_path_lookup(
-        self, client: TestClient, as_role: Callable[[UserRole], dict[str, str]]
+        self,
+        client: TestClient,
+        as_role: Callable[[UserRole], dict[str, str]],
+        path: str,
     ) -> None:
         """Answer a human 403 on an unknown row, not the lookup's 404.
 
         A 404 reaching a refused caller would tell it which identifiers exist.
         """
-        response = client.post("/restricted/99999", headers=as_role(UserRole.ADMIN))
+        response = client.post(path, headers=as_role(UserRole.ADMIN))
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/restricted/99999", "/restricted/99999/looked-up"],
+        ids=["parameter_lookup", "decorator_lookup"],
+    )
+    def test_the_principal_reaches_the_path_lookup(
+        self, client: TestClient, path: str
+    ) -> None:
+        """Answer the principal the lookup's 404, the refusal being the only gate."""
+        response = client.post(
+            path, headers={"Authorization": f"Bearer {SERVICE_TOKEN}"}
+        )
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_an_exempt_route_admits_a_human(
         self, client: TestClient, as_role: Callable[[UserRole], dict[str, str]]

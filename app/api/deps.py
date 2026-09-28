@@ -244,8 +244,9 @@ class ServicePrincipalWriteRoute(APIRoute):
     :data:`ExemptFromServicePrincipalDep`. The restriction is added as a normal
     route dependency rather than checked in a router-level dependency's body, so
     it keeps advertising the Bearer requirement in the schema, is resolved from
-    FastAPI's per-request cache, and runs ahead of the path lookups — a refused
-    caller gets 403 before any 404 could tell it which identifiers exist.
+    FastAPI's per-request cache, and runs ahead of every other dependency and the
+    path lookups — a refused caller gets 403 before any 404 could tell it which
+    identifiers exist.
     """
 
     def __init__(
@@ -267,13 +268,15 @@ class ServicePrincipalWriteRoute(APIRoute):
         :param kwargs: Every other ``APIRoute`` argument, passed through.
         """
         route_dependencies = list(dependencies or ())
-        # include_router rebuilds each route from its predecessor's dependencies,
-        # which already carry the restriction.
-        if (
-            requires_service_principal(methods or {"GET"}, route_dependencies)
-            and IsServicePrincipalDep not in route_dependencies
-        ):
-            route_dependencies.append(IsServicePrincipalDep)
+        if requires_service_principal(methods or {"GET"}, route_dependencies):
+            # FastAPI resolves decorator dependencies in order, so the restriction
+            # goes first, ahead of one that could 404. include_router rebuilds each
+            # route from its predecessor's dependencies, which already carry it
+            # behind whatever the inclusion prepends, so move it rather than add it.
+            route_dependencies = [
+                IsServicePrincipalDep,
+                *(dep for dep in route_dependencies if dep != IsServicePrincipalDep),
+            ]
         super().__init__(
             path,
             endpoint,
