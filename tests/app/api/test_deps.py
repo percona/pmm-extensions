@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from typing import Annotated, Any, Final
 
 import pytest
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
+from fastapi import APIRouter, Depends, FastAPI, status
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -46,6 +46,7 @@ from app.core.auth.models import UserRole
 from app.core.auth.providers.grafana.models import GrafanaUser
 from app.core.auth.utils import get_user_model
 from app.core.config import settings
+from app.core.exceptions import HTTPNotFoundException
 from app.core.log import ContextFilter
 from app.extensions.apps.alerts.api_routes import (
     alerts_api_pagerduty_delete,
@@ -944,7 +945,7 @@ def _only_route(routes: list[Any]) -> APIRoute:
 
 async def _missing_row() -> None:
     """Raise the 404 a path dependency answers for an unknown identifier."""
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    raise HTTPNotFoundException
 
 
 class TestServicePrincipalWriteRoute:
@@ -1085,8 +1086,17 @@ class TestRequiresServicePrincipal:
             ({"GET"}, False),
             ({"GET", "HEAD", "OPTIONS"}, False),
             (set(), False),
+            ({"get"}, False),
         ],
-        ids=["post", "delete", "mixed", "get", "all_safe", "no_methods"],
+        ids=[
+            "post",
+            "delete",
+            "mixed",
+            "get",
+            "all_safe",
+            "no_methods",
+            "lowercase_get",
+        ],
     )
     def test_the_method_set_decides_a_route_without_the_exemption(
         self, methods: set[str], *, expected: bool

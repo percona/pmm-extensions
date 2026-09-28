@@ -143,8 +143,21 @@ class TestHasUnsafeMethod:
             (set(SAFE_HTTP_METHODS), False),
             ({"GET"}, False),
             (set(), False),
+            ({"get"}, False),
+            ({"post"}, True),
         ],
-        ids=["post", "put", "patch", "delete", "mixed", "all_safe", "get", "empty"],
+        ids=[
+            "post",
+            "put",
+            "patch",
+            "delete",
+            "mixed",
+            "all_safe",
+            "get",
+            "empty",
+            "lowercase_get",
+            "lowercase_post",
+        ],
     )
     def test_any_unsafe_method_makes_the_set_unsafe(
         self, methods: set[str], *, expected: bool

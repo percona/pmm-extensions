@@ -473,7 +473,7 @@ def test_the_service_principal_can_update_a_service(
     assert response.json()["name"] == "renamed-by-sync"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SyncerWrite:
     """Describe one write only a syncer issues, and the answer it expects."""
 
