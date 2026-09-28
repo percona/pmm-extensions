@@ -906,8 +906,10 @@ class BaseManager:
                 logger.exception("DatabaseError saving instance %s", instance)
                 raise HTTPBadRequestException from None
             # Drop columns marked exclude=True (e.g. retirement_key) so the
-            # conflict message only names caller-visible fields.
-            fields = cls.Model.model_fields
+            # conflict message only names caller-visible fields. Plain
+            # SQLAlchemy models (celery-beat) have no model_fields — treat
+            # every column as visible so their conflict messages stay unchanged.
+            fields = getattr(cls.Model, "model_fields", {})
             visible_columns = [
                 name
                 for name in duplicate_columns
