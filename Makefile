@@ -202,7 +202,7 @@ migrate: venv alembic.ini app/tasks/migrations/versions app/inventory/migrations
 	  echo "Error: One or more Alembic upgrades failed."; \
 	  exit $$ret; \
 	fi
-	@"${VENV_BIN}"/python -m app.core.celery.bootstrap
+	@"${VENV_BIN}"/python -m app.core.celery.bootstrap --deadline-seconds 60
 
 checkmigrations: migrate
 	@"${VENV_BIN}"/python -m scripts.check_alembic_revision_tree
