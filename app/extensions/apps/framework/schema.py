@@ -1575,8 +1575,8 @@ def _require_item_display_names_in_json_schema(
     """
     required: set[str] = set(json_schema.get("required") or ())
     required.update(ITEM_DISPLAY_NAME_KEYS)
-    json_schema["required"] = sorted(required)
     properties = json_schema.get("properties") or {}
+    json_schema["required"] = [key for key in properties if key in required]
     for key in ITEM_DISPLAY_NAME_KEYS:
         prop = properties.get(key)
         if isinstance(prop, dict):
@@ -1694,6 +1694,10 @@ class AppEntitySchema(SchemaBaseModel):
         Defaults to ``None``.
     """
 
+    model_config = ConfigDict(
+        json_schema_extra=_require_item_display_names_in_json_schema,
+    )
+
     name: Annotated[NonEmptyStr, Field(pattern=_FIELD_NAME_PATTERN)]
     display_name: NonEmptyStr
     item_display_name: NonEmptyStr = Field(default=None)
@@ -1706,13 +1710,6 @@ class AppEntitySchema(SchemaBaseModel):
     )
     cardinality_rules: list[CardinalityRule] | None = None
     fail_when: list[FailRule] | None = None
-
-    model_config = ConfigDict(
-        populate_by_name=True,
-        extra="forbid",
-        arbitrary_types_allowed=True,
-        json_schema_extra=_require_item_display_names_in_json_schema,
-    )
 
     @model_validator(mode="before")
     @classmethod
@@ -1836,6 +1833,10 @@ class AppSchema(SchemaBaseModel):
         declaring ``entities``, whose records are not task runs.
     """
 
+    model_config = ConfigDict(
+        json_schema_extra=_require_item_display_names_in_json_schema,
+    )
+
     name: Annotated[NonEmptyStr, Field(pattern=_FIELD_NAME_PATTERN)]
     display_name: NonEmptyStr
     item_display_name: NonEmptyStr = Field(default=None)
@@ -1853,13 +1854,6 @@ class AppSchema(SchemaBaseModel):
     predecessors: list[ChainedPredecessor] | None = None
     related_apps: list[RelatedApp] | None = None
     task_statuses: list[TaskStatusDescriptor] | None = None
-
-    model_config = ConfigDict(
-        populate_by_name=True,
-        extra="forbid",
-        arbitrary_types_allowed=True,
-        json_schema_extra=_require_item_display_names_in_json_schema,
-    )
 
     @model_validator(mode="before")
     @classmethod

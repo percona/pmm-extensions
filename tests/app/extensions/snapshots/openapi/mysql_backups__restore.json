@@ -177,12 +177,12 @@
           }
         },
         "required": [
+          "name",
           "display_name",
-          "forms",
           "item_display_name",
           "item_display_name_plural",
-          "list_view",
-          "name"
+          "forms",
+          "list_view"
         ],
         "title": "AppEntitySchema",
         "type": "object"
@@ -373,10 +373,10 @@
           }
         },
         "required": [
+          "name",
           "display_name",
           "item_display_name",
-          "item_display_name_plural",
-          "name"
+          "item_display_name_plural"
         ],
         "title": "AppSchema",
         "type": "object"
