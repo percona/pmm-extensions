@@ -943,7 +943,8 @@ def _default_item_display_name_plural(
 
     :param display_name: The resolved app title.
     :param item_display_name: The resolved singular (declared or title fallback).
-    :param singular_declared: Whether the author supplied a singular.
+    :param singular_declared: Whether the resolved singular differs from
+        ``display_name`` (the same signal both resolve paths use).
     :return: The plural to seed into the generated app.
     """
     if not singular_declared:
@@ -975,7 +976,7 @@ def _resolve_non_interactive(
         _default_item_display_name_plural(
             display_name,
             item_display_name,
-            singular_declared=args.item_display_name is not None,
+            singular_declared=item_display_name != display_name,
         )
     )
     description = (
@@ -1074,9 +1075,7 @@ def _resolve_interactive(
         plural_default = _default_item_display_name_plural(
             display_name,
             item_display_name,
-            singular_declared=(
-                args.item_display_name is not None or item_display_name != display_name
-            ),
+            singular_declared=item_display_name != display_name,
         )
         item_display_name_plural = args.item_display_name_plural or prompt_cls.ask(
             "Record name (plural)", default=plural_default

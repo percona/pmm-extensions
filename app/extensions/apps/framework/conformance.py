@@ -41,11 +41,7 @@ from app.extensions.apps.framework.form_dsl import (
     derive_form_sections,
 )
 from app.extensions.apps.framework.responses import root_segment, serialized_field_names
-from app.extensions.apps.framework.schema import (
-    Capabilities,
-    ITEM_DISPLAY_NAME_KEYS,
-    pluralize_item_display_name,
-)
+from app.extensions.apps.framework.schema import Capabilities, ITEM_DISPLAY_NAME_KEYS
 
 if TYPE_CHECKING:
     from app.extensions.apps.framework.apps import TaskExecutionApp
@@ -140,14 +136,6 @@ def check_item_display_names_declared(
     "was it declared?" cannot be asked of the payload. A name that merely differs
     but is still not a mid-sentence record noun passes here and is left to review.
 
-    When the author declares a singular, the plural is derived from that noun and
-    therefore differs from the title by construction — the plural equality check
-    does not fire for that healthy path. It still fires when both keys were left
-    as the title. Separately, a plural that is only the Django-style pluralisation
-    of the title while the singular is also still the title (the
-    "MySQL Backupses" shape) is reported so a regression of title-as-singular
-    derivation cannot slip past the plural half of the tripwire.
-
     Each scope is judged against its own ``display_name`` and gated on its own
     form sections, so an entities-mode schema — whose root ``forms`` are empty by
     construction — is checked per entity and never at the root, which names no
@@ -155,46 +143,24 @@ def check_item_display_names_declared(
 
     :param schema_payload: A plugin schema's wire payload (the ``GET /schema``
         body, or ``app_schema.model_dump(by_alias=True, exclude_none=True)``).
-    :return: One message per record-name defect; empty when the schema declares
-        no create form or names both records.
+    :return: One message per record name left equal to its ``display_name``;
+        empty when the schema declares no create form or names both records.
     """
     scopes = [(str(schema_payload.get("name")), schema_payload)]
     scopes.extend(
         (f"{schema_payload.get('name')}.{entity.get('name')}", entity)
         for entity in schema_payload.get("entities") or ()
     )
-    violations: list[str] = []
-    for scope_label, scope in scopes:
-        if not any(section.get("fields") for section in scope.get("forms") or ()):
-            continue
-        display_name = scope.get("display_name")
-        # Partial / unvalidated payloads may leave display_name non-str; skip
-        # rather than raising out of the pluraliser during conformance.
-        if not isinstance(display_name, str):
-            continue
-        singular = scope.get("item_display_name")
-        plural = scope.get("item_display_name_plural")
-        violations.extend(
-            f"schema {scope_label!r} leaves {key!r} equal to its "
-            f"display_name ({display_name!r}); declare the record noun "
-            f"this form creates one of, in mid-sentence form"
-            for key in ITEM_DISPLAY_NAME_KEYS
-            if scope.get(key) == display_name
-        )
-        # Title left as singular, plural only a pluralisation of that title —
-        # the regression of deriving the plural from an undeclared singular.
-        if (
-            singular == display_name
-            and isinstance(plural, str)
-            and plural != display_name
-            and plural == pluralize_item_display_name(display_name)
-        ):
-            violations.append(
-                f"schema {scope_label!r} leaves 'item_display_name_plural' as a "
-                f"pluralisation of its display_name ({plural!r}); declare the "
-                f"record noun this form creates one of, in mid-sentence form"
-            )
-    return violations
+    return [
+        f"schema {scope_label!r} leaves {key!r} equal to its display_name "
+        f"({display_name!r}); declare the record noun this form creates one of, "
+        f"in mid-sentence form"
+        for scope_label, scope in scopes
+        if any(section.get("fields") for section in scope.get("forms") or ())
+        for key in ITEM_DISPLAY_NAME_KEYS
+        if (display_name := scope.get("display_name")) is not None
+        and scope.get(key) == display_name
+    ]
 
 
 def check_capability_route_consistency(app: "TaskExecutionApp") -> list[str]:

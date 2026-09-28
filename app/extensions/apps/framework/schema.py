@@ -1589,9 +1589,8 @@ def pluralize_item_display_name(singular: str) -> str:
     Pluralises only the last whitespace-separated token so multi-word nouns
     like ``schema change`` become ``schema changes``. Irregular plurals and
     forms outside this heuristic stay author-declared via
-    ``item_display_name_plural``. Shared by schema defaulting, the scaffold
-    plural prompt default, and the conformance detector that recognises a
-    title-pluralised regression.
+    ``item_display_name_plural``. Shared by schema defaulting and the scaffold
+    plural prompt default.
 
     :param singular: The resolved singular record noun (explicit or
         ``display_name`` fallback).

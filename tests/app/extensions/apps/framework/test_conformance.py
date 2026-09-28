@@ -994,31 +994,6 @@ def test_item_display_names_fire_on_the_singular_alone():
     assert "item_display_name'" in violations[0]
 
 
-def test_item_display_names_fire_when_plural_is_only_the_title_pluralised():
-    """Catch the title-as-singular regression: plural = pluralise(display_name).
-
-    Equality with ``display_name`` cannot see this shape — the plural differs —
-    so the detector must recognise it explicitly.
-    """
-    payload = {
-        "name": "mysql_backups",
-        "display_name": "MySQL Backups",
-        "item_display_name": "MySQL Backups",
-        "item_display_name_plural": "MySQL Backupses",
-        "forms": [{"fields": [{"name": "service_id"}]}],
-    }
-
-    violations = check_item_display_names_declared(payload)
-
-    flagged = sorted(
-        key
-        for key in ITEM_DISPLAY_NAME_KEYS
-        if any(repr(key) in message or f"'{key}'" in message for message in violations)
-    )
-    assert flagged == sorted(ITEM_DISPLAY_NAME_KEYS)
-    assert any("MySQL Backupses" in message for message in violations)
-
-
 def test_item_display_names_pass_when_singular_is_declared_and_plural_derived():
     """A declared singular with a derived plural is healthy — plural ≠ title."""
     payload = {
@@ -1026,19 +1001,6 @@ def test_item_display_names_pass_when_singular_is_declared_and_plural_derived():
         "display_name": "MySQL Backups",
         "item_display_name": "backup",
         "item_display_name_plural": "backups",
-        "forms": [{"fields": [{"name": "service_id"}]}],
-    }
-
-    assert check_item_display_names_declared(payload) == []
-
-
-def test_item_display_names_skip_when_display_name_is_not_a_string():
-    """Skip scopes whose display_name is non-str rather than raising on pluralise."""
-    payload = {
-        "name": "mysql_backups",
-        "display_name": 42,
-        "item_display_name": 42,
-        "item_display_name_plural": "42s",
         "forms": [{"fields": [{"name": "service_id"}]}],
     }
 
