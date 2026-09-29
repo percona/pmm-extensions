@@ -107,6 +107,21 @@ async def test_close_all_force_closes_a_deferred_retiree() -> None:
         assert client._session is None
 
 
+@pytest.mark.asyncio
+async def test_close_all_seals_pending_so_a_late_invalidate_closes_now() -> None:
+    """A rebind that races past close_all must close immediately, not defer."""
+    registry = ClientRegistry()
+    client = await registry.get(RemoteAPI, endpoint="https://a.example.org")
+    await registry.close_all()
+
+    async with client.hold():
+        # Simulate an invalidate that already left the close lock before
+        # close_all sealed, then calls close_when_idle afterward.
+        await client.close_when_idle(pending=registry._pending_closes)
+        assert client._session is None
+        assert registry._pending_closes._clients == {}
+
+
 _CREDENTIAL_ENDPOINT = "https://svcuser:svcpass@a.example.org"
 _CREDENTIAL_SECRET = "svcpass"
 _CLOSE_FAILURE = "close boom"

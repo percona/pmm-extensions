@@ -146,6 +146,9 @@ class NomadLifecycle:
     async def __aexit__(self, *_exc: object) -> None:
         """Exit the entered executor and force-close any still-deferred retirees."""
         async with self._lock:
+            # Seal before awaiting so a concurrent reconcile that already left
+            # the lock cannot register a deferred close after the sweep.
+            self._pending_closes.seal()
             if self._current is not None:
                 await self._current.__aexit__(None, None, None)
                 self._current = None

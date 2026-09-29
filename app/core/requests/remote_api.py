@@ -382,17 +382,32 @@ class PendingCloses:
     Clients are keyed by identity: :class:`BaseRemoteAPI` compares by field
     values, so a value-keyed set would collapse two retired instances that
     shared an endpoint.
+
+    :meth:`seal` (and :meth:`force_close`) permanently refuse new deferrals so a
+    rebind that races shutdown cannot register a client after the sweep has
+    already run. :meth:`add` returns ``False`` when sealed; the caller must
+    close immediately.
     """
 
     def __init__(self) -> None:
         self._clients: dict[int, BaseRemoteAPI] = {}
+        self._sealed = False
 
-    def add(self, client: "BaseRemoteAPI") -> None:
+    def seal(self) -> None:
+        """Reject further deferrals; late retirements must close immediately."""
+        self._sealed = True
+
+    def add(self, client: "BaseRemoteAPI") -> bool:
         """Remember ``client`` until it drains or :meth:`force_close` runs.
 
         :param client: The client whose close was deferred.
+        :return: ``True`` when registered, ``False`` when this collection is
+            already sealed and the caller must close ``client`` now.
         """
+        if self._sealed:
+            return False
         self._clients[id(client)] = client
+        return True
 
     def discard(self, client: "BaseRemoteAPI") -> None:
         """Drop ``client`` after a normal deferred close.
@@ -402,13 +417,15 @@ class PendingCloses:
         self._clients.pop(id(client), None)
 
     async def force_close(self) -> None:
-        """Close every still-deferred client and clear the set.
+        """Seal, then close every still-deferred client and clear the set.
 
-        Safe to call when empty. A client already closed by its last holder is
-        not present. Concurrent with an in-flight hold, ``close`` races the
-        holder; :meth:`BaseRemoteAPI.__aexit__` guards on ``session.closed``
-        and clears deferred-close bookkeeping.
+        Sealing happens before any ``await`` so a concurrent rebind that tries
+        to register after this returns cannot reintroduce a leak.
+        Safe to call when empty. Concurrent with an in-flight hold, ``close``
+        races the holder; :meth:`BaseRemoteAPI.__aexit__` guards on
+        ``session.closed`` and clears deferred-close bookkeeping.
         """
+        self._sealed = True
         clients = list(self._clients.values())
         self._clients.clear()
         if not clients:
@@ -642,7 +659,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
 
         When the close is deferred and ``pending`` is given, this client is
         registered there so the owner's shutdown path can still force-close it
-        if the holder never unwinds.
+        if the holder never unwinds. If ``pending`` is already sealed (shutdown
+        has begun), the close runs immediately instead of being deferred past
+        the sweep.
 
         :param pending: The calling owner's deferred-close collection, or
             ``None`` when the caller does not track retirements for shutdown.
@@ -650,8 +669,11 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         if self._in_flight:
             self._close_when_idle = True
             if pending is not None:
+                if not pending.add(self):
+                    self._close_when_idle = False
+                    await self.close()
+                    return
                 self._pending_closes = pending
-                pending.add(self)
             return
         await self.close()
 

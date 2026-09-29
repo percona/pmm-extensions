@@ -364,6 +364,9 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             async with default_lifespan(app):
                 yield
         finally:
+            # Seal before awaiting so a concurrent _rebind (refresher still
+            # nested above this finally) cannot register after the sweep.
+            app.state.retired_remote_apis.seal()
             await app.state.tasks_api.__aexit__(None, None, None)
             await app.state.inventory_api.__aexit__(None, None, None)
             await app.state.retired_remote_apis.force_close()

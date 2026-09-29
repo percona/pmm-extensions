@@ -784,6 +784,26 @@ class TestDrainOnRebind:
         assert pending._clients == {}
         assert remote_api._session is None
 
+    async def test_sealed_pending_closes_immediately_mid_hold(self, remote_api):
+        """Close now when the owner's pending set is already sealed by shutdown."""
+        pending = PendingCloses()
+        pending.seal()
+        await remote_api.open()
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            assert remote_api._session is None
+            assert pending._clients == {}
+
+    async def test_add_after_force_close_is_rejected(self, remote_api):
+        """Refuse a post-sweep registration so a late rebind cannot leak."""
+        pending = PendingCloses()
+        await remote_api.open()
+        await pending.force_close()
+
+        assert pending.add(remote_api) is False
+        await remote_api.close()
+
 
 async def _achunks(chunks: list[bytes]) -> AsyncGenerator[bytes, None]:
     """Yield each chunk from ``chunks`` as an async iterator.

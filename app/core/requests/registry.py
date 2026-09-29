@@ -177,6 +177,9 @@ class ClientRegistry:
             if self.closed:
                 return
             self._closed = True
+            # Seal before any await so a concurrent invalidate cannot register
+            # a deferred close after force_close has already returned.
+            self._pending_closes.seal()
             clients = list(self._clients.values())
 
         try:
