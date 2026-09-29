@@ -90,7 +90,7 @@ class TestAlertsSettingsProxy:
 
     def test_proxy_uses_class_name_identifier(self) -> None:
         """Bind the proxy to its own ``__name__``, distinct from the core ``AlertSettings``."""
-        assert alerts_settings._setting_class == AlertsSettings.__name__
+        assert alerts_settings.get_setting_class() == AlertsSettings.__name__
         assert AlertsSettings.__name__ != ALERT_SETTINGS
 
 

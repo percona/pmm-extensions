@@ -76,6 +76,16 @@ class OverridableSettingsProxy(LazyProxy[T]):
         """
         return object.__getattribute__(self, "_snapshot")
 
+    def get_setting_class(self) -> str:
+        """Return the class identifier this proxy was constructed with.
+
+        Lets callers verify registry wiring against the class ``__name__``
+        without reaching into the proxy's slots.
+
+        :return: The class identifier passed at construction.
+        """
+        return object.__getattribute__(self, "_setting_class")
+
     def _set_snapshot(self, snapshot: Mapping[str, object]) -> None:
         """Replace the snapshot reference atomically.
 

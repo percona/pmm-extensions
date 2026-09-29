@@ -19,8 +19,8 @@ The Inventory database gains its first ``settingoverride`` table so
 ``InventorySettings`` can be wired into the runtime override framework. The
 ``setting_class`` CHECK constraint lists every settings-class storage token
 shared at the time (including ``INVENTORY_SETTINGS``) so all three tracks
-converge on the same allowed set. The table is created under the shared advisory lock the other
-tracks' settingoverride migrations hold.
+converge on the same allowed set. The table is created under the shared
+advisory lock the other tracks' settingoverride migrations hold.
 
 Revision ID: c4d5e6f7a8b9
 Revises: b73c0110ad55

@@ -50,7 +50,7 @@ class TestSettingClassIdentifiers:
     def test_differs_from_storage_token(
         self, identifier: str, settings_cls: type[BaseYamlSettings]
     ) -> None:
-        """Never coincide with the token existing ``settingoverride`` rows store."""
+        """Differ from the token existing ``settingoverride`` rows store."""
         assert identifier != setting_class_token(settings_cls)
 
     def test_legacy_check_members_stay_storage_tokens(self) -> None:

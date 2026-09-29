@@ -195,8 +195,10 @@ class TestHealthReportSettingsProxy:
         assert isinstance(health_report_settings, OverridableSettingsProxy)
 
     def test_proxy_uses_class_name_identifier(self) -> None:
-        """Bind the proxy to the Pydantic class ``__name__``, not an enum member."""
-        assert health_report_settings._setting_class == HealthReportSettings.__name__
+        """Bind the proxy to the Pydantic class ``__name__``, not the storage token."""
+        assert (
+            health_report_settings.get_setting_class() == HealthReportSettings.__name__
+        )
 
 
 class TestHealthReportSettingsOverridePosture:

@@ -115,7 +115,7 @@ def assert_entries_keyed_by_class_name(entries: Sequence[ClassEntry]) -> None:
     assert entries, "the settings router serves no classes"
     for identifier, settings_cls, proxy in entries:
         assert identifier == settings_cls.__name__
-        assert proxy._setting_class == identifier  # noqa: SLF001
+        assert proxy.get_setting_class() == identifier
 
 
 async def insert_override_row(

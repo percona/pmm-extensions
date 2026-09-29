@@ -439,11 +439,11 @@ class TestDispatch:
     def test_unknown_class_is_not_proxied(
         self, admin_client: TestClient, mock_tasks: AsyncMock
     ) -> None:
-        """A core class that is neither local nor remote 404s, never proxied.
+        """Return 404 for a core class neither local nor remote, never proxying it.
 
-        ``Settings`` is a real core settings class but is not
-        registered on the PMM Extensions router (local or remote), so ``_resolve`` 404s it
-        before any dispatch -- the remote branch must not swallow an unknown class.
+        ``Settings`` is a real core settings class but is not registered on the
+        PMM Extensions router (local or remote), so ``_resolve`` rejects it
+        before any dispatch. The remote branch must not swallow an unknown class.
         """
         response = admin_client.get(
             f"/api/extensions/admin/settings/Settings/{TASKS_KEY}"
