@@ -516,6 +516,10 @@ class TestInternalDispatchQueueItem:
         lock_session.refresh.assert_not_awaited()
         assert lock_session.add.call_count == 1
         assert isinstance(lock_session.add.call_args.args[0], DispatchLock)
+        # The positive boundary matters as much as the absent refresh: without
+        # the commit the row stays invisible to every other session, so the lock
+        # would not lock anything and this test would still pass.
+        lock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_integrity_error_on_lock_raises_conflict(self):
