@@ -100,6 +100,12 @@ logger = logging.getLogger(__name__)
 
 _MAX_CHAIN_DEPTH = 10
 
+#: How old a dispatch-lock row must be before a later dispatch may clear it.
+#: Named because two places depend on the same number: the sweep that reclaims a
+#: lock whose dispatch died holding it, and the release path, which tolerates its
+#: own failure precisely because that sweep will reclaim the row.
+_DISPATCH_LOCK_STALE_SECONDS = 30
+
 
 @task_revoked.connect
 def task_revoked_handler(*, request: Context, expired: bool, **kwargs: Any) -> None:
@@ -718,14 +724,26 @@ async def _dispatch_queue_item(
     async with lock_session_maker() as lock_session:
         await DispatchLockManager.delete_where(
             lock_session,
-            col(DispatchLock.created_at) < (utc_now() - timedelta(seconds=30)),
+            col(DispatchLock.created_at)
+            < (utc_now() - timedelta(seconds=_DISPATCH_LOCK_STALE_SECONDS)),
             name=dispatch_lock_name,
         )
         try:
-            dispatch_lock = await DispatchLockManager.create(
-                lock_session, DispatchLock(name=dispatch_lock_name)
-            )
+            # Added and committed directly rather than through
+            # ``DispatchLockManager.create``. That routes to ``CRUDBase.save``,
+            # which follows its commit with a ``session.refresh`` - a second
+            # checkout from this pool, taken at the one moment when failing is
+            # most expensive. The row is committed by then, so a refresh that
+            # cannot get a connection raises without the ``try`` below ever
+            # being entered: the lock is orphaned, and nothing clears it until
+            # the 30-second sweep above, which refuses every identical dispatch
+            # in the meantime. Nothing is read back off the row, so the refresh
+            # bought nothing to begin with; the release below matches on
+            # ``name`` rather than on a persisted instance.
+            lock_session.add(DispatchLock(name=dispatch_lock_name))
+            await lock_session.commit()
         except IntegrityError as exc:
+            await lock_session.rollback()
             raise HTTPConflictException("Identical dispatch in progress.") from exc
 
     try:
@@ -743,8 +761,28 @@ async def _dispatch_queue_item(
         else:
             schedule_annotation(result, "STARTED")
     finally:
-        async with lock_session_maker() as async_session:
-            await DispatchLockManager.delete(async_session, dispatch_lock)
+        # Releasing the lock must not decide the dispatch's outcome. This runs
+        # after the work is done, and it needs its own checkout from a pool the
+        # dispatch has just been contending for, so it is exactly where a
+        # POOL_TIMEOUT lands. Raising here would replace an already-successful
+        # dispatch with an error the client reads as a refusal, and the retry
+        # that follows is not idempotent: the task is enqueued, so the retry
+        # collides with the item this attempt created. Logged and swallowed
+        # instead - the 30-second sweep at the top of this function is the
+        # backstop for a lock that outlives its dispatch, and it is the same
+        # backstop an orphaned row already relied on.
+        try:
+            async with lock_session_maker() as release_session:
+                await DispatchLockManager.delete_where(
+                    release_session, name=dispatch_lock_name
+                )
+        except Exception:
+            logger.exception(
+                "Could not release dispatch lock %s; it will be swept once it is "
+                "older than %ss",
+                dispatch_lock_name,
+                _DISPATCH_LOCK_STALE_SECONDS,
+            )
 
     if result.status.is_terminal():
         await maybe_record_run(result.id, executor)
