@@ -429,8 +429,10 @@ class PendingCloses:
         Sealing happens before any ``await`` so a concurrent rebind that tries
         to register after this returns cannot reintroduce a leak.
         Each client's deferred-close flag is cleared before ``close`` so a
-        concurrent :meth:`BaseRemoteAPI.hold` finally will not race a second
-        ``close`` (``__aexit__`` also guards on ``session.closed``).
+        concurrent :meth:`BaseRemoteAPI.hold` finally will not start another
+        close from ``_close_when_idle``. If that hold already began tearing
+        down the session, :meth:`BaseRemoteAPI.close` joins the in-progress
+        operation so this sweep still waits for the socket to finish closing.
         Safe to call when empty.
         """
         self._sealed = True
@@ -488,6 +490,11 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     _in_flight: int = 0
     _close_when_idle: bool = False
     _pending_closes: PendingCloses | None = None
+    # Set while :meth:`__aexit__` runs so a concurrent :meth:`close` (e.g.
+    # shutdown ``force_close``) awaits the same session teardown instead of
+    # racing a second one, and so the client stays joinable after it has
+    # already left :class:`PendingCloses`.
+    _close_done: asyncio.Future[None] | None = None
     _extra_headers: ContextVar[dict[str, str] | None] = PrivateAttr(
         default_factory=lambda: ContextVar("api_extra_headers", default=None)
     )
@@ -561,6 +568,10 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         :rtype: BaseRemoteAPI
         """
         if getattr(self, "_session", None) is None:
+            # A prior close may have left ``_close_done`` completed; clear it
+            # so a later close on this reopened session is not treated as a
+            # join on the finished teardown.
+            self._close_done = None
             self.logger.debug("Opening ClientSession for %s", self.redacted_base_url)
             connector = TCPConnector(
                 ssl=self.ssl_context,
@@ -589,10 +600,12 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ) -> None:
         """Exit the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized. Also clears
-        deferred-close bookkeeping so an owner's :class:`PendingCloses` no
-        longer tracks this client after any path that closes it (normal drain,
-        unconditional ``close``, or shutdown ``force_close``).
+        Closes the aiohttp `ClientSession` if it was initialized. Concurrent
+        callers join the in-progress teardown via ``_close_done`` instead of
+        starting a second ``ClientSession.close``. Deferred-close bookkeeping
+        is cleared only after the session close finishes (or is skipped), so a
+        shutdown :meth:`PendingCloses.force_close` that races a draining
+        :meth:`hold` still finds this client and awaits the same operation.
 
         :param exc_type: The exception type, if any.
         :type exc_type: type[BaseException] | None
@@ -601,15 +614,28 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         :param exc_tb: The traceback, if any.
         :type exc_tb: TracebackType | None
         """
-        self.clear_deferred_close()
-        if self._session and not self._session.closed:
-            self.logger.debug("Closing ClientSession for %s", self.redacted_base_url)
-            await self._session.close()
-        else:
-            self.logger.debug(
-                "ClientSession already closed for %s", self.redacted_base_url
-            )
-        self._session = None
+        if self._close_done is not None:
+            await self._close_done
+            return
+
+        self._close_done = asyncio.get_running_loop().create_future()
+        try:
+            if self._session and not self._session.closed:
+                self.logger.debug(
+                    "Closing ClientSession for %s", self.redacted_base_url
+                )
+                await self._session.close()
+            else:
+                self.logger.debug(
+                    "ClientSession already closed for %s", self.redacted_base_url
+                )
+            self._session = None
+        finally:
+            # After the await above: keep the client in PendingCloses for the
+            # whole session.close so force_close can still discover and join it.
+            self.clear_deferred_close()
+            if not self._close_done.done():
+                self._close_done.set_result(None)
 
     async def open(self) -> Self:
         """Open the asynchronous context manager.
@@ -624,7 +650,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     async def close(self) -> None:
         """Close the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized.
+        Closes the aiohttp `ClientSession` if it was initialized. If a close is
+        already in progress (a draining :meth:`hold`, or another caller), waits
+        for that teardown to finish instead of starting a second one.
         """
         await self.__aexit__(None, None, None)
 
@@ -633,8 +661,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
 
         :meth:`PendingCloses.force_close` calls this before awaiting
         :meth:`close` so a concurrent :meth:`hold` finally no longer sees
-        ``_close_when_idle`` and does not race a second close. Also used by
-        :meth:`__aexit__` on every close path.
+        ``_close_when_idle`` and starts a redundant close; :meth:`close` is
+        still joinable via ``_close_done`` if teardown already began.
+        :meth:`__aexit__` also calls this after the session close finishes.
         """
         pending = self._pending_closes
         if pending is not None:
@@ -650,9 +679,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         including the ones it issues after an earlier response finished, so the
         accounting unit is the hold rather than the individual HTTP call. The
         releaser that drops the count to zero performs a close that
-        :meth:`close_when_idle` deferred, and removes this client from the
-        owner's :class:`PendingCloses` so a later shutdown sweep will not
-        force-close it again.
+        :meth:`close_when_idle` deferred. That close stays discoverable on the
+        owner's :class:`PendingCloses` until the session teardown finishes, so
+        a concurrent shutdown sweep can await the same operation.
 
         The release runs during cancellation too, when the consuming task is
         cancelled by a client disconnecting mid-response, so the deferred close

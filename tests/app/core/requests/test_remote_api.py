@@ -797,6 +797,48 @@ class TestDrainOnRebind:
 
         assert closes == 1
 
+    async def test_force_close_awaits_in_progress_drain_close(self, remote_api, mocker):
+        """Join a draining hold's session.close instead of missing it mid-teardown."""
+        pending = PendingCloses()
+        await remote_api.open()
+        session = remote_api._session
+        assert session is not None
+        entered_close = asyncio.Event()
+        finish_close = asyncio.Event()
+        real_close = session.close
+
+        async def paused_session_close() -> None:
+            entered_close.set()
+            await finish_close.wait()
+            await real_close()
+
+        mocker.patch.object(session, "close", paused_session_close)
+        released = asyncio.Event()
+
+        async def consumer() -> None:
+            async with remote_api.hold():
+                await remote_api.close_when_idle(pending=pending)
+                released.set()
+                await asyncio.Event().wait()
+
+        consumer_task = asyncio.create_task(consumer())
+        await asyncio.wait_for(released.wait(), timeout=5)
+        consumer_task.cancel()
+        # hold finally starts shielded close(); pause inside ClientSession.close.
+        await asyncio.wait_for(entered_close.wait(), timeout=5)
+        assert id(remote_api) in pending._clients
+
+        force_task = asyncio.create_task(pending.force_close())
+        await asyncio.sleep(0)
+        assert not force_task.done()
+
+        finish_close.set()
+        await force_task
+        with pytest.raises(asyncio.CancelledError):
+            await consumer_task
+        assert remote_api._session is None
+        assert pending._clients == {}
+
     async def test_idle_close_does_not_register_on_pending(self, remote_api):
         """Skip pending registration when the close runs immediately."""
         pending = PendingCloses()
