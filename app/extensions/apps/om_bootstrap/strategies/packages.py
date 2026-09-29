@@ -543,20 +543,19 @@ class PackagesInstallStrategy:
     def _start_service(self, spec: BootstrapSpec) -> StepAction:  # noqa: ARG002
         """Enable the ``mongod`` systemd unit and (re)start it on the config just written.
 
-        Explicitly ``restart``, not ``enable --now``: on Ubuntu,
-        ``percona-server-mongodb``'s ``.deb`` postinst starts ``mongod`` itself as
-        part of ``install_package``, before this step ever runs — confirmed
-        against a real run where the seed member's ``rs.initiate`` failed with
-        ``This node was not started with replication enabled``. ``enable --now``
-        only starts a unit that isn't already active; against one the package
-        already started, it is a no-op, so the process stays live on whatever
-        config it booted with — the package's own default, with no
-        ``replication`` block — never picking up :meth:`_configure_mongod`'s
-        rewrite of :data:`CONFIG_PATH` a step earlier. ``verify``, right after,
-        only pings the server, so it passes regardless. Rocky/RPM's ``%post``
-        does not auto-start the service, so the bug is Ubuntu-only — but
-        ``restart`` is correct on both, since restarting a unit that
-        ``install_package`` never started behaves exactly like starting it.
+        Explicitly ``restart``, not ``enable --now``: ``install_package`` may have
+        left ``mongod`` already running, and ``enable --now`` only starts a unit
+        that is not already active. Against one the package started it is a
+        no-op, so the process stays live on whatever config it booted with, which
+        is the package's own default and carries no ``replication`` block. It
+        therefore never picks up :meth:`_configure_mongod`'s rewrite of
+        :data:`CONFIG_PATH` a step earlier, and ``verify`` right after only pings
+        the server, so that does not catch it either.
+
+        Whether the package pre-starts the service is not something this step
+        needs to distinguish: Ubuntu's ``.deb`` postinst does, Rocky's ``%post``
+        does not, and ``restart`` is correct for both, since restarting a unit
+        that ``install_package`` never started behaves exactly like starting it.
 
         :param spec: The host's bootstrap spec. Unused.
         :return: The step action.

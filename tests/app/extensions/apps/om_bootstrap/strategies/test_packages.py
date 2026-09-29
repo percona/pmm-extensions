@@ -413,14 +413,11 @@ class TestBuildStep:
     def test_start_service_restarts_rather_than_enable_now(self) -> None:
         """Force a restart, since install_package may have started mongod already.
 
-        On Ubuntu, percona-server-mongodb's .deb postinst starts mongod itself
-        during install_package, before configure_mongod ever runs. `enable
-        --now` is a no-op against a unit that's already active, so it would
-        leave that process running on the package's default config forever -
-        never picking up configure_mongod's rewrite of mongod.conf. Only an
-        explicit restart guarantees the config just written actually takes
-        effect, matching a real run where rs.initiate failed with "This node
-        was not started with replication enabled" for exactly this reason.
+        ``enable --now`` is a no-op against a unit that is already active, so it
+        would leave that process running on the package's default config, which
+        carries no ``replication`` block, and never pick up
+        ``configure_mongod``'s rewrite of ``mongod.conf``. Only an explicit
+        ``restart`` guarantees the config just written actually takes effect.
         """
         action = PackagesInstallStrategy().build_step(
             "start_service", "node00", _spec(OperatingSystem.UBUNTU)
