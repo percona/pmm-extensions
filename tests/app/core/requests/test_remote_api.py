@@ -48,6 +48,7 @@ from app.core.requests.remote_api import (
     as_json_object,
     BaseRemoteAPI,
     is_non_json_success,
+    PendingCloses,
     UPSTREAM_NON_JSON_HEADER,
 )
 from app.core.requests.remote_api import (
@@ -747,6 +748,41 @@ class TestDrainOnRebind:
         async with remote_api.hold():
             await remote_api.close()
             assert remote_api._session is None
+
+    async def test_deferred_close_registers_then_discards_on_drain(self, remote_api):
+        """Track a deferred close on the owner's pending set until the hold ends."""
+        pending = PendingCloses()
+        await remote_api.open()
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            assert id(remote_api) in pending._clients
+
+        assert id(remote_api) not in pending._clients
+        assert remote_api._session is None
+
+    async def test_force_close_closes_a_still_held_client(self, remote_api):
+        """Force-close a deferred client whose holder has not released yet."""
+        pending = PendingCloses()
+        await remote_api.open()
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            await pending.force_close()
+            assert remote_api._session is None
+            assert pending._clients == {}
+
+        await pending.force_close()
+
+    async def test_idle_close_does_not_register_on_pending(self, remote_api):
+        """Skip pending registration when the close runs immediately."""
+        pending = PendingCloses()
+        await remote_api.open()
+
+        await remote_api.close_when_idle(pending=pending)
+
+        assert pending._clients == {}
+        assert remote_api._session is None
 
 
 async def _achunks(chunks: list[bytes]) -> AsyncGenerator[bytes, None]:

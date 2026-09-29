@@ -15,6 +15,7 @@
 
 """Tests for the NomadLifecycle holder and executor-resolution helpers."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -143,6 +144,34 @@ async def test_reconcile_swaps_and_drains_on_change() -> None:
         assert holder.current is not old
         assert str(holder.current.endpoint).startswith("https://nomad-b.example.org")
         assert old._session is None
+
+
+@pytest.mark.asyncio
+async def test_aexit_force_closes_a_deferred_retiree() -> None:
+    """Force-close a mid-hold retiree when the lifecycle shuts down."""
+    _override_nomad(_NOMAD_A)
+    held = asyncio.Event()
+
+    async def consumer(client: NomadExecutor) -> None:
+        async with client.hold():
+            held.set()
+            await asyncio.Event().wait()
+
+    try:
+        async with NomadLifecycle(FastAPI()) as holder:
+            old = holder.current
+            task = asyncio.create_task(consumer(old))
+            await asyncio.wait_for(held.wait(), timeout=5)
+            _override_nomad(_NOMAD_B)
+            await holder.reconcile()
+            assert old._session is not None
+
+        assert old._session is None
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
 
 
 @pytest.mark.asyncio

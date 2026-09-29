@@ -27,6 +27,7 @@ import app.extensions.main as extensions_main
 from app.core.celery.models import IntervalSchedule
 from app.core.config import PMMSettings, Settings, settings
 from app.core.requests import RemoteAPI
+from app.core.requests.remote_api import PendingCloses
 from app.core.settings_override.lifecycle import is_fire_on_boot, SnapshotChange
 from app.core.settings_override.models import SettingClassEnum
 from app.extensions.config import extensions_settings
@@ -218,6 +219,45 @@ async def test_endpoint_rebinder_defers_app_state_close_while_a_consumer_holds(
         if new is not None:
             await new.close()
         extensions_settings._set_snapshot({})
+
+
+@pytest.mark.asyncio
+async def test_endpoint_rebinder_shutdown_force_closes_deferred_app_state_client(
+    mocker: MockerFixture,
+) -> None:
+    """Force-close a mid-hold app.state retiree when the owner's pending sweeps."""
+    app = FastAPI()
+    pending = PendingCloses()
+    old = await RemoteAPI(endpoint="https://old-inv.example.org").open()
+    app.state.inventory_api = old
+    extensions_settings._set_snapshot(  # ty: ignore[unresolved-attribute]
+        {"INVENTORY_ENDPOINT": "https://new-inv.example.org"}
+    )
+    mocker.patch.object(Settings, "invalidate_client", new=AsyncMock())
+
+    new = None
+    rebind = _make_remote_api_rebinder(
+        app,
+        "inventory_api",
+        extensions_settings,
+        "INVENTORY_ENDPOINT",
+        pending=pending,
+    )
+    try:
+        async with old.hold():
+            await rebind(SnapshotChange({}, {}))
+
+            new = app.state.inventory_api
+            assert new is not old
+            assert old._session is not None
+
+            await pending.force_close()
+
+            assert old._session is None
+    finally:
+        if new is not None:
+            await new.close()
+        extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
 
 
 @pytest.mark.asyncio

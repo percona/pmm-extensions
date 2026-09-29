@@ -92,6 +92,21 @@ async def test_invalidate_defers_the_close_while_a_consumer_holds() -> None:
         await registry.close_all()
 
 
+@pytest.mark.asyncio
+async def test_close_all_force_closes_a_deferred_retiree() -> None:
+    """Force-close an invalidate()-deferred client when shutdown runs mid-hold."""
+    registry = ClientRegistry()
+    client = await registry.get(RemoteAPI, endpoint="https://a.example.org")
+
+    async with client.hold():
+        await registry.invalidate("https://a.example.org")
+        assert client._session is not None
+
+        await registry.close_all()
+
+        assert client._session is None
+
+
 _CREDENTIAL_ENDPOINT = "https://svcuser:svcpass@a.example.org"
 _CREDENTIAL_SECRET = "svcpass"
 _CLOSE_FAILURE = "close boom"
