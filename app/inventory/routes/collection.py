@@ -28,6 +28,7 @@ import logging
 from fastapi import APIRouter
 
 from app.api.deps import IsAuthenticatedDep
+from app.inventory.constants import RetirableEntityName
 from app.inventory.crud import collect_retirable_entities
 from app.inventory.deps import SessionDep
 from app.inventory.models import InventoryCollectResponse, InventoryCollectWrite
@@ -35,6 +36,15 @@ from app.inventory.models import InventoryCollectResponse, InventoryCollectWrite
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/collection", tags=["collection"])
+
+
+def _log_collected(name: RetirableEntityName, collected: int) -> None:
+    """Log the rows one entity type's delete removed.
+
+    :param name: The entity type the delete ran on.
+    :param collected: The number of rows it removed.
+    """
+    logger.info("Collected %s retired %s entities", collected, name)
 
 
 @router.post("/collect", dependencies=[IsAuthenticatedDep])
@@ -58,7 +68,6 @@ async def collect_retired_entities(
         keep=body.keep,
         limit=body.limit,
         dry_run=body.dry_run,
+        on_collected=_log_collected,
     )
-    for name, collected in batch.collected.items():
-        logger.info("Collected %s retired %s entities", collected, name)
     return InventoryCollectResponse(deleted=batch.deleted, remaining=batch.remaining)

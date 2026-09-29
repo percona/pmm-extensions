@@ -364,6 +364,35 @@ class TestCollectionAdapter:
         ]
 
     @pytest.mark.asyncio
+    async def test_deletions_before_a_failure_are_still_logged(
+        self,
+        test_client: TestClient,
+        mocker: MockerFixture,
+        caplog: pytest.LogCaptureFixture,
+        retired_tree: Node,
+    ) -> None:
+        """Log each committed delete as it lands, not only once the walk ends."""
+        mocker.patch.object(
+            RetiredInclusiveServiceManager,
+            "collect",
+            autospec=True,
+            side_effect=RuntimeError("interrupted"),
+        )
+
+        with (
+            caplog.at_level(logging.INFO, logger=ROUTE_LOGGER),
+            pytest.raises(RuntimeError, match="interrupted"),
+        ):
+            test_client.post(
+                COLLECT_URL, json={"retired_before": CUTOFF, "dry_run": False}
+            )
+
+        assert [r.getMessage() for r in caplog.records if r.name == ROUTE_LOGGER] == [
+            "Collected 1 retired table entities",
+            "Collected 1 retired schema entities",
+        ]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("payload", "dry_run"),
         [({}, True), ({"dry_run": False}, False)],
@@ -382,9 +411,7 @@ class TestCollectionAdapter:
             collection,
             "collect_retirable_entities",
             autospec=True,
-            return_value=CollectionBatch(
-                deleted=EMPTY_BATCH, remaining=False, collected={}
-            ),
+            return_value=CollectionBatch(deleted=EMPTY_BATCH, remaining=False),
         )
 
         response = test_client.post(
@@ -405,4 +432,5 @@ class TestCollectionAdapter:
             keep={RetirableEntityName.NODE: [7]},
             limit=3,
             dry_run=dry_run,
+            on_collected=mocker.ANY,
         )

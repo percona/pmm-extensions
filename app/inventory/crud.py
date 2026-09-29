@@ -15,7 +15,7 @@
 
 """Define database operations for the Inventory API."""
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar, Final, TYPE_CHECKING
@@ -1968,19 +1968,18 @@ COLLECTION_ORDER: tuple[
 
 @dataclass(frozen=True, slots=True)
 class CollectionBatch:
-    """Report what one collection call deleted, or would have deleted.
+    """Report which tombstones one collection call selected.
 
-    :param deleted: The collected ids per entity type, every type present in
-        :data:`COLLECTION_ORDER` order. On a dry run these are the ids the
-        equivalent real call would delete.
-    :param remaining: Whether a type filled the limit, so more are waiting.
-    :param collected: The rows each type's delete removed, present only for the
-        types a delete ran on.
+    :param deleted: The ids selected for collection per entity type, every type
+        present in :data:`COLLECTION_ORDER` order. A real call passed them to
+        the delete, which may remove fewer rows than listed; a dry run only
+        selected them.
+    :param remaining: Whether a type filled the limit, so the caller should run
+        another batch. It may find nothing left.
     """
 
     deleted: dict[RetirableEntityName, list[int]]
     remaining: bool
-    collected: dict[RetirableEntityName, int]
 
 
 async def collect_retirable_entities(
@@ -1990,6 +1989,7 @@ async def collect_retirable_entities(
     keep: Mapping[RetirableEntityName, Collection[int]],
     limit: int,
     dry_run: bool,
+    on_collected: Callable[[RetirableEntityName, int], None],
 ) -> CollectionBatch:
     """Delete the tombstones the retained set does not cover, deepest first.
 
@@ -2005,7 +2005,10 @@ async def collect_retirable_entities(
     :param keep: The ids the caller knows are still referenced, per entity type.
     :param limit: The most entities to collect per type.
     :param dry_run: Whether to report the eligible ids without deleting them.
-    :return: The collected ids and rowcounts per type, and whether more wait.
+    :param on_collected: The callback given each type and the rows its delete
+        removed. It runs as each delete commits, so a later failure cannot
+        lose the report of one that already landed.
+    :return: The selected ids per type, and whether to run another batch.
     :raises ValueError: If ``limit`` is not positive, since every batch would
         then report ``remaining`` and a batching caller would never finish.
     """
@@ -2017,7 +2020,6 @@ async def collect_retirable_entities(
     deleted: dict[RetirableEntityName, list[int]] = {
         name: [] for name, _ in COLLECTION_ORDER
     }
-    collected: dict[RetirableEntityName, int] = {}
     remaining = False
     for name, manager in COLLECTION_ORDER:
         entity_ids = await manager.collectible_ids(
@@ -2028,11 +2030,11 @@ async def collect_retirable_entities(
         )
         deleted[name] = entity_ids
         if entity_ids and not dry_run:
-            collected[name] = await manager.collect(session, entity_ids)
+            on_collected(name, await manager.collect(session, entity_ids))
         if len(entity_ids) >= limit:
             remaining = True
             break
-    return CollectionBatch(deleted=deleted, remaining=remaining, collected=collected)
+    return CollectionBatch(deleted=deleted, remaining=remaining)
 
 
 class HostSystemObservationManager(BaseSQLModelChildManager):

@@ -484,14 +484,20 @@ class TestCollectRetirableEntities:
         keep: dict[RetirableEntityName, list[int]] | None = None,
         limit: int = 10,
         dry_run: bool = False,
+        reports: list[tuple[RetirableEntityName, int]] | None = None,
     ) -> CollectionBatch:
-        """Run the walk with the tests' cutoff and a roomy default limit."""
+        """Run the walk with the tests' cutoff and a roomy default limit.
+
+        Each delete's report is appended to ``reports`` when one is given.
+        """
+        sink = [] if reports is None else reports
         return await collect_retirable_entities(
             session,
             retired_before=CUTOFF,
             keep=keep or {},
             limit=limit,
             dry_run=dry_run,
+            on_collected=lambda name, rows: sink.append((name, rows)),
         )
 
     @pytest.mark.asyncio
@@ -503,8 +509,10 @@ class TestCollectRetirableEntities:
         schema: Schema,
         table: Table,
     ) -> None:
-        """Delete every aged tombstone and report each id with its rowcount."""
-        batch = await self._collect(session)
+        """Delete every aged tombstone and report each type's rowcount in order."""
+        reports: list[tuple[RetirableEntityName, int]] = []
+
+        batch = await self._collect(session, reports=reports)
 
         assert batch.deleted == {
             RetirableEntityName.TABLE: [table.id],
@@ -513,7 +521,7 @@ class TestCollectRetirableEntities:
             RetirableEntityName.NODE: [retired_tree.id],
         }
         assert batch.remaining is False
-        assert batch.collected == dict.fromkeys(batch.deleted, 1)
+        assert reports == [(name, 1) for name, _ in COLLECTION_ORDER]
         assert await retirable_row_counts(session) == (0, 0, 0, 0)
 
     @pytest.mark.asyncio
@@ -523,10 +531,12 @@ class TestCollectRetirableEntities:
         retired_tree: Node,
     ) -> None:
         """Report the ids a real run would delete, and delete none of them."""
-        batch = await self._collect(session, dry_run=True)
+        reports: list[tuple[RetirableEntityName, int]] = []
+
+        batch = await self._collect(session, dry_run=True, reports=reports)
 
         assert batch.deleted[RetirableEntityName.NODE] == [retired_tree.id]
-        assert batch.collected == {}
+        assert reports == []
         assert await retirable_row_counts(session) == (1, 1, 1, 1)
 
     @pytest.mark.asyncio
@@ -538,12 +548,14 @@ class TestCollectRetirableEntities:
             mocker.spy(manager, "collect") for _, manager in COLLECTION_ORDER
         ]
 
-        batch = await self._collect(session)
+        reports: list[tuple[RetirableEntityName, int]] = []
+
+        batch = await self._collect(session, reports=reports)
 
         assert list(batch.deleted) == [name for name, _ in COLLECTION_ORDER]
         assert batch.deleted == EMPTY_BATCH
         assert batch.remaining is False
-        assert batch.collected == {}
+        assert reports == []
         for spy in collect_spies:
             spy.assert_not_called()
 
@@ -572,11 +584,12 @@ class TestCollectRetirableEntities:
         """Skip the delete for a type with nothing eligible."""
         await retire_before_cutoff(session, table)
         schema_collect = mocker.spy(RetiredInclusiveSchemaManager, "collect")
+        reports: list[tuple[RetirableEntityName, int]] = []
 
-        batch = await self._collect(session)
+        batch = await self._collect(session, reports=reports)
 
         assert batch.deleted == {**EMPTY_BATCH, RetirableEntityName.TABLE: [table.id]}
-        assert batch.collected == {RetirableEntityName.TABLE: 1}
+        assert reports == [(RetirableEntityName.TABLE, 1)]
         schema_collect.assert_not_called()
 
     @pytest.mark.asyncio
@@ -668,27 +681,33 @@ class TestCollectRetirableEntities:
     async def test_a_failed_delete_propagates_after_the_deeper_types(
         self, session: AsyncSession, retired_tree: Node
     ) -> None:
-        """Raise mid-walk with only descendants gone, never an orphan."""
+        """Raise mid-walk with only descendants gone, each already reported."""
         await _on_delete(session, Service, "RAISE(ABORT, 'interrupted')")
+        reports: list[tuple[RetirableEntityName, int]] = []
 
         with pytest.raises(IntegrityError, match="interrupted"):
-            await self._collect(session)
+            await self._collect(session, reports=reports)
         await session.rollback()
 
         assert await retirable_row_counts(session) == (1, 1, 0, 0)
+        assert reports == [
+            (RetirableEntityName.TABLE, 1),
+            (RetirableEntityName.SCHEMA, 1),
+        ]
 
     @pytest.mark.asyncio
-    async def test_collected_reports_the_rowcount_not_the_id_count(
+    async def test_a_report_carries_the_rowcount_not_the_id_count(
         self, session: AsyncSession, table: Table
     ) -> None:
         """Report what the delete removed, even when it falls short of the ids."""
         await retire_before_cutoff(session, table)
         await _on_delete(session, Table, "RAISE(IGNORE)")
+        reports: list[tuple[RetirableEntityName, int]] = []
 
-        batch = await self._collect(session)
+        batch = await self._collect(session, reports=reports)
 
         assert batch.deleted[RetirableEntityName.TABLE] == [table.id]
-        assert batch.collected == {RetirableEntityName.TABLE: 0}
+        assert reports == [(RetirableEntityName.TABLE, 0)]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("limit", [0, -1])
