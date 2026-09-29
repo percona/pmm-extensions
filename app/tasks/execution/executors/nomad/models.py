@@ -25,6 +25,7 @@ from base64 import b64decode
 from binascii import b2a_base64
 from collections import defaultdict
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import datetime, UTC
 from enum import StrEnum
 from functools import cached_property
@@ -42,6 +43,7 @@ from aiohttp import (
 from fastapi import status
 from nomad import Nomad
 from nomad.api.exceptions import BaseNomadException, URLNotFoundNomadException
+from pydantic import PrivateAttr
 from sqlalchemy_celery_beat.models import Period
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -731,6 +733,73 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     )
 
     _sync_session: requests.Session | None = None
+    _session_guard: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
+    _borrow_depth: int = 0
+    _borrow_owned: bool = False
+
+    @asynccontextmanager
+    async def _borrowed_session(self) -> AsyncGenerator[None, None]:
+        """Guarantee an open aiohttp session for the duration of one call.
+
+        Every ported call goes through :meth:`_nomad_json`, and the inherited
+        ``_request`` reaches straight for ``self._session``. Only the executor
+        :class:`~app.tasks.execution.nomad_lifecycle.NomadLifecycle` owns is ever
+        entered, so that assumption holds for routes taking the ``TaskExecutor``
+        dependency and for nothing else. :func:`~app.tasks.deps.get_executor` -
+        and so ``get_executor_for_task``, which the dispatch path and every
+        Celery task use - hands back an *un-entered* executor, whose session is
+        ``None``. Those callers were fine while these calls went through the
+        synchronous ``self.backend``; once they became aiohttp calls the same
+        line raised ``AttributeError: 'NoneType' object has no attribute
+        'request'`` and the dispatch answered 500, which is what an om_inventory
+        sweep saw on every host.
+
+        Celery is why this cannot be fixed by sending those callers to the
+        entered executor instead: a worker has no ``app.state``, so there is no
+        ``NomadLifecycle`` there to ask.
+
+        With no ``NOMAD`` override, ``get_executor`` returns the YAML settings
+        object itself - one instance shared process-wide - so concurrent
+        request-less callers borrow on the *same* executor. Both edges therefore
+        run under :attr:`_session_guard`, and a borrow count decides them: the
+        borrow that takes the count up from zero opens, the one that returns it
+        to zero closes, and an executor that already had a session - the one
+        ``NomadLifecycle`` entered, reached through the ``TaskExecutor``
+        dependency - is only ever read, never opened or closed here.
+
+        Serialising the close as well as the open is what makes this safe, and
+        the reason is in
+        :meth:`~app.core.requests.remote_api.BaseRemoteAPI.__aexit__`: it awaits
+        ``self._session.close()`` and clears ``_session`` only afterwards. A
+        borrower testing the session during that await finds one that is not
+        ``None`` but is already closed - and ``__aenter__`` builds a replacement
+        only when it is ``None``, so it would hand back the dead session and the
+        request would fail on a closed connector. Holding the guard across the
+        close removes the window rather than testing for it.
+
+        The base class's ``hold``/``close_when_idle`` pair is deliberately not
+        used here: it defers a close to the last in-flight consumer, which is
+        the right shape for retiring a *streaming* client but leaves the close
+        running outside this guard, which is the very thing that has to stay
+        inside it.
+        """
+        async with self._session_guard:
+            if not self._borrow_depth:
+                self._borrow_owned = self.session is None or self.session.closed
+                if self._borrow_owned:
+                    # Drop a session left behind by an interrupted close, which
+                    # __aenter__ would otherwise keep rather than replace.
+                    self._session = None
+                    await self.open()
+            self._borrow_depth += 1
+        try:
+            yield
+        finally:
+            async with self._session_guard:
+                self._borrow_depth -= 1
+                if not self._borrow_depth and self._borrow_owned:
+                    self._borrow_owned = False
+                    await self.close()
 
     def _compute_base_url(self) -> str:
         """Compute the base URL, dropping userinfo once an API key is configured.
@@ -954,7 +1023,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         """
         kwargs.setdefault("timeout", ClientTimeout(total=self.timeout))
         try:
-            async with self._request(method, path, **kwargs) as response:
+            async with (
+                self._borrowed_session(),
+                self._request(method, path, **kwargs) as response,
+            ):
                 response.raise_for_status()
                 return await response.json()
         except ClientResponseError as exc:

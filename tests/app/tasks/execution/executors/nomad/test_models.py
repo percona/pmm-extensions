@@ -8678,3 +8678,133 @@ class TestPortedNomadCallsKeepTheirErrorContract:
             await executor.get_hosts()
 
         assert seen[0].total == CONFIGURED_NOMAD_TIMEOUT
+
+
+class TestPortedNomadCallsRunOnAnUnenteredExecutor:
+    """Pin that the ported calls work on an executor nobody entered.
+
+    This is the regression that shipped with the port. The inherited
+    ``_request`` reaches straight for ``self._session``, and only the executor
+    :class:`~app.tasks.execution.nomad_lifecycle.NomadLifecycle` owns is ever
+    entered. :func:`~app.tasks.deps.get_executor` hands back an un-entered one,
+    whose session is ``None`` - and ``get_executor_for_task`` wraps it, so the
+    dispatch route, every Celery task and the connectivity check all hold one.
+    While these calls went through the synchronous ``self.backend`` that was
+    fine; as aiohttp calls the same line raised ``AttributeError: 'NoneType'
+    object has no attribute 'request'``, the dispatch answered 500, and an
+    om_inventory sweep failed on every host it had.
+
+    Sending those callers to the entered executor instead is not available: a
+    Celery worker has no ``app.state``, so there is no holder there to ask.
+    """
+
+    #: One ready node, in the shape ``GET /v1/nodes`` answers with.
+    NODES = [{"Name": "node-1", "Address": "10.0.0.1"}]
+
+    #: Borrowers to race in :meth:`test_concurrent_borrowers_each_get_a_live_session`.
+    BORROWERS = 20
+
+    @staticmethod
+    @contextmanager
+    def _answer(body: Any) -> Generator[list[Any], None, None]:
+        """Answer every request with ``body``, recording the session used.
+
+        Patches ``aiohttp.ClientSession.request`` rather than the executor's
+        ``_request``, so the line that actually reads ``self._session`` runs. A
+        test stubbing ``_request`` would pass with the session still ``None``,
+        which is precisely the bug.
+
+        Records ``(session, closed)`` as the call is served rather than the
+        session alone: by the time the block exits every borrowed session has
+        been closed on purpose, so only the state at call time says whether a
+        borrower was handed a usable one.
+
+        :param body: The JSON body each call answers with.
+        :yield: The ``(session, closed-at-call-time)`` of each recorded call.
+        """
+        sessions: list[Any] = []
+        response = AsyncMock()
+        response.raise_for_status = MagicMock()
+        response.json = AsyncMock(return_value=body)
+
+        def _request(session: Any, *_args: Any, **_kwargs: Any) -> Any:
+            sessions.append((session, session.closed))
+            ctx = AsyncMock()
+            ctx.__aenter__ = AsyncMock(return_value=response)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            return ctx
+
+        with patch(
+            "aiohttp.ClientSession.request", autospec=True, side_effect=_request
+        ):
+            yield sessions
+
+    @pytest.mark.asyncio
+    async def test_get_hosts_answers_without_the_executor_being_entered(self) -> None:
+        """Assert the call that the dispatch path makes needs no ``__aenter__``."""
+        executor = _build_executor(stub_nomad=False)
+        assert executor.session is None
+
+        with self._answer(self.NODES):
+            hosts = await executor.get_hosts()
+
+        assert hosts == {"node-1": "10.0.0.1"}
+
+    @pytest.mark.asyncio
+    async def test_a_borrowed_session_is_not_left_open(self) -> None:
+        """Assert the executor is back to un-entered once the call returns.
+
+        A borrower that kept the session would leak one per request-less caller,
+        and would also quietly turn the shared settings object into an entered
+        executor for everybody after it.
+        """
+        executor = _build_executor(stub_nomad=False)
+
+        with self._answer(self.NODES):
+            await executor.get_hosts()
+
+        assert executor.session is None
+
+    @pytest.mark.asyncio
+    async def test_an_entered_executor_keeps_the_session_it_was_given(self) -> None:
+        """Assert a borrowed call does not close the lifecycle's own session.
+
+        ``NomadLifecycle`` holds one entered executor for the whole process and
+        retires it on its own terms; a call that closed it would take the open
+        session out from under every route streaming logs off that instance.
+        """
+        executor = _build_executor(stub_nomad=False)
+        async with executor:
+            owned = executor.session
+            assert owned is not None
+
+            with self._answer(self.NODES) as sessions:
+                await executor.get_hosts()
+
+            assert sessions == [(owned, False)]
+            assert executor.session is owned
+            assert not owned.closed
+
+    @pytest.mark.asyncio
+    async def test_concurrent_borrowers_each_get_a_live_session(self) -> None:
+        """Assert one borrower cannot close the session another is still using.
+
+        With no ``NOMAD`` override ``get_executor`` returns the YAML settings
+        object itself - one instance shared process-wide - so concurrent
+        request-less callers borrow on the *same* executor. Deciding whether to
+        open with a bare ``is None`` test would let the first to finish close a
+        session the others are still holding.
+        """
+        executor = _build_executor(stub_nomad=False)
+
+        with self._answer(self.NODES) as sessions:
+            results = await asyncio.gather(
+                *(executor.get_hosts() for _ in range(self.BORROWERS)),
+                return_exceptions=True,
+            )
+
+        assert [r for r in results if isinstance(r, BaseException)] == []
+        assert all(r == {"node-1": "10.0.0.1"} for r in results)
+        assert len(sessions) == self.BORROWERS
+        assert not any(closed for _, closed in sessions)
+        assert executor.session is None
