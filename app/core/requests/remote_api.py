@@ -617,7 +617,14 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         if self._close_done is not None:
             # Shield so cancelling this waiter does not cancel the shared
             # future other close() / force_close joiners still need.
+            # A later close that finds the teardown already finished still
+            # logs the already-closed line (password-redacted).
+            already_closed = self._close_done.done()
             await asyncio.shield(self._close_done)
+            if already_closed:
+                self.logger.debug(
+                    "ClientSession already closed for %s", self.redacted_base_url
+                )
             return
 
         done = asyncio.get_running_loop().create_future()
