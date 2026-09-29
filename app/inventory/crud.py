@@ -2007,7 +2007,8 @@ async def collect_retirable_entities(
     :param dry_run: Whether to report the eligible ids without deleting them.
     :param on_collected: The callback given each type and the rows its delete
         removed. It runs as each delete commits, so a later failure cannot
-        lose the report of one that already landed.
+        lose the report of one that already landed. An exception it raises
+        ends the walk and propagates, with that delete already committed.
     :return: The selected ids per type, and whether to run another batch.
     :raises ValueError: If ``limit`` is not positive, since every batch would
         then report ``remaining`` and a batching caller would never finish.
