@@ -386,12 +386,19 @@ class PendingCloses:
     :meth:`seal` (and :meth:`force_close`) permanently refuse new deferrals so a
     rebind that races shutdown cannot register a client after the sweep has
     already run. :meth:`add` returns ``False`` when sealed; the caller must
-    close immediately.
+    close immediately. Callers that open a *replacement* client during
+    shutdown also check :attr:`sealed` and discard the replacement instead of
+    publishing it (the active slot is owned by teardown once sealing starts).
     """
 
     def __init__(self) -> None:
         self._clients: dict[int, BaseRemoteAPI] = {}
         self._sealed = False
+
+    @property
+    def sealed(self) -> bool:
+        """Whether shutdown has sealed this collection against new deferrals."""
+        return self._sealed
 
     def seal(self) -> None:
         """Reject further deferrals; late retirements must close immediately."""

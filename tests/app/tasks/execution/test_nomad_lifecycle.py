@@ -175,6 +175,26 @@ async def test_aexit_force_closes_a_deferred_retiree() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconcile_refuses_to_publish_after_aexit() -> None:
+    """A reconcile queued past shutdown must not open a fresh executor session."""
+    _override_nomad(_NOMAD_A)
+    app = FastAPI()
+    holder = NomadLifecycle(app)
+    try:
+        await holder.__aenter__()
+        await holder.__aexit__(None, None, None)
+        assert holder._current is None
+        assert holder._closing is True
+
+        _override_nomad(_NOMAD_B)
+        await holder.reconcile()
+
+        assert holder._current is None
+    finally:
+        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.asyncio
 async def test_reconcile_opens_a_fresh_session_for_a_copied_override() -> None:
     """Open a new session when the override is a ``model_copy`` of the entered executor.
 

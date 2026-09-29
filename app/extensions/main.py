@@ -141,7 +141,11 @@ def _make_remote_api_rebinder(
     the consumers still holding it (an open log stream, a running download)
     release. App-state retirements register on ``pending`` so
     :func:`extensions_lifespan` can force-close them at shutdown if a holder
-    never unwinds.
+    never unwinds. When ``pending`` is already sealed (teardown has begun while
+    the override refresher is still nested above the close ``finally``), the
+    replacement is closed and discarded instead of published -- sealing alone
+    only forces the *outgoing* client; a post-teardown ``setattr`` would leak
+    the new session.
 
     :param app: The FastAPI application whose ``state`` holds the client.
     :param name: The ``app.state`` attribute name (``inventory_api`` /
@@ -169,6 +173,10 @@ def _make_remote_api_rebinder(
             new_api = await RemoteAPI(endpoint=new_endpoint, **ssl).open()
         except Exception:
             logger.exception("Failed to rebind %s; keeping previous client", name)
+            return
+        # Check after the await: teardown may have sealed while we were opening.
+        if pending is not None and pending.sealed:
+            await new_api.close()
             return
         setattr(app.state, name, new_api)
         await old.close_when_idle(pending=pending)
@@ -365,7 +373,9 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 yield
         finally:
             # Seal before awaiting so a concurrent _rebind (refresher still
-            # nested above this finally) cannot register after the sweep.
+            # nested above this finally) cannot register a deferred close
+            # after the sweep, and must discard any replacement it opened
+            # rather than publishing it into a slot teardown already owns.
             app.state.retired_remote_apis.seal()
             await app.state.tasks_api.__aexit__(None, None, None)
             await app.state.inventory_api.__aexit__(None, None, None)

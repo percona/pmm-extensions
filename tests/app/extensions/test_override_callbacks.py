@@ -261,6 +261,38 @@ async def test_endpoint_rebinder_shutdown_force_closes_deferred_app_state_client
 
 
 @pytest.mark.asyncio
+async def test_endpoint_rebinder_discards_replacement_when_pending_sealed(
+    mocker: MockerFixture,
+) -> None:
+    """Do not publish a new app.state client after teardown has sealed pending."""
+    app = FastAPI()
+    pending = PendingCloses()
+    old = await RemoteAPI(endpoint="https://old-inv.example.org").open()
+    app.state.inventory_api = old
+    extensions_settings._set_snapshot(  # ty: ignore[unresolved-attribute]
+        {"INVENTORY_ENDPOINT": "https://new-inv.example.org"}
+    )
+    mocker.patch.object(Settings, "invalidate_client", new=AsyncMock())
+    pending.seal()
+
+    rebind = _make_remote_api_rebinder(
+        app,
+        "inventory_api",
+        extensions_settings,
+        "INVENTORY_ENDPOINT",
+        pending=pending,
+    )
+    try:
+        await rebind(SnapshotChange({}, {}))
+
+        assert app.state.inventory_api is old
+        assert old._session is not None
+    finally:
+        await old.close()
+        extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.asyncio
 async def test_endpoint_rebinder_defers_registry_close_while_a_consumer_holds() -> None:
     """Keep a held registry client alive through the eviction, closing on release."""
     app = FastAPI()
