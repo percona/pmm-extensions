@@ -2831,7 +2831,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {"node-1": "10.0.0.1"}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -2860,7 +2860,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -2908,7 +2908,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=False)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -2938,7 +2938,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=False)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -2971,7 +2971,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.side_effect = [{}, {"node-1": "10.0.0.1"}]
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -2999,7 +2999,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.side_effect = BaseNomadException("nomad down")
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3037,7 +3037,7 @@ class TestExecuteTaskByName:
                 )
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {"local": "localhost"}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3067,7 +3067,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3116,7 +3116,7 @@ class TestExecuteTaskByName:
                 )
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3170,7 +3170,7 @@ class TestExecuteTaskByName:
             existing = test_loop.run_until_complete(_seed_pending())
 
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3200,7 +3200,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3256,7 +3256,7 @@ class TestExecuteTaskByNamePeriodicAnnotationRegression:
                 )
 
             fake_executor = MagicMock(spec=BaseExecutor)
-            fake_executor.get_hosts = MagicMock(return_value={"node-1": "10.0.0.1"})
+            fake_executor.get_hosts = AsyncMock(return_value={"node-1": "10.0.0.1"})
             fake_executor.dispatch_task = fake_dispatch_task
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=fake_executor

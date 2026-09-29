@@ -21,7 +21,8 @@ import logging
 from base64 import b64encode
 from binascii import b2a_base64
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Generator, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, UTC
 from typing import Any
 from unittest.mock import AsyncMock, call, MagicMock, patch
@@ -243,9 +244,46 @@ def _build_queue_item(
     )
 
 
-def _build_executor(**kwargs) -> NomadExecutor:
+#: What an unstubbed ``GET /v1/job/{id}`` answers: a job that is alive and not
+#: stopped, so a test reaching it incidentally sees nothing terminal.
+_DEFAULT_NOMAD_JOB = {"ID": "job-1", "Status": "running", "Stop": False}
+
+#: Nomad stubs installed by :func:`_build_executor`, undone after each test by
+#: :func:`_stop_nomad_api_stubs`. Tracked here rather than through
+#: ``patch.stopall`` so stopping them cannot reach a patch someone else started.
+_ACTIVE_NOMAD_STUBS: list[Any] = []
+
+
+@pytest.fixture(autouse=True)
+def _stop_nomad_api_stubs() -> Generator[None, None, None]:
+    """Undo any Nomad HTTP stub a test installed through :func:`_build_executor`."""
+    yield
+    while _ACTIVE_NOMAD_STUBS:
+        _ACTIVE_NOMAD_STUBS.pop().stop()
+
+
+def _build_executor(
+    *,
+    nomad_job: Any = None,
+    nomad_nodes: Any = None,
+    nomad_register: Any = None,
+    nomad_dispatch: Any = None,
+    stub_nomad: bool = True,
+    **kwargs,
+) -> NomadExecutor:
     """Build a NomadExecutor with default test settings.
 
+    The ``nomad_*`` arguments stub the five dispatch-path calls that moved off
+    python-nomad onto the aiohttp session, for the tests whose subject is what
+    the executor does with Nomad's answers rather than the calls themselves.
+    Where a test asserts on the calls, use :func:`_stub_nomad_api` instead.
+
+    :param nomad_job: Answer for ``GET /v1/job/{id}``.
+    :param nomad_nodes: Answer for ``GET /v1/nodes``.
+    :param nomad_register: Answer for ``POST /v1/job/{id}``.
+    :param nomad_dispatch: Answer for ``POST /v1/job/{id}/dispatch``.
+    :param stub_nomad: Pass ``False`` to leave the Nomad calls unstubbed, for a
+        test whose subject is the HTTP request the executor builds.
     :return: A NomadExecutor instance.
     :rtype: NomadExecutor
     """
@@ -254,7 +292,159 @@ def _build_executor(**kwargs) -> NomadExecutor:
         "verify_ssl": False,
     }
     defaults.update(kwargs)
+    if (nomad_job, nomad_nodes, nomad_register, nomad_dispatch) != (None,) * 4:
+        _stub_nomad_calls(
+            job=nomad_job,
+            nodes=nomad_nodes,
+            register=nomad_register,
+            dispatch=nomad_dispatch,
+        )
+    elif stub_nomad and not _ACTIVE_NOMAD_STUBS:
+        # No stub asked for and none already installed by a ``_backend`` helper.
+        # Install a benign one anyway: the ported calls now go out over the
+        # aiohttp session, which is None until the executor is entered as an async
+        # context manager, so a test that reaches one only incidentally would fail
+        # on the session rather than on its own subject.
+        _stub_nomad_calls()
     return NomadExecutor(**defaults)
+
+
+def _nomad_error(status_code: int) -> ClientResponseError:
+    """Build the error ``raise_for_status`` raises for ``status_code``.
+
+    :param status_code: The HTTP status Nomad answered with.
+    :return: The matching aiohttp error.
+    """
+    return ClientResponseError(request_info=MagicMock(), history=(), status=status_code)
+
+
+def _serve(canned: Any, fallback: Any, *args: Any) -> Any:
+    """Resolve one stubbed Nomad answer, raising it when it is an exception.
+
+    :param canned: The configured answer: a body, a callable, an exception, or None.
+    :param fallback: What to answer when ``canned`` is None.
+    :param args: Passed to ``canned`` when it is callable.
+    :return: The body to answer with.
+    """
+    if canned is None:
+        return fallback
+    if hasattr(canned, "__next__"):
+        # An explicit iterator answers successive calls in turn, the way a
+        # ``side_effect`` list did. A plain list is left alone: ``nodes`` is one.
+        return _serve(next(canned), fallback, *args)
+    if isinstance(canned, BaseException):
+        raise canned
+    if callable(canned):
+        return canned(*args)
+    return canned
+
+
+def _nomad_router(
+    *,
+    job: Any = None,
+    nodes: Any = None,
+    register: Any = None,
+    dispatch: Any = None,
+) -> tuple[Callable[..., Any], list[tuple[str, str, dict[str, Any]]]]:
+    """Build a stand-in for :meth:`NomadExecutor._nomad_json` and its call log.
+
+    The dispatch path's five Nomad calls moved off the synchronous python-nomad
+    client onto the inherited aiohttp session, so a test can no longer set
+    ``mock_backend.job.<call>.return_value``. This routes by method and path
+    instead, and each argument takes a body, a callable receiving the job id, or
+    an exception to raise.
+
+    Deliberately a stand-in for ``_nomad_json`` rather than for ``_request``:
+    most of these tests are about what the executor does with Nomad's answers,
+    and routing them through a mock HTTP response would only restate aiohttp. The
+    wire format those calls actually put on the socket - method, path and body -
+    is pinned separately, and once, by
+    :class:`TestPortedNomadCallsUseTheDocumentedEndpoints`.
+
+    :param job: Answer for ``GET /v1/job/{id}``.
+    :param nodes: Answer for ``GET /v1/nodes``.
+    :param register: Answer for ``POST /v1/job/{id}``.
+    :param dispatch: Answer for ``POST /v1/job/{id}/dispatch``.
+    :return: The replacement coroutine function, and the list its calls land in.
+    """
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def _nomad_json(method: str, path: str, **kwargs: Any) -> Any:
+        calls.append((method, path, kwargs))
+        if method == "GET" and path == "/v1/nodes":
+            return _serve(nodes, [])
+        if method == "GET" and path.startswith("/v1/job/"):
+            return _serve(job, _DEFAULT_NOMAD_JOB, path.removeprefix("/v1/job/"))
+        if method == "POST" and path.endswith("/dispatch"):
+            return _serve(dispatch, {"EvalID": "eval-1"})
+        if method == "POST" and path.startswith("/v1/job/"):
+            return _serve(register, {"EvalID": "eval-1"})
+        raise AssertionError(f"unrouted Nomad call: {method} {path}")
+
+    return _nomad_json, calls
+
+
+def _stub_nomad_calls(**answers: Any) -> list[tuple[str, str, dict[str, Any]]]:
+    """Stub the ported Nomad calls for every executor built during this test.
+
+    Patched on :class:`NomadExecutor` rather than on an instance so the
+    ``_backend`` helpers, which wire Nomad up before the executor exists, can
+    install one too. Undone by :func:`_stop_nomad_api_stubs`.
+
+    :param answers: As :func:`_nomad_router` takes them.
+    :return: The list the recorded calls land in.
+    """
+    router, calls = _nomad_router(**answers)
+
+    async def _nomad_json(
+        _self: NomadExecutor, method: str, path: str, **kwargs: Any
+    ) -> Any:
+        return await router(method, path, **kwargs)
+
+    patcher = patch.object(NomadExecutor, "_nomad_json", _nomad_json)
+    patcher.start()
+    _ACTIVE_NOMAD_STUBS.append(patcher)
+    return calls
+
+
+@contextmanager
+def _stub_nomad_api(
+    executor: NomadExecutor,
+    *,
+    job: Any = None,
+    nodes: Any = None,
+    register: Any = None,
+    dispatch: Any = None,
+) -> Generator[list[tuple[str, str, dict[str, Any]]], None, None]:
+    """Answer the executor's ported Nomad calls, yielding the calls it recorded.
+
+    See :func:`_nomad_router` for the routing and for what each argument accepts.
+    Use this where the test asserts on the calls; where the stub is only setup,
+    ``_build_executor(nomad_job=...)`` keeps it out of the test body.
+
+    :param executor: The executor whose calls to intercept.
+    :param job: Answer for ``GET /v1/job/{id}``.
+    :param nodes: Answer for ``GET /v1/nodes``.
+    :param register: Answer for ``POST /v1/job/{id}``.
+    :param dispatch: Answer for ``POST /v1/job/{id}/dispatch``.
+    :yield: The recorded ``(method, path, kwargs)`` of every call made.
+    """
+    router, calls = _nomad_router(
+        job=job, nodes=nodes, register=register, dispatch=dispatch
+    )
+    with patch.object(executor, "_nomad_json", side_effect=router):
+        yield calls
+
+
+def _dispatch_body(calls: list[tuple[str, str, dict[str, Any]]]) -> dict[str, Any]:
+    """Return the JSON body of the one dispatch call recorded in ``calls``.
+
+    :param calls: The calls a :func:`_stub_nomad_api` block recorded.
+    :return: The ``Payload``/``Meta``/``IdPrefixTemplate`` body that was sent.
+    """
+    bodies = [kwargs["json"] for _, path, kwargs in calls if path.endswith("/dispatch")]
+    assert len(bodies) == 1, f"expected exactly one dispatch call, got {len(bodies)}"
+    return bodies[0]
 
 
 class TestAnonymizedStepClassification:
@@ -808,49 +998,37 @@ class TestNomadExecutorApiKey:
 class TestRegisterJob:
     """Test NomadExecutor.register_job."""
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_register_job_success(self, mock_nomad_cls):
-        """Assert register_job calls backend and returns status."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.register_job.return_value = {"EvalID": "eval-1"}
-
+    @pytest.mark.asyncio
+    async def test_register_job_posts_the_spec_and_returns_status(self) -> None:
+        """Assert register_job posts the job spec and returns Nomad's status."""
         executor = _build_executor()
         task = _build_task(task_id="reg-job")
-        result = executor.register_job(task)
 
-        mock_backend.job.register_job.assert_called_once_with(
-            id_="reg-job",
-            job={"Job": task.data},
-        )
+        with _stub_nomad_api(executor, register={"EvalID": "eval-1"}) as calls:
+            result = await executor.register_job(task)
+
+        assert calls == [("POST", "/v1/job/reg-job", {"json": {"Job": task.data}})]
         assert result == {"EvalID": "eval-1"}
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_register_job_empty_status_raises(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_register_job_empty_status_raises(self) -> None:
         """Assert register_job raises ValueError when backend returns empty status."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.register_job.return_value = {}
-
         executor = _build_executor()
         task = _build_task()
-        with pytest.raises(ValueError, match="job status could not be determined"):
-            executor.register_job(task)
+
+        with (
+            _stub_nomad_api(executor, register={}),
+            pytest.raises(ValueError, match="job status could not be determined"),
+        ):
+            await executor.register_job(task)
 
 
 class TestDispatchJob:
     """Test NomadExecutor.dispatch_job."""
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_dispatch_job_with_payload(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_dispatch_job_with_payload(self) -> None:
         """Assert dispatch_job encodes and dispatches payload correctly."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {
-            "DispatchedJobID": "dispatched-1",
-            "EvalID": "eval-2",
-        }
-
         executor = _build_executor()
         task = _build_task(task_id="dispatch-job", parameterized=True)
         queue_item = _build_queue_item(
@@ -859,82 +1037,65 @@ class TestDispatchJob:
             meta={"target": "node-1", "_job_id_prefix": "custom"},
         )
 
-        result = executor.dispatch_job(queue_item, task)
+        with _stub_nomad_api(
+            executor,
+            dispatch={"DispatchedJobID": "dispatched-1", "EvalID": "eval-2"},
+        ) as calls:
+            result = await executor.dispatch_job(queue_item, task)
 
         assert result["DispatchedJobID"] == "dispatched-1"
-        call_kwargs = mock_backend.job.dispatch_job.call_args
-        assert call_kwargs[0][0] == "dispatch-job"
-        assert call_kwargs[1]["payload"] is not None
-        assert call_kwargs[1]["meta"]["target"] == "node-1"
-        assert "_job_id_prefix" not in call_kwargs[1]["meta"]
-        assert "staleness_threshold_seconds" in call_kwargs[1]["meta"]
+        method, path, kwargs = calls[0]
+        assert (method, path) == ("POST", "/v1/job/dispatch-job/dispatch")
+        body = kwargs["json"]
+        assert body["Payload"] is not None
+        assert body["Meta"]["target"] == "node-1"
+        assert "_job_id_prefix" not in body["Meta"]
+        assert "staleness_threshold_seconds" in body["Meta"]
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_dispatch_job_no_payload(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_dispatch_job_no_payload(self) -> None:
         """Assert dispatch_job sends None payload when not provided."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {
-            "DispatchedJobID": "d-1",
-            "EvalID": "e-1",
-        }
-
         executor = _build_executor()
         task = _build_task(task_id="no-payload-job", parameterized=True)
         queue_item = _build_queue_item(task=task, payload=None)
 
-        executor.dispatch_job(queue_item, task)
+        with _stub_nomad_api(executor) as calls:
+            await executor.dispatch_job(queue_item, task)
 
-        call_kwargs = mock_backend.job.dispatch_job.call_args
-        assert call_kwargs[1]["payload"] is None
+        assert _dispatch_body(calls)["Payload"] is None
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_dispatch_job_empty_status_raises(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_dispatch_job_empty_status_raises(self) -> None:
         """Assert dispatch_job raises ValueError when status is empty."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {}
-
         executor = _build_executor()
         task = _build_task(parameterized=True)
         queue_item = _build_queue_item(task=task)
 
-        with pytest.raises(ValueError, match="job status could not be determined"):
-            executor.dispatch_job(queue_item, task)
+        with (
+            _stub_nomad_api(executor, dispatch={}),
+            pytest.raises(ValueError, match="job status could not be determined"),
+        ):
+            await executor.dispatch_job(queue_item, task)
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_dispatch_job_payload_is_base64_gzip(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_dispatch_job_payload_is_base64_gzip(self) -> None:
         """Assert payload is gzip-compressed and base64-encoded."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {
-            "DispatchedJobID": "d-1",
-            "EvalID": "e-1",
-        }
-
         executor = _build_executor()
         task = _build_task(parameterized=True)
         raw_payload = "SELECT 1;"
         queue_item = _build_queue_item(task=task, payload=raw_payload)
 
-        executor.dispatch_job(queue_item, task)
+        with _stub_nomad_api(executor) as calls:
+            await executor.dispatch_job(queue_item, task)
 
-        sent_payload = mock_backend.job.dispatch_job.call_args[1]["payload"]
         expected = b2a_base64(gzip_compress(minify_file_content(raw_payload))).decode(
             "utf-8"
         )
-        assert sent_payload == expected
+        assert _dispatch_body(calls)["Payload"] == expected
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_dispatch_job_custom_prefix(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_dispatch_job_custom_prefix(self) -> None:
         """Assert dispatch_job uses custom job_id_prefix from meta."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {
-            "DispatchedJobID": "d-1",
-            "EvalID": "e-1",
-        }
-
         executor = _build_executor()
         task = _build_task(parameterized=True)
         queue_item = _build_queue_item(
@@ -942,21 +1103,15 @@ class TestDispatchJob:
             meta={"target": "n1", "_job_id_prefix": "prefix"},
         )
 
-        executor.dispatch_job(queue_item, task)
+        with _stub_nomad_api(executor) as calls:
+            await executor.dispatch_job(queue_item, task)
 
-        call_kwargs = mock_backend.job.dispatch_job.call_args
         expected_prefix = f"{slugify(task.name)}-{task.id}-{slugify('prefix')}"
-        assert call_kwargs[1]["id_prefix_template"] == expected_prefix
+        assert _dispatch_body(calls)["IdPrefixTemplate"] == expected_prefix
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_dispatch_job_injects_threshold_from_settings(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_dispatch_job_injects_threshold_from_settings(self) -> None:
         """Assert dispatch_job injects the configured staleness threshold."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {
-            "DispatchedJobID": "d-1",
-            "EvalID": "e-1",
-        }
         executor = _build_executor()
         task = _build_task(parameterized=True)
         queue_item = _build_queue_item(task=task, meta={"target": "n"})
@@ -964,24 +1119,19 @@ class TestDispatchJob:
         original = tasks_settings.STALENESS_THRESHOLD_SECONDS
         tasks_settings.STALENESS_THRESHOLD_SECONDS = STALENESS_THRESHOLD_OVERRIDE
         try:
-            executor.dispatch_job(queue_item, task)
+            with _stub_nomad_api(executor) as calls:
+                await executor.dispatch_job(queue_item, task)
         finally:
             tasks_settings.STALENESS_THRESHOLD_SECONDS = original
 
-        meta = mock_backend.job.dispatch_job.call_args[1]["meta"]
+        meta = _dispatch_body(calls)["Meta"]
         assert meta["staleness_threshold_seconds"] == str(STALENESS_THRESHOLD_OVERRIDE)
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_dispatch_job_strips_underscore_meta_but_preserves_staleness(
-        self, mock_nomad_cls
-    ):
+    @pytest.mark.asyncio
+    async def test_dispatch_job_strips_underscore_meta_but_preserves_staleness(
+        self,
+    ) -> None:
         """Assert underscore keys are stripped while staleness meta is injected."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {
-            "DispatchedJobID": "d-1",
-            "EvalID": "e-1",
-        }
         executor = _build_executor()
         task = _build_task(parameterized=True)
         queue_item = _build_queue_item(
@@ -992,19 +1142,20 @@ class TestDispatchJob:
             },
         )
 
-        executor.dispatch_job(queue_item, task)
+        with _stub_nomad_api(executor) as calls:
+            await executor.dispatch_job(queue_item, task)
 
-        meta = mock_backend.job.dispatch_job.call_args[1]["meta"]
+        meta = _dispatch_body(calls)["Meta"]
         assert "_chain_task_names" not in meta
         assert "scheduled_at" in meta
         assert isinstance(meta["scheduled_at"], str)
         assert "staleness_threshold_seconds" in meta
         assert isinstance(meta["staleness_threshold_seconds"], str)
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_dispatch_job_skips_staleness_meta_when_job_does_not_declare_it(
-        self, mock_nomad_cls
-    ):
+    @pytest.mark.asyncio
+    async def test_dispatch_job_skips_staleness_meta_when_job_does_not_declare_it(
+        self,
+    ) -> None:
         """Assert staleness meta is NOT injected into jobs that don't declare it.
 
         Custom user-defined parameterized jobs that haven't been updated to
@@ -1012,40 +1163,30 @@ class TestDispatchJob:
         so ``dispatch_job`` must preserve backward compatibility by only
         injecting the staleness meta when the job spec declares it.
         """
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {
-            "DispatchedJobID": "d-1",
-            "EvalID": "e-1",
-        }
         executor = _build_executor()
         task = _build_task(parameterized=True, declares_staleness_meta=False)
         queue_item = _build_queue_item(task=task, meta={"target": "n"})
 
-        executor.dispatch_job(queue_item, task)
+        with _stub_nomad_api(executor) as calls:
+            await executor.dispatch_job(queue_item, task)
 
-        meta = mock_backend.job.dispatch_job.call_args[1]["meta"]
+        meta = _dispatch_body(calls)["Meta"]
         assert "scheduled_at" not in meta
         assert "staleness_threshold_seconds" not in meta
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_dispatch_job_scheduled_at_uses_eta_when_set(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_dispatch_job_scheduled_at_uses_eta_when_set(self) -> None:
         """Assert ``scheduled_at`` derives from ``eta`` when the ETA is set."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {
-            "DispatchedJobID": "d-1",
-            "EvalID": "e-1",
-        }
         executor = _build_executor()
         task = _build_task(parameterized=True)
         queue_item = _build_queue_item(task=task, meta={"target": "n"})
         eta = datetime(2030, 1, 1, tzinfo=UTC)
         queue_item.execution_request.eta = eta
 
-        executor.dispatch_job(queue_item, task)
+        with _stub_nomad_api(executor) as calls:
+            await executor.dispatch_job(queue_item, task)
 
-        meta = mock_backend.job.dispatch_job.call_args[1]["meta"]
+        meta = _dispatch_body(calls)["Meta"]
         assert meta["scheduled_at"] == str(int(eta.timestamp()))
 
 
@@ -1388,82 +1529,105 @@ class TestDetectStaleSkip:
 class TestGetJob:
     """Test NomadExecutor.get_job."""
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_get_job_success(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_get_job_success(self) -> None:
         """Assert get_job returns job details."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.get_job.return_value = {"ID": "job-1", "Status": "running"}
-
         executor = _build_executor()
-        result = executor.get_job("job-1")
+
+        with _stub_nomad_api(
+            executor, job={"ID": "job-1", "Status": "running"}
+        ) as calls:
+            result = await executor.get_job("job-1")
+
         assert result["ID"] == "job-1"
+        assert calls == [("GET", "/v1/job/job-1", {})]
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_get_job_not_found_raises(self, mock_nomad_cls):
-        """Assert get_job raises JobNotFoundError on URLNotFoundNomadException."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.get_job.side_effect = URLNotFoundNomadException(
-            MagicMock(text="not found")
-        )
-
+    @pytest.mark.asyncio
+    async def test_get_job_not_found_raises(self) -> None:
+        """Assert get_job maps Nomad's 404 to JobNotFoundError."""
         executor = _build_executor()
-        with pytest.raises(JobNotFoundError):
-            executor.get_job("missing-job")
+
+        with (
+            _stub_nomad_api(executor, job=_nomad_error(status.HTTP_404_NOT_FOUND)),
+            pytest.raises(JobNotFoundError),
+        ):
+            await executor.get_job("missing-job")
+
+    @pytest.mark.asyncio
+    async def test_get_job_propagates_a_non_404_status(self) -> None:
+        """Assert only a 404 means "gone"; other statuses stay transport errors.
+
+        python-nomad drew this line by raising ``URLNotFoundNomadException``
+        apart from ``BaseNomadException``, and callers act on it: ``_sync_task_
+        history`` marks a history LOST on :class:`JobNotFoundError`, so reading a
+        Nomad 500 or 503 as absence would retire a task whose job is still there.
+        """
+        executor = _build_executor()
+
+        with (
+            _stub_nomad_api(
+                executor, job=_nomad_error(status.HTTP_503_SERVICE_UNAVAILABLE)
+            ),
+            pytest.raises(ClientResponseError) as exc_info,
+        ):
+            await executor.get_job("job-1")
+
+        assert exc_info.value.status == status.HTTP_503_SERVICE_UNAVAILABLE
 
 
 class TestGetJobForTaskHistory:
     """Test NomadExecutor.get_job_for_task_history."""
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_get_job_for_task_history_success(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_get_job_for_task_history_success(self) -> None:
         """Assert get_job_for_task_history retrieves job by tracking job_id."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.get_job.return_value = {"ID": "job-1"}
-
         executor = _build_executor()
         queue_item = _build_queue_item(
             tracking={"job_id": "job-1", "allocation_id": None, "evaluation_id": "e-1"}
         )
-        result = executor.get_job_for_task_history(queue_item)
+
+        with _stub_nomad_api(executor, job={"ID": "job-1"}):
+            result = await executor.get_job_for_task_history(queue_item)
+
         assert result["ID"] == "job-1"
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_get_job_for_task_history_missing_job_id(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_get_job_for_task_history_missing_job_id(self) -> None:
         """Assert get_job_for_task_history raises when job_id is missing."""
-        mock_nomad_cls.return_value = MagicMock()
         executor = _build_executor()
         queue_item = _build_queue_item(
             tracking={"allocation_id": None, "evaluation_id": "e-1"}
         )
+
         with pytest.raises(JobNotFoundError, match="Missing job_id"):
-            executor.get_job_for_task_history(queue_item)
+            await executor.get_job_for_task_history(queue_item)
 
 
 class TestGetHosts:
     """Test NomadExecutor.get_hosts."""
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_get_hosts(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_get_hosts(self) -> None:
         """Assert get_hosts returns filtered healthy nodes."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.nodes.get_nodes.return_value = [
-            {"Name": "node-a", "Address": "10.0.0.1"},
-            {"Name": "node-b", "Address": "10.0.0.2"},
-        ]
-
         executor = _build_executor()
-        result = executor.get_hosts()
+
+        with _stub_nomad_api(
+            executor,
+            nodes=[
+                {"Name": "node-a", "Address": "10.0.0.1"},
+                {"Name": "node-b", "Address": "10.0.0.2"},
+            ],
+        ) as calls:
+            result = await executor.get_hosts()
 
         assert result == {"node-a": "10.0.0.1", "node-b": "10.0.0.2"}
-        mock_backend.nodes.get_nodes.assert_called_once()
+        assert len(calls) == 1
+        method, path, kwargs = calls[0]
+        assert (method, path) == ("GET", "/v1/nodes")
         # A dropped clause or flipped operator here changes only the filter
         # expression, which the fixture above never exercises - pin its structure
         # directly rather than relying on the healthy-node fixtures to catch it.
-        assert mock_backend.nodes.get_nodes.call_args.kwargs["filter_"] == (
+        assert kwargs["params"]["filter"] == (
             f"Status == {NODE_STATUS_READY} "
             f"and {RAW_EXEC_DRIVER} in Drivers "
             f"and Drivers.{RAW_EXEC_DRIVER}.Healthy == true"
@@ -1479,12 +1643,11 @@ class TestGetHostStates:
     usable".
     """
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_reports_every_node_not_only_the_usable_ones(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_reports_every_node_not_only_the_usable_ones(self) -> None:
         """Assert an unusable node is a row here rather than an omission."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.nodes.get_nodes.return_value = [
+        executor = _build_executor()
+        nodes = [
             {
                 "Name": "healthy",
                 "Address": "10.0.0.1",
@@ -1499,7 +1662,8 @@ class TestGetHostStates:
             },
         ]
 
-        states = {state.name: state for state in _build_executor().get_host_states()}
+        with _stub_nomad_api(executor, nodes=nodes) as calls:
+            states = {state.name: state for state in await executor.get_host_states()}
 
         assert set(states) == {"healthy", "down"}
         assert (states["healthy"].reachable, states["healthy"].driver_healthy) == (
@@ -1511,19 +1675,18 @@ class TestGetHostStates:
             True,
         )
         # No filter: this call must see what get_hosts filters out.
-        assert mock_backend.nodes.get_nodes.call_args.kwargs == {}
+        assert calls == [("GET", "/v1/nodes", {"params": None})]
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_separates_unreachable_from_driver_unhealthy(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_separates_unreachable_from_driver_unhealthy(self) -> None:
         """Assert down and broken-driver are different answers, not one.
 
         Never onboarded and onboarded-but-broken need different people to fix them,
         so a single "unusable" flag sends the reader to the wrong place half the
         time.
         """
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.nodes.get_nodes.return_value = [
+        executor = _build_executor()
+        nodes = [
             {
                 "Name": "down",
                 "Address": "10.0.0.1",
@@ -1545,7 +1708,8 @@ class TestGetHostStates:
             },
         ]
 
-        states = {state.name: state for state in _build_executor().get_host_states()}
+        with _stub_nomad_api(executor, nodes=nodes):
+            states = {state.name: state for state in await executor.get_host_states()}
 
         assert (states["down"].reachable, states["down"].driver_healthy) == (
             False,
@@ -1561,40 +1725,37 @@ class TestGetHostStates:
         # where Nomad does supply one.
         assert states["down"].detail is None
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_a_missing_driver_entry_is_not_healthy(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_a_missing_driver_entry_is_not_healthy(self) -> None:
         """Assert an undetected driver reads as unhealthy rather than absent-so-fine.
 
         Nomad omits drivers it has not detected, so the never-onboarded host has no
         ``raw_exec`` key at all. Treating a missing key as anything but unhealthy
         would report the emptiest case as the healthiest.
         """
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.nodes.get_nodes.return_value = [
+        executor = _build_executor()
+        nodes = [
             {"Name": "bare", "Address": "10.0.0.1", "Status": "ready", "Drivers": {}},
             {"Name": "no-key", "Address": "10.0.0.2", "Status": "ready"},
         ]
 
-        states = {state.name: state for state in _build_executor().get_host_states()}
+        with _stub_nomad_api(executor, nodes=nodes):
+            states = {state.name: state for state in await executor.get_host_states()}
 
         assert states["bare"].driver_healthy is False
         assert states["no-key"].driver_healthy is False
         assert all(state.reachable for state in states.values())
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_unreachable_node_detail_comes_from_status_description(
-        self, mock_nomad_cls
-    ):
+    @pytest.mark.asyncio
+    async def test_unreachable_node_detail_comes_from_status_description(self) -> None:
         """Assert a down node explains itself instead of reporting nothing.
 
         The driver fields are a stale pre-disconnect snapshot once the node itself
         is unreachable, so ``detail`` has to come from the node's own status text,
         not from a driver reading that predates the outage.
         """
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.nodes.get_nodes.return_value = [
+        executor = _build_executor()
+        nodes = [
             {
                 "Name": "down",
                 "Address": "10.0.0.1",
@@ -1606,13 +1767,14 @@ class TestGetHostStates:
             }
         ]
 
-        states = {state.name: state for state in _build_executor().get_host_states()}
+        with _stub_nomad_api(executor, nodes=nodes):
+            states = {state.name: state for state in await executor.get_host_states()}
 
         assert states["down"].reachable is False
         assert states["down"].detail == "Node heartbeat missed"
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_malformed_healthy_value_is_not_healthy(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_malformed_healthy_value_is_not_healthy(self) -> None:
         """Assert a non-boolean ``Healthy`` value cannot read as healthy.
 
         ``bool()`` would turn any non-empty malformed value - including the string
@@ -1620,9 +1782,8 @@ class TestGetHostStates:
         regression, to ``bool(driver.get("Healthy"))``, which would otherwise keep
         the whole suite green.
         """
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.nodes.get_nodes.return_value = [
+        executor = _build_executor()
+        nodes = [
             {
                 "Name": "string-false",
                 "Address": "10.0.0.1",
@@ -1637,7 +1798,8 @@ class TestGetHostStates:
             },
         ]
 
-        states = {state.name: state for state in _build_executor().get_host_states()}
+        with _stub_nomad_api(executor, nodes=nodes):
+            states = {state.name: state for state in await executor.get_host_states()}
 
         assert states["string-false"].driver_healthy is False
         assert states["truthy-int"].driver_healthy is False
@@ -1812,20 +1974,28 @@ class TestDispatchTask:
         mock_backend = MagicMock()
         mock_nomad_cls.return_value = mock_backend
 
-        mock_backend.job.register_job.return_value = {"EvalID": "eval-reg"}
-        mock_backend.job.get_job.side_effect = [
-            URLNotFoundNomadException(MagicMock(text="not found")),
-            {"ID": "param-job-node-1", "SubmitTime": None},
-            {"ID": "dispatched-job-1", "SubmitTime": 1_700_000_000_000_000_000},
-        ]
-        mock_backend.job.dispatch_job.return_value = {
+        nomad_register = {"EvalID": "eval-reg"}
+        # In order: task_needs_job_register's lookup misses, the freshly
+        # registered job is read back, then the dispatched child job is.
+        nomad_job = iter(
+            [
+                _nomad_error(status.HTTP_404_NOT_FOUND),
+                {"ID": "param-job-node-1", "SubmitTime": None},
+                {"ID": "dispatched-job-1", "SubmitTime": 1_700_000_000_000_000_000},
+            ]
+        )
+        nomad_dispatch = {
             "DispatchedJobID": "dispatched-job-1",
             "EvalID": "eval-disp",
         }
 
         mock_th_manager.save = AsyncMock(side_effect=lambda _s, qi, **_kw: qi)
 
-        executor = _build_executor()
+        executor = _build_executor(
+            nomad_job=nomad_job,
+            nomad_register=nomad_register,
+            nomad_dispatch=nomad_dispatch,
+        )
         task = _build_task(task_id="param-job", parameterized=True)
         queue_item = _build_queue_item(
             task=task,
@@ -1851,14 +2021,15 @@ class TestDispatchTask:
         mock_backend = MagicMock()
         mock_nomad_cls.return_value = mock_backend
 
-        mock_backend.job.register_job.return_value = {"EvalID": "eval-1"}
-        mock_backend.job.get_job.return_value = {
+        nomad_register = {"EvalID": "eval-1"}
+        nomad_job = {
             "ID": "non-param-job-node-1",
             "SubmitTime": 1_700_000_000_000_000_000,
         }
 
         mock_th_manager.save = AsyncMock(side_effect=lambda _s, qi, **_kw: qi)
 
+        calls = _stub_nomad_calls(job=nomad_job, register=nomad_register)
         executor = _build_executor()
         task = _build_task(task_id="non-param-job", parameterized=False)
         queue_item = _build_queue_item(
@@ -1870,7 +2041,10 @@ class TestDispatchTask:
         result = await executor.dispatch_task(session, queue_item, task)
 
         assert result.status == TaskHistoryStatusEnum.RUNNING
-        mock_backend.job.register_job.assert_called_once()
+        # The prepared task carries the per-node job id, so the registration
+        # posts to that rather than to the task's own name.
+        registered = [path for method, path, _ in calls if method == "POST"]
+        assert registered == ["/v1/job/non-param-job-node-1"]
 
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.TaskHistoryManager")
@@ -1883,15 +2057,15 @@ class TestDispatchTask:
         mock_nomad_cls.return_value = mock_backend
 
         submit_ns = 1_700_000_000_000_000_000
-        mock_backend.job.register_job.return_value = {"EvalID": "eval-1"}
-        mock_backend.job.get_job.return_value = {
+        nomad_register = {"EvalID": "eval-1"}
+        nomad_job = {
             "ID": "job-1",
             "SubmitTime": submit_ns,
         }
 
         mock_th_manager.save = AsyncMock(side_effect=lambda _s, qi, **_kw: qi)
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job, nomad_register=nomad_register)
         task = _build_task(task_id="ts-job", parameterized=False)
         queue_item = _build_queue_item(
             task=task,
@@ -1967,7 +2141,7 @@ class TestStopTask:
             "EvalID": "eval-1",
             "ClientStatus": NomadAllocStatusEnum.PENDING,
         }
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": "running",
             "Stop": False,
@@ -1982,7 +2156,9 @@ class TestStopTask:
             "job_id": "job-1",
         }
 
-        result = await _build_executor().stop_task(session, queue_item)
+        result = await _build_executor(nomad_job=nomad_job).stop_task(
+            session, queue_item
+        )
 
         assert result.status == TaskHistoryStatusEnum.STOPPED
         assert result.finished_at is not None
@@ -2021,7 +2197,7 @@ class TestStopTask:
             "ModifyTime": exited_at_ns,
             "TaskStates": {NomadStep.RUN_SCRIPT: {"State": "dead", "Events": []}},
         }
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": "dead",
             "Stop": True,
@@ -2036,7 +2212,9 @@ class TestStopTask:
             "job_id": "job-1",
         }
 
-        result = await _build_executor().stop_task(session, queue_item)
+        result = await _build_executor(nomad_job=nomad_job).stop_task(
+            session, queue_item
+        )
 
         assert result.status == TaskHistoryStatusEnum.FAILED
         exited_at = datetime.fromtimestamp(exited_at_ns / 10**9, UTC)
@@ -2081,13 +2259,13 @@ class TestSyncTaskHistory:
             "ModifyTime": 1_700_000_000_000_000_000,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": NOMAD_DEAD_JOB_STATUS,
             "Stop": False,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-1",
@@ -2122,13 +2300,13 @@ class TestSyncTaskHistory:
             "ModifyTime": 1_700_000_000_000_000_000,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": NOMAD_DEAD_JOB_STATUS,
             "Stop": False,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-1",
@@ -2170,13 +2348,13 @@ class TestSyncTaskHistory:
             "ModifyTime": 1_700_000_000_000_000_000,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": NOMAD_DEAD_JOB_STATUS,
             "Stop": False,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-1",
@@ -2220,13 +2398,13 @@ class TestSyncTaskHistory:
             "ModifyTime": 1_700_000_000_000_000_000,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": NOMAD_DEAD_JOB_STATUS,
             "Stop": False,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-1",
@@ -2262,13 +2440,13 @@ class TestSyncTaskHistory:
             "ModifyTime": 1_700_000_000_000_000_000,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": NOMAD_DEAD_JOB_STATUS,
             "Stop": False,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-1",
@@ -2298,13 +2476,13 @@ class TestSyncTaskHistory:
             "ModifyTime": 1_700_000_000_000_000_000,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": NOMAD_DEAD_JOB_STATUS,
             "Stop": False,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-1",
@@ -2330,11 +2508,9 @@ class TestSyncTaskHistory:
             MagicMock(text="not found")
         )
         mock_backend.allocations.get_allocations.return_value = []
-        mock_backend.job.get_job.side_effect = URLNotFoundNomadException(
-            MagicMock(text="not found")
-        )
+        nomad_job = _nomad_error(status.HTTP_404_NOT_FOUND)
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-gone",
@@ -2361,12 +2537,12 @@ class TestSyncTaskHistory:
             MagicMock(text="not found")
         )
         mock_backend.allocations.get_allocations.return_value = []
-        mock_backend.job.get_job.return_value = {"ID": "job-1"}
+        nomad_job = {"ID": "job-1"}
         mock_backend.job.get_evaluations.return_value = [
             {"Status": "complete"},
         ]
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-gone",
@@ -2397,13 +2573,13 @@ class TestSyncTaskHistory:
             "ModifyTime": None,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": NOMAD_DEAD_JOB_STATUS,
             "Stop": False,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-1",
@@ -2445,13 +2621,13 @@ class TestSyncTaskHistory:
         mock_backend.allocation.get_allocation.return_value = first_alloc
         mock_backend.allocations.get_allocations.return_value = [followup_alloc]
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": NOMAD_DEAD_JOB_STATUS,
             "Stop": False,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-1",
@@ -2483,13 +2659,13 @@ class TestSyncTaskHistory:
             "ModifyTime": 1_700_000_000_000_000_000,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": NOMAD_DEAD_JOB_STATUS,
             "Stop": True,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-1",
@@ -2518,11 +2694,9 @@ class TestSyncTaskHistory:
             "ModifyTime": None,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.side_effect = URLNotFoundNomadException(
-            MagicMock(text="not found")
-        )
+        nomad_job = _nomad_error(status.HTTP_404_NOT_FOUND)
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         queue_item = _build_queue_item(
             tracking={
                 "allocation_id": "alloc-1",
@@ -2597,11 +2771,14 @@ class TestSyncTaskHistoryWithoutTaskStates:
         mock_backend.allocation.get_allocation.return_value = alloc
         mock_backend.allocations.get_allocations.return_value = [alloc]
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = job or {
-            "ID": "job-1",
-            "Status": "running",
-            "Stop": False,
-        }
+        _stub_nomad_calls(
+            job=job
+            or {
+                "ID": "job-1",
+                "Status": "running",
+                "Stop": False,
+            }
+        )
         return mock_backend
 
     @pytest.mark.asyncio
@@ -3108,11 +3285,13 @@ class TestSyncTaskHistoryFailureReason:
         mock_backend.allocation.get_allocation.return_value = alloc
         mock_backend.allocations.get_allocations.return_value = [alloc]
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
-            "ID": "job-1",
-            "Status": NOMAD_DEAD_JOB_STATUS,
-            "Stop": stop,
-        }
+        _stub_nomad_calls(
+            job={
+                "ID": "job-1",
+                "Status": NOMAD_DEAD_JOB_STATUS,
+                "Stop": stop,
+            }
+        )
 
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
@@ -3235,10 +3414,12 @@ class TestSyncTaskHistoryFailureReason:
             MagicMock(text="not found")
         )
         mock_backend.allocations.get_allocations.return_value = []
-        mock_backend.job.get_job.return_value = {"ID": "job-1"}
+        nomad_job = {"ID": "job-1"}
         mock_backend.job.get_evaluations.return_value = [{"Status": "complete"}]
 
-        result = await _build_executor()._sync_task_history(self._queue_item())
+        result = await _build_executor(nomad_job=nomad_job)._sync_task_history(
+            self._queue_item()
+        )
 
         assert result.status == TaskHistoryStatusEnum.FAILED
         assert result.started_at is None
@@ -3256,11 +3437,11 @@ class TestSyncTaskHistoryFailureReason:
             MagicMock(text="not found")
         )
         mock_backend.allocations.get_allocations.return_value = []
-        mock_backend.job.get_job.side_effect = URLNotFoundNomadException(
-            MagicMock(text="not found")
-        )
+        nomad_job = _nomad_error(status.HTTP_404_NOT_FOUND)
 
-        result = await _build_executor()._sync_task_history(self._queue_item())
+        result = await _build_executor(nomad_job=nomad_job)._sync_task_history(
+            self._queue_item()
+        )
 
         assert result.status == TaskHistoryStatusEnum.LOST
         assert result.failure_reason == "Execution tracking lost."
@@ -3292,7 +3473,7 @@ class TestSyncTaskHistoryFailureReason:
         mock_backend.allocation.get_allocation.return_value = alloc
         mock_backend.allocations.get_allocations.return_value = [alloc]
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": "running",
             "Stop": False,
@@ -3302,7 +3483,9 @@ class TestSyncTaskHistoryFailureReason:
             seconds=PENDING_ALLOCATION_PAST_BOUND_AGE
         )
 
-        result = await _build_executor()._sync_task_history(queue_item)
+        result = await _build_executor(nomad_job=nomad_job)._sync_task_history(
+            queue_item
+        )
 
         assert result.status == TaskHistoryStatusEnum.LOST
         assert result.failure_reason == "Execution tracking lost."
@@ -3355,72 +3538,61 @@ class TestStampFinishedAt:
 class TestTaskNeedsJobRegister:
     """Test NomadExecutor.task_needs_job_register."""
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_non_parameterized_always_true(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_non_parameterized_always_true(self) -> None:
         """Assert non-parameterized tasks always need registration."""
-        mock_nomad_cls.return_value = MagicMock()
         executor = _build_executor()
         task = _build_task(parameterized=False)
-        assert executor.task_needs_job_register(task) is True
+        assert await executor.task_needs_job_register(task) is True
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_parameterized_job_not_found(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_parameterized_job_not_found(self) -> None:
         """Assert True when parameterized job doesn't exist."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.get_job.side_effect = URLNotFoundNomadException(
-            MagicMock(text="not found")
-        )
+        nomad_job = _nomad_error(status.HTTP_404_NOT_FOUND)
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         task = _build_task(parameterized=True)
-        assert executor.task_needs_job_register(task) is True
+        assert await executor.task_needs_job_register(task) is True
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_parameterized_job_stale(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_parameterized_job_stale(self) -> None:
         """Assert True when existing job is older than task update time."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
         old_timestamp = 1_600_000_000_000_000_000
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "SubmitTime": old_timestamp,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         task = _build_task(parameterized=True)
         task.updated_at = datetime(2024, 1, 1, tzinfo=UTC)
-        assert executor.task_needs_job_register(task) is True
+        assert await executor.task_needs_job_register(task) is True
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_parameterized_job_fresh(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_parameterized_job_fresh(self) -> None:
         """Assert False when existing job is newer than task update time."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
         recent_timestamp = 2_000_000_000_000_000_000
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "SubmitTime": recent_timestamp,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         task = _build_task(parameterized=True)
         task.updated_at = datetime(2020, 1, 1, tzinfo=UTC)
-        assert executor.task_needs_job_register(task) is False
+        assert await executor.task_needs_job_register(task) is False
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_parameterized_job_no_submit_time(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_parameterized_job_no_submit_time(self) -> None:
         """Assert True when existing job has no SubmitTime."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "SubmitTime": None,
         }
 
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
         task = _build_task(parameterized=True)
-        assert executor.task_needs_job_register(task) is True
+        assert await executor.task_needs_job_register(task) is True
 
 
 class TestValidateJob:
@@ -7686,7 +7858,7 @@ class TestNomadSyncWithCaptureHold:
             "ModifyTime": 1_700_000_000_000_000_000,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = job
+        _stub_nomad_calls(job=job)
         return mock_backend
 
     @staticmethod
@@ -7914,12 +8086,12 @@ class TestNomadSyncWithCaptureHold:
             "ModifyTime": 1_700_000_000_000_000_000,
         }
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
+        nomad_job = {
             "ID": "job-1",
             "Status": NOMAD_DEAD_JOB_STATUS,
             "Stop": False,
         }
-        executor = _build_executor()
+        executor = _build_executor(nomad_job=nomad_job)
 
         result = await executor._sync_task_history(self._queue_item())
 
@@ -8001,49 +8173,39 @@ class TestNomadCaptureHoldDispatchMeta:
             owner="ANY",
         )
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_configured_deadline_is_injected_as_meta(self, mock_nomad_cls):
+    @pytest.mark.asyncio
+    async def test_configured_deadline_is_injected_as_meta(self) -> None:
         """Assert the executor setting is passed per dispatch, as a string.
 
         Enforcement lives on the execution host, so the value has to travel
         with the dispatch rather than being read by the shell from PMM Extensions.
         """
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {
-            "DispatchedJobID": "d-1",
-            "EvalID": "e-1",
-        }
+        calls = _stub_nomad_calls(dispatch={"DispatchedJobID": "d-1", "EvalID": "e-1"})
         executor = _build_executor(log_capture_hold_seconds=self.HOLD_SECONDS)
         task = self._task_declaring_hold_meta(declares=True)
 
-        executor.dispatch_job(_build_queue_item(task=task, payload="x"), task)
+        await executor.dispatch_job(_build_queue_item(task=task, payload="x"), task)
 
-        meta = mock_backend.job.dispatch_job.call_args[1]["meta"]
+        meta = _dispatch_body(calls)["Meta"]
         assert meta["log_capture_hold_seconds"] == str(self.HOLD_SECONDS)
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_meta_is_withheld_from_a_template_that_does_not_declare_it(
-        self, mock_nomad_cls
-    ):
+    @pytest.mark.asyncio
+    async def test_meta_is_withheld_from_a_template_that_does_not_declare_it(
+        self,
+    ) -> None:
         """Assert a template predating the hold key is dispatched without it.
 
         Nomad rejects a dispatch carrying meta the parameterized job never
         declared, so gating on the declaration is what lets the setting be
         hot-reloadable without re-registering every job first.
         """
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_backend.job.dispatch_job.return_value = {
-            "DispatchedJobID": "d-1",
-            "EvalID": "e-1",
-        }
+        calls = _stub_nomad_calls(dispatch={"DispatchedJobID": "d-1", "EvalID": "e-1"})
         executor = _build_executor(log_capture_hold_seconds=self.HOLD_SECONDS)
         task = self._task_declaring_hold_meta(declares=False)
 
-        executor.dispatch_job(_build_queue_item(task=task, payload="x"), task)
+        await executor.dispatch_job(_build_queue_item(task=task, payload="x"), task)
 
-        meta = mock_backend.job.dispatch_job.call_args[1]["meta"]
+        meta = _dispatch_body(calls)["Meta"]
         assert "log_capture_hold_seconds" not in meta
 
 
@@ -8282,3 +8444,111 @@ class TestNomadStopReleasesCaptureHold:
 
         mock_backend.job.deregister_job.assert_called_once_with("job-1")
         mock_backend.client.allocation.signal_allocation.assert_not_called()
+
+
+class TestPortedNomadCallsUseTheDocumentedEndpoints:
+    """Pin the wire format of the five calls that moved off python-nomad.
+
+    Everything else in this module stubs :meth:`NomadExecutor._nomad_json` and so
+    says nothing about what actually reaches the socket. python-nomad used to
+    build these requests; now the executor does, and a wrong verb, path or body
+    key would reach a live Nomad rather than a test. These assertions are that
+    check, and each expectation is the request the library sent for the same
+    call: ``Job`` wrapping for a registration, ``Payload``/``Meta``/
+    ``IdPrefixTemplate`` for a dispatch, ``filter`` for a node listing.
+    """
+
+    @staticmethod
+    @contextmanager
+    def _capture(
+        executor: NomadExecutor, body: Any
+    ) -> Generator[list[tuple[str, str, dict[str, Any]]], None, None]:
+        """Answer every request with ``body``, recording the requests made.
+
+        :param executor: The executor whose ``_request`` to intercept.
+        :param body: The JSON body each call answers with.
+        :yield: The recorded ``(method, path, kwargs)`` of every request.
+        """
+        requests: list[tuple[str, str, dict[str, Any]]] = []
+        response = AsyncMock()
+        response.raise_for_status = MagicMock()
+        response.json = AsyncMock(return_value=body)
+
+        def _request(method: str, path: str, **kwargs: Any) -> Any:
+            requests.append((method, path, kwargs))
+            ctx = AsyncMock()
+            ctx.__aenter__ = AsyncMock(return_value=response)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            return ctx
+
+        with patch.object(executor, "_request", side_effect=_request):
+            yield requests
+
+    @pytest.mark.asyncio
+    async def test_register_job_posts_the_spec_to_the_job_endpoint(self) -> None:
+        """Assert a registration is ``POST /v1/job/{id}`` with a ``Job`` wrapper."""
+        executor = _build_executor(stub_nomad=False)
+        task = _build_task(task_id="wire-reg")
+
+        with self._capture(executor, {"EvalID": "e-1"}) as requests:
+            await executor.register_job(task)
+
+        assert requests == [("POST", "/v1/job/wire-reg", {"json": {"Job": task.data}})]
+
+    @pytest.mark.asyncio
+    async def test_dispatch_job_posts_to_the_dispatch_subpath(self) -> None:
+        """Assert a dispatch is ``POST /v1/job/{id}/dispatch`` with Nomad's keys."""
+        executor = _build_executor(stub_nomad=False)
+        task = _build_task(task_id="wire-dispatch", parameterized=True)
+        queue_item = _build_queue_item(task=task, meta={"target": "n"})
+
+        with self._capture(
+            executor, {"DispatchedJobID": "d-1", "EvalID": "e-1"}
+        ) as requests:
+            await executor.dispatch_job(queue_item, task)
+
+        assert len(requests) == 1
+        method, path, kwargs = requests[0]
+        assert (method, path) == ("POST", "/v1/job/wire-dispatch/dispatch")
+        assert set(kwargs["json"]) == {"Payload", "Meta", "IdPrefixTemplate"}
+
+    @pytest.mark.asyncio
+    async def test_get_job_gets_the_job_endpoint(self) -> None:
+        """Assert a job read is a bare ``GET /v1/job/{id}``."""
+        executor = _build_executor(stub_nomad=False)
+
+        with self._capture(executor, {"ID": "wire-get"}) as requests:
+            await executor.get_job("wire-get")
+
+        assert requests == [("GET", "/v1/job/wire-get", {})]
+
+    @pytest.mark.asyncio
+    async def test_get_hosts_filters_through_the_nodes_query_string(self) -> None:
+        """Assert the host filter travels as the ``filter`` query parameter.
+
+        python-nomad took the expression as ``filter_`` and renamed it on the way
+        out; sending the Python spelling would filter nothing and quietly report
+        every node as usable.
+        """
+        executor = _build_executor(stub_nomad=False)
+
+        with self._capture(executor, []) as requests:
+            await executor.get_hosts()
+
+        method, path, kwargs = requests[0]
+        assert (method, path) == ("GET", "/v1/nodes")
+        assert set(kwargs["params"]) == {"filter"}
+
+    @pytest.mark.asyncio
+    async def test_get_host_states_sends_no_filter_at_all(self) -> None:
+        """Assert the every-node listing omits the parameter rather than blanking it.
+
+        ``filter=`` with an empty value is not the same request as no ``filter``,
+        and this call has to see the nodes ``get_hosts`` screens out.
+        """
+        executor = _build_executor(stub_nomad=False)
+
+        with self._capture(executor, []) as requests:
+            await executor.get_host_states()
+
+        assert requests == [("GET", "/v1/nodes", {"params": None})]

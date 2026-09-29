@@ -180,7 +180,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         """
 
     @abstractmethod
-    def get_hosts(self) -> dict[str, str]:
+    async def get_hosts(self) -> dict[str, str]:
         """Get the list of valid executor hosts.
 
         :return: A dictionary with node names as key and the respective addresses
@@ -188,7 +188,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         :rtype: list[str]
         """
 
-    def get_host_states(self) -> list[ExecutorHostState]:
+    async def get_host_states(self) -> list[ExecutorHostState]:
         """Describe every host the backend knows about, usable or not.
 
         Deliberately concrete rather than abstract: a backend with nothing to add
@@ -207,7 +207,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
             ExecutorHostState(
                 name=name, address=address, reachable=True, driver_healthy=True
             )
-            for name, address in self.get_hosts().items()
+            for name, address in (await self.get_hosts()).items()
         ]
 
     @abstractmethod
