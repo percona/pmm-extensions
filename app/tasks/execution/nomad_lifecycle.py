@@ -150,19 +150,29 @@ class NomadLifecycle:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
-        """Exit the entered executor and force-close any still-deferred retirees."""
-        async with self._lock:
-            # Mark closing before any await so a reconcile queued on this lock
-            # refuses to publish after we clear ``_current``. Seal pending so a
-            # reconcile that already left the lock cannot register after the
-            # sweep either.
-            self._closing = True
-            self._pending_closes.seal()
-            if self._current is not None:
-                await self._current.__aexit__(None, None, None)
-                self._current = None
-        await self._pending_closes.force_close()
-        self._app.state.nomad_lifecycle = None
+        """Exit the entered executor and force-close any still-deferred retirees.
+
+        Nested ``finally`` so a failure closing the active executor still
+        force-closes deferred retirees and unpublishes the holder.
+        """
+        try:
+            async with self._lock:
+                # Mark closing before any await so a reconcile queued on this lock
+                # refuses to publish after we clear ``_current``. Seal pending so a
+                # reconcile that already left the lock cannot register after the
+                # sweep either.
+                self._closing = True
+                self._pending_closes.seal()
+                if self._current is not None:
+                    try:
+                        await self._current.__aexit__(None, None, None)
+                    finally:
+                        self._current = None
+        finally:
+            try:
+                await self._pending_closes.force_close()
+            finally:
+                self._app.state.nomad_lifecycle = None
 
     async def reconcile(self) -> None:
         """Rebind the entered executor when the effective NOMAD config changed.

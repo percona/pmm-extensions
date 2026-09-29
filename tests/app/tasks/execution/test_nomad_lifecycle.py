@@ -17,11 +17,13 @@
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp import encode_basic_auth
 from fastapi import FastAPI
 from pydantic import ValidationError
+from pytest_mock import MockerFixture
 
 from app.tasks.config import tasks_settings
 from app.tasks.deps import (
@@ -191,6 +193,39 @@ async def test_reconcile_refuses_to_publish_after_aexit() -> None:
 
         assert holder._current is None
     finally:
+        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.asyncio
+async def test_aexit_still_force_closes_when_active_close_fails(
+    mocker: MockerFixture,
+) -> None:
+    """Pending sweep and unpublish still run when the active executor close raises."""
+    _override_nomad(_NOMAD_A)
+    app = FastAPI()
+    holder = NomadLifecycle(app)
+    old: NomadExecutor | None = None
+    try:
+        await holder.__aenter__()
+        old = holder.current
+        retired = await NomadExecutor.model_validate(_NOMAD_B).open()
+
+        async with retired.hold():
+            await retired.close_when_idle(pending=holder._pending_closes)
+            mocker.patch.object(
+                old, "__aexit__", AsyncMock(side_effect=RuntimeError("active boom"))
+            )
+
+            with pytest.raises(RuntimeError, match="active boom"):
+                await holder.__aexit__(None, None, None)
+
+            assert holder._current is None
+            assert retired._session is None
+            assert app.state.nomad_lifecycle is None
+    finally:
+        if old is not None and old._session is not None:
+            await old._session.close()
+            old._session = None
         tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
 
 
