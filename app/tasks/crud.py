@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import ChunkedIteratorResult, CursorResult, delete, func, or_, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql import ColumnExpressionArgument
 from sqlalchemy.sql.elements import ColumnElement
@@ -1574,3 +1575,52 @@ class DispatchLockManager(BaseSQLModelManager):
     """
 
     Model = DispatchLock
+
+    @classmethod
+    async def claim(cls, session: AsyncSession, name: str) -> None:
+        """Insert the lock row for ``name``, committing without reading it back.
+
+        Deliberately not :meth:`~app.core.db.crud.CRUDBase.save`, which follows
+        its commit with ``session.refresh``. That refresh is a second checkout
+        from the pool, taken at the one moment when failing is most expensive:
+        the row is committed by then, so a refresh that cannot get a connection
+        raises after the lock exists and before the caller's ``try``/``finally``
+        has been entered. The lock is orphaned, and nothing clears it until the
+        caller's stale-row sweep, which refuses every identical dispatch until it
+        runs. No caller reads anything back off a lock row, so the refresh buys
+        nothing to pay that with.
+
+        The ``IntegrityError`` is left to the caller rather than translated here:
+        on this table a unique violation means "an identical dispatch already
+        holds the lock", which is the caller's conflict to name.
+
+        :param session: A session dedicated to this lock, separate from the one
+            the dispatch itself runs on so the commit does not end that
+            transaction.
+        :param name: The lock's content hash.
+        :raises IntegrityError: If the lock is already held.
+        """
+        # ty reads SQLModel's `id` as required because it cannot see the
+        # primary-key default; the same artifact already sits on
+        # `_transient_log_state`. Per-site rather than a pyproject override,
+        # which would also cover any genuine hit of this rule in the file.
+        session.add(cls.Model(name=name))  # ty: ignore[missing-argument]
+        try:
+            await session.commit()
+        except IntegrityError:
+            # The failed statement leaves the transaction unusable, so it has to
+            # be released before the caller can act on the conflict.
+            await session.rollback()
+            raise
+
+    @classmethod
+    async def release(cls, session: AsyncSession, name: str) -> None:
+        """Delete the lock row for ``name``.
+
+        Keyed by name rather than by a persisted instance, so :meth:`claim` never
+        has to read one back.
+
+        :param session: A session dedicated to this lock.
+        :param name: The lock's content hash.
+        """
+        await cls.delete_where(session, name=name)
