@@ -56,6 +56,7 @@ from app.tasks.execution.exceptions import TaskNotStartedInExecutorError
 from app.tasks.execution.executors.nomad.exceptions import (
     AllocationNotFoundError,
     JobNotFoundError,
+    NomadRequestError,
 )
 from app.tasks.execution.executors.nomad.models import (
     _alloc_step_state,
@@ -251,6 +252,10 @@ def _build_queue_item(
     )
 
 
+#: A per-call Nomad timeout distinct from both the field default and the
+#: shared session's, so a test cannot pass by picking up either.
+CONFIGURED_NOMAD_TIMEOUT = 7
+
 #: What an unstubbed ``GET /v1/job/{id}`` answers: a job that is alive and not
 #: stopped, so a test reaching it incidentally sees nothing terminal.
 _DEFAULT_NOMAD_JOB = {"ID": "job-1", "Status": "running", "Stop": False}
@@ -316,13 +321,18 @@ def _build_executor(
     return NomadExecutor(**defaults)
 
 
-def _nomad_error(status_code: int) -> ClientResponseError:
-    """Build the error ``raise_for_status`` raises for ``status_code``.
+def _nomad_error(status_code: int) -> NomadRequestError:
+    """Build the error ``_nomad_json`` raises for ``status_code``.
+
+    Deliberately the executor's own error rather than the underlying
+    ``aiohttp.ClientResponseError``: ``_nomad_json`` converts every failure so
+    that it stays a ``BaseNomadException``, which the Tasks exception handler and
+    the periodic-dispatch alert both depend on.
 
     :param status_code: The HTTP status Nomad answered with.
-    :return: The matching aiohttp error.
+    :return: The matching error.
     """
-    return ClientResponseError(request_info=MagicMock(), history=(), status=status_code)
+    return NomadRequestError(f"Nomad answered {status_code}", status_code=status_code)
 
 
 def _serve(canned: Any, fallback: Any, *args: Any) -> Any:
@@ -1575,11 +1585,11 @@ class TestGetJob:
             _stub_nomad_api(
                 executor, job=_nomad_error(status.HTTP_503_SERVICE_UNAVAILABLE)
             ),
-            pytest.raises(ClientResponseError) as exc_info,
+            pytest.raises(NomadRequestError) as exc_info,
         ):
             await executor.get_job("job-1")
 
-        assert exc_info.value.status == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
 
 class TestGetJobForTaskHistory:
@@ -10087,7 +10097,10 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
         with self._capture(executor, {"EvalID": "e-1"}) as requests:
             await executor.register_job(task)
 
-        assert requests == [("POST", "/v1/job/wire-reg", {"json": {"Job": task.data}})]
+        assert len(requests) == 1
+        method, path, kwargs = requests[0]
+        assert (method, path) == ("POST", "/v1/job/wire-reg")
+        assert kwargs["json"] == {"Job": task.data}
 
     @pytest.mark.asyncio
     async def test_dispatch_job_posts_to_the_dispatch_subpath(self) -> None:
@@ -10114,7 +10127,10 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
         with self._capture(executor, {"ID": "wire-get"}) as requests:
             await executor.get_job("wire-get")
 
-        assert requests == [("GET", "/v1/job/wire-get", {})]
+        assert len(requests) == 1
+        method, path, kwargs = requests[0]
+        assert (method, path) == ("GET", "/v1/job/wire-get")
+        assert set(kwargs) == {"timeout"}
 
     @pytest.mark.asyncio
     async def test_get_hosts_filters_through_the_nodes_query_string(self) -> None:
@@ -10145,4 +10161,114 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
         with self._capture(executor, []) as requests:
             await executor.get_host_states()
 
-        assert requests == [("GET", "/v1/nodes", {"params": None})]
+        assert len(requests) == 1
+        method, path, kwargs = requests[0]
+        assert (method, path) == ("GET", "/v1/nodes")
+        assert kwargs["params"] is None
+
+
+class TestPortedNomadCallsKeepTheirErrorContract:
+    """Pin that a Nomad failure still arrives as a ``BaseNomadException``.
+
+    Two callers outside this package depend on it and neither is obvious from
+    the executor: ``app.tasks.main.nomad_exception_handler`` answers a route with
+    502 and "make sure the agent is online", and ``app.tasks.celery`` raises the
+    periodic-dispatch failure alert on ``BaseNomadException``. Moving these calls
+    onto aiohttp would have let ``ClientError`` escape instead, turning the first
+    into a bare 500 and silencing the second - a monitoring product quietly
+    stopping its own alerts.
+    """
+
+    @staticmethod
+    @contextmanager
+    def _failing_request(exc: Exception) -> Generator[None, None, None]:
+        """Make the executor's next request fail with ``exc``.
+
+        :param exc: Raised in place of sending the request.
+        :yield: Nothing; the patch is active for the block.
+        """
+
+        def _request(*_args: Any, **_kwargs: Any) -> Any:
+            raise exc
+
+        with patch.object(
+            NomadExecutor, "_request", side_effect=_request, autospec=True
+        ):
+            yield
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            ClientError("connection refused"),
+            TimeoutError("timed out"),
+        ],
+        ids=["transport", "timeout"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_request_that_gets_no_answer_is_still_a_nomad_error(
+        self, failure: Exception
+    ) -> None:
+        """Assert a failure with no HTTP answer is a BaseNomadException with no status."""
+        executor = _build_executor(stub_nomad=False)
+
+        with (
+            self._failing_request(failure),
+            pytest.raises(NomadRequestError) as exc_info,
+        ):
+            await executor.get_hosts()
+
+        assert isinstance(exc_info.value, BaseNomadException)
+        assert exc_info.value.status_code is None
+
+    @pytest.mark.asyncio
+    async def test_an_error_status_is_a_nomad_error_carrying_that_status(self) -> None:
+        """Assert an error status survives as ``status_code`` for callers to act on."""
+        executor = _build_executor(stub_nomad=False)
+        response = AsyncMock()
+        response.raise_for_status = MagicMock(
+            side_effect=ClientResponseError(
+                request_info=MagicMock(),
+                history=(),
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        )
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.object(executor, "_request", return_value=ctx),
+            pytest.raises(NomadRequestError) as exc_info,
+        ):
+            await executor.get_hosts()
+
+        assert isinstance(exc_info.value, BaseNomadException)
+        assert exc_info.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+
+    @pytest.mark.asyncio
+    async def test_the_calls_use_the_executors_timeout_not_the_sessions(self) -> None:
+        """Assert the configured ``timeout`` is applied per call.
+
+        The shared session is built for log streaming and allows 300s total with
+        a 120s socket read; python-nomad received ``self.timeout``, which
+        defaults to 10s and is hot-reloadable. Inheriting the session's budget
+        would ignore an operator's setting and let a hung Nomad hold a dispatch,
+        and its database connection, thirty times longer than asked.
+        """
+        executor = _build_executor(stub_nomad=False, timeout=CONFIGURED_NOMAD_TIMEOUT)
+        response = AsyncMock()
+        response.raise_for_status = MagicMock()
+        response.json = AsyncMock(return_value=[])
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        seen: list[Any] = []
+
+        def _request(_method: str, _path: str, **kwargs: Any) -> Any:
+            seen.append(kwargs.get("timeout"))
+            return ctx
+
+        with patch.object(executor, "_request", side_effect=_request):
+            await executor.get_hosts()
+
+        assert seen[0].total == CONFIGURED_NOMAD_TIMEOUT
