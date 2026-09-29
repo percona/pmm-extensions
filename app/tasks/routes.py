@@ -283,7 +283,7 @@ async def execute_task_name(
 
     root_task = await TaskManager.get_root_task(session, queue_item.task)
     executor = get_executor_for_task(root_task)
-    if queue_item.execution_request.target not in executor.get_hosts():
+    if queue_item.execution_request.target not in await executor.get_hosts():
         raise HTTPBadRequestException(
             f"Failed to dispatch task: Target {queue_item.execution_request.target!r}"
             f"is not available in {executor.__class__.__name__} for task {task_name!r}"
@@ -840,7 +840,7 @@ async def get_executor_hosts(executor: TaskExecutor) -> dict[str, str]:
         body or a connection failure outside the Nomad SDK's own wrapping).
     """
     try:
-        return executor.get_hosts()
+        return await executor.get_hosts()
     except requests.exceptions.RequestException as exc:
         raise HTTPBadGatewayException(
             detail=f"Executor backend unreachable: {exc}"
@@ -866,7 +866,7 @@ async def get_executor_host_states(executor: TaskExecutor) -> list[ExecutorHostS
         answers with something the client cannot parse.
     """
     try:
-        return executor.get_host_states()
+        return await executor.get_host_states()
     except requests.exceptions.RequestException as exc:
         raise HTTPBadGatewayException(
             detail=f"Executor backend unreachable: {exc}"
