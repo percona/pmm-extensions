@@ -492,8 +492,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     _pending_closes: PendingCloses | None = None
     # Set while :meth:`__aexit__` runs so a concurrent :meth:`close` (e.g.
     # shutdown ``force_close``) awaits the same session teardown instead of
-    # racing a second one, and so the client stays joinable after it has
-    # already left :class:`PendingCloses`.
+    # racing a second one. Cleared on failure so a later close can retry;
+    # left completed on success so late joiners still observe the finish.
     _close_done: asyncio.Future[None] | None = None
     _extra_headers: ContextVar[dict[str, str] | None] = PrivateAttr(
         default_factory=lambda: ContextVar("api_extra_headers", default=None)
@@ -601,11 +601,11 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         """Exit the asynchronous context manager.
 
         Closes the aiohttp `ClientSession` if it was initialized. Concurrent
-        callers join the in-progress teardown via ``_close_done`` instead of
-        starting a second ``ClientSession.close``. Deferred-close bookkeeping
-        is cleared only after the session close finishes (or is skipped), so a
-        shutdown :meth:`PendingCloses.force_close` that races a draining
-        :meth:`hold` still finds this client and awaits the same operation.
+        callers join the in-progress teardown via a shielded ``_close_done``
+        wait so cancelling one waiter cannot cancel the shared close state.
+        Deferred-close bookkeeping is cleared only after a *successful*
+        session close, so a failed or cancelled teardown stays discoverable
+        on :class:`PendingCloses` and a later :meth:`close` can retry.
 
         :param exc_type: The exception type, if any.
         :type exc_type: type[BaseException] | None
@@ -615,10 +615,13 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         :type exc_tb: TracebackType | None
         """
         if self._close_done is not None:
-            await self._close_done
+            # Shield so cancelling this waiter does not cancel the shared
+            # future other close() / force_close joiners still need.
+            await asyncio.shield(self._close_done)
             return
 
-        self._close_done = asyncio.get_running_loop().create_future()
+        done = asyncio.get_running_loop().create_future()
+        self._close_done = done
         try:
             if self._session and not self._session.closed:
                 self.logger.debug(
@@ -630,12 +633,23 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                     "ClientSession already closed for %s", self.redacted_base_url
                 )
             self._session = None
-        finally:
-            # After the await above: keep the client in PendingCloses for the
-            # whole session.close so force_close can still discover and join it.
+        except BaseException as exc:
+            # Leave the client on PendingCloses and clear ``_close_done`` so a
+            # later close (e.g. force_close) can retry; publish the failure to
+            # anyone already joined on ``done``.
+            self._close_done = None
+            if not done.done():
+                done.set_exception(exc)
+                # Mark retrieved when nobody joined, so asyncio does not warn
+                # about an orphaned future exception on this failure path.
+                done.exception()
+            raise
+        else:
+            # Only after a successful close: drop pending tracking and wake
+            # joiners. Keep the client discoverable for the whole await above.
             self.clear_deferred_close()
-            if not self._close_done.done():
-                self._close_done.set_result(None)
+            if not done.done():
+                done.set_result(None)
 
     async def open(self) -> Self:
         """Open the asynchronous context manager.
@@ -652,7 +666,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
 
         Closes the aiohttp `ClientSession` if it was initialized. If a close is
         already in progress (a draining :meth:`hold`, or another caller), waits
-        for that teardown to finish instead of starting a second one.
+        for that teardown to finish instead of starting a second one. A failed
+        close leaves the client retryable for a later call.
         """
         await self.__aexit__(None, None, None)
 
@@ -663,7 +678,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         :meth:`close` so a concurrent :meth:`hold` finally no longer sees
         ``_close_when_idle`` and starts a redundant close; :meth:`close` is
         still joinable via ``_close_done`` if teardown already began.
-        :meth:`__aexit__` also calls this after the session close finishes.
+        :meth:`__aexit__` also calls this after a successful session close.
         """
         pending = self._pending_closes
         if pending is not None:

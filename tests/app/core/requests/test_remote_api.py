@@ -839,6 +839,70 @@ class TestDrainOnRebind:
         assert remote_api._session is None
         assert pending._clients == {}
 
+    async def test_failed_session_close_stays_retryable(self, remote_api, mocker):
+        """A raised ClientSession.close must not look done or leave pending."""
+        pending = PendingCloses()
+        await remote_api.open()
+        session = remote_api._session
+        assert session is not None
+        real_close = session.close
+        fail_once = True
+
+        async def flaky_close() -> None:
+            nonlocal fail_once
+            if fail_once:
+                fail_once = False
+                raise RuntimeError("close boom")
+            await real_close()
+
+        mocker.patch.object(session, "close", flaky_close)
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            with pytest.raises(RuntimeError, match="close boom"):
+                await remote_api.close()
+            assert remote_api._session is session
+            assert id(remote_api) in pending._clients
+            assert remote_api._close_done is None
+
+            await remote_api.close()
+            assert remote_api._session is None
+            assert id(remote_api) not in pending._clients
+
+    async def test_cancelling_close_waiter_does_not_cancel_shared_future(
+        self, remote_api, mocker
+    ):
+        """Shield the shared _close_done so one cancelled joiner cannot abort it."""
+        await remote_api.open()
+        session = remote_api._session
+        assert session is not None
+        entered_close = asyncio.Event()
+        finish_close = asyncio.Event()
+        real_close = session.close
+
+        async def paused_session_close() -> None:
+            entered_close.set()
+            await finish_close.wait()
+            await real_close()
+
+        mocker.patch.object(session, "close", paused_session_close)
+
+        closer = asyncio.create_task(remote_api.close())
+        await asyncio.wait_for(entered_close.wait(), timeout=5)
+        shared = remote_api._close_done
+        assert shared is not None
+
+        waiter = asyncio.create_task(remote_api.close())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        assert not shared.cancelled()
+        finish_close.set()
+        await closer
+        assert remote_api._session is None
+
     async def test_idle_close_does_not_register_on_pending(self, remote_api):
         """Skip pending registration when the close runs immediately."""
         pending = PendingCloses()
