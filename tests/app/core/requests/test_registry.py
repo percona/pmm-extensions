@@ -111,24 +111,24 @@ async def test_close_all_force_closes_a_deferred_retiree() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_all_seals_pending_so_a_late_invalidate_closes_now(
+async def test_close_all_force_closes_mid_invalidate_before_close_when_idle(
     mocker: MockerFixture,
 ) -> None:
-    """A rebind that races past close_all must close immediately, not defer.
+    """Eviction registers on pending under the lock so close_all cannot miss it.
 
-    Pause ``invalidate`` after it has evicted a still-held client but before
-    ``close_when_idle`` registers on pending. ``close_all`` then seals an empty
-    pending set; when invalidate resumes, the sealed path must close the
-    still-open session rather than deferring past the sweep.
+    Pause after ``invalidate`` has left ``close_when_idle``; the client must
+    already be on pending from the locked eviction, so ``close_all`` force-closes
+    it during the pause -- not only after invalidate resumes. Cancelling the
+    invalidate task afterward must not reopen a leak.
     """
     registry = ClientRegistry()
     client = await registry.get(RemoteAPI, endpoint="https://a.example.org")
-    evicted = asyncio.Event()
+    entered = asyncio.Event()
     resume = asyncio.Event()
     original = RemoteAPI.close_when_idle
 
     async def paused_close_when_idle(self: RemoteAPI, pending=None) -> None:
-        evicted.set()
+        entered.set()
         await resume.wait()
         await original(self, pending=pending)
 
@@ -138,19 +138,52 @@ async def test_close_all_seals_pending_so_a_late_invalidate_closes_now(
         invalidate_task = asyncio.create_task(
             registry.invalidate("https://a.example.org")
         )
-        await asyncio.wait_for(evicted.wait(), timeout=5)
+        await asyncio.wait_for(entered.wait(), timeout=5)
         assert client._session is not None
+        assert id(client) in registry._pending_closes._clients
 
         await registry.close_all()
-        assert client._session is not None
+        assert client._session is None
         assert registry._pending_closes.sealed
-        assert registry._pending_closes._clients == {}
 
         resume.set()
-        await invalidate_task
+        invalidate_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await invalidate_task
 
         assert client._session is None
         assert registry._pending_closes._clients == {}
+
+
+@pytest.mark.asyncio
+async def test_close_all_force_closes_idle_client_cancelled_mid_invalidate(
+    mocker: MockerFixture,
+) -> None:
+    """An idle eviction still lands on pending so cancel mid-close cannot leak."""
+    registry = ClientRegistry()
+    client = await registry.get(RemoteAPI, endpoint="https://a.example.org")
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+    original = RemoteAPI.close_when_idle
+
+    async def paused_close_when_idle(self: RemoteAPI, pending=None) -> None:
+        entered.set()
+        await resume.wait()
+        await original(self, pending=pending)
+
+    mocker.patch.object(RemoteAPI, "close_when_idle", paused_close_when_idle)
+
+    invalidate_task = asyncio.create_task(registry.invalidate("https://a.example.org"))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    assert id(client) in registry._pending_closes._clients
+    assert client._session is not None
+
+    invalidate_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await invalidate_task
+
+    await registry.close_all()
+    assert client._session is None
 
 
 _CREDENTIAL_ENDPOINT = "https://svcuser:svcpass@a.example.org"

@@ -127,11 +127,14 @@ class ClientRegistry:
 
         Eviction is immediate; the close is not. A client with consumers still
         in flight stays open until its last one releases, so an SSE stream or a
-        file download that resolved it survives the rebind. Deferred closes are
-        registered on this registry's :class:`PendingCloses` so
-        :meth:`close_all` can still force-close them at shutdown if a holder
-        never unwinds. This method therefore does not guarantee the client is
-        closed by the time it returns, only that no new work is handed it.
+        file download that resolved it survives the rebind. Evicted clients are
+        registered on this registry's :class:`PendingCloses` *under the same
+        lock* as the cache removal, so :meth:`close_all` cannot seal and sweep
+        in the gap before :meth:`~BaseRemoteAPI.close_when_idle` runs -- even
+        if this task is cancelled mid-await, or the client was idle and would
+        otherwise never touch pending. This method therefore does not guarantee
+        the client is closed by the time it returns, only that no new work is
+        handed it.
 
         :param endpoint: The endpoint URL whose cached clients to evict.
             Compared trailing-slash-insensitively against each client's
@@ -149,17 +152,28 @@ class ClientRegistry:
             for key, _client in matching:
                 del self._clients[key]
                 self._locks.pop(key, None)
+            if not matching:
+                return
+            # Register before releasing the lock so close_all cannot miss a
+            # client that has left _clients but not yet entered close_when_idle.
+            deferred: list[BaseRemoteAPI] = []
+            immediate: list[BaseRemoteAPI] = []
+            for _key, client in matching:
+                if client.remember_pending_close(self._pending_closes):
+                    deferred.append(client)
+                else:
+                    immediate.append(client)
 
-        if not matching:
-            return
+        closing = immediate + deferred
         results = await asyncio.gather(
+            *(client.close() for client in immediate),
             *(
                 client.close_when_idle(pending=self._pending_closes)
-                for _key, client in matching
+                for client in deferred
             ),
             return_exceptions=True,
         )
-        for (_key, client), result in zip(matching, results, strict=False):
+        for client, result in zip(closing, results, strict=False):
             if isinstance(result, Exception):
                 logger.warning(
                     "Error closing client %s: %s", client.redacted_base_url, result

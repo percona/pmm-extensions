@@ -686,6 +686,23 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
             self._pending_closes = None
         self._close_when_idle = False
 
+    def remember_pending_close(self, pending: PendingCloses) -> bool:
+        """Register on ``pending`` so a shutdown sweep can still force-close us.
+
+        Owners call this under their eviction lock *before* awaiting
+        :meth:`close_when_idle`, so a concurrent seal/sweep cannot miss a
+        client that has left the live cache but not yet deferred. Idempotent
+        when already registered on ``pending``.
+
+        :param pending: The calling owner's deferred-close collection.
+        :return: ``True`` when registered, ``False`` when ``pending`` is
+            already sealed and the caller must close this client now.
+        """
+        if not pending.add(self):
+            return False
+        self._pending_closes = pending
+        return True
+
     @asynccontextmanager
     async def hold(self) -> AsyncGenerator[Self, None]:
         """Count the caller as an in-flight consumer for the duration of the block.
@@ -732,12 +749,10 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         """
         if self._in_flight:
             self._close_when_idle = True
-            if pending is not None:
-                if not pending.add(self):
-                    self._close_when_idle = False
-                    await self.close()
-                    return
-                self._pending_closes = pending
+            if pending is not None and not self.remember_pending_close(pending):
+                self._close_when_idle = False
+                await self.close()
+                return
             return
         await self.close()
 
