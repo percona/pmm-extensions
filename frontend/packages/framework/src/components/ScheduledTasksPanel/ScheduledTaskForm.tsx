@@ -15,7 +15,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Autocomplete from '@mui/material/Autocomplete';
 import Box from '@mui/material/Box';
@@ -30,12 +30,14 @@ import Typography from '@mui/material/Typography';
 import { Controller, useForm, type SubmitHandler } from 'react-hook-form';
 import cronstrue from 'cronstrue';
 import { ChainBuilder, type AvailableTask, type ChainValue } from '../ChainBuilder';
-import type {
-  CrontabSchedule,
-  IntervalSchedule,
-  PeriodicTaskCreate,
-  PeriodicTaskResponse,
-  PeriodicTaskUpdate,
+import {
+  useSchedulePreview,
+  type CrontabSchedule,
+  type IntervalSchedule,
+  type PeriodicTaskCreate,
+  type PeriodicTaskResponse,
+  type PeriodicTaskUpdate,
+  type SchedulePreviewWrite,
 } from './hooks';
 
 export type IntervalUnit = 'days' | 'hours' | 'minutes';
@@ -64,6 +66,8 @@ export interface ScheduledTaskFormProps {
 }
 
 const CRON_PATTERN = /^\S+(?:\s+\S+){4}$/;
+const PREVIEW_DEBOUNCE_MS = 400;
+const PREVIEW_RUN_COUNT = 3;
 
 const TIMEZONES = (() => {
   type IntlWithTz = typeof Intl & { supportedValuesOf?: (key: string) => string[] };
@@ -98,6 +102,43 @@ function utcIsoToLocalInput(iso: string): string {
   }
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function localInputToUtcIso(value: string): string | null {
+  if (!value) {
+    return null;
+  }
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/**
+ * Hold a value still until it has stopped changing for `delay` ms, so the
+ * schedule preview sends one request per pause in typing, not per keystroke.
+ */
+function useDebounced<T>(value: T, delay: number): T {
+  const [held, setHeld] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setHeld(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return held;
+}
+
+// A clock time in the zone the schedule runs in, never the reader's zone, so
+// a cron schedule written in another zone than the reader's is unambiguous.
+function formatRunInZone(iso: string, timeZone: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    return iso;
+  }
+  try {
+    return d.toLocaleString(undefined, { timeZone, dateStyle: 'medium', timeStyle: 'short' });
+  } catch {
+    // An alias the runtime's Intl data does not know: fall back to UTC and
+    // say so, rather than silently rendering in the reader's zone.
+    return `${d.toLocaleString(undefined, { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' })} UTC`;
+  }
 }
 
 function cronToExpression(c: CrontabSchedule): string {
@@ -184,6 +225,10 @@ export function ScheduledTaskForm({
 
   const scheduleMode = watch('scheduleMode');
   const cronExpression = watch('cronExpression');
+  const cronTimezone = watch('cronTimezone');
+  const intervalEvery = watch('intervalEvery');
+  const intervalPeriod = watch('intervalPeriod');
+  const startTime = watch('startTime');
   const taskName = watch('task');
   const chain = watch('chain');
 
@@ -204,6 +249,34 @@ export function ScheduledTaskForm({
       );
     }
   }, [taskName, chain, setValue]);
+
+  // The schedule as currently entered, in the shape the preview endpoint
+  // takes. Null while it is not a valid schedule, which keeps the query idle.
+  const previewSpec = useMemo<SchedulePreviewWrite | null>(() => {
+    if (scheduleMode === 'cron') {
+      if (!cronExpression || !humanize(cronExpression).valid) {
+        return null;
+      }
+      const crontab = expressionToCron(cronExpression, cronTimezone);
+      return crontab ? { crontab, interval: null, start_time: null } : null;
+    }
+    const every = Number(intervalEvery);
+    if (!Number.isFinite(every) || every < 1) {
+      return null;
+    }
+    return {
+      interval: { every, period: intervalPeriod },
+      crontab: null,
+      start_time: localInputToUtcIso(startTime),
+    };
+  }, [scheduleMode, cronExpression, cronTimezone, intervalEvery, intervalPeriod, startTime]);
+
+  const debouncedSpec = useDebounced(previewSpec, PREVIEW_DEBOUNCE_MS);
+  // Only the spec that matches the current input may be previewed; while the
+  // debounce catches up, the input is still `previewSpec` and the old runs
+  // would describe a schedule the user has already moved away from.
+  const specSettled = debouncedSpec === previewSpec;
+  const preview = useSchedulePreview(debouncedSpec);
 
   const cronPreview = useMemo(() => {
     if (scheduleMode !== 'cron' || !cronExpression) {
@@ -240,8 +313,7 @@ export function ScheduledTaskForm({
       ? null
       : { every: everyNum, period: values.intervalPeriod };
 
-    const start_time =
-      !isCron && values.startTime ? new Date(values.startTime).toISOString() : null;
+    const start_time = isCron ? null : localInputToUtcIso(values.startTime);
 
     const hasChain = values.chain.chain_task_names.length > 0;
     const execute_request = hasChain
@@ -265,6 +337,21 @@ export function ScheduledTaskForm({
     };
 
     await onSubmit(body, values.task);
+  };
+
+  const renderNextRuns = () => {
+    if (!specSettled || preview.isPending) {
+      return 'Working out the next runs…';
+    }
+    if (preview.isError) {
+      return 'Could not work out the next runs for this schedule.';
+    }
+    const { timezone, next_runs } = preview.data;
+    const runs = next_runs.slice(0, PREVIEW_RUN_COUNT);
+    if (runs.length === 0) {
+      return `This schedule has no upcoming runs (${timezone}).`;
+    }
+    return `Next runs (${timezone}): ${runs.map((r) => formatRunInZone(r, timezone)).join(', ')}`;
   };
 
   const taskField =
@@ -429,6 +516,19 @@ export function ScheduledTaskForm({
           )}
         />
       </Stack>
+
+      {previewSpec !== null && (
+        <Box sx={{ mb: 1 }}>
+          <Typography
+            variant="caption"
+            color={specSettled && preview.isError ? 'warning.main' : 'text.secondary'}
+            sx={{ display: 'block' }}
+            data-testid="sched-form-next-runs"
+          >
+            {renderNextRuns()}
+          </Typography>
+        </Box>
+      )}
 
       <Box sx={{ mb: 1 }}>
         <Link
