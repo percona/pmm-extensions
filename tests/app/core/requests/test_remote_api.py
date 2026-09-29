@@ -771,8 +771,31 @@ class TestDrainOnRebind:
             await pending.force_close()
             assert remote_api._session is None
             assert pending._clients == {}
+            assert remote_api._close_when_idle is False
 
         await pending.force_close()
+
+    async def test_force_close_clears_flag_so_hold_does_not_close_again(
+        self, remote_api, mocker
+    ):
+        """Avoid a second close when force_close races a draining hold."""
+        pending = PendingCloses()
+        await remote_api.open()
+        closes = 0
+        original = BaseRemoteAPI.close
+
+        async def counting_close(self: BaseRemoteAPI) -> None:
+            nonlocal closes
+            closes += 1
+            await original(self)
+
+        mocker.patch.object(BaseRemoteAPI, "close", counting_close)
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            await pending.force_close()
+
+        assert closes == 1
 
     async def test_idle_close_does_not_register_on_pending(self, remote_api):
         """Skip pending registration when the close runs immediately."""

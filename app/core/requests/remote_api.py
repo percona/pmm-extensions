@@ -421,13 +421,16 @@ class PendingCloses:
 
         Sealing happens before any ``await`` so a concurrent rebind that tries
         to register after this returns cannot reintroduce a leak.
-        Safe to call when empty. Concurrent with an in-flight hold, ``close``
-        races the holder; :meth:`BaseRemoteAPI.__aexit__` guards on
-        ``session.closed`` and clears deferred-close bookkeeping.
+        Each client's deferred-close flag is cleared before ``close`` so a
+        concurrent :meth:`BaseRemoteAPI.hold` finally will not race a second
+        ``close`` (``__aexit__`` also guards on ``session.closed``).
+        Safe to call when empty.
         """
         self._sealed = True
         clients = list(self._clients.values())
         self._clients.clear()
+        for client in clients:
+            client.clear_deferred_close()
         if not clients:
             return
         results = await asyncio.gather(
@@ -591,11 +594,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         :param exc_tb: The traceback, if any.
         :type exc_tb: TracebackType | None
         """
-        pending = self._pending_closes
-        if pending is not None:
-            pending.discard(self)
-            self._pending_closes = None
-        self._close_when_idle = False
+        self.clear_deferred_close()
         if self._session and not self._session.closed:
             self.logger.debug("Closing ClientSession for %s", self.redacted_base_url)
             await self._session.close()
@@ -621,6 +620,20 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         Closes the aiohttp `ClientSession` if it was initialized.
         """
         await self.__aexit__(None, None, None)
+
+    def clear_deferred_close(self) -> None:
+        """Drop deferred-close bookkeeping without closing the session.
+
+        :meth:`PendingCloses.force_close` calls this before awaiting
+        :meth:`close` so a concurrent :meth:`hold` finally no longer sees
+        ``_close_when_idle`` and does not race a second close. Also used by
+        :meth:`__aexit__` on every close path.
+        """
+        pending = self._pending_closes
+        if pending is not None:
+            pending.discard(self)
+            self._pending_closes = None
+        self._close_when_idle = False
 
     @asynccontextmanager
     async def hold(self) -> AsyncGenerator[Self, None]:
