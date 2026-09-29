@@ -95,7 +95,7 @@ async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
 def mock_executor() -> AsyncMock:
     """Return a mock executor with spec of BaseExecutor."""
     executor = AsyncMock(spec=BaseExecutor)
-    executor.get_hosts = MagicMock(return_value={"node1": "10.0.0.1"})
+    executor.get_hosts = AsyncMock(return_value={"node1": "10.0.0.1"})
     executor.preflight_stream_logs = MagicMock(return_value=None)
     executor.get_events = MagicMock(return_value=[])
     return executor

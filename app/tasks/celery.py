@@ -327,7 +327,7 @@ async def _pre_dispatch_health_check(
     if root_task.backend != TaskBackendEnum.NOMAD:
         return None
     executor = get_executor_for_task(root_task)
-    if task_history.execution_request.target in executor.get_hosts():
+    if task_history.execution_request.target in await executor.get_hosts():
         return None
     return await _skip_dispatch_unhealthy_target(
         task_history, task_name, periodic_task_name

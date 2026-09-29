@@ -36,6 +36,7 @@ from typing import Any, ClassVar, NamedTuple
 import requests
 from aiohttp import (
     ClientError,
+    ClientResponseError,
     ClientTimeout,
 )
 from fastapi import status
@@ -944,7 +945,42 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             return await async_run(self.backend.jobs.parse, payload)
         return await super().parse_payload(payload, payload_format)
 
-    def register_job(self, task: Task) -> dict[str, Any]:
+    async def _nomad_json(self, method: str, path: str, **kwargs: Any) -> Any:
+        """Issue one Nomad API call on the aiohttp session and decode its JSON body.
+
+        The dispatch path's Nomad calls run through here rather than through
+        :attr:`backend`, whose python-nomad client is synchronous and sits on a
+        ``requests.Session``: every round-trip it makes blocks the event loop for
+        its full duration, so concurrent dispatches serialise behind each other
+        however their callers are written, and a burst of them holds database
+        connections open across the wait.
+
+        Offloading to a worker thread would have kept python-nomad but moved the
+        problem: :attr:`backend` is a ``cached_property`` whose read is only
+        incidentally race-free (3.11 still locked it, 3.12 does not), and
+        :meth:`__aexit__` closes the session out from under anything not inside
+        :meth:`~app.core.requests.remote_api.BaseRemoteAPI.hold`. Staying on the
+        loop removes both hazards instead of guarding them, and the inherited
+        ``_request`` already enters ``hold()`` for the duration of the call.
+
+        ``raise_for_status`` keeps the failure a transport-level
+        :class:`aiohttp.ClientResponseError` rather than mapping it to an
+        ``HTTPException``: these are calls SEP makes *to* Nomad, and a caller
+        deciding what a Nomad refusal means (see :meth:`get_job`) needs the
+        status, not a response body already shaped for SEP's own clients.
+
+        :param method: The HTTP method for the call.
+        :param path: The Nomad API path, beginning with ``/v1/``.
+        :param kwargs: Passed through to the underlying request (``json``,
+            ``params``).
+        :return: The decoded JSON body.
+        :raises aiohttp.ClientResponseError: If Nomad answers 4xx or 5xx.
+        """
+        async with self._request(method, path, **kwargs) as response:
+            response.raise_for_status()
+            return await response.json()
+
+    async def register_job(self, task: Task) -> dict[str, Any]:
         """Register a new job with the Nomad backend.
 
         Sends the job specification to Nomad for registration. Raises an error if the
@@ -955,17 +991,19 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :return: The status response from Nomad after registering the job.
         :rtype: dict[str, Any]
         :raises ValueError: If the job status cannot be determined.
+        :raises aiohttp.ClientResponseError: If Nomad refuses the registration.
         """
-        job_status = self.backend.job.register_job(
-            id_=task.data["ID"],
-            job={"Job": task.data},
+        job_status = await self._nomad_json(
+            "POST",
+            f"/v1/job/{task.data['ID']}",
+            json={"Job": task.data},
         )
         if not job_status:
             logger.error("Unable to determine status for task %s", task.id)
             raise ValueError("The job status could not be determined")
         return job_status
 
-    def dispatch_job(
+    async def dispatch_job(
         self, queue_item: TaskHistory, task: Task | None = None
     ) -> dict[str, Any]:
         """Dispatch a parameterized job for execution.
@@ -977,6 +1015,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :type task: Task | None
         :return: The status response from Nomad after dispatching the job.
         :rtype: dict[str, Any]
+        :raises aiohttp.ClientResponseError: If Nomad refuses the dispatch.
         """
         task = queue_item.task if task is None else task
         logger.debug("Dispatching job: %s", queue_item)
@@ -1023,40 +1062,59 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         if custom_prefix:
             custom_prefix = f"-{slugify(custom_prefix)}"
 
-        job_status = self.backend.job.dispatch_job(
-            task.data["ID"],
-            payload=payload,
-            meta=filtered_meta,
-            id_prefix_template=f"{slugify(queue_item.task.name)}-{queue_item.task.id}{custom_prefix}",
+        # python-nomad also sent ``idempotency_token: null`` here. Omitted rather
+        # than reproduced: Nomad treats an absent token and a null one alike, and
+        # spelling the null out would suggest the field is in use.
+        job_status = await self._nomad_json(
+            "POST",
+            f"/v1/job/{task.data['ID']}/dispatch",
+            json={
+                "Payload": payload,
+                "Meta": filtered_meta,
+                "IdPrefixTemplate": (
+                    f"{slugify(queue_item.task.name)}-{queue_item.task.id}"
+                    f"{custom_prefix}"
+                ),
+            },
         )
         if not job_status:
             logger.error("Unable to dispatch task %s", task.id)
             raise ValueError("The job status could not be determined")
         return job_status
 
-    def get_job(self, job_id: str) -> dict[str, Any]:
+    async def get_job(self, job_id: str) -> dict[str, Any]:
         """Retrieve a job's details from the Nomad backend.
 
         Fetches the job information based on the task's ID. Raises an error if the job
         cannot be retrieved.
+
+        Only a 404 becomes :class:`JobNotFoundError`; every other status stays a
+        :class:`aiohttp.ClientResponseError`. python-nomad drew the same line by
+        raising ``URLNotFoundNomadException`` apart from ``BaseNomadException``,
+        and it matters to the callers: "this job is gone" is a terminal answer a
+        sync path acts on, while a 500 or a 503 from Nomad is a transport failure
+        the caller should not read as absence.
 
         :param job_id: The ID of the job to be retrieved.
         :type job_id: str
         :return: The job details retrieved from Nomad.
         :rtype: dict[str, Any]
         :raises JobNotFoundError: If the job could not be determined.
+        :raises aiohttp.ClientResponseError: For any other error status.
         """
         try:
-            return self.backend.job.get_job(job_id)
-        except URLNotFoundNomadException as exc:
+            return await self._nomad_json("GET", f"/v1/job/{job_id}")
+        except ClientResponseError as exc:
+            if exc.status != status.HTTP_404_NOT_FOUND:
+                raise
             raise JobNotFoundError(
-                str(exc.nomad_resp),
+                f"Nomad answered {exc.status} for job {job_id}",
                 executor_name="nomad",
                 resource_type="job",
                 resource_id=job_id,
             ) from None
 
-    def get_job_for_task_history(self, queue_item: TaskHistory) -> dict[str, Any]:
+    async def get_job_for_task_history(self, queue_item: TaskHistory) -> dict[str, Any]:
         """Retrieve the job associated with a task history record.
 
         This method checks the task history's tracking information for a job ID and
@@ -1071,14 +1129,24 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             found.
         """
         if job_id := queue_item.execution_request.tracking.get("job_id"):
-            return self.get_job(job_id)
+            return await self.get_job(job_id)
         raise JobNotFoundError(
             f"Missing job_id in task history tracking ({queue_item.id})",
             executor_name="nomad",
             resource_type="job",
         )
 
-    def get_hosts(self) -> dict[str, str]:
+    async def _get_nodes(self, filter_: str | None = None) -> list[dict[str, Any]]:
+        """List Nomad's registered clients, optionally narrowed by a filter.
+
+        :param filter_: A Nomad filter expression, or ``None`` for every node.
+        :return: One stub per node, as Nomad returned them.
+        :raises aiohttp.ClientResponseError: If Nomad refuses the listing.
+        """
+        params = {"filter": filter_} if filter_ is not None else None
+        return await self._nomad_json("GET", "/v1/nodes", params=params)
+
+    async def get_hosts(self) -> dict[str, str]:
         """Get healthy node names from Nomad backend.
 
         :return: A dictionary with node names as key and the respective addresses
@@ -1092,10 +1160,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         )
         return {
             node["Name"]: node["Address"]
-            for node in self.backend.nodes.get_nodes(filter_=filter_expression)
+            for node in await self._get_nodes(filter_=filter_expression)
         }
 
-    def get_host_states(self) -> list[ExecutorHostState]:
+    async def get_host_states(self) -> list[ExecutorHostState]:
         """Describe every node Nomad knows about, including the unusable ones.
 
         The same three conditions :meth:`get_hosts` filters on, reported separately
@@ -1111,7 +1179,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :return: One entry per registered Nomad client.
         """
         states = []
-        for node in self.backend.nodes.get_nodes():
+        for node in await self._get_nodes():
             driver = (node.get("Drivers") or {}).get(RAW_EXEC_DRIVER) or {}
             # An absent or non-boolean driver entry is not a healthy one: Nomad
             # omits drivers it has not detected, and "not detected" is exactly the
@@ -1252,14 +1320,14 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
 
         job_status = {}
         job = None
-        if self.task_needs_job_register(task):
-            job_status = self.register_job(task)
+        if await self.task_needs_job_register(task):
+            job_status = await self.register_job(task)
             logger.debug("Job status: %r", job_status)
-            job = self.get_job(task.data["ID"])
+            job = await self.get_job(task.data["ID"])
             logger.debug("Job: %s", job)
         if task.data.get("ParameterizedJob"):
-            job_status = self.dispatch_job(queue_item, task)
-            job = self.get_job(job_status["DispatchedJobID"])
+            job_status = await self.dispatch_job(queue_item, task)
+            job = await self.get_job(job_status["DispatchedJobID"])
         if job is None:
             raise ValueError("The job could not be determined")
 
@@ -1517,7 +1585,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             task_logs[step][log_type] = step_delta.text
         return task_logs
 
-    def _resolve_running_allocation(
+    async def _resolve_running_allocation(
         self, queue_item: TaskHistory
     ) -> tuple[dict[str, Any], str] | None:
         """Resolve the current allocation for a running task history.
@@ -1552,7 +1620,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         except AllocationNotFoundError:
             logger.debug("Allocation not found for task history %s", queue_item.id)
         try:
-            job = self.get_job_for_task_history(queue_item)
+            job = await self.get_job_for_task_history(queue_item)
         except JobNotFoundError:
             logger.warning(
                 "Lost job and allocation from task history %s", queue_item.id
@@ -1815,7 +1883,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             "allocation_id"
         )
 
-        resolved = self._resolve_running_allocation(queue_item)
+        resolved = await self._resolve_running_allocation(queue_item)
         if resolved is None:
             return queue_item
         alloc, job_id = resolved
@@ -1826,7 +1894,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         capture_hold_ready = _detect_capture_hold_ready(alloc)
 
         try:
-            job = self.get_job(job_id)
+            job = await self.get_job(job_id)
         except JobNotFoundError:
             queue_item.status = TaskHistoryStatusEnum.LOST
             queue_item.set_failure_reason(
@@ -2441,7 +2509,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 force_flush=True,
             )
 
-    def task_needs_job_register(self, task: Task) -> bool:
+    async def task_needs_job_register(self, task: Task) -> bool:
         """Determine whether a job needs to be registered for the task.
 
         Checks the task's configuration to decide if a job should be registered. If the
@@ -2458,7 +2526,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         """
         if task.data.get("ParameterizedJob"):
             try:
-                job = self.get_job(task.data["ID"])
+                job = await self.get_job(task.data["ID"])
             except JobNotFoundError:
                 return True
             return (submit_time := job.get("SubmitTime")) is None or make_datetime_utc(
