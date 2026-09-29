@@ -15,7 +15,10 @@
 
 """Tests for :meth:`ClientRegistry.invalidate`."""
 
+import asyncio
+
 import pytest
+from pytest_mock import MockerFixture
 
 from app.core.requests.registry import ClientRegistry
 from app.core.requests.remote_api import RemoteAPI
@@ -108,16 +111,44 @@ async def test_close_all_force_closes_a_deferred_retiree() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_all_seals_pending_so_a_late_invalidate_closes_now() -> None:
-    """A rebind that races past close_all must close immediately, not defer."""
+async def test_close_all_seals_pending_so_a_late_invalidate_closes_now(
+    mocker: MockerFixture,
+) -> None:
+    """A rebind that races past close_all must close immediately, not defer.
+
+    Pause ``invalidate`` after it has evicted a still-held client but before
+    ``close_when_idle`` registers on pending. ``close_all`` then seals an empty
+    pending set; when invalidate resumes, the sealed path must close the
+    still-open session rather than deferring past the sweep.
+    """
     registry = ClientRegistry()
     client = await registry.get(RemoteAPI, endpoint="https://a.example.org")
-    await registry.close_all()
+    evicted = asyncio.Event()
+    resume = asyncio.Event()
+    original = RemoteAPI.close_when_idle
+
+    async def paused_close_when_idle(self: RemoteAPI, pending=None) -> None:
+        evicted.set()
+        await resume.wait()
+        await original(self, pending=pending)
+
+    mocker.patch.object(RemoteAPI, "close_when_idle", paused_close_when_idle)
 
     async with client.hold():
-        # Simulate an invalidate that already left the close lock before
-        # close_all sealed, then calls close_when_idle afterward.
-        await client.close_when_idle(pending=registry._pending_closes)
+        invalidate_task = asyncio.create_task(
+            registry.invalidate("https://a.example.org")
+        )
+        await asyncio.wait_for(evicted.wait(), timeout=5)
+        assert client._session is not None
+
+        await registry.close_all()
+        assert client._session is not None
+        assert registry._pending_closes.sealed
+        assert registry._pending_closes._clients == {}
+
+        resume.set()
+        await invalidate_task
+
         assert client._session is None
         assert registry._pending_closes._clients == {}
 
