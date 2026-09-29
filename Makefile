@@ -317,6 +317,10 @@ startapp-check:
 
 SIGN_FLAG := $(if $(SIGN_VIA_API),--sign-via-github-api,)
 PUSH_IMAGE_DOCKER ?= true
+JENKINS_MISSING = missing=""; \
+	for v in JENKINS_URL JENKINS_USER JENKINS_API_TOKEN; do \
+		[ -n "$${!v:-}" ] || missing="$${missing:+$${missing} }$${v}"; \
+	done
 
 release-prep:
 ifndef VERSION
@@ -341,42 +345,52 @@ endif
 
 trigger-jenkins:
 ifndef TAG
-	$(error TAG is required. Usage: make trigger-jenkins TAG=vX.Y.Z [PUSH_IMAGE_DOCKER=false] [WEBHOOK_URL_ENV=... WEBHOOK_AUTH_ENV=...])
+	$(error TAG is required. Usage: make trigger-jenkins TAG=vX.Y.Z [PUSH_IMAGE_DOCKER=false] [JENKINS_OPTIONAL=1] [WEBHOOK_URL_ENV=... WEBHOOK_AUTH_ENV=...])
 endif
 	@set -euo pipefail; \
 	tag='$(value TAG)'; \
-	if [ -n "$${JENKINS_URL:-}" ] && [ -n "$${JENKINS_USER:-}" ] && [ -n "$${JENKINS_API_TOKEN:-}" ]; then \
-		case "$${tag}" in \
-			v*) jenkins_job="Release" ;; \
-			*) jenkins_job="Build" ;; \
-		esac; \
-		echo "==> Triggering Jenkins $${jenkins_job} build for $${tag}..."; \
-		if printf 'user = "%s:%s"\n' "$${JENKINS_USER}" "$${JENKINS_API_TOKEN}" \
-			| curl -sSf -k --config - \
-				-X POST "$${JENKINS_URL}/job/PMM-Extensions/job/$${jenkins_job}/buildWithParameters" \
-				--data-urlencode "releaseTag=$${tag}" \
-				--data-urlencode "pushImage=true" \
-				--data-urlencode "pushImageDocker=$(PUSH_IMAGE_DOCKER)" 2>&1; then \
-			echo "    Jenkins build triggered successfully."; \
-			if [ -n "$(WEBHOOK_URL_ENV)" ] && [ -n "$(WEBHOOK_AUTH_ENV)" ]; then \
-				$(PYTHON) scripts/post_jira_webhook.py \
-					--url-env "$(WEBHOOK_URL_ENV)" \
-					--auth-env "$(WEBHOOK_AUTH_ENV)" \
-					--version-tag "$${tag}" || true; \
-			fi; \
-		else \
-			echo "    Warning: Failed to trigger Jenkins build. Trigger it manually."; \
+	optional="$${JENKINS_OPTIONAL:-}"; \
+	$(JENKINS_MISSING); \
+	if [ -n "$${missing}" ]; then \
+		if [ "$${optional}" = 1 ]; then \
+			echo "WARNING: Jenkins build NOT triggered for $${tag}: $${missing} not set. Trigger it manually." >&2; \
+			exit 0; \
 		fi; \
+		echo "error: trigger-jenkins needs $${missing}; set them, or pass JENKINS_OPTIONAL=1 to skip the trigger explicitly." >&2; \
+		exit 1; \
+	fi; \
+	case "$${tag}" in \
+		v*) jenkins_job="Release" ;; \
+		*) jenkins_job="Build" ;; \
+	esac; \
+	echo "==> Triggering Jenkins $${jenkins_job} build for $${tag}..."; \
+	if printf 'user = "%s:%s"\n' "$${JENKINS_USER}" "$${JENKINS_API_TOKEN}" \
+		| curl -sSf -k --config - \
+			-X POST "$${JENKINS_URL}/job/PMM-Extensions/job/$${jenkins_job}/buildWithParameters" \
+			--data-urlencode "releaseTag=$${tag}" \
+			--data-urlencode "pushImage=true" \
+			--data-urlencode "pushImageDocker=$(PUSH_IMAGE_DOCKER)" 2>&1; then \
+		echo "    Jenkins build triggered successfully."; \
+		if [ -n "$(WEBHOOK_URL_ENV)" ] && [ -n "$(WEBHOOK_AUTH_ENV)" ]; then \
+			$(PYTHON) scripts/post_jira_webhook.py \
+				--url-env "$(WEBHOOK_URL_ENV)" \
+				--auth-env "$(WEBHOOK_AUTH_ENV)" \
+				--version-tag "$${tag}" || true; \
+		fi; \
+	elif [ "$${optional}" = 1 ]; then \
+		echo "WARNING: Failed to trigger the Jenkins build for $${tag}. Trigger it manually." >&2; \
 	else \
-		echo "Note: JENKINS_URL/JENKINS_USER/JENKINS_API_TOKEN not all set, skipping Jenkins trigger."; \
+		echo "error: failed to trigger the Jenkins build for $${tag}." >&2; \
+		exit 1; \
 	fi
 
 # Jenkins Declarative validate. Usage: make lint-pipelines [FILE=build/x.pipeline]
 lint-pipelines:
 	@set -euo pipefail; \
-	if [ -z "$${JENKINS_URL:-}" ] || [ -z "$${JENKINS_USER:-}" ] || [ -z "$${JENKINS_API_TOKEN:-}" ]; then \
-		echo "Note: JENKINS_URL/JENKINS_USER/JENKINS_API_TOKEN not all set, skipping Declarative lint."; \
-		exit 0; \
+	$(JENKINS_MISSING); \
+	if [ -n "$${missing}" ]; then \
+		echo "error: lint-pipelines needs $${missing}; the Declarative lint runs on Jenkins." >&2; \
+		exit 1; \
 	fi; \
 	if [ -n "$(FILE)" ]; then \
 		files=("$(FILE)"); \
