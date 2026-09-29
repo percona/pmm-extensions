@@ -1856,7 +1856,7 @@ async def test_get_executor_hosts(test_client, mock_executor):
 @pytest.mark.asyncio
 async def test_get_executor_host_states(test_client, mock_executor):
     """Assert /hosts/states/ reports unusable hosts, which /hosts/ can only omit."""
-    mock_executor.get_host_states = MagicMock(
+    mock_executor.get_host_states = AsyncMock(
         return_value=[
             ExecutorHostState(
                 name="node1", address="10.0.0.1", reachable=True, driver_healthy=True
@@ -1884,7 +1884,7 @@ async def test_get_executor_host_states(test_client, mock_executor):
 @pytest.mark.asyncio
 async def test_get_executor_host_states_unreachable(test_client, mock_executor):
     """Assert /hosts/states/ answers 502 rather than 500 when the backend is down."""
-    mock_executor.get_host_states = MagicMock(
+    mock_executor.get_host_states = AsyncMock(
         side_effect=requests.exceptions.ConnectionError("boom")
     )
     response = test_client.get("/hosts/states/")

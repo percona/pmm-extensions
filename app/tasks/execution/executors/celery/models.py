@@ -284,7 +284,7 @@ class CeleryExecutor(BaseExecutor):
             raise TypeError(f"'{callable_path}' is not callable")
         return job
 
-    def get_hosts(self) -> dict[str, str]:
+    async def get_hosts(self) -> dict[str, str]:
         """Return the local host as the only available executor host.
 
         :return: A dictionary with a single ``local`` entry.

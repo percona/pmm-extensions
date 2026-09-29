@@ -60,7 +60,7 @@ class ConcreteExecutor(BaseExecutor):
         """Return the job unchanged."""
         return job
 
-    def get_hosts(self) -> dict[str, str]:
+    async def get_hosts(self) -> dict[str, str]:
         """Return an empty host map."""
         return {}
 
