@@ -17,7 +17,7 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
 
 import pytest
 import pytest_asyncio
@@ -27,13 +27,22 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel.pool import StaticPool
 
 from app.core.alerts.config import AlertSettings
-from app.core.config import Settings, settings
+from app.core.config import BaseYamlSettings, Settings, settings
 from app.core.db.utils import get_async_session_maker_from_engine
+from app.core.settings_override.api.routes import ClassEntry
+from app.core.settings_override.constants import (
+    ALERT_SETTINGS,
+    ANONYMIZER_SETTINGS,
+    EXTENSIONS_SETTINGS,
+    INVENTORY_SETTINGS,
+    SETTINGS,
+    SNIPPETS_SETTINGS,
+    TASKS_SETTINGS,
+)
 from app.core.settings_override.lifecycle import RefreshCallback, SnapshotChange
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import (
     setting_class_token,
-    SettingClassEnum,
     SettingOverride,
 )
 from app.core.utils import json_serializer
@@ -67,6 +76,17 @@ SETTINGS_TOKEN = setting_class_token(Settings)
 SNIPPETS_SETTINGS_TOKEN = setting_class_token(SnippetsSettings)
 TASKS_SETTINGS_TOKEN = setting_class_token(TasksSettings)
 
+#: Every core identifier constant paired with the class it names.
+CORE_SETTINGS_CLASSES: tuple[tuple[str, type[BaseYamlSettings]], ...] = (
+    (EXTENSIONS_SETTINGS, ExtensionsSettings),
+    (TASKS_SETTINGS, TasksSettings),
+    (SNIPPETS_SETTINGS, SnippetsSettings),
+    (SETTINGS, Settings),
+    (ALERT_SETTINGS, AlertSettings),
+    (ANONYMIZER_SETTINGS, AnonymizerSettings),
+    (INVENTORY_SETTINGS, InventorySettings),
+)
+
 #: The token every revision up to the class rename stored the service settings'
 #: rows under. The frozen revisions predate that rename, so the rows seeded
 #: beneath them carry it rather than the live :data:`EXTENSIONS_SETTINGS_TOKEN`.
@@ -74,7 +94,7 @@ LEGACY_SEP_SETTINGS_TOKEN = "SEP_SETTINGS"
 
 #: The callback key :func:`seed_connectivity_override` fires on.
 CONNECTIVITY_CALLBACK_KEY = (
-    SettingClassEnum.EXTENSIONS_SETTINGS,
+    EXTENSIONS_SETTINGS,
     "CONNECTIVITY_CHECK_DEFAULT",
 )
 
@@ -82,6 +102,20 @@ CONNECTIVITY_CALLBACK_KEY = (
 #: SQLite round-trip and its real-PostgreSQL sibling write one this long to
 #: prove ``settingoverride.updated_by`` carries no width.
 LONG_USERNAME_LENGTH = 512
+
+
+def assert_entries_keyed_by_class_name(entries: Sequence[ClassEntry]) -> None:
+    """Assert each settings-router entry and its proxy use the class ``__name__``.
+
+    An entry keyed by the storage token instead is no error, just a silent
+    lookup miss, so only an explicit check catches it.
+
+    :param entries: The ``ClassEntry`` list a service's settings router serves.
+    """
+    assert entries, "the settings router serves no classes"
+    for identifier, settings_cls, proxy in entries:
+        assert identifier == settings_cls.__name__
+        assert proxy._setting_class == identifier  # noqa: SLF001
 
 
 async def insert_override_row(

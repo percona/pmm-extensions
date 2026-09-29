@@ -35,8 +35,13 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.config import Settings, settings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.settings_override.api.routes import build_settings_router
+from app.core.settings_override.constants import (
+    EXTENSIONS_SETTINGS,
+    INVENTORY_SETTINGS,
+    SETTINGS,
+    TASKS_SETTINGS,
+)
 from app.core.settings_override.manager import SettingsOverrideManager
-from app.core.settings_override.models import SettingClassEnum
 from app.core.settings_override.registry import ReloadClassification
 from app.core.utils import json_serializer
 from app.extensions.config import extensions_settings, ExtensionsSettings
@@ -52,10 +57,10 @@ from tests.app.db_schema import apply_schema
 
 ANNOTATIONS_KEY = "Settings.PMM__annotations_enabled"
 LOGGING_KEY = "Settings.LOGGING"
-SETTINGS_URL = f"/settings/{SettingClassEnum.SETTINGS.value}"
-EXTENSIONS_URL = f"/settings/{SettingClassEnum.EXTENSIONS_SETTINGS.value}"
-TASKS_URL = f"/settings/{SettingClassEnum.TASKS_SETTINGS.value}"
-INVENTORY_URL = f"/settings/{SettingClassEnum.INVENTORY_SETTINGS.value}"
+SETTINGS_URL = f"/settings/{SETTINGS}"
+EXTENSIONS_URL = f"/settings/{EXTENSIONS_SETTINGS}"
+TASKS_URL = f"/settings/{TASKS_SETTINGS}"
+INVENTORY_URL = f"/settings/{INVENTORY_SETTINGS}"
 
 
 @pytest_asyncio.fixture(name="override_session")
@@ -90,10 +95,10 @@ def client_fixture(override_session: AsyncSession) -> Iterator[TestClient]:
         return None
 
     classes = [
-        (SettingClassEnum.SETTINGS, Settings, settings),
-        (SettingClassEnum.EXTENSIONS_SETTINGS, ExtensionsSettings, extensions_settings),
-        (SettingClassEnum.TASKS_SETTINGS, TasksSettings, tasks_settings),
-        (SettingClassEnum.INVENTORY_SETTINGS, InventorySettings, inventory_settings),
+        (SETTINGS, Settings, settings),
+        (EXTENSIONS_SETTINGS, ExtensionsSettings, extensions_settings),
+        (TASKS_SETTINGS, TasksSettings, tasks_settings),
+        (INVENTORY_SETTINGS, InventorySettings, inventory_settings),
     ]
     router = build_settings_router(
         classes=classes,
@@ -118,7 +123,7 @@ def _nomad_leaf_reloads(client: TestClient) -> dict[str, str]:
     groups = {group["setting_class"]: group for group in response.json()["groups"]}
     return {
         field["key"]: field["reload"]
-        for field in groups[SettingClassEnum.TASKS_SETTINGS.value]["settings"]
+        for field in groups[TASKS_SETTINGS]["settings"]
         if field["key"].startswith("NOMAD__")
     }
 
@@ -155,11 +160,11 @@ class TestRemotePassThrough:
             return _RefusingRemoteAPI()
 
         router = build_settings_router(
-            classes=[(SettingClassEnum.SETTINGS, Settings, settings)],
+            classes=[(SETTINGS, Settings, settings)],
             session_dep=Annotated[AsyncSession, Depends(get_session)],
             admin_dep=Depends(lambda: None),
             actor_dep=Annotated[str, Depends(lambda: "test-admin")],
-            remote_classes=[(SettingClassEnum.TASKS_SETTINGS, "/admin/settings")],
+            remote_classes=[(TASKS_SETTINGS, "/admin/settings")],
             remote_api_dep=Annotated[_RefusingRemoteAPI, Depends(get_remote_api)],
         )
         app = FastAPI()
@@ -337,7 +342,7 @@ class TestReporting:
         groups = {group["setting_class"]: group for group in response.json()["groups"]}
         reloads = {
             field["key"]: field["reload"]
-            for field in groups[SettingClassEnum.EXTENSIONS_SETTINGS.value]["settings"]
+            for field in groups[EXTENSIONS_SETTINGS]["settings"]
         }
         assert reloads["INVENTORY_ENDPOINT"] == (
             ReloadClassification.NOT_OVERRIDABLE.value

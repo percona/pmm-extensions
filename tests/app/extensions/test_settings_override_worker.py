@@ -39,11 +39,16 @@ from app.core.config import BaseYamlSettings, LogLevel, Settings, settings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.settings_override import lifecycle
 from app.core.settings_override.api.routes import AppOwnedClassEntry
+from app.core.settings_override.constants import (
+    ALERT_SETTINGS,
+    EXTENSIONS_SETTINGS,
+    SETTINGS,
+    SNIPPETS_SETTINGS,
+)
 from app.core.settings_override.lifecycle import refresh_all
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import (
     setting_class_token,
-    SettingClassEnum,
     SettingOverride,
 )
 from app.core.settings_override.proxy import OverridableSettingsProxy
@@ -71,10 +76,10 @@ from tests.app.db_schema import apply_schema
 
 EXTENSIONS_CORE_CLASSES = frozenset(
     {
-        SettingClassEnum.EXTENSIONS_SETTINGS,
-        SettingClassEnum.SNIPPETS_SETTINGS,
-        SettingClassEnum.SETTINGS,
-        SettingClassEnum.ALERT_SETTINGS,
+        EXTENSIONS_SETTINGS,
+        SNIPPETS_SETTINGS,
+        SETTINGS,
+        ALERT_SETTINGS,
     }
 )
 PMM_ENDPOINT = "https://pmm-worker.example.org"
@@ -214,14 +219,14 @@ class TestBuildExtensionsOverrideProxies:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Keep the PMM Extensions refresher as the sole owner of a shared core proxy."""
-        entry = _app_owned_entry(SettingClassEnum.SETTINGS)
+        entry = _app_owned_entry(SETTINGS)
         monkeypatch.setattr(
             extensions_worker, "collect_app_owned_settings_classes", lambda: [entry]
         )
 
         proxies = build_extensions_override_proxies()
 
-        assert proxies[SettingClassEnum.SETTINGS].proxy is settings
+        assert proxies[SETTINGS].proxy is settings
 
     @pytest.mark.usefixtures("no_app_owned_classes")
     def test_builder_shares_no_keys_with_the_tasks_registry(self) -> None:
@@ -243,8 +248,8 @@ class TestWorkerOverrideCallbacks:
     def test_registry_is_pmm_and_logging(self) -> None:
         """Pin the disposition: PMM invalidation plus LOGGING dictConfig rebind."""
         assert set(WORKER_OVERRIDE_CALLBACKS) == {
-            (SettingClassEnum.SETTINGS, "PMM"),
-            (SettingClassEnum.SETTINGS, "LOGGING"),
+            (SETTINGS, "PMM"),
+            (SETTINGS, "LOGGING"),
         }
 
 
@@ -482,7 +487,7 @@ class TestWorkerPmmClientInvalidation:
         await refresh_all(
             lambda: override_session_maker,
             proxies,
-            {(SettingClassEnum.SETTINGS, "PMM"): _boom},
+            {(SETTINGS, "PMM"): _boom},
         )
 
         assert settings.PMM.api_key == SecretStr("new-key")

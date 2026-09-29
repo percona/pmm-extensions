@@ -42,7 +42,7 @@ from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.requests import RemoteAPI
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import EXTENSIONS_SETTINGS, TASKS_SETTINGS
 from app.core.utils import json_serializer
 from app.extensions.deps import (
     get_current_user,
@@ -178,7 +178,7 @@ class TestListAggregation:
             set(classes)
         )
         assert classes[-5:] == [
-            SettingClassEnum.TASKS_SETTINGS.value,
+            TASKS_SETTINGS,
             "InventoryAppSettings",
             "AlertsSettings",
             "HealthReportSettings",
@@ -196,7 +196,7 @@ class TestListAggregation:
         extensions_group = next(
             g
             for g in response.json()["groups"]
-            if g["setting_class"] == SettingClassEnum.EXTENSIONS_SETTINGS.value
+            if g["setting_class"] == EXTENSIONS_SETTINGS
         )
         advanced = {s["key"]: s["is_advanced"] for s in extensions_group["settings"]}
         # Top-level advanced settings.
@@ -220,7 +220,7 @@ class TestListAggregation:
         extensions_group = next(
             g
             for g in response.json()["groups"]
-            if g["setting_class"] == SettingClassEnum.EXTENSIONS_SETTINGS.value
+            if g["setting_class"] == EXTENSIONS_SETTINGS
         )
         applicable = {
             s["key"]: s["is_applicable"] for s in extensions_group["settings"]
@@ -239,7 +239,7 @@ class TestListAggregation:
         extensions_group = next(
             g
             for g in response.json()["groups"]
-            if g["setting_class"] == SettingClassEnum.EXTENSIONS_SETTINGS.value
+            if g["setting_class"] == EXTENSIONS_SETTINGS
         )
         applicable = {
             s["key"]: s["is_applicable"] for s in extensions_group["settings"]
@@ -318,7 +318,7 @@ class TestDispatch:
         )
         assert response.status_code == status.HTTP_200_OK
         body = response.json()
-        assert body["setting_class"] == SettingClassEnum.TASKS_SETTINGS.value
+        assert body["setting_class"] == TASKS_SETTINGS
         assert body["key"] == TASKS_KEY
         mock_tasks.get.assert_awaited_once_with(
             f"{REMOTE_BASE}/TasksSettings/{TASKS_KEY}"
@@ -439,9 +439,9 @@ class TestDispatch:
     def test_unknown_class_is_not_proxied(
         self, admin_client: TestClient, mock_tasks: AsyncMock
     ) -> None:
-        """A valid enum class that is neither local nor remote 404s, never proxied.
+        """A core class that is neither local nor remote 404s, never proxied.
 
-        ``Settings`` is a real :class:`SettingClassEnum` member but is not
+        ``Settings`` is a real core settings class but is not
         registered on the PMM Extensions router (local or remote), so ``_resolve`` 404s it
         before any dispatch -- the remote branch must not swallow an unknown class.
         """

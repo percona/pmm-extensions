@@ -34,9 +34,10 @@ from sqlmodel.pool import StaticPool
 
 from app.core.config import settings
 from app.core.db.utils import get_async_session_maker_from_engine
+from app.core.settings_override.constants import ANONYMIZER_SETTINGS, TASKS_SETTINGS
 from app.core.settings_override.lifecycle import ProxyEntry, refresh_all
 from app.core.settings_override.manager import SettingsOverrideManager
-from app.core.settings_override.models import SettingClassEnum, SettingOverride
+from app.core.settings_override.models import SettingOverride
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.worker import SEED_TIMEOUT_FRACTION
 from app.core.utils import json_serializer
@@ -181,25 +182,15 @@ async def _get_sync_started_at(maker, row_id: int):
 def _anonymizer_proxies() -> dict:
     """Return the Anonymizer-side proxy registry mirroring the worker wiring."""
     return {
-        SettingClassEnum.ANONYMIZER_SETTINGS: ProxyEntry(
-            anonymizer_settings, AnonymizerSettings
-        ),
+        ANONYMIZER_SETTINGS: ProxyEntry(anonymizer_settings, AnonymizerSettings),
     }
 
 
 def _tasks_proxies() -> dict:
     """Return the Tasks-side proxy registry mirroring the worker wiring."""
     return {
-        SettingClassEnum.TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
+        TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
     }
-
-
-class TestSettingClassEnumMembership:
-    """Test the ANONYMIZER_SETTINGS enum member this wiring introduces."""
-
-    def test_anonymizer_member_value_is_class_name(self):
-        """Encode the Pydantic class name as the ANONYMIZER_SETTINGS member value."""
-        assert SettingClassEnum.ANONYMIZER_SETTINGS.value == AnonymizerSettings.__name__
 
 
 class TestAnonymizerDefaultEntitiesOverride:

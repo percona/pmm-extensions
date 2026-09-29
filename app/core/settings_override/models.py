@@ -13,26 +13,23 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the persistent ``SettingOverride`` model and class identifier enum."""
+"""Define the persistent ``SettingOverride`` model and its storage-token derivation."""
 
 from __future__ import annotations
 
 __all__ = [
-    "SettingClassEnum",
     "SettingOverride",
     "StaleActorUpdateError",
     "setting_class_token",
 ]
 
 import re
-from enum import StrEnum
-from typing import Any, cast, TYPE_CHECKING
+from typing import cast, TYPE_CHECKING
 
-from pydantic import BaseModel, field_validator, JsonValue
+from pydantic import BaseModel, JsonValue
 from sqlalchemy import Column, event, Index, inspect, String
 from sqlalchemy.orm import InstanceState
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy.types import TypeDecorator
 from sqlmodel import Field as SQLField
 
 from app.core.db.models import BaseSQLModel
@@ -41,7 +38,6 @@ from app.core.settings_override.constants import SETTING_CLASS_MAX_LENGTH
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
-    from sqlalchemy.engine.interfaces import Dialect
     from sqlalchemy.orm import Mapper
 
 #: Columns whose change on an already-persisted row must be accompanied by a
@@ -85,66 +81,6 @@ def setting_class_token(settings_cls: type[BaseModel]) -> str:
     return _CAMEL_SPLIT.sub("_", settings_cls.__name__).upper()
 
 
-class SettingClassEnum(StrEnum):
-    """Enumerate settings classes that may have HOT override rows.
-
-    Members are the core-wired classes only. A settings class owned by an app
-    declares itself under ``app/extensions/apps/<app>/`` and needs no member here.
-
-    Members are in-process constants. The ``settingoverride.setting_class``
-    column is a plain string whose stored token is derived by
-    :func:`setting_class_token`; adding a member no longer requires a
-    migration.
-
-    To wire a new core settings class:
-
-    1. Add a member here whose value matches the Pydantic class ``__name__``.
-    2. Wire a ``ProxyEntry`` for the new class in the relevant service's
-       lifespan (``app/extensions/main.py`` or ``app/tasks/main.py``).
-    """
-
-    EXTENSIONS_SETTINGS = "ExtensionsSettings"
-    TASKS_SETTINGS = "TasksSettings"
-    SNIPPETS_SETTINGS = "SnippetsSettings"
-    SETTINGS = "Settings"
-    ALERT_SETTINGS = "AlertSettings"
-    ANONYMIZER_SETTINGS = "AnonymizerSettings"
-    INVENTORY_SETTINGS = "InventorySettings"
-
-
-class _SettingClassString(TypeDecorator):
-    """Store the settings-class token as VARCHAR, coercing enum members by name.
-
-    The ordinary persistence path passes a plain string token produced by
-    :func:`setting_class_token`. :meth:`process_bind_param` also converts a
-    directly supplied :class:`SettingClassEnum` member to its name, preserving
-    the storage token for direct model construction.
-    :meth:`SettingOverride._enum_member_to_token` applies the same coercion
-    earlier on the ``model_validate`` path.
-
-    """
-
-    impl: String = String(SETTING_CLASS_MAX_LENGTH)
-    cache_ok: bool = True
-
-    def process_bind_param(
-        self,
-        value: Any,
-        dialect: Dialect,  # noqa: ARG002
-    ) -> str | None:
-        """Persist enum members by name and every other value as a string.
-
-        :param value: The Python value being bound.
-        :param dialect: The active SQLAlchemy dialect (unused).
-        :return: The storage token, or ``None``.
-        """
-        if value is None:
-            return None
-        if isinstance(value, SettingClassEnum):
-            return value.name
-        return str(value)
-
-
 class SettingOverride(BaseSQLModel, table=True):
     """Represent an admin-managed runtime override of a single settings field.
 
@@ -179,7 +115,7 @@ class SettingOverride(BaseSQLModel, table=True):
     )
 
     setting_class: str = SQLField(
-        sa_column=Column(_SettingClassString(), nullable=False),
+        sa_column=Column(String(SETTING_CLASS_MAX_LENGTH), nullable=False),
         max_length=SETTING_CLASS_MAX_LENGTH,
     )
     key: str = SQLField(index=True, nullable=False, max_length=255)
@@ -188,31 +124,6 @@ class SettingOverride(BaseSQLModel, table=True):
     )
     is_active: bool = SQLField(default=True, nullable=False, index=True)
     updated_by: str | None = SQLField(default=None, nullable=True)
-
-    @field_validator("setting_class", mode="before")
-    @classmethod
-    def _enum_member_to_token(cls, value: Any) -> Any:
-        """Persist ``SettingClassEnum`` members by name, not value.
-
-        Runs on the ``model_validate`` path only, because SQLModel skips
-        validation in ``__init__`` for ``table=True`` models. A constructed
-        instance keeps the member and relies on
-        :meth:`_SettingClassString.process_bind_param` for the same coercion
-        at bind time.
-
-        A ``StrEnum`` is a ``str`` whose content is the member *value*
-        (``ExtensionsSettings``). Without this coercion, constructing
-        ``SettingOverride(setting_class=SettingClassEnum.EXTENSIONS_SETTINGS)``
-        would store that value and orphan every existing row, which stores
-        the member *name* (``EXTENSIONS_SETTINGS``).
-
-        :param value: The raw ``setting_class`` being assigned.
-        :return: The storage token when ``value`` is an enum member, otherwise
-            ``value`` unchanged.
-        """
-        if isinstance(value, SettingClassEnum):
-            return value.name
-        return value
 
     def stamp(self, actor: str) -> None:
         """Attribute this row's pending change to ``actor``.

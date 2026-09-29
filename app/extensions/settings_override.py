@@ -35,6 +35,12 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.celery import celery
 from app.core.alerts.config import alert_settings, AlertSettings
 from app.core.config import PMMSettings, Settings, settings
+from app.core.settings_override.constants import (
+    ALERT_SETTINGS,
+    EXTENSIONS_SETTINGS,
+    SETTINGS,
+    SNIPPETS_SETTINGS,
+)
 from app.core.settings_override.lifecycle import (
     CallbackRegistry,
     fire_on_boot,
@@ -44,7 +50,6 @@ from app.core.settings_override.lifecycle import (
     publish_snapshot,
     SnapshotChange,
 )
-from app.core.settings_override.models import SettingClassEnum
 from app.core.settings_override.worker import WorkerRefresher
 from app.extensions.apps.framework.registry import collect_app_owned_settings_classes
 from app.extensions.config import extensions_settings, ExtensionsSettings
@@ -83,14 +88,10 @@ def build_extensions_override_proxies() -> ProxyRegistry:
     }
     proxies.update(
         {
-            SettingClassEnum.EXTENSIONS_SETTINGS: ProxyEntry(
-                extensions_settings, ExtensionsSettings
-            ),
-            SettingClassEnum.SNIPPETS_SETTINGS: ProxyEntry(
-                snippets_settings, SnippetsSettings
-            ),
-            SettingClassEnum.SETTINGS: ProxyEntry(settings, Settings),
-            SettingClassEnum.ALERT_SETTINGS: ProxyEntry(alert_settings, AlertSettings),
+            EXTENSIONS_SETTINGS: ProxyEntry(extensions_settings, ExtensionsSettings),
+            SNIPPETS_SETTINGS: ProxyEntry(snippets_settings, SnippetsSettings),
+            SETTINGS: ProxyEntry(settings, Settings),
+            ALERT_SETTINGS: ProxyEntry(alert_settings, AlertSettings),
         }
     )
     return proxies
@@ -187,8 +188,8 @@ async def apply_logging_dictconfig(_: SnapshotChange) -> None:
 #: ``apply_logging_dictconfig`` is kept so a HOT ``LOGGING`` override re-enters
 #: ``dictConfig`` after Celery's ``setup_logging`` installed boot-time levels.
 WORKER_OVERRIDE_CALLBACKS: CallbackRegistry = {
-    (SettingClassEnum.SETTINGS, "PMM"): invalidate_pmm_clients,
-    (SettingClassEnum.SETTINGS, "LOGGING"): apply_logging_dictconfig,
+    (SETTINGS, "PMM"): invalidate_pmm_clients,
+    (SETTINGS, "LOGGING"): apply_logging_dictconfig,
 }
 
 

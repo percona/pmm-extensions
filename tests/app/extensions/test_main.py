@@ -32,8 +32,13 @@ import app.extensions.routes.artifacts as artifacts_module
 from app.core.alerts.config import alert_settings, AlertSettings
 from app.core.auth.exceptions import BaseAuthProviderException
 from app.core.security import crypto_timestamp_serializer
-from app.core.settings_override.lifecycle import ProxyEntry
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import (
+    ALERT_SETTINGS,
+    EXTENSIONS_SETTINGS,
+    SETTINGS,
+    SNIPPETS_SETTINGS,
+)
+from app.core.settings_override.lifecycle import ProxyEntry, ProxyRegistry
 from app.extensions.api.router import apps_router
 from app.extensions.apps.alerts.config import alerts_settings, AlertsSettings
 from app.extensions.apps.framework.base import BaseApp
@@ -351,13 +356,13 @@ def test_embedded_activation_list_serves_a_snippet_download(mocker, tmp_path):
         _reload_restoring_identity()
 
 
-async def _refresher_proxy_map(mocker) -> dict[SettingClassEnum, ProxyEntry]:
+async def _refresher_proxy_map(mocker) -> ProxyRegistry:
     """Return the proxy map ``extensions_overrides_lifespan`` hands to the refresher.
 
     :param mocker: The ``pytest-mock`` fixture used to stub the refresher.
     :return: The composed proxy map: the app-owned entries plus the PMM Extensions ones.
     """
-    captured: dict[SettingClassEnum, ProxyEntry] = {}
+    captured: ProxyRegistry = {}
 
     @asynccontextmanager
     async def fake_refresher(_session_maker, proxies, *_args, **_kwargs):
@@ -382,10 +387,10 @@ async def test_proxy_map_composes_app_owned_and_extensions_entries(mocker):
     proxies = await _refresher_proxy_map(mocker)
 
     assert set(proxies) == {
-        SettingClassEnum.EXTENSIONS_SETTINGS,
-        SettingClassEnum.SNIPPETS_SETTINGS,
-        SettingClassEnum.SETTINGS,
-        SettingClassEnum.ALERT_SETTINGS,
+        EXTENSIONS_SETTINGS,
+        SNIPPETS_SETTINGS,
+        SETTINGS,
+        ALERT_SETTINGS,
         AlertsSettings.__name__,
         HealthReportSettings.__name__,
         InventoryAppSettings.__name__,
@@ -408,9 +413,7 @@ async def test_lifespan_refreshes_exactly_the_shared_builder_map(mocker):
     keeps the two processes from drifting.
     """
     sentinel = {
-        SettingClassEnum.EXTENSIONS_SETTINGS: ProxyEntry(
-            extensions_settings, ExtensionsSettings
-        ),
+        EXTENSIONS_SETTINGS: ProxyEntry(extensions_settings, ExtensionsSettings),
     }
     mocker.patch.object(
         main_module, "build_extensions_override_proxies", return_value=sentinel
@@ -438,7 +441,7 @@ async def test_proxy_map_drops_alerts_but_keeps_core_alert_settings(mocker):
 
     assert AlertsSettings.__name__ not in proxies
     assert HealthReportSettings.__name__ not in proxies
-    alert_entry = proxies[SettingClassEnum.ALERT_SETTINGS]
+    alert_entry = proxies[ALERT_SETTINGS]
     assert alert_entry.proxy is alert_settings
     assert alert_entry.settings_cls is AlertSettings
 

@@ -28,8 +28,8 @@ from starlette.status import HTTP_200_OK, HTTP_503_SERVICE_UNAVAILABLE
 
 from app.core.config import settings
 from app.core.requests import RemoteAPI
+from app.core.settings_override.constants import EXTENSIONS_SETTINGS
 from app.core.settings_override.lifecycle import SnapshotChange
-from app.core.settings_override.models import SettingClassEnum
 from app.extensions.config import extensions_settings
 from app.extensions.deps import (
     get_current_user,
@@ -333,7 +333,7 @@ async def _tasks_endpoint_rebinder():
     extensions_settings._set_snapshot({"TASKS_ENDPOINT": NEW_TASKS_ENDPOINT})
     async with extensions_overrides_lifespan(extensions_app):
         callbacks = extensions_app.state.override_callbacks
-    return callbacks[(SettingClassEnum.EXTENSIONS_SETTINGS, "TASKS_ENDPOINT")]
+    return callbacks[(EXTENSIONS_SETTINGS, "TASKS_ENDPOINT")]
 
 
 @pytest.mark.usefixtures("real_client_route_overrides")

@@ -22,7 +22,7 @@ from fastapi import APIRouter
 from app.api.deps import AdminUsername, IsAdminDep
 from app.core.settings_override.api import build_settings_router
 from app.core.settings_override.api.routes import ClassEntry
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import INVENTORY_SETTINGS
 from app.inventory.config import inventory_settings, InventorySettings
 from app.inventory.deps import SessionDep
 
@@ -32,7 +32,7 @@ from app.inventory.deps import SessionDep
 
 INVENTORY_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [
     (
-        SettingClassEnum.INVENTORY_SETTINGS,
+        INVENTORY_SETTINGS,
         InventorySettings,
         inventory_settings,
     ),

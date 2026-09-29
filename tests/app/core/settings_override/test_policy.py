@@ -276,11 +276,10 @@ class TestPredicates:
     def test_unregistered_class_matches_allowlist_by_name(
         self, restrict: Callable[..., None]
     ) -> None:
-        """Assert a class token outside the enum still matches ``ALLOWED_KEYS``.
+        """Assert a class with no core identifier still matches ``ALLOWED_KEYS``.
 
-        ``_setting_class_or_none`` used to map ``settings_cls.__name__`` through
-        ``SettingClassEnum`` and withhold everything on ``ValueError``. App-owned
-        classes leaving the enum would then lock keys the allowlist already names.
+        App-owned classes have no core identifier, so a lookup that withheld
+        every unknown ``__name__`` would lock keys the allowlist already names.
         """
         restrict("UnregisteredSettings.FOO")
         assert is_key_allowed("UnregisteredSettings", "FOO") is True
@@ -292,8 +291,8 @@ class TestPredicates:
     ) -> None:
         """Match a core class and an app-owned class by ``__name__``, not the token.
 
-        ``AlertsSettings`` is no longer a ``SettingClassEnum`` member; the
-        allowlist must still address it the same way it addresses ``ExtensionsSettings``.
+        ``AlertsSettings`` is app-owned and has no core identifier; the allowlist
+        must still address it the same way it addresses ``ExtensionsSettings``.
         The storage tokens (``EXTENSIONS_SETTINGS``, ``ALERTS_SETTINGS``) grant nothing.
         """
         restrict(

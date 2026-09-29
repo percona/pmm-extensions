@@ -21,8 +21,12 @@ import pytest
 from fastapi import FastAPI, HTTPException, status
 from sqlalchemy.dialects.postgresql import JSON, JSONB
 
+from app.core.settings_override.constants import (
+    ALERT_SETTINGS,
+    ANONYMIZER_SETTINGS,
+    TASKS_SETTINGS,
+)
 from app.core.settings_override.lifecycle import SnapshotChange
-from app.core.settings_override.models import SettingClassEnum
 from app.tasks.db.seed import verify_taskhistory_execution_request_is_jsonb
 from app.tasks.execution.exceptions import TaskDataNotFoundInExecutorError
 from app.tasks.execution.executors.nomad.exceptions import (
@@ -73,10 +77,10 @@ async def test_tasks_lifespan_wires_anonymizer_into_refresher():
 
     refresher.assert_called_once()
     proxies = refresher.call_args.args[1]
-    assert SettingClassEnum.ANONYMIZER_SETTINGS in proxies
-    assert SettingClassEnum.TASKS_SETTINGS in proxies
+    assert ANONYMIZER_SETTINGS in proxies
+    assert TASKS_SETTINGS in proxies
     # ALERT_SETTINGS must stay out of the Tasks-process refresher.
-    assert SettingClassEnum.ALERT_SETTINGS not in proxies
+    assert ALERT_SETTINGS not in proxies
 
 
 def test_tasks_app_lifespan_is_always_set():
@@ -99,7 +103,7 @@ def test_tasks_app_publishes_nomad_rebind_callback_on_state():
     ``app`` passed to ``tasks_lifespan`` under the combined ``app.main:app``.
     """
     callbacks = tasks_app.state.override_callbacks
-    assert callbacks[(SettingClassEnum.TASKS_SETTINGS, "NOMAD")] is _reconcile_nomad
+    assert callbacks[(TASKS_SETTINGS, "NOMAD")] is _reconcile_nomad
 
 
 @pytest.mark.asyncio

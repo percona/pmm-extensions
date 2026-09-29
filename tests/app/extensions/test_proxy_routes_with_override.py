@@ -44,11 +44,11 @@ from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.config import BaseYamlSettings
 from app.core.db.utils import get_async_session_maker_from_engine
+from app.core.settings_override.constants import EXTENSIONS_SETTINGS, SNIPPETS_SETTINGS
 from app.core.settings_override.lifecycle import ProxyEntry, refresh_all
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import (
     setting_class_token,
-    SettingClassEnum,
     SettingOverride,
 )
 from app.core.utils import json_serializer
@@ -85,12 +85,8 @@ async def override_session_maker() -> AsyncGenerator[async_sessionmaker, None]:
 def _extensions_proxies() -> dict:
     """Return the PMM Extensions side proxy registry mirroring the PMM Extensions lifespan wiring."""
     return {
-        SettingClassEnum.EXTENSIONS_SETTINGS: ProxyEntry(
-            extensions_settings, ExtensionsSettings
-        ),
-        SettingClassEnum.SNIPPETS_SETTINGS: ProxyEntry(
-            snippets_settings, SnippetsSettings
-        ),
+        EXTENSIONS_SETTINGS: ProxyEntry(extensions_settings, ExtensionsSettings),
+        SNIPPETS_SETTINGS: ProxyEntry(snippets_settings, SnippetsSettings),
     }
 
 

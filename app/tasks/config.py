@@ -34,7 +34,7 @@ from app.core.config import BaseYamlAppSettings
 from app.core.db.config import DatabaseOptions
 from app.core.middleware.security_headers import SecurityHeadersOptions
 from app.core.models import BaseLowercaseModel
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import TASKS_SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import (
     hot_field,
@@ -313,5 +313,5 @@ class TasksSettings(BaseYamlAppSettings):
 
 
 tasks_settings: TasksSettings = OverridableSettingsProxy(
-    TasksSettings, setting_class=SettingClassEnum.TASKS_SETTINGS
+    TasksSettings, setting_class=TASKS_SETTINGS
 )

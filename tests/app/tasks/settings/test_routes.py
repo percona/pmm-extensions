@@ -27,8 +27,8 @@ from starlette.testclient import TestClient
 from app.api.deps import get_current_user, require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.encryption import marked_ciphertext
+from app.core.settings_override.constants import ANONYMIZER_SETTINGS, TASKS_SETTINGS
 from app.core.settings_override.manager import SettingsOverrideManager
-from app.core.settings_override.models import SettingClassEnum
 from app.core.settings_override.registry import (
     ReloadClassification,
     SECRET_STR_MASK,
@@ -38,8 +38,10 @@ from app.tasks.deps import get_request_executor, get_session
 from app.tasks.execution.executors.nomad import NomadExecutor
 from app.tasks.execution.nomad_lifecycle import normalize_nomad_config_value
 from app.tasks.main import tasks_app
+from app.tasks.settings.routes import TASKS_ADMIN_SETTINGS_CLASSES
 from tests.app.core.settings_override.conftest import (
     ANONYMIZER_SETTINGS_TOKEN,
+    assert_entries_keyed_by_class_name,
     TASKS_SETTINGS_TOKEN,
 )
 from tests.app.encryption_fixtures import is_stored_ciphertext, stored_plaintext
@@ -101,6 +103,14 @@ def unauthenticated_client_fixture(
     tasks_app.dependency_overrides = {}
 
 
+class TestTasksSettingsClassEntries:
+    """Key the Tasks settings router by class identifier, never the storage token."""
+
+    def test_entries_are_keyed_by_class_name(self) -> None:
+        """Name each entry, and bind its proxy, by the class ``__name__``."""
+        assert_entries_keyed_by_class_name(TASKS_ADMIN_SETTINGS_CLASSES)
+
+
 @pytest.mark.asyncio
 class TestTasksSettingsApi:
     """Cover the Tasks sub-app settings router end-to-end."""
@@ -114,8 +124,8 @@ class TestTasksSettingsApi:
         groups = response.json()["groups"]
         classes = {group["setting_class"] for group in groups}
         assert classes == {
-            SettingClassEnum.TASKS_SETTINGS.value,
-            SettingClassEnum.ANONYMIZER_SETTINGS.value,
+            TASKS_SETTINGS,
+            ANONYMIZER_SETTINGS,
         }
 
     async def test_get_single_setting(self, admin_test_client: TestClient) -> None:
@@ -136,9 +146,7 @@ class TestTasksSettingsApi:
             "/admin/settings/AnonymizerSettings/DEFAULT_ENTITIES"
         )
         assert response.status_code == status.HTTP_200_OK
-        assert response.json()["setting_class"] == (
-            SettingClassEnum.ANONYMIZER_SETTINGS.value
-        )
+        assert response.json()["setting_class"] == (ANONYMIZER_SETTINGS)
 
     async def test_patch_anonymizer_default_entities(
         self,
@@ -221,7 +229,7 @@ class TestTasksSettingsApi:
         row = next(
             s
             for g in response.json()["groups"]
-            if g["setting_class"] == SettingClassEnum.TASKS_SETTINGS.value
+            if g["setting_class"] == TASKS_SETTINGS
             for s in g["settings"]
             if s["key"] == "PRE_EXECUTION_CONNECTIVITY_CHECK"
         )
@@ -976,7 +984,7 @@ class TestTasksSettingsInlineRebind:
         spy = AsyncMock()
         original = getattr(tasks_app.state, "override_callbacks", None)
         tasks_app.state.override_callbacks = {
-            (SettingClassEnum.TASKS_SETTINGS, "NOMAD"): spy,
+            (TASKS_SETTINGS, "NOMAD"): spy,
         }
         tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
         yield spy

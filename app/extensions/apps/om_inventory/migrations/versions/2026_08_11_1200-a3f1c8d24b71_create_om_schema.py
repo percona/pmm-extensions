@@ -218,8 +218,7 @@ def upgrade() -> None:
                 # Enum persists by name, so a constraint listing the lowercase values
                 # rejects every insert the model makes. ``EnumField`` stores
                 # ``ProbeRunStatus.RUNNING`` as ``"RUNNING"`` while its value is
-                # ``"running"`` — the same trap ``SettingClassEnum``'s docstring
-                # records.
+                # ``"running"``.
                 sa.Enum(
                     "RUNNING",
                     "SUCCESS",

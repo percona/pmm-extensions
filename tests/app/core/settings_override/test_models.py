@@ -21,21 +21,25 @@ from typing import ClassVar
 import pytest
 import pytest_asyncio
 from alembic.migration import MigrationContext
-from sqlalchemy import Column, VARCHAR
+from pydantic import ValidationError
+from sqlalchemy import Column, insert, String, VARCHAR
 from sqlalchemy.orm.attributes import flag_modified
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.alerts.config import AlertSettings
 from app.core.config import BaseYamlSettings, Settings
+from app.core.settings_override.cache import build_snapshot
 from app.core.settings_override.constants import SETTING_CLASS_MAX_LENGTH
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import (
     setting_class_token,
-    SettingClassEnum,
     SettingOverride,
     StaleActorUpdateError,
 )
+from app.core.utils.date_time import utc_now
 from app.extensions import apps
+from app.extensions.api.routes.settings import EXTENSIONS_ADMIN_SETTINGS_CLASSES
 from app.extensions.apps.alerts.config import AlertsSettings
 from app.extensions.apps.framework.registry import collect_app_owned_settings_classes
 from app.extensions.apps.inventory.config import InventoryAppSettings
@@ -44,9 +48,12 @@ from app.extensions.apps.report.config import HealthReportSettings
 from app.extensions.config import App, ExtensionsSettings
 from app.extensions.snippets.config import SnippetsSettings
 from app.inventory.config import InventorySettings
+from app.inventory.settings.routes import INVENTORY_ADMIN_SETTINGS_CLASSES
 from app.tasks.anonymizer.config import AnonymizerSettings
 from app.tasks.config import TasksSettings
+from app.tasks.settings.routes import TASKS_ADMIN_SETTINGS_CLASSES
 from tests.app.core.settings_override.conftest import (
+    CORE_SETTINGS_CLASSES,
     insert_override_row,
     LONG_USERNAME_LENGTH,
 )
@@ -57,9 +64,8 @@ _GUARD_ORIGINAL_VALUE = 5
 _GUARD_UPDATED_VALUE = 99
 
 
-#: Historical ``SettingClassEnum`` member names the database already stores.
-#: Includes the two app-owned classes this ticket removes from the enum, so a
-#: future class rename cannot silently orphan their override rows.
+#: Storage tokens existing override rows already carry, pinned per class so a
+#: future class rename cannot silently orphan those rows.
 _HISTORICAL_TOKENS: tuple[tuple[type[BaseYamlSettings], str], ...] = (
     (AlertSettings, "ALERT_SETTINGS"),
     (AlertsSettings, "ALERTS_SETTINGS"),
@@ -112,27 +118,99 @@ def test_every_reachable_settings_class_pins_its_token() -> None:
         for path in Path(apps.__file__).parent.glob("*/app_owned_settings.py")
     ]
     pinned = {cls.__name__ for cls, _ in _HISTORICAL_TOKENS}
-    reachable = {member.value for member in SettingClassEnum} | {
-        entry.settings_cls.__name__
-        for entry in collect_app_owned_settings_classes(declaring_apps)
-    }
+    core_entries = (
+        *EXTENSIONS_ADMIN_SETTINGS_CLASSES,
+        *TASKS_ADMIN_SETTINGS_CLASSES,
+        *INVENTORY_ADMIN_SETTINGS_CLASSES,
+    )
+    reachable = (
+        {identifier for identifier, _ in CORE_SETTINGS_CLASSES}
+        | {settings_cls.__name__ for _, settings_cls, _ in core_entries}
+        | {
+            entry.settings_cls.__name__
+            for entry in collect_app_owned_settings_classes(declaring_apps)
+        }
+    )
     assert not reachable - pinned
 
 
 @pytest.mark.parametrize("dialect_name", ["postgresql", "sqlite"])
 def test_column_type_matches_inspected_varchar_by_default(dialect_name: str) -> None:
-    """Leave autogenerate no diff between the column's type and the stored VARCHAR.
-
-    ``_SettingClassString`` is a ``TypeDecorator``; Alembic's default type
-    comparison unwraps it to its ``impl`` before comparing, so no project-level
-    ``compare_type`` branch is needed to keep autogenerate quiet.
-    """
+    """Leave autogenerate no diff between the column's type and the stored VARCHAR."""
     impl = MigrationContext.configure(dialect_name=dialect_name).impl
     verdict = impl.compare_type(
         Column("setting_class", VARCHAR(SETTING_CLASS_MAX_LENGTH)),
         Column("setting_class", SettingOverride.__table__.c.setting_class.type),
     )
     assert verdict is False
+
+
+class TestSettingClassColumn:
+    """Pin ``setting_class`` as a plain string column that stores tokens verbatim."""
+
+    def test_column_is_undecorated_string(self) -> None:
+        """Bind through a plain ``String``, with no ``TypeDecorator`` rewriting values."""
+        column_type = SettingOverride.__table__.c.setting_class.type
+        assert type(column_type) is String
+        assert column_type.length == SETTING_CLASS_MAX_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_storage_token_round_trips_verbatim(
+        self, session: AsyncSession
+    ) -> None:
+        """Store exactly the token :func:`setting_class_token` derives."""
+        await insert_override_row(
+            session,
+            setting_class=setting_class_token(ExtensionsSettings),
+            key="CONNECTIVITY_CHECK_DEFAULT",
+            value=False,
+        )
+
+        stored = (
+            await session.exec(select(SettingOverride.__table__.c.setting_class))
+        ).one()
+
+        assert stored == "EXTENSIONS_SETTINGS"
+
+    @pytest.mark.asyncio
+    async def test_existing_row_still_resolves(self, session: AsyncSession) -> None:
+        """Apply a row written with raw SQL under the historical token.
+
+        Mirrors a row an existing deployment already holds: it never passed
+        through the model, so only the stored spelling links it to its class.
+        """
+        await session.exec(
+            insert(SettingOverride.__table__).values(
+                setting_class="EXTENSIONS_SETTINGS",
+                key="CONNECTIVITY_CHECK_DEFAULT",
+                value=False,
+                is_active=True,
+                created_at=utc_now(),
+            )
+        )
+        await session.commit()
+
+        snapshot = await build_snapshot(session, ExtensionsSettings)
+
+        assert snapshot["CONNECTIVITY_CHECK_DEFAULT"] is False
+
+    @pytest.mark.parametrize(
+        "setting_class",
+        [123, None, "X" * (SETTING_CLASS_MAX_LENGTH + 1)],
+        ids=["int", "none", "over-length"],
+    )
+    def test_model_validate_rejects_invalid_setting_class(
+        self, setting_class: object
+    ) -> None:
+        """Reject a non-string or over-length ``setting_class`` instead of coercing it."""
+        with pytest.raises(ValidationError):
+            SettingOverride.model_validate(
+                {
+                    "setting_class": setting_class,
+                    "key": "CONNECTIVITY_CHECK_DEFAULT",
+                    "value": False,
+                }
+            )
 
 
 def test_updated_by_defaults_to_none() -> None:
@@ -143,7 +221,7 @@ def test_updated_by_defaults_to_none() -> None:
     omits it stays valid.
     """
     row = SettingOverride(
-        setting_class=SettingClassEnum.EXTENSIONS_SETTINGS,
+        setting_class=setting_class_token(ExtensionsSettings),
         key="SYNC_REFRESH_TIME",
         value=5,
     )
@@ -161,7 +239,7 @@ async def test_long_updated_by_round_trips(session: AsyncSession) -> None:
     actor = "a" * LONG_USERNAME_LENGTH
     await insert_override_row(
         session,
-        setting_class=SettingClassEnum.EXTENSIONS_SETTINGS,
+        setting_class=setting_class_token(ExtensionsSettings),
         key="SYNC_REFRESH_TIME",
         value=5,
         updated_by=actor,
@@ -185,7 +263,7 @@ class TestActorStampGuard:
         """
         return await insert_override_row(
             session,
-            setting_class=SettingClassEnum.EXTENSIONS_SETTINGS,
+            setting_class=setting_class_token(ExtensionsSettings),
             key="SYNC_REFRESH_TIME",
             value=_GUARD_ORIGINAL_VALUE,
             updated_by="original-actor",
@@ -198,7 +276,7 @@ class TestActorStampGuard:
             ("value", _GUARD_UPDATED_VALUE),
             ("is_active", False),
             ("key", "OTHER_KEY"),
-            ("setting_class", SettingClassEnum.TASKS_SETTINGS.name),
+            ("setting_class", setting_class_token(TasksSettings)),
         ],
     )
     async def test_direct_mutation_without_actor_is_rejected(
@@ -349,7 +427,7 @@ class TestActorStampGuard:
         """Roll back a correctly-stamped row alongside the unstamped one it shares a flush with."""
         sibling = await insert_override_row(
             session,
-            setting_class=SettingClassEnum.EXTENSIONS_SETTINGS,
+            setting_class=setting_class_token(ExtensionsSettings),
             key="ARTIFACT_DOWNLOAD_TTL",
             value=_GUARD_ORIGINAL_VALUE,
             updated_by="original-actor",
@@ -395,7 +473,7 @@ class TestActorStampGuard:
     ) -> None:
         """Reject a ``SettingsOverrideManager.update`` call that omits ``updated_by``."""
         patch = SettingOverride(
-            setting_class=SettingClassEnum.EXTENSIONS_SETTINGS,
+            setting_class=setting_class_token(ExtensionsSettings),
             key=persisted_row.key,
             value=_GUARD_UPDATED_VALUE,
         )
@@ -426,7 +504,7 @@ class TestActorStampGuard:
     ) -> None:
         """Accept a ``SettingsOverrideManager.update`` call that also restamps ``updated_by``."""
         patch = SettingOverride(
-            setting_class=SettingClassEnum.EXTENSIONS_SETTINGS,
+            setting_class=setting_class_token(ExtensionsSettings),
             key=persisted_row.key,
             value=_GUARD_UPDATED_VALUE,
             updated_by="new-actor",
@@ -446,7 +524,7 @@ class TestActorStampGuard:
         """
         row = await insert_override_row(
             session,
-            setting_class=SettingClassEnum.EXTENSIONS_SETTINGS,
+            setting_class=setting_class_token(ExtensionsSettings),
             key="SYNC_REFRESH_TIME",
             value=_GUARD_ORIGINAL_VALUE,
         )
@@ -458,7 +536,7 @@ class TestActorStampGuard:
     ) -> None:
         """Persist an ``updated_by`` reassigned on a not-yet-added instance."""
         row = SettingOverride(
-            setting_class=SettingClassEnum.EXTENSIONS_SETTINGS,
+            setting_class=setting_class_token(ExtensionsSettings),
             key="SYNC_REFRESH_TIME",
             value=_GUARD_ORIGINAL_VALUE,
             updated_by="first-actor",

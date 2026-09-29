@@ -28,7 +28,7 @@ from app.api import deps as api_deps
 from app.core.auth.providers.grafana.models import GrafanaUser
 from app.core.auth.providers.grafana.provider import GrafanaAuthProvider
 from app.core.config import settings
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import INVENTORY_SETTINGS
 from app.inventory.deps import get_session
 from app.inventory.main import inventory_app
 from app.inventory.models import (
@@ -210,7 +210,7 @@ def test_the_service_principal_is_still_refused_by_a_route_admin_check(
     mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(SERVICE_TOKEN))
 
     response = bearer_client.patch(
-        f"/admin/settings/{SettingClassEnum.INVENTORY_SETTINGS.value}",
+        f"/admin/settings/{INVENTORY_SETTINGS}",
         json={"overrides": {}},
         headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
     )

@@ -21,7 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.celery.models import IntervalSchedule, Period
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import ALERT_SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import (
     is_hot_reloadable,
@@ -77,7 +77,7 @@ class TestAlertsSettings:
 
 
 class TestAlertsSettingsProxy:
-    """The module exposes an overridable proxy bound to its enum member."""
+    """Expose an overridable proxy bound to the class ``__name__``."""
 
     def test_alerts_settings_is_overridable_proxy(self) -> None:
         """``alerts_settings`` is an ``OverridableSettingsProxy``."""
@@ -89,9 +89,9 @@ class TestAlertsSettingsProxy:
         assert alerts_settings.BACKUP_RETENTION == DEFAULT_BACKUP_RETENTION
 
     def test_proxy_uses_class_name_identifier(self) -> None:
-        """Bind the proxy to the Pydantic class ``__name__``, not an enum member."""
+        """Bind the proxy to its own ``__name__``, distinct from the core ``AlertSettings``."""
         assert alerts_settings._setting_class == AlertsSettings.__name__
-        assert AlertsSettings.__name__ != SettingClassEnum.ALERT_SETTINGS
+        assert AlertsSettings.__name__ != ALERT_SETTINGS
 
 
 class TestAlertsSettingsHotFields:
