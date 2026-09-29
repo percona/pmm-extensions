@@ -154,7 +154,7 @@ async def test_aexit_force_closes_a_deferred_retiree() -> None:
     _override_nomad(_NOMAD_A)
     held = asyncio.Event()
 
-    async def consumer(client: NomadExecutor) -> None:
+    async def consumer(client) -> None:
         async with client.hold():
             held.set()
             await asyncio.Event().wait()
@@ -173,7 +173,7 @@ async def test_aexit_force_closes_a_deferred_retiree() -> None:
         with pytest.raises(asyncio.CancelledError):
             await task
     finally:
-        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+        tasks_settings._set_snapshot({})
 
 
 @pytest.mark.asyncio
@@ -204,7 +204,7 @@ async def test_aexit_still_force_closes_when_active_close_fails(
     _override_nomad(_NOMAD_A)
     app = FastAPI()
     holder = NomadLifecycle(app)
-    old: NomadExecutor | None = None
+    old = None
     try:
         await holder.__aenter__()
         old = holder.current

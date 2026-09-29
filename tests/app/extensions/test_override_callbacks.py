@@ -258,7 +258,7 @@ async def test_endpoint_rebinder_shutdown_force_closes_deferred_app_state_client
     finally:
         if new is not None:
             await new.close()
-        extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+        extensions_settings._set_snapshot({})
 
 
 @pytest.mark.asyncio
