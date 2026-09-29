@@ -62,8 +62,11 @@ from app.extensions.snippets.config import snippets_settings, SnippetsSettings
 # TasksSettings is owned by the Tasks sub-app, so PMM Extensions proxies it server-side
 # through ``tasks_api`` (mounted at ``/admin/settings``) rather than registering
 # it as a local class. The React Settings page reaches it via ``/api/extensions``
-# only.
-EXTENSIONS_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [
+# only. The proxies are annotated as their settings class so attribute reads
+# stay typed, which ty then cannot match to the ``OverridableSettingsProxy`` slot.
+EXTENSIONS_ADMIN_SETTINGS_CLASSES: list[
+    ClassEntry
+] = [  # ty: ignore[invalid-assignment]
     (EXTENSIONS_SETTINGS, ExtensionsSettings, extensions_settings),
     (SNIPPETS_SETTINGS, SnippetsSettings, snippets_settings),
     (ALERT_SETTINGS, AlertSettings, alert_settings),

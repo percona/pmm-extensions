@@ -39,7 +39,11 @@ from app.core.settings_override.constants import (
     SNIPPETS_SETTINGS,
     TASKS_SETTINGS,
 )
-from app.core.settings_override.lifecycle import RefreshCallback, SnapshotChange
+from app.core.settings_override.lifecycle import (
+    ProxyRegistry,
+    RefreshCallback,
+    SnapshotChange,
+)
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import (
     setting_class_token,
@@ -116,6 +120,20 @@ def assert_entries_keyed_by_class_name(entries: Sequence[ClassEntry]) -> None:
     for identifier, settings_cls, proxy in entries:
         assert identifier == settings_cls.__name__
         assert proxy.get_setting_class() == identifier
+
+
+def assert_registry_keyed_by_class_name(registry: ProxyRegistry) -> None:
+    """Assert each refresher registry key, its class and its proxy agree on ``__name__``.
+
+    The refresher looks rebind callbacks up by registry key, so a key spelled as
+    the storage token would still load rows yet silently never fire a callback.
+
+    :param registry: The ``ProxyRegistry`` a refresher is started with.
+    """
+    assert registry, "the refresher registry wires no classes"
+    for identifier, entry in registry.items():
+        assert identifier == entry.settings_cls.__name__
+        assert entry.proxy.get_setting_class() == identifier
 
 
 async def insert_override_row(

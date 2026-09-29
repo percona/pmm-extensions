@@ -44,6 +44,7 @@ from app.core.utils import json_serializer
 from app.tasks import celery as celery_module
 from app.tasks.anonymizer.config import anonymizer_settings, AnonymizerSettings
 from app.tasks.celery import (
+    build_tasks_override_proxies,
     refresh_tasks_overrides_if_due,
     start_settings_override_refresher,
     stop_settings_override_refresher,
@@ -60,6 +61,7 @@ from app.tasks.models import (
 )
 from tests.app.core.settings_override.conftest import (
     ANONYMIZER_SETTINGS_TOKEN,
+    assert_registry_keyed_by_class_name,
     BOUNDED_SEED,
     HangingSession,
     recording_bounded_seed,
@@ -191,6 +193,14 @@ def _tasks_proxies() -> dict:
     return {
         TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
     }
+
+
+class TestBuildTasksOverrideProxies:
+    """Cover the Tasks worker proxy-set builder."""
+
+    def test_builder_keys_every_entry_by_class_name(self) -> None:
+        """Key each Tasks worker entry by the class ``__name__``."""
+        assert_registry_keyed_by_class_name(build_tasks_override_proxies())
 
 
 class TestAnonymizerDefaultEntitiesOverride:

@@ -43,6 +43,7 @@ from app.api.deps import (
 )
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import setting_class_token
+from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import hot_field_names
 from app.extensions.apps.framework.registry import collect_app_owned_settings_classes
 from app.extensions.apps.om_inventory.config import (
@@ -129,6 +130,18 @@ class TestTheAppIsActuallyWiredIn:
             ) in callbacks
         finally:
             extensions_app.state.override_callbacks = original
+
+    def test_the_proxy_is_keyed_by_the_class_name(self) -> None:
+        """Bind the proxy to the class ``__name__``, never the storage token.
+
+        The refresher and the callback map both look the proxy up by that
+        identifier, so a proxy bound to the token spelling would load no rows.
+        """
+        assert isinstance(om_inventory_settings, OverridableSettingsProxy)
+        assert om_inventory_settings.get_setting_class() == OmInventorySettings.__name__
+        assert om_inventory_settings.get_setting_class() != setting_class_token(
+            OmInventorySettings
+        )
 
 
 class TestGetConfig:

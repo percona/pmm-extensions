@@ -20,6 +20,8 @@ from datetime import timedelta
 import pytest
 from pydantic import ValidationError
 
+from app.core.settings_override.models import setting_class_token
+from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import coerce_field_value
 from app.extensions.apps.inventory.config import (
     inventory_app_settings,
@@ -97,3 +99,17 @@ def test_the_batch_bounds_reject_zero(field: str) -> None:
     """Refuse a zero batch bound — an unset interval is how you disable the job."""
     with pytest.raises(ValidationError):
         InventoryAppSettings(**{field: 0})
+
+
+class TestInventoryAppSettingsProxy:
+    """Pin the identifier the app-owned proxy is bound to."""
+
+    def test_the_proxy_is_keyed_by_the_class_name(self) -> None:
+        """Bind the proxy to the class ``__name__``, never the storage token."""
+        assert isinstance(inventory_app_settings, OverridableSettingsProxy)
+        assert (
+            inventory_app_settings.get_setting_class() == InventoryAppSettings.__name__
+        )
+        assert inventory_app_settings.get_setting_class() != setting_class_token(
+            InventoryAppSettings
+        )

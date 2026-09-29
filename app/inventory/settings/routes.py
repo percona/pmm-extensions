@@ -30,7 +30,9 @@ from app.inventory.deps import SessionDep
 # until one is promoted; the override framework (proxy, refresher, table) is
 # wired end-to-end regardless.
 
-INVENTORY_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [
+# The proxies are annotated as their settings class so attribute reads stay
+# typed, which ty then cannot match to the ``OverridableSettingsProxy`` slot.
+INVENTORY_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [  # ty: ignore[invalid-assignment]
     (
         INVENTORY_SETTINGS,
         InventorySettings,

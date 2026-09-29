@@ -41,6 +41,9 @@ from app.tasks.main import (
     tasks_lifespan,
 )
 from app.tasks.main import lifespan as tasks_module_lifespan
+from tests.app.core.settings_override.conftest import (
+    assert_registry_keyed_by_class_name,
+)
 
 
 def _null_async_cm() -> MagicMock:
@@ -81,6 +84,36 @@ async def test_tasks_lifespan_wires_anonymizer_into_refresher():
     assert TASKS_SETTINGS in proxies
     # ALERT_SETTINGS must stay out of the Tasks-process refresher.
     assert ALERT_SETTINGS not in proxies
+
+
+class TestTasksLifespanRegistry:
+    """Pin the registry ``tasks_lifespan`` starts the override refresher with."""
+
+    @pytest.mark.asyncio
+    async def test_registry_is_keyed_by_class_name(self) -> None:
+        """Key each entry by the class ``__name__`` and every callback by a wired key.
+
+        ``refresh_all`` looks callbacks up by registry key, so a key spelled as
+        the storage token would load overrides yet never fire the NOMAD rebind.
+        """
+        refresher = MagicMock(return_value=_null_async_cm())
+        with (
+            patch("app.tasks.main.init_tasks_db", new=AsyncMock()),
+            patch(
+                "app.tasks.main.verify_taskhistory_execution_request_is_jsonb",
+                new=AsyncMock(),
+            ),
+            patch("app.tasks.main.settings_override_refresher", refresher),
+            patch("app.tasks.main.default_lifespan", return_value=_null_async_cm()),
+            patch("app.tasks.main.NomadLifecycle", return_value=_null_async_cm()),
+        ):
+            async with tasks_lifespan(FastAPI()):
+                pass
+
+        registry = refresher.call_args.args[1]
+        assert_registry_keyed_by_class_name(registry)
+        callbacks = refresher.call_args.kwargs["callbacks"]
+        assert {setting_class for setting_class, _ in callbacks} <= set(registry)
 
 
 def test_tasks_app_lifespan_is_always_set():

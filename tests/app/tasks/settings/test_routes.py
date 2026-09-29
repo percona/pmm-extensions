@@ -112,6 +112,50 @@ class TestTasksSettingsClassEntries:
 
 
 @pytest.mark.asyncio
+class TestTasksSettingsStorageTokenPath:
+    """Reject the storage token in the path; the router speaks the class ``__name__``."""
+
+    @pytest.mark.parametrize(
+        ("identifier", "token", "key"),
+        [
+            (TASKS_SETTINGS, TASKS_SETTINGS_TOKEN, "STALENESS_THRESHOLD_SECONDS"),
+            (ANONYMIZER_SETTINGS, ANONYMIZER_SETTINGS_TOKEN, "DEFAULT_ENTITIES"),
+        ],
+        ids=[TASKS_SETTINGS, ANONYMIZER_SETTINGS],
+    )
+    async def test_get_by_token_returns_404(
+        self, admin_test_client: TestClient, identifier: str, token: str, key: str
+    ) -> None:
+        """Return 404 for the token spelling while the identifier resolves."""
+        assert (
+            admin_test_client.get(f"/admin/settings/{identifier}/{key}").status_code
+            == status.HTTP_200_OK
+        )
+        response = admin_test_client.get(f"/admin/settings/{token}/{key}")
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    @pytest.mark.parametrize(
+        ("token", "payload"),
+        [
+            (TASKS_SETTINGS_TOKEN, {"STALENESS_THRESHOLD_SECONDS": 600}),
+            (ANONYMIZER_SETTINGS_TOKEN, {"DEFAULT_ENTITIES": ["EMAIL_ADDRESS"]}),
+        ],
+        ids=[TASKS_SETTINGS, ANONYMIZER_SETTINGS],
+    )
+    async def test_patch_by_token_returns_404_and_writes_nothing(
+        self,
+        admin_test_client: TestClient,
+        session: AsyncSession,
+        token: str,
+        payload: dict[str, object],
+    ) -> None:
+        """Refuse a PATCH on the token spelling without persisting an override row."""
+        response = admin_test_client.patch(f"/admin/settings/{token}", json=payload)
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert await SettingsOverrideManager.list(session, setting_class=token) == []
+
+
+@pytest.mark.asyncio
 class TestTasksSettingsApi:
     """Cover the Tasks sub-app settings router end-to-end."""
 

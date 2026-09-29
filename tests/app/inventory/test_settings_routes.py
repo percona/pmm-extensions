@@ -168,6 +168,25 @@ class TestInventorySettingsRouter:
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["setting_class"] == (INVENTORY_SETTINGS)
 
+    async def test_get_by_storage_token_returns_404(
+        self, admin_client: TestClient
+    ) -> None:
+        """Reject the storage token in the path; the router speaks the class ``__name__``."""
+        response = admin_client.get(
+            f"/admin/settings/{INVENTORY_SETTINGS_TOKEN}/UVICORN_PORT"
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_patch_by_storage_token_returns_404(
+        self, admin_client: TestClient
+    ) -> None:
+        """Return 404 before field validation, so the token never reaches a row write."""
+        response = admin_client.patch(
+            f"/admin/settings/{INVENTORY_SETTINGS_TOKEN}",
+            json={"UVICORN_PORT": 9999},
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
     async def test_non_admin_list_forbidden(self, non_admin_client: TestClient) -> None:
         """Assert a non-admin caller is rejected from the admin-gated LIST."""
         response = non_admin_client.get("/admin/settings/")

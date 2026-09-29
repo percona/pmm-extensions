@@ -68,6 +68,7 @@ from app.extensions.settings_override import (
 )
 from app.tasks.celery import build_tasks_override_proxies
 from tests.app.core.settings_override.conftest import (
+    assert_registry_keyed_by_class_name,
     BOUNDED_SEED,
     HangingSession,
     recording_bounded_seed,
@@ -240,6 +241,10 @@ class TestBuildExtensionsOverrideProxies:
         assert not set(build_extensions_override_proxies()) & set(
             build_tasks_override_proxies()
         )
+
+    def test_builder_keys_every_entry_by_class_name(self) -> None:
+        """Key the real app-owned and core entries by the class ``__name__``."""
+        assert_registry_keyed_by_class_name(build_extensions_override_proxies())
 
 
 class TestWorkerOverrideCallbacks:

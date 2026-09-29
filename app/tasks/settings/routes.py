@@ -27,7 +27,9 @@ from app.tasks.anonymizer.config import anonymizer_settings, AnonymizerSettings
 from app.tasks.config import tasks_settings, TasksSettings
 from app.tasks.deps import SessionDep
 
-TASKS_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [
+# The proxies are annotated as their settings class so attribute reads stay
+# typed, which ty then cannot match to the ``OverridableSettingsProxy`` slot.
+TASKS_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [  # ty: ignore[invalid-assignment]
     (TASKS_SETTINGS, TasksSettings, tasks_settings),
     (ANONYMIZER_SETTINGS, AnonymizerSettings, anonymizer_settings),
 ]
