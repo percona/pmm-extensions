@@ -74,6 +74,7 @@ from app.tasks.crud import TaskHistoryLogStateManager, TaskHistoryManager
 from app.tasks.execution.executors.nomad.exceptions import (
     AllocationNotFoundError,
     JobNotFoundError,
+    NomadRequestError,
 )
 from app.tasks.execution.executors.nomad.steps import (
     LAUNCH_CHECK_EXIT_CODE,
@@ -926,22 +927,45 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         loop removes both hazards instead of guarding them, and the inherited
         ``_request`` already enters ``hold()`` for the duration of the call.
 
-        ``raise_for_status`` keeps the failure a transport-level
-        :class:`aiohttp.ClientResponseError` rather than mapping it to an
-        ``HTTPException``: these are calls SEP makes *to* Nomad, and a caller
-        deciding what a Nomad refusal means (see :meth:`get_job`) needs the
-        status, not a response body already shaped for SEP's own clients.
+        Every failure becomes a :class:`NomadRequestError`, which is a
+        ``BaseNomadException``. That is not tidiness: ``app.tasks.main``
+        registers an exception handler on ``BaseNomadException`` that answers a
+        route with 502 and "make sure the agent is online", and ``app.tasks
+        .celery`` raises the periodic-dispatch failure alert on it. Letting an
+        ``aiohttp.ClientError`` escape would turn the first into a bare 500 and
+        silence the second. The answering status rides along on the error so a
+        caller can still act on it; :meth:`get_job` treats only a 404 as "gone".
+
+        The timeout is the executor's own ``timeout`` field rather than the
+        session's default. The session is built for log streaming, so it allows
+        300s total and a 120s socket read; python-nomad received ``self.timeout``
+        (10s by default, and hot-reloadable). Inheriting the session's budget
+        would silently ignore a tunable operators set, and would let a hung Nomad
+        hold this dispatch - and its database connection - thirty times longer
+        than configured, which is most of what this path was changed to avoid.
 
         :param method: The HTTP method for the call.
         :param path: The Nomad API path, beginning with ``/v1/``.
         :param kwargs: Passed through to the underlying request (``json``,
-            ``params``).
+            ``params``); a caller may override ``timeout``.
         :return: The decoded JSON body.
-        :raises aiohttp.ClientResponseError: If Nomad answers 4xx or 5xx.
+        :raises NomadRequestError: If Nomad answers 4xx or 5xx, or if the request
+            never got an answer at all.
         """
-        async with self._request(method, path, **kwargs) as response:
-            response.raise_for_status()
-            return await response.json()
+        kwargs.setdefault("timeout", ClientTimeout(total=self.timeout))
+        try:
+            async with self._request(method, path, **kwargs) as response:
+                response.raise_for_status()
+                return await response.json()
+        except ClientResponseError as exc:
+            raise NomadRequestError(
+                f"Nomad answered {exc.status} to {method} {path}",
+                status_code=exc.status,
+            ) from exc
+        except (ClientError, TimeoutError) as exc:
+            # No status: the request never got an answer. Subclass first, so a
+            # ClientResponseError does not land here and lose its status.
+            raise NomadRequestError(f"{method} {path} failed: {exc!r}") from exc
 
     async def register_job(self, task: Task) -> dict[str, Any]:
         """Register a new job with the Nomad backend.
@@ -954,7 +978,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :return: The status response from Nomad after registering the job.
         :rtype: dict[str, Any]
         :raises ValueError: If the job status cannot be determined.
-        :raises aiohttp.ClientResponseError: If Nomad refuses the registration.
+        :raises NomadRequestError: If Nomad refuses the registration.
         """
         job_status = await self._nomad_json(
             "POST",
@@ -978,7 +1002,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :type task: Task | None
         :return: The status response from Nomad after dispatching the job.
         :rtype: dict[str, Any]
-        :raises aiohttp.ClientResponseError: If Nomad refuses the dispatch.
+        :raises NomadRequestError: If Nomad refuses the dispatch.
         """
         task = queue_item.task if task is None else task
         logger.debug("Dispatching job: %s", queue_item)
@@ -1052,7 +1076,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         cannot be retrieved.
 
         Only a 404 becomes :class:`JobNotFoundError`; every other status stays a
-        :class:`aiohttp.ClientResponseError`. python-nomad drew the same line by
+        :class:`NomadRequestError`. python-nomad drew the same line by
         raising ``URLNotFoundNomadException`` apart from ``BaseNomadException``,
         and it matters to the callers: "this job is gone" is a terminal answer a
         sync path acts on, while a 500 or a 503 from Nomad is a transport failure
@@ -1063,15 +1087,16 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :return: The job details retrieved from Nomad.
         :rtype: dict[str, Any]
         :raises JobNotFoundError: If the job could not be determined.
-        :raises aiohttp.ClientResponseError: For any other error status.
+        :raises NomadRequestError: For any other error status, or a request that
+            got no answer.
         """
         try:
             return await self._nomad_json("GET", f"/v1/job/{job_id}")
-        except ClientResponseError as exc:
-            if exc.status != status.HTTP_404_NOT_FOUND:
+        except NomadRequestError as exc:
+            if exc.status_code != status.HTTP_404_NOT_FOUND:
                 raise
             raise JobNotFoundError(
-                f"Nomad answered {exc.status} for job {job_id}",
+                f"Nomad answered {exc.status_code} for job {job_id}",
                 executor_name="nomad",
                 resource_type="job",
                 resource_id=job_id,
@@ -1104,7 +1129,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
 
         :param filter_: A Nomad filter expression, or ``None`` for every node.
         :return: One stub per node, as Nomad returned them.
-        :raises aiohttp.ClientResponseError: If Nomad refuses the listing.
+        :raises NomadRequestError: If Nomad refuses the listing.
         """
         params = {"filter": filter_} if filter_ is not None else None
         return await self._nomad_json("GET", "/v1/nodes", params=params)
