@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, UTC
 
 import pytest
 from pytest_mock import MockerFixture
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncEngine
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -38,11 +40,15 @@ from app.inventory.constants import (
     SYNC_ERROR_MAX_LENGTH,
 )
 from app.inventory.crud import (
+    collect_retirable_entities,
+    COLLECTION_ORDER,
+    CollectionBatch,
     ExternalIdentityAliasManager,
     HostSystemObservationManager,
     IdentityLinkDecisionManager,
     NodeManager,
     RetiredInclusiveNodeManager,
+    RetiredInclusiveSchemaManager,
     RetiredInclusiveServiceManager,
     RetiredInclusiveTableManager,
     SchemaManager,
@@ -66,7 +72,14 @@ from app.inventory.models import (
     Table,
 )
 from tests.app.factories import NodeWriteFactory, ServiceWriteFactory
-from tests.app.inventory.conftest import retire_in_place
+from tests.app.inventory.conftest import (
+    CUTOFF,
+    EMPTY_BATCH,
+    retirable_row_counts,
+    retire_before_cutoff,
+    retire_in_place,
+    RETIRED_AT,
+)
 
 PAGE = Pagination(offset=0, limit=50)
 
@@ -230,10 +243,6 @@ async def test_dangling_fk_rejected_by_database(session: AsyncSession) -> None:
     """
     with pytest.raises(HTTPBadRequestException):
         await ServiceManager.create(session, ServiceWriteFactory.build(), node_id=9999)
-
-
-RETIRED_AT = datetime(2026, 1, 1, tzinfo=UTC)
-CUTOFF = datetime(2026, 2, 1, tzinfo=UTC)
 
 
 class TestCollectibleIds:
@@ -447,6 +456,253 @@ class TestCollect:
 
         assert await RetiredInclusiveNodeManager.collect(session, [node.id]) == 1
         assert await HostSystemObservationManager.count(session) == 0
+
+
+async def _on_delete(
+    session: AsyncSession, model: type[RetirableSQLModel], action: str
+) -> None:
+    """Install a SQLite trigger running ``action`` before each delete on ``model``.
+
+    Fault-inject at the database, so the walk's own managers stay unpatched.
+    """
+    await session.exec(
+        text(
+            f"CREATE TRIGGER on_{model.__tablename__}_delete BEFORE DELETE ON "
+            f'"{model.__tablename__}" BEGIN SELECT {action}; END'
+        )
+    )
+    await session.commit()
+
+
+class TestCollectRetirableEntities:
+    """Test the deepest-first walk that collects tombstones across every type."""
+
+    @staticmethod
+    async def _collect(
+        session: AsyncSession,
+        *,
+        keep: dict[RetirableEntityName, list[int]] | None = None,
+        limit: int = 10,
+        dry_run: bool = False,
+    ) -> CollectionBatch:
+        """Run the walk with the tests' cutoff and a roomy default limit."""
+        return await collect_retirable_entities(
+            session,
+            retired_before=CUTOFF,
+            keep=keep or {},
+            limit=limit,
+            dry_run=dry_run,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_real_run_deletes_the_retired_subtree(
+        self,
+        session: AsyncSession,
+        retired_tree: Node,
+        service: Service,
+        schema: Schema,
+        table: Table,
+    ) -> None:
+        """Delete every aged tombstone and report each id with its rowcount."""
+        batch = await self._collect(session)
+
+        assert batch.deleted == {
+            RetirableEntityName.TABLE: [table.id],
+            RetirableEntityName.SCHEMA: [schema.id],
+            RetirableEntityName.SERVICE: [service.id],
+            RetirableEntityName.NODE: [retired_tree.id],
+        }
+        assert batch.remaining is False
+        assert batch.collected == dict.fromkeys(batch.deleted, 1)
+        assert await retirable_row_counts(session) == (0, 0, 0, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_dry_run_reports_without_deleting(
+        self,
+        session: AsyncSession,
+        retired_tree: Node,
+    ) -> None:
+        """Report the ids a real run would delete, and delete none of them."""
+        batch = await self._collect(session, dry_run=True)
+
+        assert batch.deleted[RetirableEntityName.NODE] == [retired_tree.id]
+        assert batch.collected == {}
+        assert await retirable_row_counts(session) == (1, 1, 1, 1)
+
+    @pytest.mark.asyncio
+    async def test_an_empty_inventory_reports_every_type_empty(
+        self, session: AsyncSession, mocker: MockerFixture
+    ) -> None:
+        """Report all four types, in walk order, without issuing a delete."""
+        collect_spies = [
+            mocker.spy(manager, "collect") for _, manager in COLLECTION_ORDER
+        ]
+
+        batch = await self._collect(session)
+
+        assert list(batch.deleted) == [name for name, _ in COLLECTION_ORDER]
+        assert batch.deleted == EMPTY_BATCH
+        assert batch.remaining is False
+        assert batch.collected == {}
+        for spy in collect_spies:
+            spy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_walk_visits_types_deepest_first(
+        self,
+        session: AsyncSession,
+        mocker: MockerFixture,
+        retired_tree: Node,
+    ) -> None:
+        """Query table, schema, service, then node, so no row is ever orphaned."""
+        calls = mocker.Mock()
+        for name, manager in COLLECTION_ORDER:
+            calls.attach_mock(mocker.spy(manager, "collectible_ids"), name.value)
+
+        await self._collect(session, dry_run=True)
+
+        assert [call[0] for call in calls.mock_calls] == [
+            name.value for name, _ in COLLECTION_ORDER
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_type_with_no_candidates_issues_no_delete(
+        self, session: AsyncSession, mocker: MockerFixture, table: Table
+    ) -> None:
+        """Skip the delete for a type with nothing eligible."""
+        await retire_before_cutoff(session, table)
+        schema_collect = mocker.spy(RetiredInclusiveSchemaManager, "collect")
+
+        batch = await self._collect(session)
+
+        assert batch.deleted == {**EMPTY_BATCH, RetirableEntityName.TABLE: [table.id]}
+        assert batch.collected == {RetirableEntityName.TABLE: 1}
+        schema_collect.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry"])
+    async def test_a_full_batch_ends_the_walk(
+        self,
+        session: AsyncSession,
+        node: Node,
+        service: Service,
+        schema: Schema,
+        table: Table,
+        second_table: Table,
+        *,
+        dry_run: bool,
+    ) -> None:
+        """Stop before the ancestors whose delete would cascade unreported rows."""
+        await retire_before_cutoff(session, table, second_table, schema, service, node)
+
+        batch = await self._collect(session, limit=1, dry_run=dry_run)
+
+        assert batch.deleted == {**EMPTY_BATCH, RetirableEntityName.TABLE: [table.id]}
+        assert batch.remaining is True
+        assert await RetiredInclusiveSchemaManager.count(session) == 1
+        assert await RetiredInclusiveNodeManager.count(session) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_batch_exactly_at_the_limit_reports_remaining(
+        self, session: AsyncSession, table: Table
+    ) -> None:
+        """Ask for another batch once a type fills the limit, even with none left."""
+        await retire_before_cutoff(session, table)
+
+        batch = await self._collect(session, limit=1)
+
+        assert batch.deleted == {**EMPTY_BATCH, RetirableEntityName.TABLE: [table.id]}
+        assert batch.remaining is True
+
+    @pytest.mark.asyncio
+    async def test_a_kept_service_retains_only_its_own_ancestry(
+        self,
+        session: AsyncSession,
+        retired_tree: Node,
+        service: Service,
+        schema: Schema,
+        table: Table,
+    ) -> None:
+        """Keep the service and its node while its unreferenced subtree goes."""
+        batch = await self._collect(
+            session, keep={RetirableEntityName.SERVICE: [service.id]}
+        )
+
+        assert batch.deleted == {
+            **EMPTY_BATCH,
+            RetirableEntityName.TABLE: [table.id],
+            RetirableEntityName.SCHEMA: [schema.id],
+        }
+        assert await retirable_row_counts(session) == (1, 1, 0, 0)
+
+    @pytest.mark.asyncio
+    async def test_keeping_unknown_ids_changes_nothing(
+        self,
+        session: AsyncSession,
+        retired_tree: Node,
+    ) -> None:
+        """Collect as usual when the retained set names ids that do not exist."""
+        batch = await self._collect(
+            session, keep={RetirableEntityName.NODE: [9998, 9999]}
+        )
+
+        assert batch.remaining is False
+        assert await retirable_row_counts(session) == (0, 0, 0, 0)
+
+    @pytest.mark.asyncio
+    async def test_active_rows_are_never_deleted(
+        self,
+        session: AsyncSession,
+        node: Node,
+        service: Service,
+        schema: Schema,
+        table: Table,
+    ) -> None:
+        """Leave a live inventory untouched by a real run."""
+        batch = await self._collect(session)
+
+        assert batch.deleted == EMPTY_BATCH
+        assert await retirable_row_counts(session) == (1, 1, 1, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_delete_propagates_after_the_deeper_types(
+        self, session: AsyncSession, retired_tree: Node
+    ) -> None:
+        """Raise mid-walk with only descendants gone, never an orphan."""
+        await _on_delete(session, Service, "RAISE(ABORT, 'interrupted')")
+
+        with pytest.raises(IntegrityError, match="interrupted"):
+            await self._collect(session)
+        await session.rollback()
+
+        assert await retirable_row_counts(session) == (1, 1, 0, 0)
+
+    @pytest.mark.asyncio
+    async def test_collected_reports_the_rowcount_not_the_id_count(
+        self, session: AsyncSession, table: Table
+    ) -> None:
+        """Report what the delete removed, even when it falls short of the ids."""
+        await retire_before_cutoff(session, table)
+        await _on_delete(session, Table, "RAISE(IGNORE)")
+
+        batch = await self._collect(session)
+
+        assert batch.deleted[RetirableEntityName.TABLE] == [table.id]
+        assert batch.collected == {RetirableEntityName.TABLE: 0}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, -1])
+    async def test_a_non_positive_limit_is_refused(
+        self,
+        session: AsyncSession,
+        retired_tree: Node,
+        limit: int,
+    ) -> None:
+        """Refuse a limit that would report ``remaining`` forever."""
+        with pytest.raises(ValueError, match="limit"):
+            await self._collect(session, limit=limit)
+
+        assert await retirable_row_counts(session) == (1, 1, 1, 1)
 
 
 class TestNodeIdentityCandidates:
