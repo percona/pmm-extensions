@@ -484,7 +484,7 @@ TASKS:
 EXTENSIONS:
   DATABASE:
     ENGINE: postgresql
-    USER: sep_user
+    USER: extensions_user
     PASSWORD: your_secure_password
     HOST: localhost
     PORT: 5432
