@@ -21,19 +21,18 @@
  * The per-app specs (mysql-backups, archives, …) verify each app page in
  * isolation by navigating directly to its URL. They do NOT exercise the sidebar
  * itself, which is how two regressions slipped through review: the MySQL entry
- * pointed at /backups/mysql (PlaceholderPage) and the Archive entry at /archive
- * (no route → NotFoundPage).
+ * pointed at a placeholder route and the Archive entry at /archive (no route →
+ * NotFoundPage).
  *
- * This spec clicks every non-placeholder sidebar entry the way a user would and
- * asserts (1) the resulting URL, (2) a positive sentinel rendered by the target
- * app, and only then (3) that neither the "under construction" PlaceholderPage
- * nor the 404 NotFoundPage is showing. The positive sentinel is essential: pages
- * are lazy()/Suspense-loaded, so the URL flips synchronously on click while the
- * chunk is still resolving — asserting placeholder/404 *absence* against that
+ * This spec clicks the covered sidebar entries the way a user would and asserts
+ * (1) the resulting URL, (2) a positive sentinel rendered by the target app, and
+ * only then (3) that the 404 NotFoundPage is not showing. The positive sentinel
+ * is essential: pages are lazy()/Suspense-loaded, so the URL flips synchronously
+ * on click while the chunk is still resolving — asserting 404 *absence* against that
  * still-loading DOM would pass even for a regressed route. Waiting for the
  * target's own element first guarantees the page has actually mounted.
  *
- * Entries intentionally excluded (they still route to PlaceholderPage by design):
+ * Entries not covered by this spec:
  * Alert Templates, Schema Change/Alters, Health & Security Report, Settings.
  */
 
@@ -156,13 +155,13 @@ async function mockAuthenticatedApis(page: Page): Promise<void> {
 }
 
 // ── Sidebar map ───────────────────────────────────────────────────────────────
-// One entry per non-placeholder leaf in shell/src/appNavConfig.ts.
+// One entry per covered leaf in shell/src/appNavConfig.ts.
 // `label` must match ``display_name`` from ``GET /api/apps/`` (see mockEnabledApps).
 // `group`      — collapsible parent that must be expanded before the child shows.
 // `urlPattern` — matched against the post-navigation URL (apps may redirect
 //                to a default sub-route, e.g. /backups/mongodb → /backups/mongodb/backups).
 // `sentinel`   — positive locator the target page renders; asserted before the
-//                placeholder/404 negative checks so we never assert against a
+//                404 negative check so we never assert against a
 //                still-loading DOM.
 interface SidebarTarget {
   label: string;
@@ -221,9 +220,8 @@ const TARGETS: SidebarTarget[] = [
   },
 ];
 
-// PlaceholderPage / NotFoundPage sentinel copy — their presence means the
-// sidebar landed on a broken (unmigrated / unrouted) destination.
-const PLACEHOLDER_TEXT = /implemented during the frontend migration/i;
+// NotFoundPage sentinel copy — its presence means the sidebar landed on an
+// unrouted destination.
 const NOT_FOUND_TEXT = /Page not found/i;
 
 const LAZY_TIMEOUT = 30_000;
@@ -252,7 +250,7 @@ test.describe('sidebar navigation wiring', () => {
 
       await page.getByRole('button', { name: target.label }).click();
 
-      // URL resolves to the target app's route (not a placeholder / 404 path).
+      // URL resolves to the target app's route (not a 404 path).
       await expect(page).toHaveURL(target.urlPattern, { timeout: LAZY_TIMEOUT });
 
       // Positive sentinel: wait until the target page has actually mounted. This
@@ -260,8 +258,7 @@ test.describe('sidebar navigation wiring', () => {
       // lazy chunk and pass against a still-loading DOM.
       await expect(target.sentinel(page)).toBeVisible({ timeout: LAZY_TIMEOUT });
 
-      // Negative sentinels: the broken destinations render these, the real ones never do.
-      await expect(page.getByText(PLACEHOLDER_TEXT)).toHaveCount(0);
+      // Negative sentinel: an unrouted destination renders this, the real ones never do.
       await expect(page.getByText(NOT_FOUND_TEXT)).toHaveCount(0);
     });
   }
