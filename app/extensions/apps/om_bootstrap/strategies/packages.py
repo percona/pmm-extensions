@@ -479,7 +479,7 @@ class PackagesInstallStrategy:
         assuming the package's own post-install already did — confirmed
         against a real failure that it does not: mongod exits immediately on
         first start with ``NonExistentPath: Data directory /var/lib/mongo not
-        found``, and ``start_service`` (``systemctl enable --now``) reports
+        found``, and ``start_service`` (``systemctl restart``) reports
         success regardless, since ``Type=forking`` only waits for the initial
         fork, not for mongod's own startup logic to run. ``verify``, a step
         later, is what actually surfaces the failure — by then the run has
@@ -541,13 +541,27 @@ class PackagesInstallStrategy:
         return _shell_step(command)
 
     def _start_service(self, spec: BootstrapSpec) -> StepAction:  # noqa: ARG002
-        """Enable and start the ``mongod`` systemd unit.
+        """Enable the ``mongod`` systemd unit and (re)start it on the config just written.
+
+        Explicitly ``restart``, not ``enable --now``: ``install_package`` may have
+        left ``mongod`` already running, and ``enable --now`` only starts a unit
+        that is not already active. Against one the package started it is a
+        no-op, so the process stays live on whatever config it booted with, which
+        is the package's own default and carries no ``replication`` block. It
+        therefore never picks up :meth:`_configure_mongod`'s rewrite of
+        :data:`CONFIG_PATH` a step earlier, and ``verify`` right after only pings
+        the server, so that does not catch it either.
+
+        Whether the package pre-starts the service is not something this step
+        needs to distinguish: Ubuntu's ``.deb`` postinst does, Rocky's ``%post``
+        does not, and ``restart`` is correct for both, since restarting a unit
+        that ``install_package`` never started behaves exactly like starting it.
 
         :param spec: The host's bootstrap spec. Unused.
         :return: The step action.
         """
-        return StepAction(
-            command=["systemctl", "enable", "--now", "mongod"], timeout_s=60
+        return _shell_step(
+            "systemctl enable mongod && systemctl restart mongod", timeout_s=60
         )
 
     def _verify(self, spec: BootstrapSpec) -> StepAction:

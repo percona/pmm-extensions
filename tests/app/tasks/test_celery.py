@@ -763,8 +763,15 @@ class TestIdenticalTaskConflictStatusScoping:
         )
         queue_item = _pg_queue_item(task, meta=meta, item_id=_UNSEEDED_ITEM_ID)
 
+        # Matched including the "(<id>)." suffix, unlike this module's other
+        # assertions on the same message, so that one test anchors the format.
+        # om_inventory's dispatcher parses that id out to adopt the named item
+        # instead of failing its host, and nothing else on this side pins it;
+        # a reworded suffix would pass the whole Tasks suite and silently put
+        # that app back on the failure path.
         with pytest.raises(
-            HTTPConflictException, match="Identical queue item already running"
+            HTTPConflictException,
+            match=r"Identical queue item already running \(\d+\)\.",
         ):
             await _raise_if_identical_task_conflict(queue_item, session)
 
