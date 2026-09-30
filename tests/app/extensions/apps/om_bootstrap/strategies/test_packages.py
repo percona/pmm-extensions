@@ -617,12 +617,8 @@ class TestBuildRunStep:
 
         The regression this pins. createUser is a write, so it needs the
         primary, and this step runs on hosts[0] - the seed. rs.initiate only
-        proposes the config; the election that follows is open to every member.
-        Observed on a real deployment: the seed initiated a three-member set,
-        another member won the election 11s later, and both dispatches of this
-        step died with "MongoServerError: not primary". Retries could not help,
-        because every attempt went to the same secondary, so the run rolled back
-        a set that was otherwise healthy.
+        proposes the config; the election that follows is open to every member,
+        so a run whose seed loses it rolls back a healthy replica set.
 
         Naming every member with replicaSet= makes the driver find the primary
         wherever it is.

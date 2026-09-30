@@ -727,14 +727,13 @@ class PackagesInstallStrategy:
         ``rs.initiate`` only proposes the config; the election that follows is
         open to every member, and any of them can win it.
 
-        Observed failing on a real deployment: the seed initiated a
-        three-member set at 11:45:04, a different member won the election at
-        11:45:15, and both dispatches of this step - 11:45:31 and 11:45:47, on
-        the seed - died with ``MongoServerError: not primary``. Retrying could
-        not help, since every attempt went to the same secondary, so the run
-        exhausted its retries and rolled back a set that was otherwise fine. It
-        succeeded on an identical run whose seed happened to win, which is what
-        made it look intermittent rather than wrong.
+        Confirmed against a real multi-member run, not a theoretical race: a
+        different member won the election, every dispatch of this step died
+        with ``MongoServerError: not primary``, and retrying could not help
+        because each attempt went to the same secondary - so the run exhausted
+        its retries and rolled back a set that was otherwise fine. An identical
+        run whose seed happened to win succeeded, which is what made this look
+        intermittent rather than wrong.
 
         The URI fixes the ordering too: the driver waits up to
         :data:`PRIMARY_SELECTION_TIMEOUT_MS` for a primary to exist, so this no
