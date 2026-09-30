@@ -584,7 +584,7 @@ class SyncInstanceManager(BaseSQLModelManager):
     async def finish_hanging_items(
         cls,
         session: AsyncSession,
-        instance_id: int,
+        instance_id: UUID4,
     ) -> list[SyncItem]:
         """Mark all hanging SyncItems as failed for a given SyncInstance.
 

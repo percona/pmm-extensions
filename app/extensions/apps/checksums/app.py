@@ -39,7 +39,6 @@ app = TaskExecutionApp(
     name="checksums",
     display_name="Checksums",
     item_display_name="checksum",
-    item_display_name_plural="checksums",
     uri_path="/checksums",
     css_class="checksums",
     nav_order=7,

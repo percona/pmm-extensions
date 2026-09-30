@@ -484,7 +484,7 @@ class TestTableSyncHealthReads:
     def test_detail_exposes_the_columns(
         self, test_client: TestClient, table: Table
     ) -> None:
-        """Carry the four fields on the table detail response."""
+        """Carry the sync-health fields on the table detail response."""
         response = test_client.get(f"/tables/{table.id}")
 
         assert response.status_code == status.HTTP_200_OK
@@ -494,7 +494,7 @@ class TestTableSyncHealthReads:
     def test_list_items_expose_the_columns(
         self, test_client: TestClient, table: Table
     ) -> None:
-        """Carry the four fields on every row of the paginated list."""
+        """Carry the sync-health fields on every row of the paginated list."""
         response = test_client.get("/tables/")
 
         assert response.status_code == status.HTTP_200_OK

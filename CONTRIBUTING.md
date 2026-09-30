@@ -26,7 +26,7 @@ git checkout -b PMM-12345
 
 When your feature or fix is ready, open a Pull Request (PR) from your feature branch (`PMM-NNNNN`) to the main branch. Ensure the PR description includes a representative summary of your changes.
 
-All PRs must be reviewed and approved by at least one of our [CODEOWNERS](https://github.com/percona/SEP/blob/main/.github/CODEOWNERS).
+All PRs must be reviewed and approved by at least one of our [CODEOWNERS](https://github.com/percona/pmm-extensions/blob/main/.github/CODEOWNERS).
 
 ## Changelog Fragments
 
@@ -61,11 +61,11 @@ See [`changelog.d/README.md`](changelog.d/README.md) for the full format and exa
 1. Clone the repository
 
 ```shell
-git clone https://github.com/percona/SEP.git
+git clone https://github.com/percona/pmm-extensions.git
 ```
 or
 ```shell
-git clone git@github.com:percona/SEP.git
+git clone git@github.com:percona/pmm-extensions.git
 ```
 
 2. Install the dependencies
@@ -73,7 +73,7 @@ git clone git@github.com:percona/SEP.git
 Navigate to the project directory, create a virtual environment and install the required packages:
 
 ```shell
-cd SEP
+cd pmm-extensions
 make venv
 ```
 
@@ -91,7 +91,7 @@ This ensures that your code adheres to our linting and formatting standards befo
 
 - **Linting and Formatting**:
 
-We enforce code style guidelines using [Ruff](https://docs.astral.sh/ruff/). The rules are defined in the [pyproject.toml](https://github.com/percona/SEP/blob/main/pyproject.toml) file.
+We enforce code style guidelines using [Ruff](https://docs.astral.sh/ruff/). The rules are defined in the [pyproject.toml](https://github.com/percona/pmm-extensions/blob/main/pyproject.toml) file.
 
 - **Type checking**:
 
@@ -186,11 +186,11 @@ apps.
 ### Writing Tests
 
 New code usually means new tests. Make sure new features and bug fixes include corresponding tests.
-[PMM Extensions v0.1.0-alpha](https://github.com/percona/SEP/releases/tag/v0.1.0-alpha) has a test coverage of over 50%, and our goal is to continually increase this percentage.
+[PMM Extensions v0.1.0-alpha](https://github.com/percona/pmm-extensions/releases/tag/v0.1.0-alpha) has a test coverage of over 50%, and our goal is to continually increase this percentage.
 
-Tests are located in the [tests/](https://github.com/percona/SEP/tree/main/app/tests) directory and mirror the structure of the [app/](https://github.com/percona/SEP/tree/main/app/) directory. For example:
-- For [app/models.py](https://github.com/percona/SEP/blob/main/app/models.py), the tests are in [tests/test_models.py](https://github.com/percona/SEP/blob/main/app/tests/test_models.py).
-- For [app/api/routes/oauth.py](https://github.com/percona/SEP/blob/main/app/api/routes/oauth.py), the tests are in [tests/api/routes/test_oauth.py](https://github.com/percona/SEP/blob/main/app/tests/api/routes/test_oauth.py).
+Tests are located in the [tests/app/](https://github.com/percona/pmm-extensions/tree/main/tests/app) directory and mirror the structure of the [app/](https://github.com/percona/pmm-extensions/tree/main/app/) directory. For example:
+- For [app/core/models.py](https://github.com/percona/pmm-extensions/blob/main/app/core/models.py), the tests are in [tests/app/core/test_models.py](https://github.com/percona/pmm-extensions/blob/main/tests/app/core/test_models.py).
+- For [app/api/routes/oauth.py](https://github.com/percona/pmm-extensions/blob/main/app/api/routes/oauth.py), the tests are in [tests/app/api/routes/test_oauth.py](https://github.com/percona/pmm-extensions/blob/main/tests/app/api/routes/test_oauth.py).
 
 As you can see, test filenames are prefixed with a `test_`.
 
@@ -225,4 +225,4 @@ export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib:${DYLD_FALLBACK_LIBRARY_
 
 If you have any questions or need assistance, feel free to reach out:
 - Open an issue on GitHub or on Jira.
-- Contact one of the [CODEOWNERS](https://github.com/percona/SEP/blob/main/.github/CODEOWNERS) or anyone from the GAS team.
+- Contact one of the [CODEOWNERS](https://github.com/percona/pmm-extensions/blob/main/.github/CODEOWNERS) or anyone from the GAS team.

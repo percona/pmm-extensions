@@ -50,6 +50,7 @@ from app.extensions.apps.framework.schema import (
     FormSection,
     HostField,
     IntegerField,
+    ITEM_DISPLAY_NAME_KEYS,
     iter_section_fields,
     ListView,
     MultiChoiceField,
@@ -2836,8 +2837,8 @@ class TestOneOfGroup:
 class TestAppSchemaRecordDisplayNames:
     """Cover the singular/plural record names carried beside ``display_name``."""
 
-    def test_both_record_names_default_to_display_name(self) -> None:
-        """Fall back to ``display_name`` for both record names when neither is supplied."""
+    def test_both_record_names_default_when_omitted(self) -> None:
+        """Fall back both record names to ``display_name`` when neither is supplied."""
         schema = AppSchema(
             name="minimal",
             display_name="MySQL Backups",
@@ -2847,8 +2848,8 @@ class TestAppSchemaRecordDisplayNames:
         assert schema.item_display_name == "MySQL Backups"
         assert schema.item_display_name_plural == "MySQL Backups"
 
-    def test_supplying_the_singular_leaves_the_plural_defaulted(self) -> None:
-        """Default the plural from ``display_name``, never from the singular."""
+    def test_supplying_the_singular_derives_the_plural(self) -> None:
+        """Default the plural from the resolved singular when it is omitted."""
         schema = AppSchema(
             name="minimal",
             display_name="MySQL Backups",
@@ -2857,7 +2858,7 @@ class TestAppSchemaRecordDisplayNames:
         )
 
         assert schema.item_display_name == "backup"
-        assert schema.item_display_name_plural == "MySQL Backups"
+        assert schema.item_display_name_plural == "backups"
 
     def test_supplying_the_plural_leaves_the_singular_defaulted(self) -> None:
         """Default the singular from ``display_name``, never from the plural."""
@@ -2883,6 +2884,20 @@ class TestAppSchemaRecordDisplayNames:
 
         assert schema.item_display_name == "backup"
         assert schema.item_display_name_plural == "backups"
+
+    @pytest.mark.parametrize("model", [AppSchema, AppEntitySchema])
+    def test_record_names_stay_required_on_the_wire_schema(
+        self, model: type[AppSchema | AppEntitySchema]
+    ) -> None:
+        """Keep both record names required and default-free in the OpenAPI schema."""
+        schema = model.model_json_schema()
+
+        assert set(ITEM_DISPLAY_NAME_KEYS).issubset(schema["required"])
+        for key in ITEM_DISPLAY_NAME_KEYS:
+            prop = schema["properties"][key]
+            assert "default" not in prop
+            assert prop.get("type") == "string"
+            assert "anyOf" not in prop
 
     @pytest.mark.parametrize(
         "field_name", ["item_display_name", "item_display_name_plural"]
@@ -2925,6 +2940,26 @@ class TestAppSchemaRecordDisplayNames:
 
         assert {error["type"] for error in exc_info.value.errors()} == {"model_type"}
 
+    def test_non_str_singular_is_reported_not_raised(self) -> None:
+        """Leave a non-str singular for Pydantic; do not crash the before validator.
+
+        The fill helper reads the raw payload. Without a type gate it would call
+        ``pluralize_item_display_name`` on an int and raise ``AttributeError``.
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            AppSchema.model_validate(
+                {
+                    "name": "minimal",
+                    "display_name": "MySQL Backups",
+                    "item_display_name": 7,
+                    "list_view": _minimal_list_view(),
+                }
+            )
+
+        assert any(
+            error["loc"] == ("item_display_name",) for error in exc_info.value.errors()
+        )
+
     def test_a_read_only_mapping_defaults_like_a_dict(self) -> None:
         """Default from any ``Mapping``, not only ``dict`` — the guard is not type-narrow."""
         payload = MappingProxyType(
@@ -2941,7 +2976,7 @@ class TestAppSchemaRecordDisplayNames:
         assert schema.item_display_name_plural == "MySQL Backups"
 
     def test_entity_record_names_default_from_the_entity_display_name(self) -> None:
-        """Default an entity's record names from its own ``display_name``."""
+        """Default both entity record names from its own ``display_name`` when omitted."""
         entity = _minimal_entity_schema()
 
         assert entity.item_display_name == "Things"
@@ -2971,6 +3006,75 @@ class TestAppSchemaRecordDisplayNames:
         assert schema.item_display_name == "Inventory"
         assert schema.entities is not None
         assert schema.entities[0].item_display_name == "node"
+
+    def test_explicit_plural_overrides_the_pluraliser(self) -> None:
+        """Keep an irregular plural when the author declares it."""
+        schema = AppSchema(
+            name="minimal",
+            display_name="Children",
+            item_display_name="child",
+            item_display_name_plural="children",
+            list_view=_minimal_list_view(),
+        )
+
+        assert schema.item_display_name_plural == "children"
+
+    def test_entity_singular_derives_the_plural(self) -> None:
+        """Derive an entity's plural from its declared singular."""
+        entity = AppEntitySchema(
+            name="nodes",
+            display_name="Nodes",
+            item_display_name="node",
+            forms=[
+                FormSection(
+                    title="T",
+                    fields=[StringField(name="title", label="Title", required=True)],
+                )
+            ],
+            list_view=_minimal_list_view(),
+        )
+
+        assert entity.item_display_name == "node"
+        assert entity.item_display_name_plural == "nodes"
+
+    def test_entity_explicit_plural_overrides_the_pluraliser(self) -> None:
+        """Keep an irregular entity plural when the author declares it."""
+        entity = AppEntitySchema(
+            name="children",
+            display_name="Children",
+            item_display_name="child",
+            item_display_name_plural="children",
+            forms=[
+                FormSection(
+                    title="T",
+                    fields=[StringField(name="title", label="Title", required=True)],
+                )
+            ],
+            list_view=_minimal_list_view(),
+        )
+
+        assert entity.item_display_name_plural == "children"
+
+
+class TestPluralizeItemDisplayName:
+    """Cover the Django-style pluraliser used when the plural is omitted."""
+
+    @pytest.mark.parametrize(
+        ("singular", "expected"),
+        [
+            ("category", "categories"),
+            ("key", "keys"),
+            ("box", "boxes"),
+            ("buzz", "buzzes"),
+            ("watch", "watches"),
+            ("dish", "dishes"),
+            ("backup", "backups"),
+            ("schema change", "schema changes"),
+        ],
+    )
+    def test_pluraliser_branches(self, singular: str, expected: str) -> None:
+        """Apply consonant-y, vowel-y, sibilant, default, and multi-word rules."""
+        assert schema_module.pluralize_item_display_name(singular) == expected
 
 
 class TestAppSchemaTaskStatuses:

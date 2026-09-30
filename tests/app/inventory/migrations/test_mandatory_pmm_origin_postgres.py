@@ -26,24 +26,15 @@ async engine, and the ``test_postgres`` CI job installs the ``postgresql`` group
 only, so no sync driver is available to lean on.
 """
 
-import asyncio
-import os
 from functools import partial
 
 import pytest
 from alembic import command
-from alembic.config import Config
-from pydantic import SecretStr
 from sqlalchemy import text
-from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.core.utils.fields import AsyncDatabaseEngine
-from app.inventory.config import inventory_settings
-from tests.app.alembic_paths import ALEMBIC_INI
 from tests.app.inventory.legacy_origin import PRE_RENAME_LEGACY_PREFIX
-
-POSTGRES_DSN_ENV = "EXTENSIONS_TEST_POSTGRES_DSN"
+from tests.app.inventory.migrations.conftest import SEED_TIMESTAMPS
+from tests.app.inventory.migrations.postgres_support import run_on_postgres
 
 # The head immediately before the PMM origin becomes mandatory.
 _PRE_ORIGIN_REVISION = "c7d1e94ab3f2"
@@ -54,8 +45,6 @@ _MANDATORY_COLUMNS = (
     ("service", "external_id"),
 )
 
-_SEED_TIMESTAMPS = "'2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00'"
-
 _NULLABILITY = (
     "SELECT is_nullable FROM information_schema.columns "
     "WHERE table_name = :table_name AND column_name = :column_name"
@@ -64,73 +53,12 @@ _NULLABILITY = (
 pytestmark = pytest.mark.postgres
 
 
-@pytest.fixture
-def postgres_async_url():
-    """Return an ``asyncpg`` URL to the real-PostgreSQL test database.
-
-    Skip when ``$EXTENSIONS_TEST_POSTGRES_DSN`` is unset (local runs without
-    PostgreSQL); the dedicated ``test_postgres`` CI job supplies it.
-    """
-    dsn = os.environ.get(POSTGRES_DSN_ENV)
-    if not dsn:
-        pytest.skip(f"{POSTGRES_DSN_ENV} not set; skipping real-PostgreSQL tests")
-    return make_url(dsn).set(drivername="postgresql+asyncpg")
-
-
-@pytest.fixture
-def inventory_postgres_config(postgres_async_url, monkeypatch):
-    """Point the inventory track at real PostgreSQL and yield its Alembic config.
-
-    ``command.upgrade`` builds its own engine inside the track's ``env.py`` from
-    ``inventory_settings.DATABASE`` rather than accepting one, so the settings
-    are what must be redirected. Drop the schema on teardown so sibling tests
-    inherit a clean database.
-    """
-    database = inventory_settings.DATABASE
-    monkeypatch.setattr(database, "ENGINE", AsyncDatabaseEngine.POSTGRESQL)
-    monkeypatch.setattr(database, "USER", postgres_async_url.username)
-    monkeypatch.setattr(
-        database,
-        "PASSWORD",
-        SecretStr(postgres_async_url.password) if postgres_async_url.password else None,
-    )
-    monkeypatch.setattr(database, "HOST", postgres_async_url.host)
-    monkeypatch.setattr(database, "PORT", postgres_async_url.port)
-    monkeypatch.setattr(database, "NAME", postgres_async_url.database)
-
-    cfg = Config(str(ALEMBIC_INI), ini_section="inventory")
-    try:
-        yield cfg, postgres_async_url
-    finally:
-        _await(postgres_async_url, _drop_schema)
-
-
-def _await(url, coroutine_factory):
-    """Run ``coroutine_factory`` against a fresh async engine and dispose of it."""
-
-    async def _run():
-        engine = create_async_engine(url)
-        try:
-            async with engine.begin() as conn:
-                return await coroutine_factory(conn)
-        finally:
-            await engine.dispose()
-
-    return asyncio.run(_run())
-
-
-async def _drop_schema(conn):
-    """Drop and recreate the ``public`` schema."""
-    await conn.execute(text("DROP SCHEMA public CASCADE"))
-    await conn.execute(text("CREATE SCHEMA public"))
-
-
 async def _insert_node(conn, address, name, external_id, source):
     """Insert a ``node`` row and return its primary key."""
     result = await conn.execute(
         text(
             "INSERT INTO node (created_at, updated_at, address, name, external_id, "
-            f"source, type, retirement_key) VALUES ({_SEED_TIMESTAMPS}, :address, "
+            f"source, type, retirement_key) VALUES ({SEED_TIMESTAMPS}, :address, "
             ":name, :external_id, CAST(:source AS sourceenum), 'generic', -1) "
             "RETURNING id"
         ),
@@ -149,7 +77,7 @@ async def _insert_service(conn, external_id, name, port, node_id):
     result = await conn.execute(
         text(
             "INSERT INTO service (created_at, updated_at, external_id, name, type, "
-            f"port, node_id, retirement_key) VALUES ({_SEED_TIMESTAMPS}, "
+            f"port, node_id, retirement_key) VALUES ({SEED_TIMESTAMPS}, "
             ":external_id, :name, 'MYSQL', :port, :node_id, -1) RETURNING id"
         ),
         {
@@ -205,13 +133,13 @@ def test_backfill_writes_a_valid_enum_label(inventory_postgres_config):
     """Stamp a label ``sourceenum`` accepts, which SQLite could not have proven."""
     cfg, url = inventory_postgres_config
     command.upgrade(cfg, _PRE_ORIGIN_REVISION)
-    node_id = _await(
+    node_id = run_on_postgres(
         url, lambda conn: _insert_node(conn, "10.0.0.1", "legacy", None, None)
     )
 
     command.upgrade(cfg, "heads")
 
-    node = _await(url, lambda conn: _row(conn, "node", node_id))
+    node = run_on_postgres(url, lambda conn: _row(conn, "node", node_id))
     assert node["source"] == "PMM"
     assert node["external_id"] == f"{PRE_RENAME_LEGACY_PREFIX}{node_id}"
 
@@ -222,7 +150,7 @@ def test_set_not_null_lands_on_the_native_path(inventory_postgres_config):
     command.upgrade(cfg, "heads")
 
     for table_name, column in _MANDATORY_COLUMNS:
-        verdict = _await(
+        verdict = run_on_postgres(
             url, partial(_is_nullable, table_name=table_name, column=column)
         )
         assert verdict == "NO", f"{table_name}.{column}"
@@ -242,7 +170,7 @@ def test_cascade_under_real_foreign_keys(inventory_postgres_config):
             await conn.execute(
                 text(
                     "INSERT INTO schema (created_at, updated_at, name, service_id, "
-                    f"retirement_key) VALUES ({_SEED_TIMESTAMPS}, 'sch', "
+                    f"retirement_key) VALUES ({SEED_TIMESTAMPS}, 'sch', "
                     ":service_id, -1) RETURNING id"
                 ),
                 {"service_id": service_id},
@@ -252,7 +180,7 @@ def test_cascade_under_real_foreign_keys(inventory_postgres_config):
             await conn.execute(
                 text(
                     'INSERT INTO "table" (created_at, updated_at, name, "create", '
-                    f"keys, schema_id, retirement_key) VALUES ({_SEED_TIMESTAMPS}, "
+                    f"keys, schema_id, retirement_key) VALUES ({SEED_TIMESTAMPS}, "
                     "'tbl', 'CREATE TABLE t (id INT)', '{}', :schema_id, -1) "
                     "RETURNING id"
                 ),
@@ -261,7 +189,7 @@ def test_cascade_under_real_foreign_keys(inventory_postgres_config):
         ).scalar_one()
         return node_id, service_id, schema_id, table_id
 
-    node_id, service_id, schema_id, table_id = _await(url, _seed)
+    node_id, service_id, schema_id, table_id = run_on_postgres(url, _seed)
 
     command.upgrade(cfg, "heads")
 
@@ -271,7 +199,9 @@ def test_cascade_under_real_foreign_keys(inventory_postgres_config):
         ("schema", schema_id),
         ("table", table_id),
     ):
-        row = _await(url, partial(_row, table_name=table_name, entity_id=entity_id))
+        row = run_on_postgres(
+            url, partial(_row, table_name=table_name, entity_id=entity_id)
+        )
         assert row["retired_at"] is not None, table_name
         assert row["retirement_key"] == entity_id, table_name
 
@@ -282,22 +212,22 @@ def test_downgrade_restores_nullability_and_leaves_data_alone(
     """Restore the three columns to nullable without rewriting a stamped row."""
     cfg, url = inventory_postgres_config
     command.upgrade(cfg, _PRE_ORIGIN_REVISION)
-    node_id = _await(
+    node_id = run_on_postgres(
         url, lambda conn: _insert_node(conn, "10.0.0.3", "legacy", None, None)
     )
-    node_columns = set(_await(url, lambda conn: _row(conn, "node", node_id)))
+    node_columns = set(run_on_postgres(url, lambda conn: _row(conn, "node", node_id)))
 
     command.upgrade(cfg, "heads")
-    stamped = _await(
+    stamped = run_on_postgres(
         url, lambda conn: _projected_row(conn, "node", node_id, node_columns)
     )
 
     command.downgrade(cfg, _PRE_ORIGIN_REVISION)
 
     for table_name, column in _MANDATORY_COLUMNS:
-        verdict = _await(
+        verdict = run_on_postgres(
             url, partial(_is_nullable, table_name=table_name, column=column)
         )
         assert verdict == "YES", f"{table_name}.{column}"
 
-    assert _await(url, lambda conn: _row(conn, "node", node_id)) == stamped
+    assert run_on_postgres(url, lambda conn: _row(conn, "node", node_id)) == stamped

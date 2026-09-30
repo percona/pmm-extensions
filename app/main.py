@@ -131,6 +131,17 @@ def extensions_openapi_json() -> JSONResponse:
     return JSONResponse(extensions_app.openapi())
 
 
+_MERGED_OPENAPI_DESCRIPTION = (
+    f"{__summary__}\n\n"
+    "This spec is the unified public API: the **core** API (OAuth, users) merged with "
+    "the PMM Extensions web app (``/api/extensions/openapi.json``: shared routes, "
+    "plugins, etc.). The Inventory and Tasks services are not merged in; they publish "
+    "separate OpenAPI JSON at ``/api/inventory/openapi.json`` and "
+    "``/api/tasks/openapi.json``."
+)
+"""Describe ``/api/openapi.json``, whose ``info`` is otherwise the core spec's."""
+
+
 @functools.lru_cache(maxsize=1)
 def _get_merged_openapi() -> dict[str, Any]:
     """Return the merged OpenAPI document, computed once and cached for the process.
@@ -138,10 +149,14 @@ def _get_merged_openapi() -> dict[str, Any]:
     FastAPI's own ``app.openapi_schema`` cache fixes the upstream specs after the
     first hit, and routes are not added at runtime, so a single-entry cache is safe.
 
+    The merge keeps the core spec's ``info``, whose description says the PMM Extensions
+    web app is not merged in, so the unified document replaces it with its own.
+
     :return: The merged OpenAPI 3.x JSON document.
-    :rtype: dict[str, Any]
     """
-    return merge_openapi_documents(app.openapi(), extensions_app.openapi())
+    merged = merge_openapi_documents(app.openapi(), extensions_app.openapi())
+    merged["info"]["description"] = _MERGED_OPENAPI_DESCRIPTION
+    return merged
 
 
 @app.get(

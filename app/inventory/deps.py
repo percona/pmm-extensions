@@ -253,6 +253,62 @@ TableScopeDep = Annotated[
 ]
 
 
+async def get_in_scope_node(
+    session: SessionDep, node_id: int, manager: NodeScopeDep
+) -> Node:
+    """Resolve the node addressed by the path within the request's retirement scope.
+
+    Share the children's retirement scope, so a nested-list route resolves its parent
+    and its children from one ``include_retired`` value.
+
+    :param session: The asynchronous database session.
+    :param node_id: The unique identifier of the node to retrieve.
+    :param manager: The node manager the request's retirement scope selected.
+    :return: The node instance corresponding to the provided ``node_id``.
+    :raises HTTPNotFoundException: If no node in scope has the given ``node_id``.
+    """
+    return await manager.get_or_404(session, id=node_id)
+
+
+async def get_in_scope_service(
+    session: SessionDep, service_id: int, manager: ServiceScopeDep
+) -> Service:
+    """Resolve the service addressed by the path within the request's retirement scope.
+
+    Service-level counterpart of :func:`get_in_scope_node`.
+
+    :param session: The asynchronous database session.
+    :param service_id: The unique identifier of the service to retrieve.
+    :param manager: The service manager the request's retirement scope selected.
+    :return: The service instance corresponding to the provided ``service_id``.
+    :raises HTTPNotFoundException: If no service in scope has the given
+        ``service_id``.
+    """
+    return await manager.get_or_404(session, id=service_id)
+
+
+async def get_in_scope_schema(
+    session: SessionDep, schema_id: int, manager: SchemaScopeDep
+) -> Schema:
+    """Resolve the schema addressed by the path within the request's retirement scope.
+
+    Schema-level counterpart of :func:`get_in_scope_node`.
+
+    :param session: The asynchronous database session.
+    :param schema_id: The unique identifier of the schema to retrieve.
+    :param manager: The schema manager the request's retirement scope selected.
+    :return: The schema instance corresponding to the provided ``schema_id``.
+    :raises HTTPNotFoundException: If no schema in scope has the given
+        ``schema_id``.
+    """
+    return await manager.get_or_404(session, id=schema_id)
+
+
+InScopeNodeDep = Annotated[Node, Depends(get_in_scope_node)]
+InScopeServiceDep = Annotated[Service, Depends(get_in_scope_service)]
+InScopeSchemaDep = Annotated[Schema, Depends(get_in_scope_schema)]
+
+
 async def get_host_system_observation(
     session: SessionDep, node: NodeDep
 ) -> HostSystemObservation:

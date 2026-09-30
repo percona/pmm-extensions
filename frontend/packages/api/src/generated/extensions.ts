@@ -4782,6 +4782,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param services: A list of services associated with the node.
      */
     Node: {
@@ -4807,6 +4810,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       source: components['schemas']['SourceEnum'];
@@ -4914,6 +4919,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param tables: A list of tables within the schema.
      */
     Schema: {
@@ -4935,6 +4943,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       /** Service Id */
@@ -5290,7 +5300,6 @@ export interface components {
      *
      *     :cvar PMM: Represents the PMM data source.
      *     :vartype PMM: str
-     * @constant
      * @enum {string}
      */
     SourceEnum: 'pmm';
@@ -5779,7 +5788,6 @@ export interface components {
       /**
        * Status
        * @constant
-       * @enum {string}
        */
       status: 'success';
     };
@@ -6043,6 +6051,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      */
     app__inventory__models__ServiceResponse: {
       /** Cluster */
@@ -6073,6 +6084,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       node: components['schemas']['Node'];
       /** Node Id */
       node_id: number;
@@ -7712,11 +7725,15 @@ export interface components {
      *         entity's screens. Stored in mid-sentence form so a consumer composing a
      *         label capitalises the first character itself. Defaults to this entity's
      *         own ``display_name`` — not the parent app's, and never inferred from
-     *         ``item_display_name_plural``.
+     *         ``item_display_name_plural``. Optional at construction (``None``
+     *         default); the before-validator always fills a string, and the OpenAPI
+     *         schema keeps the field required and non-nullable.
      *     :param item_display_name_plural: What **several** records of this entity are
-     *         called (for example ``nodes``). An independent declaration under the
-     *         same mid-sentence convention; nothing derives it from
-     *         ``item_display_name``. Defaults to this entity's own ``display_name``.
+     *         called (for example ``nodes``). Same mid-sentence convention. When the
+     *         singular is declared, defaults by pluralising it; when both are
+     *         omitted, defaults to this entity's own ``display_name``. Declare
+     *         explicitly for irregulars or forms the heuristic misses. Optional at
+     *         construction under the same wire-required contract as the singular.
      *     :param description: Optional helper text for this entity. Defaults to
      *         ``None``.
      *     :param forms: Form sections for create (and edit when the UI supports it).
@@ -7765,13 +7782,17 @@ export interface components {
      *         lowercase unless it opens with a proper noun — so a consumer composing a
      *         label capitalises the first character itself. Defaults to
      *         ``display_name``, and is never inferred from
-     *         ``item_display_name_plural``. Unlike the optional UI hints on this
-     *         model, both record names are required and non-nullable so the generated
-     *         client types them as ``string`` and no consumer needs a fallback.
+     *         ``item_display_name_plural``. Optional at construction (``None``
+     *         default); the before-validator always fills a string. Unlike the
+     *         optional UI hints on this model, both record names stay required and
+     *         non-nullable on the wire so the generated client types them as
+     *         ``string`` and no consumer needs a fallback.
      *     :param item_display_name_plural: What **several** of those records are
-     *         called (for example ``backups``). An independent declaration under the
-     *         same mid-sentence convention; nothing derives it from
-     *         ``item_display_name``. Defaults to ``display_name``.
+     *         called (for example ``backups``). Same mid-sentence convention. When
+     *         the singular is declared, defaults by pluralising it; when both are
+     *         omitted, defaults to ``display_name``. Declare explicitly for
+     *         irregulars or forms the heuristic misses. Optional at construction
+     *         under the same wire-required contract as the singular.
      *     :param description: Optional helper text describing the plugin's
      *         purpose. Defaults to ``None``.
      *     :param task_type: Optional task-type identifier used when creating tasks
@@ -10993,7 +11014,9 @@ export interface components {
       /** Node Id */
       node_id: string;
       /** Observed */
-      observed?: Record<string, never>;
+      observed?: {
+        [key: string]: unknown;
+      };
       /** Services */
       services?: components['schemas']['om_inventory__ServiceResponse'][];
     };
@@ -11266,7 +11289,9 @@ export interface components {
       /** Node Id */
       node_id: string;
       /** Observed */
-      observed?: Record<string, never>;
+      observed?: {
+        [key: string]: unknown;
+      };
       /** Port */
       port?: number | null;
       /** Role */

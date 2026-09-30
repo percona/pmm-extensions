@@ -167,6 +167,7 @@ async def _seed_running_history(maker, *, sync_started_at) -> int:
             sync_in_progress_started_at=sync_started_at,
         )
         saved = await TaskHistoryManager.save(session, history)
+        assert saved.id is not None
         return saved.id
 
 

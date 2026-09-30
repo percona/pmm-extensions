@@ -32,13 +32,17 @@ engine, which resolves the same setting through a driver
 :meth:`~sqlalchemy_celery_beat.session.SessionManager.prepare_models` cannot use.
 """
 
+import argparse
 import json
 import logging
 import logging.config
-from time import sleep
+import sys
+from collections.abc import Sequence
+from time import monotonic, sleep
+from typing import Any
 
 from sqlalchemy import inspect, or_
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy_celery_beat.models import PeriodicTask
@@ -51,8 +55,38 @@ logger = logging.getLogger(__name__)
 STORE_READINESS_POLL_INTERVAL = 1.0
 """Seconds between connection attempts while the beat store is unreachable."""
 
+STORE_CONNECT_TIMEOUT = 5
+"""Seconds for each TCP connect attempt when a readiness deadline is set.
 
-def _wait_for_store(engine: Engine) -> None:
+The deadline is only consulted after ``engine.connect()`` returns. A host that
+silently drops packets otherwise leaves the call blocked on the OS TCP timeout
+(often minutes), so ``make migrate`` would still hang well past its bound.
+``psycopg2``'s ``connect_timeout`` caps each attempt; kept strictly below the
+migrate recipe's 60s budget so several polls fit inside it. SQLite has no TCP
+connect and rejects the argument, so it is applied only for PostgreSQL.
+"""
+
+
+def _session_kwargs_for_deadline(
+    dburi: str, deadline_seconds: float | None
+) -> dict[str, Any]:
+    """Return ``create_session`` kwargs that bound each connect under a deadline.
+
+    :param dburi: The resolved beat-store URL.
+    :param deadline_seconds: The caller's wall-clock bound, or ``None`` when
+        unbounded (side-car).
+    :return: ``connect_args`` for PostgreSQL when a deadline is set; otherwise
+        an empty dict so the unbounded path is unchanged.
+    """
+    if deadline_seconds is None:
+        return {}
+    if make_url(dburi).get_backend_name() != "postgresql":
+        return {}
+    connect_timeout = max(1, min(STORE_CONNECT_TIMEOUT, int(deadline_seconds)))
+    return {"connect_args": {"connect_timeout": connect_timeout}}
+
+
+def _wait_for_store(engine: Engine, *, deadline_seconds: float | None = None) -> None:
     """Block until the beat store accepts a connection.
 
     The side-car's three alembic one-shots wait on ``EXTENSIONS_DB_HOST``/``EXTENSIONS_DB_PORT``
@@ -61,27 +95,43 @@ def _wait_for_store(engine: Engine) -> None:
     separate database, so readiness is probed against the URL this process will
     actually dial rather than against a host named in the program table.
 
-    The wait is unbounded, matching those three shell loops. A bounded one could
-    expire while the store was merely slow, and the caller runs as a one-shot that
-    is never re-run, so its sentinel could then never appear — leaving every
-    program gated on it waiting for the life of the container. What bounds the
-    observable behaviour instead is the gate in front of each API program, and the
-    healthcheck, which reports the missing sentinel either way.
+    By default the wait is unbounded, matching those three shell loops. A bound
+    that expired while the store was merely slow would leave the side-car's
+    one-shot sentinel permanently unwritten, gating every program behind it for
+    the life of the container. Callers that can be re-run — such as
+    ``make migrate`` — may pass ``deadline_seconds`` so a persistent
+    ``OperationalError`` (including a rejected password) fails the command
+    instead of hanging indefinitely.
+
+    When a deadline is set, the engine is built with a per-attempt
+    ``connect_timeout`` (see :data:`STORE_CONNECT_TIMEOUT`) so a firewalled or
+    unroutable host cannot block past the bound on a single TCP handshake.
+    ``prepare_models`` reuses that engine, so its connects inherit the same cap.
 
     ``prepare_models`` retries too, but only for the check-then-create race it was
     written for: ten attempts with sub-second backoff, which a database that has
     not finished starting outlasts.
 
     :param engine: The synchronous engine for the resolved beat store.
+    :param deadline_seconds: Wall-clock seconds to keep retrying
+        ``OperationalError``s. ``None`` (the default) waits without a bound.
+    :raises TimeoutError: When ``deadline_seconds`` elapses while the store still
+        refuses connections with ``OperationalError``.
     :raises DBAPIError: On a connection failure that is not an
         ``OperationalError``, which is raised on the first attempt rather than
         retried — only an ``OperationalError`` is treated as "not up yet".
     """
+    deadline = None if deadline_seconds is None else monotonic() + deadline_seconds
     while True:
         try:
             with engine.connect():
                 return
-        except OperationalError:
+        except OperationalError as exc:
+            if deadline is not None and monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Celery beat store at {engine.url.host}:{engine.url.port} "
+                    f"did not become reachable within {deadline_seconds} seconds"
+                ) from exc
             # Host and port only: the resolved URL carries the store's password.
             logger.info(
                 "Waiting for the Celery beat store at %s:%s",
@@ -226,7 +276,7 @@ def move_pre_rename_periodic_tasks(session_factory: sessionmaker[Session]) -> in
     return moved
 
 
-def bootstrap_beat_schema() -> None:
+def bootstrap_beat_schema(*, deadline_seconds: float | None = None) -> None:
     """Create the ``sqlalchemy_celery_beat`` schedule tables if they are absent.
 
     Then move any schedule stored under its pre-rename name forward, through
@@ -245,6 +295,14 @@ def bootstrap_beat_schema() -> None:
     ``create_engine``. Neither outcome can configure anything, and the second
     would fail this step on a documented, validated setting.
 
+    A readiness ``deadline_seconds`` does forward a driver ``connect_timeout`` for
+    PostgreSQL so each dial is capped; that is unrelated to the pool options
+    above and is omitted when the wait is unbounded.
+
+    :param deadline_seconds: Optional wall-clock bound forwarded to the store
+        readiness wait. ``None`` leaves the wait unbounded (side-car one-shot).
+    :raises TimeoutError: When a supplied ``deadline_seconds`` elapses while the
+        store is still unreachable.
     :raises DBAPIError: When the store refuses a connection for a reason other
         than not being up yet, or when creating the tables fails after the
         library has exhausted its own retries. The family is ``DBAPIError``
@@ -259,16 +317,38 @@ def bootstrap_beat_schema() -> None:
     engine, session_factory = manager.create_session(
         settings.CELERY.beat_dburi,
         schema=settings.CELERY.beat_schema,
+        **_session_kwargs_for_deadline(settings.CELERY.beat_dburi, deadline_seconds),
     )
     try:
-        _wait_for_store(engine)
+        _wait_for_store(engine, deadline_seconds=deadline_seconds)
         manager.prepare_models(engine, schema=settings.CELERY.beat_schema)
         move_pre_rename_periodic_tasks(session_factory)
     finally:
         engine.dispose()
 
 
-def main() -> None:
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Return the CLI parser for the beat-schema bootstrap entry point.
+
+    :return: A parser exposing optional ``--deadline-seconds``.
+    """
+    parser = argparse.ArgumentParser(
+        description="Create the Celery beat schedule tables if they are absent."
+    )
+    parser.add_argument(
+        "--deadline-seconds",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Wall-clock seconds to wait for the beat store before failing. "
+            "Omit to wait without a bound (side-car migrate-beat)."
+        ),
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
     """Run the bootstrap, configuring logging for a freshly spawned process.
 
     Supervisord starts this in a process that has run no ``dictConfig``, and the
@@ -276,13 +356,23 @@ def main() -> None:
     step has not finished. A failure is deliberately left to propagate: the
     non-zero exit is what keeps the caller's sentinel unwritten.
 
+    ``--deadline-seconds`` is optional so the side-car's one-shot invocation
+    stays unbounded; ``make migrate`` passes a bound so a persistent store
+    failure fails the command instead of hanging.
+
+    :param argv: CLI arguments. ``None`` means no flags (unbounded wait), matching
+        a bare ``python -m`` / programmatic call; ``__main__`` passes
+        ``sys.argv[1:]``.
+    :raises TimeoutError: When a supplied deadline elapses while the store is
+        still unreachable.
     :raises SQLAlchemyError: When the tables cannot be created, or the store
         refuses a connection for a reason other than not being up yet.
     """
+    args = _build_arg_parser().parse_args([] if argv is None else argv)
     logging.config.dictConfig(settings.LOGGING_CONFIG)
-    bootstrap_beat_schema()
+    bootstrap_beat_schema(deadline_seconds=args.deadline_seconds)
     logger.info("Celery beat schedule tables are present.")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

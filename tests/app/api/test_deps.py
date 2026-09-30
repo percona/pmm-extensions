@@ -132,16 +132,6 @@ async def test_authenticate_bearer_token_internal_token_mismatch_falls_through(
 
 
 @pytest.mark.asyncio
-async def test_authenticate_bearer_token_internal_token_unset_falls_through(
-    casdoor_mock, valid_username, mocker
-):
-    """Verify an unset ``EXTENSIONS_INTERNAL_TOKEN`` leaves every token to the provider."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", None)
-    user = await authenticate_bearer_token("supersecret")
-    assert user.username == valid_username
-
-
-@pytest.mark.asyncio
 async def test_authenticate_bearer_token_internal_token_empty_falls_through(
     casdoor_mock, valid_username, mocker
 ):

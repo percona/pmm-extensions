@@ -15,7 +15,6 @@
 
 """Define tests for the app.core.security module."""
 
-import pytest
 from pydantic import SecretStr
 
 from app.core.config import settings
@@ -24,7 +23,6 @@ from app.core.security import (
     crypto_timestamp_serializer,
     get_internal_token,
     is_bearer_authenticated,
-    require_internal_token,
 )
 from tests.app.conftest import make_request
 
@@ -51,35 +49,6 @@ def test_get_internal_token_returns_secret(mocker):
         settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr("internal-secret")
     )
     assert get_internal_token() == "internal-secret"
-
-
-def test_get_internal_token_returns_none_when_unset(mocker):
-    """``get_internal_token`` returns ``None`` when the token is unset."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", None)
-    assert get_internal_token() is None
-
-
-def test_get_internal_token_returns_none_when_empty(mocker):
-    """``get_internal_token`` treats an empty ``SecretStr`` as absent."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(""))
-    assert get_internal_token() is None
-
-
-def test_require_internal_token_returns_secret(mocker):
-    """``require_internal_token`` returns the configured token's secret value."""
-    mocker.patch.object(
-        settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr("internal-secret")
-    )
-    assert require_internal_token() == "internal-secret"
-
-
-def test_require_internal_token_raises_when_absent(mocker):
-    """``require_internal_token`` raises ``RuntimeError`` when the token is absent."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", None)
-    with pytest.raises(
-        RuntimeError, match="EXTENSIONS_INTERNAL_TOKEN must be configured"
-    ):
-        require_internal_token()
 
 
 class TestBearerHeaderEdgeCases:

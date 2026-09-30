@@ -15,6 +15,7 @@
 
 """Provide helpers shared by the periodic-task routes."""
 
+import hashlib
 import json
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,33 @@ def resolve_schedule_task_name(periodic_task: PeriodicTask) -> str | None:
         return None
     name = resolve_task_name(args, kwargs)
     return name if isinstance(name, str) and name else None
+
+
+def generate_periodic_task_name(task_name: str, period: str, kwargs: str) -> str:
+    """Derive a stable auto-generated name for an unnamed periodic task.
+
+    Digest rather than :func:`hash`: the builtin is salted per process, so two
+    processes computing the same unnamed create request would derive two
+    different names and the database's uniqueness check would never catch
+    the duplicate. Eight digest bytes, not the four
+    :func:`~app.core.db.utils.advisory_lock_key` uses — that size fits a
+    signed 32-bit PostgreSQL advisory-lock key, a constraint that doesn't
+    apply here, and ``PeriodicTask.name`` is a 255-character column that also
+    has to fit ``task_name``. The digest covers all three inputs, not just
+    ``kwargs``: the returned name's visible prefix collapses every space to
+    an underscore, so two task names differing only by that character
+    (``"a b"`` vs ``"a_b"``) would otherwise render identically once a
+    digest over ``kwargs`` alone happened to match.
+
+    :param task_name: Name of the task the periodic schedule executes.
+    :param period: The schedule's period.
+    :param kwargs: The periodic task's JSON-encoded ``kwargs`` string.
+    :return: A name stable across processes and ``PYTHONHASHSEED`` values for
+        this ``(task_name, period, kwargs)`` triple.
+    """
+    digest_input = f"{task_name}\x00{period}\x00{kwargs}".encode()
+    digest = hashlib.blake2b(digest_input, digest_size=8).hexdigest()
+    return f"run_{task_name}_{period}_{digest}".replace(" ", "_")
 
 
 async def attach_last_run_status(

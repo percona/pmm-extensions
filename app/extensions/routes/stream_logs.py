@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import StreamingResponse
 
 from app.core.requests import as_json_object
-from app.core.security import require_internal_token
+from app.core.security import get_internal_token
 from app.extensions.deps import (
     ApiCurrentUser,
     get_task_history,
@@ -187,7 +187,7 @@ async def task_history_logs_event_stream(
             ):
                 if log_entry:
                     yield f"data: {log_entry.decode()}\n\n"
-        with tasks_client.auth(require_internal_token()) as sync_api:
+        with tasks_client.auth(get_internal_token()) as sync_api:
             task_history = as_json_object(
                 await sync_api.post(f"/history/{task_history_id}/sync/")
             )

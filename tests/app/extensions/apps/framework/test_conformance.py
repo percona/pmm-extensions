@@ -994,6 +994,19 @@ def test_item_display_names_fire_on_the_singular_alone():
     assert "item_display_name'" in violations[0]
 
 
+def test_item_display_names_pass_when_singular_is_declared_and_plural_derived():
+    """Pass a declared singular whose derived plural differs from the title."""
+    payload = {
+        "name": "mysql_backups",
+        "display_name": "MySQL Backups",
+        "item_display_name": "backup",
+        "item_display_name_plural": "backups",
+        "forms": [{"fields": [{"name": "service_id"}]}],
+    }
+
+    assert check_item_display_names_declared(payload) == []
+
+
 def test_item_display_names_checked_per_entity_against_its_own_title():
     """Assert an entity's record names are judged against the entity's display name."""
     payload = {

@@ -769,7 +769,7 @@ class TestCredentialUrlWritePathValueType:
     """Cover the leaf type the write path actually hands the walker.
 
     ``coerce_field_value`` validates a ``CredentialHttpUrl`` field to a
-    :class:`pydantic_core.Url` and ``unwrap_secrets_for_storage`` passes the
+    :class:`~pydantic.HttpUrl` and ``unwrap_secrets_for_storage`` passes the
     object through, so three of the four live leaves reach the walker as URL
     objects rather than text. Every payload here is built through
     ``coerce_field_value`` for that reason: a hand-written string cannot fail.

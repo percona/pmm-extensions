@@ -150,6 +150,21 @@ def test_api_openapi_json_merges_core_and_extensions(test_client):
     assert extensions_paths & merged_paths, "merged spec missing extensions_app paths"
 
 
+def test_api_openapi_json_describes_itself_as_the_merged_document(test_client):
+    """Describe ``/api/openapi.json`` as the merged document, not the core-only one.
+
+    The merge keeps ``info`` from the core spec, whose description tells the
+    reader the PMM Extensions web app routes are not in the document. Swagger UI
+    at ``/api/docs`` renders that text above the very routes it says are absent.
+    """
+    merged = test_client.get("/api/openapi.json").json()["info"]["description"]
+    core = test_client.get("/openapi.json").json()["info"]["description"]
+
+    assert merged != core
+    assert "not merged into this document" not in merged
+    assert "/api/extensions/openapi.json" in merged
+
+
 def test_api_docs_serves_swagger_ui(test_client):
     """``GET /api/docs`` returns Swagger UI HTML wired to ``/api/openapi.json``."""
     response = test_client.get("/api/docs")

@@ -16,7 +16,7 @@ pipeline {
 			tagFilter: 'v*',
 	        type: 'PT_TAG',
 	        requiredParameter: true,
-			useRepository: 'https://github.com/percona/SEP.git'
+			useRepository: 'https://github.com/percona/pmm-extensions.git'
 		string(
 			name: 'defaultCmd',
 			defaultValue: '--log-level=DEBUG'
@@ -70,7 +70,7 @@ pipeline {
 					userRemoteConfigs: [
 						[
 							credentialsId: '9024f3ea-4c7e-46a6-acf5-4b2c768f0930',
-							url: 'https://github.com/percona/SEP.git'
+							url: 'https://github.com/percona/pmm-extensions.git'
 						]
 					]
 				)
@@ -83,7 +83,7 @@ pipeline {
 		}
 		stage('Execute CI') {
 			steps {
-				build job: 'SEP/CI', parameters: [
+				build job: 'PMM-Extensions/CI', parameters: [
 					[$class: 'StringParameterValue', name: 'releaseTag', value: "${env.GIT_COMMIT_SHA}"],
 					[$class: 'StringParameterValue', name: 'pyVersion', value: "${PYTHON_VERSION}"],
 					[$class: 'BooleanParameterValue', name: 'pushImage', value: Boolean.valueOf("${params.pushImage}")],

@@ -53,7 +53,6 @@ app = TaskExecutionApp(
     name="mysql_backups_restores",
     display_name="MySQL Restores",
     item_display_name="restore",
-    item_display_name_plural="restores",
     uri_path="/mysql_backups/restores",
     css_class="mysql_backups",
     group="backups",

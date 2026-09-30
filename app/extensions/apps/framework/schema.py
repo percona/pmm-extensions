@@ -60,6 +60,7 @@ __all__ = [
     "YamlField",
     "declared_field_names_from_forms",
     "iter_section_fields",
+    "pluralize_item_display_name",
 ]
 
 from collections import Counter
@@ -1552,14 +1553,90 @@ def _collect_fail_rule_errors(
 ITEM_DISPLAY_NAME_KEYS = ("item_display_name", "item_display_name_plural")
 """The two record-name keys, shared with the conformance detector that checks them."""
 
+_VOWELS = frozenset("aeiou")
+
+
+def _require_item_display_names_in_json_schema(
+    json_schema: dict[str, Any],
+) -> None:
+    """Keep record-name fields required and non-nullable on the wire.
+
+    Both fields are ``NonEmptyStr | None = None`` at construction so authors
+    (and ty) may omit them; :func:`_fill_item_display_names` always writes a
+    string before the instance exists. Without this patch, Pydantic would drop
+    them from ``required``, advertise a null default, and emit an ``anyOf``
+    with ``null``, breaking the generated client's non-nullable ``string``
+    contract.
+
+    Bound as ``json_schema_extra`` on :class:`AppSchema` and
+    :class:`AppEntitySchema` (mutating callable form).
+
+    :param json_schema: The JSON schema Pydantic built for the model; mutated
+        in place.
+    """
+    required: set[str] = set(json_schema.get("required") or ())
+    required.update(ITEM_DISPLAY_NAME_KEYS)
+    properties = json_schema.get("properties") or {}
+    json_schema["required"] = [key for key in properties if key in required]
+    for key in ITEM_DISPLAY_NAME_KEYS:
+        prop = properties.get(key)
+        if not isinstance(prop, dict):
+            continue
+        title = prop.get("title")
+        prop.pop("default", None)
+        alternatives = prop.get("anyOf")
+        if isinstance(alternatives, list):
+            non_null = [
+                alt
+                for alt in alternatives
+                if isinstance(alt, dict) and alt.get("type") != "null"
+            ]
+            if len(non_null) == 1:
+                prop.clear()
+                prop.update(non_null[0])
+                if title is not None:
+                    prop["title"] = title
+
+
+def pluralize_item_display_name(singular: str) -> str:
+    """Return a Django-style English plural for a mid-sentence record noun.
+
+    Pluralises only the last whitespace-separated token so multi-word nouns
+    like ``schema change`` become ``schema changes``. Irregular plurals and
+    forms outside this heuristic stay author-declared via
+    ``item_display_name_plural``. Shared by schema defaulting and the scaffold
+    plural prompt default.
+
+    :param singular: The resolved singular record noun (explicit or
+        ``display_name`` fallback).
+    :return: The pluralised noun under the consonant-``y`` / sibilant / ``+s``
+        rules (including vowel-``y`` → ``+s``, e.g. ``key`` → ``keys``).
+    """
+    head, sep, word = singular.rpartition(" ")
+    if not word:
+        return singular
+    lower = word.lower()
+    penult = lower[-2:-1]
+    if lower.endswith("y") and penult and penult not in _VOWELS:
+        plural_word = f"{word[:-1]}ies"
+    elif lower.endswith(("s", "x", "z", "ch", "sh")):
+        plural_word = f"{word}es"
+    else:
+        plural_word = f"{word}s"
+    return f"{head}{sep}{plural_word}"
+
 
 def _fill_item_display_names(data: Any) -> Any:
-    """Fill either unset record name from the payload's own ``display_name``.
+    """Fill unset record names from ``display_name`` or a declared singular.
 
     Backs the ``mode="before"`` validator on :class:`AppEntitySchema` and
     :class:`AppSchema` so both fields can be declared bare and required while
-    staying optional for the author. Each key defaults independently: supplying
-    the singular never derives the plural, or the reverse.
+    staying optional for the author. The singular falls back to
+    ``display_name`` when omitted. The plural is derived from a
+    **declared** singular via a Django-style pluraliser; when the singular
+    was also defaulted, the plural falls back to ``display_name`` (so an
+    already-plural title is not pluralised again). An explicit
+    ``item_display_name_plural`` always wins (irregular override).
 
     :param data: The raw input passed to the model, which Pydantic hands over
         before field validation and therefore does not constrain — anything the
@@ -1567,19 +1644,31 @@ def _fill_item_display_names(data: Any) -> Any:
         returned untouched so Pydantic reports it as a ``model_type`` error
         rather than this function raising ``AttributeError`` out of the
         validator; input whose ``display_name`` is absent or not a string is
-        returned untouched for the same reason, leaving the two record names to
-        be reported ``missing`` alongside it.
-    :return: A mapping with either record name filled from ``display_name``, or
-        the input unchanged when both were supplied or nothing could be filled.
+        returned untouched for the same reason, leaving Pydantic to report the
+        ``display_name`` error alone. A non-string
+        ``item_display_name`` is likewise left untouched so the pluraliser is
+        never called on a non-str and Pydantic surfaces the field type error.
+    :return: A mapping with either record name filled, or the input unchanged
+        when both were supplied or nothing could be filled.
     """
     if not isinstance(data, Mapping):
         return data
     display_name = data.get("display_name")
     if not isinstance(display_name, str):
         return data
-    filled = {
-        key: display_name for key in ITEM_DISPLAY_NAME_KEYS if data.get(key) is None
-    }
+    declared_singular = data.get("item_display_name")
+    if declared_singular is not None and not isinstance(declared_singular, str):
+        return data
+    singular = display_name if declared_singular is None else declared_singular
+    filled: dict[str, str] = {}
+    if declared_singular is None:
+        filled["item_display_name"] = singular
+    if data.get("item_display_name_plural") is None:
+        filled["item_display_name_plural"] = (
+            pluralize_item_display_name(singular)
+            if declared_singular is not None
+            else display_name
+        )
     return {**data, **filled} if filled else data
 
 
@@ -1598,11 +1687,15 @@ class AppEntitySchema(SchemaBaseModel):
         entity's screens. Stored in mid-sentence form so a consumer composing a
         label capitalises the first character itself. Defaults to this entity's
         own ``display_name`` — not the parent app's, and never inferred from
-        ``item_display_name_plural``.
+        ``item_display_name_plural``. Optional at construction (``None``
+        default); the before-validator always fills a string, and the OpenAPI
+        schema keeps the field required and non-nullable.
     :param item_display_name_plural: What **several** records of this entity are
-        called (for example ``nodes``). An independent declaration under the
-        same mid-sentence convention; nothing derives it from
-        ``item_display_name``. Defaults to this entity's own ``display_name``.
+        called (for example ``nodes``). Same mid-sentence convention. When the
+        singular is declared, defaults by pluralising it; when both are
+        omitted, defaults to this entity's own ``display_name``. Declare
+        explicitly for irregulars or forms the heuristic misses. Optional at
+        construction under the same wire-required contract as the singular.
     :param description: Optional helper text for this entity. Defaults to
         ``None``.
     :param forms: Form sections for create (and edit when the UI supports it).
@@ -1616,10 +1709,14 @@ class AppEntitySchema(SchemaBaseModel):
         Defaults to ``None``.
     """
 
+    model_config = ConfigDict(
+        json_schema_extra=_require_item_display_names_in_json_schema,
+    )
+
     name: Annotated[NonEmptyStr, Field(pattern=_FIELD_NAME_PATTERN)]
     display_name: NonEmptyStr
-    item_display_name: NonEmptyStr
-    item_display_name_plural: NonEmptyStr
+    item_display_name: NonEmptyStr | None = None
+    item_display_name_plural: NonEmptyStr | None = None
     description: NonEmptyStr | None = None
     forms: list[FormSection]
     list_view: ListView
@@ -1632,7 +1729,7 @@ class AppEntitySchema(SchemaBaseModel):
     @model_validator(mode="before")
     @classmethod
     def _default_item_display_names(cls, data: Any) -> Any:
-        """Fill both record names from ``display_name`` when the author omits them.
+        """Fill unset record names from ``display_name`` or a declared singular.
 
         :param data: The raw input Pydantic passes before field validation.
         :return: The input with either record name filled, or unchanged when both
@@ -1694,13 +1791,17 @@ class AppSchema(SchemaBaseModel):
         lowercase unless it opens with a proper noun — so a consumer composing a
         label capitalises the first character itself. Defaults to
         ``display_name``, and is never inferred from
-        ``item_display_name_plural``. Unlike the optional UI hints on this
-        model, both record names are required and non-nullable so the generated
-        client types them as ``string`` and no consumer needs a fallback.
+        ``item_display_name_plural``. Optional at construction (``None``
+        default); the before-validator always fills a string. Unlike the
+        optional UI hints on this model, both record names stay required and
+        non-nullable on the wire so the generated client types them as
+        ``string`` and no consumer needs a fallback.
     :param item_display_name_plural: What **several** of those records are
-        called (for example ``backups``). An independent declaration under the
-        same mid-sentence convention; nothing derives it from
-        ``item_display_name``. Defaults to ``display_name``.
+        called (for example ``backups``). Same mid-sentence convention. When
+        the singular is declared, defaults by pluralising it; when both are
+        omitted, defaults to ``display_name``. Declare explicitly for
+        irregulars or forms the heuristic misses. Optional at construction
+        under the same wire-required contract as the singular.
     :param description: Optional helper text describing the plugin's
         purpose. Defaults to ``None``.
     :param task_type: Optional task-type identifier used when creating tasks
@@ -1747,10 +1848,14 @@ class AppSchema(SchemaBaseModel):
         declaring ``entities``, whose records are not task runs.
     """
 
+    model_config = ConfigDict(
+        json_schema_extra=_require_item_display_names_in_json_schema,
+    )
+
     name: Annotated[NonEmptyStr, Field(pattern=_FIELD_NAME_PATTERN)]
     display_name: NonEmptyStr
-    item_display_name: NonEmptyStr
-    item_display_name_plural: NonEmptyStr
+    item_display_name: NonEmptyStr | None = None
+    item_display_name_plural: NonEmptyStr | None = None
     description: NonEmptyStr | None = None
     task_type: NonEmptyStr | None = None
     forms: list[FormSection] = Field(default_factory=list)
@@ -1768,7 +1873,7 @@ class AppSchema(SchemaBaseModel):
     @model_validator(mode="before")
     @classmethod
     def _default_item_display_names(cls, data: Any) -> Any:
-        """Fill both record names from ``display_name`` when the author omits them.
+        """Fill unset record names from ``display_name`` or a declared singular.
 
         :param data: The raw input Pydantic passes before field validation.
         :return: The input with either record name filled, or unchanged when both

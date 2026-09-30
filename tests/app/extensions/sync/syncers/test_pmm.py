@@ -23,6 +23,7 @@ from unittest.mock import ANY, AsyncMock, Mock
 import pytest
 import pytest_asyncio
 from pydantic import ValidationError
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.utils.date_time import utc_now
 from app.extensions.clients.pmm import (
@@ -45,7 +46,12 @@ from app.extensions.models import (
 )
 from app.extensions.sync.syncers.pmm import PMMSyncer
 from app.inventory.models import Service, ServiceTypeEnum, SourceEnum
-from tests.app.extensions.sync.conftest import entity_posts, sync_health_posts
+from tests.app.extensions.sync.conftest import (
+    close_run,
+    entity_posts,
+    local_nodes_payload,
+    sync_health_posts,
+)
 from tests.app.factories import (
     CreatedNodeFactory,
     CreatedServiceFactory,
@@ -72,15 +78,25 @@ def mock_pmm_api() -> AsyncMock:
     return AsyncMock(spec=PMMRemoteAPI)
 
 
-@pytest.fixture
-def pmmsyncer(mock_pmm_api, mock_remote_api) -> PMMSyncer:
-    """Mock PMMSyncer instance with mocked APIs."""
+def _build_pmmsyncer(mock_pmm_api: AsyncMock, mock_remote_api: AsyncMock) -> PMMSyncer:
+    """Build a PMMSyncer reading through the given mocked clients.
+
+    :param mock_pmm_api: The PMM client the snapshot is read from.
+    :param mock_remote_api: The inventory client the local entities are read from.
+    :return: A syncer with no run of its own yet.
+    """
     syncer = PMMSyncer(
         pmm={"endpoint": "http://localhost", "api_key": "test-key"},
         inventory_api=mock_remote_api,
     )
     syncer._pmm_api = mock_pmm_api
     return syncer
+
+
+@pytest.fixture
+def pmmsyncer(mock_pmm_api, mock_remote_api) -> PMMSyncer:
+    """Mock PMMSyncer instance with mocked APIs."""
+    return _build_pmmsyncer(mock_pmm_api, mock_remote_api)
 
 
 @pytest.fixture
@@ -885,7 +901,7 @@ async def test_perform_node_sync(node_with_services, owned_pmmsyncer, mocker):
 async def test_perform_inventory_sync(local_node, owned_pmmsyncer, mocker):
     """Test performing the inventory synchronization process."""
     owned_pmmsyncer.break_on_error = False
-    owned_pmmsyncer.inventory_api.get.side_effect = [_local_nodes_payload(local_node)]
+    owned_pmmsyncer.inventory_api.get.side_effect = [local_nodes_payload(local_node)]
     owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(return_value=_snapshot())
     retire_node = mocker.patch(
         "app.extensions.sync.syncers.pmm.PMMSyncer.retire_node", new_callable=AsyncMock
@@ -908,7 +924,7 @@ async def test_perform_inventory_sync_break_on_error_true_skips_failed_false(
 ):
     """Test perform_inventory_sync passes skip_failed=False when break_on_error=True."""
     owned_pmmsyncer.break_on_error = True
-    owned_pmmsyncer.inventory_api.get.side_effect = [_local_nodes_payload(local_node)]
+    owned_pmmsyncer.inventory_api.get.side_effect = [local_nodes_payload(local_node)]
     owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(return_value=_snapshot())
     mocker.patch(
         "app.extensions.sync.syncers.pmm.PMMSyncer.retire_node", new_callable=AsyncMock
@@ -938,16 +954,6 @@ def _snapshot(*nodes: Node, **diagnostics: Any) -> PMMInventorySnapshot:
     )
 
 
-def _local_nodes_payload(*created_nodes: CreatedNode) -> dict[str, Any]:
-    """Build the paginated inventory-API payload listing ``created_nodes``."""
-    return {
-        "items": [node.model_dump() for node in created_nodes],
-        "total": len(created_nodes),
-        "offset": 0,
-        "limit": 50,
-    }
-
-
 def _remote_node(created_node: CreatedNode) -> Node:
     """Build the PMM-side counterpart of a locally known node."""
     return Node(
@@ -960,6 +966,20 @@ def _remote_node(created_node: CreatedNode) -> Node:
     )
 
 
+def _node_reporting(created_node: CreatedNode, **service_fields: Any) -> Node:
+    """Build the PMM-side node reporting one service with the given fields.
+
+    :param created_node: The local node PMM reports.
+    :param service_fields: Fields overriding the reported service's defaults.
+    :return: The remote node, as the PMM client would parse it.
+    """
+    remote = _remote_node(created_node)
+    remote.services = [
+        {"service_name": "reported", "service_type": "mysql", **service_fields}
+    ]
+    return Node.model_validate(remote.model_dump() | {"node_name": remote.name})
+
+
 @pytest.fixture
 def local_node(created_node) -> CreatedNode:
     """Return a locally known node carrying an external ID and no services."""
@@ -970,23 +990,35 @@ def local_node(created_node) -> CreatedNode:
 
 @pytest.fixture
 def node_with_services(created_node) -> CreatedNode:
-    """Return a locally known node whose services carry persistable local IDs."""
+    """Return a locally known node whose live services carry persistable local IDs."""
     created_node.external_id = "pmm-node-1"
     for local_id, service in enumerate(created_node.services, start=1):
         service.id = local_id
+        # Nested models are built with a random retirement, and a tombstone is
+        # skipped by both the prepare walk and absence handling.
+        service.retired_at = None
     return created_node
+
+
+async def _own_run(syncer: PMMSyncer, session: AsyncSession) -> PMMSyncer:
+    """Bind ``syncer`` to ``session`` and a fresh RUNNING instance it owns.
+
+    :param syncer: The syncer to bind.
+    :param session: The database session the run writes through.
+    :return: The same syncer, ready to run.
+    """
+    syncer.sync_instance = await SyncInstanceManager.save(
+        session,
+        SyncInstance(syncer=syncer.get_name(), status=SyncStatusEnum.RUNNING),
+    )
+    syncer._session = session
+    return syncer
 
 
 @pytest_asyncio.fixture
 async def owned_pmmsyncer(pmmsyncer, session) -> PMMSyncer:
     """Return a syncer bound to a real session and a RUNNING instance it owns."""
-    instance = await SyncInstanceManager.save(
-        session,
-        SyncInstance(syncer=pmmsyncer.get_name(), status=SyncStatusEnum.RUNNING),
-    )
-    pmmsyncer._session = session
-    pmmsyncer.sync_instance = instance
-    return pmmsyncer
+    return await _own_run(pmmsyncer, session)
 
 
 async def _absence_rows(session, entity_type=SyncInventoryEntityTypeEnum.NODE) -> list:
@@ -1188,7 +1220,7 @@ class TestInventoryGenerationGating:
     ):
         """Retire nothing when a validation-skipped entity blocks the run."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=_snapshot(invalid_services=1)
@@ -1228,7 +1260,7 @@ class TestInventoryGenerationGating:
         assert snapshot.nodes == []
 
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=snapshot
@@ -1247,7 +1279,7 @@ class TestInventoryGenerationGating:
     ):
         """Start the count without retiring on one generation reporting absence."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=_snapshot()
@@ -1264,7 +1296,7 @@ class TestInventoryGenerationGating:
     ):
         """Retire the entity on a second consecutive complete generation."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=_snapshot()
@@ -1283,7 +1315,7 @@ class TestInventoryGenerationGating:
     ):
         """Reset the counter to zero, not to N-1, when an entity reappears."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.inventory_api.put.return_value = local_node.model_dump()
         absent = _snapshot()
@@ -1305,7 +1337,7 @@ class TestInventoryGenerationGating:
     ):
         """Hold the counter steady when a generation is inconclusive."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             side_effect=[_snapshot(), _snapshot(invalid_nodes=1), _snapshot()]
@@ -1330,7 +1362,7 @@ class TestInventoryGenerationGating:
         two consecutive generations.
         """
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.inventory_api.put.return_value = local_node.model_dump()
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
@@ -1354,7 +1386,7 @@ class TestInventoryGenerationGating:
     ):
         """Leave the generation incomplete when orphans persist across fetches."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         orphaned = _snapshot(orphan_service_node_ids=["ghost"])
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
@@ -1376,7 +1408,7 @@ class TestInventoryGenerationGating:
     ):
         """Restore a complete generation and normal gating after a clean refetch."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             side_effect=[_snapshot(orphan_service_node_ids=["ghost"]), _snapshot()]
@@ -1397,7 +1429,7 @@ class TestInventoryGenerationGating:
     ):
         """Hold a node newly labelled ``extensions_sync: disabled`` indefinitely."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         excluded = _snapshot(filtered_node_ids={local_node.external_id})
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
@@ -1428,7 +1460,7 @@ class TestInventoryGenerationGating:
             service.external_id = f"pmm-service-{index}"
         excluded = {service.external_id for service in node_with_services.services}
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(node_with_services)
+            local_nodes_payload(node_with_services)
         ]
         owned_pmmsyncer.inventory_api.put.return_value = node_with_services.model_dump()
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
@@ -1459,7 +1491,7 @@ class TestInventoryGenerationGating:
     ):
         """Retire nothing from a run that lost ownership of its instance."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=_snapshot()
@@ -1481,7 +1513,7 @@ class TestInventoryGenerationGating:
     ):
         """Close a held entity's SyncItem so the run does not roll up FAILED."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=_snapshot(invalid_nodes=1)
@@ -1500,7 +1532,7 @@ class TestInventoryGenerationGating:
     ):
         """Carry the completeness verdict for ``__aexit__`` to persist."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=_snapshot(invalid_services=2)
@@ -1558,15 +1590,6 @@ class TestTombstoneReconciliation:
         )
 
     @staticmethod
-    def _node_reporting(created_node: CreatedNode, **service_fields: Any) -> Node:
-        """Build the PMM-side node reporting one service with the given fields."""
-        remote = _remote_node(created_node)
-        remote.services = [
-            {"service_name": "reported", "service_type": "mysql", **service_fields}
-        ]
-        return Node.model_validate(remote.model_dump() | {"node_name": remote.name})
-
-    @staticmethod
     def _node_reporting_pair(
         created_node: CreatedNode, *services: dict[str, Any]
     ) -> Node:
@@ -1588,7 +1611,7 @@ class TestTombstoneReconciliation:
     ):
         """Read retired nodes, or a reappearance would create a duplicate row."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=_snapshot()
@@ -1606,7 +1629,7 @@ class TestTombstoneReconciliation:
         """Revive the existing row rather than creating a second one."""
         local_node.retired_at = utc_now()
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.inventory_api.put.return_value = local_node.model_dump()
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
@@ -1623,20 +1646,21 @@ class TestTombstoneReconciliation:
     async def test_an_active_node_wins_its_external_id_over_a_tombstone(
         self, local_node, owned_pmmsyncer, session
     ):
-        """Match the live node, and still account for the tombstone it displaced.
+        """Match the live node, and leave the tombstone it displaced untouched.
 
         The unique key admits one active row per external id plus any number of
         tombstones, so a retired-inclusive read returns both. Matching the
-        tombstone would attempt a revive the active row's key refuses; dropping
-        it from the reconciliation set would leave its SyncItem hanging.
+        tombstone instead would attempt a revive, which collides with the active
+        row already holding that external id.
         """
         local_node.retired_at = utc_now()
         replacement = CreatedNodeFactory.build(id=local_node.id + 1)
         replacement.external_id = local_node.external_id
+        replacement.source = SourceEnum.PMM
         replacement.services = []
         # Tombstone last, so a plain last-write-wins index would pick it.
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(replacement, local_node)
+            local_nodes_payload(replacement, local_node)
         ]
         owned_pmmsyncer.inventory_api.put.return_value = replacement.model_dump()
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
@@ -1647,14 +1671,15 @@ class TestTombstoneReconciliation:
 
         # The live node matched, so no revive was posted and no row was created.
         assert entity_posts(owned_pmmsyncer.inventory_api) == []
-        # The tombstone still reached absence handling, which held it.
         assert await _absence_rows(session) == []
         assert (
-            owned_pmmsyncer.sync_items[
-                (SyncInventoryEntityTypeEnum.NODE, local_node.id)
-            ].status
-            == SyncStatusEnum.SUCCESS
-        )
+            SyncInventoryEntityTypeEnum.NODE,
+            replacement.id,
+        ) in owned_pmmsyncer.sync_items
+        assert (
+            SyncInventoryEntityTypeEnum.NODE,
+            local_node.id,
+        ) not in owned_pmmsyncer.sync_items
 
     @pytest.mark.asyncio
     async def test_unmatched_external_id_always_creates(
@@ -1678,7 +1703,7 @@ class TestTombstoneReconciliation:
 
         await owned_pmmsyncer.perform_node_sync(
             local_node,
-            self._node_reporting(local_node, service_id="svc-new", port=3306),
+            _node_reporting(local_node, service_id="svc-new", port=3306),
         )
 
         owned_pmmsyncer.inventory_api.post.assert_awaited_once()
@@ -1708,7 +1733,7 @@ class TestTombstoneReconciliation:
 
         await owned_pmmsyncer.perform_node_sync(
             local_node,
-            self._node_reporting(local_node, service_id="svc-new", port=3306),
+            _node_reporting(local_node, service_id="svc-new", port=3306),
         )
 
         owned_pmmsyncer.inventory_api.post.assert_awaited_once()
@@ -1820,12 +1845,245 @@ class TestTombstoneReconciliation:
         owned_pmmsyncer.inventory_api.post.return_value = replacement.model_dump()
 
         await owned_pmmsyncer.perform_node_sync(
-            local_node, self._node_reporting(local_node, service_id="svc-new")
+            local_node, _node_reporting(local_node, service_id="svc-new")
         )
 
         owned_pmmsyncer.inventory_api.post.assert_awaited_once()
         assert owned_pmmsyncer.inventory_api.post.await_args.args[0] == (
             f"/nodes/{local_node.id}/services/"
+        )
+
+
+class TestTombstonesOpenNoSyncItem:
+    """Test that a full run opens no SyncItem for an entity it retired earlier."""
+
+    @staticmethod
+    def _service_of(created_node: CreatedNode, **fields: Any) -> CreatedService:
+        """Attach one PMM service with a persistable id to ``created_node``.
+
+        :param created_node: The node the service belongs to.
+        :param fields: Fields overriding the factory's defaults.
+        :return: The attached service.
+        """
+        service = CreatedServiceFactory.build(
+            id=7,
+            external_id="pmm-service-1",
+            node_id=created_node.id,
+            type=ServiceTypeEnum.MYSQL,
+            **fields,
+        )
+        created_node.services = [service]
+        return service
+
+    @staticmethod
+    async def _run_generation(
+        session: AsyncSession,
+        mock_pmm_api: AsyncMock,
+        mock_remote_api: AsyncMock,
+        local_node: CreatedNode,
+        snapshot: PMMInventorySnapshot,
+    ) -> PMMSyncer:
+        """Run one full generation on a fresh syncer, closed as ``__aexit__`` would.
+
+        :param session: The database session the run writes through.
+        :param mock_pmm_api: The PMM client the snapshot is read from.
+        :param mock_remote_api: The inventory client the local nodes are read from.
+        :param local_node: The node the inventory reports.
+        :param snapshot: What PMM reports this generation.
+        :return: The syncer after the run is closed.
+        """
+        mock_remote_api.get.side_effect = [local_nodes_payload(local_node)]
+        mock_remote_api.put.return_value = local_node.model_dump()
+        mock_pmm_api.get_inventory_snapshot = AsyncMock(return_value=snapshot)
+        syncer = await _own_run(
+            _build_pmmsyncer(mock_pmm_api, mock_remote_api), session
+        )
+        await syncer.sync_inventory()
+        await close_run(
+            session,
+            syncer.sync_instance.id,
+            snapshot_complete=syncer._snapshot_complete,
+        )
+        return syncer
+
+    @staticmethod
+    async def _items(
+        session: AsyncSession, syncer: PMMSyncer
+    ) -> dict[tuple[SyncInventoryEntityTypeEnum, int | None], SyncStatusEnum]:
+        """Return the status of every SyncItem the run persisted.
+
+        :param session: The database session the run wrote through.
+        :param syncer: The syncer whose run to read.
+        :return: Each item's status, keyed by ``(entity_type, entity_id)``.
+        """
+        items = await SyncItemManager.list(
+            session, sync_instance_id=syncer.sync_instance.id
+        )
+        return {(item.entity_type, item.entity_id): item.status for item in items}
+
+    @staticmethod
+    async def _run_status(session: AsyncSession, syncer: PMMSyncer) -> SyncStatusEnum:
+        """Return the status the run was finalized with.
+
+        :param session: The database session the run wrote through.
+        :param syncer: The syncer whose run to read.
+        :return: The persisted run status.
+        """
+        await session.refresh(syncer.sync_instance)
+        return syncer.sync_instance.status
+
+    @pytest.mark.asyncio
+    async def test_absent_tombstoned_node_gets_no_item_in_any_generation(
+        self, local_node, session, mock_pmm_api, mock_remote_api
+    ):
+        """Open no item for a tombstone PMM keeps omitting, run after run."""
+        local_node.source = SourceEnum.PMM
+        local_node.retired_at = utc_now()
+
+        syncers = [
+            await self._run_generation(
+                session, mock_pmm_api, mock_remote_api, local_node, _snapshot()
+            )
+            for _ in range(2)
+        ]
+
+        for syncer in syncers:
+            assert await self._items(session, syncer) == {
+                (SyncInventoryEntityTypeEnum.INVENTORY, None): SyncStatusEnum.SUCCESS
+            }
+            assert await self._run_status(session, syncer) == SyncStatusEnum.SUCCESS
+        mock_remote_api.delete.assert_not_awaited()
+        assert await _absence_rows(session) == []
+
+    @pytest.mark.asyncio
+    async def test_absent_tombstoned_service_gets_no_item_in_any_generation(
+        self, local_node, session, mock_pmm_api, mock_remote_api
+    ):
+        """Open no item for a tombstoned service under a node PMM still reports."""
+        local_node.source = SourceEnum.PMM
+        service = self._service_of(local_node, retired_at=utc_now())
+
+        syncers = [
+            await self._run_generation(
+                session,
+                mock_pmm_api,
+                mock_remote_api,
+                local_node,
+                _snapshot(_remote_node(local_node)),
+            )
+            for _ in range(2)
+        ]
+
+        for syncer in syncers:
+            assert await self._items(session, syncer) == {
+                (SyncInventoryEntityTypeEnum.INVENTORY, None): SyncStatusEnum.SUCCESS,
+                (SyncInventoryEntityTypeEnum.NODE, local_node.id): (
+                    SyncStatusEnum.SUCCESS
+                ),
+            }
+        assert (SyncInventoryEntityTypeEnum.SERVICE, service.id) not in {
+            key for syncer in syncers for key in await self._items(session, syncer)
+        }
+        mock_remote_api.delete.assert_not_awaited()
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "diagnostics",
+        [
+            pytest.param({"invalid_nodes": 1}, id="incomplete-generation"),
+            pytest.param({"filtered_node_ids": {"pmm-node-1"}}, id="filtered"),
+        ],
+    )
+    async def test_absent_tombstone_is_skipped_rather_than_held(
+        self, local_node, session, mock_pmm_api, mock_remote_api, diagnostics
+    ):
+        """Open no item for a tombstone even when absence handling would hold it."""
+        local_node.source = SourceEnum.PMM
+        local_node.retired_at = utc_now()
+
+        syncer = await self._run_generation(
+            session, mock_pmm_api, mock_remote_api, local_node, _snapshot(**diagnostics)
+        )
+
+        assert await self._items(session, syncer) == {
+            (SyncInventoryEntityTypeEnum.INVENTORY, None): SyncStatusEnum.SUCCESS
+        }
+        mock_remote_api.delete.assert_not_awaited()
+        assert await _absence_rows(session) == []
+
+    @pytest.mark.asyncio
+    async def test_absent_tombstoned_node_skips_its_active_services(
+        self, local_node, session, mock_pmm_api, mock_remote_api
+    ):
+        """Open no item under a tombstone, even for a service still marked active."""
+        local_node.source = SourceEnum.PMM
+        local_node.retired_at = utc_now()
+        self._service_of(local_node, retired_at=None)
+
+        syncer = await self._run_generation(
+            session, mock_pmm_api, mock_remote_api, local_node, _snapshot()
+        )
+
+        assert await self._items(session, syncer) == {
+            (SyncInventoryEntityTypeEnum.INVENTORY, None): SyncStatusEnum.SUCCESS
+        }
+        mock_remote_api.delete.assert_not_awaited()
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+
+    @pytest.mark.asyncio
+    async def test_revived_node_is_synced_as_live_on_the_next_generation(
+        self, local_node, session, mock_pmm_api, mock_remote_api
+    ):
+        """Sync a revived node normally afterwards, without reviving it again."""
+        local_node.source = SourceEnum.PMM
+        local_node.retired_at = utc_now()
+        snapshot = _snapshot(_remote_node(local_node))
+
+        revived = await self._run_generation(
+            session, mock_pmm_api, mock_remote_api, local_node, snapshot
+        )
+        # The inventory reports the row live from here on, as the revive left it.
+        local_node.retired_at = None
+        live = await self._run_generation(
+            session, mock_pmm_api, mock_remote_api, local_node, snapshot
+        )
+
+        assert entity_posts(mock_remote_api) == [f"/nodes/{local_node.id}/revive"]
+        for syncer in (revived, live):
+            items = await self._items(session, syncer)
+            assert items[(SyncInventoryEntityTypeEnum.NODE, local_node.id)] == (
+                SyncStatusEnum.SUCCESS
+            )
+            assert await self._run_status(session, syncer) == SyncStatusEnum.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_reappearing_tombstoned_service_is_revived_and_synced(
+        self, local_node, session, mock_pmm_api, mock_remote_api
+    ):
+        """Revive a returning service and open its item once it is live again."""
+        local_node.source = SourceEnum.PMM
+        service = self._service_of(local_node, retired_at=utc_now())
+
+        syncer = await self._run_generation(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            local_node,
+            _snapshot(
+                _node_reporting(
+                    local_node,
+                    service_id=service.external_id,
+                    service_name=service.name,
+                    node_id=local_node.external_id,
+                )
+            ),
+        )
+
+        assert entity_posts(mock_remote_api) == [f"/services/{service.id}/revive"]
+        items = await self._items(session, syncer)
+        assert items[(SyncInventoryEntityTypeEnum.SERVICE, service.id)] == (
+            SyncStatusEnum.SUCCESS
         )
 
 
@@ -1907,7 +2165,7 @@ class TestNodeIdentityIsNeverInferredFromANaturalKey:
     ):
         """Create a second node for a new upstream id sharing an existing name."""
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         reregistered = _remote_node(local_node)
         reregistered.external_id = "pmm-node-1-reregistered"
@@ -1936,7 +2194,7 @@ class TestNodeIdentityIsNeverInferredFromANaturalKey:
         """
         local_node.address = "10.0.0.1"
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         reregistered = _remote_node(local_node)
         reregistered.external_id = "pmm-node-1-reregistered"
@@ -1980,7 +2238,7 @@ class TestMirroredEntityLevels:
         local_node.retired_at = None
         local_node.source = SourceEnum.PMM
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.inventory_api.put.return_value = local_node.model_dump()
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
@@ -2008,7 +2266,7 @@ class TestMirroredEntityLevels:
         local_node.retired_at = None
         local_node.source = SourceEnum.PMM
         owned_pmmsyncer.inventory_api.get.side_effect = [
-            _local_nodes_payload(local_node)
+            local_nodes_payload(local_node)
         ]
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=_snapshot()

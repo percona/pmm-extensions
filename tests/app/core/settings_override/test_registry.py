@@ -20,13 +20,15 @@ from string import Template
 from typing import ClassVar
 
 import pytest
-from pydantic import BaseModel, SecretBytes, SecretStr
+from pydantic import BaseModel, computed_field, Field, SecretBytes, SecretStr
 
 from app.core.alerts.config import AlertSettings
 from app.core.alerts.models import BaseAlertProvider
+from app.core.config import BaseYamlSettings, Settings
 from app.core.settings_override.registry import (
     _clear_cached_properties,
     chain_has_advanced,
+    computed_field_info,
     field_materializer,
     field_reload_classification,
     hot_field,
@@ -626,3 +628,102 @@ class TestUnwrapSecretsForStorage:
         assert unwrap_secrets_for_storage(
             [SecretStr("first"), "plain", (SecretBytes(b"second"),)]
         ) == ["first", "plain", ["second"]]
+
+
+class _ComputedFixtureSettings(BaseYamlSettings):
+    """Expose an excluded input beside a computed field, as ``Settings`` does."""
+
+    SETTINGS_PREFIXES: ClassVar[list[str]] = ["COMPUTED_FIXTURE"]
+
+    PLAIN: str = "visible"
+    HIDDEN_INPUT: SecretStr | None = Field(default=None, exclude=True)
+
+    @computed_field
+    @property
+    def derived(self) -> SecretStr:
+        """Return the resolved value callers read.
+
+        The body below the summary line exists to pin that only the summary
+        reaches the API description.
+
+        :return: The resolved value.
+        """
+        return self.HIDDEN_INPUT or SecretStr("derived")
+
+
+class TestIterClassFieldsKeySet:
+    """Pin the key set to the one ``model_dump()`` produces."""
+
+    def test_excluded_field_is_not_enumerated(self) -> None:
+        """Omit a field declared ``exclude=True``; it is not public surface."""
+        keys = {meta.key for meta in iter_class_fields(_ComputedFixtureSettings)}
+        assert "HIDDEN_INPUT" not in keys
+        assert "PLAIN" in keys
+
+    def test_computed_field_is_enumerated(self) -> None:
+        """Surface a computed field alongside the declared ones."""
+        metas = {meta.key: meta for meta in iter_class_fields(_ComputedFixtureSettings)}
+        assert metas["derived"].annotation is SecretStr
+        assert metas["derived"].is_secret is True
+        assert metas["derived"].is_complex is False
+
+    def test_computed_field_is_not_overridable(self) -> None:
+        """Classify a computed field NOT_OVERRIDABLE; it carries no reload marker."""
+        meta = next(
+            m for m in iter_class_fields(_ComputedFixtureSettings) if m.key == "derived"
+        )
+        assert meta.reload is ReloadClassification.NOT_OVERRIDABLE
+
+    def test_computed_field_description_is_the_summary_line(self) -> None:
+        """Trim the docstring Pydantic backfills down to its summary line."""
+        meta = next(
+            m for m in iter_class_fields(_ComputedFixtureSettings) if m.key == "derived"
+        )
+        assert meta.description == "Return the resolved value callers read."
+
+    def test_computed_field_info_is_none_for_a_declared_field(self) -> None:
+        """Answer ``None`` for a key ``model_fields`` already owns."""
+        assert computed_field_info(_ComputedFixtureSettings, "PLAIN") is None
+        assert computed_field_info(_ComputedFixtureSettings, "derived") is not None
+
+
+class TestSettingsInternalTokenKeys:
+    """Pin the ``Settings`` keys the admin settings API advertises."""
+
+    def test_resolved_token_replaces_the_settable_input(self) -> None:
+        """Assert the computed ``EXTENSIONS_INTERNAL_TOKEN`` is listed, never its excluded input."""
+        keys = {meta.key for meta in iter_class_fields(Settings)}
+        assert "EXTENSIONS_INTERNAL_TOKEN" in keys
+        assert "EXTENSIONS_INTERNAL_TOKEN_INPUT" not in keys
+
+    def test_internal_token_stays_secret_and_not_overridable(self) -> None:
+        """Keep the token masked and closed to overrides through the computed field."""
+        meta = next(
+            m
+            for m in iter_class_fields(Settings)
+            if m.key == "EXTENSIONS_INTERNAL_TOKEN"
+        )
+        assert meta.is_secret is True
+        assert meta.reload is ReloadClassification.NOT_OVERRIDABLE
+
+    def test_internal_token_description_is_operator_facing(self) -> None:
+        """Describe the token for an operator rather than echoing its docstring.
+
+        Docstrings here open in imperative mood, which reads as an instruction
+        once the settings page renders it, so the computed field declares its
+        own description instead of inheriting the summary line.
+        """
+        meta = next(
+            m
+            for m in iter_class_fields(Settings)
+            if m.key == "EXTENSIONS_INTERNAL_TOKEN"
+        )
+        assert meta.description == (
+            "The internal service-to-service token. Derived from SECRET_KEY "
+            "when no explicit value is configured."
+        )
+
+    def test_base_dir_is_advertised(self) -> None:
+        """Assert ``BASE_DIR`` is listed: matching ``model_dump()`` adds every computed key."""
+        keys = {meta.key for meta in iter_class_fields(Settings)}
+        assert "BASE_DIR" in keys
