@@ -32,6 +32,7 @@ batching by host is both fewer Nomad jobs and less duplicated work.
 import asyncio
 import json
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -59,17 +60,43 @@ REQUIREMENTS = "pymongo>=4.6,<5"
 JOB_ID_PREFIX = "om"
 PROBE_PAYLOAD_PATH = Path(payload_pkg.__file__).parent / "probe.py"
 
-# Bounds with_capacity_retry both ways: at most this many tries, and -- since the
-# backoff is 1, 2, 4, ... seconds -- at most a handful of seconds of extra wait
-# before it gives up and lets the caller's own failure handling take over.
-CAPACITY_RETRY_ATTEMPTS = 3
+# Bounds with_capacity_retry both ways, whichever runs out first.
+#
+# The wall-clock budget is the one that has to be sized deliberately: what a retry
+# has to outlast here is the dispatch lock's stale-row sweep in
+# `_dispatch_queue_item` (app/tasks/celery.py), which only clears a lock older
+# than 30 seconds, so a shorter budget cannot clear an orphaned one at all. An
+# attempt count on its own cannot express that, because attempt cost varies by
+# four orders of magnitude: an attempt refused by an existing lock row returns a
+# 409 in milliseconds, while one that ends in the pool's own connection timeout
+# costs a full 10 seconds. The same three attempts therefore span anywhere from
+# ~3s to ~33s, and the previous budget of three attempts over 1+2s of backoff
+# could not reach 30 seconds by any path.
+CAPACITY_RETRY_BUDGET_SECONDS = 40.0
+# The attempt cap is the secondary bound, and stops a refusal that returns
+# instantly from spinning through the budget.
+CAPACITY_RETRY_ATTEMPTS = 8
 _CAPACITY_RETRY_BASE_DELAY_SECONDS = 1.0
+# Caps the doubling, so the tail of the budget is spent on several late attempts
+# rather than on one long sleep that ends just as the budget does.
+_CAPACITY_RETRY_MAX_DELAY_SECONDS = 8.0
 
 #: Substring `_dispatch_queue_item` (app/tasks/celery.py) puts in a 409's detail
 #: when its own dispatch-lock row collided. Matched rather than the bare status
 #: code so a 409 for an unrelated reason (e.g. "Queue item is not in a pending
 #: state") still fails immediately instead of being retried into a longer hang.
 _DISPATCH_LOCK_CONFLICT_MARKER = "DispatchLock"
+
+#: Matches the 409 `_raise_if_identical_task_conflict` (app/tasks/celery.py) raises
+#: when an active queue item already carries this exact request, capturing that
+#: item's id. Parsed out of the message because the id is not returned as a field;
+#: see `_adopted_queue_item_id` for why it is worth parsing anyway.
+#:
+#: Deliberately matched on the whole phrase, not on a bare `\((\d+)\)`: the same
+#: guard raises a second 409 that also names an id, "In-flight queue item (N)
+#: cannot be compared ...", and that one means the requests could *not* be shown
+#: identical, so adopting the item it names would be unsound.
+_IDENTICAL_QUEUE_ITEM_RE = re.compile(r"Identical queue item already running \((\d+)\)")
 
 T = TypeVar("T")
 
@@ -87,13 +114,23 @@ def _is_dispatch_lock_race(err: Exception) -> bool:
     """Return whether ``err`` is a same-content dispatch racing its own lock row.
 
     ``_dispatch_queue_item`` computes its lock name as a hash of exactly
-    ``{task_id, task, target, payload, meta}`` and deletes the row in a
-    ``finally`` right after dispatching — the lock's whole lifetime is one
-    dispatch call, not this probe's. So a collision here means another request
-    with byte-identical content (this same host, dispatched again before the
-    first attempt's ``finally`` ran) is racing this one, not that a long-running
-    duplicate is genuinely still in flight. Waiting a moment and asking again
-    is correct, not a way of hiding a real conflict.
+    ``{task_id, task, target, payload, meta}``, so a collision means a request
+    with byte-identical content, this same host dispatched again, is contending
+    with this one rather than a real conflict being hidden. Waiting and asking
+    again is the correct response either way.
+
+    What the wait has to cover is not obvious, and is why
+    :data:`CAPACITY_RETRY_BUDGET_SECONDS` is sized the way it is. The lock is
+    deleted in a ``finally``, but that ``finally`` guards only the dispatch
+    itself: the lock row is committed one frame earlier, inside
+    ``DispatchLockManager.create``, and ``CRUDBase.save`` then issues a
+    post-commit ``session.refresh`` needing a *second* checkout from the same
+    pool. When the pool is exhausted that refresh raises, the row is already
+    committed, and the ``try`` that would have released it was never entered.
+    The lock is then orphaned, and nothing clears it until the caller's own
+    30-second stale-row sweep. So the collision a retry meets here can just as
+    easily be this probe's own failed first attempt as another dispatch, and it
+    can outlive that attempt by the full 30 seconds.
 
     :param err: The exception a retried call raised.
     :return: Whether it is worth retrying.
@@ -101,6 +138,36 @@ def _is_dispatch_lock_race(err: Exception) -> bool:
     return isinstance(
         err, HTTPConflictException
     ) and _DISPATCH_LOCK_CONFLICT_MARKER in str(err.detail)
+
+
+def _adopted_queue_item_id(err: Exception) -> int | None:
+    """Return the id of an in-flight queue item this dispatch should adopt.
+
+    ``_raise_if_identical_task_conflict`` refuses a request an active queue item
+    already carries, naming that item. It is not a failure of this host's probe:
+    it says the exact probe being asked for is already running, so the answer is
+    on its way and this call need only wait for it.
+
+    Adopting is sound because of what the guard compares before raising: same
+    ``task``, same ``target``, the same meta clauses, and
+    ``_encrypted_leaves_match`` over the payload. The item it names therefore
+    produces the byte-identical result this dispatch would have produced itself.
+
+    Worth handling rather than retrying, because a retry cannot make the
+    conflict go away: the item stays active for as long as the probe takes, so
+    the attempts are spent waiting for a result already being computed and the
+    host is recorded failed anyway. It is also reachable without a second
+    caller, since ``with_capacity_retry`` retries the pool's 503 and that retry
+    is not idempotent; the enqueue can land while the client sees the refusal,
+    and the next attempt then collides with its own earlier item.
+
+    :param err: The exception the dispatch call raised.
+    :return: The queue item id to adopt, or ``None`` if this is not that conflict.
+    """
+    if not isinstance(err, HTTPConflictException):
+        return None
+    match = _IDENTICAL_QUEUE_ITEM_RE.search(str(err.detail))
+    return int(match.group(1)) if match else None
 
 
 async def with_capacity_retry(call: Callable[[], Awaitable[T]]) -> T:
@@ -117,16 +184,21 @@ async def with_capacity_retry(call: Callable[[], Awaitable[T]]) -> T:
 
     Left uncapped this would be indistinguishable from a hang: retrying forever
     on a pool that stays saturated blocks the semaphore slot this host holds,
-    which is exactly what starves the *other* queued hosts of a turn. Bounded
-    both ways — a fixed attempt count, and an exponential backoff that is itself
-    bounded by that count — caps how long one host can hold its slot before this
-    gives up and lets the ordinary failure path record it.
+    which is exactly what starves the *other* queued hosts of a turn. So it is
+    bounded two ways and stops at whichever runs out first — a wall-clock budget
+    sized to outlast the dispatch lock's own stale-row sweep (see
+    :data:`CAPACITY_RETRY_BUDGET_SECONDS`), and an attempt cap for a refusal that
+    returns too fast for that budget to bound anything on its own.
+
+    The budget is checked against the *next* sleep rather than after it, so this
+    never sleeps past the deadline only to give up on waking.
 
     :param call: Zero-argument async callable to retry.
     :return: Whatever ``call`` returns, once it stops raising.
-    :raises Exception: Whatever ``call`` last raised, once every attempt is spent,
+    :raises Exception: Whatever ``call`` last raised, once either bound is spent,
         or immediately for any exception neither predicate recognises.
     """
+    deadline = monotonic() + CAPACITY_RETRY_BUDGET_SECONDS
     for attempt in range(CAPACITY_RETRY_ATTEMPTS):
         try:
             return await call()
@@ -134,7 +206,13 @@ async def with_capacity_retry(call: Callable[[], Awaitable[T]]) -> T:
             transient = _is_pool_capacity_error(err) or _is_dispatch_lock_race(err)
             if not transient or attempt == CAPACITY_RETRY_ATTEMPTS - 1:
                 raise
-            await asyncio.sleep(_CAPACITY_RETRY_BASE_DELAY_SECONDS * 2**attempt)
+            delay = min(
+                _CAPACITY_RETRY_BASE_DELAY_SECONDS * 2**attempt,
+                _CAPACITY_RETRY_MAX_DELAY_SECONDS,
+            )
+            if monotonic() + delay >= deadline:
+                raise
+            await asyncio.sleep(delay)
     raise AssertionError("unreachable: the loop above always returns or raises")
 
 
@@ -402,21 +480,33 @@ async def probe_host(
     # duration, and this number is only ever read as an interval.
     started = monotonic()
     try:
-        created = await with_capacity_retry(
-            lambda: tasks_api.post(
-                f"/execute/{RUN_PYTHON_TASK}",
-                json={
-                    "meta": {
-                        "target": executor_host,
-                        "config": build_config(entries),
-                        "requirements": REQUIREMENTS,
-                        "_job_id_prefix": JOB_ID_PREFIX,
+        try:
+            created = await with_capacity_retry(
+                lambda: tasks_api.post(
+                    f"/execute/{RUN_PYTHON_TASK}",
+                    json={
+                        "meta": {
+                            "target": executor_host,
+                            "config": build_config(entries),
+                            "requirements": REQUIREMENTS,
+                            "_job_id_prefix": JOB_ID_PREFIX,
+                        },
+                        "payload": f"file://{PROBE_PAYLOAD_PATH}",
+                        "anonymize_mask": 0,
                     },
-                    "payload": f"file://{PROBE_PAYLOAD_PATH}",
-                    "anonymize_mask": 0,
-                },
+                )
             )
-        )
+        except Exception as err:
+            adopted = _adopted_queue_item_id(err)
+            if adopted is None:
+                raise
+            logger.info(
+                "OM inventory: %s already has an identical probe in flight, "
+                "adopting history %s instead of dispatching a second one",
+                executor_host,
+                adopted,
+            )
+            created = {"id": adopted}
         if not isinstance(created, dict) or "id" not in created:
             result.error = "Tasks API did not return a task history id"
             return result
