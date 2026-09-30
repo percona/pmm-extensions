@@ -278,7 +278,7 @@
 | app/extensions/apps/om\_inventory/celery.py                                                                                         |       11 |        2 |        0 |        0 |     82% |     51-54 |
 | app/extensions/apps/om\_inventory/config.py                                                                                         |       26 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/crud.py                                                                                           |      134 |        4 |       38 |        2 |     97% |328-\>332, 331, 402, 411-417 |
-| app/extensions/apps/om\_inventory/dispatch.py                                                                                       |      150 |       15 |       42 |        7 |     88% |138, 266-267, 269, 274-\>260, 296, 377-383, 421-422, 450 |
+| app/extensions/apps/om\_inventory/dispatch.py                                                                                       |      170 |       16 |       48 |        8 |     88% |214, 216, 344-345, 347, 352-\>338, 374, 455-461, 511-512, 540 |
 | app/extensions/apps/om\_inventory/enumeration.py                                                                                    |       50 |        1 |       16 |        1 |     97% |142-\>146, 155 |
 | app/extensions/apps/om\_inventory/inventory.py                                                                                      |       22 |       11 |        2 |        0 |     46% |72-82, 98-117 |
 | app/extensions/apps/om\_inventory/mapping.py                                                                                        |       46 |        1 |       14 |        1 |     97% |       115 |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33734** | **1920** | **8150** |  **680** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33754** | **1921** | **8156** |  **681** | **93%** |           |
 
 
 ## Setup coverage badge
