@@ -383,11 +383,13 @@ class RetirableManagerMixin(BaseSQLModelManager):
     on the hydration query alone, returning a short page whose ``total`` does not
     match it.
 
+    :cvar Model: The retirable model class this manager handles.
     :cvar include_retired: Whether reads through this manager see tombstones.
     :cvar retirement_subtree: The descendant models retirement cascades into,
         nearest first, each paired with the foreign key naming its own parent.
     """
 
+    Model: type[RetirableSQLModel]
     include_retired: ClassVar[bool] = False
     retirement_subtree: ClassVar[tuple[tuple[type[RetirableSQLModel], str], ...]] = ()
 
