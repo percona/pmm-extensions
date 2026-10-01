@@ -424,6 +424,20 @@ class TestGetUsernameMapping:
         assert result == {}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("exc", [RuntimeError("no provider"), TypeError("bad")])
+    async def test_unexpected_exception_returns_empty_dict(
+        self, exc: Exception, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Assert any provider exception returns an empty dict and logs a traceback."""
+        with patch(
+            "app.extensions.deps.User.get_actors",
+            new=AsyncMock(side_effect=exc),
+        ):
+            result = await get_username_mapping()
+        assert result == {}
+        assert any(r.exc_info for r in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_http_exception_returns_empty_dict(self) -> None:
         """Assert an HTTPException from the provider returns an empty dict."""
         with patch(

@@ -45,6 +45,13 @@ export interface TaskLogsState {
   streamStatus: StreamStatus;
   finishStatus?: FinishStatus;
   error?: StreamError;
+  /**
+   * Whether a reconnect resumed from the received offsets. Those offsets are
+   * live-stream offsets, which the persisted log of a run that finished
+   * meanwhile does not share, so a resumed log is only trustworthy once
+   * reloaded in full.
+   */
+  resumed: boolean;
 }
 
 interface IncomingLog {
@@ -62,12 +69,28 @@ class StreamRetriableAfterRefresh extends Error {}
 // the retry loop permanently. Prevents infinite reconnects after auth failure.
 class StreamFatalError extends Error {}
 
+// Thrown from onmessage on a 409 so onerror can schedule a backoff reconnect;
+// aborting instead would end fetchEventSource's retry loop.
+class StreamNotStartedYet extends Error {}
+
+/**
+ * Backoff before each reconnect while the run has not started yet (409).
+ *
+ * One entry per consecutive retry that receives no log line, so the budget is
+ * about 35 s; any accepted log line restarts it.
+ */
+export const NOT_STARTED_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 10000, 10000] as const;
+
 /**
  * SSE-backed log stream for a task history.
  *
  * Single /stream-logs/{id} endpoint covers both running and completed tasks:
  * the server streams historical log lines then emits a `finish` event with
  * terminal status. No REST fallback needed.
+ *
+ * An `extensions-error` with code 409 means the run is not producing output
+ * yet: the stream reconnects with bounded backoff, resuming from the offsets
+ * already received. A 410 (data gone) or any other code is never retried.
  *
  * Uses @microsoft/fetch-event-source so the Bearer token can be attached as a
  * header — the browser EventSource API has no headers option and could only
@@ -88,6 +111,7 @@ export function useTaskLogs(
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
   const [finishStatus, setFinishStatus] = useState<FinishStatus | undefined>();
   const [error, setError] = useState<StreamError | undefined>();
+  const [resumed, setResumed] = useState(false);
 
   const offsetsRef = useRef<Record<string, number>>({});
   // Stable ref so onclose can read current streamStatus without re-registering.
@@ -104,6 +128,7 @@ export function useTaskLogs(
     setStepOrder([]);
     setFinishStatus(undefined);
     setError(undefined);
+    setResumed(false);
     streamStatusRef.current = 'connecting';
     setStreamStatus('connecting');
 
@@ -116,20 +141,30 @@ export function useTaskLogs(
     // Set at every intentional terminal site so onclose can distinguish a clean
     // shutdown from an unexpected connection drop.
     let terminatedCleanly = false;
+    let notStartedAttempts = 0;
 
     const baseUrl = `/stream-logs/${encodeURIComponent(String(taskHistoryId))}`;
-    const url =
-      tail !== undefined && tail > 0
-        ? `${baseUrl}?tail=${encodeURIComponent(String(tail))}`
-        : baseUrl;
+    const buildUrl = () => {
+      const params = Object.entries(offsetsRef.current).map(
+        ([key, offset]) => `${encodeURIComponent(`${key}_offset`)}=${offset}`,
+      );
+      if (params.length && !disposed) {
+        setResumed(true);
+      }
+      if (tail !== undefined && tail > 0) {
+        params.unshift(`tail=${encodeURIComponent(String(tail))}`);
+      }
+      return params.length ? `${baseUrl}?${params.join('&')}` : baseUrl;
+    };
 
-    fetchEventSource(url, {
+    fetchEventSource(baseUrl, {
       signal: ctrl.signal,
       openWhenHidden: true,
 
       // Custom fetch so we can inject a fresh token on every (re)connect,
-      // including after a 401-triggered refresh.
-      fetch: (input, init) => {
+      // including after a 401-triggered refresh, and resume a reconnect from
+      // the offsets already received (the library re-sends its fixed input).
+      fetch: (_input, init) => {
         // Preserve existing headers (fetchEventSource passes a plain object,
         // but guard against Headers/string[][] just in case).
         const headers = new Headers(init?.headers as HeadersInit | undefined);
@@ -138,7 +173,7 @@ export function useTaskLogs(
         if (currentToken) {
           headers.set('Authorization', `Bearer ${currentToken}`);
         }
-        return globalThis.fetch(input as RequestInfo, { ...init, headers });
+        return globalThis.fetch(buildUrl(), { ...init, headers });
       },
 
       onopen: async (response) => {
@@ -224,6 +259,11 @@ export function useTaskLogs(
           } catch {
             payload = { detail: String(ev.data || 'Unknown stream error') };
           }
+          if (payload.code === 409 && notStartedAttempts < NOT_STARTED_RETRY_DELAYS_MS.length) {
+            streamStatusRef.current = 'connecting';
+            setStreamStatus('connecting');
+            throw new StreamNotStartedYet();
+          }
           setError(payload);
           streamStatusRef.current = 'error';
           setStreamStatus('error');
@@ -257,6 +297,7 @@ export function useTaskLogs(
           return;
         }
         offsetsRef.current[key] = offset;
+        notStartedAttempts = 0;
 
         setTextByStep((prev) => {
           const existing = prev[step] ?? { stdout: '', stderr: '' };
@@ -276,6 +317,11 @@ export function useTaskLogs(
         if (err instanceof StreamFatalError) {
           // State already set in onopen; re-throw to stop the retry loop.
           throw err;
+        }
+        if (err instanceof StreamNotStartedYet) {
+          const delay = NOT_STARTED_RETRY_DELAYS_MS[notStartedAttempts];
+          notStartedAttempts += 1;
+          return delay;
         }
         // Transient network blip — stay in 'connecting' and let fetchEventSource
         // retry with default 1 000 ms backoff.
@@ -307,5 +353,5 @@ export function useTaskLogs(
     };
   }, [taskHistoryId, tail, attempt]);
 
-  return { textByStep, stepOrder, streamStatus, finishStatus, error };
+  return { textByStep, stepOrder, streamStatus, finishStatus, error, resumed };
 }
