@@ -24,9 +24,11 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 from pydantic import UUID4, ValidationError
 
 from app.core.alerts.config import alert_service
+from app.core.exceptions import HTTPBadGatewayException
 from app.core.requests import RemoteAPI
 from app.core.utils.date_time import utc_now
 from app.extensions.crud import SyncInstanceManager, SyncItemManager
@@ -1103,13 +1105,15 @@ async def _statuses(
     return {item.entity_id: item.status for item in items}
 
 
-async def _record_daily_attempt(
-    session, node_id: int, status: SyncStatusEnum, finished_ago: timedelta
+async def _record_attempt(
+    session,
+    syncer: type[SystemFactsSyncer],
+    node_id: int,
+    status: SyncStatusEnum,
+    finished_ago: timedelta,
 ) -> None:
-    """Persist a ``SystemFactsSyncer`` NODE item that last changed ``finished_ago``."""
-    instance = SyncInstance(
-        syncer=SystemFactsSyncer.get_name(), status=SyncStatusEnum.SUCCESS
-    )
+    """Persist one run of ``syncer`` with a NODE item last changed ``finished_ago``."""
+    instance = SyncInstance(syncer=syncer.get_name(), status=SyncStatusEnum.SUCCESS)
     session.add(instance)
     await session.commit()
     await session.refresh(instance)
@@ -1234,7 +1238,7 @@ class TestUnmeasuredHostFactsPass:
     @pytest.mark.parametrize(
         ("pages", "error"),
         [
-            ([OSError("inventory unreachable")], OSError),
+            ([HTTPBadGatewayException("inventory unreachable")], HTTPException),
             ([None], ValidationError),
             ([{}], ValidationError),
             ([{"total": 0, "offset": 0, "limit": 200}], ValidationError),
@@ -1311,13 +1315,89 @@ class TestUnmeasuredHostFactsPass:
         self, session, inventory_api, tasks_api, dispatch, status, dispatched
     ):
         """Hold a host the daily run just finished probing; ignore one in flight."""
-        await _record_daily_attempt(
-            session, FIRST_NODE_ID, status, timedelta(minutes=10)
+        await _record_attempt(
+            session, SystemFactsSyncer, FIRST_NODE_ID, status, timedelta(minutes=10)
         )
 
         await _run_pass(session, inventory_api, tasks_api)
 
         assert dispatch.await_count == int(dispatched)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("failures", "dispatched"),
+        [(3, True), (4, False)],
+        ids=["first-and-two-retries-failed", "first-and-three-retries-failed"],
+    )
+    async def test_the_retry_cap_is_read_from_the_ledger(
+        self, session, inventory_api, tasks_api, dispatch, failures, dispatched
+    ):
+        """Stop attempting a host once its first attempt and three retries failed."""
+        for _ in range(failures):
+            await _record_attempt(
+                session,
+                UnmeasuredHostFactsSyncer,
+                FIRST_NODE_ID,
+                SyncStatusEnum.FAILED,
+                2 * HOUR,
+            )
+
+        await _run_pass(session, inventory_api, tasks_api)
+
+        assert dispatch.await_count == int(dispatched)
+
+    @pytest.mark.asyncio
+    async def test_a_success_in_the_ledger_clears_the_failure_count(
+        self, session, inventory_api, tasks_api, dispatch
+    ):
+        """Attempt a host again when a success followed its capped failures."""
+        for _ in range(4):
+            await _record_attempt(
+                session,
+                UnmeasuredHostFactsSyncer,
+                FIRST_NODE_ID,
+                SyncStatusEnum.FAILED,
+                5 * HOUR,
+            )
+        await _record_attempt(
+            session,
+            UnmeasuredHostFactsSyncer,
+            FIRST_NODE_ID,
+            SyncStatusEnum.SUCCESS,
+            3 * HOUR,
+        )
+
+        await _run_pass(session, inventory_api, tasks_api)
+
+        dispatch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_cap_counts_only_this_hosts_own_failures(
+        self, session, inventory_api, tasks_api, dispatch, fake_inventory
+    ):
+        """Count only a host's own failures, not another host's or the daily run's."""
+        fake_inventory.nodes.append(_node(2))
+        for _ in range(4):
+            await _record_attempt(
+                session,
+                UnmeasuredHostFactsSyncer,
+                FIRST_NODE_ID,
+                SyncStatusEnum.FAILED,
+                2 * HOUR,
+            )
+            await _record_attempt(
+                session,
+                SystemFactsSyncer,
+                FIRST_NODE_ID + 1,
+                SyncStatusEnum.FAILED,
+                2 * HOUR,
+            )
+
+        run_id = await _run_pass(session, inventory_api, tasks_api)
+
+        assert await _statuses(session, run_id, NODE) == {
+            FIRST_NODE_ID + 1: SyncStatusEnum.SUCCESS
+        }
 
     @pytest.mark.asyncio
     async def test_a_host_added_later_is_measured_by_the_next_pass(
@@ -1397,6 +1477,39 @@ class TestConcurrentFirstMeasurement:
         statuses = await _statuses(session, run_id, NODE)
         assert len(statuses) == len(fake_inventory.nodes)
         assert set(statuses.values()) == {SyncStatusEnum.SUCCESS}
+
+    @pytest.mark.asyncio
+    async def test_a_host_is_recorded_while_slower_probes_run(
+        self, session, inventory_api, tasks_api, fake_inventory, mocker
+    ):
+        """Write a fast host's observation before a slower probe returns.
+
+        The slow probe waits for the fast host's observation, so a pass that
+        recorded only after its last probe would time that probe out.
+        """
+        fake_inventory.nodes[:] = [_node(1), _node(2)]
+        first_written = asyncio.Event()
+
+        async def put(path: str, **kwargs: Any) -> dict[str, Any]:
+            written = await fake_inventory.put(path, **kwargs)
+            first_written.set()
+            return written
+
+        inventory_api.put.side_effect = put
+
+        async def probe(self, **meta: Any) -> TaskRunResult:
+            if meta["target"] == "probe-host-2":
+                await asyncio.wait_for(first_written.wait(), timeout=1)
+            return TaskRunResult(1, MEASURED_STDOUT)
+
+        mocker.patch.object(UnmeasuredHostFactsSyncer, "wait_for_task_output", probe)
+
+        run_id = await _run_pass(session, inventory_api, tasks_api)
+
+        assert await _statuses(session, run_id, NODE) == {
+            FIRST_NODE_ID: SyncStatusEnum.SUCCESS,
+            FIRST_NODE_ID + 1: SyncStatusEnum.SUCCESS,
+        }
 
     @pytest.mark.asyncio
     async def test_one_failing_probe_fails_only_its_own_host(

@@ -165,8 +165,9 @@ class SyncItemManager(BaseSQLModelManager):
         session: AsyncSession,
         syncer: str,
         entity_type: SyncInventoryEntityTypeEnum,
-        # pagination-ok: no route reads it; the retry policy needs every attempt
-        # on the given entities, which are bounded by the unmeasured hosts.
+        # pagination-ok: no route reads it, and the retry policy needs every attempt
+        # on the given entities. Rows grow by one per daily run for a host that
+        # stays unmeasured, since sync rows are never pruned.
         entity_ids: Collection[int | None],
     ) -> list[SyncItem]:
         """Return ``syncer``'s finished attempts on the given entities, oldest first.

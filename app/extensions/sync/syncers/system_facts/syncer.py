@@ -535,6 +535,7 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
         :raises pydantic.ValidationError: If a page is not a valid observation page.
         :raises IncompleteObservationsReadError: If fewer rows were read than the
             inventory reported.
+        :raises fastapi.HTTPException: If the inventory API request fails.
         """
         total = 0
 
@@ -618,12 +619,13 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
         :raises pydantic.ValidationError: If an observation page is invalid.
         :raises IncompleteObservationsReadError: If the observation read came up
             short of the inventory's total.
+        :raises fastapi.HTTPException: If an inventory or tasks API request fails.
         """
         if not self.force_executor_host and not await self.get_available_hosts():
             logger.info("No executor hosts available; no host can be measured")
             return []
-        observed = await self.get_observed_node_ids()
         nodes = await self.get_inventory_nodes()
+        observed = await self.get_observed_node_ids()
         unmeasured = [node for node in nodes if node.id not in observed]
         measurable = [node for node in unmeasured if await self.is_measurable(node)]
         candidates = await self._due_by_ledger(measurable)
@@ -669,26 +671,42 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
             return await SystemFactsSyncer.fetch_node(self, node)
 
     async def perform_inventory_sync(self) -> None:
-        """Probe every candidate concurrently, then record each one in turn."""
+        """Probe every candidate concurrently, recording each one as its probe ends.
+
+        Recording on completion rather than after the last probe keeps the run's
+        items progressing, so the stale-run reclaim never mistakes a long pass for an
+        abandoned one, and a host's observation is written as soon as it is measured.
+        The recording itself stays on this coroutine, the only one using the session.
+        A probe still in flight when the walk is interrupted is cancelled.
+        """
         candidates = await self.get_unmeasured_candidates()
         limit = asyncio.Semaphore(self.FIRST_MEASUREMENT_CONCURRENCY)
-        outcomes = await asyncio.gather(
-            *(self._probe(node, limit) for node in candidates),
-            return_exceptions=True,
-        )
-        self._prefetched = dict(
-            zip((node.id for node in candidates), outcomes, strict=True)
-        )
-        for node in candidates:
-            await self.sync_node(node)
+        pending = {
+            asyncio.create_task(self._probe(node, limit)): node for node in candidates
+        }
+        try:
+            while pending:
+                done, _ = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    node = pending.pop(task)
+                    self._prefetched[node.id] = task.exception() or task.result()
+                    await self.sync_node(node)
+        finally:
+            for task in pending:
+                task.cancel()
 
     async def fetch_node(self, created_node: CreatedNode) -> Node | None:
         """Replay the node's probe outcome, raising the error a failed probe raised.
 
-        A node with no gathered outcome, as in a per-node sync, is probed directly.
+        A node with no recorded outcome, as in a per-node sync, is probed directly,
+        outside the candidate filter and the retry policy.
 
         :param created_node: The node to collect facts for.
         :return: The node, as the probe returned it.
+        :raises Exception: Whatever the node's probe raised, such as the
+            ``TimeoutError`` or ``ValueError`` of a timed-out or failed task.
         """
         if created_node.id not in self._prefetched:
             return await super().fetch_node(created_node)
