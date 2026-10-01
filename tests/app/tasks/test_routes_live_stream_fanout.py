@@ -348,27 +348,31 @@ async def test_a_cancelled_lookup_keeps_its_executor_until_the_thread_ends(
 ) -> None:
     """Defer a retirement close until a cancelled lookup's worker thread is done.
 
-    A viewer disconnecting mid-lookup cancels the awaiting task, but the worker
-    thread keeps using the executor's Nomad client.
+    A viewer disconnecting mid-lookup cancels the awaiting task, under AnyIO
+    repeatedly, but the worker thread keeps using the executor's Nomad client.
     """
     nomad_stub.allocation_delay = SLOW_ALLOCATION_LOOKUP
     executor = await NomadExecutor(
         endpoint=nomad_stub.endpoint, verify_ssl=False
     ).open()
     lookup = asyncio.create_task(
-        executor._get_last_allocation_held(nomad_stub.job_id, nomad_stub.eval_id)
+        executor.run_in_thread_held(
+            executor.get_last_allocation, nomad_stub.job_id, nomad_stub.eval_id
+        )
     )
     await asyncio.sleep(SLOW_ALLOCATION_LOOKUP / 4)
-    lookup.cancel()
-    await asyncio.sleep(0)
+    for _ in range(2):
+        lookup.cancel()
+        await asyncio.sleep(0)
+    with suppress(asyncio.CancelledError):
+        await lookup
     await executor.close_when_idle()
     open_while_thread_runs = executor.session is not None
 
-    with suppress(asyncio.CancelledError):
-        await lookup
+    await asyncio.gather(*executor._held_workers)
 
-    assert open_while_thread_runs
     assert lookup.cancelled()
+    assert open_while_thread_runs
     assert executor.session is None
     assert executor._sync_session is None
 

@@ -44,6 +44,7 @@ from app.core.exceptions import (
 )
 from app.core.pagination import PaginatedResponse
 from app.core.pagination.deps import PaginationDep
+from app.core.requests import BaseRemoteAPI
 from app.core.utils import utc_now
 from app.core.utils.fields import NonEmptyStr
 from app.tasks.celery import (
@@ -557,7 +558,12 @@ async def stream_task_history_logs(
     if task_history.status == TaskHistoryStatusEnum.PENDING:
         raise HTTPConflictException("Task history is pending.")
     if task_history.status == TaskHistoryStatusEnum.RUNNING:
-        await asyncio.to_thread(executor.preflight_stream_logs, task_history)
+        if isinstance(executor, BaseRemoteAPI):
+            await executor.run_in_thread_held(
+                executor.preflight_stream_logs, task_history
+            )
+        else:
+            await asyncio.to_thread(executor.preflight_stream_logs, task_history)
         stream_logs_generator = (
             f"{log_line.model_dump_json()}\n" if log_line else ""
             async for log_line in executor.stream_logs(task_history, offsets)

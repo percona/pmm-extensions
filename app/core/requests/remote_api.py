@@ -36,6 +36,7 @@ from collections.abc import (
     AsyncGenerator,
     AsyncIterable,
     AsyncIterator,
+    Callable,
     Generator,
     Iterable,
     Mapping,
@@ -45,7 +46,16 @@ from contextvars import ContextVar, Token
 from functools import cached_property, lru_cache
 from ssl import create_default_context, SSLContext
 from types import SimpleNamespace, TracebackType
-from typing import Annotated, Any, BinaryIO, ClassVar, NoReturn, Self
+from typing import (
+    Annotated,
+    Any,
+    BinaryIO,
+    ClassVar,
+    NoReturn,
+    ParamSpec,
+    Self,
+    TypeVar,
+)
 from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunsplit
 
 from aiohttp import (
@@ -127,6 +137,9 @@ _TRUNCATION_MARKER = "... (truncated)"
 # body (e.g. an nginx HTML 502), letting callers tell a proxy/gateway failure
 # apart from an app-level JSON error at the same status code.
 UPSTREAM_NON_JSON_HEADER = "X-Upstream-Non-JSON"
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 #: Seconds a request may wait for a pooled connection before the wait is logged
 #: as a WARNING: a wait that long means the pool is saturated, not merely busy.
@@ -463,6 +476,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     _stream_session: ClientSession | None = None
     _in_flight: int = 0
     _close_when_idle: bool = False
+    _held_workers: set[asyncio.Future[Any]] = PrivateAttr(default_factory=set)
     _extra_headers: ContextVar[dict[str, str] | None] = PrivateAttr(
         default_factory=lambda: ContextVar("api_extra_headers", default=None)
     )
@@ -684,6 +698,41 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
             if not self._in_flight and self._close_when_idle:
                 self._close_when_idle = False
                 await asyncio.shield(self.close())
+
+    async def run_in_thread_held(
+        self, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        """Run a blocking call in a worker thread, holding this client until it returns.
+
+        Cancelling the caller does not stop the worker thread, which goes on
+        using this client. The hold therefore lives in a task of its own that
+        ends only when the thread does, so a retirement waiting on
+        :meth:`close_when_idle` cannot close the client under it, however often
+        the caller is cancelled.
+
+        :param func: The blocking callable.
+        :param args: Positional arguments for ``func``.
+        :param kwargs: Keyword arguments for ``func``.
+        :return: What ``func`` returns.
+        """
+
+        async def held() -> R:
+            async with self.hold():
+                return await asyncio.to_thread(func, *args, **kwargs)
+
+        worker = asyncio.ensure_future(held())
+        self._held_workers.add(worker)
+        worker.add_done_callback(self._forget_held_worker)
+        return await asyncio.shield(worker)
+
+    def _forget_held_worker(self, worker: asyncio.Future[Any]) -> None:
+        """Drop a finished worker, retrieving its outcome so none goes unreported.
+
+        :param worker: The finished worker.
+        """
+        self._held_workers.discard(worker)
+        if not worker.cancelled():
+            worker.exception()
 
     async def close_when_idle(self) -> None:
         """Close the session now when idle, or once the last consumer releases.

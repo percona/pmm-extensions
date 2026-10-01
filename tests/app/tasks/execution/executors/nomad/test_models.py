@@ -24,6 +24,7 @@ from binascii import b2a_base64
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import datetime, timedelta, UTC
+from itertools import pairwise
 from typing import Any
 from unittest.mock import AsyncMock, call, MagicMock, patch
 
@@ -4534,6 +4535,38 @@ class TestNomadLogStreaming:
         assert params["offset"] == last_offset
 
     @pytest.mark.asyncio
+    async def test_consume_nomad_log_stream_reads_a_character_split_across_chunks(self):
+        """Read a frame whose non-ASCII text ends one chunk mid-character."""
+        frame = json.dumps(
+            {"Offset": 4, "File": "tâche", "Data": b64encode(b"ok\n").decode()},
+            ensure_ascii=False,
+        ).encode()
+        split_at = frame.index("â".encode()) + 1
+        chunks = [frame[:split_at], frame[split_at:]]
+        executor = _build_executor()
+        params = self._log_stream_params("step2")
+        queue = asyncio.Queue()
+
+        with patch.object(
+            executor,
+            "_request",
+            return_value=self._stream_response(self._make_iter_chunks(chunks)),
+        ):
+            await executor._consume_nomad_log_stream(
+                alloc=self._alloc_for_logs("step2"),
+                step="step2",
+                log_type=TaskLogType.STDOUT,
+                queue=queue,
+                params=params,
+                client_timeout=ClientTimeout(sock_read=NOMAD_DEFAULT_TIMEOUT),
+                anonymize_entities=None,
+                pending=WithheldLineBuffer(),
+            )
+
+        logs = await self._drain_task_logs(queue)
+        assert [log.msg for log in logs] == ["ok\n"]
+
+    @pytest.mark.asyncio
     async def test_consume_nomad_log_stream_empty_data_increments_without_recheck(self):
         """Data frame then empty frame increments empty_data_count without recheck (step2)."""
         chunks = [
@@ -5519,6 +5552,72 @@ class TestStreamFile:
             ]
 
         assert b"".join(chunks) == file_content
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_stream_file_anonymizes_off_the_event_loop(self, mock_nomad_cls):
+        """Keep the event loop free while a downloaded chunk is anonymized.
+
+        A slow analysis, such as the first one, which loads the language model,
+        would otherwise stall every stream the worker serves.
+        """
+        slow_anonymization = 1.0
+        mock_nomad_cls.return_value.allocation.get_allocation.return_value = {
+            "ID": "alloc-1"
+        }
+        executor = _build_executor()
+        queue_item = _build_queue_item(
+            tracking={"allocation_id": "alloc-1"},
+        )
+        queue_item.anonymize_mask = PIIEntity.EMAIL_ADDRESS
+        file_content = b"mail me\n"
+        stat_response = AsyncMock()
+        stat_response.raise_for_status = MagicMock()
+        stat_response.json = AsyncMock(
+            return_value={"Size": len(file_content), "IsDir": False}
+        )
+        read_response = AsyncMock()
+        read_response.raise_for_status = MagicMock()
+        read_response.read = AsyncMock(return_value=file_content)
+
+        def mock_request(_method, path, **_kwargs):
+            ctx = AsyncMock()
+            response = stat_response if "stat" in path else read_response
+            ctx.__aenter__ = AsyncMock(return_value=response)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            return ctx
+
+        def slow_anonymize(text: str, _entities: set[PIIEntity]) -> str:
+            time.sleep(slow_anonymization)
+            return text
+
+        ticks: list[float] = []
+        stop = asyncio.Event()
+
+        async def tick() -> None:
+            while not stop.is_set():
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.02)
+
+        ticker = asyncio.create_task(tick())
+        await asyncio.sleep(0)
+        with (
+            patch.object(executor, "_request", side_effect=mock_request),
+            patch(
+                "app.tasks.execution.executors.nomad.models.anonymize_text",
+                side_effect=slow_anonymize,
+            ),
+        ):
+            chunks = [
+                chunk
+                async for chunk in executor.stream_file(queue_item, "/output/a.log")
+            ]
+        ticks.append(time.monotonic())
+        stop.set()
+        await ticker
+
+        assert b"".join(chunks) == file_content
+        assert max(b - a for a, b in pairwise(ticks)) < slow_anonymization / 2
 
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
