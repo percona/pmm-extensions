@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
 # ---
+# title: "Kernel Messages (dmesg)"
+# description: "This script displays the kernel ring buffer messages with human-readable timestamps."
 # allow_extra_args: false
 # sudo: true
 # diagnostic_categories:

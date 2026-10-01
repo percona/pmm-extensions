@@ -414,7 +414,7 @@ default:
       PORT: null
       NAME: tasks.db
     SYNC_LOCK_TTL: 300  # TaskHistory sync lock timeout (seconds)
-    # PENDING_ALLOCATION_TIMEOUT_SECONDS: 3600  # Max seconds a RUNNING row may wait for an allocation to produce TaskStates before escalating to LOST
+    # PENDING_ALLOCATION_TIMEOUT_SECONDS: 3600  # Max seconds a RUNNING row may wait for Nomad to place its work or for its allocation to produce TaskStates before escalating to LOST
     PRE_EXECUTION_CONNECTIVITY_CHECK: warn  # disabled | warn | block
     INVENTORY_SYNC_INTERVAL: null  # Celery beat interval seeded for inventory-sync, e.g. "15 minutes"; null seeds no schedule
     INVENTORY_SYNC_SYNCER: null  # Dotted "module.ClassName" syncer the seeded schedule targets; null runs every configured syncer
