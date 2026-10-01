@@ -51,6 +51,7 @@ from app.tasks.execution.executors.nomad.steps import (
 )
 from app.tasks.models import (
     EXECUTE_TASK_BY_NAME_TASK,
+    FINISHING_SYNC_INTERVAL_SECONDS,
     INVENTORY_COLLECTION_TASK_NAME,
     INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FOLLOWERS_KEY,
@@ -811,11 +812,6 @@ SYSTEM_TASKS = [
         created_by=SYSTEM_USER,
     ),
 ]
-
-#: Tick of the finishing-run probe. A finished run's status must be stored
-#: within 5 s, and the sync the probe dispatches still spends the terminal
-#: log-drain budget first, so the tick leaves most of that bound to the drain.
-FINISHING_SYNC_INTERVAL_SECONDS = 1
 
 SYSTEM_PERIODIC_TASKS = [
     SystemPeriodicTaskSchedule(

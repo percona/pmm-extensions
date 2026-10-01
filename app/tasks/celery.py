@@ -86,6 +86,7 @@ from app.tasks.execution_request_secrets import ENCRYPTED_META_KEYS
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
     DispatchLock,
+    FINISHING_SYNC_INTERVAL_SECONDS,
     SYSTEM_USER,
     Task,
     TaskBackendEnum,
@@ -990,7 +991,9 @@ async def sync_finishing_items() -> None:
     the status, drains the logs and releases the hold. Each claimed history is
     its own Celery task so that concurrent finishers drain in parallel.
 
-    A Nomad failure is logged and left to the sweep, which still covers the run.
+    A failed or slow Nomad listing is logged and left to the sweep, which still
+    covers the run; the listing is bounded by the tick interval, so a hung Nomad
+    cannot pile up probes across the worker pool.
     """
     async_session = get_async_session_maker()
     async with async_session() as session:
@@ -1001,8 +1004,8 @@ async def sync_finishing_items() -> None:
     try:
         ready_job_ids = normalize_nomad_config_value(
             tasks_settings.NOMAD
-        ).capture_hold_ready_job_ids()
-    except BaseNomadException:
+        ).capture_hold_ready_job_ids(timeout=FINISHING_SYNC_INTERVAL_SECONDS)
+    except (BaseNomadException, ValueError):
         logger.warning(
             "Could not list Nomad allocations; leaving finished runs to the sweep",
             exc_info=True,

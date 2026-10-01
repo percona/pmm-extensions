@@ -1186,22 +1186,30 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             )
         return alloc
 
-    def capture_hold_ready_job_ids(self) -> frozenset[str]:
+    def capture_hold_ready_job_ids(self, *, timeout: float) -> frozenset[str]:
         """Return the job IDs whose running allocation is capture-hold ready.
 
         One list call covers every running allocation, so detecting finished runs
-        costs the same whatever the number of RUNNING histories. A hold keeps its
-        allocation ``running`` after the producing steps die, which is why the
-        ``running`` filter cannot miss a hold-ready allocation.
+        costs the same whatever the number of RUNNING histories. The hold keeps
+        its allocation ``running`` while it waits to be released, so the
+        ``running`` filter covers every run still waiting on its hold; one whose
+        hold has already exited is left to the regular sync.
 
+        :param timeout: Seconds to wait for Nomad before giving up, in place of
+            the client-wide ``timeout``.
         :return: The ``JobID`` of every running allocation for which
             :func:`_detect_capture_hold_ready` holds.
         :raises BaseNomadException: If Nomad cannot be reached or rejects the call.
+        :raises ValueError: If Nomad answers with a body that is not JSON.
         """
-        allocations = self.backend.allocations.get_allocations(
-            filter_=f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"',
-            task_states=True,
-        )
+        allocations = self.backend.allocations.request(
+            method="get",
+            params={
+                "filter": f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"',
+                "task_states": True,
+            },
+            timeout=timeout,
+        ).json()
         return frozenset(
             alloc["JobID"] for alloc in allocations if _detect_capture_hold_ready(alloc)
         )

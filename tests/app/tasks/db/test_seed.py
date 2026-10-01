@@ -33,7 +33,6 @@ from app.tasks.db.seed import (
     _launch_check_shell,
     _LOG_CAPTURE_HOLD_TASK,
     EFFECTIVE_INTERPRETER_PATH,
-    FINISHING_SYNC_INTERVAL_SECONDS,
     LOG_CAPTURE_HOLD_SHELL,
     NOMAD_EXEC_ARTIFACT,
     NOMAD_EXEC_PYTHON_ARTIFACT,
@@ -46,11 +45,13 @@ from app.tasks.db.seed import (
 from app.tasks.execution.executors.nomad.constants import (
     CHECK_NOMAD_CERT_EXPIRY_TASK_NAME,
 )
+from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.executors.nomad.steps import (
     LAUNCH_CHECK_EXIT_CODE,
     NomadStep,
 )
 from app.tasks.models import (
+    FINISHING_SYNC_INTERVAL_SECONDS,
     INTERNAL_TASK_NAMES,
     INVENTORY_COLLECTION_TASK_NAME,
     INVENTORY_SYNC_TASK_NAME,
@@ -1258,13 +1259,24 @@ def test_nomad_cert_expiry_periodic_task_seeded() -> None:
 
 
 def test_finishing_sync_schedule_within_bound() -> None:
-    """Assert the finishing-run probe ticks well inside the 5-second status bound.
+    """Assert the finishing-run probe leaves the default drain inside the 5 s bound.
 
-    A tick only detects the finished run; the sync it dispatches still spends up
-    to the terminal log-drain budget before the status is saved, so the tick has
-    to leave most of the bound to that drain.
+    A finished run waits up to one tick to be noticed and up to one more for the
+    probe's listing, whose timeout is the tick interval; the sync it dispatches
+    then spends up to the terminal log-drain budget before the status is saved.
+    The drain is read off the executor's defaults, so raising either drain knob
+    past the bound fails here.
     """
     status_bound_seconds = 5
+    drain_fields = NomadExecutor.model_fields
+    drain_budget_seconds = (
+        drain_fields["terminal_log_drain_max_attempts"].default
+        * drain_fields["terminal_log_drain_interval"].default
+    )
+    assert (
+        2 * FINISHING_SYNC_INTERVAL_SECONDS + drain_budget_seconds
+        < status_bound_seconds
+    )
     for schedule, tasks in SYSTEM_PERIODIC_TASKS:
         for entry in tasks:
             if entry.name == SYNC_FINISHING_TASKS_TASK_NAME:
@@ -1275,7 +1287,6 @@ def test_finishing_sync_schedule_within_bound() -> None:
                 assert entry.extra_kwargs == {
                     "expire_seconds": FINISHING_SYNC_INTERVAL_SECONDS
                 }
-                assert status_bound_seconds > FINISHING_SYNC_INTERVAL_SECONDS
                 return
     raise AssertionError(f"{SYNC_FINISHING_TASKS_TASK_NAME} task not found")
 

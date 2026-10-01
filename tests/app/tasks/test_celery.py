@@ -74,6 +74,7 @@ from app.tasks.execution_request_secrets import (
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
     DispatchLock,
+    FINISHING_SYNC_INTERVAL_SECONDS,
     Task,
     TaskBackendEnum,
     TaskExecutionRequest,
@@ -1732,10 +1733,11 @@ class TestSyncFinishingItems:
 
         with self._probe(session, frozenset({"job-a", "job-foreign"})) as (
             mock_group,
-            _,
+            mock_listing,
         ):
             await sync_finishing_items()
 
+        mock_listing.assert_called_once_with(timeout=FINISHING_SYNC_INTERVAL_SECONDS)
         assert self._dispatched_ids(mock_group) == [ready]
         assert await self._lock_of(session, ready) is not None
         assert await self._lock_of(session, busy) is None
@@ -1791,14 +1793,22 @@ class TestSyncFinishingItems:
         assert await self._lock_of(session, untracked) is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure",
+        [BaseNomadException("unreachable"), ValueError("Expecting value")],
+        ids=["nomad-error", "non-json-body"],
+    )
     async def test_nomad_error_logs_and_returns(
-        self, session: AsyncSession, caplog: pytest.LogCaptureFixture
+        self,
+        session: AsyncSession,
+        caplog: pytest.LogCaptureFixture,
+        failure: Exception,
     ):
-        """Assert a Nomad failure is logged and leaves the run to the sweep."""
+        """Assert a failed listing is logged and leaves the run to the sweep."""
         history_id = await self._seed_running(session, {"job_id": "job-a"})
 
         with self._probe(session, frozenset()) as (mock_group, mock_listing):
-            mock_listing.side_effect = BaseNomadException("unreachable")
+            mock_listing.side_effect = failure
             await sync_finishing_items()
 
         mock_group.assert_not_called()
