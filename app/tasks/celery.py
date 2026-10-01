@@ -997,6 +997,9 @@ async def sync_finishing_items() -> None:
     covers the run. The whole listing, opening the executor's HTTP client
     included, is cancelled once it outlasts one tick, so a Nomad that hangs or
     answers a byte at a time cannot pile up probes across the worker pool.
+    Closing the client the probe opened is left outside that deadline: a close
+    cancelled partway leaves the shared executor holding a closed session that
+    every later tick would reuse.
     """
     async_session = get_async_session_maker()
     async with async_session() as session:
@@ -1006,13 +1009,11 @@ async def sync_finishing_items() -> None:
             return
     nomad = normalize_nomad_config_value(tasks_settings.NOMAD)
     try:
-        async with (
-            asyncio.timeout(FINISHING_SYNC_INTERVAL_SECONDS),
-            AsyncExitStack() as stack,
-        ):
-            if nomad.session is None:
-                await stack.enter_async_context(nomad)
-            ready_job_ids = await nomad.capture_hold_ready_job_ids()
+        async with AsyncExitStack() as stack:
+            async with asyncio.timeout(FINISHING_SYNC_INTERVAL_SECONDS):
+                if nomad.session is None:
+                    await stack.enter_async_context(nomad)
+                ready_job_ids = await nomad.capture_hold_ready_job_ids()
     except (ClientError, TimeoutError, ValueError):
         logger.warning(
             "Could not list Nomad allocations; leaving finished runs to the sweep",

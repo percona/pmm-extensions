@@ -1876,6 +1876,30 @@ class TestSyncFinishingItems:
         assert executor.session is None
 
     @pytest.mark.asyncio
+    async def test_slow_close_is_not_cut_off_by_the_tick(self, session: AsyncSession):
+        """Assert a close that outlasts the tick still runs to completion.
+
+        A close cancelled partway leaves the shared executor holding a closed
+        session, which every later tick would skip reopening and then reuse.
+        """
+        await self._seed_running(session, {"job_id": "job-a"})
+        real_close = ClientSession.close
+
+        async def slow_close(client: ClientSession) -> None:
+            await real_close(client)
+            await asyncio.sleep(0.3)
+
+        with (
+            self._probe(session, frozenset()) as (_, mock_listing),
+            patch(f"{MODULE}.FINISHING_SYNC_INTERVAL_SECONDS", 0.1),
+            patch.object(ClientSession, "close", slow_close),
+        ):
+            await sync_finishing_items()
+
+        executor = mock_listing.await_args.args[0]
+        assert executor.session is None
+
+    @pytest.mark.asyncio
     async def test_finished_run_turns_terminal_between_sweeps(
         self, session: AsyncSession
     ):
