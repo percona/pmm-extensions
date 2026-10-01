@@ -3139,6 +3139,7 @@ class TestSyncTaskHistoryQueuedEvaluations:
             "ID": "job-1",
             "Status": "running",
             "Stop": False,
+            "Dispatched": True,
         }
         mock_backend.job.get_evaluations.return_value = evaluations
         return mock_backend
@@ -3476,7 +3477,8 @@ class TestSyncTaskHistoryQueuedEvaluations:
             mock_nomad_cls,
             [
                 {"ID": "eval-1", "Status": "complete"},
-                {"ID": "eval-f1", "Status": "blocked"},
+                {"ID": "eval-f1", "Status": "complete", "BlockedEval": "eval-f2"},
+                {"ID": "eval-f2", "Status": "blocked"},
             ],
             placed={"eval-1": [rescheduled]},
         )
@@ -3497,6 +3499,141 @@ class TestSyncTaskHistoryQueuedEvaluations:
 
         assert result.status == expected_status
         assert mock_backend.job.deregister_job.call_count == expected_deregisters
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_reschedule_placed_via_blocked_followup_is_adopted(
+        self, mock_nomad_cls
+    ):
+        """Assert a reschedule queued for capacity is followed to its placement.
+
+        The follow-up evaluation finds no capacity, completes and parks the
+        replacement in a blocked evaluation, which places it once capacity
+        frees, so the replacement carries the blocked evaluation's id.
+        """
+        rescheduled = self._running_alloc("eval-1", alloc_id="alloc-1") | {
+            "ClientStatus": NomadAllocStatusEnum.FAILED,
+            "FollowupEvalID": "eval-f1",
+        }
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            [
+                {"ID": "eval-1", "Status": "complete"},
+                {"ID": "eval-f1", "Status": "complete", "BlockedEval": "eval-f2"},
+                {"ID": "eval-f2", "Status": "complete"},
+            ],
+            placed={
+                "eval-1": [rescheduled],
+                "eval-f2": [self._running_alloc("eval-f2")],
+            },
+        )
+        mock_backend.allocation.get_allocation.side_effect = None
+        mock_backend.allocation.get_allocation.return_value = rescheduled
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(
+            self._queue_item(
+                tracking={
+                    "allocation_id": "alloc-1",
+                    "evaluation_id": "eval-1",
+                    "job_id": "job-1",
+                },
+            )
+        )
+
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        tracking = result.execution_request.tracking
+        assert tracking is not None
+        assert tracking["allocation_id"] == "alloc-9"
+        assert tracking["evaluation_id"] == "eval-f2"
+        mock_backend.job.deregister_job.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_deepest_chain_allocation_wins(self, mock_nomad_cls):
+        """Assert the blocked evaluation's placement is preferred to the tracked one's.
+
+        The tracked evaluation's allocation lands only after the first lookup,
+        so both are visible to the chain walk and only its order decides.
+        """
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            self._QUEUED_EVALUATIONS,
+            placed={"eval-2": [self._running_alloc("eval-2")]},
+        )
+        keyed_lookup = mock_backend.allocations.get_allocations.side_effect
+        tracked_lookups: list[str] = []
+
+        def get_allocations(*, filter_: str, reverse: bool) -> list[dict[str, Any]]:
+            if 'EvalID == "eval-1"' in filter_:
+                tracked_lookups.append(filter_)
+                if len(tracked_lookups) > 1:
+                    return [self._running_alloc("eval-1", alloc_id="alloc-old")]
+                return []
+            return keyed_lookup(filter_=filter_, reverse=reverse)
+
+        mock_backend.allocations.get_allocations.side_effect = get_allocations
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(self._queue_item())
+
+        tracking = result.execution_request.tracking
+        assert tracking is not None
+        assert tracking["allocation_id"] == "alloc-9"
+
+    @pytest.mark.parametrize(
+        ("evaluations", "age", "expected_status"),
+        [
+            pytest.param(
+                [{"ID": "eval-1", "Status": "complete"}],
+                PENDING_ALLOCATION_WITHIN_BOUND_AGE,
+                TaskHistoryStatusEnum.FAILED,
+                id="terminal-evaluations",
+            ),
+            pytest.param(
+                _QUEUED_EVALUATIONS,
+                PENDING_ALLOCATION_PAST_BOUND_AGE,
+                TaskHistoryStatusEnum.LOST,
+                id="live-evaluation-past-bound",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_job_shared_across_runs_is_not_withdrawn(
+        self,
+        mock_nomad_cls,
+        monkeypatch: pytest.MonkeyPatch,
+        evaluations: list[dict[str, Any]],
+        age: int,
+        expected_status: TaskHistoryStatusEnum,
+    ):
+        """Assert a job that is not a per-run dispatch is left registered.
+
+        A non-parameterized task registers one job per task and target, so its
+        other runs' work lives in the same job and deregistering it would stop
+        them too.
+        """
+        monkeypatch.setattr(
+            tasks_settings,
+            "PENDING_ALLOCATION_TIMEOUT_SECONDS",
+            PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
+        )
+        mock_backend = self._backend(mock_nomad_cls, evaluations)
+        mock_backend.job.get_job.return_value = {
+            "ID": "job-1",
+            "Status": "running",
+            "Stop": False,
+            "Dispatched": False,
+        }
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(
+            self._queue_item(started_at=utc_now() - timedelta(seconds=age))
+        )
+
+        assert result.status == expected_status
+        mock_backend.job.deregister_job.assert_not_called()
 
 
 class TestSyncTaskHistoryFailureReason:

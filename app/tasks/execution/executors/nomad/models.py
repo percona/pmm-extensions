@@ -1518,10 +1518,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         run's. Otherwise, while any evaluation is still live (see
         ``_LIVE_EVAL_STATUSES``) the work is queued and the row stays RUNNING
         until ``PENDING_ALLOCATION_TIMEOUT_SECONDS`` elapses from ``started_at``,
-        after which the job is withdrawn and the row goes LOST. With every
-        evaluation terminal the job is withdrawn and the row goes FAILED. Both
-        withdrawals are best-effort so a Nomad error cannot leave the row
-        RUNNING. A job Nomad no longer has goes LOST with nothing to withdraw.
+        after which the row goes LOST. With every evaluation terminal the row
+        goes FAILED. On both paths a job dispatched for this run alone is
+        withdrawn first, best-effort, so a Nomad error cannot leave the row
+        RUNNING; a job shared by every run of its task and target stays
+        registered, since withdrawing it would stop the other runs' work. A job
+        Nomad no longer has goes LOST with nothing to withdraw.
 
         Every terminal outcome mutates ``queue_item`` and returns ``None`` so the
         caller knows to bail out without further work.
@@ -1529,6 +1531,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param queue_item: The running task history record.
         :return: ``(alloc, job_id)`` when an allocation is found, or ``None``
             when the caller should return early.
+        :raises BaseNomadException: If Nomad fails a request other than the
+            not-found lookups this method resolves.
         """
         try:
             return self._follow_reschedules(
@@ -1563,7 +1567,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     job["ID"],
                     queue_item.id,
                 )
-                self._withdraw_job(job["ID"], queue_item, TaskHistoryStatusEnum.LOST)
+                self._withdraw_unplaced_job(job, queue_item, TaskHistoryStatusEnum.LOST)
                 queue_item.finished_at = utc_now()
                 queue_item.status = TaskHistoryStatusEnum.LOST
                 queue_item.set_failure_reason(
@@ -1574,7 +1578,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             "No allocations or pending evaluations found for task history %s",
             queue_item.id,
         )
-        self._withdraw_job(job["ID"], queue_item, TaskHistoryStatusEnum.FAILED)
+        self._withdraw_unplaced_job(job, queue_item, TaskHistoryStatusEnum.FAILED)
         queue_item.status = TaskHistoryStatusEnum.FAILED
         queue_item.set_failure_reason(
             "The executor job produced no allocation and has no pending evaluation."
@@ -1583,22 +1587,68 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         return None
 
     def _follow_reschedules(
-        self, queue_item: TaskHistory, alloc: dict[str, Any]
+        self,
+        queue_item: TaskHistory,
+        alloc: dict[str, Any],
+        evaluations_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], str]:
         """Walk an allocation's ``FollowupEvalID`` chain to its latest successor.
+
+        A follow-up evaluation that found no capacity places its replacement
+        through the ``BlockedEval`` it spawned, so each hop is looked up along
+        that evaluation's placement chain when ``evaluations_by_id`` is given.
 
         :param queue_item: The running task history record; its tracked task
             states are reset on every hop, since they belonged to the
             superseded allocation.
         :param alloc: The allocation to start from.
+        :param evaluations_by_id: The job's evaluations keyed by id. Without
+            them each hop is looked up by its follow-up evaluation alone.
         :return: ``(alloc, job_id)`` for the latest allocation in the chain.
         :raises AllocationNotFoundError: If a successor has not been placed yet.
+        :raises BaseNomadException: If Nomad fails the allocation lookup.
         """
         job_id = alloc["JobID"]
         while followup_eval_id := alloc.get("FollowupEvalID"):
-            alloc = self.get_last_allocation(job_id, followup_eval_id)
+            alloc = self._last_chain_allocation(
+                job_id, followup_eval_id, evaluations_by_id or {}
+            )
             queue_item.execution_request.tracking["task_states"] = {}
         return alloc, job_id
+
+    def _last_chain_allocation(
+        self,
+        job_id: str,
+        eval_id: str,
+        evaluations_by_id: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Return the allocation placed along an evaluation's placement chain.
+
+        Nomad places work queued for capacity under the ``blocked`` evaluation's
+        id, not the evaluation that queued it, so ``eval_id``'s ``BlockedEval``
+        links are followed (stopping at a missing link or a cycle) and looked up
+        deepest first. ``eval_id`` itself is looked up last, so its own
+        placement is still found when it never blocked.
+
+        :param job_id: The Nomad job id.
+        :param eval_id: The evaluation the chain starts from.
+        :param evaluations_by_id: The job's evaluations keyed by id.
+        :return: The first allocation found.
+        :raises AllocationNotFoundError: If no evaluation in the chain has
+            placed an allocation.
+        :raises BaseNomadException: If Nomad fails the allocation lookup.
+        """
+        chain = [eval_id]
+        while (
+            blocked_eval_id := evaluations_by_id.get(chain[-1], {}).get("BlockedEval")
+        ) and blocked_eval_id not in chain:
+            chain.append(blocked_eval_id)
+        for blocked_eval_id in reversed(chain[1:]):
+            try:
+                return self.get_last_allocation(job_id, blocked_eval_id)
+            except AllocationNotFoundError:
+                logger.debug("No allocation placed by evaluation %s", blocked_eval_id)
+        return self.get_last_allocation(job_id, eval_id)
 
     def _find_chain_allocation(
         self,
@@ -1608,13 +1658,11 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     ) -> tuple[dict[str, Any], str] | None:
         """Find an allocation placed by the run's own evaluation chain.
 
-        Nomad places work queued for capacity under the ``blocked`` evaluation's
-        id, not the dispatch evaluation the row tracks, so the tracked eval's
-        ``BlockedEval`` links are followed (stopping at a missing link or a
-        cycle) and each is looked up, deepest first. The tracked eval itself is
-        always looked up last: Nomad writes an allocation before marking its
-        evaluation terminal, so this re-read sees a placement that landed after
-        the tracked lookup but before ``evaluations`` was read.
+        Looks the tracked evaluation up along its placement chain, then follows
+        any reschedules from what it finds. The tracked evaluation is looked up
+        again here, after ``evaluations`` was read: Nomad's scheduler submits an
+        evaluation's placements before it marks the evaluation complete, so this
+        re-read also sees a placement that landed after the first lookup.
 
         Matching on the chain rather than on the job alone keeps a job reused
         across runs from adopting another run's allocation.
@@ -1622,30 +1670,59 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param queue_item: The running task history record.
         :param job_id: The Nomad job id.
         :param evaluations: The job's evaluations as Nomad returned them.
-        :return: ``(alloc, job_id)`` for the first allocation found, or ``None``
-            when no evaluation in the chain has placed one.
+        :return: ``(alloc, job_id)`` for the allocation found, or ``None`` when
+            no evaluation in the chain has placed one or a reschedule's
+            successor is not yet placed.
+        :raises BaseNomadException: If Nomad fails the allocation lookup.
         """
         tracked_eval_id = queue_item.execution_request.tracking.get("evaluation_id")
         if not tracked_eval_id:
             return None
-        by_id = {evaluation.get("ID"): evaluation for evaluation in evaluations}
-        chain = [tracked_eval_id]
-        while (
-            blocked_eval_id := by_id.get(chain[-1], {}).get("BlockedEval")
-        ) and blocked_eval_id not in chain:
-            chain.append(blocked_eval_id)
-        for eval_id in reversed(chain):
-            try:
-                return self._follow_reschedules(
-                    queue_item, self.get_last_allocation(job_id, eval_id)
-                )
-            except AllocationNotFoundError:
-                logger.debug(
-                    "No allocation placed by evaluation %s of task history %s",
-                    eval_id,
-                    queue_item.id,
-                )
-        return None
+        evaluations_by_id = {
+            evaluation["ID"]: evaluation
+            for evaluation in evaluations
+            if evaluation.get("ID")
+        }
+        try:
+            return self._follow_reschedules(
+                queue_item,
+                self._last_chain_allocation(job_id, tracked_eval_id, evaluations_by_id),
+                evaluations_by_id,
+            )
+        except AllocationNotFoundError:
+            logger.debug(
+                "No allocation placed by the evaluation chain of task history %s",
+                queue_item.id,
+            )
+            return None
+
+    def _withdraw_unplaced_job(
+        self,
+        job: dict[str, Any],
+        queue_item: TaskHistory,
+        outcome: TaskHistoryStatusEnum,
+    ) -> None:
+        """Withdraw a run's own job when the run ends without an allocation.
+
+        Only a job Nomad dispatched for this run alone is withdrawn. A
+        non-parameterized task registers one job per task and target, which
+        every such run shares, so withdrawing it would stop the other runs' work
+        too; it stays registered.
+
+        :param job: The Nomad job dict backing the run.
+        :param queue_item: The task history record being terminalized.
+        :param outcome: The terminal status the row is about to take.
+        """
+        if not job.get("Dispatched"):
+            logger.info(
+                "Job %s of task history %s is shared across runs; leaving it "
+                "registered while marking %s",
+                job["ID"],
+                queue_item.id,
+                outcome.name,
+            )
+            return
+        self._withdraw_job(job["ID"], queue_item, outcome)
 
     def _withdraw_job(
         self,
@@ -1653,12 +1730,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         queue_item: TaskHistory,
         outcome: TaskHistoryStatusEnum,
     ) -> None:
-        """Ask Nomad to deregister a job whose run ends without an allocation.
+        """Ask Nomad to deregister the job of a run ending before any task started.
 
-        The call is best-effort. Withdrawing stops Nomad from still placing work the row is about to
-        report terminal. A Nomad error is logged and swallowed: holding the row
-        RUNNING instead would block every re-dispatch of the same task, target
-        and payload with a 409.
+        The call is best-effort. Withdrawing stops Nomad from still placing work
+        the row is about to report terminal. A Nomad error is logged and
+        swallowed: holding the row RUNNING instead would block every re-dispatch
+        of the same task, target and payload with a 409.
 
         :param job_id: The Nomad job to deregister.
         :param queue_item: The task history record being terminalized.
@@ -1896,7 +1973,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             )
 
     def _should_escalate_pending_allocation(self, queue_item: TaskHistory) -> bool:
-        """Return whether a TaskStates-less allocation has outlived the age bound.
+        """Return whether a run with no started task has outlived the age bound.
 
         Ages from ``queue_item.started_at`` so the bound does not reset across a
         FollowupEvalID reschedule chain. A missing ``started_at`` never
