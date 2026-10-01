@@ -129,7 +129,7 @@
 | app/extensions/apps/alerts/restore.py                                                                                               |       95 |        0 |       26 |        0 |    100% |           |
 | app/extensions/apps/alters/api\_routes.py                                                                                           |       38 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/alters/app.py                                                                                                   |       10 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/alters/deps.py                                                                                                  |      211 |       11 |       62 |       12 |     92% |101, 131-\>143, 137-\>136, 141-\>136, 144, 220-\>222, 347, 417-418, 557, 580-581, 701, 712, 714, 754-\>758 |
+| app/extensions/apps/alters/deps.py                                                                                                  |      211 |       11 |       62 |       11 |     92% |101, 131-\>143, 137-\>136, 141-\>136, 144, 347, 417-418, 557, 580-581, 701, 712, 714, 754-\>758 |
 | app/extensions/apps/alters/form\_backfill.py                                                                                        |       32 |        1 |       10 |        1 |     95% |       102 |
 | app/extensions/apps/alters/models.py                                                                                                |       49 |        1 |        6 |        1 |     96% |       121 |
 | app/extensions/apps/alters/schema.py                                                                                                |        7 |        0 |        0 |        0 |    100% |           |
@@ -225,8 +225,8 @@
 | app/extensions/apps/inventory/api\_routes.py                                                                                        |       39 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/app.py                                                                                                |       10 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/app\_owned\_settings.py                                                                               |        3 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/inventory/collection.py                                                                                         |       98 |        3 |       24 |        0 |     98% |   318-320 |
-| app/extensions/apps/inventory/config.py                                                                                             |       16 |        0 |        0 |        0 |    100% |           |
+| app/extensions/apps/inventory/collection.py                                                                                         |      100 |        3 |       24 |        0 |     98% |   323-325 |
+| app/extensions/apps/inventory/config.py                                                                                             |       17 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/connectivity.py                                                                                       |       42 |        0 |        6 |        0 |    100% |           |
 | app/extensions/apps/inventory/constants.py                                                                                          |        2 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/deps.py                                                                                               |       77 |        1 |       12 |        0 |     99% |       290 |
@@ -394,7 +394,7 @@
 | app/extensions/utils/jinja.py                                                                                                       |       61 |       10 |       10 |        1 |     79% |105, 124, 135-140, 171-172 |
 | app/inventory/config.py                                                                                                             |       12 |        0 |        0 |        0 |    100% |           |
 | app/inventory/constants.py                                                                                                          |       15 |        0 |        0 |        0 |    100% |           |
-| app/inventory/crud.py                                                                                                               |      405 |        6 |       80 |        3 |     98% |365, 535-537, 811-\>813, 998, 1326, 1850-\>exit |
+| app/inventory/crud.py                                                                                                               |      406 |        6 |       80 |        3 |     98% |365, 536-538, 820-\>822, 1007, 1336, 1872-\>exit |
 | app/inventory/db.py                                                                                                                 |        6 |        0 |        0 |        0 |    100% |           |
 | app/inventory/deps.py                                                                                                               |       72 |        9 |        4 |        0 |     83% |63-65, 328-330, 349-351 |
 | app/inventory/main.py                                                                                                               |       44 |        6 |        2 |        1 |     85% |52, 97-98, 136-140 |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33769** | **1915** | **8160** |  **681** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33773** | **1915** | **8160** |  **680** | **93%** |           |
 
 
 ## Setup coverage badge

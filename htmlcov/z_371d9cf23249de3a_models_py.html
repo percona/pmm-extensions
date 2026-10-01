@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_e96ceae1d04060d9_collection_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-01 13:01 +0000
+            created at 2026-10-01 14:14 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -1364,34 +1364,39 @@
     <p class="pln"><span class="n"><a id="t1280" href="#t1280">1280</a></span><span class="t"><span class="str">    :param retired_before: The cutoff a tombstone must predate to be eligible.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1281" href="#t1281">1281</a></span><span class="t"><span class="str">        The caller pins one value for a whole run so successive batches cannot</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1282" href="#t1282">1282</a></span><span class="t"><span class="str">        drift into collecting a tombstone that was too young a moment earlier.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1283" href="#t1283">1283</a></span><span class="t"><span class="str">    :param keep: The ids the caller knows are still referenced, per entity type.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1284" href="#t1284">1284</a></span><span class="t"><span class="str">        Ancestors of a kept entity are retained without being listed.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1285" href="#t1285">1285</a></span><span class="t"><span class="str">    :param limit: The most entities to collect per type in this call.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1286" href="#t1286">1286</a></span><span class="t"><span class="str">    :param dry_run: Whether to report the eligible ids without deleting them.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1287" href="#t1287">1287</a></span><span class="t"><span class="str">        Defaults to reporting: on an irreversible endpoint the mode a caller</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1288" href="#t1288">1288</a></span><span class="t"><span class="str">        reaches by omission is the one that cannot destroy anything.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1289" href="#t1289">1289</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1290" href="#t1290">1290</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1291" href="#t1291">1291</a></span><span class="t">    <span class="nam">model_config</span> <span class="op">=</span> <span class="nam">ConfigDict</span><span class="op">(</span><span class="nam">extra</span><span class="op">=</span><span class="str">&quot;forbid&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1292" href="#t1292">1292</a></span><span class="t">    <span class="nam">retired_before</span><span class="op">:</span> <span class="nam">UTCDatetime</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1293" href="#t1293">1293</a></span><span class="t">    <span class="nam">keep</span><span class="op">:</span> <span class="nam">dict</span><span class="op">[</span><span class="nam">RetirableEntityName</span><span class="op">,</span> <span class="nam">list</span><span class="op">[</span><span class="nam">int</span><span class="op">]</span><span class="op">]</span> <span class="op">=</span> <span class="op">{</span><span class="op">}</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1294" href="#t1294">1294</a></span><span class="t">    <span class="nam">limit</span><span class="op">:</span> <span class="nam">PositiveInt</span> <span class="op">=</span> <span class="num">500</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1295" href="#t1295">1295</a></span><span class="t">    <span class="nam">dry_run</span><span class="op">:</span> <span class="nam">bool</span> <span class="op">=</span> <span class="key">True</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1296" href="#t1296">1296</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1297" href="#t1297">1297</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1298" href="#t1298">1298</a></span><span class="t"><span class="key">class</span> <span class="nam">InventoryCollectResponse</span><span class="op">(</span><span class="nam">BaseModel</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1299" href="#t1299">1299</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Report what a collection call deleted, or would have deleted.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1300" href="#t1300">1300</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1301" href="#t1301">1301</a></span><span class="t"><span class="str">    :param deleted: The collected ids per entity type, exhaustive for this</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1302" href="#t1302">1302</a></span><span class="t"><span class="str">        call. On a dry run these are the ids the equivalent real call would</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1303" href="#t1303">1303</a></span><span class="t"><span class="str">        delete. A type the walk stopped before reporting is empty rather than</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1304" href="#t1304">1304</a></span><span class="t"><span class="str">        absent.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1305" href="#t1305">1305</a></span><span class="t"><span class="str">    :param remaining: Whether any entity type filled its ``limit``, meaning more</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1306" href="#t1306">1306</a></span><span class="t"><span class="str">        tombstones are waiting for the next batch.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1307" href="#t1307">1307</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1308" href="#t1308">1308</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1309" href="#t1309">1309</a></span><span class="t">    <span class="nam">deleted</span><span class="op">:</span> <span class="nam">dict</span><span class="op">[</span><span class="nam">RetirableEntityName</span><span class="op">,</span> <span class="nam">list</span><span class="op">[</span><span class="nam">int</span><span class="op">]</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1310" href="#t1310">1310</a></span><span class="t">    <span class="nam">remaining</span><span class="op">:</span> <span class="nam">bool</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1283" href="#t1283">1283</a></span><span class="t"><span class="str">    :param link_pin_retired_before: The cutoff a linked tombstone must predate</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1284" href="#t1284">1284</a></span><span class="t"><span class="str">        for its link to stop pinning it. Required rather than defaulted: either</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1285" href="#t1285">1285</a></span><span class="t"><span class="str">        extreme a default could pick silently keeps every link&#x27;s successor</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1286" href="#t1286">1286</a></span><span class="t"><span class="str">        forever or releases it at once.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1287" href="#t1287">1287</a></span><span class="t"><span class="str">    :param keep: The ids the caller knows are still referenced, per entity type.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1288" href="#t1288">1288</a></span><span class="t"><span class="str">        Ancestors of a kept entity are retained without being listed.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1289" href="#t1289">1289</a></span><span class="t"><span class="str">    :param limit: The most entities to collect per type in this call.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1290" href="#t1290">1290</a></span><span class="t"><span class="str">    :param dry_run: Whether to report the eligible ids without deleting them.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1291" href="#t1291">1291</a></span><span class="t"><span class="str">        Defaults to reporting: on an irreversible endpoint the mode a caller</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1292" href="#t1292">1292</a></span><span class="t"><span class="str">        reaches by omission is the one that cannot destroy anything.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1293" href="#t1293">1293</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1294" href="#t1294">1294</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1295" href="#t1295">1295</a></span><span class="t">    <span class="nam">model_config</span> <span class="op">=</span> <span class="nam">ConfigDict</span><span class="op">(</span><span class="nam">extra</span><span class="op">=</span><span class="str">&quot;forbid&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1296" href="#t1296">1296</a></span><span class="t">    <span class="nam">retired_before</span><span class="op">:</span> <span class="nam">UTCDatetime</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1297" href="#t1297">1297</a></span><span class="t">    <span class="nam">link_pin_retired_before</span><span class="op">:</span> <span class="nam">UTCDatetime</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1298" href="#t1298">1298</a></span><span class="t">    <span class="nam">keep</span><span class="op">:</span> <span class="nam">dict</span><span class="op">[</span><span class="nam">RetirableEntityName</span><span class="op">,</span> <span class="nam">list</span><span class="op">[</span><span class="nam">int</span><span class="op">]</span><span class="op">]</span> <span class="op">=</span> <span class="op">{</span><span class="op">}</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1299" href="#t1299">1299</a></span><span class="t">    <span class="nam">limit</span><span class="op">:</span> <span class="nam">PositiveInt</span> <span class="op">=</span> <span class="num">500</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1300" href="#t1300">1300</a></span><span class="t">    <span class="nam">dry_run</span><span class="op">:</span> <span class="nam">bool</span> <span class="op">=</span> <span class="key">True</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1301" href="#t1301">1301</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1302" href="#t1302">1302</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1303" href="#t1303">1303</a></span><span class="t"><span class="key">class</span> <span class="nam">InventoryCollectResponse</span><span class="op">(</span><span class="nam">BaseModel</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1304" href="#t1304">1304</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Report what a collection call deleted, or would have deleted.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1305" href="#t1305">1305</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1306" href="#t1306">1306</a></span><span class="t"><span class="str">    :param deleted: The collected ids per entity type, exhaustive for this</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1307" href="#t1307">1307</a></span><span class="t"><span class="str">        call. On a dry run these are the ids the equivalent real call would</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1308" href="#t1308">1308</a></span><span class="t"><span class="str">        delete. A type the walk stopped before reporting is empty rather than</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1309" href="#t1309">1309</a></span><span class="t"><span class="str">        absent.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1310" href="#t1310">1310</a></span><span class="t"><span class="str">    :param remaining: Whether any entity type filled its ``limit``, meaning more</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1311" href="#t1311">1311</a></span><span class="t"><span class="str">        tombstones are waiting for the next batch.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1312" href="#t1312">1312</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1313" href="#t1313">1313</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1314" href="#t1314">1314</a></span><span class="t">    <span class="nam">deleted</span><span class="op">:</span> <span class="nam">dict</span><span class="op">[</span><span class="nam">RetirableEntityName</span><span class="op">,</span> <span class="nam">list</span><span class="op">[</span><span class="nam">int</span><span class="op">]</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1315" href="#t1315">1315</a></span><span class="t">    <span class="nam">remaining</span><span class="op">:</span> <span class="nam">bool</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -1401,7 +1406,7 @@
             <a class="nav" href="z_e96ceae1d04060d9_collection_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-01 13:01 +0000
+            created at 2026-10-01 14:14 +0000
         </p>
     </div>
 </footer>
