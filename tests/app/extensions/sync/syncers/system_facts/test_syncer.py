@@ -1059,7 +1059,7 @@ def dispatch(mocker) -> AsyncMock:
     )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def alerts(mocker) -> AsyncMock:
     """Capture the alerts a failed attempt raises."""
     return mocker.patch.object(alert_service, "trigger", new_callable=AsyncMock)
@@ -1139,6 +1139,7 @@ INVENTORY = SyncInventoryEntityTypeEnum.INVENTORY
 FIRST_NODE_ID = MOCK_CREATED_NODE_ID + 1
 
 
+@pytest.mark.usefixtures("alerts")
 class TestUnmeasuredHostFactsPass:
     """Test a first-measurement pass end to end against the real sync ledger."""
 
@@ -1434,6 +1435,7 @@ class TestUnmeasuredHostFactsPass:
         }
 
 
+@pytest.mark.usefixtures("alerts")
 class TestConcurrentFirstMeasurement:
     """Test that a pass dispatches its candidates together rather than in turn."""
 
@@ -1466,9 +1468,9 @@ class TestConcurrentFirstMeasurement:
     async def test_at_most_the_concurrency_cap_is_in_flight(
         self, session, inventory_api, tasks_api, fake_inventory, mocker
     ):
-        """Hold exactly eight probes in flight, then finish all ten."""
-        fake_inventory.nodes[:] = [_node(index) for index in range(1, 11)]
+        """Hold the cap's worth of probes in flight, then finish every host."""
         cap = UnmeasuredHostFactsSyncer.FIRST_MEASUREMENT_CONCURRENCY
+        fake_inventory.nodes[:] = [_node(index) for index in range(1, cap + 3)]
         in_flight = 0
         peak = 0
         release = asyncio.Event()
