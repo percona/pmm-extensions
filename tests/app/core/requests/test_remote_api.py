@@ -361,7 +361,14 @@ class TestNonJsonResponseLogging:
 
         assert exc_info.value.headers == {UPSTREAM_NON_JSON_HEADER: "1"}
         assert _logged_non_json_body(caplog.records) == expected
-        messages = [record.getMessage() for record in caplog.records]
+        # Scope these guards to the non-JSON response record: the capture window
+        # also includes session open/close debug lines on the same logger.
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if "response content" in record.msg
+        ]
+        assert messages
         assert any(repr(expected) in message for message in messages)
         assert all("StreamReader" not in message for message in messages)
         assert all("\n" not in message for message in messages)
