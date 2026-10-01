@@ -25,9 +25,6 @@
 #  - WRITES_ARE_BLOCKED
 #  - PERFORMANCE_OTHER
 #  - TEMPORARY_STALLS
-#  - NATIVE_ASYNC_REPLICATION
-#  - GALERA
-#  - GROUP_REPLICATION
 # service_type: generic
 # alerts:
 #   - HighCPUUsage
