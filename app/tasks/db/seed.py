@@ -1111,8 +1111,9 @@ async def seed_system_periodic_tasks() -> None:
     waits for the default's first completed sync. Each follower also carries when
     its schedule was first seeded and the ``INVENTORY_SYNC_FOLLOWER_MAX_WAIT``
     window, which together bound that wait, and the default holds the same
-    values so the first run it starts matches the follower's own request. Nothing is written when the default is not seeded, which leaves a
-    standalone or operator-scheduled install unchanged.
+    values so the first run it starts matches the follower's own request.
+    Nothing is written when the default is not seeded, which leaves a standalone
+    or operator-scheduled install unchanged.
 
     :raises SQLAlchemyError: When the celery-beat store cannot be read for the
         followers' anchors, or cannot be written.
@@ -1145,9 +1146,8 @@ async def seed_system_periodic_tasks() -> None:
     since = {follower: anchor.isoformat() for follower, anchor in anchors.items()}
     # Serialised here so the scheduled callable, which lives in another app,
     # reads the window from its own request rather than from tasks settings.
-    max_wait = int(
-        tasks_settings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT.schedule.run_every.total_seconds()
-    )
+    window = tasks_settings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT.schedule.run_every
+    max_wait = int(window.total_seconds())
     if primary_interval is not None:
         periodic_tasks.append(
             _inventory_sync_schedule(

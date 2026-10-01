@@ -653,7 +653,8 @@ class TestBoundedFollowerWait:
             pytest.param(12345, id="not-a-string"),
             pytest.param("9998-01-01T00:00:00+00:00", id="future"),
             pytest.param(
-                (_SEEDED_AT + timedelta(seconds=1)).isoformat(), id="just-ahead"
+                (_SEEDED_AT + timedelta(minutes=5, seconds=1)).isoformat(),
+                id="beyond-skew",
             ),
         ],
     )
@@ -665,9 +666,9 @@ class TestBoundedFollowerWait:
         """Run the follower, with a warning, when the anchor is unusable.
 
         The anchor sits in operator-editable row ``kwargs``, and a request queued
-        by an older seeder has none; neither may make the wait unbounded. A
-        future anchor, as an edit or a skewed clock leaves it, is unusable too,
-        since it would push the deadline arbitrarily far out.
+        by an older seeder has none; neither may make the wait unbounded. An
+        anchor further ahead than a small clock skew, as an edit leaves it, is
+        unusable too, since it would push the deadline arbitrarily far out.
         """
         self._at(mocker, _SEEDED_AT)
 
@@ -684,6 +685,29 @@ class TestBoundedFollowerWait:
         assert note is None
         assert len(await self._follower_runs(extensions_maker)) == 1
         assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_tolerates_an_anchor_stamped_on_a_slightly_fast_clock(
+        self, extensions_maker, mocker
+    ) -> None:
+        """Keep waiting on an anchor a little ahead of this worker's clock.
+
+        The seeder stamps the anchor on another process's clock, and the first
+        beat fire follows the seed at once, so a small skew must not release the
+        follower ahead of its leader at bring-up.
+        """
+        self._at(mocker, _SEEDED_AT - timedelta(minutes=1))
+
+        note = await run_scheduled_inventory_sync(
+            syncer=_FOLLOWER,
+            after_syncer=_LEADER,
+            after_syncer_since=_SEEDED_AT_ISO,
+            after_syncer_max_wait=_ONE_DAY_SECONDS,
+        )
+
+        assert note is not None
+        assert "or at 2026-09-02T00:00:00Z" in note
+        assert await self._follower_runs(extensions_maker) == []
 
     @pytest.mark.parametrize(
         "max_wait",

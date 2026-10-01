@@ -336,6 +336,29 @@ class TestInventorySyncFollowerMaxWait:
         with pytest.raises(ValidationError, match="longest representable"):
             TasksSettings(INVENTORY_SYNC_FOLLOWER_MAX_WAIT="1000000000 days")
 
+    def test_rejects_a_wait_shorter_than_one_second(self) -> None:
+        """Assert a wait the whole-second window would truncate to zero is refused.
+
+        The follower reads a zero window as unusable, so every run would log a
+        warning suggesting corrupt meta rather than a deliberate short wait.
+        """
+        with pytest.raises(ValidationError, match="shorter than one second"):
+            TasksSettings(INVENTORY_SYNC_FOLLOWER_MAX_WAIT="500 microseconds")
+
+    @pytest.mark.parametrize(
+        ("value", "seconds"),
+        [
+            pytest.param("1 seconds", 1, id="one-second"),
+            pytest.param("1000000 microseconds", 1, id="one-second-in-microseconds"),
+        ],
+    )
+    def test_accepts_a_wait_of_one_second(self, value: str, seconds: int) -> None:
+        """Assert the shortest whole-second wait still loads."""
+        settings = TasksSettings(INVENTORY_SYNC_FOLLOWER_MAX_WAIT=value)
+
+        run_every = settings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT.schedule.run_every
+        assert run_every.total_seconds() == seconds
+
 
 class TestSyncerNameConstants:
     """Test that the suite's hand-kept syncer paths match the real classes."""

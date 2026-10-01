@@ -49,6 +49,12 @@ from app.tasks.models import (
 
 logger = logging.getLogger(__name__)
 
+#: How far ahead of this worker's clock a follower's anchor may sit and still
+#: count. The seeder stamps it on another process's clock, and a beat fire right
+#: after the first seed would otherwise read a slightly fast clock as a future
+#: anchor and release the follower at bring-up.
+_ANCHOR_CLOCK_SKEW = timedelta(minutes=5)
+
 
 async def run_scheduled_inventory_sync(
     syncer: str | None = None,
@@ -104,7 +110,8 @@ async def run_scheduled_inventory_sync(
     :param after_syncer_since: When this follower's schedule was first seeded,
         as a timezone-aware ISO-8601 string, which starts its bounded wait. It
         comes from operator-editable meta, so it may hold anything; a missing or
-        unreadable value, or one later than now, does not hold the run back.
+        unreadable value, or one further ahead of now than a small clock skew,
+        does not hold the run back.
     :param after_syncer_max_wait: How long, in whole seconds, the follower waits
         from ``after_syncer_since``. The tasks seeder writes it from
         ``INVENTORY_SYNC_FOLLOWER_MAX_WAIT``, so this app reads no tasks setting;
@@ -179,21 +186,23 @@ def _wait_deadline(since: object, max_wait: object) -> datetime | None:
 
     A missing anchor or window is treated like a broken one, so a request queued
     before either existed, or one an operator stripped, runs at once rather than
-    waiting without a bound. An anchor later than now is refused as well: an
-    edited or clock-skewed one would otherwise push the deadline arbitrarily far
-    out, and treating it as now would restart the window on every fire.
+    waiting without a bound. An anchor further ahead than the tolerated clock
+    skew is refused as well: an edited one would otherwise push the deadline
+    arbitrarily far out, and treating it as now would restart the window on
+    every fire.
 
     :param since: The follower's anchor, as found in its operator-editable meta,
         so not necessarily a string at all.
     :param max_wait: The window in whole seconds, from the same meta.
-    :return: The deadline in UTC, or ``None`` when ``since`` is not a past
-        timezone-aware timestamp or ``max_wait`` is not a positive whole number
-        of seconds that fits, in which case the follower stops waiting.
+    :return: The deadline in UTC, or ``None`` when ``since`` is not a
+        timezone-aware timestamp no later than now plus the tolerated skew, or
+        ``max_wait`` is not a positive whole number of seconds that fits, in
+        which case the follower stops waiting.
     """
     anchor = parse_aware_datetime(since)
     if (
         anchor is not None
-        and anchor <= utc_now()
+        and anchor <= utc_now() + _ANCHOR_CLOCK_SKEW
         and isinstance(max_wait, int)
         and not isinstance(max_wait, bool)
         and max_wait > 0
@@ -253,9 +262,9 @@ async def start_follower_first_runs(
     instead.
 
     The start also carries the follower's wait anchor and window when ``since``
-    and ``max_wait`` hold them, because the identical-task guard matches meta by containment: a start
-    missing a key the follower's beat fire carries would no longer hold that
-    fire back while the start is in flight.
+    and ``max_wait`` hold them, because the identical-task guard matches meta by
+    containment: a start missing a key the follower's beat fire carries would no
+    longer hold that fire back while the start is in flight.
 
     :param leader: The fully qualified name of the syncer the followers wait on.
     :param followers: The fully qualified names of the followers to consider.

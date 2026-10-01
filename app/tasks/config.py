@@ -100,19 +100,23 @@ SyncerName = Annotated[str, AfterValidator(_validate_syncer_name)]
 
 
 def _validate_follower_max_wait(value: IntervalSchedule) -> IntervalSchedule:
-    """Return ``value`` when its duration fits a ``timedelta``, else raise.
+    """Return ``value`` when it spans whole seconds a ``timedelta`` holds, else raise.
 
     :param value: A candidate :attr:`TasksSettings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT`.
     :return: The validated interval, unchanged.
     :raises ValueError: When ``every`` periods exceed ``timedelta``'s range, so
-        the seeder could never compute the window it writes into follower meta.
+        the seeder could never compute the window it writes into follower meta,
+        or come to less than one second, which that whole-second window would
+        truncate to zero and the follower would read as unusable on every run.
     """
     try:
-        _ = value.schedule
+        run_every = value.schedule.run_every
     except OverflowError:
         raise ValueError(
             f"{value} is longer than the longest representable duration"
         ) from None
+    if run_every < timedelta(seconds=1):
+        raise ValueError(f"{value} is shorter than one second")
     return value
 
 

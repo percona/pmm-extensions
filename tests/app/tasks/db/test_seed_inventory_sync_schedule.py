@@ -984,6 +984,34 @@ class TestFollowerWaitAnchor:
         own, held = await self._anchors(beat_maker, with_system_facts_schedule)
         assert own == held == seeded_at.isoformat()
 
+    @pytest.mark.asyncio
+    async def test_a_changed_window_keeps_the_anchor(
+        self, with_system_facts_schedule, beat_maker, mocker
+    ) -> None:
+        """Assert a reboot with a new window rewrites the window, not the anchor.
+
+        Changing ``INVENTORY_SYNC_FOLLOWER_MAX_WAIT`` resizes a wait already under
+        way rather than starting a new one.
+        """
+        seeded_at = datetime(2026, 9, 1, 12, tzinfo=UTC)
+        self._at(mocker, seeded_at)
+        await seed_module.seed_system_periodic_tasks()
+        mocker.patch.object(
+            tasks_settings,
+            "INVENTORY_SYNC_FOLLOWER_MAX_WAIT",
+            IntervalScheduleOption(every=6, period=Period.HOURS),
+        )
+
+        self._at(mocker, seeded_at + timedelta(hours=1))
+        await seed_module.seed_system_periodic_tasks()
+
+        own, held = await self._anchors(beat_maker, with_system_facts_schedule)
+        assert own == held == seeded_at.isoformat()
+        (primary,) = await _seeded_rows(beat_maker)
+        (follower,) = await _rows_named(beat_maker, with_system_facts_schedule)
+        assert _meta(primary)[INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY] == 6 * 3600
+        assert _meta(follower)[INVENTORY_SYNC_MAX_WAIT_KEY] == 6 * 3600
+
     @pytest.mark.parametrize(
         ("timing", "expected"),
         [
