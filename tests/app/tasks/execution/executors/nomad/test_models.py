@@ -1863,14 +1863,20 @@ class TestPreflightStreamLogs:
         capacity, so its run is alive and the viewer should keep retrying.
         """
         executor, mock_backend = self._executor(
-            mock_nomad_cls, [[]], evaluation_status=evaluation_status
+            mock_nomad_cls, [[], []], evaluation_status=evaluation_status
         )
 
         with pytest.raises(TaskNotStartedInExecutorError):
             executor.preflight_stream_logs(_build_queue_item())
 
         mock_backend.job.get_evaluations.assert_called_once_with("job-1")
-        mock_backend.allocations.get_allocations.assert_called_once()
+        allocation_read = call(
+            filter_='JobID == "job-1" and EvalID == "eval-1"', reverse=True
+        )
+        assert mock_backend.allocations.get_allocations.call_args_list == [
+            allocation_read,
+            allocation_read,
+        ]
 
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     def test_allocation_placed_by_blocked_evaluation_is_found(self, mock_nomad_cls):
@@ -1903,6 +1909,37 @@ class TestPreflightStreamLogs:
             call(filter_='JobID == "job-1" and EvalID == "eval-1"', reverse=True),
             call(filter_='JobID == "job-1" and EvalID == "eval-2"', reverse=True),
         ]
+
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    def test_own_blocked_placement_is_found_while_another_run_is_blocked(
+        self, mock_nomad_cls
+    ):
+        """Assert another run's ``blocked`` evaluation does not hide this run's allocation.
+
+        A non-parameterized job is shared by every run of its task and target,
+        so the job-wide liveness check must not run before the tracked
+        evaluation's own placement chain is resolved.
+        """
+        started = self._alloc(
+            NomadAllocStatusEnum.RUNNING,
+            EvalID="eval-2",
+            TaskStates={"step1": {"State": "running", "StartedAt": "1"}},
+        )
+        executor, _ = self._executor(
+            mock_nomad_cls,
+            [[], [started]],
+            evaluations=[
+                {
+                    "ID": "eval-1",
+                    "Status": NomadEvalStatusEnum.COMPLETE,
+                    "BlockedEval": "eval-2",
+                },
+                {"ID": "eval-2", "Status": NomadEvalStatusEnum.COMPLETE},
+                {"ID": "eval-9", "Status": NomadEvalStatusEnum.BLOCKED},
+            ],
+        )
+
+        assert executor.preflight_stream_logs(_build_queue_item()) is None
 
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     def test_no_allocation_and_nothing_pending_stays_gone(self, mock_nomad_cls):

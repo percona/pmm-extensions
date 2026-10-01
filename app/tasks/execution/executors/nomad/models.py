@@ -2929,11 +2929,14 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
         """Resolve allocation for live log streaming before HTTP response headers are sent.
 
-        A miss is re-read once after the evaluations are seen to be settled:
-        Nomad can place the allocation and complete its evaluation between the
-        two reads, and only a second miss means nothing is coming. Work that
-        waited for capacity is placed under the ``blocked`` evaluation the
-        tracked one spawned, so the re-read follows that placement chain.
+        A miss is re-read along the tracked evaluation's placement chain once
+        the job's evaluations have been read: Nomad can place the allocation
+        and complete its evaluation between the two reads, and work that waited
+        for capacity is placed under the ``blocked`` evaluation the tracked one
+        spawned. Only a miss on that chain while some evaluation of the job is
+        still live is reported as not started, since the job is shared by every
+        run of its task and target; a miss with no live evaluation means
+        nothing is coming.
 
         :param queue_item: The running task history whose logs are about to stream.
         :raises TaskNotStartedInExecutorError: When Nomad is still placing the
@@ -2953,16 +2956,19 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         except AllocationNotFoundError:
             self.get_job(job_id)
             evaluations = self.backend.job.get_evaluations(job_id)
-            if any(
-                evaluation.get("Status") in _LIVE_EVAL_STATUSES
-                for evaluation in evaluations
-            ):
-                raise TaskNotStartedInExecutorError(
-                    f"Nomad has not placed an allocation for job {job_id} yet"
-                ) from None
-            alloc = self._last_chain_allocation(
-                job_id, eval_id, _evaluations_by_id(evaluations)
-            )
+            try:
+                alloc = self._last_chain_allocation(
+                    job_id, eval_id, _evaluations_by_id(evaluations)
+                )
+            except AllocationNotFoundError:
+                if any(
+                    evaluation.get("Status") in _LIVE_EVAL_STATUSES
+                    for evaluation in evaluations
+                ):
+                    raise TaskNotStartedInExecutorError(
+                        f"Nomad has not placed an allocation for job {job_id} yet"
+                    ) from None
+                raise
         if not _alloc_task_states(alloc) and alloc.get("ClientStatus") in {
             NomadAllocStatusEnum.PENDING,
             NomadAllocStatusEnum.RUNNING,
