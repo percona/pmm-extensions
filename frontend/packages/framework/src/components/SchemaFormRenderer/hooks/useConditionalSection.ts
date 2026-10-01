@@ -22,10 +22,6 @@ import { isOneOfGroup } from '../utils/flattenSectionFields';
 import { evaluatePredicate, getGateFieldNames } from '../utils/predicateEvaluator';
 import { watchValuesByName } from '../utils/watchValuesByName';
 
-export interface ConditionalSectionState {
-  isHidden: boolean;
-}
-
 /**
  * Evaluate the `forbidden` gates of several sections against one watch.
  *
@@ -38,10 +34,10 @@ export interface ConditionalSectionState {
  * Returns one flag per input section, positionally.
  *
  * Deliberately not exported from the package: it is only half the contract.
- * A caller that reads these flags without also calling
+ * This hook and {@link useUnregisterHiddenSections} are used as a pair — a
+ * caller that reads these flags without also passing them to
  * {@link useUnregisterHiddenSections} ships a hidden section's values in the
- * submission payload. {@link useConditionalSection} pairs the two for the
- * single-section case and is the supported entry point.
+ * submission payload.
  */
 export function useConditionalSections(sections: FormSection[]): boolean[] {
   const { control } = useFormContext();
@@ -126,22 +122,4 @@ export function useUnregisterHiddenSections(sections: FormSection[], hidden: boo
       }
     });
   }, [hidden, namesBySection, unregister]);
-}
-
-/**
- * Evaluate one section's gates and drop its fields while it is hidden.
- *
- * When the section becomes hidden every child field must drop out of
- * RHF state so its (possibly default) value does not ship. On re-show,
- * the renderer re-mounts the children which re-call register() and
- * start fresh — intentional: stale user input from the prior session
- * would otherwise ship in the payload and fail backend cross-mode validation.
- */
-export function useConditionalSection(section: FormSection): ConditionalSectionState {
-  const sections = useMemo(() => [section], [section]);
-  const hidden = useConditionalSections(sections);
-
-  useUnregisterHiddenSections(sections, hidden);
-
-  return { isHidden: hidden[0] ?? false };
 }

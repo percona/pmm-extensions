@@ -89,6 +89,18 @@ beforeEach(() => {
   authMock.canMutate = true;
 });
 
+/**
+ * The create POSTs, ignoring the schedule-preview POSTs the form issues while
+ * a schedule is being entered. Both go through the same mocked client.
+ */
+function createCalls() {
+  return apiMock.post.mock.calls.filter(([url]) => !String(url).includes('schedule/preview'));
+}
+
+function previewCalls() {
+  return apiMock.post.mock.calls.filter(([url]) => String(url).includes('schedule/preview'));
+}
+
 function setup(periodic: PeriodicTaskResponse[]) {
   useAppTasksMock.mockReturnValue({
     data: {
@@ -311,8 +323,8 @@ describe('ScheduledTasksPanel', () => {
 
     await user.click(within(form).getByRole('button', { name: /Create/i }));
 
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledTimes(1));
-    const [url, body] = apiMock.post.mock.calls[0];
+    await waitFor(() => expect(createCalls()).toHaveLength(1));
+    const [url, body] = createCalls()[0];
     expect(url).toBe('/extensions/periodic-tasks/plugin-task/');
     expect(body).toMatchObject({
       task: 'plugin-task',
@@ -343,8 +355,8 @@ describe('ScheduledTasksPanel', () => {
 
     await user.click(within(form).getByRole('button', { name: /Create/i }));
 
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledTimes(1));
-    const [, body] = apiMock.post.mock.calls[0];
+    await waitFor(() => expect(createCalls()).toHaveLength(1));
+    const [, body] = createCalls()[0];
     expect(body.interval).toBeNull();
     expect(body.crontab).toMatchObject({
       minute: '*/5',
@@ -368,7 +380,7 @@ describe('ScheduledTasksPanel', () => {
     await user.type(within(form).getByTestId('sched-form-cron'), 'not-a-cron');
     await user.click(within(form).getByRole('button', { name: /Create/i }));
 
-    expect(apiMock.post).not.toHaveBeenCalled();
+    expect(createCalls()).toHaveLength(0);
   });
 
   it('rejects an empty interval-every value and does not POST', async () => {
@@ -382,7 +394,7 @@ describe('ScheduledTasksPanel', () => {
     await user.clear(within(form).getByTestId('sched-form-interval-every'));
     await user.click(within(form).getByRole('button', { name: /Create/i }));
 
-    expect(apiMock.post).not.toHaveBeenCalled();
+    expect(createCalls()).toHaveLength(0);
   });
 
   it('disables the toggle while a previous toggle is in flight', async () => {
@@ -463,8 +475,8 @@ describe('ScheduledTasksPanel', () => {
 
     await user.click(within(form).getByRole('button', { name: /Create/i }));
 
-    await waitFor(() => expect(apiMock.post).toHaveBeenCalledTimes(1));
-    const [, body] = apiMock.post.mock.calls[0];
+    await waitFor(() => expect(createCalls()).toHaveLength(1));
+    const [, body] = createCalls()[0];
     expect(body.execute_request).toMatchObject({
       chain_task_names: ['other-plugin-task'],
       chain_on_failure: false,
@@ -566,5 +578,139 @@ describe('ScheduledTasksPanel — write access', () => {
     expect(
       within(screen.getByTestId('scheduled-task-row-1')).getByText('Enabled'),
     ).toBeInTheDocument();
+  });
+});
+
+// The form previews a schedule with the scheduler's own next runs, fetched
+// from the preview endpoint, never computed in the browser.
+describe('ScheduledTasksPanel — schedule preview', () => {
+  const RUN_FORMAT = { dateStyle: 'medium', timeStyle: 'short' } as const;
+  const testZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // A zone guaranteed to differ from the runner's, so a run formatted in the
+  // reader's zone cannot pass for one formatted in the schedule's zone.
+  const scheduleZone =
+    testZone === 'Pacific/Kiritimati' ? 'Pacific/Pago_Pago' : 'Pacific/Kiritimati';
+
+  function mockPreview(result: { timezone: string; next_runs: string[] } | Error) {
+    apiMock.post.mockImplementation(async (url: string) => {
+      if (!String(url).includes('schedule/preview')) {
+        return { data: makePeriodic({ id: 99 }) };
+      }
+      if (result instanceof Error) {
+        throw result;
+      }
+      return { data: { ...result, next_run_at: result.next_runs[0] ?? null } };
+    });
+  }
+
+  async function openCreateForm() {
+    renderPanel(<ScheduledTasksPanel pluginName="myplugin" />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId('scheduled-tasks-add'));
+    const form = await screen.findByTestId('scheduled-task-form');
+    return { user, form };
+  }
+
+  it('shows the next three runs from the endpoint, in the zone the response names', async () => {
+    setup([]);
+    const runs = [
+      '2026-03-01T02:30:00Z',
+      '2026-03-02T02:30:00Z',
+      '2026-03-03T02:30:00Z',
+      '2026-03-04T02:30:00Z',
+    ];
+    mockPreview({ timezone: scheduleZone, next_runs: runs });
+
+    const { user, form } = await openCreateForm();
+    await user.click(within(form).getByTestId('sched-form-toggle-mode'));
+    await user.type(within(form).getByTestId('sched-form-cron'), '30 2 * * *');
+
+    const nextRuns = within(form).getByTestId('sched-form-next-runs');
+    await waitFor(() => expect(nextRuns).toHaveTextContent(`Next runs (${scheduleZone}):`));
+    for (const iso of runs.slice(0, 3)) {
+      const inScheduleZone = new Date(iso).toLocaleString(undefined, {
+        ...RUN_FORMAT,
+        timeZone: scheduleZone,
+      });
+      const inReaderZone = new Date(iso).toLocaleString(undefined, {
+        ...RUN_FORMAT,
+        timeZone: testZone,
+      });
+      expect(inScheduleZone).not.toBe(inReaderZone);
+      expect(nextRuns.textContent).toContain(inScheduleZone);
+      expect(nextRuns.textContent).not.toContain(inReaderZone);
+    }
+    // Three runs, not the four the endpoint returned.
+    expect(nextRuns.textContent).not.toContain(
+      new Date(runs[3]).toLocaleString(undefined, { ...RUN_FORMAT, timeZone: scheduleZone }),
+    );
+    // The browser-side description stays alongside the scheduler's runs.
+    expect(within(form).getByTestId('sched-form-cron-preview')).toHaveTextContent(/at 02:30 AM/i);
+    const calls = previewCalls();
+    const [, body] = calls[calls.length - 1];
+    expect(body).toMatchObject({
+      interval: null,
+      start_time: null,
+      crontab: { minute: '30', hour: '2', day_of_month: '*', month_of_year: '*', day_of_week: '*' },
+    });
+  });
+
+  it('sends no preview request for an invalid cron expression', async () => {
+    setup([]);
+    mockPreview({ timezone: 'UTC', next_runs: [] });
+
+    const { user, form } = await openCreateForm();
+    await user.click(within(form).getByTestId('sched-form-toggle-mode'));
+    // Interval mode previews its default schedule on mount; only what cron
+    // mode asks for counts here.
+    apiMock.post.mockClear();
+    await user.type(within(form).getByTestId('sched-form-cron'), 'not-a-cron');
+
+    expect(within(form).getByTestId('sched-form-cron-preview')).toHaveTextContent(
+      'Invalid cron expression',
+    );
+    // Outlast the debounce so a request would have been sent by now.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(previewCalls()).toHaveLength(0);
+    expect(within(form).queryByTestId('sched-form-next-runs')).not.toBeInTheDocument();
+  });
+
+  it('sends a single preview request after a burst of typing', async () => {
+    setup([]);
+    mockPreview({ timezone: 'UTC', next_runs: ['2026-03-01T02:30:00Z'] });
+
+    const { user, form } = await openCreateForm();
+    const nextRuns = within(form).getByTestId('sched-form-next-runs');
+    // The default interval schedule previews once on mount.
+    await waitFor(() => expect(nextRuns).toHaveTextContent('Next runs (UTC):'));
+    apiMock.post.mockClear();
+
+    // Every intermediate value (1, 12, 123) is itself a valid interval.
+    const every = within(form).getByTestId('sched-form-interval-every');
+    await user.clear(every);
+    await user.type(every, '123');
+
+    await waitFor(() => expect(previewCalls()).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(previewCalls()).toHaveLength(1);
+    expect(previewCalls()[0][1]).toMatchObject({
+      interval: { every: 123, period: 'hours' },
+      crontab: null,
+    });
+  });
+
+  it('shows a non-blocking message when the preview fails, and still saves', async () => {
+    setup([]);
+    mockPreview(new Error('preview blew up'));
+
+    const { user, form } = await openCreateForm();
+    await waitFor(() =>
+      expect(within(form).getByTestId('sched-form-next-runs')).toHaveTextContent(
+        'Could not work out the next runs for this schedule.',
+      ),
+    );
+
+    await user.click(within(form).getByRole('button', { name: /Create/i }));
+    await waitFor(() => expect(createCalls()).toHaveLength(1));
   });
 });

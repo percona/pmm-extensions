@@ -29,9 +29,12 @@ export type PeriodicTaskUpdate = TasksComponents['schemas']['PeriodicTaskUpdate'
 export type IntervalSchedule = TasksComponents['schemas']['IntervalSchedule'];
 export type CrontabSchedule = TasksComponents['schemas']['CrontabSchedule'];
 export type PeriodicTaskExecuteRequest = TasksComponents['schemas']['PeriodicTaskExecuteRequest'];
+export type SchedulePreviewWrite = TasksComponents['schemas']['SchedulePreviewWrite'];
+export type SchedulePreviewResponse = TasksComponents['schemas']['SchedulePreviewResponse'];
 
 const PERIODIC_LIST_KEY = ['periodic'] as const;
 const PERIODIC_LIST_PATH = '/extensions/periodic-tasks/';
+const PREVIEW_PATH = '/extensions/periodic-tasks/schedule/preview/';
 const POLL_INTERVAL_MS = 30_000;
 
 interface AppTask extends Record<string, unknown> {
@@ -94,6 +97,31 @@ export function useScheduledTasksForApp(
       return periodicQuery.refetch();
     },
   };
+}
+
+/**
+ * Ask the scheduler what a schedule would do, without saving it.
+ *
+ * The upcoming runs and the zone they resolve in are computed by the
+ * scheduler's own schedule objects, so the preview cannot disagree with what
+ * the saved schedule will do. Pass `null` while the form does not describe a
+ * valid schedule; the query then stays idle instead of sending a request the
+ * backend would reject. Each spec is its own cache entry, so a late response
+ * for superseded input never becomes the data for the current one.
+ */
+export function useSchedulePreview(spec: SchedulePreviewWrite | null) {
+  return useQuery<SchedulePreviewResponse, Error>({
+    queryKey: ['periodic:preview', spec],
+    queryFn: async () => {
+      const { data } = await apiClient.post<SchedulePreviewResponse>(PREVIEW_PATH, spec);
+      return data;
+    },
+    enabled: spec !== null,
+    retry: false,
+    // The runs are relative to "now", so a cached answer for a spec the user
+    // returns to is refetched rather than trusted.
+    staleTime: 0,
+  });
 }
 
 interface CreateVars {
