@@ -707,7 +707,6 @@ class TestCollectRetirableEntities:
             name: [] for name, _ in COLLECTION_ORDER
         }
 
-        # Bounded, so a batch that never drains fails instead of hanging.
         for _ in range(20):
             batch = await self._collect(session, limit=1)
             for name, entity_ids in batch.deleted.items():

@@ -2014,6 +2014,10 @@ async def collect_retirable_entities(
     :return: The selected ids per type, and whether to run another batch.
     :raises ValueError: If ``limit`` is not positive, since every batch would
         then report ``remaining`` and a batching caller would never finish.
+    :raises sqlalchemy.exc.SQLAlchemyError: When a type's delete fails, with
+        the deeper types' deletes already committed.
+    :raises Exception: Whatever ``on_collected`` raises, with that type's
+        delete already committed.
     """
     if limit < 1:
         raise ValueError(f"limit must be positive, got {limit}")

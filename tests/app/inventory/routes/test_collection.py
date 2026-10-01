@@ -402,7 +402,7 @@ class TestCollectionAdapter:
         self,
         test_client: TestClient,
         mocker: MockerFixture,
-        payload: dict,
+        payload: dict[str, bool],
         *,
         dry_run: bool,
     ) -> None:
