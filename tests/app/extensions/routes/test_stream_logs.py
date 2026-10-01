@@ -16,6 +16,7 @@
 """Define tests for the app.extensions.routes.stream_logs module."""
 
 import asyncio
+import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -24,7 +25,11 @@ import pytest
 from aioresponses import aioresponses, CallbackResult
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from starlette.status import HTTP_200_OK, HTTP_503_SERVICE_UNAVAILABLE
+from starlette.status import (
+    HTTP_200_OK,
+    HTTP_409_CONFLICT,
+    HTTP_503_SERVICE_UNAVAILABLE,
+)
 
 from app.core.config import settings
 from app.core.requests import RemoteAPI
@@ -189,6 +194,104 @@ def test_logs_event_stream_finishes_on_empty_log_stream(
     assert "log line" not in streamed_content
     assert "event: finish" in streamed_content
     assert TaskHistoryStatusEnum.SUCCESS.value in streamed_content
+
+
+def _sse_frames(streamed_content: str) -> list[tuple[str | None, str]]:
+    """Split an SSE body into ``(event, data)`` pairs, ``event`` ``None`` when unnamed.
+
+    :param streamed_content: The decoded ``text/event-stream`` response body.
+    :return: One pair per frame, in emission order.
+    """
+    frames: list[tuple[str | None, str]] = []
+    for block in streamed_content.split("\n\n"):
+        if not block:
+            continue
+        fields = dict(line.split(": ", 1) for line in block.splitlines())
+        frames.append((fields.get("event"), fields["data"]))
+    return frames
+
+
+@pytest.mark.parametrize(
+    "reconciled_status",
+    [TaskHistoryStatusEnum.RUNNING, TaskHistoryStatusEnum.PENDING],
+)
+def test_logs_event_stream_ending_before_a_terminal_status_emits_retryable_409(
+    test_client, mock_tasks_client, task_history_response, reconciled_status
+):
+    """Assert a stream ending while the run is still live asks the client to retry.
+
+    A ``finish`` frame tells the viewer the log is complete, so it is reserved
+    for a terminal status; a run the executor has not started yet ends its
+    stream early and gets a 409 error frame instead.
+    """
+    mock_tasks_client.stream.side_effect = lambda *_args, **_kwargs: (
+        mock_stream_logs_generator([])
+    )
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": reconciled_status
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert response.status_code == HTTP_200_OK
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (
+            "extensions-error",
+            json.dumps(
+                {
+                    "code": HTTP_409_CONFLICT,
+                    "detail": f"Task history is {reconciled_status}.",
+                }
+            ),
+        )
+    ]
+
+
+def test_logs_event_stream_lost_run_still_finishes(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert a LOST run ends with ``finish`` even though it never finished.
+
+    LOST is terminal without an observed outcome, so the stream must still
+    close it rather than ask the client to retry a run that will not resume.
+    """
+    mock_tasks_client.stream.side_effect = lambda *_args, **_kwargs: (
+        mock_stream_logs_generator([])
+    )
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": TaskHistoryStatusEnum.LOST
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        ("finish", json.dumps({"status": TaskHistoryStatusEnum.LOST}))
+    ]
+
+
+def test_logs_event_stream_forwards_upstream_not_started_409(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert the Tasks API's not-started 409 reaches the client as a 409 frame."""
+    mock_tasks_client.stream.side_effect = HTTPException(
+        status_code=HTTP_409_CONFLICT,
+        detail="Allocation a has not started a task yet",
+    )
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (
+            "extensions-error",
+            json.dumps(
+                {
+                    "code": HTTP_409_CONFLICT,
+                    "detail": "Allocation a has not started a task yet",
+                }
+            ),
+        )
+    ]
+    mock_tasks_client.post.assert_not_called()
 
 
 def test_logs_event_stream_forwards_tail_query_param(

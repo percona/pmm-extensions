@@ -102,11 +102,9 @@ export interface TaskLogViewerProps {
 
 /**
  * The terminal statuses a `finish` frame is supposed to carry. The frame is
- * parsed without validation, and the backend does send `finish` with a
- * non-terminal status (e.g. `running`) when it reconciles a run whose
- * allocation is placed but no step has started, so a live log is only treated
- * as complete when its status is one of these. Keyed on the union so a new
- * member cannot be added without deciding it here.
+ * parsed without validation, so a live log is only treated as complete when
+ * its status is one of these. Keyed on the union so a new member cannot be
+ * added without deciding it here.
  */
 const TERMINAL_FINISH_STATUS: Record<FinishStatus, true> = {
   success: true,

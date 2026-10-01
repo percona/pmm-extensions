@@ -22,7 +22,7 @@ from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from aiohttp import ClientTimeout
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from starlette.responses import StreamingResponse
 
 from app.core.requests import as_json_object
@@ -169,6 +169,10 @@ async def task_history_logs_event_stream(
     and this stream is open to any authenticated user, so that call carries the
     internal token instead.
 
+    ``finish`` is reserved for a terminal status. A stream that ends while the
+    reconciled run is still live (for example, the executor had not started it
+    yet) emits a 409 ``extensions-error`` for the client to retry instead.
+
     :param tasks_client: The TaskAPI client for interacting with the Tasks service.
     :param task_history_id: The ID of the task history whose logs to stream.
     :param request: The FastAPI request object, used to access query parameters.
@@ -191,7 +195,15 @@ async def task_history_logs_event_stream(
             task_history = as_json_object(
                 await sync_api.post(f"/history/{task_history_id}/sync/")
             )
-        yield f"event: finish\ndata: {json.dumps({'status': task_history['status']})}\n\n"
+        reconciled = TaskHistoryStatusEnum(task_history["status"])
+        if not reconciled.is_terminal():
+            payload = {
+                "code": status.HTTP_409_CONFLICT,
+                "detail": f"Task history is {reconciled}.",
+            }
+            yield f"event: extensions-error\ndata: {json.dumps(payload)}\n\n"
+            return
+        yield f"event: finish\ndata: {json.dumps({'status': reconciled})}\n\n"
     except TimeoutError as exc:
         logger.warning(
             "Timeout while streaming task logs task_history_id=%s: %s",

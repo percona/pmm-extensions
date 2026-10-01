@@ -70,6 +70,7 @@ from app.core.utils.pydantic import field_with_metadata
 from app.tasks.anonymizer import anonymize_text
 from app.tasks.anonymizer.entities import PIIEntity
 from app.tasks.crud import TaskHistoryLogStateManager, TaskHistoryManager
+from app.tasks.execution.exceptions import TaskNotStartedInExecutorError
 from app.tasks.execution.executors.nomad.exceptions import (
     AllocationNotFoundError,
     JobNotFoundError,
@@ -1480,6 +1481,17 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             task_logs[step][log_type] = step_delta.text
         return task_logs
 
+    def _job_has_pending_evaluation(self, job_id: str) -> bool:
+        """Return whether Nomad still has a pending evaluation for ``job_id``.
+
+        :param job_id: The Nomad job whose evaluations to inspect.
+        :return: ``True`` while Nomad may still place an allocation for the job.
+        """
+        return any(
+            evaluation.get("Status") == NomadAllocStatusEnum.PENDING
+            for evaluation in self.backend.job.get_evaluations(job_id)
+        )
+
     def _resolve_running_allocation(
         self, queue_item: TaskHistory
     ) -> tuple[dict[str, Any], str] | None:
@@ -1508,10 +1520,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             return alloc, job_id
         try:
             job = self.get_job_for_task_history(queue_item)
-            if all(
-                evaluation.get("Status") != NomadAllocStatusEnum.PENDING
-                for evaluation in self.backend.job.get_evaluations(job["ID"])
-            ):
+            if not self._job_has_pending_evaluation(job["ID"]):
                 logger.warning(
                     "No allocations or pending evaluations found for task history %s",
                     queue_item.id,
@@ -2706,9 +2715,36 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             return (_NOMAD_LOG_STREAM_CLIENT_ERROR, alloc, stream_start)
 
     def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
-        """Resolve allocation for live log streaming before HTTP response headers are sent."""
+        """Resolve allocation for live log streaming before HTTP response headers are sent.
+
+        A miss is re-read once after the evaluations are seen to be settled:
+        Nomad can place the allocation and complete its evaluation between the
+        two reads, and only a second miss means nothing is coming.
+
+        :param queue_item: The running task history whose logs are about to stream.
+        :raises TaskNotStartedInExecutorError: When Nomad is still placing the
+            allocation, or has placed it but reports no task state yet.
+        :raises JobNotFoundError: When the job itself is gone.
+        :raises AllocationNotFoundError: When the job has no allocation and nothing
+            is pending that would produce one.
+        """
         job_id, eval_id = self.job_eval_ids_for_stream_logs(queue_item)
-        self.get_last_allocation(job_id, eval_id)
+        try:
+            alloc = self.get_last_allocation(job_id, eval_id)
+        except AllocationNotFoundError:
+            self.get_job(job_id)
+            if self._job_has_pending_evaluation(job_id):
+                raise TaskNotStartedInExecutorError(
+                    f"Nomad has not placed an allocation for job {job_id} yet"
+                ) from None
+            alloc = self.get_last_allocation(job_id, eval_id)
+        if not _alloc_task_states(alloc) and alloc.get("ClientStatus") in {
+            NomadAllocStatusEnum.PENDING,
+            NomadAllocStatusEnum.RUNNING,
+        }:
+            raise TaskNotStartedInExecutorError(
+                f"Allocation {alloc['ID']} has not started a task yet"
+            )
 
     def job_eval_ids_for_stream_logs(self, queue_item: TaskHistory) -> tuple[str, str]:
         """Return job_id and evaluation_id from task history tracking for log streaming.
