@@ -4490,6 +4490,50 @@ class TestNomadLogStreaming:
         assert logs[0].type == TaskLogType.STDOUT
 
     @pytest.mark.asyncio
+    async def test_consume_nomad_log_stream_reads_frames_sharing_a_chunk(self):
+        """Read every frame when a proxy forwards several in one HTTP chunk.
+
+        A heartbeat directly followed by a data frame, two data frames, and a
+        frame whose end shares a chunk with the next frame's start must all be
+        read, in order, with the offset ending at the last frame's.
+        """
+        first = self._nomad_log_frame(msg="one\n", offset=4)
+        second = self._nomad_log_frame(msg="two\n", offset=8)
+        third = self._nomad_log_frame(msg="three\n", offset=14)
+        last_offset = 19
+        fourth = self._nomad_log_frame(msg="four\n", offset=last_offset)
+        split_at = len(fourth) // 2
+        chunks = [
+            b"{}" + first,
+            second + third + fourth[:split_at],
+            fourth[split_at:],
+        ]
+        executor = _build_executor()
+        params = self._log_stream_params("step2")
+        queue = asyncio.Queue()
+
+        with patch.object(
+            executor,
+            "_request",
+            return_value=self._stream_response(self._make_iter_chunks(chunks)),
+        ):
+            state, _alloc, _start = await executor._consume_nomad_log_stream(
+                alloc=self._alloc_for_logs("step2"),
+                step="step2",
+                log_type=TaskLogType.STDOUT,
+                queue=queue,
+                params=params,
+                client_timeout=ClientTimeout(sock_read=NOMAD_DEFAULT_TIMEOUT),
+                anonymize_entities=None,
+                pending=WithheldLineBuffer(),
+            )
+
+        logs = await self._drain_task_logs(queue)
+        assert state == "running"
+        assert [log.msg for log in logs] == ["one\n", "two\n", "three\n", "four\n"]
+        assert params["offset"] == last_offset
+
+    @pytest.mark.asyncio
     async def test_consume_nomad_log_stream_empty_data_increments_without_recheck(self):
         """Data frame then empty frame increments empty_data_count without recheck (step2)."""
         chunks = [

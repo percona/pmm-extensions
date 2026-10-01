@@ -124,6 +124,7 @@ NODE_STATUS_READY = "ready"
 # Internal states returned by :meth:`NomadExecutor._consume_nomad_log_stream` (not Nomad task states).
 _NOMAD_LOG_STREAM_SOCK_TIMEOUT = "nomad-log-stream-sock-timeout"
 _NOMAD_LOG_STREAM_CLIENT_ERROR = "nomad-log-stream-client-error"
+_NOMAD_FRAME_DECODER = json.JSONDecoder()
 
 _ANONYMIZED_STEPS: frozenset[NomadStep] = NomadStep.anonymized()
 
@@ -153,6 +154,35 @@ def _should_anonymize(step: str, anonymize_entities: set[PIIEntity] | None) -> b
     :return: ``True`` when the step is anonymized and entities were requested.
     """
     return step in _ANONYMIZED_STEPS and bool(anonymize_entities)
+
+
+def _split_nomad_frames(buffer: bytes) -> tuple[list[dict[str, Any]], bytes]:
+    """Split the complete JSON frames off the front of a log-follow buffer.
+
+    Nomad writes one JSON object per frame, but a proxy between it and this
+    client may forward several frames in one HTTP chunk, a heartbeat glued to
+    the next data frame included, or one frame across several chunks. Frames are
+    therefore read off the accumulated bytes one by one until only an
+    incomplete frame, or nothing, is left.
+
+    :param buffer: The bytes received and not yet parsed, oldest first.
+    :return: The complete frames in arrival order, and the unparsed tail to
+        prepend to the next chunk.
+    """
+    text = buffer.decode()
+    frames: list[dict[str, Any]] = []
+    index = 0
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index == len(text):
+            break
+        try:
+            frame, index = _NOMAD_FRAME_DECODER.raw_decode(text, index)
+        except json.JSONDecodeError:
+            break
+        frames.append(frame)
+    return frames, text[index:].encode()
 
 
 def _decode_and_anonymize(raw: bytes, anonymize_entities: set[PIIEntity] | None) -> str:
@@ -2681,76 +2711,74 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 raw_data = b""
                 first_chunk_seen = False
                 async for chunk, _ in response.content.iter_chunks():
-                    raw_data += chunk
-                    if b"}" not in chunk:
-                        continue
-                    data = json.loads(raw_data)
-                    raw_data = b""
-                    params["offset"] = offset = data.get("Offset", params["offset"])
-                    if data and (msg := data.get("Data")):
-                        logger.debug(
-                            "Nomad log frame alloc_id=%s step=%s log_type=%s "
-                            "offset=%s b64_chars=%s monotonic=%.3f",
-                            alloc_id,
-                            step,
-                            log_type,
-                            offset,
-                            len(msg),
-                            time.monotonic(),
-                        )
-                        empty_data_count = 0
-                        if not first_chunk_seen:
-                            first_chunk_seen = True
-                            elapsed = (
-                                time.monotonic() - stream_start
-                                if stream_start is not None
-                                else 0
-                            )
+                    frames, raw_data = _split_nomad_frames(raw_data + chunk)
+                    for data in frames:
+                        params["offset"] = offset = data.get("Offset", params["offset"])
+                        if data and (msg := data.get("Data")):
                             logger.debug(
-                                "First log chunk received alloc_id=%s step=%s "
-                                "log_type=%s offset=%s elapsed=%.2fs",
+                                "Nomad log frame alloc_id=%s step=%s log_type=%s "
+                                "offset=%s b64_chars=%s monotonic=%.3f",
                                 alloc_id,
                                 step,
                                 log_type,
                                 offset,
-                                elapsed,
+                                len(msg),
+                                time.monotonic(),
                             )
-                        decoded_msg, emit_offset = await self._decode_live_frame(
-                            pending,
-                            msg,
-                            step,
-                            offset,
-                            anonymize_entities,
-                            alloc_id=alloc_id,
-                            log_type=log_type,
-                        )
-                        if decoded_msg is None:
-                            continue
-                        await queue.put(
-                            TaskLog(
-                                step=step,
-                                type=log_type,
-                                msg=decoded_msg,
-                                offset=emit_offset,
+                            empty_data_count = 0
+                            if not first_chunk_seen:
+                                first_chunk_seen = True
+                                elapsed = (
+                                    time.monotonic() - stream_start
+                                    if stream_start is not None
+                                    else 0
+                                )
+                                logger.debug(
+                                    "First log chunk received alloc_id=%s step=%s "
+                                    "log_type=%s offset=%s elapsed=%.2fs",
+                                    alloc_id,
+                                    step,
+                                    log_type,
+                                    offset,
+                                    elapsed,
+                                )
+                            decoded_msg, emit_offset = await self._decode_live_frame(
+                                pending,
+                                msg,
+                                step,
+                                offset,
+                                anonymize_entities,
+                                alloc_id=alloc_id,
+                                log_type=log_type,
                             )
-                        )
-                    elif empty_data_count >= self.log_socket_read_timeout:
-                        logger.debug(
-                            "No data received for %s seconds, rechecking job status...",
-                            self.log_socket_read_timeout,
-                        )
-                        alloc = await self._get_last_allocation_held(
-                            alloc["JobID"], alloc["EvalID"]
-                        )
-                        return (
-                            # An empty state ends the caller's loop, so a step
-                            # the refreshed allocation dropped stops the stream.
-                            _alloc_step_state(alloc, step).get("State", ""),
-                            alloc,
-                            stream_start,
-                        )
-                    else:
-                        empty_data_count += 1
+                            if decoded_msg is None:
+                                continue
+                            await queue.put(
+                                TaskLog(
+                                    step=step,
+                                    type=log_type,
+                                    msg=decoded_msg,
+                                    offset=emit_offset,
+                                )
+                            )
+                        elif empty_data_count >= self.log_socket_read_timeout:
+                            logger.debug(
+                                "No data received for %s seconds, "
+                                "rechecking job status...",
+                                self.log_socket_read_timeout,
+                            )
+                            alloc = await self._get_last_allocation_held(
+                                alloc["JobID"], alloc["EvalID"]
+                            )
+                            return (
+                                # An empty state ends the caller's loop, so a step
+                                # the refreshed allocation dropped stops the stream.
+                                _alloc_step_state(alloc, step).get("State", ""),
+                                alloc,
+                                stream_start,
+                            )
+                        else:
+                            empty_data_count += 1
                 return ("running", alloc, stream_start)
         except TimeoutError:
             return (_NOMAD_LOG_STREAM_SOCK_TIMEOUT, alloc, stream_start)
