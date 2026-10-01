@@ -1388,6 +1388,12 @@ class AliasableManagerMixin(RetirableManagerMixin):
         index carrying ``retirement_key``: the successor is retired first, which
         vacates the identifier, and only then does the predecessor take it.
 
+        The successor's ``retired_at`` is restamped with the confirmation time
+        even when it was already retired, because that stamp is what bounds
+        this link's pin in :meth:`collectible_ids`, and the ``retired_at IS
+        NULL`` guard in :meth:`_retirement_statements` would otherwise leave an
+        older one in place.
+
         A rejection does not block this. A pairing rejected by mistake stays
         confirmable by explicit id, which is what keeps a mistaken rejection
         correctable rather than permanent.
@@ -1430,9 +1436,6 @@ class AliasableManagerMixin(RetirableManagerMixin):
         confirmed_at = utc_now()
         statements = [
             *cls._retirement_statements(successor.id, confirmed_at),
-            # _retire leaves an already-retired successor's stamp alone — a
-            # service its node's link took — yet that stamp is what bounds this
-            # link's pin in collectible_ids, so it must restart here.
             update(cls.Model)
             .where(col(cls.Model.id) == successor.id)
             .values(retired_at=confirmed_at),
@@ -1807,9 +1810,10 @@ class ServiceManager(
         before nodes, so the very rows
         :meth:`_structural_pairing_clauses` keeps surfacing as candidates would
         age out from under the standing node link — taking the reversal's
-        subtree with them. The shared bound still applies unchanged, because
-        the subtree retirement stamps each service's ``retired_at`` with the
-        node's confirmation time.
+        subtree with them. The shared bound applies to each service's own
+        ``retired_at``: a service the node link retired carries the node's
+        confirmation time, while one already retired before the link keeps its
+        older stamp, so its pin ends first.
 
         :return: The ``EXISTS`` predicate.
         """
