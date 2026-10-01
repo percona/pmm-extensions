@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_97e4a3a828beac02_models_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-01 14:24 +0000
+            created at 2026-10-01 14:53 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -107,7 +107,7 @@
     <p class="run"><span class="n"><a id="t23" href="#t23">23</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">alerts</span><span class="op">.</span><span class="nam">models</span> <span class="key">import</span> <span class="nam">Alert</span><span class="op">,</span> <span class="nam">AlertService</span><span class="op">,</span> <span class="nam">BaseAlertProvider</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t24" href="#t24">24</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">alerts</span><span class="op">.</span><span class="nam">providers</span><span class="op">.</span><span class="nam">pagerduty</span> <span class="key">import</span> <span class="nam">PagerDutyEventsAlertProvider</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t25" href="#t25">25</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">config</span> <span class="key">import</span> <span class="nam">BaseYamlSettings</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">settings_override</span><span class="op">.</span><span class="nam">models</span> <span class="key">import</span> <span class="nam">SettingClassEnum</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">settings_override</span><span class="op">.</span><span class="nam">constants</span> <span class="key">import</span> <span class="nam">ALERT_SETTINGS</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t27" href="#t27">27</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">settings_override</span><span class="op">.</span><span class="nam">proxy</span> <span class="key">import</span> <span class="nam">OverridableSettingsProxy</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t28" href="#t28">28</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">settings_override</span><span class="op">.</span><span class="nam">registry</span> <span class="key">import</span> <span class="nam">hot_field</span><span class="op">,</span> <span class="nam">materialize_via_owning_model</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t29" href="#t29">29</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">utils</span><span class="op">.</span><span class="nam">fields</span> <span class="key">import</span> <span class="nam">NonEmptyStr</span>&nbsp;</span><span class="r"></span></p>
@@ -168,7 +168,7 @@
     <p class="pln"><span class="n"><a id="t84" href="#t84">84</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t85" href="#t85">85</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t86" href="#t86">86</a></span><span class="t"><span class="nam">alert_settings</span><span class="op">:</span> <span class="nam">AlertSettings</span> <span class="op">=</span> <span class="nam">OverridableSettingsProxy</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t87" href="#t87">87</a></span><span class="t">    <span class="nam">AlertSettings</span><span class="op">,</span> <span class="nam">setting_class</span><span class="op">=</span><span class="nam">SettingClassEnum</span><span class="op">.</span><span class="nam">ALERT_SETTINGS</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t87" href="#t87">87</a></span><span class="t">    <span class="nam">AlertSettings</span><span class="op">,</span> <span class="nam">setting_class</span><span class="op">=</span><span class="nam">ALERT_SETTINGS</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t88" href="#t88">88</a></span><span class="t"><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t89" href="#t89">89</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t90" href="#t90">90</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
@@ -221,7 +221,7 @@
             <a class="nav" href="z_97e4a3a828beac02_models_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-01 14:24 +0000
+            created at 2026-10-01 14:53 +0000
         </p>
     </div>
 </footer>
