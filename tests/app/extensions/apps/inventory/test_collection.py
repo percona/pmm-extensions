@@ -17,6 +17,7 @@
 
 from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime, timedelta, UTC
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -48,6 +49,7 @@ BATCH_SIZE = 42
 BATCH_CAP = 3
 TWO_BATCHES = 2
 SYNCER = "app.extensions.sync.syncers.pmm.PMMSyncer"
+NOW = datetime(2026, 6, 1, tzinfo=UTC)
 
 
 def _session_maker(session: AsyncSession) -> Callable[[], Any]:
@@ -234,6 +236,46 @@ class TestRunInventoryCollection:
         await run_inventory_collection(API_KEY)
 
         assert len({call["retired_before"] for call in client.calls}) == 1
+
+    async def test_the_pin_cutoff_is_pinned_for_the_whole_run(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Send one identical ``link_pin_retired_before`` on every call of the run."""
+        client = _install_client(
+            mocker,
+            RecordingInventoryClient([_batch([1], remaining=True), _batch([2])]),
+        )
+
+        await run_inventory_collection(API_KEY)
+
+        assert len(client.calls) == 2 * TWO_BATCHES
+        assert len({call["link_pin_retired_before"] for call in client.calls}) == 1
+
+    async def test_each_cutoff_follows_its_own_retention(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Derive the pin cutoff from its own setting, independent of the age one."""
+        mocker.patch.object(collection, "utc_now", return_value=NOW)
+        mocker.patch.object(
+            collection.inventory_app_settings,
+            "COLLECTION_RETENTION",
+            timedelta(days=10),
+        )
+        mocker.patch.object(
+            collection.inventory_app_settings,
+            "IDENTITY_LINK_PIN_RETENTION",
+            timedelta(days=90),
+        )
+        client = _install_client(mocker, RecordingInventoryClient([_batch([1])]))
+
+        await run_inventory_collection(API_KEY)
+
+        assert client.calls[0]["retired_before"] == (
+            (NOW - timedelta(days=10)).isoformat()
+        )
+        assert client.calls[0]["link_pin_retired_before"] == (
+            (NOW - timedelta(days=90)).isoformat()
+        )
 
     async def test_the_batch_size_is_sent_as_the_limit(
         self, mocker: MockerFixture
