@@ -196,7 +196,7 @@ pipeline {
 			// TODO: if possible, build this only when necessary - TBC how to automatically determine this
 			steps {
 
-				withCredentials([string(credentialsId: 'SEP_DOCKER_HUB_WRITE_TOKEN', variable: 'DOCKER_TOKEN')]) {
+				withCredentials([string(credentialsId: 'PMM_EXTENSIONS_DOCKER_HUB_WRITE_TOKEN', variable: 'DOCKER_TOKEN')]) {
 					sh '''
 						set -o errexit
 						set -o pipefail

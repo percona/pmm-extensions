@@ -28,7 +28,6 @@ import {
   setTokenProvider,
   useAuth,
   type AuthSession,
-  type AuthState,
   type SPAOAuthTokenResponse,
   type User,
 } from '@pmm-extensions/api';
@@ -208,4 +207,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 // Shell-local imports keep pointing at this module; the implementation is
 // ``@pmm-extensions/api``'s, so the framework and app packages read the same context.
 export { useAuth };
-export type { AuthSession, AuthState, User };
+export type { AuthSession, User };

@@ -17,8 +17,9 @@
 
 :func:`tests.app.db_schema.apply_schema` is a drop-in for ``create_all`` on an
 **async in-memory SQLite** connection only: it replays captured DDL through
-``executescript``, an aiosqlite-specific API with no asyncpg or synchronous
-equivalent. The metadata expression cannot tell the buckets apart — nearly every
+``executescript``, which asyncpg lacks and which ``apply_schema`` reaches only
+through an ``AsyncConnection`` (stdlib ``sqlite3`` has it, so the sync bucket is
+unconverted, not unconvertible). The metadata expression cannot tell the buckets apart — nearly every
 site reads ``SQLModel.metadata.create_all`` whichever engine it runs on — so this
 walks back to the enclosing function and classifies by the engine it binds.
 

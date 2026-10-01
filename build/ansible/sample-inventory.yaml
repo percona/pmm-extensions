@@ -1,18 +1,4 @@
 ---
-sep_controller:
-  hosts:
-    deb-controller:
-      ansible_host: x.x.x.x
-    el-controller:
-      ansible_host: x.x.x.x
-  vars:
-    custom_ca_certificate: |
-      -----BEGIN CERTIFICATE-----
-      changemechangemechangeme
-      -----END CERTIFICATE-----
-    sep_image_name: changeme.url/sep
-    sep_image_tag: changeme-latest
-
 mysql:
   hosts:
     mysql1-el:
