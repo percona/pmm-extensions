@@ -50,6 +50,7 @@ from app.tasks.connectivity.models import ConnectivityServiceType
 from app.tasks.connectivity.service import _cached_check_connectivity
 from app.tasks.crud import TaskHistoryLogManager, TaskHistoryManager, TaskManager
 from app.tasks.deps import get_request_executor, get_session
+from app.tasks.execution.exceptions import TaskNotStartedInExecutorError
 from app.tasks.execution.executors.nomad.exceptions import AllocationNotFoundError
 from app.tasks.execution.executors.nomad.steps import (
     NomadStep,
@@ -1187,6 +1188,35 @@ async def test_stream_logs_running_preflight_allocation_gone_returns_410(
     assert response.status_code == status.HTTP_410_GONE
     detail = response.json()["detail"]
     assert detail["resource_type"] == "allocation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "not_started_reason",
+    [
+        "Nomad has not placed an allocation for job j yet",
+        "Allocation a has not started a task yet",
+    ],
+)
+async def test_stream_logs_running_not_started_returns_409(
+    test_client, session, mock_executor, created_task_with_history, not_started_reason
+):
+    """Assert a RUNNING history the executor has not started yet answers 409.
+
+    The conflict is decided before streaming starts, so a client can retry it,
+    and it stays apart from the 410 an expired run answers.
+    """
+    created_task_with_history.status = TaskHistoryStatusEnum.RUNNING
+    await TaskHistoryManager.save(session, created_task_with_history)
+    mock_executor.preflight_stream_logs.side_effect = TaskNotStartedInExecutorError(
+        not_started_reason
+    )
+
+    response = test_client.get(f"/history/{created_task_with_history.id}/logs/")
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert response.json()["detail"] == not_started_reason
+    mock_executor.stream_logs.assert_not_called()
 
 
 @pytest.mark.asyncio

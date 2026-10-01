@@ -15,6 +15,7 @@
 
 """Define tests for the app.extensions.apps.backup_mongo.deps module."""
 
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,6 +27,7 @@ from app.core.exceptions import (
 )
 from app.core.requests.remote_api import RemoteAPI
 from app.extensions.apps.backup_mongo.deps import (
+    _fetch_latest_pbm_status,
     build_backup_mongo_api_task_response,
     build_backup_task_payload,
     ensure_backup_derived_siblings,
@@ -234,3 +236,26 @@ class TestEnsureMissingDerivedChildrenPathGuard:
             )
 
         tasks_api.post.assert_not_awaited()
+
+
+class TestFetchLatestPbmStatus:
+    """Test reading the latest PBM status tail through the Tasks log route."""
+
+    @pytest.mark.asyncio
+    async def test_a_status_run_not_started_yet_reads_as_no_status(self) -> None:
+        """Assert a 409 from a status run the executor has not started is no status.
+
+        The panel is best-effort, so a run caught before its first step must not
+        fail the whole backup detail response.
+        """
+
+        async def not_started_stream(
+            *_args: object, **_kwargs: object
+        ) -> AsyncIterator[bytes]:
+            raise HTTPConflictException("Allocation a has not started a task yet")
+            yield b""
+
+        tasks_api = AsyncMock(spec=RemoteAPI)
+        tasks_api.stream = not_started_stream
+
+        assert await _fetch_latest_pbm_status(tasks_api, [{"id": 7}]) is None

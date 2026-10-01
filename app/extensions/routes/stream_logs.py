@@ -23,7 +23,7 @@ from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from aiohttp import ClientTimeout
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from starlette.responses import StreamingResponse
 
 from app.core.requests import as_json_object
@@ -154,6 +154,84 @@ async def task_logs_event_stream(
     )
 
 
+async def _log_data_frames(
+    tasks_client: TasksClient, task_history_id: int, request: Request, access_token: str
+) -> AsyncGenerator[str, None]:
+    """Yield a task history's log lines from the Tasks API as SSE data frames.
+
+    :param tasks_client: The TaskAPI client for interacting with the Tasks service.
+    :param task_history_id: The ID of the task history whose logs to read.
+    :param request: The FastAPI request whose query parameters are forwarded.
+    :param access_token: Bearer token authenticating the read as the viewing user.
+    :return: One ``data`` frame per non-empty log line.
+    :raises HTTPException: When the Tasks API answers the log read with an error.
+    """
+    with tasks_client.auth(access_token) as tasks_api:
+        # No read timeout: log stream can stall under backpressure (e.g. ~26MB)
+        # and must not be killed by the default sock_read=120.
+        async for log_entry in tasks_api.stream(
+            f"/history/{task_history_id}/logs/",
+            params=request.query_params,
+            timeout=ClientTimeout(sock_read=None),
+        ):
+            if log_entry:
+                logger.debug(
+                    "Proxying log line task_history_id=%s bytes=%s monotonic=%.3f",
+                    task_history_id,
+                    len(log_entry),
+                    time.monotonic(),
+                )
+                yield f"data: {log_entry.decode()}\n\n"
+
+
+async def _reconciled_log_frames(
+    tasks_client: TasksClient, task_history_id: int, request: Request, access_token: str
+) -> AsyncGenerator[str, None]:
+    """Yield a task history's log frames, then the frame its reconciled status calls for.
+
+    :param tasks_client: The TaskAPI client for interacting with the Tasks service.
+    :param task_history_id: The ID of the task history whose logs to stream.
+    :param request: The FastAPI request whose query parameters are forwarded.
+    :param access_token: Bearer token authenticating the log reads as the viewing
+        user.
+    :return: Log ``data`` frames, then ``finish`` for a terminal status or a 409
+        ``extensions-error`` for a live one.
+    :raises HTTPException: When the Tasks API answers a log read or the sync with
+        an error other than the log read's not-started 409.
+    """
+    not_started = False
+    try:
+        async for frame in _log_data_frames(
+            tasks_client, task_history_id, request, access_token
+        ):
+            yield frame
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_409_CONFLICT:
+            raise
+        logger.debug(
+            "Task history %s is not streaming yet: %s", task_history_id, exc.detail
+        )
+        not_started = True
+    with tasks_client.auth(get_internal_token()) as sync_api:
+        task_history = as_json_object(
+            await sync_api.post(f"/history/{task_history_id}/sync/")
+        )
+    reconciled = TaskHistoryStatusEnum(task_history["status"])
+    if not reconciled.is_terminal():
+        payload = {
+            "code": status.HTTP_409_CONFLICT,
+            "detail": f"Task history is {reconciled}.",
+        }
+        yield f"event: extensions-error\ndata: {json.dumps(payload)}\n\n"
+        return
+    if not_started:
+        async for frame in _log_data_frames(
+            tasks_client, task_history_id, request, access_token
+        ):
+            yield frame
+    yield f"event: finish\ndata: {json.dumps({'status': reconciled})}\n\n"
+
+
 # TODO(yan): Put stream_task_history_logs in a proper TasksAPI SDK class
 # SEP-130
 async def task_history_logs_event_stream(
@@ -170,6 +248,14 @@ async def task_history_logs_event_stream(
     and this stream is open to any authenticated user, so that call carries the
     internal token instead.
 
+    ``finish`` is reserved for a terminal status. A stream that ends while the
+    reconciled run is still live (for example, the executor had not started it
+    yet) emits a 409 ``extensions-error`` for the client to retry instead. A 409
+    from the log read itself is reconciled the same way before it reaches the
+    client, so a run that died before starting finishes rather than retrying;
+    one that reconciles terminal has its persisted log read before ``finish``,
+    since it may have run to completion in between.
+
     :param tasks_client: The TaskAPI client for interacting with the Tasks service.
     :param task_history_id: The ID of the task history whose logs to stream.
     :param request: The FastAPI request object, used to access query parameters.
@@ -178,27 +264,10 @@ async def task_history_logs_event_stream(
     :return: Log entries formatted as server-sent events.
     """
     try:
-        with tasks_client.auth(access_token) as tasks_api:
-            # No read timeout: log stream can stall under backpressure (e.g. ~26MB)
-            # and must not be killed by the default sock_read=120.
-            async for log_entry in tasks_api.stream(
-                f"/history/{task_history_id}/logs/",
-                params=request.query_params,
-                timeout=ClientTimeout(sock_read=None),
-            ):
-                if log_entry:
-                    logger.debug(
-                        "Proxying log line task_history_id=%s bytes=%s monotonic=%.3f",
-                        task_history_id,
-                        len(log_entry),
-                        time.monotonic(),
-                    )
-                    yield f"data: {log_entry.decode()}\n\n"
-        with tasks_client.auth(get_internal_token()) as sync_api:
-            task_history = as_json_object(
-                await sync_api.post(f"/history/{task_history_id}/sync/")
-            )
-        yield f"event: finish\ndata: {json.dumps({'status': task_history['status']})}\n\n"
+        async for frame in _reconciled_log_frames(
+            tasks_client, task_history_id, request, access_token
+        ):
+            yield frame
     except TimeoutError as exc:
         logger.warning(
             "Timeout while streaming task logs task_history_id=%s: %s",
