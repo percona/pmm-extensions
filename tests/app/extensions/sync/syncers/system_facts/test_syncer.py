@@ -1137,6 +1137,9 @@ async def _record_attempt(
 NODE = SyncInventoryEntityTypeEnum.NODE
 INVENTORY = SyncInventoryEntityTypeEnum.INVENTORY
 FIRST_NODE_ID = MOCK_CREATED_NODE_ID + 1
+#: How long a probe waits on another host's progress before failing. Only a
+#: deadlocked walk reaches it, so it is generous enough not to fire under load.
+PROBE_WAIT_TIMEOUT = 10
 
 
 @pytest.mark.usefixtures("alerts")
@@ -1452,7 +1455,7 @@ class TestConcurrentFirstMeasurement:
             targets.append(meta["target"])
             if len(targets) == len(fake_inventory.nodes):
                 release.set()
-            await asyncio.wait_for(release.wait(), timeout=1)
+            await asyncio.wait_for(release.wait(), timeout=PROBE_WAIT_TIMEOUT)
             return TaskRunResult(1, MEASURED_STDOUT)
 
         mocker.patch.object(UnmeasuredHostFactsSyncer, "wait_for_task_output", probe)
@@ -1482,7 +1485,7 @@ class TestConcurrentFirstMeasurement:
             if in_flight == cap:
                 release.set()
             try:
-                await asyncio.wait_for(release.wait(), timeout=1)
+                await asyncio.wait_for(release.wait(), timeout=PROBE_WAIT_TIMEOUT)
             finally:
                 in_flight -= 1
             return TaskRunResult(1, MEASURED_STDOUT)
@@ -1517,7 +1520,7 @@ class TestConcurrentFirstMeasurement:
 
         async def probe(self, **meta: Any) -> TaskRunResult:
             if meta["target"] == "probe-host-2":
-                await asyncio.wait_for(first_written.wait(), timeout=1)
+                await asyncio.wait_for(first_written.wait(), timeout=PROBE_WAIT_TIMEOUT)
             return TaskRunResult(1, MEASURED_STDOUT)
 
         mocker.patch.object(UnmeasuredHostFactsSyncer, "wait_for_task_output", probe)
