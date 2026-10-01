@@ -70,6 +70,7 @@ from tests.app.tasks.conftest import (
     MYSQL_SYNCER,
     PMM_SYNCER,
     SYSTEM_FACTS_SYNCER,
+    UNMEASURED_HOST_FACTS_SYNCER,
 )
 
 FIFTEEN_MINUTES = IntervalScheduleOption(every=15, period=Period.MINUTES)
@@ -639,6 +640,43 @@ async def test_the_pinned_default_names_its_followers(
     }
     assert primary.start_time is not None
     assert follower.start_time is not None
+
+
+@pytest.mark.asyncio
+async def test_the_first_measurement_pass_follows_the_default(
+    configured, mocker, beat_maker
+) -> None:
+    """Assert the side-car pair seeds the pass as a follower beside the daily run.
+
+    Following the default is what keeps a fresh install's first pass from probing
+    an inventory PMM has not populated yet.
+    """
+    mocker.patch.object(
+        tasks_settings,
+        "INVENTORY_SYNC_SCHEDULES",
+        [
+            InventorySyncSchedule(syncer=SYSTEM_FACTS_SYNCER, interval=ONE_DAY),
+            InventorySyncSchedule(
+                syncer=UNMEASURED_HOST_FACTS_SYNCER, interval=FIFTEEN_MINUTES
+            ),
+        ],
+    )
+
+    await seed_module.seed_system_periodic_tasks()
+
+    (primary,) = await _seeded_rows(beat_maker)
+    (follower,) = await _rows_named(
+        beat_maker,
+        seed_module._inventory_sync_schedule_name(UNMEASURED_HOST_FACTS_SYNCER),
+    )
+    assert _meta(primary)[INVENTORY_SYNC_FOLLOWERS_KEY] == [
+        SYSTEM_FACTS_SYNCER,
+        UNMEASURED_HOST_FACTS_SYNCER,
+    ]
+    assert _meta(follower) == {
+        "syncer": UNMEASURED_HOST_FACTS_SYNCER,
+        INVENTORY_SYNC_AFTER_KEY: PMM_SYNCER,
+    }
 
 
 @pytest.mark.asyncio
