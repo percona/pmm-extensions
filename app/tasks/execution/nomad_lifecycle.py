@@ -197,14 +197,11 @@ class NomadLifecycle:
 class WorkerNomadClient:
     """Keep one entered :class:`NomadExecutor` open across a worker process's tasks.
 
-    A Celery worker has no lifespan owning an executor the way
-    :class:`NomadLifecycle` does for the API, so a task calling Nomad through
-    the settings value has to open, and close, an aiohttp session on every run.
-    This holder opens a private executor on first use and hands the same one
-    back on later calls, so a task that ticks every second reuses one pooled
-    connection instead of paying a TCP and TLS handshake per tick. The executor
-    is rebuilt when the effective ``NOMAD`` config changes or its session has
-    been closed, and :meth:`close` releases it when the process shuts down.
+    Opens a private executor on the first :meth:`get` and returns that same
+    executor on later calls, so callers reuse one pooled connection instead of
+    opening a session per call. The executor is rebuilt when the effective
+    ``NOMAD`` config changes or its session has been closed, and :meth:`close`
+    releases it.
 
     The executor is a private copy for the reason
     :meth:`NomadLifecycle._desired` gives. Its session is bound to the event loop
