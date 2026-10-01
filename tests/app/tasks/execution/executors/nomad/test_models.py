@@ -68,6 +68,7 @@ from app.tasks.execution.executors.nomad.models import (
     _NOMAD_LOG_STREAM_CLIENT_ERROR,
     _NOMAD_LOG_STREAM_SOCK_TIMEOUT,
     _should_anonymize,
+    _split_nomad_frames,
     _STALE_SKIP_TASK_NAME,
     _status_from_step_states,
     NODE_STATUS_READY,
@@ -4565,6 +4566,131 @@ class TestNomadLogStreaming:
 
         logs = await self._drain_task_logs(queue)
         assert [log.msg for log in logs] == ["ok\n"]
+
+    @pytest.mark.parametrize(
+        "truncated",
+        [
+            b'{"Offset":4,"Data":"b25',
+            b'{"Offset":4',
+            b'{"Offset":4,"Fi',
+        ],
+        ids=["mid-string", "mid-number", "mid-key"],
+    )
+    def test_split_nomad_frames_carries_a_truncated_frame_over(self, truncated: bytes):
+        """Carry a frame the buffer cut off over, after the frames before it."""
+        complete = self._nomad_log_frame(msg="one\n", offset=2)
+
+        frames, tail = _split_nomad_frames(complete + truncated)
+
+        assert frames == [json.loads(complete)]
+        assert tail == truncated
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            b'{"Offset":!}',
+            b'{"Offset":4,"Data":"a\x01"}',
+            b'{"Offset":4,"Data":"\\q"}',
+            b"{Offset:4}",
+        ],
+        ids=["bad-value", "control-character", "bad-escape", "unquoted-key"],
+    )
+    def test_split_nomad_frames_raises_on_a_malformed_frame(self, malformed: bytes):
+        """Raise on a frame no further bytes could make valid, not buffer it."""
+        complete = self._nomad_log_frame(msg="one\n", offset=2)
+
+        with pytest.raises(json.JSONDecodeError):
+            _split_nomad_frames(malformed + complete)
+
+    @pytest.mark.asyncio
+    async def test_consume_nomad_log_stream_raises_on_a_malformed_frame(self):
+        """Surface a malformed frame instead of buffering every later frame."""
+        chunks = [b'{"Offset":!}' + self._nomad_log_frame(msg="one\n", offset=4)]
+        executor = _build_executor()
+        queue = asyncio.Queue()
+
+        with (
+            patch.object(
+                executor,
+                "_request",
+                return_value=self._stream_response(self._make_iter_chunks(chunks)),
+            ),
+            pytest.raises(json.JSONDecodeError),
+        ):
+            await executor._consume_nomad_log_stream(
+                alloc=self._alloc_for_logs("step2"),
+                step="step2",
+                log_type=TaskLogType.STDOUT,
+                queue=queue,
+                params=self._log_stream_params("step2"),
+                client_timeout=ClientTimeout(sock_read=NOMAD_DEFAULT_TIMEOUT),
+                anonymize_entities=None,
+                pending=WithheldLineBuffer(),
+            )
+
+        assert queue.empty()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pieces", [1, 2], ids=["one-chunk", "split-frame"])
+    async def test_consume_nomad_log_stream_queues_output_sharing_a_recheck_chunk(
+        self, pieces: int
+    ):
+        """Queue the data frame that arrives with the heartbeat due for a recheck.
+
+        The recheck waits for the chunk's remaining frames, and for a frame
+        split across chunks to complete, so the output is queued before a later
+        run of heartbeats rechecks and ends the stream on the terminal state.
+        """
+        heartbeats = b"".join(
+            self._nomad_log_frame(msg=None, offset=1)
+            for _ in range(EXPECTED_EMPTY_FRAMES_BEFORE_RECHECK)
+        )
+        last_offset = 5
+        output = self._nomad_log_frame(msg="last\n", offset=last_offset)
+        split_at = len(output) // pieces
+        chunks = [
+            heartbeats + output[:split_at],
+            output[split_at:],
+            self._nomad_log_frame(msg=None, offset=last_offset)
+            * (EXPECTED_EMPTY_FRAMES_BEFORE_RECHECK),
+        ]
+        executor = _build_executor(
+            log_socket_read_timeout=RECHECK_LOG_SOCKET_READ_TIMEOUT
+        )
+        alloc = self._alloc_for_logs("step2")
+        refreshed_alloc = {
+            **alloc,
+            "TaskStates": {"step2": {"State": RECHECKED_TASK_STATE}},
+        }
+        params = self._log_stream_params("step2")
+        queue = asyncio.Queue()
+
+        with (
+            patch.object(
+                executor,
+                "_request",
+                return_value=self._stream_response(self._make_iter_chunks(chunks)),
+            ),
+            patch.object(
+                NomadExecutor, "get_last_allocation", return_value=refreshed_alloc
+            ) as mock_get_last_allocation,
+        ):
+            state, _alloc, _start = await executor._consume_nomad_log_stream(
+                alloc=alloc,
+                step="step2",
+                log_type=TaskLogType.STDOUT,
+                queue=queue,
+                params=params,
+                client_timeout=ClientTimeout(sock_read=NOMAD_DEFAULT_TIMEOUT),
+                anonymize_entities=None,
+                pending=WithheldLineBuffer(),
+            )
+
+        logs = await self._drain_task_logs(queue)
+        assert state == RECHECKED_TASK_STATE
+        assert [log.msg for log in logs] == ["last\n"]
+        assert params["offset"] == last_offset
+        mock_get_last_allocation.assert_called_once_with("job-1", "eval-1")
 
     @pytest.mark.asyncio
     async def test_consume_nomad_log_stream_empty_data_increments_without_recheck(self):

@@ -125,6 +125,8 @@ NODE_STATUS_READY = "ready"
 _NOMAD_LOG_STREAM_SOCK_TIMEOUT = "nomad-log-stream-sock-timeout"
 _NOMAD_LOG_STREAM_CLIENT_ERROR = "nomad-log-stream-client-error"
 _NOMAD_FRAME_DECODER = json.JSONDecoder()
+#: The decoder error for a string the end of the buffer cut off, wherever it began.
+_UNTERMINATED_STRING_ERROR = "Unterminated string starting at"
 
 _ANONYMIZED_STEPS: frozenset[NomadStep] = NomadStep.anonymized()
 
@@ -156,6 +158,20 @@ def _should_anonymize(step: str, anonymize_entities: set[PIIEntity] | None) -> b
     return step in _ANONYMIZED_STEPS and bool(anonymize_entities)
 
 
+def _is_truncated_frame(error: json.JSONDecodeError, text: str) -> bool:
+    """Return whether a decode failure is only the buffer ending mid-frame.
+
+    A frame cut short fails either at the very end of the text or inside a
+    string that runs to the end of it; any other failure means the bytes can
+    never become a valid frame, however many more arrive.
+
+    :param error: The error raised while decoding a frame off ``text``.
+    :param text: The decoded buffer the frame was read from.
+    :return: ``True`` when more bytes could still complete the frame.
+    """
+    return error.pos == len(text) or error.msg == _UNTERMINATED_STRING_ERROR
+
+
 def _split_nomad_frames(buffer: bytes) -> tuple[list[dict[str, Any]], bytes]:
     """Split the complete JSON frames off the front of a log-follow buffer.
 
@@ -166,13 +182,17 @@ def _split_nomad_frames(buffer: bytes) -> tuple[list[dict[str, Any]], bytes]:
     incomplete frame, or nothing, is left.
 
     A chunk can also end inside a multi-byte character; those trailing bytes
-    are carried over undecoded until the next chunk completes them.
+    are carried over undecoded until the next chunk completes them. A frame
+    that no further bytes could make valid raises instead of being carried
+    over, so malformed input is surfaced rather than buffered forever.
 
     :param buffer: The bytes received and not yet parsed, oldest first.
     :return: The complete frames in arrival order, and the unparsed tail to
         prepend to the next chunk.
     :raises UnicodeDecodeError: If the bytes are not UTF-8 at all, as opposed
         to merely ending mid-character.
+    :raises json.JSONDecodeError: If a frame is malformed, as opposed to merely
+        cut off by the end of the buffer.
     """
     try:
         text = buffer.decode()
@@ -191,8 +211,10 @@ def _split_nomad_frames(buffer: bytes) -> tuple[list[dict[str, Any]], bytes]:
             break
         try:
             frame, index = _NOMAD_FRAME_DECODER.raw_decode(text, index)
-        except json.JSONDecodeError:
-            break
+        except json.JSONDecodeError as error:
+            if _is_truncated_frame(error, text):
+                break
+            raise
         frames.append(frame)
     return frames, text[index:].encode() + undecoded
 
@@ -2650,7 +2672,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
 
         Opens ``/v1/client/fs/logs/{alloc_id}``, handles 404 while the task has not
         started, streams framed JSON log lines into ``queue``, and returns when the
-        stream ends or the allocation task state should be rechecked.
+        stream ends or the allocation task state should be rechecked. A due
+        recheck waits until every frame of the chunk is queued and no partial
+        frame is buffered, so output arriving with the heartbeat is not lost.
 
         On socket read timeout or :exc:`~aiohttp.ClientError`, returns internal state
         constants ``_NOMAD_LOG_STREAM_SOCK_TIMEOUT`` or ``_NOMAD_LOG_STREAM_CLIENT_ERROR``
@@ -2658,19 +2682,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
 
         :param alloc: Nomad allocation dictionary (must include ``ID``, ``JobID``,
             ``EvalID``, and ``TaskStates``).
-        :type alloc: dict[str, Any]
         :param step: Task step name for the ``task`` query parameter.
-        :type step: str
         :param log_type: ``stdout`` or ``stderr``.
-        :type log_type: TaskLogType
         :param queue: Queue to push :class:`~app.tasks.models.TaskLog` records into.
-        :type queue: asyncio.Queue
         :param params: Mutable request query parameters (``offset`` is updated).
-        :type params: dict[str, Any]
         :param client_timeout: aiohttp client timeout (e.g. socket read timeout).
-        :type client_timeout: ClientTimeout
         :param anonymize_entities: Optional PII entities to redact for specific steps.
-        :type anonymize_entities: set[PIIEntity] | None
         :param pending: Caller-owned buffer holding the trailing partial line
             withheld from anonymization; mutated in place and carried across
             reconnects so a token split at a frame boundary is redacted whole.
@@ -2678,7 +2695,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             loop, or a ``_NOMAD_LOG_STREAM_*`` sentinel; the allocation dict (possibly
             refreshed); and monotonic time when response body reads began, or
             ``None`` if that phase was not reached.
-        :rtype: tuple[str, dict[str, Any], float | None]
         """
         alloc_id = alloc["ID"]
         stream_start = None
@@ -2773,26 +2789,25 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                                     offset=emit_offset,
                                 )
                             )
-                        elif empty_data_count >= self.log_socket_read_timeout:
-                            logger.debug(
-                                "No data received for %s seconds, "
-                                "rechecking job status...",
-                                self.log_socket_read_timeout,
-                            )
-                            alloc = await self.run_in_thread_held(
-                                self.get_last_allocation,
-                                alloc["JobID"],
-                                alloc["EvalID"],
-                            )
-                            return (
-                                # An empty state ends the caller's loop, so a step
-                                # the refreshed allocation dropped stops the stream.
-                                _alloc_step_state(alloc, step).get("State", ""),
-                                alloc,
-                                stream_start,
-                            )
                         else:
                             empty_data_count += 1
+                    if empty_data_count > self.log_socket_read_timeout and not raw_data:
+                        logger.debug(
+                            "No data received for %s seconds, rechecking job status...",
+                            self.log_socket_read_timeout,
+                        )
+                        alloc = await self.run_in_thread_held(
+                            self.get_last_allocation,
+                            alloc["JobID"],
+                            alloc["EvalID"],
+                        )
+                        return (
+                            # An empty state ends the caller's loop, so a step
+                            # the refreshed allocation dropped stops the stream.
+                            _alloc_step_state(alloc, step).get("State", ""),
+                            alloc,
+                            stream_start,
+                        )
                 return ("running", alloc, stream_start)
         except TimeoutError:
             return (_NOMAD_LOG_STREAM_SOCK_TIMEOUT, alloc, stream_start)
