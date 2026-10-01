@@ -48,10 +48,11 @@ def normalize_nomad_config_value(value: object) -> NomadExecutor:
     mapping is reconstructed instead, for a caller holding one rather than a
     model.
 
-    A request-less reader that only drives the config-built sync
-    ``self.backend`` sub-client needs a usable :class:`NomadExecutor`
-    *instance*, not a mapping; an un-entered instance is sufficient because
-    those readers never touch the live aiohttp session.
+    A request-less reader needs a usable :class:`NomadExecutor` *instance*, not
+    a mapping. An un-entered one is sufficient: it drives the config-built sync
+    ``self.backend`` sub-client directly, and the ported calls that need aiohttp
+    open a private executor for the one call rather than this instance's session
+    (see ``NomadExecutor._calling_executor``).
 
     :param value: The effective ``NOMAD`` value: a :class:`NomadExecutor` or a
         config fingerprint mapping.
@@ -72,10 +73,18 @@ def normalize_nomad_config_value(value: object) -> NomadExecutor:
 class NomadLifecycle:
     """Own the entered :class:`NomadExecutor` and rebind it on config changes.
 
-    The live entered executor (the one with an open aiohttp session) lives here
-    in ``app.state.nomad_lifecycle`` and nowhere else: neither the YAML settings
-    value nor the override snapshot's copy of it is ever entered, so no reader
-    outside this holder can be handed the session it owns.
+    The long-lived entered executor (the one with an open aiohttp session kept
+    across calls) lives here in ``app.state.nomad_lifecycle`` and nowhere else:
+    neither the YAML settings value nor the override snapshot's copy of it is
+    ever entered, so no reader outside this holder can be handed the session it
+    owns.
+
+    The ported Nomad calls do enter an executor, but never a shared one: each
+    builds a private instance for its own call and closes it afterwards, the same
+    way :meth:`_desired` builds this holder's (see
+    ``NomadExecutor._calling_executor``). So the invariant above is about the
+    objects other readers hold, not about aiohttp sessions being unique to this
+    class.
 
     :meth:`reconcile` is wired as the ``(TASKS_SETTINGS, NOMAD)`` rebind
     callback by ``tasks_lifespan``; it opens the new executor before swapping

@@ -32,18 +32,18 @@ from functools import cached_property
 from itertools import product
 from pathlib import Path
 from types import TracebackType
-from typing import Any, ClassVar, NamedTuple
+from typing import Any, cast, ClassVar, NamedTuple, Self
 
 import requests
 from aiohttp import (
     ClientError,
     ClientResponseError,
     ClientTimeout,
+    ContentTypeError,
 )
 from fastapi import status
 from nomad import Nomad
 from nomad.api.exceptions import BaseNomadException, URLNotFoundNomadException
-from pydantic import PrivateAttr
 from sqlalchemy_celery_beat.models import Period
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -67,6 +67,7 @@ from app.core.utils import (
 from app.core.utils.fields import (
     AuthCredentialSecretStr,
     AuthSchemeStr,
+    PRESERVE_CREDENTIALS_CONTEXT,
     strip_credential_url_userinfo,
 )
 from app.core.utils.pydantic import field_with_metadata
@@ -770,13 +771,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     )
 
     _sync_session: requests.Session | None = None
-    _session_guard: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
-    _borrow_depth: int = 0
-    _borrow_owned: bool = False
 
     @asynccontextmanager
-    async def _borrowed_session(self) -> AsyncGenerator[None, None]:
-        """Guarantee an open aiohttp session for the duration of one call.
+    async def _calling_executor(self) -> AsyncGenerator[Self, None]:
+        """Yield an executor whose aiohttp session is open, for one call.
 
         Every ported call goes through :meth:`_nomad_json`, and the inherited
         ``_request`` reaches straight for ``self._session``. Only the executor
@@ -788,55 +786,45 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         ``None``. Those callers were fine while these calls went through the
         synchronous ``self.backend``; once they became aiohttp calls the same
         line raised ``AttributeError: 'NoneType' object has no attribute
-        'request'`` and the dispatch answered 500, which is what an om_inventory
-        sweep saw on every host.
+        'request'``.
 
         Celery is why this cannot be fixed by sending those callers to the
         entered executor instead: a worker has no ``app.state``, so there is no
         ``NomadLifecycle`` there to ask.
 
-        With no ``NOMAD`` override, ``get_executor`` returns the YAML settings
-        object itself - one instance shared process-wide - so concurrent
-        request-less callers borrow on the *same* executor. Both edges therefore
-        run under :attr:`_session_guard`, and a borrow count decides them: the
-        borrow that takes the count up from zero opens, the one that returns it
-        to zero closes, and an executor that already had a session - the one
-        ``NomadLifecycle`` entered, reached through the ``TaskExecutor``
-        dependency - is only ever read, never opened or closed here.
+        So an un-entered executor gets a **private** one instead, built the way
+        :meth:`~app.tasks.execution.nomad_lifecycle.NomadLifecycle._desired`
+        builds its own and for the same reason: nothing shared may be entered
+        here. ``get_executor`` with no ``NOMAD`` override returns the YAML
+        settings object itself, one instance process-wide, and an override
+        snapshot is a ``model_copy`` of it - which carries pydantic private
+        attributes across, session included. Entering either would publish a
+        session to holders that never opened it, and closing it afterwards would
+        shut one they were still serving from. Re-validating the dump yields an
+        instance this call alone owns, so its close can only ever retire its own
+        clients: the aiohttp session, the ``requests.Session`` and the cached
+        :attr:`backend` that :meth:`__aexit__` drops with them.
 
-        Serialising the close as well as the open is what makes this safe, and
-        the reason is in
-        :meth:`~app.core.requests.remote_api.BaseRemoteAPI.__aexit__`: it awaits
-        ``self._session.close()`` and clears ``_session`` only afterwards. A
-        borrower testing the session during that await finds one that is not
-        ``None`` but is already closed - and ``__aenter__`` builds a replacement
-        only when it is ``None``, so it would hand back the dead session and the
-        request would fail on a closed connector. Holding the guard across the
-        close removes the window rather than testing for it.
+        The cost is one session per call on that path, where the previous shape
+        shared one. That is the price of not mutating an object other readers
+        hold, and it buys back the whole class of failure: no borrow count to
+        strand at a non-zero depth when a snapshot is copied mid-call or a second
+        cancellation arrives, and no shared ``backend`` discarded underneath the
+        synchronous calls that still use it.
 
-        The base class's ``hold``/``close_when_idle`` pair is deliberately not
-        used here: it defers a close to the last in-flight consumer, which is
-        the right shape for retiring a *streaming* client but leaves the close
-        running outside this guard, which is the very thing that has to stay
-        inside it.
+        :return: ``self`` when its session is already open and usable - the
+            entered executor behind the ``TaskExecutor`` dependency - otherwise a
+            freshly-built private executor, entered for this call and closed
+            after it.
         """
-        async with self._session_guard:
-            if not self._borrow_depth:
-                self._borrow_owned = self.session is None or self.session.closed
-                if self._borrow_owned:
-                    # Drop a session left behind by an interrupted close, which
-                    # __aenter__ would otherwise keep rather than replace.
-                    self._session = None
-                    await self.open()
-            self._borrow_depth += 1
-        try:
-            yield
-        finally:
-            async with self._session_guard:
-                self._borrow_depth -= 1
-                if not self._borrow_depth and self._borrow_owned:
-                    self._borrow_owned = False
-                    await self.close()
+        if self.session is not None and not self.session.closed:
+            yield self
+            return
+        private = NomadExecutor.model_validate(
+            self.model_dump(mode="json", context=PRESERVE_CREDENTIALS_CONTEXT)
+        )
+        async with private as entered:
+            yield cast(Self, entered)
 
     def _compute_base_url(self) -> str:
         """Compute the base URL, dropping userinfo once an API key is configured.
@@ -1061,18 +1049,30 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         kwargs.setdefault("timeout", ClientTimeout(total=self.timeout))
         try:
             async with (
-                self._borrowed_session(),
-                self._request(method, path, **kwargs) as response,
+                self._calling_executor() as executor,
+                # Same class, other instance: on the un-entered path the open
+                # session belongs to the private executor, not to self.
+                executor._request(method, path, **kwargs) as response,  # noqa: SLF001
             ):
                 response.raise_for_status()
                 return await response.json()
+        except ContentTypeError as exc:
+            # Before ClientResponseError, its base: this one is raised by json()
+            # on a body Nomad did not label as JSON, so the status was fine and
+            # reporting it as the failure would be wrong.
+            raise NomadRequestError(
+                f"Nomad answered {method} {path} with a body that is not JSON",
+                status_code=exc.status,
+            ) from exc
         except ClientResponseError as exc:
             raise NomadRequestError(
                 f"Nomad answered {exc.status} to {method} {path}",
                 status_code=exc.status,
             ) from exc
-        except (ClientError, TimeoutError) as exc:
-            # No status: the request never got an answer. Subclass first, so a
+        except (ClientError, TimeoutError, ValueError) as exc:
+            # No status: the request never got an answer, or the answer was
+            # labelled JSON and did not parse - json() raises JSONDecodeError,
+            # a ValueError, which no branch above catches. Subclasses first, so a
             # ClientResponseError does not land here and lose its status.
             raise NomadRequestError(f"{method} {path} failed: {exc!r}") from exc
 
@@ -1158,9 +1158,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         if custom_prefix:
             custom_prefix = f"-{slugify(custom_prefix)}"
 
-        # python-nomad also sent ``idempotency_token: null`` here. Omitted rather
-        # than reproduced: Nomad treats an absent token and a null one alike, and
-        # spelling the null out would suggest the field is in use.
         job_status = await self._nomad_json(
             "POST",
             f"/v1/job/{task.data['ID']}/dispatch",
