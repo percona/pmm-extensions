@@ -24,7 +24,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from celery.exceptions import SoftTimeLimitExceeded
 from cryptography import x509
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
@@ -60,7 +59,6 @@ from app.tasks.celery import (
     prepare_periodic_task_history,
     purge_task_history_logs,
     sync_finishing_items,
-    sync_finishing_tasks,
     sync_queue_item,
     sync_running_items,
     task_revoked_handler,
@@ -1815,34 +1813,6 @@ class TestSyncFinishingItems:
 
         mock_group.assert_not_called()
         assert await self._lock_of(session, history_id) is None
-        assert any(
-            record.levelno == logging.WARNING and record.name == MODULE
-            for record in caplog.records
-        )
-
-    def test_task_soft_time_limit_spans_two_ticks(self):
-        """Assert a stuck tick is cut off after two tick intervals.
-
-        The listing's timeout bounds each read, not the whole response, so a
-        Nomad that trickles bytes is stopped only by the task's own limit.
-        """
-        assert sync_finishing_tasks.soft_time_limit == (
-            2 * FINISHING_SYNC_INTERVAL_SECONDS
-        )
-
-    def test_overrun_is_logged_and_left_to_the_sweep(
-        self, caplog: pytest.LogCaptureFixture
-    ):
-        """Assert a tick that overruns its limit warns instead of failing the task."""
-
-        def overrun(coro):
-            coro.close()
-            raise SoftTimeLimitExceeded
-
-        with patch(f"{MODULE}.celery") as mock_celery:
-            mock_celery.loop.run_until_complete = MagicMock(side_effect=overrun)
-            sync_finishing_tasks()
-
         assert any(
             record.levelno == logging.WARNING and record.name == MODULE
             for record in caplog.records

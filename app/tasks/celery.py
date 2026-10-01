@@ -31,7 +31,6 @@ from typing import Any
 from celery import group
 from celery import Task as CeleryTask
 from celery.app.task import Context
-from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import (
     task_prerun,
     task_revoked,
@@ -512,24 +511,12 @@ def sync_running_tasks() -> None:
     )
 
 
-@celery.task(soft_time_limit=2 * FINISHING_SYNC_INTERVAL_SECONDS)
+@celery.task
 def sync_finishing_tasks() -> None:
-    """Define Celery task to sync running tasks whose steps have finished.
-
-    The listing's timeout bounds each read from Nomad, not the whole response,
-    so the soft time limit is what stops a tick held by a slowly trickling
-    response, so about two ticks at most can be in flight. An overrun is logged and
-    the run is left to the sweep.
-    """
-    try:
-        celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-            sync_finishing_items()
-        )
-    except SoftTimeLimitExceeded:
-        logger.warning(
-            "Finishing-run probe overran its time limit; "
-            "leaving finished runs to the sweep"
-        )
+    """Define Celery task to sync running tasks whose steps have finished."""
+    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
+        sync_finishing_items()
+    )
 
 
 @celery.task
