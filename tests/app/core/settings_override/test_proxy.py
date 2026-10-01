@@ -36,7 +36,7 @@ def _factory() -> _Sample:
 @pytest.fixture
 def proxy() -> OverridableSettingsProxy[_Sample]:
     """Return a fresh proxy wrapping ``_Sample``."""
-    return OverridableSettingsProxy(_factory, setting_class="ExtensionsSettings")
+    return OverridableSettingsProxy(_factory)
 
 
 def test_empty_snapshot_delegates_to_factory(
@@ -164,7 +164,19 @@ def test_per_class_isolation_with_unknown_field() -> None:
     This test exercises that guarantee with a snapshot that contains an
     unrelated rogue key and an access for a distinct never-defined key.
     """
-    proxy = OverridableSettingsProxy(_factory, setting_class="ExtensionsSettings")
+    proxy = OverridableSettingsProxy(_factory)
     proxy._set_snapshot({"unknown_field": "should-not-leak"})
     with pytest.raises(AttributeError):
         _ = proxy.also_absent
+
+
+class TestConstructorContract:
+    """Pin the constructor to the factory alone."""
+
+    def test_rejects_setting_class_keyword(self) -> None:
+        """Reject the removed ``setting_class`` keyword instead of ignoring it."""
+        with pytest.raises(TypeError):
+            OverridableSettingsProxy(
+                _factory,
+                setting_class="ExtensionsSettings",  # ty: ignore[unknown-argument]
+            )

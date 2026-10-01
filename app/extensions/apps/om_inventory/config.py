@@ -144,7 +144,5 @@ class OmInventorySettings(BaseYamlSettings):
 
 
 om_inventory_settings: OmInventorySettings = (  # ty: ignore[invalid-assignment]
-    OverridableSettingsProxy(
-        OmInventorySettings, setting_class=OmInventorySettings.__name__
-    )
+    OverridableSettingsProxy(OmInventorySettings)
 )
