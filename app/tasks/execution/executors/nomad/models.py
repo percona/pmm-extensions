@@ -250,6 +250,19 @@ def _alloc_task_states(alloc: dict[str, Any]) -> dict[str, Any]:
     return task_states or {}
 
 
+def _evaluations_by_id(evaluations: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Key a job's evaluations by id, dropping any Nomad returned without one.
+
+    :param evaluations: The job's evaluations as Nomad returned them.
+    :return: The evaluations keyed by their ``ID``.
+    """
+    return {
+        evaluation["ID"]: evaluation
+        for evaluation in evaluations
+        if evaluation.get("ID")
+    }
+
+
 def _alloc_step_state(alloc: dict[str, Any], step: str) -> dict[str, Any]:
     """Return one step's Nomad task state, or an empty dict when unavailable.
 
@@ -1504,18 +1517,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             task_logs[step][log_type] = step_delta.text
         return task_logs
 
-    def _job_has_pending_evaluation(self, job_id: str) -> bool:
-        """Return whether Nomad still has a pending evaluation for ``job_id``.
-
-        :param job_id: The Nomad job whose evaluations to inspect.
-        :return: ``True`` while Nomad may still place an allocation for the job.
-        :raises BaseNomadException: When Nomad cannot list the job's evaluations.
-        """
-        return any(
-            evaluation.get("Status") == NomadEvalStatusEnum.PENDING
-            for evaluation in self.backend.job.get_evaluations(job_id)
-        )
-
     def _resolve_running_allocation(
         self, queue_item: TaskHistory
     ) -> tuple[dict[str, Any], str] | None:
@@ -1691,11 +1692,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         )
         if not tracked_eval_id:
             return None
-        evaluations_by_id = {
-            evaluation["ID"]: evaluation
-            for evaluation in evaluations
-            if evaluation.get("ID")
-        }
+        evaluations_by_id = _evaluations_by_id(evaluations)
         try:
             return self._follow_reschedules(
                 queue_item,
@@ -2934,14 +2931,17 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
 
         A miss is re-read once after the evaluations are seen to be settled:
         Nomad can place the allocation and complete its evaluation between the
-        two reads, and only a second miss means nothing is coming.
+        two reads, and only a second miss means nothing is coming. Work that
+        waited for capacity is placed under the ``blocked`` evaluation the
+        tracked one spawned, so the re-read follows that placement chain.
 
         :param queue_item: The running task history whose logs are about to stream.
         :raises TaskNotStartedInExecutorError: When Nomad is still placing the
-            allocation, or has placed it but reports no task state yet.
+            allocation or holding it for capacity, or has placed it but reports
+            no task state yet.
         :raises JobNotFoundError: When the job itself is gone.
-        :raises AllocationNotFoundError: When the job has no allocation and nothing
-            is pending that would produce one.
+        :raises AllocationNotFoundError: When the job has no allocation and no live
+            evaluation that would produce one.
         :raises KeyError: When the history's tracking carries no job or
             evaluation id.
         :raises BaseNomadException: When a Nomad read fails for another reason,
@@ -2952,11 +2952,17 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             alloc = self.get_last_allocation(job_id, eval_id)
         except AllocationNotFoundError:
             self.get_job(job_id)
-            if self._job_has_pending_evaluation(job_id):
+            evaluations = self.backend.job.get_evaluations(job_id)
+            if any(
+                evaluation.get("Status") in _LIVE_EVAL_STATUSES
+                for evaluation in evaluations
+            ):
                 raise TaskNotStartedInExecutorError(
                     f"Nomad has not placed an allocation for job {job_id} yet"
                 ) from None
-            alloc = self.get_last_allocation(job_id, eval_id)
+            alloc = self._last_chain_allocation(
+                job_id, eval_id, _evaluations_by_id(evaluations)
+            )
         if not _alloc_task_states(alloc) and alloc.get("ClientStatus") in {
             NomadAllocStatusEnum.PENDING,
             NomadAllocStatusEnum.RUNNING,
@@ -2973,6 +2979,28 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         """
         tracking = queue_item.execution_request.tracking or {}
         return (tracking["job_id"], tracking["evaluation_id"])
+
+    def _stream_allocation(self, job_id: str, eval_id: str) -> dict[str, Any]:
+        """Return the allocation a run's live log streams from.
+
+        Work that waited for capacity is placed under the ``blocked`` evaluation
+        the tracked one spawned, and the history keeps the tracked id until a
+        sync adopts the new one, so a miss is retried along the placement chain.
+
+        :param job_id: The Nomad job id.
+        :param eval_id: The evaluation id the history tracks.
+        :return: The allocation the evaluation chain placed.
+        :raises AllocationNotFoundError: If no evaluation in the chain has placed
+            an allocation.
+        :raises BaseNomadException: If Nomad fails a read.
+        """
+        try:
+            return self.get_last_allocation(job_id, eval_id)
+        except AllocationNotFoundError:
+            evaluations = self.backend.job.get_evaluations(job_id)
+        return self._last_chain_allocation(
+            job_id, eval_id, _evaluations_by_id(evaluations)
+        )
 
     async def stream_logs(
         self,
@@ -2995,7 +3023,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             log messages.
         """
         job_id, eval_id = self.job_eval_ids_for_stream_logs(queue_item)
-        alloc = self.get_last_allocation(job_id, eval_id)
+        alloc = self._stream_allocation(job_id, eval_id)
         active_streams = set()
         queue = asyncio.Queue()
         push_logs_tasks = []
