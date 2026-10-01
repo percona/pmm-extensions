@@ -186,6 +186,48 @@ async def test_close_all_force_closes_idle_client_cancelled_mid_invalidate(
     assert client._session is None
 
 
+@pytest.mark.asyncio
+async def test_close_all_still_force_closes_when_active_result_handling_raises(
+    mocker: MockerFixture,
+) -> None:
+    """Pending sweep still runs when post-gather error handling raises.
+
+    Nested ``finally`` keeps the deferred retiree from leaking when the try body
+    fails after active closes are awaited: ``_closed`` already blocks a later
+    ``close_all`` retry.
+    """
+    registry = ClientRegistry()
+    active = await registry.get(RemoteAPI, endpoint="https://active.example.org")
+    deferred = await registry.get(RemoteAPI, endpoint="https://deferred.example.org")
+    original_close = RemoteAPI.close
+    try:
+        async with deferred.hold():
+            await registry.invalidate("https://deferred.example.org")
+            assert id(deferred) in registry._pending_closes._clients
+            assert deferred._session is not None
+
+            async def close_active_fails(self: RemoteAPI) -> None:
+                if self is active:
+                    raise RuntimeError("close boom")
+                await original_close(self)
+
+            mocker.patch.object(RemoteAPI, "close", close_active_fails)
+            mocker.patch(
+                "app.core.requests.registry.logger.warning",
+                side_effect=RuntimeError("log boom"),
+            )
+
+            with pytest.raises(RuntimeError, match="log boom"):
+                await registry.close_all()
+
+            assert deferred._session is None
+            assert registry._pending_closes.sealed
+    finally:
+        mocker.stopall()
+        if active._session is not None:
+            await original_close(active)
+
+
 _CREDENTIAL_ENDPOINT = "https://svcuser:svcpass@a.example.org"
 _CREDENTIAL_SECRET = "svcpass"
 _CLOSE_FAILURE = "close boom"

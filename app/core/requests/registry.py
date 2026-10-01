@@ -183,9 +183,11 @@ class ClientRegistry:
         """Close all RemoteAPI clients and clear the registry.
 
         Closes every client still in the cache, then force-closes any clients
-        :meth:`invalidate` deferred via :class:`PendingCloses`. Safe to call
-        multiple times; subsequent calls have no effect once the registry is
-        closed.
+        :meth:`invalidate` deferred via :class:`PendingCloses`. The pending
+        sweep runs in a nested ``finally`` so it still executes when an active
+        close is cancelled or raises -- ``_closed`` already blocks a later
+        ``close_all`` retry. Safe to call multiple times; subsequent calls have
+        no effect once the registry is closed.
         """
         async with self._close_lock:
             if self.closed:
@@ -197,17 +199,22 @@ class ClientRegistry:
             clients = list(self._clients.values())
 
         try:
-            results = await asyncio.gather(
-                *(client.close() for client in clients), return_exceptions=True
-            )
-            for client, result in zip(clients, results, strict=False):
-                if isinstance(result, Exception):
-                    logger.warning(
-                        "Error closing client %s: %s",
-                        client.redacted_base_url,
-                        result,
-                    )
-            await self._pending_closes.force_close()
+            try:
+                results = await asyncio.gather(
+                    *(client.close() for client in clients), return_exceptions=True
+                )
+                for client, result in zip(clients, results, strict=False):
+                    if isinstance(result, Exception):
+                        logger.warning(
+                            "Error closing client %s: %s",
+                            client.redacted_base_url,
+                            result,
+                        )
+            finally:
+                # Pending sweep must run even if an active close is cancelled
+                # or raises: retired clients held by streams would otherwise
+                # remain open with no later close_all to find them.
+                await self._pending_closes.force_close()
         finally:
             self._clients.clear()
             self._locks.clear()

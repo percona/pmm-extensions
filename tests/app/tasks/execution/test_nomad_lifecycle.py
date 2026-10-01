@@ -230,6 +230,94 @@ async def test_aexit_still_force_closes_when_active_close_fails(
 
 
 @pytest.mark.asyncio
+async def test_aexit_force_closes_idle_retiree_cancelled_mid_reconcile(
+    mocker: MockerFixture,
+) -> None:
+    """Idle reconcile registers under the lock so cancel mid-close cannot leak."""
+    _override_nomad(_NOMAD_A)
+    app = FastAPI()
+    holder = NomadLifecycle(app)
+    try:
+        await holder.__aenter__()
+        retired = holder.current
+        entered = asyncio.Event()
+        resume = asyncio.Event()
+        original = NomadExecutor.close_when_idle
+
+        async def paused_close_when_idle(self: NomadExecutor, pending=None) -> None:
+            entered.set()
+            await resume.wait()
+            await original(self, pending=pending)
+
+        mocker.patch.object(NomadExecutor, "close_when_idle", paused_close_when_idle)
+
+        _override_nomad(_NOMAD_B)
+        reconcile_task = asyncio.create_task(holder.reconcile())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert id(retired) in holder._pending_closes._clients
+        assert retired._session is not None
+
+        reconcile_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reconcile_task
+
+        await holder.__aexit__(None, None, None)
+        assert retired._session is None
+        assert holder._pending_closes._clients == {}
+    finally:
+        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.asyncio
+async def test_aexit_force_closes_mid_reconcile_before_close_when_idle(
+    mocker: MockerFixture,
+) -> None:
+    """Swap registers on pending under the lock so ``__aexit__`` cannot miss it.
+
+    Pause after reconcile has left ``close_when_idle``; the retired executor must
+    already be on pending from the locked swap, so ``__aexit__`` force-closes it
+    during the pause -- not only after reconcile resumes.
+    """
+    _override_nomad(_NOMAD_A)
+    app = FastAPI()
+    holder = NomadLifecycle(app)
+    try:
+        await holder.__aenter__()
+        retired = holder.current
+        entered = asyncio.Event()
+        resume = asyncio.Event()
+        original = NomadExecutor.close_when_idle
+
+        async def paused_close_when_idle(self: NomadExecutor, pending=None) -> None:
+            entered.set()
+            await resume.wait()
+            await original(self, pending=pending)
+
+        mocker.patch.object(NomadExecutor, "close_when_idle", paused_close_when_idle)
+
+        async with retired.hold():
+            _override_nomad(_NOMAD_B)
+            reconcile_task = asyncio.create_task(holder.reconcile())
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert id(retired) in holder._pending_closes._clients
+            assert retired._session is not None
+
+            await holder.__aexit__(None, None, None)
+            assert retired._session is None
+            assert holder._pending_closes.sealed
+
+            resume.set()
+            reconcile_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await reconcile_task
+
+            assert retired._session is None
+            assert holder._pending_closes._clients == {}
+    finally:
+        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.asyncio
 async def test_reconcile_opens_a_fresh_session_for_a_copied_override() -> None:
     """Open a new session when the override is a ``model_copy`` of the entered executor.
 

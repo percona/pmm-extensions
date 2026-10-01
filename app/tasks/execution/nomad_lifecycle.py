@@ -195,9 +195,12 @@ class NomadLifecycle:
 
         The old executor is retired rather than closed outright: routes that
         resolved it stream off that instance for the whole response, so it stays
-        open until the last of them releases it. The retirement is registered so
-        :meth:`__aexit__` can force-close it at shutdown if a holder never
-        unwinds.
+        open until the last of them releases it. Retirement is registered on
+        :class:`PendingCloses` *under the same lock* as the swap, so
+        :meth:`__aexit__` cannot seal and sweep in the gap before
+        :meth:`~app.core.requests.remote_api.BaseRemoteAPI.close_when_idle`
+        runs -- even if this task is cancelled mid-await, or the client was
+        idle and would otherwise never touch pending.
 
         :raises ValidationError: If the overridden config fingerprint cannot be
             reconstructed into a :class:`NomadExecutor` (propagated from
@@ -210,6 +213,8 @@ class NomadLifecycle:
         desired_config = desired.model_dump(
             mode="json", context=PRESERVE_CREDENTIALS_CONTEXT
         )
+        close_immediately = False
+        old: NomadExecutor | None = None
         async with self._lock:
             if self._closing:
                 return
@@ -218,5 +223,12 @@ class NomadLifecycle:
             new = await desired.__aenter__()
             old, self._current = self._current, new
             self._current_config = desired_config
+            # Register before releasing the lock so __aexit__ cannot miss a
+            # client that has left _current but not yet entered close_when_idle.
+            if old is not None and not old.remember_pending_close(self._pending_closes):
+                close_immediately = True
         if old is not None:
-            await old.close_when_idle(pending=self._pending_closes)
+            if close_immediately:
+                await old.close()
+            else:
+                await old.close_when_idle(pending=self._pending_closes)
