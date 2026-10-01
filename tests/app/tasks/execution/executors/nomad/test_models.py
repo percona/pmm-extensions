@@ -5315,6 +5315,87 @@ class TestParsePayload:
         assert result == {"Job": {"ID": "test"}}
 
 
+class TestConcurrentAnonymizedLiveStreams:
+    """Cover live anonymization when several streams redact at the same time."""
+
+    @staticmethod
+    def _request_serving(frames: dict[TaskLogType, list[str]]) -> Callable[..., Any]:
+        """Build a ``_request`` stand-in serving each log type's frames once.
+
+        The second request for a log type fails to connect, which ends that
+        stream and makes it drain whatever it still withholds.
+
+        :param frames: The frame payloads to serve per log type, in order.
+        :return: The ``side_effect`` for a patched ``_request``.
+        """
+        served: set[TaskLogType] = set()
+
+        def request(_method: str, _path: str, **kwargs: Any) -> AsyncMock:
+            log_type = kwargs["params"]["type"]
+            if log_type in served:
+                failing = AsyncMock()
+                failing.__aenter__ = AsyncMock(side_effect=ClientError("gone"))
+                return failing
+            served.add(log_type)
+            chunks = TestNomadLogStreaming._frames_with_running_offsets(
+                frames[log_type]
+            )
+            return TestNomadLogStreaming._stream_response(
+                TestNomadLogStreaming._make_iter_chunks(chunks)
+            )
+
+        return request
+
+    @pytest.mark.asyncio
+    async def test_concurrent_streams_each_redact_their_own_split_tokens(self):
+        """Redact every address whole in both streams, in each stream's own order.
+
+        Both streams run the real anonymizer at once, and each address is split
+        across two frames, so a stream's output is correct only when its own
+        withheld remainder was joined with its own next frame.
+        """
+        frames = {
+            TaskLogType.STDOUT: [
+                "mail alice@exam",
+                "ple.com now\nthen bob@exa",
+                "mple.org",
+            ],
+            TaskLogType.STDERR: [
+                "warn carol@exa",
+                "mple.net\nfrom dave@exam",
+                "ple.com\n",
+            ],
+        }
+        expected = {
+            TaskLogType.STDOUT: "mail <EMAIL_ADDRESS> now\nthen <EMAIL_ADDRESS>",
+            TaskLogType.STDERR: "warn <EMAIL_ADDRESS>\nfrom <EMAIL_ADDRESS>\n",
+        }
+        executor = _build_executor()
+        alloc = TestNomadLogStreaming._alloc_for_logs(NomadStep.RUN_SCRIPT)
+        queues = {log_type: asyncio.Queue() for log_type in frames}
+
+        with patch.object(
+            executor, "_request", side_effect=self._request_serving(frames)
+        ):
+            await asyncio.gather(
+                *(
+                    executor._push_logs_to_queue(
+                        alloc,
+                        NomadStep.RUN_SCRIPT,
+                        log_type,
+                        queue,
+                        anonymize_entities={PIIEntity.EMAIL_ADDRESS},
+                    )
+                    for log_type, queue in queues.items()
+                )
+            )
+
+        for log_type, queue in queues.items():
+            logs = await TestNomadLogStreaming._drain_task_logs(queue)
+            assert logs[-1].msg is None
+            assert "".join(log.msg for log in logs[:-1]) == expected[log_type]
+
+
 class TestStreamFile:
     """Test NomadExecutor.stream_file."""
 

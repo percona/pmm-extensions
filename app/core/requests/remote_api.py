@@ -16,6 +16,7 @@
 """Manage remote API interactions."""
 
 __all__ = [
+    "POOL_WAIT_WARN_SECONDS",
     "UPSTREAM_NON_JSON_HEADER",
     "BaseRemoteAPI",
     "CredentialHeaderMixin",
@@ -30,6 +31,7 @@ __all__ = [
 
 import asyncio
 import logging
+import time
 from collections.abc import (
     AsyncGenerator,
     AsyncIterable,
@@ -42,7 +44,7 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
 from functools import cached_property, lru_cache
 from ssl import create_default_context, SSLContext
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import Annotated, Any, BinaryIO, ClassVar, NoReturn, Self
 from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunsplit
 
@@ -55,6 +57,10 @@ from aiohttp import (
     encode_basic_auth,
     FormData,
     TCPConnector,
+    TraceConfig,
+    TraceConnectionQueuedEndParams,
+    TraceConnectionQueuedStartParams,
+    TraceRequestStartParams,
 )
 from aiohttp.abc import AbstractCookieJar
 from fastapi import HTTPException, status
@@ -121,6 +127,10 @@ _TRUNCATION_MARKER = "... (truncated)"
 # body (e.g. an nginx HTML 502), letting callers tell a proxy/gateway failure
 # apart from an app-level JSON error at the same status code.
 UPSTREAM_NON_JSON_HEADER = "X-Upstream-Non-JSON"
+
+#: Seconds a request may wait for a pooled connection before the wait is logged
+#: as a WARNING: a wait that long means the pool is saturated, not merely busy.
+POOL_WAIT_WARN_SECONDS = 1.0
 
 #: The body of a single multipart file part: raw bytes held in memory, an open
 #: binary handle, or an async iterator of chunks. aiohttp streams the latter two,
@@ -370,31 +380,75 @@ async def _iter_lines_from_chunks(
         yield bytes(buffer)
 
 
+def _pool_wait_trace_config(logger: logging.Logger, target: str) -> TraceConfig:
+    """Build the tracing hooks that log a long wait for a pooled connection.
+
+    aiohttp fires the queued signals only when a request found its pool full,
+    so a request that got a connection at once logs nothing. The hooks hold
+    plain values rather than the client: a session referencing its own client
+    would form a cycle, and an unclosed one would then outlive its scope.
+
+    :param logger: The client's logger.
+    :param target: The redacted base URL the session talks to.
+    :return: The trace config to build a session with.
+    """
+    trace_config = TraceConfig()
+
+    async def on_request_start(
+        _session: ClientSession,
+        context: SimpleNamespace,
+        params: TraceRequestStartParams,
+    ) -> None:
+        context.request = f"{params.method} {params.url.path}"
+
+    async def on_queued_start(
+        _session: ClientSession,
+        context: SimpleNamespace,
+        _params: TraceConnectionQueuedStartParams,
+    ) -> None:
+        context.queued_at = time.monotonic()
+
+    async def on_queued_end(
+        _session: ClientSession,
+        context: SimpleNamespace,
+        _params: TraceConnectionQueuedEndParams,
+    ) -> None:
+        waited = time.monotonic() - context.queued_at
+        if waited > POOL_WAIT_WARN_SECONDS:
+            logger.warning(
+                "Waited %.2fs for a pooled connection to %s (%s)",
+                waited,
+                target,
+                context.request,
+            )
+
+    trace_config.on_request_start.append(on_request_start)
+    trace_config.on_connection_queued_start.append(on_queued_start)
+    trace_config.on_connection_queued_end.append(on_queued_end)
+    return trace_config
+
+
 class BaseRemoteAPI(BaseCaseInsensitiveModel):
-    """Base class for interacting with external APIs.
+    """Interact with an external HTTP API.
 
     Provides foundational functionality for making HTTP requests, handling SSL
     configurations, and managing request paths and headers.
 
     :param endpoint: The base URL for the external API endpoint.
-    :type endpoint: CredentialHttpUrl
     :param verify_ssl: Whether to verify SSL certificates. Defaults to True.
-    :type verify_ssl: bool
     :param ssl_cafile: Path to the SSL certificate authority file. Defaults to None.
-    :type ssl_cafile: RelativeFilePathField | None
     :param ssl_keyfile: Path to the SSL key file. Defaults to None.
-    :type ssl_keyfile: RelativeFilePathField | None
     :param ssl_certfile: Path to the SSL certificate file. Defaults to None.
-    :type ssl_certfile: RelativeFilePathField | None
-    :param logger_name: Name to use for the logger. Defaults to `__name__`.
-    :type logger_name: str
+    :param logger_name: Name to use for the logger. Defaults to ``__name__``.
     :cvar CONNECTIVITY_CHECK_PATH: Lightweight route hit by
         :meth:`RemoteAPI.check_connectivity` for a reachability probe. Never
         enters the client-registry key or model serialization. Override per
         client, or pass an explicit ``path`` to ``check_connectivity``.
+    :cvar STREAM_CONNECTION_LIMIT: Default for :attr:`stream_connection_limit`.
     """
 
     CONNECTIVITY_CHECK_PATH: ClassVar[str] = "/"
+    STREAM_CONNECTION_LIMIT: ClassVar[int] = 64
     endpoint: CredentialHttpUrl = Field(..., frozen=True)
     verify_ssl: bool = Field(default=True, frozen=True)
     ssl_cafile: RelativeFilePathField | None = Field(None, frozen=True)
@@ -402,6 +456,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ssl_certfile: RelativeFilePathField | None = Field(None, frozen=True)
     logger_name: str = __name__
     _session: ClientSession | None = None
+    _stream_session: ClientSession | None = None
     _in_flight: int = 0
     _close_when_idle: bool = False
     _extra_headers: ContextVar[dict[str, str] | None] = PrivateAttr(
@@ -468,6 +523,72 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         """
         return None
 
+    @property
+    def stream_connection_limit(self) -> int:
+        """Return the most connections long-lived responses may hold at once.
+
+        Long-lived responses draw on a pool of their own with no per-host cap,
+        so however many are open they cannot starve the short calls, and only
+        this total bounds them. Override to make the cap configurable.
+
+        :return: The total connection cap of the long-lived pool.
+        """
+        return self.STREAM_CONNECTION_LIMIT
+
+    def _new_session(
+        self,
+        *,
+        limit: int,
+        limit_per_host: int,
+        cookie_jar: AbstractCookieJar | None,
+    ) -> ClientSession:
+        """Build an aiohttp session over a pool of its own.
+
+        :param limit: The pool's total connection cap.
+        :param limit_per_host: The pool's per-host cap, ``0`` for none.
+        :param cookie_jar: The jar to use, or ``None`` for aiohttp's default.
+        :return: The new session.
+        """
+        connector = TCPConnector(
+            ssl=self.ssl_context,
+            enable_cleanup_closed=True,
+            limit=limit,
+            limit_per_host=limit_per_host,
+            ttl_dns_cache=300,
+            keepalive_timeout=15,
+        )
+        return ClientSession(
+            base_url=self.session_base_url,
+            headers=self.headers or None,
+            json_serialize=json_serializer,
+            connector=connector,
+            timeout=ClientTimeout(total=300, connect=5, sock_connect=5, sock_read=120),
+            cookie_jar=cookie_jar,
+            trace_configs=[
+                _pool_wait_trace_config(self.logger, self.redacted_base_url)
+            ],
+        )
+
+    def _long_lived_session(self) -> ClientSession:
+        """Return the session long-lived responses use, building it on first use.
+
+        Clients that never stream never pay for the second pool. It shares the
+        short-call session's cookie jar, so a cookie an earlier call received
+        still reaches a stream.
+
+        :return: The long-lived session.
+        :raises RuntimeError: If the client has not been opened.
+        """
+        if self._session is None:
+            raise RuntimeError(f"{type(self).__name__} is not open")
+        if self._stream_session is None or self._stream_session.closed:
+            self._stream_session = self._new_session(
+                limit=self.stream_connection_limit,
+                limit_per_host=0,
+                cookie_jar=self._session.cookie_jar,
+            )
+        return self._stream_session
+
     async def __aenter__(self) -> Self:
         """Enter the asynchronous context manager.
 
@@ -478,22 +599,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         """
         if getattr(self, "_session", None) is None:
             self.logger.debug("Opening ClientSession for %s", self.redacted_base_url)
-            connector = TCPConnector(
-                ssl=self.ssl_context,
-                enable_cleanup_closed=True,
-                limit=25,
-                limit_per_host=10,
-                ttl_dns_cache=300,
-                keepalive_timeout=15,
-            )
-            timeout = ClientTimeout(total=300, connect=5, sock_connect=5, sock_read=120)
-            self._session = ClientSession(
-                base_url=self.session_base_url,
-                headers=self.headers or None,
-                json_serialize=json_serializer,
-                connector=connector,
-                timeout=timeout,
-                cookie_jar=self._cookie_jar(),
+            self._session = self._new_session(
+                limit=25, limit_per_host=10, cookie_jar=self._cookie_jar()
             )
         return self
 
@@ -505,14 +612,12 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ) -> None:
         """Exit the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized.
+        Closes the aiohttp ``ClientSession`` if it was initialized, and the
+        long-lived session with it.
 
         :param exc_type: The exception type, if any.
-        :type exc_type: type[BaseException] | None
         :param exc_val: The exception value, if any.
-        :type exc_val: BaseException | None
         :param exc_tb: The traceback, if any.
-        :type exc_tb: TracebackType | None
         """
         if self._session and not self._session.closed:
             self.logger.debug("Closing ClientSession for %s", self.redacted_base_url)
@@ -522,6 +627,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 "ClientSession already closed for %s", self.redacted_base_url
             )
         self._session = None
+        if self._stream_session and not self._stream_session.closed:
+            await self._stream_session.close()
+        self._stream_session = None
 
     async def open(self) -> Self:
         """Open the asynchronous context manager.
@@ -900,20 +1008,21 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         self,
         method: str,
         path: str,
+        *,
+        long_lived: bool = False,
         **kwargs: Any,
     ) -> AsyncGenerator[ClientResponse, None]:
-        """Define internal method to perform an HTTP request.
-
-        Yields the aiohttp `ClientResponse` object for further processing.
+        """Perform an HTTP request and hand back its open response.
 
         :param method: The HTTP method to use for the request.
-        :type method: str
         :param path: The API endpoint path to request.
-        :type path: str
+        :param long_lived: Whether the response stays open for long, like a
+            stream or a follow. Such a request draws on the long-lived pool
+            rather than the short-call one.
         :param kwargs: Additional keyword arguments to pass to the request.
-        :type kwargs: Any
-        :yield: The aiohttp `ClientResponse` object.
-        :rtype: AsyncGenerator[ClientResponse, None]
+        :return: The aiohttp ``ClientResponse``, open for the block.
+        :raises RuntimeError: If ``long_lived`` is set on a client that has not
+            been opened.
         """
         prepared_path = self.prepare_path(path)
         if extra_headers := self._extra_headers.get():
@@ -938,9 +1047,10 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 extra_sensitive_body_fields=self._extra_sensitive_body_fields.get(),
             ),
         )
+        session = self._long_lived_session() if long_lived else self._session
         async with (
             self.hold(),
-            self._session.request(method, prepared_path, **kwargs) as response,
+            session.request(method, prepared_path, **kwargs) as response,
         ):
             yield response
 
@@ -990,7 +1100,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         """
         self.logger.debug("Stream started path=%s method=%s", path, method)
         try:
-            async with self._request(method, path, **kwargs) as response:
+            async with self._request(
+                method, path, long_lived=True, **kwargs
+            ) as response:
                 if response.status >= status.HTTP_400_BAD_REQUEST:
                     detail_key = getattr(self, "error_detail_key", "detail")
                     code_key = getattr(self, "error_code_key", None)

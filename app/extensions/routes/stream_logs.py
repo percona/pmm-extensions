@@ -18,6 +18,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator
 from typing import Annotated
 
@@ -186,6 +187,12 @@ async def task_history_logs_event_stream(
                 timeout=ClientTimeout(sock_read=None),
             ):
                 if log_entry:
+                    logger.debug(
+                        "Proxying log line task_history_id=%s bytes=%s monotonic=%.3f",
+                        task_history_id,
+                        len(log_entry),
+                        time.monotonic(),
+                    )
                     yield f"data: {log_entry.decode()}\n\n"
         with tasks_client.auth(get_internal_token()) as sync_api:
             task_history = as_json_object(

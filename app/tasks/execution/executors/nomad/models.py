@@ -637,6 +637,11 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         Jobs. Defaults to True.
     :param log_socket_read_timeout: Socket read timeout in seconds for log streaming.
         Defaults to 10.
+    :param log_stream_max_connections: Most Nomad connections live log follows
+        may hold at once. Every viewer of a running task opens one follow per
+        logged step and log type, all to the one Nomad host, so they draw on a pool of
+        their own instead of the short calls' per-host cap. Keep it below
+        Nomad's ``limits.http_max_conns_per_client``. Defaults to ``64``.
     :param cert_expiry_warn_days: Number of days before ``not_valid_after`` when
         Nomad TLS cert expiry alerts should fire. Used by the periodic
         ``check_nomad_cert_expiry`` task. Defaults to 7.
@@ -700,6 +705,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     log_socket_read_timeout: int = hot_field(  # ty: ignore[invalid-assignment]
         10, advanced=True
     )
+    log_stream_max_connections: int = hot_field(  # ty: ignore[invalid-assignment]
+        BaseRemoteAPI.STREAM_CONNECTION_LIMIT, ge=1, advanced=True
+    )
     cert_expiry_warn_days: int = hot_field(  # ty: ignore[invalid-assignment]
         7, ge=1, advanced=True
     )
@@ -729,6 +737,14 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     )
 
     _sync_session: requests.Session | None = None
+
+    @property
+    def stream_connection_limit(self) -> int:
+        """Return the configured cap on concurrently open live log follows.
+
+        :return: :attr:`log_stream_max_connections`.
+        """
+        return self.log_stream_max_connections
 
     def _compute_base_url(self) -> str:
         """Compute the base URL, dropping userinfo once an API key is configured.
@@ -2484,8 +2500,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 )
                 break
         if pending:
-            decoded_msg = _decode_and_anonymize(
-                pending.drain(), anonymize_entities or None
+            decoded_msg = await asyncio.to_thread(
+                _decode_and_anonymize, pending.drain(), anonymize_entities or None
             )
             await queue.put(
                 TaskLog(
@@ -2497,7 +2513,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             )
         await queue.put(TaskLog(step=step, type=log_type, msg=None))
 
-    def _decode_live_frame(
+    async def _decode_live_frame(
         self,
         pending: WithheldLineBuffer,
         raw_msg: str,
@@ -2517,6 +2533,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         ``log_anonymization_max_withheld_bytes``, the whole buffer is flushed
         instead and ``pending`` is cleared so the live viewer keeps advancing.
         Non-anonymized steps decode and emit each frame unchanged.
+
+        Anonymization runs in a worker thread, so a slow analysis (the first
+        one loads the language model) holds back only this stream rather than
+        every stream the event loop is serving.
 
         :param pending: The withheld-remainder buffer, mutated in place.
         :param raw_msg: This frame's base64-encoded ``Data`` field.
@@ -2549,7 +2569,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 self.log_anonymization_max_withheld_bytes,
                 "the live viewer can advance",
             )
-        decoded_msg = _decode_and_anonymize(release.complete, anonymize_entities)
+        decoded_msg = await asyncio.to_thread(
+            _decode_and_anonymize, release.complete, anonymize_entities
+        )
         return decoded_msg, offset - len(pending)
 
     async def _consume_nomad_log_stream(
@@ -2604,6 +2626,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             async with self._request(
                 "GET",
                 f"/v1/client/fs/logs/{alloc_id}",
+                long_lived=True,
                 params=params,
                 timeout=client_timeout,
             ) as response:
@@ -2646,6 +2669,16 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     raw_data = b""
                     params["offset"] = offset = data.get("Offset", params["offset"])
                     if data and (msg := data.get("Data")):
+                        logger.debug(
+                            "Nomad log frame alloc_id=%s step=%s log_type=%s "
+                            "offset=%s bytes=%s monotonic=%.3f",
+                            alloc_id,
+                            step,
+                            log_type,
+                            offset,
+                            len(msg),
+                            time.monotonic(),
+                        )
                         empty_data_count = 0
                         if not first_chunk_seen:
                             first_chunk_seen = True
@@ -2663,7 +2696,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                                 offset,
                                 elapsed,
                             )
-                        decoded_msg, emit_offset = self._decode_live_frame(
+                        decoded_msg, emit_offset = await self._decode_live_frame(
                             pending,
                             msg,
                             step,
@@ -2687,8 +2720,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                             "No data received for %s seconds, rechecking job status...",
                             self.log_socket_read_timeout,
                         )
-                        alloc = self.get_last_allocation(
-                            alloc["JobID"], alloc["EvalID"]
+                        alloc = await asyncio.to_thread(
+                            self.get_last_allocation, alloc["JobID"], alloc["EvalID"]
                         )
                         return (
                             # An empty state ends the caller's loop, so a step
@@ -2740,7 +2773,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             log messages.
         """
         job_id, eval_id = self.job_eval_ids_for_stream_logs(queue_item)
-        alloc = self.get_last_allocation(job_id, eval_id)
+        alloc = await asyncio.to_thread(self.get_last_allocation, job_id, eval_id)
         active_streams = set()
         queue = asyncio.Queue()
         push_logs_tasks = []

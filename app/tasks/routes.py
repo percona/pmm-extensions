@@ -15,6 +15,7 @@
 
 """Define routes for the Tasks API."""
 
+import asyncio
 import json
 import logging
 import os
@@ -556,7 +557,7 @@ async def stream_task_history_logs(
     if task_history.status == TaskHistoryStatusEnum.PENDING:
         raise HTTPConflictException("Task history is pending.")
     if task_history.status == TaskHistoryStatusEnum.RUNNING:
-        executor.preflight_stream_logs(task_history)
+        await asyncio.to_thread(executor.preflight_stream_logs, task_history)
         stream_logs_generator = (
             f"{log_line.model_dump_json()}\n" if log_line else ""
             async for log_line in executor.stream_logs(task_history, offsets)
