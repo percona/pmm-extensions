@@ -501,10 +501,11 @@ class RetirableManagerMixin(BaseSQLModelManager):
     def _identity_link_pin(cls) -> ColumnElement[bool] | None:
         """Return the predicate matching a row a standing identity link pins.
 
-        None for an entity type that carries no external identity of its own, so
-        collection pays nothing for a clause that could never match.
+        ``None`` for an entity type that carries no external identity of its own,
+        so collection pays nothing for a clause that could never match. The pin
+        is bounded rather than permanent; :meth:`collectible_ids` owns the bound.
 
-        :return: The predicate, or None when this entity type cannot be linked.
+        :return: The predicate, or ``None`` when this entity type cannot be linked.
         """
         return None
 
@@ -545,26 +546,34 @@ class RetirableManagerMixin(BaseSQLModelManager):
         session: AsyncSession,
         *,
         retired_before: datetime,
+        link_pin_retired_before: datetime,
         keep_by_model: Mapping[type[RetirableSQLModel], Collection[int]],
         limit: int,
     ) -> list[int]:
         """Return the ids of this table's tombstones eligible for deletion.
 
         A tombstone is eligible when it aged past ``retired_before``, no caller
-        declared it referenced, and nothing in its subtree is retained. Only
-        reachable through the retired-inclusive subclasses: the default managers'
-        ``retired_at IS NULL`` guard makes the underlying read match nothing.
+        declared it referenced, nothing in its subtree is retained, and no
+        standing identity link still pins it. Only reachable through the
+        retired-inclusive subclasses: the default managers' ``retired_at IS
+        NULL`` guard makes the underlying read match nothing.
+
+        The pin is bounded by the row's own ``retired_at``, which every
+        confirmation restamps, even on an already-retired successor, and nothing
+        moves while the link stands, so it already says how long the link has
+        stood. The bound only narrows the exemption: a released row must still
+        satisfy every other condition.
 
         :param session: The asynchronous database session to use.
         :param retired_before: The cutoff a tombstone must predate.
+        :param link_pin_retired_before: The cutoff a linked tombstone must predate
+            for its link to stop pinning it.
         :param keep_by_model: The ids a caller declared still referenced, per table.
         :param limit: The most ids to return.
         :return: The eligible ids, lowest first.
         """
-        whereclause = [
-            col(cls.Model.retired_at).is_not(None),
-            col(cls.Model.retired_at) < retired_before,
-        ]
+        retired_at = col(cls.Model.retired_at)
+        whereclause = [retired_at.is_not(None), retired_at < retired_before]
         if keep_ids := keep_by_model.get(cls.Model, ()):
             whereclause.append(col(cls.Model.id).not_in(keep_ids))
         if (
@@ -577,7 +586,7 @@ class RetirableManagerMixin(BaseSQLModelManager):
         ) is not None:
             whereclause.append(~pinned)
         if (linked := cls._identity_link_pin()) is not None:
-            whereclause.append(~linked)
+            whereclause.append(or_(~linked, retired_at < link_pin_retired_before))
         query = cls._filter_query(select(col(cls.Model.id)), *whereclause)
         result = await cls._exec(
             session, query.order_by(col(cls.Model.id)).limit(limit)
@@ -1018,11 +1027,12 @@ class AliasableManagerMixin(RetirableManagerMixin):
 
         A confirmed link's successor is a tombstone nothing references any more,
         so collection would otherwise age it out and make the reversal
-        permanently impossible with no signal.
+        impossible with no signal. The pin only defers that, for as long as
+        :meth:`collectible_ids` bounds it.
 
         Narrowed from the base's optional return: an aliasable entity always has
         a pin, which is what lets a subclass widen this one by ``or_``-ing onto
-        ``super()`` without re-testing for None.
+        ``super()`` without re-testing for ``None``.
 
         :return: The ``EXISTS`` predicate.
         """
@@ -1378,6 +1388,12 @@ class AliasableManagerMixin(RetirableManagerMixin):
         index carrying ``retirement_key``: the successor is retired first, which
         vacates the identifier, and only then does the predecessor take it.
 
+        The successor's ``retired_at`` is restamped with the confirmation time
+        even when it was already retired, because that stamp is what bounds
+        this link's pin in :meth:`collectible_ids`, and the ``retired_at IS
+        NULL`` guard in :meth:`_retirement_statements` would otherwise leave an
+        older one in place.
+
         A rejection does not block this. A pairing rejected by mistake stays
         confirmable by explicit id, which is what keeps a mistaken rejection
         correctable rather than permanent.
@@ -1420,6 +1436,9 @@ class AliasableManagerMixin(RetirableManagerMixin):
         confirmed_at = utc_now()
         statements = [
             *cls._retirement_statements(successor.id, confirmed_at),
+            update(cls.Model)
+            .where(col(cls.Model.id) == successor.id)
+            .values(retired_at=confirmed_at),
             *cls._revival_statements(predecessor.id),
             update(cls.Model)
             .where(col(cls.Model.id) == predecessor.id)
@@ -1791,7 +1810,10 @@ class ServiceManager(
         before nodes, so the very rows
         :meth:`_structural_pairing_clauses` keeps surfacing as candidates would
         age out from under the standing node link — taking the reversal's
-        subtree with them.
+        subtree with them. The shared bound applies to each service's own
+        ``retired_at``: a service the node link retired carries the node's
+        confirmation time, while one already retired before the link keeps its
+        older stamp, so its pin ends first.
 
         :return: The ``EXISTS`` predicate.
         """
@@ -1988,6 +2010,7 @@ async def collect_retirable_entities(
     session: AsyncSession,
     *,
     retired_before: datetime,
+    link_pin_retired_before: datetime,
     keep: Mapping[RetirableEntityName, Collection[int]],
     limit: int,
     dry_run: bool,
@@ -2004,6 +2027,8 @@ async def collect_retirable_entities(
 
     :param session: The asynchronous database session to use.
     :param retired_before: The cutoff a tombstone must predate.
+    :param link_pin_retired_before: The cutoff a linked tombstone must predate
+        for its link to stop pinning it.
     :param keep: The ids the caller knows are still referenced, per entity type.
     :param limit: The most entities to collect per type.
     :param dry_run: Whether to report the eligible ids without deleting them.
@@ -2032,6 +2057,7 @@ async def collect_retirable_entities(
         entity_ids = await manager.collectible_ids(
             session,
             retired_before=retired_before,
+            link_pin_retired_before=link_pin_retired_before,
             keep_by_model=keep_by_model,
             limit=limit,
         )

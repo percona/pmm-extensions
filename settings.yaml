@@ -47,11 +47,15 @@ default:
     INVENTORY:
       # Tombstone collection. A retired node/service/schema/table is deleted
       # permanently once it has been retired for COLLECTION_RETENTION AND
-      # nothing PMM Extensions persisted still resolves it. Deletion is irreversible and
+      # nothing PMM Extensions persisted still resolves it; a standing identity
+      # link only defers this, for IDENTITY_LINK_PIN_RETENTION. Deletion is irreversible and
       # cascades to the entity's subtree, so shortening the retention widens
       # what a run removes. Nothing is ever deleted while the interval is null.
       COLLECTION_INTERVAL: null  # Celery beat interval seeded for inventory-collection, e.g. "1 days"
       COLLECTION_RETENTION: 30 days
+      # How long a confirmed identity link stays reversible before collection
+      # may take its successor.
+      IDENTITY_LINK_PIN_RETENTION: 180 days
       # Entities of each type one API call may collect, and the most calls one
       # scheduled run issues before leaving the rest to the next tick.
       COLLECTION_BATCH_SIZE: 500
