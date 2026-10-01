@@ -457,7 +457,7 @@
 | app/tasks/execution/executors/celery/models.py                                                                                      |       90 |        0 |       16 |        0 |    100% |           |
 | app/tasks/execution/executors/nomad/constants.py                                                                                    |        1 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/executors/nomad/exceptions.py                                                                                   |        4 |        0 |        0 |        0 |    100% |           |
-| app/tasks/execution/executors/nomad/models.py                                                                                       |      996 |       66 |      340 |       15 |     93% |198, 377, 447-450, 451-\>exit, 491, 493-\>487, 542, 585, 910, 972-\>974, 1242-\>1247, 1251, 1257, 1292-1297, 2042, 2133, 2517-2519, 2545-2546, 2583-2584, 2618-2619, 3007, 3105-3106, 3180-3181, 3204-3260 |
+| app/tasks/execution/executors/nomad/models.py                                                                                       |     1006 |       66 |      340 |       15 |     93% |198, 390, 460-463, 464-\>exit, 504, 506-\>500, 555, 598, 923, 985-\>987, 1255-\>1260, 1264, 1270, 1305-1310, 2039, 2130, 2514-2516, 2542-2543, 2580-2581, 2615-2616, 3041, 3139-3140, 3214-3215, 3238-3294 |
 | app/tasks/execution/executors/nomad/steps.py                                                                                        |       20 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/models.py                                                                                                       |       73 |        2 |       14 |        0 |     98% |  233, 291 |
 | app/tasks/execution/nomad\_lifecycle.py                                                                                             |       54 |        0 |       12 |        2 |     97% |145-\>148, 187-\>exit |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33850** | **1910** | **8184** |  **680** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33860** | **1910** | **8184** |  **680** | **93%** |           |
 
 
 ## Setup coverage badge
