@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, UTC
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import Index, UniqueConstraint
+from sqlalchemy import Column, Index, Integer, UniqueConstraint
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlmodel import col, Relationship, SQLModel
 from sqlmodel import Field as SQLField
@@ -183,6 +183,38 @@ class CompositeUniqueManager(BaseSQLModelManager):
     """Manage the composite-unique test model."""
 
     Model = CompositeUniqueModel
+
+
+class RenamedExcludedUniqueModel(BaseSQLModel, table=True):
+    """Model an exclude=True field whose sa_column uses a different DB name.
+
+    Pins the mapper lookup in ``BaseManager.save``: ``model_fields`` is keyed by
+    attribute name (``disc``), while the unique-violation report names the
+    column (``disc_col``).
+    """
+
+    __tablename__ = "test_renamed_excluded_unique"
+    __table_args__ = (
+        Index(
+            "ix_test_renamed_excluded_unique",
+            "external_id",
+            "disc_col",
+            unique=True,
+        ),
+    )
+
+    external_id: str
+    disc: int = SQLField(
+        default=ACTIVE_DISCRIMINATOR,
+        sa_column=Column("disc_col", Integer, nullable=False),
+        exclude=True,
+    )
+
+
+class RenamedExcludedUniqueManager(BaseSQLModelManager):
+    """Manage the renamed-excluded unique-key test model."""
+
+    Model = RenamedExcludedUniqueModel
 
 
 class ConstraintUniqueModel(BaseSQLModel, table=True):
@@ -1283,6 +1315,32 @@ class TestSaveUniqueViolation:
             await CompositeUniqueManager.save(session, row)
 
         assert "discriminator" not in raised.value.detail
+
+    @pytest.mark.asyncio
+    async def test_renamed_excluded_column_collision_omits_db_name(
+        self,
+        session: AsyncSession,
+    ) -> None:
+        """Assert an exclude=True field on a renamed sa_column stays out of the 409."""
+        await RenamedExcludedUniqueManager.save(
+            session, RenamedExcludedUniqueModel(external_id="ext-a")
+        )
+        row = await RenamedExcludedUniqueManager.save(
+            session, RenamedExcludedUniqueModel(external_id="ext-b")
+        )
+        row.external_id = "ext-a"
+
+        with pytest.raises(
+            HTTPConflictException,
+            match=(
+                r"RenamedExcludedUniqueModel with the same external_id "
+                r"already exists\."
+            ),
+        ) as raised:
+            await RenamedExcludedUniqueManager.save(session, row)
+
+        assert "disc_col" not in raised.value.detail
+        assert "disc" not in raised.value.detail
 
     @pytest.mark.asyncio
     async def test_all_excluded_key_collision_still_names_the_model(
