@@ -2739,8 +2739,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                             "No data received for %s seconds, rechecking job status...",
                             self.log_socket_read_timeout,
                         )
-                        alloc = await asyncio.to_thread(
-                            self.get_last_allocation, alloc["JobID"], alloc["EvalID"]
+                        alloc = await self._get_last_allocation_held(
+                            alloc["JobID"], alloc["EvalID"]
                         )
                         return (
                             # An empty state ends the caller's loop, so a step
@@ -2756,6 +2756,34 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             return (_NOMAD_LOG_STREAM_SOCK_TIMEOUT, alloc, stream_start)
         except ClientError:
             return (_NOMAD_LOG_STREAM_CLIENT_ERROR, alloc, stream_start)
+
+    async def _get_last_allocation_held(
+        self, job_id: str | None, eval_id: str | None
+    ) -> dict[str, Any]:
+        """Look the last allocation up in a worker thread, holding the executor.
+
+        The lookup goes through :attr:`backend`, which retirement closes once
+        the last :meth:`hold` is released. Cancelling the awaiting task does not
+        stop the worker thread, so the hold is kept until the thread has
+        finished: releasing it earlier would let retirement close the session
+        the thread is using, and a thread reaching :attr:`backend` afterwards
+        would build a session nothing closes.
+
+        :param job_id: The ID of the job.
+        :param eval_id: The evaluation ID associated with the job.
+        :return: The allocation, as :meth:`get_last_allocation` returns it.
+        :raises AllocationNotFoundError: If no allocation matches.
+        :raises ValueError: If neither identifier is given.
+        """
+        async with self.hold():
+            lookup = asyncio.ensure_future(
+                asyncio.to_thread(self.get_last_allocation, job_id, eval_id)
+            )
+            try:
+                return await asyncio.shield(lookup)
+            except asyncio.CancelledError:
+                await asyncio.wait({lookup})
+                raise
 
     def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
         """Resolve allocation for live log streaming before HTTP response headers are sent."""
@@ -2792,7 +2820,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             log messages.
         """
         job_id, eval_id = self.job_eval_ids_for_stream_logs(queue_item)
-        alloc = await asyncio.to_thread(self.get_last_allocation, job_id, eval_id)
+        alloc = await self._get_last_allocation_held(job_id, eval_id)
         active_streams = set()
         queue = asyncio.Queue()
         push_logs_tasks = []
