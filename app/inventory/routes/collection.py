@@ -28,7 +28,8 @@ import logging
 from fastapi import APIRouter
 
 from app.api.deps import IsAuthenticatedDep
-from app.inventory.crud import COLLECTION_ORDER
+from app.inventory.constants import RetirableEntityName
+from app.inventory.crud import collect_retirable_entities
 from app.inventory.deps import SessionDep
 from app.inventory.models import InventoryCollectResponse, InventoryCollectWrite
 
@@ -37,45 +38,37 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/collection", tags=["collection"])
 
 
+def _log_collected(name: RetirableEntityName, collected: int) -> None:
+    """Log the rows one entity type's delete removed.
+
+    :param name: The entity type the delete ran on.
+    :param collected: The number of rows it removed.
+    """
+    logger.info("Collected %s retired %s entities", collected, name)
+
+
 @router.post("/collect", dependencies=[IsAuthenticatedDep])
 async def collect_retired_entities(
     session: SessionDep, body: InventoryCollectWrite
 ) -> InventoryCollectResponse:
     """Delete the tombstones the caller's retained set does not cover.
 
-    Entities are walked deepest-first — table, schema, service, node — so an
-    interrupted run can only leave deleted descendants under a surviving
-    ancestor rather than an orphan.
-
-    A type that fills its ``limit`` ends the walk. Deleting an ancestor cascades
-    to descendants the cap had excluded, and those ids would then be missing from
-    ``deleted`` — leaving the caller unable to clear their bookkeeping and making
-    the reported set a false record of what was removed. Stopping keeps
-    ``deleted`` exhaustive; the ancestors are collected on the next batch, which
-    ``remaining`` asks for.
+    Entities are walked deepest-first, so an interrupted run never leaves a
+    live row beneath a deleted ancestor. A type that fills its ``limit`` ends
+    the walk, so ``deleted`` is exhaustive and ``remaining`` asks for the next
+    batch.
 
     :param session: The asynchronous database session.
     :param body: The cutoffs, the retained ids, and the batch controls.
     :return: The collected ids per entity type, and whether more are waiting.
     """
-    keep_by_model = {
-        manager.Model: body.keep.get(name, ()) for name, manager in COLLECTION_ORDER
-    }
-    deleted = {name: [] for name, _ in COLLECTION_ORDER}
-    remaining = False
-    for name, manager in COLLECTION_ORDER:
-        entity_ids = await manager.collectible_ids(
-            session,
-            retired_before=body.retired_before,
-            link_pin_retired_before=body.link_pin_retired_before,
-            keep_by_model=keep_by_model,
-            limit=body.limit,
-        )
-        deleted[name] = entity_ids
-        if entity_ids and not body.dry_run:
-            collected = await manager.collect(session, entity_ids)
-            logger.info("Collected %s retired %s entities", collected, name)
-        if len(entity_ids) >= body.limit:
-            remaining = True
-            break
-    return InventoryCollectResponse(deleted=deleted, remaining=remaining)
+    batch = await collect_retirable_entities(
+        session,
+        retired_before=body.retired_before,
+        link_pin_retired_before=body.link_pin_retired_before,
+        keep=body.keep,
+        limit=body.limit,
+        dry_run=body.dry_run,
+        on_collected=_log_collected,
+    )
+    return InventoryCollectResponse(deleted=batch.deleted, remaining=batch.remaining)

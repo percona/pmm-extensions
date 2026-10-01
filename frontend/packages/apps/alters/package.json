@@ -10,7 +10,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@pmm-extensions/api": "workspace:*",
     "@pmm-extensions/framework": "workspace:*"
   },
   "devDependencies": {

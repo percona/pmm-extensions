@@ -17,7 +17,7 @@
 
 import sqlite3
 from collections.abc import AsyncGenerator, Iterator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import TypeVar
 
 import pytest
@@ -41,8 +41,13 @@ from app.core.utils.date_time import utc_now
 from app.inventory.constants import SYNC_ATTEMPT_MAX_CLOCK_SKEW
 from app.inventory.crud import (
     AliasableManagerMixin,
+    COLLECTION_ORDER,
     HostSystemObservationManager,
     NodeManager,
+    RetiredInclusiveNodeManager,
+    RetiredInclusiveSchemaManager,
+    RetiredInclusiveServiceManager,
+    RetiredInclusiveTableManager,
     SchemaManager,
     ServiceManager,
     ServiceSystemObservationManager,
@@ -220,6 +225,50 @@ async def confirmed_split(
     await session.refresh(predecessor)
     await session.refresh(successor)
     return predecessor, successor
+
+
+RETIRED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+CUTOFF = datetime(2026, 2, 1, tzinfo=UTC)
+EMPTY_BATCH = {name: [] for name, _ in COLLECTION_ORDER}
+
+
+async def retire_before_cutoff(
+    session: AsyncSession, *entities: RetirableSQLModel
+) -> None:
+    """Retire each entity in place at ``RETIRED_AT``, before ``CUTOFF``.
+
+    :param session: The async database session owning the entities.
+    :param entities: The rows to mark retired.
+    """
+    for entity in entities:
+        await retire_in_place(session, entity, retired_at=RETIRED_AT)
+
+
+async def retirable_row_counts(session: AsyncSession) -> tuple[int, int, int, int]:
+    """Count every node, service, schema, and table row, tombstones included.
+
+    :param session: The async database session to count through.
+    :return: The row counts, root type first.
+    """
+    return (
+        await RetiredInclusiveNodeManager.count(session),
+        await RetiredInclusiveServiceManager.count(session),
+        await RetiredInclusiveSchemaManager.count(session),
+        await RetiredInclusiveTableManager.count(session),
+    )
+
+
+@pytest_asyncio.fixture
+async def retired_tree(
+    session: AsyncSession,
+    node: Node,
+    service: Service,
+    schema: Schema,
+    table: Table,
+) -> Node:
+    """Retire a whole node subtree before ``CUTOFF``."""
+    await retire_before_cutoff(session, table, schema, service, node)
+    return node
 
 
 @pytest_asyncio.fixture
