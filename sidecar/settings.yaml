@@ -311,7 +311,7 @@ default:
     DATABASE: *shared_database
     UVICORN_HOST: 0.0.0.0
     UVICORN_PORT: 9002
-    # PENDING_ALLOCATION_TIMEOUT_SECONDS: 3600  # Max seconds a RUNNING row may wait for an allocation to produce TaskStates before escalating to LOST
+    # PENDING_ALLOCATION_TIMEOUT_SECONDS: 3600  # Max seconds a RUNNING row may wait for Nomad to place its work or for its allocation to produce TaskStates before escalating to LOST
     NOMAD:
       # Credential-free so this file validates standalone; the credentialed form
       # arrives as the canonical Nomad endpoint variable.
