@@ -6995,8 +6995,8 @@ class TestNomadCaptureHoldReadyJobIds:
     async def test_returns_job_ids_of_hold_ready_allocations(self) -> None:
         """Assert only allocations whose producers are done and hold is up count.
 
-        The listing asks Nomad for running and failed allocations with their
-        task states: Nomad reports an allocation ``failed`` as soon as a
+        The listing asks Nomad for pending, running and failed allocations with
+        their task states: Nomad reports an allocation ``failed`` as soon as a
         producing step fails, even while its hold still runs.
         """
         executor = _build_executor()
@@ -7067,7 +7067,7 @@ class TestNomadCaptureHoldReadyJobIds:
                         "job-retried",
                         {
                             "run-script": {"State": "dead", "Failed": True},
-                            NomadStep.LOG_CAPTURE_HOLD: {"State": "dead"},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "running"},
                         },
                         client_status=NomadAllocStatusEnum.FAILED,
                         create_index=10,
