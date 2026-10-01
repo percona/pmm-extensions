@@ -3070,6 +3070,563 @@ class TestSyncTaskHistoryWithoutTaskStates:
         assert _build_executor()._should_escalate_pending_allocation(reloaded) is True
 
 
+class TestSyncTaskHistoryQueuedEvaluations:
+    """Test ``_sync_task_history`` on a row whose job has no allocation yet.
+
+    A Nomad client without capacity completes the dispatch evaluation and parks
+    the work in a ``blocked`` evaluation, recorded as the dispatch eval's
+    ``BlockedEval``. Once capacity frees, the allocation Nomad places carries the
+    *blocked* eval's id, not the dispatch eval the row tracks.
+    """
+
+    _QUEUED_EVALUATIONS = [
+        {"ID": "eval-1", "Status": "complete", "BlockedEval": "eval-2"},
+        {"ID": "eval-2", "Status": "blocked"},
+    ]
+
+    @staticmethod
+    def _queue_item(
+        *,
+        started_at: datetime | None = None,
+        tracking: dict[str, Any] | None = None,
+    ) -> TaskHistory:
+        """Return a RUNNING task history tracking dispatch eval ``eval-1``.
+
+        :param started_at: Optional RUNNING entry time used by the age bound.
+        :param tracking: Tracking to use instead of the allocation-less default.
+        :return: The task history the sync under test starts from.
+        """
+        queue_item = _build_queue_item(
+            tracking=tracking
+            or {"allocation_id": None, "evaluation_id": "eval-1", "job_id": "job-1"},
+            status=TaskHistoryStatusEnum.RUNNING,
+        )
+        queue_item.started_at = started_at
+        return queue_item
+
+    @staticmethod
+    def _backend(
+        mock_nomad_cls: MagicMock,
+        evaluations: list[dict[str, Any]],
+        placed: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> MagicMock:
+        """Wire a Nomad backend whose allocations are keyed by evaluation id.
+
+        :param mock_nomad_cls: The patched ``Nomad`` class.
+        :param evaluations: The job's evaluations.
+        :param placed: Allocations Nomad returns per ``EvalID`` filter; any
+            other filter finds none.
+        :return: The backend mock.
+        """
+        placed = placed or {}
+
+        def get_allocations(*, filter_: str, reverse: bool) -> list[dict[str, Any]]:
+            for eval_id, allocations in placed.items():
+                if f'EvalID == "{eval_id}"' in filter_:
+                    return allocations
+            return []
+
+        mock_backend = MagicMock()
+        mock_nomad_cls.return_value = mock_backend
+        mock_backend.allocation.get_allocation.side_effect = URLNotFoundNomadException(
+            MagicMock(text="not found")
+        )
+        mock_backend.allocations.get_allocations.side_effect = get_allocations
+        mock_backend.client.stream_logs.stream.return_value = ""
+        mock_backend.job.get_job.return_value = {
+            "ID": "job-1",
+            "Status": "running",
+            "Stop": False,
+            "Dispatched": True,
+        }
+        mock_backend.job.get_evaluations.return_value = evaluations
+        return mock_backend
+
+    @staticmethod
+    def _running_alloc(eval_id: str, alloc_id: str = "alloc-9") -> dict[str, Any]:
+        """Return a running allocation placed by ``eval_id``.
+
+        :param eval_id: The evaluation that placed the allocation.
+        :param alloc_id: The allocation id.
+        :return: The allocation dict as Nomad returned it.
+        """
+        return {
+            "ID": alloc_id,
+            "JobID": "job-1",
+            "EvalID": eval_id,
+            "ClientStatus": NomadAllocStatusEnum.RUNNING,
+            "TaskStates": {"step1": {"State": "running", "StartedAt": "1"}},
+        }
+
+    @staticmethod
+    def _within_bound(monkeypatch: pytest.MonkeyPatch) -> datetime:
+        """Shorten the age bound and return a ``started_at`` still inside it.
+
+        :param monkeypatch: The pytest monkeypatch fixture.
+        :return: The RUNNING entry time.
+        """
+        monkeypatch.setattr(
+            tasks_settings,
+            "PENDING_ALLOCATION_TIMEOUT_SECONDS",
+            PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
+        )
+        return utc_now() - timedelta(seconds=PENDING_ALLOCATION_WITHIN_BOUND_AGE)
+
+    @staticmethod
+    def _past_bound(monkeypatch: pytest.MonkeyPatch) -> datetime:
+        """Shorten the age bound and return a ``started_at`` already past it.
+
+        :param monkeypatch: The pytest monkeypatch fixture.
+        :return: The RUNNING entry time.
+        """
+        monkeypatch.setattr(
+            tasks_settings,
+            "PENDING_ALLOCATION_TIMEOUT_SECONDS",
+            PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
+        )
+        return utc_now() - timedelta(seconds=PENDING_ALLOCATION_PAST_BOUND_AGE)
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_blocked_evaluation_within_bound_stays_running(
+        self, mock_nomad_cls, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Assert work queued behind a blocked evaluation waits its turn."""
+        mock_backend = self._backend(mock_nomad_cls, self._QUEUED_EVALUATIONS)
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(
+            self._queue_item(started_at=self._within_bound(monkeypatch))
+        )
+
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        assert result.failure_reason is None
+        mock_backend.job.deregister_job.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_blocked_evaluation_without_tracked_eval_stays_running(
+        self, mock_nomad_cls, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Assert liveness alone keeps a row RUNNING when tracking names no eval."""
+        mock_backend = self._backend(mock_nomad_cls, self._QUEUED_EVALUATIONS)
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(
+            self._queue_item(
+                started_at=self._within_bound(monkeypatch),
+                tracking={"allocation_id": None, "job_id": "job-1"},
+            )
+        )
+
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        mock_backend.job.deregister_job.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_unblocked_allocation_is_adopted(self, mock_nomad_cls):
+        """Assert the allocation a blocked evaluation places becomes the row's."""
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            self._QUEUED_EVALUATIONS,
+            placed={"eval-2": [self._running_alloc("eval-2")]},
+        )
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(self._queue_item())
+
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        tracking = result.execution_request.tracking
+        assert tracking is not None
+        assert tracking["evaluation_id"] == "eval-2"
+        assert tracking["allocation_id"] == "alloc-9"
+        mock_backend.job.deregister_job.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_two_hop_blocked_chain_allocation_is_adopted(self, mock_nomad_cls):
+        """Assert the walk follows ``BlockedEval`` past the first hop."""
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            [
+                {"ID": "eval-1", "Status": "complete", "BlockedEval": "eval-2"},
+                {"ID": "eval-2", "Status": "complete", "BlockedEval": "eval-3"},
+                {"ID": "eval-3", "Status": "complete"},
+            ],
+            placed={"eval-3": [self._running_alloc("eval-3")]},
+        )
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(self._queue_item())
+
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        tracking = result.execution_request.tracking
+        assert tracking is not None
+        assert tracking["evaluation_id"] == "eval-3"
+        mock_backend.job.deregister_job.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_allocation_placed_after_first_lookup_is_adopted(
+        self, mock_nomad_cls
+    ):
+        """Assert a placement landing between the two reads is not withdrawn.
+
+        The first lookup by the tracked eval finds nothing; by the time the
+        evaluations are read the eval is complete and its allocation exists.
+        """
+        mock_backend = self._backend(
+            mock_nomad_cls, [{"ID": "eval-1", "Status": "complete"}]
+        )
+        mock_backend.allocations.get_allocations.side_effect = [
+            [],
+            [self._running_alloc("eval-1")],
+        ]
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(self._queue_item())
+
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        tracking = result.execution_request.tracking
+        assert tracking is not None
+        assert tracking["allocation_id"] == "alloc-9"
+        mock_backend.job.deregister_job.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "evaluations",
+        [
+            pytest.param(_QUEUED_EVALUATIONS, id="blocked"),
+            pytest.param([{"ID": "eval-1", "Status": "pending"}], id="pending"),
+        ],
+    )
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.utc_now")
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_live_evaluation_past_bound_withdraws_and_lands_lost(
+        self,
+        mock_nomad_cls,
+        mock_utc_now: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        evaluations: list[dict[str, Any]],
+    ):
+        """Assert work still queued at the bound is withdrawn and ends LOST."""
+        monkeypatch.setattr(
+            tasks_settings,
+            "PENDING_ALLOCATION_TIMEOUT_SECONDS",
+            PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
+        )
+        mock_backend = self._backend(mock_nomad_cls, evaluations)
+        now = datetime(2026, 10, 1, 12, 0, 0, tzinfo=UTC)
+        mock_utc_now.return_value = now
+        started_at = now - timedelta(seconds=PENDING_ALLOCATION_PAST_BOUND_AGE)
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(
+            self._queue_item(started_at=started_at)
+        )
+
+        assert result.status == TaskHistoryStatusEnum.LOST
+        assert result.finished_at == now
+        assert result.failure_reason == "Execution tracking lost."
+        mock_backend.job.deregister_job.assert_called_once_with("job-1")
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_live_evaluation_withdraw_failure_still_lands_lost(
+        self,
+        mock_nomad_cls,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Assert a Nomad error on the withdrawal is logged and the row still ends."""
+        mock_backend = self._backend(mock_nomad_cls, self._QUEUED_EVALUATIONS)
+        mock_backend.job.deregister_job.side_effect = BaseNomadException(
+            MagicMock(text="unavailable")
+        )
+        executor = _build_executor()
+
+        with caplog.at_level(logging.WARNING):
+            result = await executor._sync_task_history(
+                self._queue_item(started_at=self._past_bound(monkeypatch))
+            )
+
+        assert result.status == TaskHistoryStatusEnum.LOST
+        assert "Could not deregister job job-1 for task history 10" in caplog.text
+        assert "marking LOST anyway" in caplog.text
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_terminal_evaluations_withdraw_then_fail(self, mock_nomad_cls):
+        """Assert a job with no allocation and no live eval is withdrawn, then FAILED."""
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            [{"Status": "complete"}, {"Status": "failed"}, {"Status": "canceled"}],
+        )
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(
+            self._queue_item(started_at=utc_now())
+        )
+
+        assert result.status == TaskHistoryStatusEnum.FAILED
+        assert result.failure_reason == (
+            "The executor job produced no allocation and has no pending evaluation."
+        )
+        assert result.started_at is None
+        mock_backend.job.deregister_job.assert_called_once_with("job-1")
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_terminal_evaluations_withdraw_failure_still_fails(
+        self, mock_nomad_cls, caplog: pytest.LogCaptureFixture
+    ):
+        """Assert a Nomad error on the withdrawal is logged and the row still FAILS."""
+        mock_backend = self._backend(mock_nomad_cls, [{"Status": "complete"}])
+        mock_backend.job.deregister_job.side_effect = BaseNomadException(
+            MagicMock(text="unavailable")
+        )
+        executor = _build_executor()
+
+        with caplog.at_level(logging.WARNING):
+            result = await executor._sync_task_history(self._queue_item())
+
+        assert result.status == TaskHistoryStatusEnum.FAILED
+        assert "Could not deregister job job-1 for task history 10" in caplog.text
+        assert "marking FAILED anyway" in caplog.text
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_blocked_eval_cycle_terminates_and_fails(self, mock_nomad_cls):
+        """Assert a ``BlockedEval`` cycle ends the walk instead of looping."""
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            [
+                {"ID": "eval-1", "Status": "complete", "BlockedEval": "eval-2"},
+                {"ID": "eval-2", "Status": "complete", "BlockedEval": "eval-1"},
+            ],
+        )
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(self._queue_item())
+
+        assert result.status == TaskHistoryStatusEnum.FAILED
+        mock_backend.job.deregister_job.assert_called_once_with("job-1")
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_lost_job_is_not_withdrawn(self, mock_nomad_cls):
+        """Assert a job Nomad no longer has ends LOST with nothing to deregister."""
+        mock_backend = self._backend(mock_nomad_cls, [])
+        mock_backend.job.get_job.side_effect = URLNotFoundNomadException(
+            MagicMock(text="not found")
+        )
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(self._queue_item())
+
+        assert result.status == TaskHistoryStatusEnum.LOST
+        mock_backend.job.deregister_job.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("age", "expected_status", "expected_deregisters"),
+        [
+            pytest.param(
+                PENDING_ALLOCATION_WITHIN_BOUND_AGE,
+                TaskHistoryStatusEnum.RUNNING,
+                0,
+                id="within-bound",
+            ),
+            pytest.param(
+                PENDING_ALLOCATION_PAST_BOUND_AGE,
+                TaskHistoryStatusEnum.LOST,
+                1,
+                id="past-bound",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_unplaced_reschedule_falls_through_to_liveness(
+        self,
+        mock_nomad_cls,
+        monkeypatch: pytest.MonkeyPatch,
+        age: int,
+        expected_status: TaskHistoryStatusEnum,
+        expected_deregisters: int,
+    ):
+        """Assert a reschedule whose successor is still blocked obeys the bound."""
+        monkeypatch.setattr(
+            tasks_settings,
+            "PENDING_ALLOCATION_TIMEOUT_SECONDS",
+            PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
+        )
+        rescheduled = self._running_alloc("eval-1", alloc_id="alloc-1") | {
+            "ClientStatus": NomadAllocStatusEnum.FAILED,
+            "FollowupEvalID": "eval-f1",
+        }
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            [
+                {"ID": "eval-1", "Status": "complete"},
+                {"ID": "eval-f1", "Status": "complete", "BlockedEval": "eval-f2"},
+                {"ID": "eval-f2", "Status": "blocked"},
+            ],
+            placed={"eval-1": [rescheduled]},
+        )
+        mock_backend.allocation.get_allocation.side_effect = None
+        mock_backend.allocation.get_allocation.return_value = rescheduled
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(
+            self._queue_item(
+                started_at=utc_now() - timedelta(seconds=age),
+                tracking={
+                    "allocation_id": "alloc-1",
+                    "evaluation_id": "eval-1",
+                    "job_id": "job-1",
+                },
+            )
+        )
+
+        assert result.status == expected_status
+        assert mock_backend.job.deregister_job.call_count == expected_deregisters
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_reschedule_placed_via_blocked_followup_is_adopted(
+        self, mock_nomad_cls
+    ):
+        """Assert a reschedule queued for capacity is followed to its placement.
+
+        The follow-up evaluation finds no capacity, completes and parks the
+        replacement in a blocked evaluation, which places it once capacity
+        frees, so the replacement carries the blocked evaluation's id.
+        """
+        rescheduled = self._running_alloc("eval-1", alloc_id="alloc-1") | {
+            "ClientStatus": NomadAllocStatusEnum.FAILED,
+            "FollowupEvalID": "eval-f1",
+        }
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            [
+                {"ID": "eval-1", "Status": "complete"},
+                {"ID": "eval-f1", "Status": "complete", "BlockedEval": "eval-f2"},
+                {"ID": "eval-f2", "Status": "complete"},
+            ],
+            placed={
+                "eval-1": [rescheduled],
+                "eval-f2": [self._running_alloc("eval-f2")],
+            },
+        )
+        mock_backend.allocation.get_allocation.side_effect = None
+        mock_backend.allocation.get_allocation.return_value = rescheduled
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(
+            self._queue_item(
+                tracking={
+                    "allocation_id": "alloc-1",
+                    "evaluation_id": "eval-1",
+                    "job_id": "job-1",
+                },
+            )
+        )
+
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        tracking = result.execution_request.tracking
+        assert tracking is not None
+        assert tracking["allocation_id"] == "alloc-9"
+        assert tracking["evaluation_id"] == "eval-f2"
+        mock_backend.job.deregister_job.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_deepest_chain_allocation_wins(self, mock_nomad_cls):
+        """Assert the blocked evaluation's placement is preferred to the tracked one's.
+
+        The tracked evaluation's allocation lands only after the first lookup,
+        so both are visible to the chain walk and only its order decides.
+        """
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            self._QUEUED_EVALUATIONS,
+            placed={"eval-2": [self._running_alloc("eval-2")]},
+        )
+        keyed_lookup = mock_backend.allocations.get_allocations.side_effect
+        tracked_lookups: list[str] = []
+
+        def get_allocations(*, filter_: str, reverse: bool) -> list[dict[str, Any]]:
+            if 'EvalID == "eval-1"' in filter_:
+                tracked_lookups.append(filter_)
+                if len(tracked_lookups) > 1:
+                    return [self._running_alloc("eval-1", alloc_id="alloc-old")]
+                return []
+            return keyed_lookup(filter_=filter_, reverse=reverse)
+
+        mock_backend.allocations.get_allocations.side_effect = get_allocations
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(self._queue_item())
+
+        tracking = result.execution_request.tracking
+        assert tracking is not None
+        assert tracking["allocation_id"] == "alloc-9"
+
+    @pytest.mark.parametrize(
+        ("evaluations", "age", "expected_status"),
+        [
+            pytest.param(
+                [{"ID": "eval-1", "Status": "complete"}],
+                PENDING_ALLOCATION_WITHIN_BOUND_AGE,
+                TaskHistoryStatusEnum.FAILED,
+                id="terminal-evaluations",
+            ),
+            pytest.param(
+                _QUEUED_EVALUATIONS,
+                PENDING_ALLOCATION_PAST_BOUND_AGE,
+                TaskHistoryStatusEnum.LOST,
+                id="live-evaluation-past-bound",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_job_shared_across_runs_is_not_withdrawn(
+        self,
+        mock_nomad_cls,
+        monkeypatch: pytest.MonkeyPatch,
+        evaluations: list[dict[str, Any]],
+        age: int,
+        expected_status: TaskHistoryStatusEnum,
+    ):
+        """Assert a job that is not a per-run dispatch is left registered.
+
+        A non-parameterized task registers one job per task and target, so its
+        other runs' work lives in the same job and deregistering it would stop
+        them too.
+        """
+        monkeypatch.setattr(
+            tasks_settings,
+            "PENDING_ALLOCATION_TIMEOUT_SECONDS",
+            PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
+        )
+        mock_backend = self._backend(mock_nomad_cls, evaluations)
+        mock_backend.job.get_job.return_value = {
+            "ID": "job-1",
+            "Status": "running",
+            "Stop": False,
+            "Dispatched": False,
+        }
+        executor = _build_executor()
+
+        result = await executor._sync_task_history(
+            self._queue_item(started_at=utc_now() - timedelta(seconds=age))
+        )
+
+        assert result.status == expected_status
+        mock_backend.job.deregister_job.assert_not_called()
+
+
 class TestSyncTaskHistoryFailureReason:
     """Test the reason ``_sync_task_history`` stores alongside each terminal status."""
 
