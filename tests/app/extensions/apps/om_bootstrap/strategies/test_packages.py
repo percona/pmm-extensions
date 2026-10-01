@@ -410,6 +410,31 @@ class TestBuildStep:
         assert "authorization" not in command
         assert "keyFile" not in command
 
+    def test_start_service_restarts_rather_than_enable_now(self) -> None:
+        """Force a restart, since install_package may have started mongod already.
+
+        ``enable --now`` is a no-op against a unit that is already active, so it
+        would leave that process running on the package's default config, which
+        carries no ``replication`` block, and never pick up
+        ``configure_mongod``'s rewrite of ``mongod.conf``. Only an explicit
+        ``restart`` guarantees the config just written actually takes effect.
+        """
+        action = PackagesInstallStrategy().build_step(
+            "start_service", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+
+        command = " ".join(action.command)
+        assert "systemctl restart mongod" in command
+        assert "--now" not in command
+
+    def test_start_service_still_enables_mongod_at_boot(self) -> None:
+        """Keep mongod enabled at boot, restart alone would not persist that."""
+        action = PackagesInstallStrategy().build_step(
+            "start_service", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+
+        assert "systemctl enable mongod" in " ".join(action.command)
+
     def test_distribute_keyfile_requires_params(self) -> None:
         """Reject a missing keyFile as a programming error, not a blank file."""
         with pytest.raises(ValueError, match="key_file_content"):

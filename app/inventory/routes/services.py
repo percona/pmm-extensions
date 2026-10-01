@@ -13,14 +13,25 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the routes for the Services resource."""
+"""Define the routes for the Services resource.
+
+Every route here is built by ``ServicePrincipalWriteRoute``, so a write route
+admits only the service principal without declaring anything. A write a human
+may call declares ``ExemptFromServicePrincipalDep`` instead of
+``IsAuthenticatedDep``.
+"""
 
 import logging
 
 from fastapi import APIRouter, status
 from sqlmodel import col
 
-from app.api.deps import CurrentUserID, IsAuthenticatedDep, IsServicePrincipalDep
+from app.api.deps import (
+    CurrentUserID,
+    ExemptFromServicePrincipalDep,
+    IsAuthenticatedDep,
+    ServicePrincipalWriteRoute,
+)
 from app.core.pagination import PaginatedResponse
 from app.core.pagination.deps import PaginationDep
 from app.core.utils.fields import NonEmptyStr
@@ -64,7 +75,9 @@ from app.inventory.models import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/services", tags=["services"])
+router = APIRouter(
+    prefix="/services", tags=["services"], route_class=ServicePrincipalWriteRoute
+)
 
 
 @router.get("/", dependencies=[IsAuthenticatedDep])
@@ -156,7 +169,7 @@ async def retrieve_service(
     )
 
 
-@router.put("/{service_id}", dependencies=[IsServicePrincipalDep])
+@router.put("/{service_id}")
 async def update_service(
     session: SessionDep,
     existing_service: ServiceDep,
@@ -169,7 +182,6 @@ async def update_service(
 
 @router.delete(
     "/{service_id}",
-    dependencies=[IsServicePrincipalDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def retire_service(session: SessionDep, service: RetirableServiceDep) -> None:
@@ -184,7 +196,6 @@ async def retire_service(session: SessionDep, service: RetirableServiceDep) -> N
 
 @router.post(
     "/{service_id}/revive",
-    dependencies=[IsServicePrincipalDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def revive_service(session: SessionDep, service: RetirableServiceDep) -> None:
@@ -201,7 +212,6 @@ async def revive_service(session: SessionDep, service: RetirableServiceDep) -> N
 
 @router.post(
     "/{service_id}/sync-health",
-    dependencies=[IsServicePrincipalDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def record_service_sync_health(
@@ -234,7 +244,7 @@ async def retrieve_service_system_observation(
     return observation
 
 
-@router.put("/{service_id}/system-observation", dependencies=[IsAuthenticatedDep])
+@router.put("/{service_id}/system-observation")
 async def upsert_service_system_observation(
     session: SessionDep,
     service: ServiceDep,
@@ -297,7 +307,6 @@ async def list_schemas_by_service(
 
 @router.post(
     "/{service_id}/schemas/",
-    dependencies=[IsAuthenticatedDep],
     status_code=status.HTTP_201_CREATED,
 )
 async def create_schema_for_service(
@@ -312,7 +321,7 @@ async def create_schema_for_service(
 
 @router.post(
     "/{service_id}/identity-link",
-    dependencies=[IsAuthenticatedDep],
+    dependencies=[ExemptFromServicePrincipalDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def decide_service_identity_link(
@@ -325,8 +334,9 @@ async def decide_service_identity_link(
 
     The path names the **predecessor** — the survivor of a confirmation.
 
-    Carries ``IsAuthenticatedDep`` and deliberately not ``IsServicePrincipalDep``:
-    an identity link is an operator judgement, not a row the syncer owns.
+    Open to an admin as well as the service principal, unlike the other
+    service writes: an identity link is an operator judgement, not a row the
+    syncer owns.
 
     :param session: The async database session.
     :param service: The predecessor addressed by the path, retired or not.

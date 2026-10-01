@@ -38,7 +38,6 @@
     "@pmm-extensions/tasks": "workspace:*",
     "@pmm-extensions/topology": "workspace:*",
     "@tanstack/react-query": "^5.100.7",
-    "axios": "^1.15.2",
     "date-fns": "^4.1.0",
     "material-react-table": "1.15.1",
     "notistack": "^3.0.2",

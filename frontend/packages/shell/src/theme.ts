@@ -107,11 +107,3 @@ const sepThemeOptions = (mode: PaletteMode): ThemeOptions => {
   return deepmerge<ThemeOptions>(sepThemeOptionsOriginal(mode), newOptions);
 };
 export { sepThemeOptions };
-
-export {
-  // sepThemeOptions,
-  sepPrimaryLight,
-  sepPrimaryDark,
-  sepTechnologyColors,
-  primitives,
-} from '@percona/percona-ui';

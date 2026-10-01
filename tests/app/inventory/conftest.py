@@ -17,7 +17,8 @@
 
 import sqlite3
 from collections.abc import AsyncGenerator, Iterator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
+from typing import TypeVar
 
 import pytest
 import pytest_asyncio
@@ -39,8 +40,14 @@ from app.core.utils import json_serializer
 from app.core.utils.date_time import utc_now
 from app.inventory.constants import SYNC_ATTEMPT_MAX_CLOCK_SKEW
 from app.inventory.crud import (
+    AliasableManagerMixin,
+    COLLECTION_ORDER,
     HostSystemObservationManager,
     NodeManager,
+    RetiredInclusiveNodeManager,
+    RetiredInclusiveSchemaManager,
+    RetiredInclusiveServiceManager,
+    RetiredInclusiveTableManager,
     SchemaManager,
     ServiceManager,
     ServiceSystemObservationManager,
@@ -185,6 +192,83 @@ async def retire_in_place(
     session.add(instance)
     await session.commit()
     await session.refresh(instance)
+
+
+PRINCIPAL = "operator@example.com"
+
+#: How far past the successor's own ``retired_at`` a pin cutoff lands in the
+#: pinned and released cases: the pin holds at the boundary and ends past it.
+PIN_BOUNDARY_CASES = [
+    pytest.param(timedelta(0), True, id="at-the-cutoff-stays-pinned"),
+    pytest.param(timedelta(seconds=1), False, id="past-the-cutoff-is-released"),
+]
+
+LinkableT = TypeVar("LinkableT", Node, Service)
+
+
+async def confirmed_split(
+    session: AsyncSession,
+    pair: tuple[LinkableT, LinkableT],
+    manager: type[AliasableManagerMixin] = NodeManager,
+) -> tuple[LinkableT, LinkableT]:
+    """Confirm an identity pairing and hand both rows back as they now stand.
+
+    :param session: The async database session owning the pair.
+    :param pair: The predecessor and the successor to link into it.
+    :param manager: The manager owning the pair's entity type.
+    :return: The predecessor and the successor, refreshed.
+    """
+    predecessor, successor = pair
+    await manager.confirm_identity_link(
+        session, predecessor, successor.id, principal=PRINCIPAL
+    )
+    await session.refresh(predecessor)
+    await session.refresh(successor)
+    return predecessor, successor
+
+
+RETIRED_AT = datetime(2026, 1, 1, tzinfo=UTC)
+CUTOFF = datetime(2026, 2, 1, tzinfo=UTC)
+EMPTY_BATCH = {name: [] for name, _ in COLLECTION_ORDER}
+
+
+async def retire_before_cutoff(
+    session: AsyncSession, *entities: RetirableSQLModel
+) -> None:
+    """Retire each entity in place at ``RETIRED_AT``, before ``CUTOFF``.
+
+    :param session: The async database session owning the entities.
+    :param entities: The rows to mark retired.
+    """
+    for entity in entities:
+        await retire_in_place(session, entity, retired_at=RETIRED_AT)
+
+
+async def retirable_row_counts(session: AsyncSession) -> tuple[int, int, int, int]:
+    """Count every node, service, schema, and table row, tombstones included.
+
+    :param session: The async database session to count through.
+    :return: The row counts, root type first.
+    """
+    return (
+        await RetiredInclusiveNodeManager.count(session),
+        await RetiredInclusiveServiceManager.count(session),
+        await RetiredInclusiveSchemaManager.count(session),
+        await RetiredInclusiveTableManager.count(session),
+    )
+
+
+@pytest_asyncio.fixture
+async def retired_tree(
+    session: AsyncSession,
+    node: Node,
+    service: Service,
+    schema: Schema,
+    table: Table,
+) -> Node:
+    """Retire a whole node subtree before ``CUTOFF``."""
+    await retire_before_cutoff(session, table, schema, service, node)
+    return node
 
 
 @pytest_asyncio.fixture
