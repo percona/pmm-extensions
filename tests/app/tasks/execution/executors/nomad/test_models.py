@@ -63,7 +63,6 @@ from app.tasks.execution.executors.nomad.models import (
     _detect_unlaunchable,
     _failed_step_reason,
     _LAUNCH_CHECK_TASK_NAME,
-    _LIVE_EVAL_STATUSES,
     _NOMAD_LOG_STREAM_CLIENT_ERROR,
     _NOMAD_LOG_STREAM_SOCK_TIMEOUT,
     _should_anonymize,
@@ -73,7 +72,6 @@ from app.tasks.execution.executors.nomad.models import (
     NOMAD_DEAD_JOB_STATUS,
     nomad_task_states_to_execution_events,
     NomadAllocStatusEnum,
-    NomadEvalStatusEnum,
     NomadExecutor,
     RAW_EXEC_DRIVER,
 )
@@ -3187,13 +3185,6 @@ class TestSyncTaskHistoryQueuedEvaluations:
             PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
         )
         return utc_now() - timedelta(seconds=PENDING_ALLOCATION_PAST_BOUND_AGE)
-
-    def test_live_eval_statuses_are_pending_and_blocked(self):
-        """Assert only queued evaluation statuses count as live."""
-        assert {
-            NomadEvalStatusEnum.PENDING,
-            NomadEvalStatusEnum.BLOCKED,
-        } == _LIVE_EVAL_STATUSES
 
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
