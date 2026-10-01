@@ -192,9 +192,16 @@ class TasksSettings(BaseYamlAppSettings):
         interval. When the pinned ``INVENTORY_SYNC_SYNCER`` default is seeded,
         each entry's seeded schedule is deferred until that syncer's first
         completed inventory sync, which then starts the entry once if it has
-        never run; an entry an operator-managed schedule already covers is not
-        seeded, so that schedule is not deferred. Read at startup. Defaults to
-        no extra schedules.
+        never run, or until ``INVENTORY_SYNC_FOLLOWER_MAX_WAIT`` has passed; an
+        entry an operator-managed schedule already covers is not seeded, so that
+        schedule is not deferred. Read at startup. Defaults to no extra
+        schedules.
+    :param INVENTORY_SYNC_FOLLOWER_MAX_WAIT: How long an ``INVENTORY_SYNC_SCHEDULES``
+        entry waits on the pinned default, counted from when the entry's schedule
+        was first seeded. Once it has passed, the entry runs on its own interval
+        even if the default never completes a pass, so a default that is broken
+        or switched off cannot stop it for good. Read at startup. Defaults to one
+        day, the interval of the host-facts schedule it exists for.
     :param LOG_STREAM_CAP_BYTES: The maximum captured-log bytes retained per
         ``(task_history_id, source, stream)``. As a stream grows past the cap
         the writer drops the oldest chunks, keeping a bounded recent tail so a
@@ -253,6 +260,9 @@ class TasksSettings(BaseYamlAppSettings):
     INVENTORY_SYNC_SYNCER: SyncerName | None = None
     INVENTORY_SYNC_SCHEDULES: UniqueList[InventorySyncSchedule] = Field(
         default_factory=list
+    )
+    INVENTORY_SYNC_FOLLOWER_MAX_WAIT: IntervalSchedule = Field(
+        default_factory=lambda: IntervalSchedule(every=1, period=Period.DAYS)
     )
     LOG_STREAM_CAP_BYTES: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
         104857600, advanced=True

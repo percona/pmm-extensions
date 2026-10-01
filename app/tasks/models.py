@@ -1136,8 +1136,13 @@ INVENTORY_SYNC_TASK_NAME = "inventory-sync"
 EXECUTE_TASK_BY_NAME_TASK = "app.tasks.celery.execute_task_by_name"
 #: Meta key naming the per-syncer schedules whose first run follows this one.
 INVENTORY_SYNC_FOLLOWERS_KEY = "follower_syncers"
+#: Meta key mapping each follower to when its schedule was first seeded.
+INVENTORY_SYNC_FOLLOWERS_SINCE_KEY = "follower_syncers_since"
 #: Meta key naming the pinned syncer a per-syncer schedule waits on.
 INVENTORY_SYNC_AFTER_KEY = "after_syncer"
+#: Meta key holding when a per-syncer schedule was first seeded, which starts
+#: the bounded wait on the pinned syncer.
+INVENTORY_SYNC_SINCE_KEY = "after_syncer_since"
 #: Meta key marking a leader-started run that goes ahead only as the syncer's first.
 INVENTORY_SYNC_FIRST_RUN_KEY = "first_run_only"
 INVENTORY_COLLECTION_TASK_NAME = "inventory-collection"
