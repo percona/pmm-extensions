@@ -48,8 +48,6 @@ import { StreamErrorBlock } from './StreamErrorBlock';
 
 type TopTab = 'stdout' | 'stderr' | 'events';
 
-export const DEFAULT_LOG_TAIL_LINES = 1000;
-
 export const LOG_TAIL_LINE_OPTIONS = [
   { label: '100', value: '100' },
   { label: '1000', value: '1000' },

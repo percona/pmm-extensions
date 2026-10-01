@@ -905,10 +905,32 @@ class BaseManager:
             if duplicate_columns is None:
                 logger.exception("DatabaseError saving instance %s", instance)
                 raise HTTPBadRequestException from None
-            raise HTTPConflictException(
-                f"{cls.Model.__name__} with the same "
-                f"{', '.join(duplicate_columns)} already exists."
-            ) from None
+            # Drop columns marked exclude=True (e.g. retirement_key) so the
+            # conflict message only names caller-visible fields. Resolve the
+            # column through the mapper so an exclude=True field mapped onto a
+            # differently named sa_column is filtered too. Models without
+            # model_fields (plain SQLAlchemy) keep every column visible.
+            mapper = inspect(cls.Model)
+            fields = getattr(cls.Model, "model_fields", {})
+            visible_columns = [
+                name
+                for name in duplicate_columns
+                if not getattr(
+                    fields.get(
+                        mapper.get_property_by_column(cls.Model.__table__.c[name]).key
+                    ),
+                    "exclude",
+                    False,
+                )
+            ]
+            if visible_columns:
+                detail = (
+                    f"{cls.Model.__name__} with the same "
+                    f"{', '.join(visible_columns)} already exists."
+                )
+            else:
+                detail = f"{cls.Model.__name__} already exists."
+            raise HTTPConflictException(detail) from None
         except DatabaseError:
             logger.exception("DatabaseError saving instance %s", instance)
             raise HTTPBadRequestException from None

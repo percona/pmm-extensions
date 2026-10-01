@@ -347,7 +347,8 @@ const MOCK_SCHEMA_WITH_SECTION_GATES = {
 
 // ── Section-visibility gate smoke tests ───────────────────────────────────────
 //
-// Guards the ``useConditionalSection`` + ``SectionRenderer`` contract:
+// Guards the ``useConditionalSections`` / ``useUnregisterHiddenSections`` +
+// ``SectionRenderer`` contract:
 // mode sections appear/disappear based on ``backup_type`` and stale child
 // values are not included in the submit payload.
 
