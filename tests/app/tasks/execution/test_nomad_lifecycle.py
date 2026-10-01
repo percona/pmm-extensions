@@ -178,7 +178,7 @@ async def test_aexit_force_closes_a_deferred_retiree() -> None:
 
 @pytest.mark.asyncio
 async def test_reconcile_refuses_to_publish_after_aexit() -> None:
-    """A reconcile queued past shutdown must not open a fresh executor session."""
+    """Reject a reconcile queued past shutdown so it cannot open a fresh executor."""
     _override_nomad(_NOMAD_A)
     app = FastAPI()
     holder = NomadLifecycle(app)
@@ -200,7 +200,7 @@ async def test_reconcile_refuses_to_publish_after_aexit() -> None:
 async def test_aexit_still_force_closes_when_active_close_fails(
     mocker: MockerFixture,
 ) -> None:
-    """Pending sweep and unpublish still run when the active executor close raises."""
+    """Keep pending sweep and unpublish running when the active executor close raises."""
     _override_nomad(_NOMAD_A)
     app = FastAPI()
     holder = NomadLifecycle(app)
@@ -233,7 +233,7 @@ async def test_aexit_still_force_closes_when_active_close_fails(
 async def test_aexit_force_closes_idle_retiree_cancelled_mid_reconcile(
     mocker: MockerFixture,
 ) -> None:
-    """Idle reconcile registers under the lock so cancel mid-close cannot leak."""
+    """Register an idle reconcile under the lock so cancel mid-close cannot leak."""
     _override_nomad(_NOMAD_A)
     app = FastAPI()
     holder = NomadLifecycle(app)
@@ -272,11 +272,11 @@ async def test_aexit_force_closes_idle_retiree_cancelled_mid_reconcile(
 async def test_aexit_force_closes_mid_reconcile_before_close_when_idle(
     mocker: MockerFixture,
 ) -> None:
-    """Swap registers on pending under the lock so ``__aexit__`` cannot miss it.
+    """Register the swap on pending under the lock so ``__aexit__`` cannot miss it.
 
     Pause after reconcile has left ``close_when_idle``; the retired executor must
     already be on pending from the locked swap, so ``__aexit__`` force-closes it
-    during the pause -- not only after reconcile resumes.
+    during the pause — not only after reconcile resumes.
     """
     _override_nomad(_NOMAD_A)
     app = FastAPI()

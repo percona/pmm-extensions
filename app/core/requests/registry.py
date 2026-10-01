@@ -130,7 +130,7 @@ class ClientRegistry:
         file download that resolved it survives the rebind. Evicted clients are
         registered on this registry's :class:`PendingCloses` *under the same
         lock* as the cache removal, so :meth:`close_all` cannot seal and sweep
-        in the gap before :meth:`~BaseRemoteAPI.close_when_idle` runs -- even
+        in the gap before :meth:`~BaseRemoteAPI.close_when_idle` runs — even
         if this task is cancelled mid-await, or the client was idle and would
         otherwise never touch pending. This method therefore does not guarantee
         the client is closed by the time it returns, only that no new work is

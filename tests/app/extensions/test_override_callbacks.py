@@ -311,7 +311,7 @@ async def test_endpoint_rebinder_discards_replacement_when_pending_sealed(
 async def test_endpoint_rebinder_registers_idle_retiree_before_publish(
     mocker: MockerFixture,
 ) -> None:
-    """Idle rebind registers on pending before publish so cancel mid-close cannot leak."""
+    """Register an idle rebind on pending before publish so cancel mid-close cannot leak."""
     app = FastAPI()
     pending = PendingCloses()
     old = await RemoteAPI(endpoint="https://old-inv.example.org").open()
@@ -366,7 +366,7 @@ async def test_endpoint_rebinder_registers_idle_retiree_before_publish(
 
 @pytest.mark.asyncio
 async def test_close_app_state_remote_apis_continues_after_tasks_close_fails() -> None:
-    """Inventory close and pending sweep still run when tasks_api.__aexit__ raises."""
+    """Continue inventory close and pending sweep when ``tasks_api.__aexit__`` raises."""
     app = FastAPI()
     pending = PendingCloses()
     app.state.retired_remote_apis = pending

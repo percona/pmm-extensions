@@ -114,11 +114,11 @@ async def test_close_all_force_closes_a_deferred_retiree() -> None:
 async def test_close_all_force_closes_mid_invalidate_before_close_when_idle(
     mocker: MockerFixture,
 ) -> None:
-    """Eviction registers on pending under the lock so close_all cannot miss it.
+    """Register eviction on pending under the lock so ``close_all`` cannot miss it.
 
     Pause after ``invalidate`` has left ``close_when_idle``; the client must
     already be on pending from the locked eviction, so ``close_all`` force-closes
-    it during the pause -- not only after invalidate resumes. Cancelling the
+    it during the pause — not only after invalidate resumes. Cancelling the
     invalidate task afterward must not reopen a leak.
     """
     registry = ClientRegistry()
@@ -159,7 +159,7 @@ async def test_close_all_force_closes_mid_invalidate_before_close_when_idle(
 async def test_close_all_force_closes_idle_client_cancelled_mid_invalidate(
     mocker: MockerFixture,
 ) -> None:
-    """An idle eviction still lands on pending so cancel mid-close cannot leak."""
+    """Keep an idle eviction on pending so cancel mid-close cannot leak."""
     registry = ClientRegistry()
     client = await registry.get(RemoteAPI, endpoint="https://a.example.org")
     entered = asyncio.Event()
@@ -190,7 +190,7 @@ async def test_close_all_force_closes_idle_client_cancelled_mid_invalidate(
 async def test_close_all_still_force_closes_when_active_result_handling_raises(
     mocker: MockerFixture,
 ) -> None:
-    """Pending sweep still runs when post-gather error handling raises.
+    """Keep the pending sweep running when post-gather error handling raises.
 
     Nested ``finally`` keeps the deferred retiree from leaking when the try body
     fails after active closes are awaited.
@@ -231,7 +231,7 @@ async def test_close_all_still_force_closes_when_active_result_handling_raises(
 async def test_close_all_retries_failed_pending_force_close(
     mocker: MockerFixture,
 ) -> None:
-    """A later ``close_all`` re-sweeps pending after a transient close failure."""
+    """Re-sweep pending from a later ``close_all`` after a transient close failure."""
     registry = ClientRegistry()
     client = await registry.get(RemoteAPI, endpoint="https://deferred.example.org")
 

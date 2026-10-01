@@ -199,7 +199,7 @@ class NomadLifecycle:
         :class:`PendingCloses` *under the same lock* as the swap, so
         :meth:`__aexit__` cannot seal and sweep in the gap before
         :meth:`~app.core.requests.remote_api.BaseRemoteAPI.close_when_idle`
-        runs -- even if this task is cancelled mid-await, or the client was
+        runs — even if this task is cancelled mid-await, or the client was
         idle and would otherwise never touch pending.
 
         :raises ValidationError: If the overridden config fingerprint cannot be

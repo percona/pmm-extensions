@@ -840,7 +840,7 @@ class TestDrainOnRebind:
         assert pending._clients == {}
 
     async def test_failed_session_close_stays_retryable(self, remote_api, mocker):
-        """A raised ClientSession.close must not look done or leave pending."""
+        """Keep a raised ``ClientSession.close`` from looking done or leaving pending."""
         pending = PendingCloses()
         await remote_api.open()
         session = remote_api._session
@@ -870,7 +870,7 @@ class TestDrainOnRebind:
             assert id(remote_api) not in pending._clients
 
     async def test_force_close_keeps_failed_client_for_retry(self, remote_api, mocker):
-        """A failed sweep must leave the client registered for a later retry."""
+        """Leave a failed sweep's client registered for a later retry."""
         pending = PendingCloses()
         await remote_api.open()
         session = remote_api._session

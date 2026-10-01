@@ -128,7 +128,7 @@ def _make_remote_api_rebinder(
     The returned callback handles both deployment shapes. Under standalone
     ``extensions_lifespan`` the client lives in ``app.state.<name>``: it is rebuilt on
     the new endpoint and the old one retired. Under the combined ``app.main:app``
-    no ``app.state`` client exists -- ``get_*_client`` falls back to the
+    no ``app.state`` client exists — ``get_*_client`` falls back to the
     registry-cached ``get_remote_api`` per request, which already key-misses to
     the new HOT endpoint, so the callback evicts the ordered de-duplicated set
     of previous-and-current endpoints (covering endpoint moves as well as
@@ -146,7 +146,7 @@ def _make_remote_api_rebinder(
     otherwise skip pending) or if this callback is cancelled mid-close. When
     ``pending`` is already sealed (teardown has begun while the override
     refresher is still nested above the close ``finally``), the replacement is
-    closed and discarded instead of published -- sealing alone only forces the
+    closed and discarded instead of published — sealing alone only forces the
     *outgoing* client; a post-teardown ``setattr`` would leak the new session.
 
     :param app: The FastAPI application whose ``state`` holds the client.

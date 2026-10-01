@@ -372,12 +372,11 @@ async def _iter_lines_from_chunks(
 
 
 class PendingCloses:
-    """Owner-scoped set of clients whose :meth:`BaseRemoteAPI.close_when_idle` deferred.
+    """Track clients whose :meth:`BaseRemoteAPI.close_when_idle` deferred a close.
 
-    Each owner (``ClientRegistry``, the extensions ``app.state`` holder,
-    ``NomadLifecycle``) keeps its own instance so a shutdown sweep only reaches
-    clients that owner itself retired. A client that drains normally before
-    shutdown is removed here and is not force-closed again.
+    Each owning component keeps its own instance so a shutdown sweep only
+    reaches clients that owner itself retired. A client that drains normally
+    before shutdown is removed here and is not force-closed again.
 
     Clients are keyed by identity: :class:`BaseRemoteAPI` compares by field
     values, so a value-keyed set would collapse two retired instances that
@@ -397,7 +396,7 @@ class PendingCloses:
 
     @property
     def sealed(self) -> bool:
-        """Whether shutdown has sealed this collection against new deferrals."""
+        """Return whether shutdown has sealed this collection against new deferrals."""
         return self._sealed
 
     def seal(self) -> None:
@@ -601,7 +600,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ) -> None:
         """Exit the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized. Concurrent
+        Closes the aiohttp ``ClientSession`` if it was initialized. Concurrent
         callers join the in-progress teardown via a shielded ``_close_done``
         wait so cancelling one waiter cannot cancel the shared close state.
         Deferred-close bookkeeping is cleared only after a *successful*
@@ -672,7 +671,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     async def close(self) -> None:
         """Close the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized. If a close is
+        Closes the aiohttp ``ClientSession`` if it was initialized. If a close is
         already in progress (a draining :meth:`hold`, or another caller), waits
         for that teardown to finish instead of starting a second one. A failed
         close leaves the client retryable for a later call.
