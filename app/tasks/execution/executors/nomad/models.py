@@ -624,9 +624,6 @@ class NomadEvalStatusEnum(StrEnum):
 
     :cvar BLOCKED: Enum value for evaluations waiting for cluster capacity.
     :cvar PENDING: Enum value for evaluations waiting for a scheduler.
-    :cvar COMPLETE: Enum value for completed evaluations.
-    :cvar FAILED: Enum value for failed evaluations.
-    :cvar CANCELED: Enum value for canceled evaluations.
     """
 
     BLOCKED = "blocked"
@@ -1536,7 +1533,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         """
         try:
             return self._follow_reschedules(
-                queue_item, self.get_allocation_for_task_history(queue_item)
+                queue_item, self.get_allocation_for_task_history(queue_item), {}
             )
         except AllocationNotFoundError:
             logger.debug("Allocation not found for task history %s", queue_item.id)
@@ -1590,20 +1587,21 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         self,
         queue_item: TaskHistory,
         alloc: dict[str, Any],
-        evaluations_by_id: dict[str, dict[str, Any]] | None = None,
+        evaluations_by_id: dict[str, dict[str, Any]],
     ) -> tuple[dict[str, Any], str]:
         """Walk an allocation's ``FollowupEvalID`` chain to its latest successor.
 
         A follow-up evaluation that found no capacity places its replacement
         through the ``BlockedEval`` it spawned, so each hop is looked up along
-        that evaluation's placement chain when ``evaluations_by_id`` is given.
+        that evaluation's placement chain as ``evaluations_by_id`` records it.
 
         :param queue_item: The running task history record; its tracked task
             states are reset on every hop, since they belonged to the
             superseded allocation.
         :param alloc: The allocation to start from.
-        :param evaluations_by_id: The job's evaluations keyed by id. Without
-            them each hop is looked up by its follow-up evaluation alone.
+        :param evaluations_by_id: The job's evaluations keyed by id. Empty when
+            the caller has not read them, in which case each hop is looked up by
+            its follow-up evaluation alone.
         :return: ``(alloc, job_id)`` for the latest allocation in the chain.
         :raises AllocationNotFoundError: If a successor has not been placed yet.
         :raises BaseNomadException: If Nomad fails the allocation lookup.
@@ -1611,7 +1609,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         job_id = alloc["JobID"]
         while followup_eval_id := alloc.get("FollowupEvalID"):
             alloc = self._last_chain_allocation(
-                job_id, followup_eval_id, evaluations_by_id or {}
+                job_id, followup_eval_id, evaluations_by_id
             )
             queue_item.execution_request.tracking["task_states"] = {}
         return alloc, job_id
@@ -1675,7 +1673,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             successor is not yet placed.
         :raises BaseNomadException: If Nomad fails the allocation lookup.
         """
-        tracked_eval_id = queue_item.execution_request.tracking.get("evaluation_id")
+        tracked_eval_id = (queue_item.execution_request.tracking or {}).get(
+            "evaluation_id"
+        )
         if not tracked_eval_id:
             return None
         evaluations_by_id = {
