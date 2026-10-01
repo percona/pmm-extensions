@@ -869,6 +869,37 @@ class TestDrainOnRebind:
             assert remote_api._session is None
             assert id(remote_api) not in pending._clients
 
+    async def test_force_close_keeps_failed_client_for_retry(self, remote_api, mocker):
+        """A failed sweep must leave the client registered for a later retry."""
+        pending = PendingCloses()
+        await remote_api.open()
+        session = remote_api._session
+        assert session is not None
+        real_close = session.close
+        fail_once = True
+
+        async def flaky_close() -> None:
+            nonlocal fail_once
+            if fail_once:
+                fail_once = False
+                raise RuntimeError("close boom")
+            await real_close()
+
+        mocker.patch.object(session, "close", flaky_close)
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            await pending.force_close()
+
+            assert remote_api._session is session
+            assert id(remote_api) in pending._clients
+            assert remote_api._close_when_idle is False
+            assert remote_api._close_done is None
+
+            await pending.force_close()
+            assert remote_api._session is None
+            assert pending._clients == {}
+
     async def test_cancelling_close_waiter_does_not_cancel_shared_future(
         self, remote_api, mocker
     ):

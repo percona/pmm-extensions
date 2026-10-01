@@ -15,6 +15,7 @@
 
 """Tests for the PMM Extensions override rebind callbacks wired in ``app.extensions.main``."""
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -276,6 +277,16 @@ async def test_endpoint_rebinder_discards_replacement_when_pending_sealed(
     mocker.patch.object(Settings, "invalidate_client", new=AsyncMock())
     pending.seal()
 
+    opened: list[RemoteAPI] = []
+    original_open = RemoteAPI.open
+
+    async def tracking_open(self: RemoteAPI) -> RemoteAPI:
+        api = await original_open(self)
+        opened.append(api)
+        return api
+
+    mocker.patch.object(RemoteAPI, "open", tracking_open)
+
     rebind = _make_remote_api_rebinder(
         app,
         "inventory_api",
@@ -288,8 +299,68 @@ async def test_endpoint_rebinder_discards_replacement_when_pending_sealed(
 
         assert app.state.inventory_api is old
         assert old._session is not None
+        assert len(opened) == 1
+        assert opened[0] is not old
+        assert opened[0]._session is None
     finally:
         await old.close()
+        extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.asyncio
+async def test_endpoint_rebinder_registers_idle_retiree_before_publish(
+    mocker: MockerFixture,
+) -> None:
+    """Idle rebind registers on pending before publish so cancel mid-close cannot leak."""
+    app = FastAPI()
+    pending = PendingCloses()
+    old = await RemoteAPI(endpoint="https://old-inv.example.org").open()
+    app.state.inventory_api = old
+    extensions_settings._set_snapshot(  # ty: ignore[unresolved-attribute]
+        {"INVENTORY_ENDPOINT": "https://new-inv.example.org"}
+    )
+    mocker.patch.object(Settings, "invalidate_client", new=AsyncMock())
+
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+    original = RemoteAPI.close_when_idle
+
+    async def paused_close_when_idle(self: RemoteAPI, pending=None) -> None:
+        entered.set()
+        await resume.wait()
+        await original(self, pending=pending)
+
+    mocker.patch.object(RemoteAPI, "close_when_idle", paused_close_when_idle)
+
+    rebind = _make_remote_api_rebinder(
+        app,
+        "inventory_api",
+        extensions_settings,
+        "INVENTORY_ENDPOINT",
+        pending=pending,
+    )
+    new = None
+    try:
+        rebind_task = asyncio.create_task(rebind(SnapshotChange({}, {})))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        new = app.state.inventory_api
+        assert new is not old
+        assert id(old) in pending._clients
+        assert old._session is not None
+
+        rebind_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await rebind_task
+
+        await pending.force_close()
+        assert old._session is None
+        assert pending._clients == {}
+    finally:
+        resume.set()
+        if new is not None and new._session is not None:
+            await new.close()
+        if old._session is not None:
+            await old.close()
         extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
 
 

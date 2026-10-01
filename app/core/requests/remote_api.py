@@ -424,24 +424,25 @@ class PendingCloses:
         self._clients.pop(id(client), None)
 
     async def force_close(self) -> None:
-        """Seal, then close every still-deferred client and clear the set.
+        """Seal, then close every still-deferred client.
 
         Sealing happens before any ``await`` so a concurrent rebind that tries
         to register after this returns cannot reintroduce a leak.
-        Each client's deferred-close flag is cleared before ``close`` so a
+        Only the hold-triggered close flag is cleared before ``close`` so a
         concurrent :meth:`BaseRemoteAPI.hold` finally will not start another
-        close from ``_close_when_idle``. If that hold already began tearing
-        down the session, :meth:`BaseRemoteAPI.close` joins the in-progress
-        operation so this sweep still waits for the socket to finish closing.
-        Safe to call when empty.
+        close from ``_close_when_idle``. The client stays registered here until
+        a *successful* session close removes it, so a failed or cancelled close
+        remains discoverable for a later sweep. If that hold already began
+        tearing down the session, :meth:`BaseRemoteAPI.close` joins the
+        in-progress operation so this sweep still waits for the socket to
+        finish closing. Safe to call when empty.
         """
         self._sealed = True
         clients = list(self._clients.values())
-        self._clients.clear()
-        for client in clients:
-            client.clear_deferred_close()
         if not clients:
             return
+        for client in clients:
+            client.clear_hold_triggered_close()
         results = await asyncio.gather(
             *(client.close() for client in clients),
             return_exceptions=True,
@@ -681,16 +682,28 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     def clear_deferred_close(self) -> None:
         """Drop deferred-close bookkeeping without closing the session.
 
-        :meth:`PendingCloses.force_close` calls this before awaiting
-        :meth:`close` so a concurrent :meth:`hold` finally no longer sees
-        ``_close_when_idle`` and starts a redundant close; :meth:`close` is
-        still joinable via ``_close_done`` if teardown already began.
-        :meth:`__aexit__` also calls this after a successful session close.
+        Called after a *successful* session close (from :meth:`__aexit__`) so
+        the owner no longer tracks this client for a shutdown sweep.
+        :meth:`PendingCloses.force_close` does *not* call this before awaiting
+        :meth:`close`; it only clears the hold-triggered flag via
+        :meth:`clear_hold_triggered_close` so a failed close stays discoverable.
         """
         pending = self._pending_closes
         if pending is not None:
             pending.discard(self)
             self._pending_closes = None
+        self._close_when_idle = False
+
+    def clear_hold_triggered_close(self) -> None:
+        """Clear the hold-triggered close flag without leaving :class:`PendingCloses`.
+
+        :meth:`PendingCloses.force_close` calls this before awaiting
+        :meth:`close` so a concurrent :meth:`hold` finally no longer sees
+        ``_close_when_idle`` and starts a redundant close; :meth:`close` is
+        still joinable via ``_close_done`` if teardown already began. The
+        client stays registered on the owner's pending set until a successful
+        session close removes it.
+        """
         self._close_when_idle = False
 
     def remember_pending_close(self, pending: PendingCloses) -> bool:

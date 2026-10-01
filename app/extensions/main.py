@@ -139,13 +139,15 @@ def _make_remote_api_rebinder(
     Both shapes retire the outgoing client rather than closing it outright: the
     swap and the eviction stop it being handed to new work, and it closes once
     the consumers still holding it (an open log stream, a running download)
-    release. App-state retirements register on ``pending`` so
-    :func:`extensions_lifespan` can force-close them at shutdown if a holder
-    never unwinds. When ``pending`` is already sealed (teardown has begun while
-    the override refresher is still nested above the close ``finally``), the
-    replacement is closed and discarded instead of published -- sealing alone
-    only forces the *outgoing* client; a post-teardown ``setattr`` would leak
-    the new session.
+    release. App-state retirements are registered on ``pending`` *before* the
+    replacement is published, so :func:`extensions_lifespan` can force-close
+    them at shutdown even on the idle path (where
+    :meth:`~app.core.requests.remote_api.BaseRemoteAPI.close_when_idle` would
+    otherwise skip pending) or if this callback is cancelled mid-close. When
+    ``pending`` is already sealed (teardown has begun while the override
+    refresher is still nested above the close ``finally``), the replacement is
+    closed and discarded instead of published -- sealing alone only forces the
+    *outgoing* client; a post-teardown ``setattr`` would leak the new session.
 
     :param app: The FastAPI application whose ``state`` holds the client.
     :param name: The ``app.state`` attribute name (``inventory_api`` /
@@ -176,6 +178,11 @@ def _make_remote_api_rebinder(
             return
         # Check after the await: teardown may have sealed while we were opening.
         if pending is not None and pending.sealed:
+            await new_api.close()
+            return
+        # Register before publishing so shutdown can find the old client even
+        # on the idle path, or if this task is cancelled mid-close.
+        if pending is not None and not old.remember_pending_close(pending):
             await new_api.close()
             return
         setattr(app.state, name, new_api)
