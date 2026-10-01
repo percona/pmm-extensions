@@ -22,17 +22,36 @@ as ``MySQLSyncer``. Facts are persisted as host/service *system observations* th
 inventory HTTP API; the syncer never creates or deletes nodes or services.
 """
 
+import asyncio
 import json
 import logging
-from datetime import datetime, UTC
+from collections import defaultdict
+from collections.abc import Sequence
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from typing import Any, ClassVar
 
-from app.extensions.inventory import CreatedNode, CreatedService, Node, Service
-from app.extensions.models import SyncInventoryEntityTypeEnum
+from app.core.pagination import fetch_all_items, PaginatedResponse, Pagination
+from app.core.utils.date_time import make_datetime_utc, utc_now
+from app.extensions.crud import SyncItemManager
+from app.extensions.inventory import (
+    CreatedEntity,
+    CreatedEntityBase,
+    CreatedNode,
+    CreatedService,
+    Node,
+    Service,
+)
+from app.extensions.models import SyncInventoryEntityTypeEnum, SyncItem, SyncStatusEnum
+from app.extensions.sync.exceptions import (
+    ExecutorHostNotFoundError,
+    HostNotMeasuredError,
+    IncompleteObservationsReadError,
+)
 from app.extensions.sync.models import BaseTaskSyncer, TaskRunResult
 from app.inventory.models import (
     HOST_OBSERVATION_FIELD_NAMES,
+    HostSystemObservationSummaryResponse,
     HostSystemObservationWrite,
     ServiceSystemObservationWrite,
     ServiceTypeEnum,
@@ -285,6 +304,32 @@ class SystemFactsSyncer(BaseTaskSyncer):
             **fields,
         )
 
+    async def _upsert_host_observation(self, created_node: CreatedNode) -> bool:
+        """Upsert the node's collected host facts as its observation, best-effort.
+
+        :param created_node: The node whose cached host facts to write.
+        :return: Whether a host observation was written.
+        """
+        if (
+            not (host_facts := self._host_facts_cache.pop(created_node.id, None))
+            or (observation := self._build_host_observation(host_facts)) is None
+        ):
+            return False
+        logger.info("Upserting host system observation for node %s", created_node.id)
+        try:
+            await self.inventory_api.put(
+                f"/nodes/{created_node.id}/system-observation",
+                json=observation.model_dump(mode="json", exclude_none=True),
+            )
+        except Exception:  # noqa: BLE001 - best-effort; must not block service syncs
+            logger.warning(
+                "Failed to upsert host system observation for node %s",
+                created_node.id,
+                exc_info=True,
+            )
+            return False
+        return True
+
     async def perform_node_sync(
         self,
         created_node: CreatedNode,
@@ -297,23 +342,7 @@ class SystemFactsSyncer(BaseTaskSyncer):
         :param updated_node: The node data returned by ``fetch_node``.
         :type updated_node: Node
         """
-        if (host_facts := self._host_facts_cache.pop(created_node.id, None)) and (
-            observation := self._build_host_observation(host_facts)
-        ) is not None:
-            logger.info(
-                "Upserting host system observation for node %s", created_node.id
-            )
-            try:
-                await self.inventory_api.put(
-                    f"/nodes/{created_node.id}/system-observation",
-                    json=observation.model_dump(mode="json", exclude_none=True),
-                )
-            except Exception:  # noqa: BLE001 - best-effort; must not block service syncs
-                logger.warning(
-                    "Failed to upsert host system observation for node %s",
-                    created_node.id,
-                    exc_info=True,
-                )
+        await self._upsert_host_observation(created_node)
         for service in created_node.services:
             await self.sync_service(service)
 
@@ -424,3 +453,283 @@ class SystemFactsSyncer(BaseTaskSyncer):
         return (
             super().can_sync_service(service) and service.type in cls.EOL_ENGINE_TYPES
         )
+
+
+def _finished_at(item: SyncItem) -> datetime:
+    """Return when a finished attempt reached its final status, in UTC.
+
+    :param item: A ``SUCCESS`` or ``FAILED`` item.
+    :return: Its last write time, or its creation time if it was never updated.
+    """
+    return make_datetime_utc(item.updated_at or item.created_at)
+
+
+def first_measurement_due(
+    own_attempts: Sequence[SyncItem],
+    latest_finish: datetime | None,
+    now: datetime,
+    *,
+    retries: int,
+    retry_interval: timedelta,
+) -> bool:
+    """Return whether a never-measured host is due a measurement attempt.
+
+    The failure count restarts at every success, so only the failures after the
+    newest one count against ``retries``.
+
+    :param own_attempts: The first-measurement syncer's finished attempts on the
+        host, oldest first.
+    :param latest_finish: When the newest finished host-facts attempt on the host
+        ended, by either syncer, or ``None`` if there is none.
+    :param now: The current time, timezone-aware.
+    :param retries: The retries allowed after a failed first attempt.
+    :param retry_interval: The least time between two attempts.
+    :return: Whether an attempt is due now.
+    """
+    failures = 0
+    for attempt in own_attempts:
+        if attempt.status == SyncStatusEnum.SUCCESS:
+            failures = 0
+        elif attempt.status == SyncStatusEnum.FAILED:
+            failures += 1
+    if failures > retries:
+        return False
+    return latest_finish is None or now - latest_finish >= retry_interval
+
+
+class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
+    """Give each never-measured host its first measurement between daily runs.
+
+    Probes only active nodes that are co-located with an executor and have no host
+    observation, so a run with nothing new dispatches no task. A host whose attempt
+    writes no observation is retried at most once per
+    ``FIRST_MEASUREMENT_RETRY_INTERVAL`` for at most ``FIRST_MEASUREMENT_RETRIES``
+    retries, then left to the daily ``SystemFactsSyncer`` refresh. The probes run
+    concurrently, so a host does not wait behind the others' probes; every ledger
+    write stays serial on the run's one session.
+
+    :cvar FIRST_MEASUREMENT_RETRIES: The retries after a failed first attempt.
+    :cvar FIRST_MEASUREMENT_RETRY_INTERVAL: The least time between two attempts on
+        one host, counting either host-facts syncer's finished attempts.
+    :cvar FIRST_MEASUREMENT_CONCURRENCY: The most first-measurement probes in
+        flight at once.
+    """
+
+    FIRST_MEASUREMENT_RETRIES: ClassVar[int] = 3
+    FIRST_MEASUREMENT_RETRY_INTERVAL: ClassVar[timedelta] = timedelta(hours=1)
+    FIRST_MEASUREMENT_CONCURRENCY: ClassVar[int] = 8
+    #: Each candidate's probe outcome, gathered before the serial ledger walk and
+    #: consumed by ``fetch_node``.
+    _prefetched: dict[int | None, Node | BaseException | None] = {}
+
+    async def get_observed_node_ids(self) -> set[int]:
+        """Return the ids of every node that has a host observation.
+
+        Fails closed: an answer smaller than the inventory holds would make measured
+        hosts look new and probe them again, so every page is validated strictly and
+        a walk that ends short of the greatest total any page reported raises.
+
+        :return: The observed node ids.
+        :raises pydantic.ValidationError: If a page is not a valid observation page.
+        :raises IncompleteObservationsReadError: If fewer rows were read than the
+            inventory reported.
+        :raises fastapi.HTTPException: If the inventory API request fails.
+        """
+        total = 0
+
+        async def get_page(
+            pagination: Pagination,
+        ) -> PaginatedResponse[HostSystemObservationSummaryResponse]:
+            nonlocal total
+            page = PaginatedResponse[
+                HostSystemObservationSummaryResponse
+            ].model_validate(
+                await self.inventory_api.get(
+                    "/nodes/system-observations", params=pagination.model_dump()
+                )
+            )
+            total = max(total, page.total)
+            return page
+
+        observations = await fetch_all_items(get_page)
+        if len(observations) < total:
+            raise IncompleteObservationsReadError(len(observations), total)
+        return {observation.node_id for observation in observations}
+
+    async def is_measurable(self, node: CreatedNode) -> bool:
+        """Return whether a probe of ``node`` can collect its host facts.
+
+        :param node: The node to check.
+        :return: Whether the executor selected for the node is co-located with it.
+        """
+        try:
+            _, colocated = await self.resolve_task_target(node.address, node.name)
+        except ExecutorHostNotFoundError:
+            return False
+        return colocated
+
+    async def _due_by_ledger(self, nodes: list[CreatedNode]) -> list[CreatedNode]:
+        """Return the nodes the retry policy lets this run attempt.
+
+        :param nodes: The unmeasured, measurable nodes.
+        :return: Those due an attempt now, in the given order.
+        """
+        node_ids = [node.id for node in nodes]
+        own = await SyncItemManager.finished_entity_attempts(
+            self._session, self.get_name(), SyncInventoryEntityTypeEnum.NODE, node_ids
+        )
+        daily = await SyncItemManager.finished_entity_attempts(
+            self._session,
+            SystemFactsSyncer.get_name(),
+            SyncInventoryEntityTypeEnum.NODE,
+            node_ids,
+        )
+        own_by_node: defaultdict[int | None, list[SyncItem]] = defaultdict(list)
+        for item in own:
+            own_by_node[item.entity_id].append(item)
+        latest_finish: dict[int | None, datetime] = {}
+        for item in (*own, *daily):
+            finished = _finished_at(item)
+            latest_finish[item.entity_id] = max(
+                finished, latest_finish.get(item.entity_id, finished)
+            )
+        now = utc_now()
+        return [
+            node
+            for node in nodes
+            if first_measurement_due(
+                own_by_node[node.id],
+                latest_finish.get(node.id),
+                now,
+                retries=self.FIRST_MEASUREMENT_RETRIES,
+                retry_interval=self.FIRST_MEASUREMENT_RETRY_INTERVAL,
+            )
+        ]
+
+    async def get_unmeasured_candidates(self) -> list[CreatedNode]:
+        """Return the nodes this run probes for their first measurement.
+
+        Reads the run's session, so it is only callable inside ``async with``.
+
+        :return: Active, co-located nodes without a host observation that the
+            retry policy lets this run attempt.
+        :raises pydantic.ValidationError: If an observation page is invalid.
+        :raises IncompleteObservationsReadError: If the observation read came up
+            short of the inventory's total.
+        :raises fastapi.HTTPException: If an inventory or tasks API request fails.
+        """
+        if not self.force_executor_host and not await self.get_available_hosts():
+            logger.info("No executor hosts available; no host can be measured")
+            return []
+        nodes = await self.get_inventory_nodes()
+        observed = await self.get_observed_node_ids()
+        unmeasured = [node for node in nodes if node.id not in observed]
+        measurable = [node for node in unmeasured if await self.is_measurable(node)]
+        candidates = await self._due_by_ledger(measurable)
+        logger.info(
+            "First host measurement: %d candidate(s); skipped %d measured, "
+            "%d without a co-located executor, %d held by the retry policy",
+            len(candidates),
+            len(nodes) - len(unmeasured),
+            len(unmeasured) - len(measurable),
+            len(measurable) - len(candidates),
+        )
+        return candidates
+
+    async def get_children_entities(
+        self,
+        entity_type: SyncInventoryEntityTypeEnum,
+        created_entity: CreatedEntity | None,
+    ) -> Sequence[CreatedEntityBase]:
+        """Open no node item up front, leaving each one to be opened as it is recorded.
+
+        A node item counts against the host's retry budget once it is finished, and
+        an interrupted run fails every item it left open. Opening an item only when
+        the host's probe has ended keeps a run that stops early from charging the
+        hosts it never probed.
+
+        :param entity_type: The type of the current entity.
+        :param created_entity: The current entity, or ``None`` at inventory level.
+        :return: No children at inventory level; the base children otherwise.
+        """
+        if entity_type == SyncInventoryEntityTypeEnum.INVENTORY:
+            return []
+        return await super().get_children_entities(entity_type, created_entity)
+
+    async def _probe(self, node: CreatedNode, limit: asyncio.Semaphore) -> Node | None:
+        """Run the daily syncer's probe for ``node`` within the concurrency cap.
+
+        Calls ``SystemFactsSyncer.fetch_node`` explicitly because this class's own
+        ``fetch_node`` replays the outcome this probe produces.
+
+        :param node: The candidate to probe.
+        :param limit: The semaphore bounding the probes in flight.
+        :return: What the probe returned.
+        """
+        async with limit:
+            return await SystemFactsSyncer.fetch_node(self, node)
+
+    async def perform_inventory_sync(self) -> None:
+        """Probe every candidate concurrently, recording each one as its probe ends.
+
+        Recording on completion rather than after the last probe keeps the run's
+        items progressing, so the stale-run reclaim never mistakes a long pass for an
+        abandoned one, and a host's observation is written as soon as it is measured.
+        The recording itself stays on this coroutine, the only one using the session.
+        A probe still in flight when the walk is interrupted is cancelled and
+        awaited before the method returns.
+        """
+        candidates = await self.get_unmeasured_candidates()
+        limit = asyncio.Semaphore(self.FIRST_MEASUREMENT_CONCURRENCY)
+        pending = {
+            asyncio.create_task(self._probe(node, limit)): node for node in candidates
+        }
+        try:
+            while pending:
+                done, _ = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    node = pending.pop(task)
+                    self._prefetched[node.id] = task.exception() or task.result()
+                    await self.sync_node(node)
+        finally:
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+    async def fetch_node(self, created_node: CreatedNode) -> Node | None:
+        """Replay the node's probe outcome, raising the error a failed probe raised.
+
+        A node with no recorded outcome, as in a per-node sync, is probed directly,
+        outside the candidate filter and the retry policy.
+
+        :param created_node: The node to collect facts for.
+        :return: The node, as the probe returned it.
+        :raises Exception: Whatever the node's probe raised, such as the
+            ``TimeoutError`` or ``ValueError`` of a timed-out or failed task.
+        """
+        if created_node.id not in self._prefetched:
+            return await super().fetch_node(created_node)
+        outcome = self._prefetched.pop(created_node.id)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    async def perform_node_sync(
+        self,
+        created_node: CreatedNode,
+        updated_node: Node,  # noqa: ARG002 - required by the BaseSyncer interface
+    ) -> None:
+        """Upsert the host observation and sync each service, failing if none was written.
+
+        :param created_node: The node being synchronized.
+        :param updated_node: The node data returned by ``fetch_node``.
+        :raises HostNotMeasuredError: If no host observation was written.
+        """
+        measured = await self._upsert_host_observation(created_node)
+        for service in created_node.services:
+            await self.sync_service(service)
+        if not measured:
+            raise HostNotMeasuredError(created_node.id)
