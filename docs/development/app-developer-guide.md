@@ -1102,7 +1102,8 @@ async def get_username_mapping() -> dict[str, str]:
 
 The body is trimmed to show the provider shape; the real source additionally wraps
 the fetch in error handling that logs and returns an empty mapping when the auth
-provider fails for any reason.
+provider raises any `Exception`. Cancellation (`asyncio.CancelledError`) and other
+`BaseException` subclasses are not caught and still propagate to the caller.
 
 **Cascade hooks** are the heaviest rung short of leaving the spine: when a single
 create must fan out into a group of related tasks, build a `CascadeCreatePlan`.
