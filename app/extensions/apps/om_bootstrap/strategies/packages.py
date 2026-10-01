@@ -201,11 +201,16 @@ def _mongosh_eval(js: str, port: int) -> StepAction:
     Every caller here runs before authorization is ever enabled (see
     :meth:`PackagesInstallStrategy._configure_mongod`'s own docstring) —
     deliberately, so this never has to route around MongoDB's localhost
-    exception at all: ``rs_initiate`` and ``create_pmm_monitoring_user`` both
-    just work, unauthenticated, on any member regardless of topology or
-    timing. ``enable_auth`` (:meth:`PackagesInstallStrategy._enable_auth`) is
-    what turns authorization on afterward, once the user this creates already
-    exists.
+    exception at all: ``rs_initiate`` and ``verify``, this function's two
+    callers, both just work unauthenticated on the member they run on.
+    ``enable_auth`` (:meth:`PackagesInstallStrategy._enable_auth`) is what turns
+    authorization on afterward, once ``create_pmm_monitoring_user`` has created
+    the first user.
+
+    ``create_pmm_monitoring_user`` is deliberately not one of those callers: its
+    write has to reach the elected primary, which the member it runs on need not
+    be, so it goes through :func:`_mongosh_file` with a replica-set URI
+    instead.
 
     :param js: The JavaScript to evaluate.
     :param port: The port mongod listens on.
@@ -256,7 +261,7 @@ def _mongosh_file(js: str, port: int, uri: str | None = None) -> StepAction:
         credentials, so it is no more secret than the argv it replaces.
     :return: The step action.
     """
-    target = f'"{uri}"' if uri else f"--port {port}"
+    target = shlex.quote(uri) if uri else f"--port {port}"
     body = (
         "umask 077\n"
         "js=$(mktemp)\n"
