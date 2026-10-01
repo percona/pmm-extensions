@@ -71,7 +71,6 @@ from app.tasks.execution_request_secrets import (
 )
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
-    DispatchLock,
     Task,
     TaskBackendEnum,
     TaskExecutionRequest,
@@ -103,6 +102,9 @@ EXPECTED_NOMAD_CERT_RESOLVE_CALLS = 2
 # show the `@>` predicate still carries the leaves that stayed queryable.
 _PRIORITY_META_VALUE = 5
 ANCHOR = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+# Stands in for the token `DispatchLockManager.claim` returns. The release has to
+# carry the claim's own token or it can delete a later dispatch's row.
+LOCK_TOKEN = datetime(2026, 1, 1, 11, 59, 0, tzinfo=UTC)
 
 
 def _make_task(**overrides):
@@ -150,37 +152,19 @@ def _make_session_mock(bind_name: str = "sqlite"):
     return session
 
 
-def _make_lock_session_maker(*, commit_error: Exception | None = None):
+def _make_lock_session_maker():
     """Build a mock async session maker that yields an async context manager.
 
-    :param commit_error: Raised by the yielded session's ``commit``, standing in
-        for the unique-key violation a colliding dispatch lock provokes.
+    ``add`` is replaced with a synchronous mock: on a bare ``AsyncMock`` it
+    returns a coroutine nobody awaits, so every test that lets the real
+    :meth:`DispatchLockManager.claim` run emits a ``RuntimeWarning``.
     """
     lock_session = AsyncMock()
-    if commit_error is not None:
-        lock_session.commit = AsyncMock(side_effect=commit_error)
+    lock_session.add = MagicMock()
     lock_session_cm = AsyncMock()
     lock_session_cm.__aenter__ = AsyncMock(return_value=lock_session)
     lock_session_cm.__aexit__ = AsyncMock(return_value=False)
     return MagicMock(return_value=lock_session_cm)
-
-
-def _assert_lock_released(delete_where_mock) -> None:
-    """Assert the dispatch lock was released exactly once.
-
-    Both the stale-row sweep and the release go through ``delete_where`` now, so
-    counting calls no longer distinguishes them. The sweep carries a positional
-    ``created_at <`` whereclause; the release is keyed only by ``name``.
-
-    :param delete_where_mock: The patched ``DispatchLockManager.delete_where``.
-    """
-    releases = [
-        call for call in delete_where_mock.await_args_list if len(call.args) == 1
-    ]
-    assert len(releases) == 1, (
-        f"expected one release keyed by name, got {delete_where_mock.await_args_list}"
-    )
-    assert set(releases[0].kwargs) == {"name"}
 
 
 def _make_chain_task(name: str) -> Task:
@@ -332,7 +316,13 @@ class TestInternalDispatchQueueItem:
 
     @pytest.mark.asyncio
     async def test_happy_path_dispatches_and_cleans_lock(self):
-        """Assert happy path creates lock, dispatches, and cleans lock."""
+        """Assert happy path claims the lock, dispatches, and releases its own row.
+
+        The release has to carry the token this dispatch's ``claim`` returned.
+        Keyed by name alone it would delete whichever row holds the name, which
+        after a sweep is a later dispatch's. ``TestDispatchLockManager`` in
+        ``test_crud.py`` walks that sequence; this pins the wiring.
+        """
         task = _make_task()
         queue_item = _make_history(task=task)
         session = _make_session_mock()
@@ -350,6 +340,15 @@ class TestInternalDispatchQueueItem:
                 new_callable=AsyncMock,
             ),
             patch(
+                "app.tasks.celery.DispatchLockManager.claim",
+                new_callable=AsyncMock,
+                return_value=LOCK_TOKEN,
+            ),
+            patch(
+                "app.tasks.celery.DispatchLockManager.release",
+                new_callable=AsyncMock,
+            ) as mock_release,
+            patch(
                 "app.tasks.celery._raise_if_identical_task_conflict",
                 new_callable=AsyncMock,
             ),
@@ -362,15 +361,12 @@ class TestInternalDispatchQueueItem:
                 "app.tasks.celery.get_executor_for_task",
                 return_value=mock_executor,
             ),
-            patch(
-                "app.tasks.celery.DispatchLockManager.delete_where",
-                new_callable=AsyncMock,
-            ) as mock_delete_lock,
         ):
             result = await _dispatch_queue_item(queue_item, session)
 
         assert result is dispatched_item
-        _assert_lock_released(mock_delete_lock)
+        mock_release.assert_awaited_once()
+        assert mock_release.await_args.args[2] is LOCK_TOKEN
 
     @pytest.mark.asyncio
     async def test_a_failed_lock_release_does_not_fail_the_dispatch(self):
@@ -390,14 +386,24 @@ class TestInternalDispatchQueueItem:
         dispatched_item = _make_history(task=task, status=TaskHistoryStatusEnum.RUNNING)
         mock_executor.dispatch_task.return_value = dispatched_item
 
-        async def delete_where(_session, *whereclause, **_kwargs):
-            if not whereclause:  # the release, not the stale-row sweep
-                raise TimeoutError("QueuePool limit reached")
-
         with (
             patch(
                 "app.tasks.celery.get_async_session_maker",
                 return_value=_make_lock_session_maker(),
+            ),
+            patch(
+                "app.tasks.celery.DispatchLockManager.delete_where",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.tasks.celery.DispatchLockManager.claim",
+                new_callable=AsyncMock,
+                return_value=LOCK_TOKEN,
+            ),
+            patch(
+                "app.tasks.celery.DispatchLockManager.release",
+                new_callable=AsyncMock,
+                side_effect=TimeoutError("QueuePool limit reached"),
             ),
             patch(
                 "app.tasks.celery._raise_if_identical_task_conflict",
@@ -411,11 +417,6 @@ class TestInternalDispatchQueueItem:
             patch(
                 "app.tasks.celery.get_executor_for_task",
                 return_value=mock_executor,
-            ),
-            patch(
-                "app.tasks.celery.DispatchLockManager.delete_where",
-                new_callable=AsyncMock,
-                side_effect=delete_where,
             ),
         ):
             result = await _dispatch_queue_item(queue_item, session)
@@ -436,16 +437,26 @@ class TestInternalDispatchQueueItem:
         mock_executor = AsyncMock()
         mock_executor.dispatch_task.side_effect = RuntimeError("dispatch failed")
 
-        async def delete_where(_session, *whereclause, **_kwargs):
-            if not whereclause:  # the release, not the stale-row sweep
-                raise TimeoutError("QueuePool limit reached")
-
         with (
             patch(
                 "app.tasks.celery.get_async_session_maker",
                 return_value=_make_lock_session_maker(),
             ),
             patch(
+                "app.tasks.celery.DispatchLockManager.delete_where",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.tasks.celery.DispatchLockManager.claim",
+                new_callable=AsyncMock,
+                return_value=LOCK_TOKEN,
+            ),
+            patch(
+                "app.tasks.celery.DispatchLockManager.release",
+                new_callable=AsyncMock,
+                side_effect=TimeoutError("QueuePool limit reached"),
+            ),
+            patch(
                 "app.tasks.celery._raise_if_identical_task_conflict",
                 new_callable=AsyncMock,
             ),
@@ -457,69 +468,10 @@ class TestInternalDispatchQueueItem:
             patch(
                 "app.tasks.celery.get_executor_for_task",
                 return_value=mock_executor,
-            ),
-            patch(
-                "app.tasks.celery.DispatchLockManager.delete_where",
-                new_callable=AsyncMock,
-                side_effect=delete_where,
             ),
             pytest.raises(RuntimeError, match="dispatch failed"),
         ):
             await _dispatch_queue_item(queue_item, session)
-
-    @pytest.mark.asyncio
-    async def test_the_lock_row_is_committed_without_a_post_commit_refresh(self):
-        """Assert acquiring the lock takes one checkout, not two.
-
-        ``CRUDBase.save`` follows its commit with ``session.refresh``, a second
-        checkout taken once the row is already committed. When the pool is
-        exhausted that refresh raises after the insert landed and before the
-        release path is reachable, orphaning the lock for the full sweep
-        interval and refusing every identical dispatch until then. Nothing reads
-        anything back off a lock row, so the acquire must not refresh it.
-        """
-        task = _make_task()
-        queue_item = _make_history(task=task)
-        session = _make_session_mock()
-        mock_executor = AsyncMock()
-        mock_executor.dispatch_task.return_value = _make_history(
-            task=task, status=TaskHistoryStatusEnum.RUNNING
-        )
-        lock_session_maker = _make_lock_session_maker()
-        lock_session = lock_session_maker.return_value.__aenter__.return_value
-
-        with (
-            patch(
-                "app.tasks.celery.get_async_session_maker",
-                return_value=lock_session_maker,
-            ),
-            patch(
-                "app.tasks.celery.DispatchLockManager.delete_where",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "app.tasks.celery._raise_if_identical_task_conflict",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "app.tasks.celery.TaskManager.get_root_task",
-                new_callable=AsyncMock,
-                return_value=task,
-            ),
-            patch(
-                "app.tasks.celery.get_executor_for_task",
-                return_value=mock_executor,
-            ),
-        ):
-            await _dispatch_queue_item(queue_item, session)
-
-        lock_session.refresh.assert_not_awaited()
-        assert lock_session.add.call_count == 1
-        assert isinstance(lock_session.add.call_args.args[0], DispatchLock)
-        # The positive boundary matters as much as the absent refresh: without
-        # the commit the row stays invisible to every other session, so the lock
-        # would not lock anything and this test would still pass.
-        lock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_integrity_error_on_lock_raises_conflict(self):
@@ -530,15 +482,18 @@ class TestInternalDispatchQueueItem:
         with (
             patch(
                 "app.tasks.celery.get_async_session_maker",
-                return_value=_make_lock_session_maker(
-                    commit_error=IntegrityError(
-                        statement="INSERT", params={}, orig=Exception()
-                    )
-                ),
+                return_value=_make_lock_session_maker(),
             ),
             patch(
                 "app.tasks.celery.DispatchLockManager.delete_where",
                 new_callable=AsyncMock,
+            ),
+            patch(
+                "app.tasks.celery.DispatchLockManager.claim",
+                new_callable=AsyncMock,
+                side_effect=IntegrityError(
+                    statement="INSERT", params={}, orig=Exception()
+                ),
             ),
             pytest.raises(
                 HTTPConflictException, match="Identical dispatch in progress"
@@ -565,6 +520,15 @@ class TestInternalDispatchQueueItem:
                 new_callable=AsyncMock,
             ),
             patch(
+                "app.tasks.celery.DispatchLockManager.claim",
+                new_callable=AsyncMock,
+                return_value=LOCK_TOKEN,
+            ),
+            patch(
+                "app.tasks.celery.DispatchLockManager.release",
+                new_callable=AsyncMock,
+            ) as mock_release,
+            patch(
                 "app.tasks.celery._raise_if_identical_task_conflict",
                 new_callable=AsyncMock,
             ),
@@ -577,15 +541,11 @@ class TestInternalDispatchQueueItem:
                 "app.tasks.celery.get_executor_for_task",
                 return_value=mock_executor,
             ),
-            patch(
-                "app.tasks.celery.DispatchLockManager.delete_where",
-                new_callable=AsyncMock,
-            ) as mock_delete_lock,
             pytest.raises(RuntimeError, match="dispatch failed"),
         ):
             await _dispatch_queue_item(queue_item, session)
 
-        _assert_lock_released(mock_delete_lock)
+        mock_release.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_identical_task_conflict_raises(self):
@@ -604,23 +564,28 @@ class TestInternalDispatchQueueItem:
                 new_callable=AsyncMock,
             ),
             patch(
+                "app.tasks.celery.DispatchLockManager.claim",
+                new_callable=AsyncMock,
+                return_value=LOCK_TOKEN,
+            ),
+            patch(
+                "app.tasks.celery.DispatchLockManager.release",
+                new_callable=AsyncMock,
+            ) as mock_release,
+            patch(
                 "app.tasks.celery._raise_if_identical_task_conflict",
                 new_callable=AsyncMock,
                 side_effect=HTTPConflictException(
                     "Identical queue item already running"
                 ),
             ),
-            patch(
-                "app.tasks.celery.DispatchLockManager.delete_where",
-                new_callable=AsyncMock,
-            ) as mock_delete_lock,
             pytest.raises(
                 HTTPConflictException, match="Identical queue item already running"
             ),
         ):
             await _dispatch_queue_item(queue_item, session)
 
-        _assert_lock_released(mock_delete_lock)
+        mock_release.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_annotates_started_on_successful_dispatch(self):
@@ -655,7 +620,12 @@ class TestInternalDispatchQueueItem:
                 return_value=mock_executor,
             ),
             patch(
-                "app.tasks.celery.DispatchLockManager.delete_where",
+                "app.tasks.celery.DispatchLockManager.claim",
+                new_callable=AsyncMock,
+                return_value=LOCK_TOKEN,
+            ),
+            patch(
+                "app.tasks.celery.DispatchLockManager.release",
                 new_callable=AsyncMock,
             ),
             patch(
@@ -3440,6 +3410,9 @@ def _noop_async_session_maker():
     :rtype: callable
     """
     lock_session = AsyncMock()
+    # Synchronous, as on the real session: an `AsyncMock.add` returns a
+    # coroutine `DispatchLockManager.claim` never awaits.
+    lock_session.add = MagicMock()
     lock_session_cm = AsyncMock()
     lock_session_cm.__aenter__ = AsyncMock(return_value=lock_session)
     lock_session_cm.__aexit__ = AsyncMock(return_value=None)

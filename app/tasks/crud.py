@@ -1577,7 +1577,7 @@ class DispatchLockManager(BaseSQLModelManager):
     Model = DispatchLock
 
     @classmethod
-    async def claim(cls, session: AsyncSession, name: str) -> None:
+    async def claim(cls, session: AsyncSession, name: str) -> datetime:
         """Insert the lock row for ``name``, committing without reading it back.
 
         Deliberately not :meth:`~app.core.db.crud.CRUDBase.save`, which follows
@@ -1598,13 +1598,18 @@ class DispatchLockManager(BaseSQLModelManager):
             the dispatch itself runs on so the commit does not end that
             transaction.
         :param name: The lock's content hash.
+        :return: The row's ``created_at``, which :meth:`release` needs to tell
+            this claim's row from a later dispatch's. Read off the instance
+            before the commit, so it costs nothing: ``default_factory`` fills it
+            client-side at construction, not from the returned row.
         :raises IntegrityError: If the lock is already held.
         """
         # ty reads SQLModel's `id` as required because it cannot see the
-        # primary-key default; the same artifact already sits on
-        # `_transient_log_state`. Per-site rather than a pyproject override,
-        # which would also cover any genuine hit of this rule in the file.
-        session.add(cls.Model(name=name))  # ty: ignore[missing-argument]
+        # primary-key default. Per-site rather than a pyproject override, which
+        # would also cover any genuine hit of this rule in the file.
+        lock = cls.Model(name=name)  # ty: ignore[missing-argument]
+        created_at = lock.created_at
+        session.add(lock)
         try:
             await session.commit()
         except IntegrityError:
@@ -1612,15 +1617,34 @@ class DispatchLockManager(BaseSQLModelManager):
             # be released before the caller can act on the conflict.
             await session.rollback()
             raise
+        return created_at
 
     @classmethod
-    async def release(cls, session: AsyncSession, name: str) -> None:
-        """Delete the lock row for ``name``.
+    async def release(
+        cls, session: AsyncSession, name: str, created_at: datetime
+    ) -> None:
+        """Delete the row this claim inserted, and only that row.
 
-        Keyed by name rather than by a persisted instance, so :meth:`claim` never
-        has to read one back.
+        ``name`` alone would not be safe. A dispatch that outlives the caller's
+        stale window has already had its row swept and replaced by a later
+        dispatch's, and a delete keyed only by name would take *that* row -
+        freeing the lock while its owner is still dispatching, which is the
+        double dispatch this table exists to prevent.
+
+        ``created_at`` identifies the claim without a read-back. It is sound as a
+        token because a sweep is the only way one row can give way to another
+        under the same name, so the two are at least the caller's stale interval
+        apart - far enough apart to survive the one-second resolution of
+        :func:`~app.core.utils.date_time.utc_now`. The primary key would not do
+        on its own: SQLite reissues a freed ``rowid``, so a swept row's key can
+        come back on the row that replaced it.
+
+        Deleting nothing is the expected outcome once a sweep has been through,
+        not an error. The caller releases from a ``finally`` where raising would
+        fail a dispatch that has already succeeded.
 
         :param session: A session dedicated to this lock.
         :param name: The lock's content hash.
+        :param created_at: The value :meth:`claim` returned for this dispatch.
         """
-        await cls.delete_where(session, name=name)
+        await cls.delete_where(session, name=name, created_at=created_at)

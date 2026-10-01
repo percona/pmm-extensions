@@ -727,12 +727,9 @@ async def _dispatch_queue_item(
             name=dispatch_lock_name,
         )
         try:
-            # ``claim`` rather than ``create``: the latter routes to
-            # ``CRUDBase.save``, whose post-commit ``session.refresh`` is a second
-            # checkout taken once the row is already committed and before the
-            # ``try`` below has been entered, so pool exhaustion there orphans the
-            # lock for the whole sweep interval. See ``DispatchLockManager.claim``.
-            await DispatchLockManager.claim(lock_session, dispatch_lock_name)
+            lock_created_at = await DispatchLockManager.claim(
+                lock_session, dispatch_lock_name
+            )
         except IntegrityError as exc:
             raise HTTPConflictException("Identical dispatch in progress.") from exc
 
@@ -751,19 +748,13 @@ async def _dispatch_queue_item(
         else:
             schedule_annotation(result, "STARTED")
     finally:
-        # Releasing the lock must not decide the dispatch's outcome. This runs
-        # after the work is done, and it needs its own checkout from a pool the
-        # dispatch has just been contending for, so it is exactly where a
-        # POOL_TIMEOUT lands. Raising here would replace an already-successful
-        # dispatch with an error the client reads as a refusal, and the retry
-        # that follows is not idempotent: the task is enqueued, so the retry
-        # collides with the item this attempt created. Logged and swallowed
-        # instead - the 30-second sweep at the top of this function is the
-        # backstop for a lock that outlives its dispatch, and it is the same
-        # backstop an orphaned row already relied on.
+        # Raising here would turn an enqueued, running dispatch into a refusal
+        # that the client retries into a duplicate.
         try:
             async with lock_session_maker() as release_session:
-                await DispatchLockManager.release(release_session, dispatch_lock_name)
+                await DispatchLockManager.release(
+                    release_session, dispatch_lock_name, lock_created_at
+                )
         except Exception:
             logger.exception(
                 "Could not release dispatch lock %s; it will be swept once it is "
