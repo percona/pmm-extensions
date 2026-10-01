@@ -772,7 +772,7 @@ def _merge_app_owned_into_lookup(
     :raises ValueError: If a setting class is wired more than once.
     """
     for entry in app_owned:
-        class_id = str(entry.setting_class)
+        class_id = entry.setting_class
         if class_id in class_lookup:
             raise ValueError(
                 f"Settings class {class_id!r} is wired as both"
@@ -800,7 +800,7 @@ async def _collect_app_owned_list_groups(
     """
     groups = []
     for entry in app_owned:
-        class_id = str(entry.setting_class)
+        class_id = entry.setting_class
         settings_list = await collect_class_setting_responses(
             session=session,
             setting_class=class_id,
@@ -843,8 +843,7 @@ async def _collect_settings_list_groups(
     :return: Groups in core, remote, then app-owned declaration order.
     """
     groups = []
-    for setting_class, settings_cls, proxy in classes:
-        class_id = str(setting_class)
+    for class_id, settings_cls, proxy in classes:
         settings_list = await collect_class_setting_responses(
             session=session,
             setting_class=class_id,

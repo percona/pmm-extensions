@@ -25,11 +25,11 @@ from app import __summary__, __version__
 from app.api.deps import IsAuthenticatedDep, RequireMinimumRoleForUnsafeMethods
 from app.core.config import create_app, default_lifespan, settings
 from app.core.health import build_health_router
+from app.core.settings_override.constants import INVENTORY_SETTINGS
 from app.core.settings_override.lifecycle import (
     ProxyEntry,
     settings_override_refresher,
 )
-from app.core.settings_override.models import SettingClassEnum
 from app.inventory.config import inventory_settings, InventorySettings
 from app.inventory.crud import NodeManager, SchemaManager, ServiceManager, TableManager
 from app.inventory.db import get_async_session_maker
@@ -73,9 +73,7 @@ async def inventory_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, Non
     async with settings_override_refresher(
         get_async_session_maker,
         {
-            SettingClassEnum.INVENTORY_SETTINGS: ProxyEntry(
-                inventory_settings, InventorySettings
-            ),
+            INVENTORY_SETTINGS: ProxyEntry(inventory_settings, InventorySettings),
         },
         callbacks={},
     ):

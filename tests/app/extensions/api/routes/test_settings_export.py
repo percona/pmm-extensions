@@ -34,7 +34,13 @@ from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.exceptions import HTTPBadGatewayException
 from app.core.requests import RemoteAPI
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import (
+    ALERT_SETTINGS,
+    EXTENSIONS_SETTINGS,
+    SETTINGS,
+    SNIPPETS_SETTINGS,
+    TASKS_SETTINGS,
+)
 from app.core.utils import json_serializer
 from app.core.utils.date_time import utc_now
 from app.extensions.bundle_upload.plan import DeliveryPlan
@@ -65,10 +71,10 @@ DEFAULT_ALERT_BACKUP_RETENTION = 10
 SAMPLE_TASKS_LIST: dict[str, Any] = {
     "groups": [
         {
-            "setting_class": SettingClassEnum.TASKS_SETTINGS.value,
+            "setting_class": TASKS_SETTINGS,
             "settings": [
                 {
-                    "setting_class": SettingClassEnum.TASKS_SETTINGS.value,
+                    "setting_class": TASKS_SETTINGS,
                     "key": "STALENESS_THRESHOLD_SECONDS",
                     "key_path": ["STALENESS_THRESHOLD_SECONDS"],
                     "value": SAMPLE_STALENESS_THRESHOLD_SECONDS,
@@ -81,7 +87,7 @@ SAMPLE_TASKS_LIST: dict[str, Any] = {
                     "has_override": False,
                 },
                 {
-                    "setting_class": SettingClassEnum.TASKS_SETTINGS.value,
+                    "setting_class": TASKS_SETTINGS,
                     "key": "API_SECRET",
                     "key_path": ["API_SECRET"],
                     "value": REDACTED_SECRET,
@@ -298,8 +304,8 @@ class TestExtensionsConfigExportYaml:
         export = yaml.safe_load(api_admin_client.get(EXPORT_URL).text)
         list_keys = _list_keys_by_class(api_admin_client)
         for setting_class in (
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
-            SettingClassEnum.SNIPPETS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
+            SNIPPETS_SETTINGS,
             "AlertsSettings",
             "HealthReportSettings",
             "OmInventorySettings",
@@ -348,10 +354,7 @@ class TestExtensionsConfigExportYaml:
         export = yaml.safe_load(yaml_text)
         health_block = export["HealthReportSettings"]
         assert health_block["api_key"] == REDACTED_SECRET
-        assert (
-            export[SettingClassEnum.TASKS_SETTINGS.value]["API_SECRET"]
-            == REDACTED_SECRET
-        )
+        assert export[TASKS_SETTINGS]["API_SECRET"] == REDACTED_SECRET
         assert "local-secret" not in yaml_text
 
     async def test_delivery_plan_secrets_redacted_in_yaml(
@@ -372,9 +375,7 @@ class TestExtensionsConfigExportYaml:
         )
         yaml_text = api_admin_client.get(EXPORT_URL).text
         export = yaml.safe_load(yaml_text)
-        block = export[SettingClassEnum.EXTENSIONS_SETTINGS.value][
-            "DIAGNOSTICS_DELIVERY"
-        ]
+        block = export[EXTENSIONS_SETTINGS]["DIAGNOSTICS_DELIVERY"]
 
         assert block["secrets"]["api_key"] == REDACTED_SECRET
         assert block["upload"]["path"] == "attachment/upload"
@@ -396,9 +397,7 @@ class TestExtensionsConfigExportYaml:
         )
         yaml_text = api_admin_client.get(EXPORT_URL).text
         export = yaml.safe_load(yaml_text)
-        block = export[SettingClassEnum.EXTENSIONS_SETTINGS.value][
-            "DIAGNOSTICS_DELIVERY_INPUTS"
-        ]
+        block = export[EXTENSIONS_SETTINGS]["DIAGNOSTICS_DELIVERY_INPUTS"]
 
         assert block["secrets"]["sn_api_key"] == REDACTED_SECRET
         assert "inputs-secret" not in yaml_text
@@ -417,9 +416,7 @@ class TestExtensionsConfigExportYaml:
             extensions_settings._set_snapshot({"INVENTORY_ENDPOINT": full_url})
             yaml_text = api_admin_client.get(EXPORT_URL).text
             export = yaml.safe_load(yaml_text)
-            value = export[SettingClassEnum.EXTENSIONS_SETTINGS.value][
-                "INVENTORY_ENDPOINT"
-            ]
+            value = export[EXTENSIONS_SETTINGS]["INVENTORY_ENDPOINT"]
             assert "inv-secret" not in yaml_text
             assert "****" in value
             assert "inv-user" in value
@@ -438,7 +435,7 @@ class TestExtensionsConfigExportYaml:
             export = yaml.safe_load(api_admin_client.get(EXPORT_URL).text)
             list_response = api_admin_client.get(SETTINGS_LIST_URL).json()
             for group in list_response["groups"]:
-                if group["setting_class"] != SettingClassEnum.EXTENSIONS_SETTINGS.value:
+                if group["setting_class"] != EXTENSIONS_SETTINGS:
                     continue
                 for entry in group["settings"]:
                     if entry["key"] == "INVENTORY_ENDPOINT":
@@ -449,10 +446,7 @@ class TestExtensionsConfigExportYaml:
                 break
             else:
                 raise AssertionError("EXTENSIONS_SETTINGS group missing from LIST")
-            assert (
-                export[SettingClassEnum.EXTENSIONS_SETTINGS.value]["INVENTORY_ENDPOINT"]
-                == list_value
-            )
+            assert export[EXTENSIONS_SETTINGS]["INVENTORY_ENDPOINT"] == list_value
             assert "inv-secret" not in list_value
         finally:
             extensions_settings._set_snapshot({})
@@ -462,7 +456,7 @@ class TestExtensionsConfigExportYaml:
     ) -> None:
         """Emit ``ExtensionsSettings.APPS`` as a structured value, not a repr blob."""
         export = yaml.safe_load(api_admin_client.get(EXPORT_URL).text)
-        plugins = export[SettingClassEnum.EXTENSIONS_SETTINGS.value]["APPS"]
+        plugins = export[EXTENSIONS_SETTINGS]["APPS"]
         assert isinstance(plugins, list)
         if plugins:
             assert isinstance(plugins[0], dict)
@@ -477,7 +471,7 @@ class TestExtensionsConfigExportTasksFanOut:
     ) -> None:
         """Place Tasks LIST values under the ``TasksSettings`` top-level key."""
         export = yaml.safe_load(api_admin_client.get(EXPORT_URL).text)
-        tasks_block = export[SettingClassEnum.TASKS_SETTINGS.value]
+        tasks_block = export[TASKS_SETTINGS]
         assert (
             tasks_block["STALENESS_THRESHOLD_SECONDS"]
             == SAMPLE_STALENESS_THRESHOLD_SECONDS
@@ -492,10 +486,10 @@ class TestExtensionsConfigExportTasksFanOut:
         mock_tasks_api.get.return_value = {
             "groups": [
                 {
-                    "setting_class": SettingClassEnum.TASKS_SETTINGS.value,
+                    "setting_class": TASKS_SETTINGS,
                     "settings": [
                         {
-                            "setting_class": SettingClassEnum.TASKS_SETTINGS.value,
+                            "setting_class": TASKS_SETTINGS,
                             "key": "NOMAD__endpoint",
                             "key_path": ["NOMAD", "endpoint"],
                             "value": redacted_endpoint,
@@ -513,10 +507,7 @@ class TestExtensionsConfigExportTasksFanOut:
         }
         yaml_text = api_admin_client.get(EXPORT_URL).text
         export = yaml.safe_load(yaml_text)
-        assert (
-            export[SettingClassEnum.TASKS_SETTINGS.value]["NOMAD__endpoint"]
-            == redacted_endpoint
-        )
+        assert export[TASKS_SETTINGS]["NOMAD__endpoint"] == redacted_endpoint
         assert "nomad-secret" not in yaml_text
         assert "****" in yaml_text
 
@@ -577,7 +568,7 @@ class TestExtensionsConfigExportTasksFanOut:
         mock_tasks_api.get.return_value = {"groups": []}
         response = api_admin_client.get(EXPORT_URL)
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
-        assert SettingClassEnum.TASKS_SETTINGS.value in response.json()["detail"]
+        assert TASKS_SETTINGS in response.json()["detail"]
 
     async def test_tasks_setting_entry_missing_value_returns_502(
         self,
@@ -588,7 +579,7 @@ class TestExtensionsConfigExportTasksFanOut:
         mock_tasks_api.get.return_value = {
             "groups": [
                 {
-                    "setting_class": SettingClassEnum.TASKS_SETTINGS.value,
+                    "setting_class": TASKS_SETTINGS,
                     "settings": [{"key": "STALENESS_THRESHOLD_SECONDS"}],
                 }
             ]
@@ -631,21 +622,21 @@ class TestExtensionsConfigExportTasksFanOut:
     ) -> None:
         """Return ``502`` when a Tasks LIST group omits ``settings``."""
         mock_tasks_api.get.return_value = {
-            "groups": [{"setting_class": SettingClassEnum.TASKS_SETTINGS.value}]
+            "groups": [{"setting_class": TASKS_SETTINGS}]
         }
         response = api_admin_client.get(EXPORT_URL)
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
         assert "missing 'settings'" in response.json()["detail"]
 
 
-EXTENSIONS_CLASS = SettingClassEnum.EXTENSIONS_SETTINGS.value
-SNIPPETS_CLASS = SettingClassEnum.SNIPPETS_SETTINGS.value
+EXTENSIONS_CLASS = EXTENSIONS_SETTINGS
+SNIPPETS_CLASS = SNIPPETS_SETTINGS
 ALERTS_CLASS = "AlertsSettings"
 HEALTH_REPORT_CLASS = "HealthReportSettings"
 INVENTORY_APP_CLASS = "InventoryAppSettings"
-SETTINGS_CLASS = SettingClassEnum.SETTINGS.value
-ALERT_CLASS = SettingClassEnum.ALERT_SETTINGS.value
-TASKS_CLASS = SettingClassEnum.TASKS_SETTINGS.value
+SETTINGS_CLASS = SETTINGS
+ALERT_CLASS = ALERT_SETTINGS
+TASKS_CLASS = TASKS_SETTINGS
 OM_INVENTORY_CLASS = "OmInventorySettings"
 FULL_EXPORT_CLASSES = {
     EXTENSIONS_CLASS,

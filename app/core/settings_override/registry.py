@@ -306,10 +306,9 @@ def _policy_locked(settings_cls: type[BaseModel], canonical_key: str) -> bool:
     """Return whether ``SETTINGS_OVERRIDE.ALLOWED_KEYS`` withholds one canonical key.
 
     Keys the allowlist on ``settings_cls.__name__``, the same token
-    ``ALLOWED_KEYS`` entries use. A class that is not a
-    :class:`~app.core.settings_override.models.SettingClassEnum` member is
-    therefore still reachable when the allowlist names it, and still withheld
-    when it does not.
+    ``ALLOWED_KEYS`` entries use. A class with no core identifier in
+    :mod:`app.core.settings_override.constants` is therefore still reachable
+    when the allowlist names it, and still withheld when it does not.
 
     :param settings_cls: The top-level Pydantic settings class owning the key.
     :param canonical_key: The canonical override key: a top-level field name or

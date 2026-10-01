@@ -377,7 +377,9 @@ async def override_rows_for_key(
 
     :param session: The sub-app's database session.
     :param settings_cls: The Pydantic settings class the rows belong to.
-    :param setting_class: The class identifier used to filter override rows.
+    :param setting_class: The storage token (from
+        :func:`~app.core.settings_override.models.setting_class_token`) used to
+        filter override rows.
     :param key: The canonical override key to resolve against.
     :return: Every matching row, in the order :meth:`SettingsOverrideManager.list`
         returns them.
