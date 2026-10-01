@@ -69,6 +69,18 @@ def normalize_nomad_config_value(value: object) -> NomadExecutor:
     raise TypeError(f"Cannot normalize {type(value).__name__} to a NomadExecutor")
 
 
+def _config_fingerprint(executor: NomadExecutor) -> dict[str, Any]:
+    """Return the JSON dump of ``executor``'s config, credentials kept in clear.
+
+    Two executors built from the same configuration dump equal, and
+    ``NomadExecutor.model_validate`` rebuilds an equivalent executor from it.
+
+    :param executor: The executor to fingerprint.
+    :return: The executor's configuration as a JSON-compatible mapping.
+    """
+    return executor.model_dump(mode="json", context=PRESERVE_CREDENTIALS_CONTEXT)
+
+
 class NomadLifecycle:
     """Own the entered :class:`NomadExecutor` and rebind it on config changes.
 
@@ -120,9 +132,7 @@ class NomadLifecycle:
             ``NOMAD`` configuration and no session.
         """
         effective = normalize_nomad_config_value(tasks_settings.NOMAD)
-        return NomadExecutor.model_validate(
-            effective.model_dump(mode="json", context=PRESERVE_CREDENTIALS_CONTEXT)
-        )
+        return NomadExecutor.model_validate(_config_fingerprint(effective))
 
     async def __aenter__(self) -> Self:
         """Enter the executor the effective config calls for and publish self.
@@ -133,9 +143,7 @@ class NomadLifecycle:
         async with self._lock:
             desired = self._desired()
             self._current = await desired.__aenter__()
-            self._current_config = desired.model_dump(
-                mode="json", context=PRESERVE_CREDENTIALS_CONTEXT
-            )
+            self._current_config = _config_fingerprint(desired)
         self._app.state.nomad_lifecycle = self
         return self
 
@@ -175,9 +183,7 @@ class NomadLifecycle:
             :func:`normalize_nomad_config_value`).
         """
         desired = self._desired()
-        desired_config = desired.model_dump(
-            mode="json", context=PRESERVE_CREDENTIALS_CONTEXT
-        )
+        desired_config = _config_fingerprint(desired)
         async with self._lock:
             if desired_config == self._current_config:
                 return
@@ -228,7 +234,7 @@ class WorkerNomadClient:
             nor a :class:`NomadExecutor`.
         """
         effective = normalize_nomad_config_value(tasks_settings.NOMAD)
-        config = effective.model_dump(mode="json", context=PRESERVE_CREDENTIALS_CONTEXT)
+        config = _config_fingerprint(effective)
         current = self._executor
         if (
             current is not None

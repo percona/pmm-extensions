@@ -676,7 +676,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         latency a run's status is expected to meet. Read when ``app.tasks.db.seed``
         builds the schedule, so it is not overridable at runtime. Set to ``None``
         to skip registering the probe, leaving finished runs to the sweep.
-        Defaults to 1.
+        Defaults to ``1``.
     :param api_key: Credential sent as ``Authorization: <auth_scheme> <api_key>``
         on both the synchronous and the asynchronous request path. It takes
         precedence over any userinfo embedded in ``endpoint``, which is stripped
