@@ -15,7 +15,7 @@
 
 """Define database operations for the Inventory API."""
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar, Final, TYPE_CHECKING
@@ -383,11 +383,13 @@ class RetirableManagerMixin(BaseSQLModelManager):
     on the hydration query alone, returning a short page whose ``total`` does not
     match it.
 
+    :cvar Model: The retirable model class this manager handles.
     :cvar include_retired: Whether reads through this manager see tombstones.
     :cvar retirement_subtree: The descendant models retirement cascades into,
         nearest first, each paired with the foreign key naming its own parent.
     """
 
+    Model: type[RetirableSQLModel]
     include_retired: ClassVar[bool] = False
     retirement_subtree: ClassVar[tuple[tuple[type[RetirableSQLModel], str], ...]] = ()
 
@@ -1964,6 +1966,82 @@ COLLECTION_ORDER: tuple[
     (RetirableEntityName.SERVICE, RetiredInclusiveServiceManager),
     (RetirableEntityName.NODE, RetiredInclusiveNodeManager),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionBatch:
+    """Report which tombstones one collection call selected.
+
+    :param deleted: The ids selected for collection per entity type, every type
+        present in :data:`COLLECTION_ORDER` order. A real call passed them to
+        the delete, which may remove fewer rows than listed; a dry run only
+        selected them.
+    :param remaining: Whether a type filled the limit, so the caller should run
+        another batch. It may find nothing left.
+    """
+
+    deleted: dict[RetirableEntityName, list[int]]
+    remaining: bool
+
+
+async def collect_retirable_entities(
+    session: AsyncSession,
+    *,
+    retired_before: datetime,
+    keep: Mapping[RetirableEntityName, Collection[int]],
+    limit: int,
+    dry_run: bool,
+    on_collected: Callable[[RetirableEntityName, int], None],
+) -> CollectionBatch:
+    """Delete the tombstones the retained set does not cover, deepest first.
+
+    A type that fills ``limit`` ends the walk. Deleting an ancestor cascades to
+    descendants the cap had excluded, and those ids would then be missing from
+    ``deleted`` — leaving the caller unable to clear their bookkeeping and
+    making the reported set a false record of what was removed. Stopping keeps
+    ``deleted`` exhaustive; the ancestors are collected on the next batch, which
+    ``remaining`` asks for.
+
+    :param session: The asynchronous database session to use.
+    :param retired_before: The cutoff a tombstone must predate.
+    :param keep: The ids the caller knows are still referenced, per entity type.
+    :param limit: The most entities to collect per type.
+    :param dry_run: Whether to report the eligible ids without deleting them.
+    :param on_collected: The callback given each type and the rows its delete
+        removed. It runs as each delete commits, so a later failure cannot
+        lose the report of one that already landed. An exception it raises
+        ends the walk and propagates, with that delete already committed.
+    :return: The selected ids per type, and whether to run another batch.
+    :raises ValueError: If ``limit`` is not positive, since every batch would
+        then report ``remaining`` and a batching caller would never finish.
+    :raises sqlalchemy.exc.SQLAlchemyError: When a type's delete fails, with
+        the deeper types' deletes already committed.
+    :raises Exception: Whatever ``on_collected`` raises, with that type's
+        delete already committed.
+    """
+    if limit < 1:
+        raise ValueError(f"limit must be positive, got {limit}")
+    keep_by_model = {
+        manager.Model: keep.get(name, ()) for name, manager in COLLECTION_ORDER
+    }
+    deleted: dict[RetirableEntityName, list[int]] = {
+        name: [] for name, _ in COLLECTION_ORDER
+    }
+    remaining = False
+    for name, manager in COLLECTION_ORDER:
+        entity_ids = await manager.collectible_ids(
+            session,
+            retired_before=retired_before,
+            keep_by_model=keep_by_model,
+            limit=limit,
+        )
+        deleted[name] = entity_ids
+        if entity_ids and not dry_run:
+            on_collected(name, await manager.collect(session, entity_ids))
+        if len(entity_ids) >= limit:
+            remaining = True
+            break
+    return CollectionBatch(deleted=deleted, remaining=remaining)
 
 
 class HostSystemObservationManager(BaseSQLModelChildManager):

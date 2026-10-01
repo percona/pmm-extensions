@@ -167,16 +167,10 @@ export interface paths {
      * Collect Retired Entities
      * @description Delete the tombstones the caller's retained set does not cover.
      *
-     *     Entities are walked deepest-first — table, schema, service, node — so an
-     *     interrupted run can only leave deleted descendants under a surviving
-     *     ancestor rather than an orphan.
-     *
-     *     A type that fills its ``limit`` ends the walk. Deleting an ancestor cascades
-     *     to descendants the cap had excluded, and those ids would then be missing from
-     *     ``deleted`` — leaving the caller unable to clear their bookkeeping and making
-     *     the reported set a false record of what was removed. Stopping keeps
-     *     ``deleted`` exhaustive; the ancestors are collected on the next batch, which
-     *     ``remaining`` asks for.
+     *     Entities are walked deepest-first, so an interrupted run never leaves a
+     *     live row beneath a deleted ancestor. A type that fills its ``limit`` ends
+     *     the walk, so ``deleted`` is exhaustive and ``remaining`` asks for the next
+     *     batch.
      *
      *     :param session: The asynchronous database session.
      *     :param body: The cutoff, the retained ids, and the batch controls.
