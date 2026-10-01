@@ -209,4 +209,4 @@ class TestConstructorContract:
     ) -> None:
         """Raise ``AttributeError`` for the removed identifier attribute."""
         with pytest.raises(AttributeError):
-            proxy._setting_class  # noqa: B018  # ty: ignore[unresolved-attribute]
+            proxy._setting_class  # noqa: B018
