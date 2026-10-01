@@ -15,53 +15,36 @@
 
 """Define tests for the inventory collection route."""
 
-from datetime import datetime, UTC
+import logging
 
 import pytest
-import pytest_asyncio
 from fastapi import status
 from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.inventory.constants import RetirableEntityName
 from app.inventory.crud import (
+    COLLECTION_ORDER,
+    CollectionBatch,
     HostSystemObservationManager,
-    RetiredInclusiveNodeManager,
-    RetiredInclusiveSchemaManager,
     RetiredInclusiveServiceManager,
     RetiredInclusiveTableManager,
 )
 from app.inventory.models import HostSystemObservation, Node, Schema, Service, Table
-from tests.app.inventory.conftest import retire_in_place
+from app.inventory.routes import collection
+from tests.app.inventory.conftest import (
+    CUTOFF as CUTOFF_AT,
+)
+from tests.app.inventory.conftest import (
+    EMPTY_BATCH,
+    retirable_row_counts,
+    retire_in_place,
+    RETIRED_AT,
+)
 
 COLLECT_URL = "/collection/collect"
-RETIRED_AT = datetime(2026, 1, 1, tzinfo=UTC)
-CUTOFF = "2026-02-01T00:00:00Z"
-EMPTY_BATCH = {"table": [], "schema": [], "service": [], "node": []}
-
-
-@pytest_asyncio.fixture
-async def retired_tree(
-    session: AsyncSession,
-    node: Node,
-    service: Service,
-    schema: Schema,
-    table: Table,
-) -> Node:
-    """Retire a whole node subtree well before the tests' cutoff."""
-    for entity in (table, schema, service, node):
-        await retire_in_place(session, entity, retired_at=RETIRED_AT)
-    return node
-
-
-async def _row_counts(session: AsyncSession) -> tuple[int, int, int, int]:
-    """Count every row of each retirable type, tombstones included."""
-    return (
-        await RetiredInclusiveNodeManager.count(session),
-        await RetiredInclusiveServiceManager.count(session),
-        await RetiredInclusiveSchemaManager.count(session),
-        await RetiredInclusiveTableManager.count(session),
-    )
+CUTOFF = CUTOFF_AT.isoformat()
 
 
 @pytest.mark.asyncio
@@ -75,7 +58,7 @@ async def test_dry_run_reports_without_deleting(
 
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["deleted"]["node"] == [retired_tree.id]
-    assert await _row_counts(session) == (1, 1, 1, 1)
+    assert await retirable_row_counts(session) == (1, 1, 1, 1)
 
 
 @pytest.mark.asyncio
@@ -92,7 +75,7 @@ async def test_real_run_deletes_what_the_dry_run_reported(
 
     assert real.status_code == status.HTTP_200_OK
     assert real.json()["deleted"] == dry_run.json()["deleted"]
-    assert await _row_counts(session) == (0, 0, 0, 0)
+    assert await retirable_row_counts(session) == (0, 0, 0, 0)
 
 
 @pytest.mark.asyncio
@@ -120,7 +103,7 @@ async def test_kept_service_and_its_node_survive(
         "service": [],
         "node": [],
     }
-    assert await _row_counts(session) == (1, 1, 0, 0)
+    assert await retirable_row_counts(session) == (1, 1, 0, 0)
 
 
 @pytest.mark.asyncio
@@ -133,7 +116,7 @@ async def test_cutoff_is_honoured(
     )
 
     assert response.json()["deleted"] == EMPTY_BATCH
-    assert await _row_counts(session) == (1, 1, 1, 1)
+    assert await retirable_row_counts(session) == (1, 1, 1, 1)
 
 
 @pytest.mark.asyncio
@@ -152,7 +135,7 @@ async def test_active_rows_are_never_touched(
 
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["deleted"] == EMPTY_BATCH
-    assert await _row_counts(session) == (1, 1, 1, 1)
+    assert await retirable_row_counts(session) == (1, 1, 1, 1)
 
 
 @pytest.mark.asyncio
@@ -263,7 +246,7 @@ async def test_an_interrupted_run_leaves_no_active_row_under_a_deleted_ancestor(
     with pytest.raises(RuntimeError, match="interrupted"):
         test_client.post(COLLECT_URL, json={"retired_before": CUTOFF, "dry_run": False})
 
-    assert await _row_counts(session) == (1, 1, 0, 0)
+    assert await retirable_row_counts(session) == (1, 1, 0, 0)
 
 
 @pytest.mark.asyncio
@@ -275,7 +258,7 @@ async def test_omitting_dry_run_reports_without_deleting(
 
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["deleted"]["node"] == [retired_tree.id]
-    assert await _row_counts(session) == (1, 1, 1, 1)
+    assert await retirable_row_counts(session) == (1, 1, 1, 1)
 
 
 @pytest.mark.asyncio
@@ -291,7 +274,7 @@ async def test_an_unknown_field_is_refused(
     response = test_client.post(COLLECT_URL, json={"retired_before": CUTOFF, **payload})
 
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-    assert await _row_counts(session) == (1, 1, 1, 1)
+    assert await retirable_row_counts(session) == (1, 1, 1, 1)
 
 
 @pytest.mark.asyncio
@@ -321,4 +304,133 @@ async def test_a_full_batch_stops_before_its_ancestors(
 
     assert body["deleted"] == {**EMPTY_BATCH, "table": [table.id]}
     assert body["remaining"] is True
-    assert await _row_counts(session) == (1, 1, 1, 1)
+    assert await retirable_row_counts(session) == (1, 1, 1, 1)
+
+
+ROUTE_LOGGER = collection.logger.name
+
+
+class TestCollectionAdapter:
+    """Test that the route delegates the walk and logs only real deletions."""
+
+    @pytest.mark.asyncio
+    async def test_a_real_run_logs_each_collected_type(
+        self,
+        test_client: TestClient,
+        caplog: pytest.LogCaptureFixture,
+        retired_tree: Node,
+    ) -> None:
+        """Log one line per type the delete ran on, in walk order."""
+        with caplog.at_level(logging.INFO, logger=ROUTE_LOGGER):
+            test_client.post(
+                COLLECT_URL, json={"retired_before": CUTOFF, "dry_run": False}
+            )
+
+        assert [r.getMessage() for r in caplog.records if r.name == ROUTE_LOGGER] == [
+            f"Collected 1 retired {name} entities" for name, _ in COLLECTION_ORDER
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_dry_run_logs_nothing(
+        self,
+        test_client: TestClient,
+        caplog: pytest.LogCaptureFixture,
+        retired_tree: Node,
+    ) -> None:
+        """Log no deletion when nothing was deleted."""
+        with caplog.at_level(logging.INFO, logger=ROUTE_LOGGER):
+            test_client.post(COLLECT_URL, json={"retired_before": CUTOFF})
+
+        assert not [r for r in caplog.records if r.name == ROUTE_LOGGER]
+
+    @pytest.mark.asyncio
+    async def test_a_type_with_nothing_collected_is_not_logged(
+        self,
+        test_client: TestClient,
+        session: AsyncSession,
+        caplog: pytest.LogCaptureFixture,
+        table: Table,
+    ) -> None:
+        """Log only the types a delete actually ran on."""
+        await retire_in_place(session, table, retired_at=RETIRED_AT)
+
+        with caplog.at_level(logging.INFO, logger=ROUTE_LOGGER):
+            test_client.post(
+                COLLECT_URL, json={"retired_before": CUTOFF, "dry_run": False}
+            )
+
+        assert [r.getMessage() for r in caplog.records if r.name == ROUTE_LOGGER] == [
+            "Collected 1 retired table entities"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_deletions_before_a_failure_are_still_logged(
+        self,
+        test_client: TestClient,
+        mocker: MockerFixture,
+        caplog: pytest.LogCaptureFixture,
+        retired_tree: Node,
+    ) -> None:
+        """Log each committed delete as it lands, not only once the walk ends."""
+        mocker.patch.object(
+            RetiredInclusiveServiceManager,
+            "collect",
+            autospec=True,
+            side_effect=RuntimeError("interrupted"),
+        )
+
+        with (
+            caplog.at_level(logging.INFO, logger=ROUTE_LOGGER),
+            pytest.raises(RuntimeError, match="interrupted"),
+        ):
+            test_client.post(
+                COLLECT_URL, json={"retired_before": CUTOFF, "dry_run": False}
+            )
+
+        assert [r.getMessage() for r in caplog.records if r.name == ROUTE_LOGGER] == [
+            "Collected 1 retired table entities",
+            "Collected 1 retired schema entities",
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("payload", "dry_run"),
+        [({}, True), ({"dry_run": False}, False)],
+        ids=["omitted", "explicit"],
+    )
+    async def test_the_body_is_handed_to_the_walk(
+        self,
+        test_client: TestClient,
+        mocker: MockerFixture,
+        payload: dict[str, bool],
+        *,
+        dry_run: bool,
+    ) -> None:
+        """Pass every body field through, defaulting an omitted mode to dry."""
+        walk = mocker.patch.object(
+            collection,
+            "collect_retirable_entities",
+            autospec=True,
+            return_value=CollectionBatch(deleted=EMPTY_BATCH, remaining=False),
+        )
+
+        response = test_client.post(
+            COLLECT_URL,
+            json={
+                "retired_before": CUTOFF,
+                "keep": {"node": [7]},
+                "limit": 3,
+                **payload,
+            },
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"deleted": EMPTY_BATCH, "remaining": False}
+        walk.assert_awaited_once_with(
+            mocker.ANY,
+            retired_before=CUTOFF_AT,
+            keep={RetirableEntityName.NODE: [7]},
+            limit=3,
+            dry_run=dry_run,
+            on_collected=mocker.ANY,
+        )
