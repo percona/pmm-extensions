@@ -407,13 +407,25 @@ class PendingCloses:
         """Remember ``client`` until it drains or :meth:`force_close` runs.
 
         :param client: The client whose close was deferred.
-        :return: ``True`` when registered, ``False`` when this collection is
-            already sealed and the caller must close ``client`` now.
+        :return: ``True`` when registered for deferred close, ``False`` when
+            this collection is already sealed and the caller must close
+            ``client`` now (use :meth:`track` if that immediate close must
+            stay discoverable on failure).
         """
         if self._sealed:
             return False
         self._clients[id(client)] = client
         return True
+
+    def track(self, client: "BaseRemoteAPI") -> None:
+        """Remember ``client`` until a successful close removes it.
+
+        Unlike :meth:`add`, this registers even when sealed so an immediate
+        close that fails or is cancelled stays discoverable for a later
+        :meth:`force_close`. Callers that discard a late replacement use this
+        before awaiting :meth:`~BaseRemoteAPI.close`.
+        """
+        self._clients[id(client)] = client
 
     def discard(self, client: "BaseRemoteAPI") -> None:
         """Drop ``client`` after a normal deferred close.
@@ -714,13 +726,23 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         when already registered on ``pending``.
 
         :param pending: The calling owner's deferred-close collection.
-        :return: ``True`` when registered, ``False`` when ``pending`` is
-            already sealed and the caller must close this client now.
+        :return: ``True`` when registered for deferred close, ``False`` when
+            ``pending`` is already sealed and the caller must close this
+            client now.
         """
         if not pending.add(self):
             return False
         self._pending_closes = pending
         return True
+
+    def track_pending_close(self, pending: PendingCloses) -> None:
+        """Register on ``pending`` even when sealed, for an immediate close.
+
+        Used when discarding a late replacement: the close runs now, but the
+        owner must still find us if that close fails or is cancelled.
+        """
+        pending.track(self)
+        self._pending_closes = pending
 
     @asynccontextmanager
     async def hold(self) -> AsyncGenerator[Self, None]:

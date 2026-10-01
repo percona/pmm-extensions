@@ -302,9 +302,74 @@ async def test_endpoint_rebinder_discards_replacement_when_pending_sealed(
         assert len(opened) == 1
         assert opened[0] is not old
         assert opened[0]._session is None
+        assert id(opened[0]) not in pending._clients
     finally:
         await old.close()
         extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.asyncio
+async def test_endpoint_rebinder_keeps_failed_discard_on_pending(
+    mocker: MockerFixture,
+) -> None:
+    """Track a sealed-path replacement so a failed discard close stays retryable."""
+    app = FastAPI()
+    pending = PendingCloses()
+    old = await RemoteAPI(endpoint="https://old-inv.example.org").open()
+    app.state.inventory_api = old
+    extensions_settings._set_snapshot(  # ty: ignore[unresolved-attribute]
+        {"INVENTORY_ENDPOINT": "https://new-inv.example.org"}
+    )
+    mocker.patch.object(Settings, "invalidate_client", new=AsyncMock())
+    pending.seal()
+
+    opened: list[RemoteAPI] = []
+    original_open = RemoteAPI.open
+    original_close = RemoteAPI.close
+
+    async def tracking_open(self: RemoteAPI) -> RemoteAPI:
+        api = await original_open(self)
+        opened.append(api)
+        return api
+
+    fail_once = True
+
+    async def flaky_close(self: RemoteAPI) -> None:
+        nonlocal fail_once
+        if self in opened and fail_once:
+            fail_once = False
+            raise RuntimeError("discard boom")
+        await original_close(self)
+
+    mocker.patch.object(RemoteAPI, "open", tracking_open)
+    mocker.patch.object(RemoteAPI, "close", flaky_close)
+
+    rebind = _make_remote_api_rebinder(
+        app,
+        "inventory_api",
+        extensions_settings,
+        "INVENTORY_ENDPOINT",
+        pending=pending,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="discard boom"):
+            await rebind(SnapshotChange({}, {}))
+
+        assert app.state.inventory_api is old
+        assert len(opened) == 1
+        discarded = opened[0]
+        assert discarded._session is not None
+        assert id(discarded) in pending._clients
+
+        await pending.force_close()
+        assert discarded._session is None
+        assert pending._clients == {}
+    finally:
+        mocker.stopall()
+        await old.close()
+        if opened and opened[0]._session is not None:
+            await original_close(opened[0])
+        extensions_settings._set_snapshot({})
 
 
 @pytest.mark.asyncio

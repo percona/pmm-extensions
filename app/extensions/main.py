@@ -148,6 +148,9 @@ def _make_remote_api_rebinder(
     refresher is still nested above the close ``finally``), the replacement is
     closed and discarded instead of published — sealing alone only forces the
     *outgoing* client; a post-teardown ``setattr`` would leak the new session.
+    Discarded replacements are :meth:`~app.core.requests.remote_api.BaseRemoteAPI.track_pending_close`
+    registered before that close so a failed or cancelled discard stays
+    visible to the shutdown sweep.
 
     :param app: The FastAPI application whose ``state`` holds the client.
     :param name: The ``app.state`` attribute name (``inventory_api`` /
@@ -178,11 +181,15 @@ def _make_remote_api_rebinder(
             return
         # Check after the await: teardown may have sealed while we were opening.
         if pending is not None and pending.sealed:
+            # Track before close so a failed/cancelled discard stays visible
+            # to the shutdown sweep.
+            new_api.track_pending_close(pending)
             await new_api.close()
             return
         # Register before publishing so shutdown can find the old client even
         # on the idle path, or if this task is cancelled mid-close.
         if pending is not None and not old.remember_pending_close(pending):
+            new_api.track_pending_close(pending)
             await new_api.close()
             return
         setattr(app.state, name, new_api)
@@ -374,11 +381,14 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     at startup) on shutdown, so a client a rebind callback swapped in mid-run is
     the one that gets closed. Clients a rebind retired while still held are
     tracked on ``app.state.retired_remote_apis`` and force-closed here if their
-    holders never unwound.
+    holders never unwound. The override refresher is drained *before* that
+    close so a sealed rebind cannot open a replacement while the sweep runs;
+    discarded replacements are still owner-tracked until their close succeeds.
 
     :param app: The FastAPI application instance.
     :return: ``None``, once the lifespans have been entered.
     """
+    clients_opened = False
     async with extensions_overrides_lifespan(app):
         await extensions_startup()
         app.state.inventory_api = await RemoteAPI(
@@ -393,11 +403,12 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             ssl_keyfile=tasks_settings.SSL_KEYFILE,
             ssl_certfile=tasks_settings.SSL_CERTFILE,
         ).open()
-        try:
-            async with default_lifespan(app):
-                yield
-        finally:
-            await _close_app_state_remote_apis(app)
+        clients_opened = True
+        async with default_lifespan(app):
+            yield
+    # Refresher drained above: sealed rebinds can no longer race this sweep.
+    if clients_opened:
+        await _close_app_state_remote_apis(app)
 
 
 lifespan = extensions_lifespan
