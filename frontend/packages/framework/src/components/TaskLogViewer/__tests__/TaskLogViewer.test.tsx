@@ -232,6 +232,35 @@ describe('TaskLogViewer', () => {
     ]);
   });
 
+  it('reloads a resumed log after its finish when no task status is given', async () => {
+    render(
+      <QueryWrapper>
+        <TaskLogViewer taskHistoryId="7" />
+      </QueryWrapper>,
+    );
+    await flushPromises();
+
+    act(() => {
+      getHandle('7').pushMessage({ msg: 'line-1\n', step: 'setup', type: 'stdout', offset: 1 });
+      getHandle('7').pushNamed('extensions-error', {
+        code: 409,
+        detail: 'Task history is running.',
+      });
+    });
+    await waitFor(() => expect(logFetchUrls()).toHaveLength(2), { timeout: 3000 });
+    await flushPromises();
+    act(() => {
+      getHandle('7').pushNamed('finish', { status: 'success' });
+    });
+
+    await waitFor(() => expect(logFetchUrls()).toHaveLength(3));
+    expect(logFetchUrls()).toEqual([
+      '/stream-logs/7?tail=1000',
+      '/stream-logs/7?tail=1000&setup_stdout_offset=1',
+      '/stream-logs/7?tail=1000',
+    ]);
+  });
+
   it('reloads a live log whose finish carried a non-terminal status', async () => {
     const { rerender } = render(
       <QueryWrapper>

@@ -306,10 +306,13 @@ def test_logs_event_stream_upstream_409_for_a_run_that_died_finishes_it(
     until a sync settles it; reconciling here ends the viewer's stream with
     that terminal status instead of spending its retry budget.
     """
-    mock_tasks_client.stream.side_effect = HTTPException(
-        status_code=HTTP_409_CONFLICT,
-        detail="Allocation a has not started a task yet",
-    )
+    mock_tasks_client.stream.side_effect = [
+        HTTPException(
+            status_code=HTTP_409_CONFLICT,
+            detail="Allocation a has not started a task yet",
+        ),
+        mock_stream_logs_generator([]),
+    ]
     mock_tasks_client.post.return_value = task_history_response.model_dump() | {
         "status": TaskHistoryStatusEnum.LOST
     }
@@ -322,6 +325,36 @@ def test_logs_event_stream_upstream_409_for_a_run_that_died_finishes_it(
     mock_tasks_client.post.assert_called_once_with(
         f"/history/{task_history_response.id}/sync/"
     )
+
+
+def test_logs_event_stream_upstream_409_for_a_run_that_finished_reads_its_logs(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert a run that finished between the 409 and the sync streams its log.
+
+    A short run can complete in that window; finishing without re-reading
+    would end the viewer's live log empty, and the viewer keeps a cleanly
+    finished live log as complete.
+    """
+    mock_tasks_client.stream.side_effect = [
+        HTTPException(
+            status_code=HTTP_409_CONFLICT,
+            detail="Allocation a has not started a task yet",
+        ),
+        mock_stream_logs_generator([b'{"msg": "persisted line"}']),
+    ]
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (None, '{"msg": "persisted line"}'),
+        ("finish", json.dumps({"status": TaskHistoryStatusEnum.SUCCESS})),
+    ]
+    logs_path = f"/history/{task_history_response.id}/logs/"
+    assert [call.args[0] for call in mock_tasks_client.stream.call_args_list] == [
+        logs_path,
+        logs_path,
+    ]
 
 
 def test_logs_event_stream_upstream_410_is_not_reconciled(

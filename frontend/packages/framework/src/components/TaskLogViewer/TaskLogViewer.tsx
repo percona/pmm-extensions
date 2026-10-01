@@ -207,9 +207,14 @@ export function TaskLogViewer({ taskHistoryId, taskStatus, height = 480 }: TaskL
       setLiveLog(running ? { historyId: taskHistoryId, state: 'open' } : null);
       return;
     }
-    // Only the stream opened while running is tracked, and it settles once:
-    // the reload that follows an `ended` stream must not be taken for it.
+    // Only the stream opened while running is tracked, plus one that resumed
+    // where no status is polled, and it settles once: the reload that follows
+    // an `ended` stream must not be taken for it.
     if (streamStatus === 'finished' || streamStatus === 'error') {
+      if (liveLogState === undefined && resumed && streamStatus === 'finished') {
+        setLiveLog({ historyId: taskHistoryId, state: 'ended' });
+        return;
+      }
       if (liveLogState !== 'open') {
         return;
       }
