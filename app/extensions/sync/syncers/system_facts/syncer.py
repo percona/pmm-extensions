@@ -644,17 +644,19 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
         entity_type: SyncInventoryEntityTypeEnum,
         created_entity: CreatedEntity | None,
     ) -> Sequence[CreatedEntityBase]:
-        """Narrow the inventory's children to the first-measurement candidates.
+        """Open no node item up front, leaving each one to be opened as it is recorded.
 
-        Without it the run would open an item for every node and fail each one it
-        never visits.
+        A node item counts against the host's retry budget once it is finished, and
+        an interrupted run fails every item it left open. Opening an item only when
+        the host's probe has ended keeps a run that stops early from charging the
+        hosts it never probed.
 
         :param entity_type: The type of the current entity.
         :param created_entity: The current entity, or ``None`` at inventory level.
-        :return: The child entities to synchronize.
+        :return: No children at inventory level; the base children otherwise.
         """
         if entity_type == SyncInventoryEntityTypeEnum.INVENTORY:
-            return await self.get_unmeasured_candidates()
+            return []
         return await super().get_children_entities(entity_type, created_entity)
 
     async def _probe(self, node: CreatedNode, limit: asyncio.Semaphore) -> Node | None:

@@ -40,7 +40,10 @@ from app.extensions.models import (
     SyncItem,
     SyncStatusEnum,
 )
-from app.extensions.sync.exceptions import IncompleteObservationsReadError
+from app.extensions.sync.exceptions import (
+    IncompleteObservationsReadError,
+    SyncFailError,
+)
 from app.extensions.sync.models import TaskRunResult
 from app.extensions.sync.syncers.system_facts.syncer import (
     first_measurement_due,
@@ -1267,16 +1270,21 @@ class TestUnmeasuredHostFactsPass:
         ],
     )
     async def test_an_unreadable_observation_list_dispatches_nothing(
-        self, session, tasks_api, dispatch, pages, error
+        self, session, tasks_api, dispatch, alerts, pages, error
     ):
-        """Fail closed: an observation read that cannot be trusted probes no host."""
+        """Fail closed: an untrustworthy observation read fails the pass, probing none.
+
+        ``break_on_error`` surfaces the failure so its cause can be asserted.
+        """
         fake = FakeInventory([_node(1)], observation_pages=pages)
         inventory_api = AsyncMock(spec=RemoteAPI)
         inventory_api.get.side_effect = fake.get
-        with pytest.raises(error):
-            await _run_pass(session, inventory_api, tasks_api)
+        with pytest.raises(SyncFailError) as failure:
+            await _run_pass(session, inventory_api, tasks_api, break_on_error=True)
 
+        assert isinstance(failure.value.__cause__, error)
         dispatch.assert_not_awaited()
+        alerts.assert_awaited_once()
         (run,) = await SyncInstanceManager.list(
             session, syncer=UnmeasuredHostFactsSyncer.get_name()
         )
@@ -1509,6 +1517,36 @@ class TestConcurrentFirstMeasurement:
         assert await _statuses(session, run_id, NODE) == {
             FIRST_NODE_ID: SyncStatusEnum.SUCCESS,
             FIRST_NODE_ID + 1: SyncStatusEnum.SUCCESS,
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_interrupted_pass_charges_no_host_it_did_not_record(
+        self, session, inventory_api, tasks_api, fake_inventory, mocker
+    ):
+        """Leave no ledger row for hosts still queued or in flight at an interruption.
+
+        Ten candidates exceed the concurrency cap, so two never start; the first
+        host's failure stops the pass under ``break_on_error`` while the others'
+        probes are still running.
+        """
+        fake_inventory.nodes[:] = [_node(index) for index in range(1, 11)]
+
+        async def probe(self, **meta: Any) -> TaskRunResult:
+            if meta["target"] == "probe-host-1":
+                raise TimeoutError("Task run-python timed out")
+            await asyncio.Event().wait()
+            return TaskRunResult(1, MEASURED_STDOUT)
+
+        mocker.patch.object(UnmeasuredHostFactsSyncer, "wait_for_task_output", probe)
+
+        with pytest.raises(SyncFailError):
+            await _run_pass(session, inventory_api, tasks_api, break_on_error=True)
+
+        (run,) = await SyncInstanceManager.list(
+            session, syncer=UnmeasuredHostFactsSyncer.get_name()
+        )
+        assert await _statuses(session, run.id, NODE) == {
+            FIRST_NODE_ID: SyncStatusEnum.FAILED
         }
 
     @pytest.mark.asyncio
