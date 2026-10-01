@@ -1,0 +1,105 @@
+# Holds NOMAD_VERSION to the feature-build client's tools/nomad, which only an
+# amd64 host can read without emulation (sidecar/pmm-fb/README.md "Caveats").
+
+name: PMM FB Nomad pin
+
+on:
+  pull_request:
+    branches:
+      - pmm
+    paths:
+      - 'sidecar/pmm-fb/**'
+      - 'scripts/check_pmm_fb_pins.py'
+      - '.github/workflows/pmm-fb-nomad-pin.yaml'
+      - 'tests/sidecar/test_pmm_fb_nomad_pin.py'
+      - 'tests/scripts/test_check_pmm_fb_pins.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pmm-fb-nomad-pin-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  nomad-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
+        with:
+          python-version: "3.11"
+
+      # Only what the pin reader and guard tests import; tests/conftest.py
+      # needs cryptography at collection.
+      - name: Install the pin reader's and guard tests' dependencies
+        run: pip install pyyaml==6.0.2 pytest==9.1.0 cryptography==50.0.0
+
+      - name: Check the committed pins name one feature build
+        run: python3 scripts/check_pmm_fb_pins.py
+
+      # ci.yml runs only for main, where sidecar/pmm-fb/ does not exist.
+      - name: Run the witness guard and pin-reader tests
+        run: python3 -m pytest tests/sidecar/test_pmm_fb_nomad_pin.py tests/scripts/test_check_pmm_fb_pins.py -q
+
+      - name: Resolve the committed pins
+        id: pins
+        run: |
+          tag=$(python3 scripts/check_pmm_fb_pins.py --print PMM_FB_TAG)
+          nomad=$(python3 scripts/check_pmm_fb_pins.py --print NOMAD_VERSION)
+          if [ -z "${tag}" ] || [ -z "${nomad}" ]; then
+              echo "::error::could not resolve the committed pins (PMM_FB_TAG='${tag}', NOMAD_VERSION='${nomad}')"
+              exit 1
+          fi
+          # Base-branch pins, empty when the base carries no compose.yaml.
+          base_tag=""
+          base_nomad=""
+          if git fetch --no-tags --depth=1 origin "${GITHUB_BASE_REF}" \
+              && git show "FETCH_HEAD:sidecar/pmm-fb/compose.yaml" > "${RUNNER_TEMP}/base-compose.yaml" 2>/dev/null; then
+              base_tag=$(python3 scripts/check_pmm_fb_pins.py --print PMM_FB_TAG "${RUNNER_TEMP}/base-compose.yaml" || true)
+              base_nomad=$(python3 scripts/check_pmm_fb_pins.py --print NOMAD_VERSION "${RUNNER_TEMP}/base-compose.yaml" || true)
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "nomad=${nomad}" >> "$GITHUB_OUTPUT"
+          echo "base_tag=${base_tag}" >> "$GITHUB_OUTPUT"
+          echo "base_nomad=${base_nomad}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify NOMAD_VERSION against the feature-build client
+        env:
+          TAG: ${{ steps.pins.outputs.tag }}
+          NOMAD: ${{ steps.pins.outputs.nomad }}
+          BASE_TAG: ${{ steps.pins.outputs.base_tag }}
+          BASE_NOMAD: ${{ steps.pins.outputs.base_nomad }}
+        run: |
+          IMG="docker.io/perconalab/pmm-client-fb:${TAG}"
+          # A manifest probe first would spend a second Docker Hub request.
+          if ! pull=$(docker pull --quiet "${IMG}" 2>&1); then
+              # Only a collected tag may skip; every other pull failure goes red.
+              case "${pull}" in
+                  *"manifest unknown"*|*MANIFEST_UNKNOWN*|*"manifest for "*"not found"*)
+                      # Skip only pins inherited unchanged (sidecar/pmm-fb/README.md "Caveats").
+                      if [ -n "${BASE_TAG}" ] && [ "${TAG}" = "${BASE_TAG}" ] \
+                          && [ "${NOMAD}" = "${BASE_NOMAD}" ]; then
+                          echo "::warning::${IMG} is no longer published, so NOMAD_VERSION=${NOMAD} is unverified here: ${pull}"
+                          exit 0
+                      fi
+                      echo "::error::${IMG} is not published, and this PR changed the pin it would have to verify (PMM_FB_TAG=${TAG}, NOMAD_VERSION=${NOMAD}): ${pull}"
+                      exit 1
+                      ;;
+              esac
+              echo "::error::could not reach ${IMG}, so NOMAD_VERSION=${NOMAD} was not verified: ${pull}"
+              exit 1
+          fi
+          if ! raw=$(docker run --rm --entrypoint /usr/local/percona/pmm/tools/nomad "${IMG}" version 2>&1); then
+              echo "::error::could not read tools/nomad from ${IMG}: ${raw}"
+              exit 1
+          fi
+          version=$(printf '%s\n' "${raw}" | head -1)
+          if [ "${version}" != "Nomad v${NOMAD}" ]; then
+              echo "::error::${IMG} ships '${version}', but compose.yaml pins NOMAD_VERSION=${NOMAD}; update NOMAD_VERSION and NOMAD_VERSION_FB_TAG together"
+              exit 1
+          fi
+          echo "${IMG} ships ${version}, matching the committed NOMAD_VERSION"

@@ -1,0 +1,83 @@
+# Image for the extensions-mysql target node; see mysql-target.md. Built with the
+# parent directory (sidecar/) as context — compose.yaml sets that.
+ARG PMM_FB_TAG
+# The feature-build client exists only for amd64. An arm64 engine passes the
+# released multi-arch client instead (bootstrap.sh writes it into .env); empty
+# selects the feature-build client at PMM_FB_TAG. See README.md § Caveats.
+ARG PMM_CLIENT_IMAGE
+FROM ${PMM_CLIENT_IMAGE:-docker.io/perconalab/pmm-client-fb:${PMM_FB_TAG}} AS pmmclient
+
+FROM docker.io/library/oraclelinux:9
+ARG NOMAD_VERSION
+
+# The percona-release RPM is signed by a key no repo has taught rpm about yet,
+# so this one install skips the check; it then imports the keys that verify
+# everything below. Same ps84lts + pt choice as
+# build/ansible/ansible-mysql-el-test-instance.yaml, plus XtraBackup.
+RUN dnf install -y --nogpgcheck https://repo.percona.com/yum/percona-release-latest.noarch.rpm \
+    && percona-release setup -y ps84lts \
+    && percona-release enable pt \
+    && percona-release enable pxb-84-lts
+
+# mydumper is not in the Percona repos; it ships its own
+RUN rpm --import 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x79EA15C0E82E34BA' \
+    && printf '%s\n' '[mydumper]' 'name=MyDumper' \
+        'baseurl=https://mydumper.github.io/mydumper/repo/yum/$releasever' \
+        'enabled=1' 'gpgcheck=1' > /etc/yum.repos.d/mydumper.repo
+
+# python3-pip and gzip are for the dispatched run-python task, which builds a
+# venv and gunzips its result; percona-server-server, percona-toolkit and
+# python3-PyMySQL mirror the ansible playbook's set. zstd, lz4, gnupg2 and rsync
+# are named though they already arrive transitively, so a shift upstream cannot
+# quietly drop a compression, encryption or upload option the forms offer.
+# sudo is not in the base image, but a builtin snippet declaring `sudo: always`
+# prepends it regardless, as does any snippet once "Run with sudo" is on.
+# Without the binary those die on `env: 'sudo': No such file or directory`
+# rather than on a privilege they already hold — raw_exec runs tasks as root
+# on this node.
+RUN dnf install -y \
+        percona-server-server percona-toolkit python3-PyMySQL \
+        percona-xtrabackup-84 mydumper \
+        python3-pip gzip tar hostname procps-ng iproute \
+        zstd lz4 gnupg2 rsync sudo \
+    && dnf clean all
+
+# The client's tree runs unchanged on OL9. Its tools/nomad must speak RPC to
+# pmm-server's, so a client whose Nomad is not the version compose says the
+# server ships is refused here rather than misbehaving at placement time.
+COPY --from=pmmclient /usr/local/percona/pmm /usr/local/percona/pmm
+RUN [ -z "${NOMAD_VERSION}" ] \
+    || /usr/local/percona/pmm/tools/nomad version | head -1 | grep -qx "Nomad v${NOMAD_VERSION}" \
+    || { echo "tools/nomad is '$(/usr/local/percona/pmm/tools/nomad version | head -1)', not v${NOMAD_VERSION}: this client cannot pair with the feature-build server" >&2; exit 1; }
+
+# On a released client the assertion above is vacuous, so NOMAD_VERSION_FB_TAG
+# must name this build's PMM_FB_TAG instead. See README.md "Caveats".
+ARG PMM_FB_TAG
+ARG PMM_CLIENT_IMAGE
+ARG NOMAD_VERSION_FB_TAG
+RUN [ -z "${PMM_CLIENT_IMAGE}" ] || [ -z "${NOMAD_VERSION}" ] \
+    || { [ -n "${PMM_FB_TAG}" ] && [ "${PMM_FB_TAG}" = "${NOMAD_VERSION_FB_TAG}" ]; } \
+    || { if [ -z "${PMM_FB_TAG}" ] && [ -z "${NOMAD_VERSION_FB_TAG}" ]; then \
+         echo "both PMM_FB_TAG and NOMAD_VERSION_FB_TAG are blank" >&2; \
+       else \
+         echo "NOMAD_VERSION=${NOMAD_VERSION} was read from PMM_FB_TAG=${NOMAD_VERSION_FB_TAG}, but this build pins PMM_FB_TAG=${PMM_FB_TAG} and copies its client from ${PMM_CLIENT_IMAGE}, whose Nomad cannot move with the feature build: build extensions-mysql on an amd64 engine to read the new client's tools/nomad, then update NOMAD_VERSION and NOMAD_VERSION_FB_TAG together" >&2; \
+       fi; \
+       exit 1; }
+COPY clone3_probe.py /usr/local/bin/clone3_probe.py
+ENV PATH="/usr/local/percona/pmm/bin:${PATH}"
+
+# Baked at build time so first boot needs no download
+ADD https://github.com/datacharmer/test_db/releases/download/v1.0.7/test_db-1.0.7.tar.gz /tmp/
+RUN tar -xzf /tmp/test_db-1.0.7.tar.gz -C /opt && rm -f /tmp/test_db-1.0.7.tar.gz
+
+COPY pmm-fb/mysql-entrypoint.sh /usr/local/bin/mysql-entrypoint.sh
+
+EXPOSE 3306
+
+# Health is MySQL readiness only, deliberately: folding PMM registration in
+# would make a registration hiccup read as "the database is down". The start
+# period covers --initialize-insecure plus the employees import.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=180s --retries=12 \
+    CMD mysqladmin --defaults-file=/root/.my.cnf --protocol=socket ping || exit 1
+
+ENTRYPOINT ["/usr/local/bin/mysql-entrypoint.sh"]

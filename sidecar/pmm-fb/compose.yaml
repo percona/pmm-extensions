@@ -1,0 +1,200 @@
+# PMM + PMM Extensions feature-build topology (branch `pmm`).
+#
+# pmm-server is the PMM feature build carrying the PMM Extensions frontend and the
+# PMM_ENABLE_EXTENSIONS PostgreSQL exposure (Percona-Lab/pmm-submodules#4500 =
+# percona/pmm main at 7a20dfff5, where PR #5992 merged, on top of the
+# exposure from PRs #5653 + #5700): its entrypoint provisions the
+# network-reachable low-privilege `pmm_extensions` role and `pmm_extensions`
+# database.
+#
+# extensions-sidecar is the app-restricted consolidated side-car, built and published
+# from main under a suffix-less tag — the build emits a single artifact. See
+# pmm-fb/README.md "Which image to pin".
+#
+# ./bootstrap.sh is only for the `mysql` profile — it generates the .env holding
+# that profile's three test-fixture passwords, and the pair below needs none of
+# them. PMM owns the four secrets PMM Extensions reads from disk: it writes them into the
+# pmm-extensions volume, which the side-car reads through SECRETS_DIR, and it serves PMM Extensions
+# under its own /extensions prefix. The Grafana service-account token and the encryption
+# key are the side-car's own — it resolves and persists those itself. PMM Extensions'
+# remaining settings come from the profile baked into the image, with the
+# per-deployment values below overriding it — environment outranks the file.
+#
+# extensions-mysql is the task-execution target, behind the `mysql` profile; see
+# mysql-target.md.
+#
+# pmm-server's nginx resolves the side-car by name at request time, so neither
+# container needs a fixed address and either may be recreated freely. extensions-mysql
+# keeps its pin for an unrelated reason — see the anchor comment below.
+#
+# No per-deployment credentials are committed: bootstrap.sh generates those
+# into the gitignored .env; see README.md. The one credential spelled out below
+# is PMM's stock admin:admin, which the feature build ships.
+#
+# pmm-server and extensions-sidecar pin linux/amd64: nothing publishes an arm64 variant
+# of the feature builds, the released percona/pmm-server, or the side-car image,
+# and the pins state that instead of leaving an arm64 engine to discover it as a
+# pull failure. extensions-mysql is built, so its platform follows the engine — see the
+# service's own comment and README.md § Caveats.
+
+name: pmm-extensions-fb
+
+# Registered into PMM inventory and bound on the container — PMM Extensions hands the
+# registered address to Mydumper, so the two must not drift
+x-extensions-mysql-address: &extensions_mysql_address 172.28.9.40
+
+services:
+  pmm-server:
+    # Default repeated on extensions-mysql's PMM_FB_TAG build arg — a repin edits both
+    image: docker.io/perconalab/pmm-server-fb:${PMM_FB_TAG:-PR-4500-622e3f3}
+    platform: linux/amd64
+    # The image ships start_period 25s with 3 retries at 4s, so it is marked
+    # unhealthy around 37s while a cold start needs appreciably longer to first
+    # pass readyz — and extensions-sidecar's service_healthy dependency turns that into
+    # an aborted bring-up rather than a wait. The build once widened this itself;
+    # the PR that did was closed unmerged, so the harness sets it here instead.
+    # Only the start period is set: Docker merges the healthcheck field by field,
+    # so the probe and the other timings stay whatever the pinned image ships and
+    # cannot go stale against a repin.
+    healthcheck:
+      start_period: 300s
+    environment:
+      PMM_ENABLE_EXTENSIONS: "1"
+      # Bare host:port — the entrypoint rejects a scheme or a trailing path, and
+      # the failure surfaces as a routing fault rather than a config error
+      PMM_EXTENSIONS_ADDRESS: extensions-sidecar:9000
+      PMM_ENABLE_NOMAD: "1" # PMM Extensions task execution runs through PMM's embedded Nomad…
+      PMM_PUBLIC_ADDRESS: pmm-server # …which silently refuses to start without a public address
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - pmm-data:/srv
+      # The only volume crossing the boundary; pmm-data stays PMM's alone
+      - pmm-extensions:/srv/extensions
+    networks:
+      - extensions-pmm
+
+  extensions-sidecar:
+    image: docker.io/percona/percona-sep:a4060c4dceea7656c21450454b89e9d46984050b
+    platform: linux/amd64
+    # service_healthy, not service_started: PMM Extensions builds its settings once, at
+    # process start, so a side-car released before pmm-server has written the
+    # four secret files exits on the missing SECRET_KEY. Health is what says they
+    # exist; the start period above is what gives a cold start room to get there.
+    depends_on:
+      pmm-server:
+        condition: service_healthy
+    # The image runs as uid/gid 1001 and PMM writes the files 0640 group 0 under
+    # a setgid directory, so group 0 membership is what makes them readable
+    group_add: ["0"]
+    environment:
+      SECRETS_DIR: /run/secrets/extensions
+      # The harness's only Nomad executor runs inside pmm-server and shares its
+      # network namespace, so it resolves this compose service name; a real
+      # deployment's PMM Client nodes could not. The /extensions prefix is load-bearing:
+      # download URLs are joined onto this path rather than replacing it.
+      BASE_URL: http://extensions-sidecar:9000/extensions
+    ports:
+      - "127.0.0.1:9000:9000" # extensions API (direct host access for probing)
+      - "127.0.0.1:9001:9001" # inventory API
+      - "127.0.0.1:9002:9002" # tasks API
+    volumes:
+      - pmm-extensions:/run/secrets/extensions:ro
+      # PMM Extensions' own writable state, holding the Grafana service-account token and
+      # the encryption key, both resolved at start and persisted here so a
+      # recreate reuses them. The two are not equally replaceable: a lost token
+      # costs one re-mint, a lost key makes every encrypted settings override
+      # permanently unreadable — so once any exist, dropping this volume alone
+      # refuses to start rather than minting over them.
+      - pmm-extensions-state:/home/extensions/state
+    networks:
+      - extensions-pmm
+
+  extensions-mysql:
+    profiles: ["mysql"]
+    # Built, unlike the two above, and its oraclelinux base ships arm64. On an
+    # arm64 engine bootstrap.sh writes linux/arm64 plus the released multi-arch
+    # pmm-client into .env and the executor runs natively; every other engine
+    # keeps the amd64 feature-build client. The executor is the one service
+    # that cannot be emulated under QEMU — README.md § Caveats.
+    platform: ${EXTENSIONS_MYSQL_PLATFORM:-linux/amd64}
+    build:
+      # The parent, so the build can copy sidecar/clone3_probe.py, which
+      # bootstrap.sh runs from the host and the entrypoint runs in the image
+      context: ..
+      dockerfile: pmm-fb/Containerfile.mysql
+      args:
+        # A repin edits PMM_FB_TAG here and on pmm-server, and NOMAD_VERSION
+        # with whatever `tools/nomad version` that build ships; README.md
+        # "Caveats" covers which build-time guard applies to each client.
+        PMM_FB_TAG: ${PMM_FB_TAG:-PR-4500-622e3f3}
+        NOMAD_VERSION: ${NOMAD_VERSION:-2.0.5}
+        # The feature build NOMAD_VERSION above was read from. Always equal to
+        # PMM_FB_TAG in committed state; the pin checker enforces that.
+        NOMAD_VERSION_FB_TAG: ${NOMAD_VERSION_FB_TAG:-PR-4500-622e3f3}
+        # Empty selects the amd64 feature-build client at PMM_FB_TAG
+        PMM_CLIENT_IMAGE: ${EXTENSIONS_MYSQL_PMM_CLIENT_IMAGE:-}
+    # service_started, not service_healthy: this node consumes none of the PMM Extensions
+    # secret provisioning pmm-server's health now gates on, and ordering is all
+    # it needs — pmm-managed starts answering registration requests later still.
+    # On first registration the entrypoint retries `pmm-agent setup` for 60s;
+    # recreates preserve that registration and instead wait up to 180s for
+    # `pmm-admin list` to confirm the reconnected agent.
+    depends_on:
+      pmm-server:
+        condition: service_started
+    hostname: extensions-mysql
+    environment:
+      # Passed through unset rather than guarded with :? here. Compose
+      # interpolates every service at parse time whatever profile is active, so
+      # a :? on this profile-gated service made ./bootstrap.sh a prerequisite of
+      # the pmm-server + extensions-sidecar bring-up too, which needs none of these.
+      # mysql-entrypoint.sh's require_secrets runs unconditionally at container
+      # start and carries the same message, so the mysql path stays guarded.
+      EXTENSIONS_MYSQL_ROOT_PASSWORD: ${EXTENSIONS_MYSQL_ROOT_PASSWORD:-}
+      EXTENSIONS_MYSQL_BACKUP_PASSWORD: ${EXTENSIONS_MYSQL_BACKUP_PASSWORD:-}
+      EXTENSIONS_MYSQL_PMM_PASSWORD: ${EXTENSIONS_MYSQL_PMM_PASSWORD:-}
+      PMM_AGENT_SERVER_ADDRESS: pmm-server:8443
+      PMM_AGENT_SERVER_USERNAME: admin
+      PMM_AGENT_SERVER_PASSWORD: admin
+      PMM_AGENT_SERVER_INSECURE_TLS: "1"
+      PMM_AGENT_CONFIG_FILE: /usr/local/percona/pmm/config/pmm-agent.yaml
+      PMM_AGENT_SETUP_NODE_NAME: extensions-mysql
+      PMM_AGENT_SETUP_NODE_ADDRESS: *extensions_mysql_address
+      PMM_AGENT_SETUP_NODE_TYPE: container
+      PMM_AGENT_PATHS_NOMAD_DATA_DIR: /var/lib/nomad
+      # Skips the entrypoint's clone3 probe; bootstrap.sh honours the same name
+      EXTENSIONS_FB_SKIP_CLONE3_CHECK: ${EXTENSIONS_FB_SKIP_CLONE3_CHECK:-0}
+    # Nomad's client fingerprinter needs cgroup control, and raw_exec places its
+    # tasks into cgroups the client creates. Measured on this topology, and a
+    # harness-only concession — the side-car topology needs neither.
+    privileged: true
+    cgroup: host
+    volumes:
+      - extensions-mysql-data:/var/lib/mysql
+      # Keeping pmm-agent.yaml off the image layer keeps the node and service
+      # ids stable across a recreate; PMM Extensions matches inventory nodes by external
+      # id, so churning them orphans catalogued backup rows
+      - extensions-mysql-pmm-config:/usr/local/percona/pmm/config
+      - extensions-mysql-nomad:/var/lib/nomad
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    networks:
+      extensions-pmm:
+        ipv4_address: *extensions_mysql_address
+
+networks:
+  extensions-pmm:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.9.0/24
+
+volumes:
+  pmm-data:
+  # Project-scoped deliberately: an unqualified name: would collide with a real
+  # PMM install's pmm-extensions volume on the same host
+  pmm-extensions:
+  pmm-extensions-state:
+  extensions-mysql-data:
+  extensions-mysql-pmm-config:
+  extensions-mysql-nomad:

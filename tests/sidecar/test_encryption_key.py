@@ -695,6 +695,10 @@ def test_a_peer_holding_the_state_lock_defers_then_refuses(fresh_deployment: Pat
     assert not result.stdout.strip()
     assert elapsed >= LOCK_WAIT_SECONDS
     assert str(lock_path) in result.stderr
+    # What proves the wait was bounded rather than merely long: the refusal
+    # names the bound it derived, so defeating the derivation fails here even on
+    # a host whose startup dwarfs the wait
+    assert f"for over {LOCK_WAIT_SECONDS:g}s" in result.stderr
     assert not persisted_key_path(fresh_deployment).exists()
 
 
