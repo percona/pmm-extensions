@@ -1486,6 +1486,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
 
         :param job_id: The Nomad job whose evaluations to inspect.
         :return: ``True`` while Nomad may still place an allocation for the job.
+        :raises BaseNomadException: When Nomad cannot list the job's evaluations.
         """
         return any(
             evaluation.get("Status") == NomadAllocStatusEnum.PENDING
@@ -2727,6 +2728,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :raises JobNotFoundError: When the job itself is gone.
         :raises AllocationNotFoundError: When the job has no allocation and nothing
             is pending that would produce one.
+        :raises KeyError: When the history's tracking carries no job or
+            evaluation id.
+        :raises BaseNomadException: When a Nomad read fails for another reason,
+            including the job vanishing between its lookup and its evaluations.
         """
         job_id, eval_id = self.job_eval_ids_for_stream_logs(queue_item)
         try:

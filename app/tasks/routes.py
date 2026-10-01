@@ -566,6 +566,8 @@ async def stream_task_history_logs(
     :return: A streaming response of newline-delimited JSON log lines.
     :raises HTTPConflictException: When the history is pending, or running but
         not started by the executor yet.
+    :raises TaskDataNotFoundInExecutorError: When the executor's job or
+        allocation for a running history is gone, answered with 410.
     """
     logger.debug("Requesting logs for task history %s", task_history.id)
     if task_history.status == TaskHistoryStatusEnum.PENDING:

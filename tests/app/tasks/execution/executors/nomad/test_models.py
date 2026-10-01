@@ -1854,6 +1854,7 @@ class TestPreflightStreamLogs:
             executor.preflight_stream_logs(_build_queue_item())
 
         mock_backend.job.get_evaluations.assert_called_once_with("job-1")
+        mock_backend.allocations.get_allocations.assert_called_once()
 
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     def test_no_allocation_and_nothing_pending_stays_gone(self, mock_nomad_cls):

@@ -401,6 +401,8 @@ export interface paths {
      *     :return: A streaming response of newline-delimited JSON log lines.
      *     :raises HTTPConflictException: When the history is pending, or running but
      *         not started by the executor yet.
+     *     :raises TaskDataNotFoundInExecutorError: When the executor's job or
+     *         allocation for a running history is gone, answered with 410.
      */
     get: operations['tasks_stream_task_history_logs_history__task_history_id__logs__get'];
     put?: never;
