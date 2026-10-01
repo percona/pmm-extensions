@@ -529,7 +529,7 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
 
         Fails closed: an answer smaller than the inventory holds would make measured
         hosts look new and probe them again, so every page is validated strictly and
-        a walk that ends short of the reported total raises.
+        a walk that ends short of the greatest total any page reported raises.
 
         :return: The observed node ids.
         :raises pydantic.ValidationError: If a page is not a valid observation page.
@@ -550,7 +550,7 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
                     "/nodes/system-observations", params=pagination.model_dump()
                 )
             )
-            total = page.total
+            total = max(total, page.total)
             return page
 
         observations = await fetch_all_items(get_page)
@@ -679,7 +679,8 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
         items progressing, so the stale-run reclaim never mistakes a long pass for an
         abandoned one, and a host's observation is written as soon as it is measured.
         The recording itself stays on this coroutine, the only one using the session.
-        A probe still in flight when the walk is interrupted is cancelled.
+        A probe still in flight when the walk is interrupted is cancelled and
+        awaited before the method returns.
         """
         candidates = await self.get_unmeasured_candidates()
         limit = asyncio.Semaphore(self.FIRST_MEASUREMENT_CONCURRENCY)
@@ -698,6 +699,8 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
         finally:
             for task in pending:
                 task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
     async def fetch_node(self, created_node: CreatedNode) -> Node | None:
         """Replay the node's probe outcome, raising the error a failed probe raised.

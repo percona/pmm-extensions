@@ -1259,6 +1259,13 @@ class TestUnmeasuredHostFactsPass:
                 ],
                 IncompleteObservationsReadError,
             ),
+            (
+                [
+                    _page([_observation(FIRST_NODE_ID)], total=3),
+                    _page([_observation(FIRST_NODE_ID + 1)], total=2),
+                ],
+                IncompleteObservationsReadError,
+            ),
         ],
         ids=[
             "transport-error",
@@ -1267,6 +1274,7 @@ class TestUnmeasuredHostFactsPass:
             "no-items",
             "malformed-second-page",
             "short-of-total",
+            "decreasing-total",
         ],
     )
     async def test_an_unreadable_observation_list_dispatches_nothing(
@@ -1548,6 +1556,47 @@ class TestConcurrentFirstMeasurement:
         assert await _statuses(session, run.id, NODE) == {
             FIRST_NODE_ID: SyncStatusEnum.FAILED
         }
+
+    @pytest.mark.asyncio
+    async def test_an_interrupted_pass_awaits_the_probes_it_cancels(
+        self, session, inventory_api, tasks_api, fake_inventory, mocker
+    ):
+        """Finish cancelling a still-blocked probe before the walk raises.
+
+        The first host's failure stops the pass under ``break_on_error`` while the
+        second host's probe is blocked, so that probe must be cancelled and done by
+        the time ``perform_inventory_sync`` propagates the failure.
+        """
+        fake_inventory.nodes[:] = [_node(1), _node(2)]
+        blocked: list[asyncio.Task[Any]] = []
+        done_at_exit: list[bool] = []
+
+        async def probe(self, **meta: Any) -> TaskRunResult:
+            if meta["target"] == "probe-host-1":
+                raise TimeoutError("Task run-python timed out")
+            blocked.append(asyncio.current_task())
+            await asyncio.Event().wait()
+            return TaskRunResult(1, MEASURED_STDOUT)
+
+        walk = UnmeasuredHostFactsSyncer.perform_inventory_sync
+
+        async def observed_walk(self) -> None:
+            try:
+                await walk(self)
+            finally:
+                done_at_exit.extend(task.done() for task in blocked)
+
+        mocker.patch.object(UnmeasuredHostFactsSyncer, "wait_for_task_output", probe)
+        mocker.patch.object(
+            UnmeasuredHostFactsSyncer, "perform_inventory_sync", observed_walk
+        )
+
+        with pytest.raises(SyncFailError):
+            await _run_pass(session, inventory_api, tasks_api, break_on_error=True)
+
+        assert len(blocked) == 1
+        assert done_at_exit == [True]
+        assert blocked[0].cancelled()
 
     @pytest.mark.asyncio
     async def test_one_failing_probe_fails_only_its_own_host(
