@@ -4573,8 +4573,10 @@ class TestNomadLogStreaming:
             b'{"Offset":4,"Data":"b25',
             b'{"Offset":4',
             b'{"Offset":4,"Fi',
+            b'{"Offset":4,"File":"a\\u00',
+            b'{"Offset":4,"File":"\\ud83d',
         ],
-        ids=["mid-string", "mid-number", "mid-key"],
+        ids=["mid-string", "mid-number", "mid-key", "mid-escape", "mid-surrogate"],
     )
     def test_split_nomad_frames_carries_a_truncated_frame_over(self, truncated: bytes):
         """Carry a frame the buffer cut off over, after the frames before it."""
@@ -4591,9 +4593,16 @@ class TestNomadLogStreaming:
             b'{"Offset":!}',
             b'{"Offset":4,"Data":"a\x01"}',
             b'{"Offset":4,"Data":"\\q"}',
+            b'{"Offset":4,"Data":"\\u12"}',
             b"{Offset:4}",
         ],
-        ids=["bad-value", "control-character", "bad-escape", "unquoted-key"],
+        ids=[
+            "bad-value",
+            "control-character",
+            "bad-escape",
+            "short-unicode-escape",
+            "unquoted-key",
+        ],
     )
     def test_split_nomad_frames_raises_on_a_malformed_frame(self, malformed: bytes):
         """Raise on a frame no further bytes could make valid, not buffer it."""

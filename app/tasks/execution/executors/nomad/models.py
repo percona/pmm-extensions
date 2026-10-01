@@ -127,6 +127,11 @@ _NOMAD_LOG_STREAM_CLIENT_ERROR = "nomad-log-stream-client-error"
 _NOMAD_FRAME_DECODER = json.JSONDecoder()
 #: The decoder error for a string the end of the buffer cut off, wherever it began.
 _UNTERMINATED_STRING_ERROR = "Unterminated string starting at"
+#: The decoder error for a ``\uXXXX`` escape that is incomplete or malformed.
+_UNICODE_ESCAPE_ERROR = "Invalid \\uXXXX escape"
+#: The most characters of a ``\uXXXX`` escape that can follow the error's
+#: position: the ``u`` and its four hex digits.
+_UNICODE_ESCAPE_TAIL = 5
 
 _ANONYMIZED_STEPS: frozenset[NomadStep] = NomadStep.anonymized()
 
@@ -161,15 +166,25 @@ def _should_anonymize(step: str, anonymize_entities: set[PIIEntity] | None) -> b
 def _is_truncated_frame(error: json.JSONDecodeError, text: str) -> bool:
     """Return whether a decode failure is only the buffer ending mid-frame.
 
-    A frame cut short fails either at the very end of the text or inside a
-    string that runs to the end of it; any other failure means the bytes can
-    never become a valid frame, however many more arrive.
+    A frame cut short fails at the very end of the text, inside a string that
+    runs to the end of it, or on a ``uXXXX`` unicode escape the end of the text
+    cuts off, which the decoder reports at the escape rather than at the end.
+    Any other failure means the bytes can never become a valid frame, however
+    many more arrive. A malformed escape near the end is carried over too, and
+    fails as one once the next chunk extends the text past it.
 
     :param error: The error raised while decoding a frame off ``text``.
     :param text: The decoded buffer the frame was read from.
     :return: ``True`` when more bytes could still complete the frame.
     """
-    return error.pos == len(text) or error.msg == _UNTERMINATED_STRING_ERROR
+    return (
+        error.pos == len(text)
+        or error.msg == _UNTERMINATED_STRING_ERROR
+        or (
+            error.msg == _UNICODE_ESCAPE_ERROR
+            and len(text) - error.pos <= _UNICODE_ESCAPE_TAIL
+        )
+    )
 
 
 def _split_nomad_frames(buffer: bytes) -> tuple[list[dict[str, Any]], bytes]:
