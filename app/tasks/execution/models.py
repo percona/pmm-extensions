@@ -244,6 +244,9 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         :class:`~app.tasks.execution.exceptions.TaskDataNotFoundInExecutorError`
         can be handled as HTTP error responses.
 
+        The route calls it in a worker thread, so blocking I/O is fine here and
+        an override must not touch event-loop-bound state.
+
         :param queue_item: The task history record that will be streamed.
         """
 

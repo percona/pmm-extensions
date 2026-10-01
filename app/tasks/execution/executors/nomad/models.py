@@ -20,6 +20,7 @@ import io
 import json
 import logging
 import tarfile
+import threading
 import time
 from base64 import b64decode
 from binascii import b2a_base64
@@ -41,6 +42,7 @@ from aiohttp import (
 from fastapi import status
 from nomad import Nomad
 from nomad.api.exceptions import BaseNomadException, URLNotFoundNomadException
+from pydantic import PrivateAttr
 from sqlalchemy_celery_beat.models import Period
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -639,9 +641,13 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         Defaults to 10.
     :param log_stream_max_connections: Most Nomad connections live log follows
         may hold at once. Every viewer of a running task opens one follow per
-        logged step and log type, all to the one Nomad host, so they draw on a pool of
-        their own instead of the short calls' per-host cap. Keep it below
-        Nomad's ``limits.http_max_conns_per_client``. Defaults to ``64``.
+        logged step and log type, all to the one Nomad host, so they draw on a
+        pool of their own instead of the short calls' per-host cap. Nomad's
+        ``limits.http_max_conns_per_client`` counts them together with every
+        other connection from this address, so leave room under it for the
+        short-call pool and the python-nomad client. A rebind applies the new
+        value to follows opened after it; open follows keep the retired
+        executor's pool until they end. Defaults to ``64``.
     :param cert_expiry_warn_days: Number of days before ``not_valid_after`` when
         Nomad TLS cert expiry alerts should fire. Used by the periodic
         ``check_nomad_cert_expiry`` task. Defaults to 7.
@@ -737,6 +743,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     )
 
     _sync_session: requests.Session | None = None
+    _backend_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     @property
     def stream_connection_limit(self) -> int:
@@ -768,31 +775,42 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     def backend(self) -> Nomad:
         """Get the Nomad backend client.
 
+        Built under a lock: the live log path's allocation lookups reach for it
+        from worker threads, so two can arrive together, and each build opens a
+        ``requests.Session`` that only the last one would close. The client is
+        cached before the lock is released, because ``cached_property`` alone
+        stores it only after this method returns, which leaves a window for a
+        second build on interpreters whose ``cached_property`` takes no lock.
+
         :return: An instance of the Nomad client configured with the executor's
             settings.
-        :rtype: Nomad
         """
-        cert = ()
-        if self.ssl_certfile:
-            if self.ssl_keyfile:
-                cert = (self.ssl_certfile, self.ssl_keyfile)
-            else:
-                cert = (self.ssl_certfile,)
-        address = str(self.endpoint).rstrip("/")
-        session = requests.Session()
-        if self._credential_value is not None:
-            address = strip_credential_url_userinfo(address)
-            session.headers.update(self.headers)
-        self._sync_session = session
-        return Nomad(
-            address=address,
-            secure=self.secure,
-            timeout=self.timeout,
-            verify=(self.secure and self.verify_ssl and self.ssl_cafile)
-            or self.verify_ssl,
-            cert=cert,
-            session=session,
-        )
+        with self._backend_lock:
+            if (built := self.__dict__.get("backend")) is not None:
+                return built
+            cert = ()
+            if self.ssl_certfile:
+                if self.ssl_keyfile:
+                    cert = (self.ssl_certfile, self.ssl_keyfile)
+                else:
+                    cert = (self.ssl_certfile,)
+            address = str(self.endpoint).rstrip("/")
+            session = requests.Session()
+            if self._credential_value is not None:
+                address = strip_credential_url_userinfo(address)
+                session.headers.update(self.headers)
+            self._sync_session = session
+            client = Nomad(
+                address=address,
+                secure=self.secure,
+                timeout=self.timeout,
+                verify=(self.secure and self.verify_ssl and self.ssl_cafile)
+                or self.verify_ssl,
+                cert=cert,
+                session=session,
+            )
+            self.__dict__["backend"] = client
+            return client
 
     async def __aexit__(
         self,
@@ -802,7 +820,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     ) -> None:
         """Exit the asynchronous context manager, releasing both HTTP clients.
 
-        The inherited exit closes the aiohttp session; this one also closes the
+        The inherited exit closes the aiohttp sessions; this one also closes the
         ``requests.Session`` handed to python-nomad, which the executor owns
         rather than the library. Retirement runs through
         :meth:`~app.core.requests.remote_api.BaseRemoteAPI.close_when_idle`, so
@@ -818,10 +836,11 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param exc_tb: The traceback, if any.
         """
         await super().__aexit__(exc_type, exc_val, exc_tb)
-        self.__dict__.pop("backend", None)
-        if self._sync_session is not None:
-            self._sync_session.close()
-            self._sync_session = None
+        with self._backend_lock:
+            self.__dict__.pop("backend", None)
+            if self._sync_session is not None:
+                self._sync_session.close()
+                self._sync_session = None
 
     @staticmethod
     def timestamp_to_datetime(timestamp: int) -> datetime:
@@ -2671,7 +2690,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     if data and (msg := data.get("Data")):
                         logger.debug(
                             "Nomad log frame alloc_id=%s step=%s log_type=%s "
-                            "offset=%s bytes=%s monotonic=%.3f",
+                            "offset=%s b64_chars=%s monotonic=%.3f",
                             alloc_id,
                             step,
                             log_type,

@@ -32,10 +32,12 @@ from contextlib import AsyncExitStack, suppress
 import pytest
 import pytest_asyncio
 from fastapi import status
+from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import get_current_user, require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
+from app.tasks.anonymizer.entities import PIIEntity
 from app.tasks.crud import TaskHistoryManager, TaskManager
 from app.tasks.deps import get_request_executor, get_session
 from app.tasks.execution.executors.nomad.models import NomadExecutor
@@ -64,6 +66,9 @@ FOLLOWS_OPEN_GRACE = 1.0
 
 #: Seconds the stub's allocation lookup takes in the loop-stall test.
 SLOW_ALLOCATION_LOOKUP = 1.0
+
+#: Seconds the stand-in anonymizer takes per frame in the loop-stall test.
+SLOW_ANONYMIZATION = 1.0
 
 #: How often the loop-stall probe wakes up.
 LOOP_TICK = 0.02
@@ -218,15 +223,27 @@ async def _run_subscribers(
     ],
 )
 async def test_every_subscriber_receives_each_line_live(
-    nomad_stub: NomadLogStub, running_history: TaskHistory, subscribers: int
+    nomad_stub: NomadLogStub,
+    running_history: TaskHistory,
+    subscribers: int,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Deliver every line to every concurrent subscriber within the live bound.
 
     Each subscriber opens a follow per log type, so six subscribers need twelve
-    concurrent Nomad connections to the one host.
+    concurrent Nomad connections to the one host. None of them may queue for a
+    connection, and closing the responses leaves no stream task behind.
     """
-    arrivals = await _run_subscribers(nomad_stub, running_history.id, subscribers)
+    with caplog.at_level(logging.WARNING):
+        arrivals = await _run_subscribers(nomad_stub, running_history.id, subscribers)
+    leftover = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and not task.done()
+    ]
 
+    assert leftover == []
+    assert "for a pooled connection" not in caplog.text
     assert len(nomad_stub.emitted) == nomad_stub.line_count * len(TaskLogType)
     for received in arrivals:
         assert received.keys() == nomad_stub.emitted.keys()
@@ -278,6 +295,52 @@ async def test_a_slow_allocation_lookup_does_not_stall_the_loop(
         longest = await gap
 
     assert longest < SLOW_ALLOCATION_LOOKUP / 2
+
+
+async def test_a_slow_anonymization_does_not_stall_the_loop(
+    nomad_stub: NomadLogStub, mocker: MockerFixture
+) -> None:
+    """Keep the event loop serving other streams while a frame is anonymized.
+
+    The anonymizer stands in for a slow analysis, such as the first one, which
+    loads the language model; every live frame of an anonymized step passes
+    through it.
+    """
+
+    def slow_anonymize(text: str, _entities: set[PIIEntity]) -> str:
+        time.sleep(SLOW_ANONYMIZATION)
+        return text
+
+    mocker.patch(
+        "app.tasks.execution.executors.nomad.models.anonymize_text",
+        side_effect=slow_anonymize,
+    )
+    queue = asyncio.Queue()
+    stop = asyncio.Event()
+    gap = asyncio.create_task(_longest_loop_gap(stop))
+    async with NomadExecutor(
+        endpoint=nomad_stub.endpoint, verify_ssl=False
+    ) as executor:
+        stream = asyncio.create_task(
+            executor._push_logs_to_queue(
+                nomad_stub.allocation(),
+                nomad_stub.step,
+                TaskLogType.STDOUT,
+                queue,
+                anonymize_entities={PIIEntity.EMAIL_ADDRESS},
+            )
+        )
+        try:
+            await nomad_stub.emit()
+            first = await asyncio.wait_for(queue.get(), RUN_TIMEOUT)
+        finally:
+            stop.set()
+            stream.cancel()
+            await asyncio.gather(stream, return_exceptions=True)
+    longest = await gap
+
+    assert first.msg == "line-0\n"
+    assert longest < SLOW_ANONYMIZATION / 2
 
 
 async def test_a_not_started_steps_retry_wait_holds_no_stream_slot(

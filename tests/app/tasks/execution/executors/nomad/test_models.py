@@ -18,6 +18,7 @@
 import asyncio
 import json
 import logging
+import time
 from base64 import b64encode
 from binascii import b2a_base64
 from collections import defaultdict
@@ -5313,6 +5314,33 @@ class TestParsePayload:
         result = await executor.parse_payload(json_payload, "json")
 
         assert result == {"Job": {"ID": "test"}}
+
+
+class TestBackendFromWorkerThreads:
+    """Cover the Nomad client being first reached from several worker threads."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_lookups_build_one_client(self) -> None:
+        """Build the client and its ``requests.Session`` once for racing threads."""
+        builds = 0
+
+        def slow_nomad(**_kwargs: Any) -> MagicMock:
+            nonlocal builds
+            builds += 1
+            time.sleep(0.2)
+            return MagicMock()
+
+        executor = _build_executor()
+        with patch(
+            "app.tasks.execution.executors.nomad.models.Nomad", side_effect=slow_nomad
+        ):
+            clients = await asyncio.gather(
+                asyncio.to_thread(lambda: executor.backend),
+                asyncio.to_thread(lambda: executor.backend),
+            )
+
+        assert builds == 1
+        assert clients[0] is clients[1]
 
 
 class TestConcurrentAnonymizedLiveStreams:

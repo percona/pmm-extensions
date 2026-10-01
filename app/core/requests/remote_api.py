@@ -384,9 +384,12 @@ def _pool_wait_trace_config(logger: logging.Logger, target: str) -> TraceConfig:
     """Build the tracing hooks that log a long wait for a pooled connection.
 
     aiohttp fires the queued signals only when a request found its pool full,
-    so a request that got a connection at once logs nothing. The hooks hold
-    plain values rather than the client: a session referencing its own client
-    would form a cycle, and an unclosed one would then outlive its scope.
+    so a request that got a connection at once logs nothing. A request that
+    loses the race for a freed slot queues again, firing the pair once per
+    attempt, so the wait is measured from the first attempt and logged once.
+    The hooks hold plain values rather than the client: a session referencing
+    its own client would form a cycle, and an unclosed one would then outlive
+    its scope.
 
     :param logger: The client's logger.
     :param target: The redacted base URL the session talks to.
@@ -406,7 +409,7 @@ def _pool_wait_trace_config(logger: logging.Logger, target: str) -> TraceConfig:
         context: SimpleNamespace,
         _params: TraceConnectionQueuedStartParams,
     ) -> None:
-        context.queued_at = time.monotonic()
+        vars(context).setdefault("queued_at", time.monotonic())
 
     async def on_queued_end(
         _session: ClientSession,
@@ -414,7 +417,8 @@ def _pool_wait_trace_config(logger: logging.Logger, target: str) -> TraceConfig:
         _params: TraceConnectionQueuedEndParams,
     ) -> None:
         waited = time.monotonic() - context.queued_at
-        if waited > POOL_WAIT_WARN_SECONDS:
+        if waited > POOL_WAIT_WARN_SECONDS and not vars(context).get("warned"):
+            context.warned = True
             logger.warning(
                 "Waited %.2fs for a pooled connection to %s (%s)",
                 waited,
@@ -528,8 +532,10 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         """Return the most connections long-lived responses may hold at once.
 
         Long-lived responses draw on a pool of their own with no per-host cap,
-        so however many are open they cannot starve the short calls, and only
-        this total bounds them. Override to make the cap configurable.
+        so however many are open they cannot take this client's short-call
+        connections, and only this total bounds them. A server that caps
+        connections per client address still counts both pools together.
+        Override to make the cap configurable.
 
         :return: The total connection cap of the long-lived pool.
         """
@@ -619,17 +625,21 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         :param exc_val: The exception value, if any.
         :param exc_tb: The traceback, if any.
         """
-        if self._session and not self._session.closed:
-            self.logger.debug("Closing ClientSession for %s", self.redacted_base_url)
-            await self._session.close()
-        else:
-            self.logger.debug(
-                "ClientSession already closed for %s", self.redacted_base_url
-            )
-        self._session = None
-        if self._stream_session and not self._stream_session.closed:
-            await self._stream_session.close()
-        self._stream_session = None
+        try:
+            if self._session and not self._session.closed:
+                self.logger.debug(
+                    "Closing ClientSession for %s", self.redacted_base_url
+                )
+                await self._session.close()
+            else:
+                self.logger.debug(
+                    "ClientSession already closed for %s", self.redacted_base_url
+                )
+            self._session = None
+        finally:
+            if self._stream_session and not self._stream_session.closed:
+                await self._stream_session.close()
+            self._stream_session = None
 
     async def open(self) -> Self:
         """Open the asynchronous context manager.
@@ -644,7 +654,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     async def close(self) -> None:
         """Close the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized.
+        Closes the aiohttp ``ClientSession`` if it was initialized, and the
+        long-lived session with it.
         """
         await self.__aexit__(None, None, None)
 
@@ -1078,16 +1089,15 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
 
         Use this for binary, gzip, or any non-line-oriented payload. For NDJSON
         log streams, prefer :meth:`stream`, which buffers chunks across newline
-        boundaries so each yield is a single line.
+        boundaries so each yield is a single line. The response stays open for
+        as long as the caller iterates, so it draws on the long-lived pool
+        (:attr:`stream_connection_limit`) rather than the short-call one.
 
         :param path: The API endpoint path to request.
-        :type path: str
         :param method: The HTTP method to use for the request. Defaults to "GET".
-        :type method: str
         :param kwargs: Additional keyword arguments to pass to the request.
-        :type kwargs: Any
-        :yield: Raw byte chunks from the response body in arrival order.
-        :rtype: AsyncGenerator[bytes, None]
+        :return: Raw byte chunks from the response body in arrival order.
+        :raises RuntimeError: If the client has not been opened.
         :raises HTTPGoneException: If the upstream API returns HTTP 410 (e.g. task data
             gone from the Nomad executor). Callers may use ``isinstance(..., HTTPGoneException)``
             or ``exc.status_code == 410`` without inspecting the status from a generic
