@@ -387,6 +387,22 @@ export interface paths {
      *
      *     ``tail`` limits output to the last N lines per stream for finished histories
      *     only. It is ignored while the task is ``RUNNING`` (live executor stream).
+     *
+     *     A 409 means the run is not producing output yet (still pending, or running
+     *     but not started by the executor), so the client should retry; a 410 means
+     *     the live data is gone for good.
+     *
+     *     :param session: Database session for reading persisted logs.
+     *     :param executor: Executor serving the live stream of a running history.
+     *     :param task_history: The task history whose logs to stream.
+     *     :param offsets: Per-step, per-stream offsets to resume from.
+     *     :param step: Limits a finished history's logs to this step.
+     *     :param tail: Limits a finished history's output to its last N lines per stream.
+     *     :return: A streaming response of newline-delimited JSON log lines.
+     *     :raises HTTPConflictException: When the history is pending, or running but
+     *         not started by the executor yet.
+     *     :raises TaskDataNotFoundInExecutorError: When the executor's job or
+     *         allocation for a running history is gone, answered with 410.
      */
     get: operations['tasks_stream_task_history_logs_history__task_history_id__logs__get'];
     put?: never;

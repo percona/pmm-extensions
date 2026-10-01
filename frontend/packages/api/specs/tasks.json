@@ -2933,7 +2933,7 @@
     },
     "/history/{task_history_id}/logs/": {
       "get": {
-        "description": "Stream a task history's logs.\n\n``tail`` limits output to the last N lines per stream for finished histories\nonly. It is ignored while the task is ``RUNNING`` (live executor stream).",
+        "description": "Stream a task history's logs.\n\n``tail`` limits output to the last N lines per stream for finished histories\nonly. It is ignored while the task is ``RUNNING`` (live executor stream).\n\nA 409 means the run is not producing output yet (still pending, or running\nbut not started by the executor), so the client should retry; a 410 means\nthe live data is gone for good.\n\n:param session: Database session for reading persisted logs.\n:param executor: Executor serving the live stream of a running history.\n:param task_history: The task history whose logs to stream.\n:param offsets: Per-step, per-stream offsets to resume from.\n:param step: Limits a finished history's logs to this step.\n:param tail: Limits a finished history's output to its last N lines per stream.\n:return: A streaming response of newline-delimited JSON log lines.\n:raises HTTPConflictException: When the history is pending, or running but\n    not started by the executor yet.\n:raises TaskDataNotFoundInExecutorError: When the executor's job or\n    allocation for a running history is gone, answered with 410.",
         "operationId": "tasks_stream_task_history_logs_history__task_history_id__logs__get",
         "parameters": [
           {
