@@ -252,6 +252,17 @@ class TestLogCaptureHoldTemplateShape:
         assert hold["RestartPolicy"] == {"Attempts": 0, "Mode": "fail"}
 
     @pytest.mark.parametrize("template", NOMAD_TEMPLATES_WITH_STALENESS)
+    def test_failed_allocation_is_never_rescheduled(self, template) -> None:
+        """Assert a failed run stays on its own allocation rather than a retry.
+
+        A rescheduled replacement shares the failed allocation's job ID, so the
+        failed allocation, still capture-hold ready, would keep the finishing
+        probe re-dispatching a sync of that history while the replacement ran.
+        """
+        for group in template["TaskGroups"]:
+            assert group["ReschedulePolicy"] == {"Attempts": 0}
+
+    @pytest.mark.parametrize("template", NOMAD_TEMPLATES_WITH_STALENESS)
     def test_hold_task_is_not_shared_between_templates(self, template) -> None:
         """Assert each template holds its own copy rather than a shared dict.
 

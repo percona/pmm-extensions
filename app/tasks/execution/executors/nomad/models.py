@@ -1191,9 +1191,11 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
 
         One list call covers every running allocation, so detecting finished runs
         costs the same whatever the number of RUNNING histories. The hold keeps
-        its allocation ``running`` while it waits to be released, so the
-        ``running`` filter covers every run still waiting on its hold; one whose
-        hold has already exited is left to the regular sync.
+        its allocation ``running`` while it waits to be released, unless a
+        producing step failed: Nomad then reports the allocation ``failed`` even
+        though the hold still runs. Listing both statuses covers every run still
+        waiting on its hold; one whose hold has already exited is left to the
+        regular sync.
 
         The call goes through the executor's own HTTP client, which must be open.
         It carries no deadline of its own: the caller bounds it, and cancelling
@@ -1209,7 +1211,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             "GET",
             "/v1/allocations",
             params={
-                "filter": f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"',
+                "filter": (
+                    f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"'
+                    f' or ClientStatus == "{NomadAllocStatusEnum.FAILED}"'
+                ),
                 "task_states": "true",
             },
         ) as response:

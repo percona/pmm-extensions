@@ -580,6 +580,7 @@ NOMAD_EXEC_ARTIFACT = {
     "TaskGroups": [
         {
             "Name": "execution",
+            "ReschedulePolicy": {"Attempts": 0},
             "Tasks": [
                 deepcopy(_CHECK_STALENESS_TASK),
                 _check_launchable_task("interpreter", allow_strip=True),

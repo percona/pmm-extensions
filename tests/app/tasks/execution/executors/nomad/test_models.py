@@ -6974,12 +6974,16 @@ class TestNomadCaptureHoldReadyJobIds:
     """Cover the cluster-wide listing of capture-hold-ready jobs."""
 
     @staticmethod
-    def _alloc(job_id: str, task_states: dict[str, dict[str, str]]) -> dict[str, Any]:
-        """Return a running allocation stub for ``job_id``."""
+    def _alloc(
+        job_id: str,
+        task_states: dict[str, dict[str, Any]],
+        client_status: NomadAllocStatusEnum = NomadAllocStatusEnum.RUNNING,
+    ) -> dict[str, Any]:
+        """Return an allocation stub for ``job_id``."""
         return {
             "ID": f"alloc-{job_id}",
             "JobID": job_id,
-            "ClientStatus": NomadAllocStatusEnum.RUNNING,
+            "ClientStatus": client_status,
             "TaskStates": task_states,
         }
 
@@ -6989,7 +6993,9 @@ class TestNomadCaptureHoldReadyJobIds:
     async def test_returns_job_ids_of_hold_ready_allocations(self) -> None:
         """Assert only allocations whose producers are done and hold is up count.
 
-        The listing asks Nomad for running allocations with their task states.
+        The listing asks Nomad for running and failed allocations with their
+        task states: Nomad reports an allocation ``failed`` as soon as a
+        producing step fails, even while its hold still runs.
         """
         executor = _build_executor()
         with aioresponses() as nomad:
@@ -7011,15 +7017,26 @@ class TestNomadCaptureHoldReadyJobIds:
                         },
                     ),
                     self._alloc("job-no-hold", {"run-script": {"State": "dead"}}),
+                    self._alloc(
+                        "job-failed",
+                        {
+                            "run-script": {"State": "dead", "Failed": True},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "running"},
+                        },
+                        client_status=NomadAllocStatusEnum.FAILED,
+                    ),
                 ],
             )
             async with executor:
                 ready = await executor.capture_hold_ready_job_ids()
 
-        assert ready == frozenset({"job-ready"})
+        assert ready == frozenset({"job-ready", "job-failed"})
         (_, (request,)) = nomad.requests.popitem()
         assert request.kwargs["params"] == {
-            "filter": f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"',
+            "filter": (
+                f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"'
+                f' or ClientStatus == "{NomadAllocStatusEnum.FAILED}"'
+            ),
             "task_states": "true",
         }
 
