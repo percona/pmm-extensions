@@ -672,7 +672,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         ``sync_finishing_tasks`` probe that syncs a run as soon as its producing
         steps end instead of waiting for the regular sweep, and the deadline of
         each tick's Nomad listing. A finished run's status lands within about two
-        ticks plus the terminal log-drain budget, so keep it well under the
+        ticks plus one ``terminal_log_drain_interval``, since a hold-ready drain
+        ends on its first quiet re-fetch, so keep it well under the
         latency a run's status is expected to meet. Read when ``app.tasks.db.seed``
         builds the schedule, so it is not overridable at runtime. Set to ``None``
         to skip registering the probe, leaving finished runs to the sweep.
@@ -2141,7 +2142,11 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         )
         if force_flush:
             drain_failures = await self._drain_terminal_logs(
-                writer_session, queue_item, alloc, alloc_epoch
+                writer_session,
+                queue_item,
+                alloc,
+                alloc_epoch,
+                capture_hold_ready=capture_hold_ready,
             )
             await self._force_flush_remaining_streams(writer_session, queue_item.id)
             await self._record_capture_outcomes(
@@ -2301,6 +2306,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         queue_item: TaskHistory,
         alloc: dict[str, Any],
         alloc_epoch: int,
+        *,
+        capture_hold_ready: bool = False,
     ) -> set[tuple[str, TaskLogType]]:
         """Fetch Nomad logs after terminal detection until every stream is quiet.
 
@@ -2323,6 +2330,15 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         only one stream polls the full window (correctness over latency; the
         window is ``hot``-tunable).
 
+        When ``capture_hold_ready`` is set, every producing step is already dead
+        behind a live hold, so no stream can start writing later and the
+        allocation's logs stay readable. The first re-fetch, a full interval
+        after the pre-drain fetch, that returns no new bytes on any stream then
+        means every stream is read to EOF, and the drain ends there instead of
+        waiting out the budget for streams that will never advance. A re-fetch
+        that still returns bytes keeps it polling, so a tail ``logmon`` flushes
+        late is still read.
+
         Anonymization withholds each stream's trailing partial line until a
         newline completes it, so a stream holding a partial looks quiet. The
         early-exit is suppressed while any stream is still withholding, and a
@@ -2335,6 +2351,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param alloc: The current Nomad allocation dict.
         :param alloc_epoch: The allocation's ``CreateIndex``, threaded into each
             write so a superseded allocation's bytes are discarded.
+        :param capture_hold_ready: Whether the allocation's producing steps have
+            all stopped behind a live hold step, which lets one quiet re-fetch
+            end the drain.
         :return: The ``(step, stream)`` pairs whose re-fetch failed at any point
             during the drain, so the caller can record their capture as
             incomplete rather than trust the pre-drain fetch alone.
@@ -2380,7 +2399,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     task_logs,
                     force_flush=True,
                 )
-            elif advanced == candidates and not withholding:
+            elif not withholding and (capture_hold_ready or advanced == candidates):
                 break
 
         # Terminal flush: emit any trailing line that never received a newline.

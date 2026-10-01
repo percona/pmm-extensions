@@ -7606,6 +7606,99 @@ class TestDrainTerminalLogs:
         assert stdout == "head\ntail\n"
         assert stderr == "boot\nlate\n"
 
+    @staticmethod
+    def _hold_ready_alloc() -> dict[str, Any]:
+        """Return an allocation whose producer is dead behind a running hold."""
+        return {
+            "ID": "alloc-1",
+            "CreateIndex": ALLOCATION_CREATE_INDEX,
+            "TaskStates": {
+                "run-script": {
+                    "State": "dead",
+                    "StartedAt": "2024-01-01T00:00:00Z",
+                },
+                NomadStep.LOG_CAPTURE_HOLD: {
+                    "State": "running",
+                    "StartedAt": "2024-01-01T00:00:01Z",
+                },
+            },
+        }
+
+    async def _persist_hold_ready(
+        self, mock_nomad_cls, session, history, snapshots
+    ) -> None:
+        """Run a terminal persist on a hold-ready allocation with ``snapshots``."""
+        mock_backend = MagicMock()
+        mock_nomad_cls.return_value = mock_backend
+        mock_backend.client.stream_logs.stream.side_effect = self._growing_stream(
+            snapshots
+        )
+        alloc = self._hold_ready_alloc()
+        mock_backend.allocation.get_allocation.return_value = alloc
+        history.anonymize_mask = 0
+        history.status = TaskHistoryStatusEnum.SUCCESS
+        executor = _build_executor(
+            terminal_log_drain_max_attempts=self.DRAIN_MAX_ATTEMPTS
+        )
+        await executor._persist_nomad_task_logs(
+            writer_session=session,
+            queue_item=history,
+            alloc=alloc,
+            previous_allocation_id="alloc-1",
+            capture_hold_ready=True,
+        )
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.tasks.execution.executors.nomad.models.asyncio.sleep",
+        new_callable=AsyncMock,
+    )
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_hold_ready_drain_ends_on_first_quiet_refetch(
+        self, mock_nomad_cls, mock_sleep, session, created_task_with_history
+    ):
+        """Assert a hold-ready drain stops once a re-fetch finds nothing new.
+
+        The producers are dead and the hold keeps the allocation alive, so a
+        re-fetch a full interval later that returns no bytes on any stream means
+        the tail is read, even for a stream that never produced anything.
+        """
+        await self._persist_hold_ready(
+            mock_nomad_cls,
+            session,
+            created_task_with_history,
+            {("run-script", TaskLogType.STDOUT): ["out\n"]},
+        )
+
+        stdout = await self._stream_content(
+            session, created_task_with_history.id, "run-script", TaskLogType.STDOUT
+        )
+        assert stdout == "out\n"
+        assert mock_sleep.await_count == 1
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.tasks.execution.executors.nomad.models.asyncio.sleep",
+        new_callable=AsyncMock,
+    )
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_hold_ready_drain_reads_a_tail_flushed_after_the_first_fetch(
+        self, mock_nomad_cls, mock_sleep, session, created_task_with_history
+    ):
+        """Assert a hold-ready drain keeps reading while the tail still lands."""
+        await self._persist_hold_ready(
+            mock_nomad_cls,
+            session,
+            created_task_with_history,
+            {("run-script", TaskLogType.STDOUT): ["out\n", "out\ntail\n"]},
+        )
+
+        stdout = await self._stream_content(
+            session, created_task_with_history.id, "run-script", TaskLogType.STDOUT
+        )
+        assert stdout == "out\ntail\n"
+        assert mock_sleep.await_count == self.EXPECTED_SLEEPS_ALL_STREAMS_DRAINED
+
 
 class TestNomadCaptureHoldDetection:
     """Cover the log-capture-hold terminal-detection helpers."""
