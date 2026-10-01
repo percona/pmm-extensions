@@ -244,7 +244,7 @@ async def test_aexit_force_closes_idle_retiree_cancelled_mid_reconcile(
         resume = asyncio.Event()
         original = NomadExecutor.close_when_idle
 
-        async def paused_close_when_idle(self: NomadExecutor, pending=None) -> None:
+        async def paused_close_when_idle(self, pending=None) -> None:
             entered.set()
             await resume.wait()
             await original(self, pending=pending)
@@ -265,7 +265,7 @@ async def test_aexit_force_closes_idle_retiree_cancelled_mid_reconcile(
         assert retired._session is None
         assert holder._pending_closes._clients == {}
     finally:
-        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+        tasks_settings._set_snapshot({})
 
 
 @pytest.mark.asyncio
@@ -288,7 +288,7 @@ async def test_aexit_force_closes_mid_reconcile_before_close_when_idle(
         resume = asyncio.Event()
         original = NomadExecutor.close_when_idle
 
-        async def paused_close_when_idle(self: NomadExecutor, pending=None) -> None:
+        async def paused_close_when_idle(self, pending=None) -> None:
             entered.set()
             await resume.wait()
             await original(self, pending=pending)
@@ -314,7 +314,7 @@ async def test_aexit_force_closes_mid_reconcile_before_close_when_idle(
             assert retired._session is None
             assert holder._pending_closes._clients == {}
     finally:
-        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+        tasks_settings._set_snapshot({})
 
 
 @pytest.mark.asyncio

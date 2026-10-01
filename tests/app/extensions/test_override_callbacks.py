@@ -361,7 +361,7 @@ async def test_endpoint_rebinder_registers_idle_retiree_before_publish(
             await new.close()
         if old._session is not None:
             await old.close()
-        extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+        extensions_settings._set_snapshot({})
 
 
 @pytest.mark.asyncio
