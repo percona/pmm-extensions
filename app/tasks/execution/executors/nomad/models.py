@@ -1187,9 +1187,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         return alloc
 
     async def capture_hold_ready_job_ids(self) -> frozenset[str]:
-        """Return the job IDs whose running allocation is capture-hold ready.
+        """Return the job IDs whose newest allocation is capture-hold ready.
 
-        One list call covers every running allocation, so detecting finished runs
+        One list call covers every live allocation, so detecting finished runs
         costs the same whatever the number of RUNNING histories. The hold keeps
         its allocation ``running`` while it waits to be released, unless a
         producing step failed: Nomad then reports the allocation ``failed`` even
@@ -1197,12 +1197,17 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         waiting on its hold; one whose hold has already exited is left to the
         regular sync.
 
+        Readiness is judged on each job's newest allocation, the one a sync
+        resolves. A rescheduled job keeps its failed predecessor, which still
+        looks hold-ready, beside a ``pending`` or ``running`` replacement, so
+        those statuses are listed too and the newer replacement decides.
+
         The call goes through the executor's own HTTP client, which must be open.
         It carries no deadline of its own: the caller bounds it, and cancelling
         it stops the request however slowly Nomad is answering.
 
-        :return: The ``JobID`` of every running allocation for which
-            :func:`_detect_capture_hold_ready` holds.
+        :return: The ``JobID`` of every job whose newest listed allocation
+            satisfies :func:`_detect_capture_hold_ready`.
         :raises aiohttp.ClientError: If Nomad cannot be reached or answers with an
             error status.
         :raises ValueError: If Nomad answers with a body that is not JSON.
@@ -1212,7 +1217,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             "/v1/allocations",
             params={
                 "filter": (
-                    f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"'
+                    f'ClientStatus == "{NomadAllocStatusEnum.PENDING}"'
+                    f' or ClientStatus == "{NomadAllocStatusEnum.RUNNING}"'
                     f' or ClientStatus == "{NomadAllocStatusEnum.FAILED}"'
                 ),
                 "task_states": "true",
@@ -1220,8 +1226,15 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         ) as response:
             response.raise_for_status()
             allocations = await response.json()
+        newest: dict[str, dict[str, Any]] = {}
+        for alloc in allocations:
+            current = newest.get(alloc["JobID"])
+            if current is None or alloc["CreateIndex"] > current["CreateIndex"]:
+                newest[alloc["JobID"]] = alloc
         return frozenset(
-            alloc["JobID"] for alloc in allocations if _detect_capture_hold_ready(alloc)
+            job_id
+            for job_id, alloc in newest.items()
+            if _detect_capture_hold_ready(alloc)
         )
 
     async def dispatch_task(

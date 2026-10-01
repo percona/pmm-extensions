@@ -6978,12 +6978,14 @@ class TestNomadCaptureHoldReadyJobIds:
         job_id: str,
         task_states: dict[str, dict[str, Any]],
         client_status: NomadAllocStatusEnum = NomadAllocStatusEnum.RUNNING,
+        create_index: int = 1,
     ) -> dict[str, Any]:
         """Return an allocation stub for ``job_id``."""
         return {
-            "ID": f"alloc-{job_id}",
+            "ID": f"alloc-{job_id}-{create_index}",
             "JobID": job_id,
             "ClientStatus": client_status,
+            "CreateIndex": create_index,
             "TaskStates": task_states,
         }
 
@@ -7034,11 +7036,57 @@ class TestNomadCaptureHoldReadyJobIds:
         (_, (request,)) = nomad.requests.popitem()
         assert request.kwargs["params"] == {
             "filter": (
-                f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"'
+                f'ClientStatus == "{NomadAllocStatusEnum.PENDING}"'
+                f' or ClientStatus == "{NomadAllocStatusEnum.RUNNING}"'
                 f' or ClientStatus == "{NomadAllocStatusEnum.FAILED}"'
             ),
             "task_states": "true",
         }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "replacement_status",
+        [NomadAllocStatusEnum.PENDING, NomadAllocStatusEnum.RUNNING],
+    )
+    async def test_superseded_failed_allocation_does_not_mark_its_job_ready(
+        self, replacement_status: NomadAllocStatusEnum
+    ) -> None:
+        """Assert readiness is judged on the job's newest allocation only.
+
+        A rescheduled job keeps its failed predecessor, which still looks
+        hold-ready, beside the replacement every sync resolves; reporting the
+        job would re-dispatch a sync of the still-running replacement on every
+        tick.
+        """
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(
+                self._LISTING_URL,
+                payload=[
+                    self._alloc(
+                        "job-retried",
+                        {
+                            "run-script": {"State": "dead", "Failed": True},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "dead"},
+                        },
+                        client_status=NomadAllocStatusEnum.FAILED,
+                        create_index=10,
+                    ),
+                    self._alloc(
+                        "job-retried",
+                        {
+                            "run-script": {"State": "pending"},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "pending"},
+                        },
+                        client_status=replacement_status,
+                        create_index=20,
+                    ),
+                ],
+            )
+            async with executor:
+                ready = await executor.capture_hold_ready_job_ids()
+
+        assert ready == frozenset()
 
     @pytest.mark.asyncio
     async def test_empty_allocation_list_returns_empty_set(self) -> None:

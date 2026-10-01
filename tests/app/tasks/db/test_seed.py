@@ -255,9 +255,9 @@ class TestLogCaptureHoldTemplateShape:
     def test_failed_allocation_is_never_rescheduled(self, template) -> None:
         """Assert a failed run stays on its own allocation rather than a retry.
 
-        A rescheduled replacement shares the failed allocation's job ID, so the
-        failed allocation, still capture-hold ready, would keep the finishing
-        probe re-dispatching a sync of that history while the replacement ran.
+        A rescheduled replacement shares the failed allocation's job ID and
+        becomes the allocation every sync resolves, so the run would show as
+        running until the retry ended instead of reporting its failure at once.
         """
         for group in template["TaskGroups"]:
             assert group["ReschedulePolicy"] == {"Attempts": 0}
