@@ -15,6 +15,8 @@
 
 """Security utilities module."""
 
+from collections.abc import Collection
+
 from fastapi import Request
 from itsdangerous import URLSafeSerializer, URLSafeTimedSerializer
 
@@ -26,6 +28,18 @@ crypto_timestamp_serializer = URLSafeTimedSerializer(
 )
 
 SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def has_unsafe_method(methods: Collection[str]) -> bool:
+    """Return whether any of ``methods`` falls outside :data:`SAFE_HTTP_METHODS`.
+
+    Compare case-insensitively: ``APIRoute`` accepts lowercase methods and only
+    uppercases them after its subclasses have inspected them.
+
+    :param methods: The HTTP methods a route answers.
+    :return: ``True`` when at least one method may change state.
+    """
+    return not SAFE_HTTP_METHODS.issuperset(method.upper() for method in methods)
 
 
 def is_bearer_authenticated(request: Request) -> bool:
