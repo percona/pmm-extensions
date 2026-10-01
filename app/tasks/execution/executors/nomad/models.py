@@ -1186,7 +1186,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             )
         return alloc
 
-    def capture_hold_ready_job_ids(self, *, timeout: float) -> frozenset[str]:
+    async def capture_hold_ready_job_ids(self) -> frozenset[str]:
         """Return the job IDs whose running allocation is capture-hold ready.
 
         One list call covers every running allocation, so detecting finished runs
@@ -1195,21 +1195,26 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         ``running`` filter covers every run still waiting on its hold; one whose
         hold has already exited is left to the regular sync.
 
-        :param timeout: Seconds to wait for Nomad before giving up, in place of
-            the client-wide ``timeout``.
+        The call goes through the executor's own HTTP client, which must be open.
+        It carries no deadline of its own: the caller bounds it, and cancelling
+        it stops the request however slowly Nomad is answering.
+
         :return: The ``JobID`` of every running allocation for which
             :func:`_detect_capture_hold_ready` holds.
-        :raises BaseNomadException: If Nomad cannot be reached or rejects the call.
+        :raises aiohttp.ClientError: If Nomad cannot be reached or answers with an
+            error status.
         :raises ValueError: If Nomad answers with a body that is not JSON.
         """
-        allocations = self.backend.allocations.request(
-            method="get",
+        async with self._request(
+            "GET",
+            "/v1/allocations",
             params={
                 "filter": f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"',
-                "task_states": True,
+                "task_states": "true",
             },
-            timeout=timeout,
-        ).json()
+        ) as response:
+            response.raise_for_status()
+            allocations = await response.json()
         return frozenset(
             alloc["JobID"] for alloc in allocations if _detect_capture_hold_ready(alloc)
         )

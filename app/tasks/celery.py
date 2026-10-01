@@ -19,6 +19,7 @@ This module defines functions for executing tasks asynchronously via Celery,
 along with utility functions to process queue items.
 """
 
+import asyncio
 import json
 import logging
 import typing
@@ -28,6 +29,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from aiohttp import ClientError
 from celery import group
 from celery import Task as CeleryTask
 from celery.app.task import Context
@@ -992,8 +994,9 @@ async def sync_finishing_items() -> None:
     its own Celery task so that concurrent finishers drain in parallel.
 
     A failed or slow Nomad listing is logged and left to the sweep, which still
-    covers the run; the listing is bounded by the tick interval, so a hung Nomad
-    cannot pile up probes across the worker pool.
+    covers the run. The whole listing, opening the executor's HTTP client
+    included, is cancelled once it outlasts one tick, so a Nomad that hangs or
+    answers a byte at a time cannot pile up probes across the worker pool.
     """
     async_session = get_async_session_maker()
     async with async_session() as session:
@@ -1001,11 +1004,16 @@ async def sync_finishing_items() -> None:
             session, status=TaskHistoryStatusEnum.RUNNING
         ):
             return
+    nomad = normalize_nomad_config_value(tasks_settings.NOMAD)
     try:
-        ready_job_ids = normalize_nomad_config_value(
-            tasks_settings.NOMAD
-        ).capture_hold_ready_job_ids(timeout=FINISHING_SYNC_INTERVAL_SECONDS)
-    except (BaseNomadException, ValueError):
+        async with (
+            asyncio.timeout(FINISHING_SYNC_INTERVAL_SECONDS),
+            AsyncExitStack() as stack,
+        ):
+            if nomad.session is None:
+                await stack.enter_async_context(nomad)
+            ready_job_ids = await nomad.capture_hold_ready_job_ids()
+    except (ClientError, TimeoutError, ValueError):
         logger.warning(
             "Could not list Nomad allocations; leaving finished runs to the sweep",
             exc_info=True,

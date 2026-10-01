@@ -18,6 +18,7 @@
 import asyncio
 import json
 import logging
+import re
 from base64 import b64encode
 from binascii import b2a_base64
 from collections import defaultdict
@@ -29,6 +30,7 @@ from unittest.mock import AsyncMock, call, MagicMock, patch
 import pytest
 import requests
 from aiohttp import ClientError, ClientRequest, ClientResponseError, ClientTimeout
+from aioresponses import aioresponses
 from fastapi import status
 from nomad.api.exceptions import BaseNomadException, URLNotFoundNomadException
 from pydantic import ValidationError
@@ -6981,73 +6983,80 @@ class TestNomadCaptureHoldReadyJobIds:
             "TaskStates": task_states,
         }
 
-    @staticmethod
-    def _listing(mock_nomad_cls: MagicMock) -> MagicMock:
-        """Return the mocked allocations endpoint's raw ``request`` method."""
-        return mock_nomad_cls.return_value.allocations.request
+    _LISTING_URL = re.compile(r"^http://localhost:4646/v1/allocations\?")
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_returns_job_ids_of_hold_ready_allocations(
-        self, mock_nomad_cls: MagicMock
-    ) -> None:
-        """Assert only allocations whose producers are done and hold is up count."""
-        request = self._listing(mock_nomad_cls)
-        request.return_value.json.return_value = [
-            self._alloc(
-                "job-ready",
-                {
-                    "run-script": {"State": "dead"},
-                    NomadStep.LOG_CAPTURE_HOLD: {"State": "running"},
-                },
-            ),
-            self._alloc(
-                "job-producing",
-                {
-                    "run-script": {"State": "running"},
-                    NomadStep.LOG_CAPTURE_HOLD: {"State": "pending"},
-                },
-            ),
-            self._alloc("job-no-hold", {"run-script": {"State": "dead"}}),
-        ]
+    @pytest.mark.asyncio
+    async def test_returns_job_ids_of_hold_ready_allocations(self) -> None:
+        """Assert only allocations whose producers are done and hold is up count.
 
-        ready = _build_executor().capture_hold_ready_job_ids(timeout=1)
+        The listing asks Nomad for running allocations with their task states.
+        """
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(
+                self._LISTING_URL,
+                payload=[
+                    self._alloc(
+                        "job-ready",
+                        {
+                            "run-script": {"State": "dead"},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "running"},
+                        },
+                    ),
+                    self._alloc(
+                        "job-producing",
+                        {
+                            "run-script": {"State": "running"},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "pending"},
+                        },
+                    ),
+                    self._alloc("job-no-hold", {"run-script": {"State": "dead"}}),
+                ],
+            )
+            async with executor:
+                ready = await executor.capture_hold_ready_job_ids()
 
         assert ready == frozenset({"job-ready"})
-        request.assert_called_once_with(
-            method="get",
-            params={
-                "filter": f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"',
-                "task_states": True,
-            },
-            timeout=1,
-        )
+        (_, (request,)) = nomad.requests.popitem()
+        assert request.kwargs["params"] == {
+            "filter": f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"',
+            "task_states": "true",
+        }
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_empty_allocation_list_returns_empty_set(
-        self, mock_nomad_cls: MagicMock
-    ) -> None:
+    @pytest.mark.asyncio
+    async def test_empty_allocation_list_returns_empty_set(self) -> None:
         """Assert a cluster with no running allocation reports no job."""
-        self._listing(mock_nomad_cls).return_value.json.return_value = []
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(self._LISTING_URL, payload=[])
+            async with executor:
+                ready = await executor.capture_hold_ready_job_ids()
 
-        assert _build_executor().capture_hold_ready_job_ids(timeout=1) == frozenset()
+        assert ready == frozenset()
 
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_nomad_error_propagates(self, mock_nomad_cls: MagicMock) -> None:
-        """Assert a Nomad failure reaches the caller, which owns the fallback."""
-        self._listing(mock_nomad_cls).side_effect = BaseNomadException("unreachable")
+    @pytest.mark.asyncio
+    async def test_error_status_propagates(self) -> None:
+        """Assert a Nomad error status reaches the caller, which owns the fallback."""
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(self._LISTING_URL, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            async with executor:
+                with pytest.raises(ClientResponseError):
+                    await executor.capture_hold_ready_job_ids()
 
-        with pytest.raises(BaseNomadException):
-            _build_executor().capture_hold_ready_job_ids(timeout=1)
-
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_non_json_body_propagates(self, mock_nomad_cls: MagicMock) -> None:
+    @pytest.mark.asyncio
+    async def test_non_json_body_propagates(self) -> None:
         """Assert a 2xx whose body is not JSON reaches the caller as ``ValueError``."""
-        self._listing(mock_nomad_cls).return_value.json.side_effect = ValueError(
-            "Expecting value"
-        )
-
-        with pytest.raises(ValueError, match="Expecting value"):
-            _build_executor().capture_hold_ready_job_ids(timeout=1)
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(
+                self._LISTING_URL,
+                body="<html>proxy error</html>",
+                content_type="application/json",
+            )
+            async with executor:
+                with pytest.raises(json.JSONDecodeError):
+                    await executor.capture_hold_ready_job_ids()
 
 
 class TestNomadCaptureHoldRelease:

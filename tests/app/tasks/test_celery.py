@@ -21,9 +21,10 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import ClientConnectionError, ClientSession
 from cryptography import x509
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
@@ -74,7 +75,6 @@ from app.tasks.execution_request_secrets import (
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
     DispatchLock,
-    FINISHING_SYNC_INTERVAL_SECONDS,
     Task,
     TaskBackendEnum,
     TaskExecutionRequest,
@@ -1685,6 +1685,7 @@ class TestSyncFinishingItems:
             patch.object(
                 NomadExecutor,
                 "capture_hold_ready_job_ids",
+                autospec=True,
                 return_value=ready_job_ids,
             ) as mock_listing,
             patch(f"{MODULE}.group") as mock_group,
@@ -1737,7 +1738,7 @@ class TestSyncFinishingItems:
         ):
             await sync_finishing_items()
 
-        mock_listing.assert_called_once_with(timeout=FINISHING_SYNC_INTERVAL_SECONDS)
+        mock_listing.assert_awaited_once_with(ANY)
         assert self._dispatched_ids(mock_group) == [ready]
         assert await self._lock_of(session, ready) is not None
         assert await self._lock_of(session, busy) is None
@@ -1795,8 +1796,12 @@ class TestSyncFinishingItems:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "failure",
-        [BaseNomadException("unreachable"), ValueError("Expecting value")],
-        ids=["nomad-error", "non-json-body"],
+        [
+            ClientConnectionError("unreachable"),
+            TimeoutError(),
+            ValueError("Expecting value"),
+        ],
+        ids=["transport-error", "listing-timeout", "non-json-body"],
     )
     async def test_nomad_error_logs_and_returns(
         self,
@@ -1817,6 +1822,58 @@ class TestSyncFinishingItems:
             record.levelno == logging.WARNING and record.name == MODULE
             for record in caplog.records
         )
+
+    @pytest.mark.asyncio
+    async def test_slow_listing_is_abandoned_at_the_tick(
+        self, session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ):
+        """Assert a listing that outlasts one tick is cut off, not waited on.
+
+        A trickling response defeats a per-read timeout, so the probe bounds the
+        whole listing; the run is left to the sweep and the client is closed.
+        """
+        history_id = await self._seed_running(session, {"job_id": "job-a"})
+        listings: list[NomadExecutor] = []
+
+        async def never_answers(executor: NomadExecutor) -> frozenset[str]:
+            listings.append(executor)
+            await asyncio.Event().wait()
+            return frozenset({"job-a"})
+
+        with (
+            self._probe(session, frozenset()) as (mock_group, mock_listing),
+            patch(f"{MODULE}.FINISHING_SYNC_INTERVAL_SECONDS", 0.05),
+        ):
+            mock_listing.side_effect = never_answers
+            await asyncio.wait_for(sync_finishing_items(), timeout=5)
+
+        mock_group.assert_not_called()
+        assert await self._lock_of(session, history_id) is None
+        assert listings[0].session is None
+        assert any(
+            record.levelno == logging.WARNING and record.name == MODULE
+            for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_listing_runs_on_an_open_client_closed_afterwards(
+        self, session: AsyncSession
+    ):
+        """Assert the probe opens the executor's HTTP client for the listing only."""
+        await self._seed_running(session, {"job_id": "job-a"})
+        clients_seen: list[ClientSession | None] = []
+
+        async def record(executor: NomadExecutor) -> frozenset[str]:
+            clients_seen.append(executor.session)
+            return frozenset()
+
+        with self._probe(session, frozenset()) as (_, mock_listing):
+            mock_listing.side_effect = record
+            await sync_finishing_items()
+
+        executor = mock_listing.await_args.args[0]
+        assert clients_seen[0] is not None
+        assert executor.session is None
 
     @pytest.mark.asyncio
     async def test_finished_run_turns_terminal_between_sweeps(
