@@ -63,7 +63,9 @@ from app.tasks.models import (
     INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FIRST_RUN_KEY,
     INVENTORY_SYNC_FOLLOWERS_KEY,
+    INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY,
     INVENTORY_SYNC_FOLLOWERS_SINCE_KEY,
+    INVENTORY_SYNC_MAX_WAIT_KEY,
     INVENTORY_SYNC_SINCE_KEY,
     INVENTORY_SYNC_TASK_NAME,
 )
@@ -626,14 +628,39 @@ async def test_the_pinned_default_names_its_followers(
         "syncer": PMM_SYNCER,
         INVENTORY_SYNC_FOLLOWERS_KEY: [SYSTEM_FACTS_SYNCER],
         INVENTORY_SYNC_FOLLOWERS_SINCE_KEY: {SYSTEM_FACTS_SYNCER: anchor},
+        INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY: 86400,
     }
     assert _meta(follower) == {
         "syncer": SYSTEM_FACTS_SYNCER,
         INVENTORY_SYNC_AFTER_KEY: PMM_SYNCER,
         INVENTORY_SYNC_SINCE_KEY: anchor,
+        INVENTORY_SYNC_MAX_WAIT_KEY: 86400,
     }
     assert primary.start_time is not None
     assert follower.start_time is not None
+
+
+@pytest.mark.asyncio
+async def test_the_configured_wait_is_written_into_both_rows(
+    with_system_facts_schedule, beat_maker, mocker
+) -> None:
+    """Assert both rows carry the configured window, in whole seconds.
+
+    The scheduled callable lives in another app, so the window reaches it
+    through the request rather than through tasks settings.
+    """
+    mocker.patch.object(
+        tasks_settings,
+        "INVENTORY_SYNC_FOLLOWER_MAX_WAIT",
+        IntervalScheduleOption(every=6, period=Period.HOURS),
+    )
+
+    await seed_module.seed_system_periodic_tasks()
+
+    (primary,) = await _seeded_rows(beat_maker)
+    (follower,) = await _rows_named(beat_maker, with_system_facts_schedule)
+    assert _meta(primary)[INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY] == 6 * 3600
+    assert _meta(follower)[INVENTORY_SYNC_MAX_WAIT_KEY] == 6 * 3600
 
 
 @pytest.mark.asyncio
@@ -827,6 +854,7 @@ async def test_the_leader_kick_is_the_seeded_follower_request_as_a_first_run(
         _meta(primary)[INVENTORY_SYNC_FOLLOWERS_KEY],
         [SystemFactsSyncer(inventory_api=mock_remote_api, tasks_api=mock_remote_api)],
         _meta(primary)[INVENTORY_SYNC_FOLLOWERS_SINCE_KEY],
+        _meta(primary)[INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY],
     )
 
     (kick,) = send_task.call_args_list
@@ -1069,6 +1097,7 @@ class TestFollowerWaitAnchor:
             pytest.param("yesterday", id="garbage"),
             pytest.param(42, id="not-a-string"),
             pytest.param("2026-09-01T00:00:00", id="naive"),
+            pytest.param("9998-01-01T00:00:00+00:00", id="future"),
         ],
     )
     @pytest.mark.asyncio
@@ -1105,8 +1134,9 @@ class TestFollowerWaitAnchor:
     ) -> None:
         """Assert hand-edited row ``kwargs`` cannot fail the seeder at startup.
 
-        Both rows are seeded first, so the lookup failure undecodable ``kwargs``
-        cause re-seeds them instead of withholding a first-time default.
+        Both rows are seeded first, so when undecodable ``kwargs`` make the
+        beat-store lookup fail, the seeder re-seeds them instead of withholding
+        a first-time default.
         """
         base = utc_now()
         await seed_module.seed_system_periodic_tasks()

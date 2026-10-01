@@ -17,7 +17,7 @@
 
 import logging
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from kombu.exceptions import KombuError
 
@@ -38,11 +38,11 @@ from app.extensions.inventory import (
 )
 from app.extensions.sync.exceptions import SyncInstanceAlreadyInProgressError
 from app.extensions.sync.models import BaseSyncer
-from app.tasks.config import tasks_settings
 from app.tasks.models import (
     EXECUTE_TASK_BY_NAME_TASK,
     INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FIRST_RUN_KEY,
+    INVENTORY_SYNC_MAX_WAIT_KEY,
     INVENTORY_SYNC_SINCE_KEY,
     INVENTORY_SYNC_TASK_NAME,
 )
@@ -57,7 +57,9 @@ async def run_scheduled_inventory_sync(
     *,
     first_run_only: bool = False,
     after_syncer_since: object = None,
+    after_syncer_max_wait: object = None,
     follower_syncers_since: object = None,
+    follower_syncers_max_wait: object = None,
 ) -> str | None:
     """Execute scheduled inventory sync using configured internal token and syncers.
 
@@ -79,8 +81,8 @@ async def run_scheduled_inventory_sync(
     which the executor writes to that run's log, so a run that synced nothing
     does not read as one that synced.
 
-    The skip is bounded: once ``INVENTORY_SYNC_FOLLOWER_MAX_WAIT`` has passed
-    since ``after_syncer_since``, the follower runs without its leader, so a
+    The skip is bounded: once ``after_syncer_max_wait`` has passed since
+    ``after_syncer_since``, the follower runs without its leader, so a
     leader that never completes cannot stop it for good. The ordering then no
     longer holds against a leader that is merely slow, which is the accepted cost.
 
@@ -102,9 +104,15 @@ async def run_scheduled_inventory_sync(
     :param after_syncer_since: When this follower's schedule was first seeded,
         as a timezone-aware ISO-8601 string, which starts its bounded wait. It
         comes from operator-editable meta, so it may hold anything; a missing or
-        unreadable value does not hold the run back.
+        unreadable value, or one later than now, does not hold the run back.
+    :param after_syncer_max_wait: How long, in whole seconds, the follower waits
+        from ``after_syncer_since``. The tasks seeder writes it from
+        ``INVENTORY_SYNC_FOLLOWER_MAX_WAIT``, so this app reads no tasks setting;
+        a missing or unreadable value does not hold the run back either.
     :param follower_syncers_since: Each follower's ``after_syncer_since``, keyed
         by follower, forwarded into the start of that follower. Defaults to none.
+    :param follower_syncers_max_wait: The followers' ``after_syncer_max_wait``,
+        forwarded into the start of each follower. Defaults to none.
     :return: The note saying why the run was skipped, otherwise ``None``.
     :raises ValueError: If a run that is not skipped names a ``syncer`` that
         matches no configured syncer able to sync inventory.
@@ -114,7 +122,7 @@ async def run_scheduled_inventory_sync(
         that is not a started first run overlaps another run of its syncer.
     """
     if after_syncer and not await _inventory_sync_completed(after_syncer):
-        deadline = _wait_deadline(after_syncer_since)
+        deadline = _wait_deadline(after_syncer_since, after_syncer_max_wait)
         if deadline is not None and utc_now() < deadline:
             return _report_skip(
                 f"Skipped {syncer}: it runs once {after_syncer} completes its first "
@@ -147,7 +155,11 @@ async def run_scheduled_inventory_sync(
         return _report_skip(first_run_taken)
     if syncer and follower_syncers:
         await start_follower_first_runs(
-            syncer, follower_syncers, syncers, follower_syncers_since
+            syncer,
+            follower_syncers,
+            syncers,
+            follower_syncers_since,
+            follower_syncers_max_wait,
         )
     return None
 
@@ -162,28 +174,40 @@ def _report_skip(note: str) -> str:
     return note
 
 
-def _wait_deadline(since: object) -> datetime | None:
+def _wait_deadline(since: object, max_wait: object) -> datetime | None:
     """Return when a follower seeded at ``since`` stops waiting on its leader.
 
-    A missing anchor is treated like a broken one, so a request queued before
-    the anchor existed, or one whose anchor an operator removed, runs at once
-    rather than bringing back the wait without end the bound exists to prevent.
+    A missing anchor or window is treated like a broken one, so a request queued
+    before either existed, or one an operator stripped, runs at once rather than
+    waiting without a bound. An anchor later than now is refused as well: an
+    edited or clock-skewed one would otherwise push the deadline arbitrarily far
+    out, and treating it as now would restart the window on every fire.
 
     :param since: The follower's anchor, as found in its operator-editable meta,
         so not necessarily a string at all.
-    :return: The deadline in UTC, or ``None`` when ``since`` is not a
-        timezone-aware timestamp the window can be added to, in which case the
-        follower stops waiting.
+    :param max_wait: The window in whole seconds, from the same meta.
+    :return: The deadline in UTC, or ``None`` when ``since`` is not a past
+        timezone-aware timestamp or ``max_wait`` is not a positive whole number
+        of seconds that fits, in which case the follower stops waiting.
     """
-    if (anchor := parse_aware_datetime(since)) is not None:
-        # The window belongs to the tasks seeder's follower schedules, but is
-        # read here so a changed window also applies to anchors already written.
-        window = tasks_settings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT.schedule.run_every
+    anchor = parse_aware_datetime(since)
+    if (
+        anchor is not None
+        and anchor <= utc_now()
+        and isinstance(max_wait, int)
+        and not isinstance(max_wait, bool)
+        and max_wait > 0
+    ):
         try:
-            return anchor + window
+            return anchor + timedelta(seconds=max_wait)
         except OverflowError:
             pass
-    logger.warning("Not waiting on a missing or unreadable schedule anchor %r", since)
+    logger.warning(
+        "Not waiting on a missing, unreadable or future schedule anchor %r with "
+        "window %r",
+        since,
+        max_wait,
+    )
     return None
 
 
@@ -214,6 +238,7 @@ async def start_follower_first_runs(
     followers: Sequence[str],
     syncers: list[BaseSyncer],
     since: object = None,
+    max_wait: object = None,
 ) -> None:
     """Start once each follower of ``leader`` that has never run.
 
@@ -227,8 +252,8 @@ async def start_follower_first_runs(
     failure is logged rather than raised: the follower's next beat fire runs it
     instead.
 
-    The start also carries the follower's wait anchor when ``since`` holds one,
-    because the identical-task guard matches meta by containment: a start
+    The start also carries the follower's wait anchor and window when ``since``
+    and ``max_wait`` hold them, because the identical-task guard matches meta by containment: a start
     missing a key the follower's beat fire carries would no longer hold that
     fire back while the start is in flight.
 
@@ -237,6 +262,8 @@ async def start_follower_first_runs(
     :param syncers: The configured syncers, which a follower must resolve against.
     :param since: Each follower's wait anchor, keyed by follower. Anything that
         is not such a mapping, or a value that is not a string, is ignored.
+    :param max_wait: The followers' wait window in whole seconds. Anything that
+        is not an integer is ignored.
     :raises sqlalchemy.exc.SQLAlchemyError: When the PMM Extensions database cannot be read.
     """
     anchors = since if isinstance(since, Mapping) else {}
@@ -269,6 +296,8 @@ async def start_follower_first_runs(
         }
         if isinstance(anchor := anchors.get(follower), str):
             meta[INVENTORY_SYNC_SINCE_KEY] = anchor
+        if isinstance(max_wait, int) and not isinstance(max_wait, bool):
+            meta[INVENTORY_SYNC_MAX_WAIT_KEY] = max_wait
         try:
             celery.send_task(
                 EXECUTE_TASK_BY_NAME_TASK,

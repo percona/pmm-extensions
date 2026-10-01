@@ -327,6 +327,15 @@ class TestInventorySyncFollowerMaxWait:
         with pytest.raises(ValidationError):
             TasksSettings(INVENTORY_SYNC_FOLLOWER_MAX_WAIT=value)
 
+    def test_rejects_a_wait_longer_than_a_timedelta_holds(self) -> None:
+        """Assert a wait the seeder could never turn into a duration is refused.
+
+        ``IntervalSchedule`` bounds ``every`` only as positive, so without this
+        the value would load and then fail every boot's seed.
+        """
+        with pytest.raises(ValidationError, match="longest representable"):
+            TasksSettings(INVENTORY_SYNC_FOLLOWER_MAX_WAIT="1000000000 days")
+
 
 class TestSyncerNameConstants:
     """Test that the suite's hand-kept syncer paths match the real classes."""

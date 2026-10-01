@@ -98,6 +98,31 @@ def _validate_syncer_name(name: str) -> str:
 #: that was pinned on purpose, and a whitespace-only one would fail every firing.
 SyncerName = Annotated[str, AfterValidator(_validate_syncer_name)]
 
+
+def _validate_follower_max_wait(value: IntervalSchedule) -> IntervalSchedule:
+    """Return ``value`` when its duration fits a ``timedelta``, else raise.
+
+    :param value: A candidate :attr:`TasksSettings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT`.
+    :return: The validated interval, unchanged.
+    :raises ValueError: When ``every`` periods exceed ``timedelta``'s range, so
+        the seeder could never compute the window it writes into follower meta.
+    """
+    try:
+        _ = value.schedule
+    except OverflowError:
+        raise ValueError(
+            f"{value} is longer than the longest representable duration"
+        ) from None
+    return value
+
+
+#: The value of :attr:`TasksSettings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT`.
+#: ``IntervalSchedule`` bounds ``every`` only as positive, so an oversized one
+#: would otherwise load and then fail every boot's seed.
+FollowerMaxWait = Annotated[
+    IntervalSchedule, AfterValidator(_validate_follower_max_wait)
+]
+
 #: The longest syncer path an ``INVENTORY_SYNC_SCHEDULES`` entry may name. Its
 #: seeded row name is the path appended to a fixed prefix, and the celery-beat
 #: ``PeriodicTask.name`` column is bounded, so a longer path passes the dotted-path
@@ -261,7 +286,7 @@ class TasksSettings(BaseYamlAppSettings):
     INVENTORY_SYNC_SCHEDULES: UniqueList[InventorySyncSchedule] = Field(
         default_factory=list
     )
-    INVENTORY_SYNC_FOLLOWER_MAX_WAIT: IntervalSchedule = Field(
+    INVENTORY_SYNC_FOLLOWER_MAX_WAIT: FollowerMaxWait = Field(
         default_factory=lambda: IntervalSchedule(every=1, period=Period.DAYS)
     )
     LOG_STREAM_CAP_BYTES: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]

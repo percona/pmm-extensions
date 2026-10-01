@@ -55,7 +55,9 @@ from app.tasks.models import (
     INVENTORY_COLLECTION_TASK_NAME,
     INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FOLLOWERS_KEY,
+    INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY,
     INVENTORY_SYNC_FOLLOWERS_SINCE_KEY,
+    INVENTORY_SYNC_MAX_WAIT_KEY,
     INVENTORY_SYNC_SINCE_KEY,
     INVENTORY_SYNC_TASK_NAME,
     SYNC_RUNNING_TASKS_TASK_NAME,
@@ -883,7 +885,7 @@ def _inventory_sync_schedule(
     name: str,
     syncer: str | None,
     interval: IntervalSchedule,
-    ordering: Mapping[str, str | list[str] | dict[str, str]] | None = None,
+    ordering: Mapping[str, str | int | list[str] | dict[str, str]] | None = None,
 ) -> SystemPeriodicTaskSchedule:
     """Build one inventory-sync schedule.
 
@@ -990,11 +992,12 @@ def _wait_anchor(row: PeriodicTask | None) -> datetime:
     row, and ``date_changed`` moves with each rewrite. A row without a readable
     anchor, as an older build left it, falls back to its ``start_time``, which
     the first seed stamped as the row was created; an earlier ``last_run_at``
-    wins in case an operator moved that marker forward. A row that has lost its
-    ``start_time`` too has no trustworthy creation time left, and only a row
-    from before the anchor existed can be in that state, so it is released at
-    once rather than held back again from a ``last_run_at`` that moves with
-    each fire.
+    wins in case an operator moved that marker forward. A stored anchor later
+    than now, as an edit or a skewed clock can leave it, is unreadable too,
+    since keeping it would hold the follower back past the window. A row that
+    has lost its ``start_time`` as well has no trustworthy creation time left,
+    so it is released at once rather than held back again from a
+    ``last_run_at`` that moves with each fire.
 
     :param row: The follower's existing row, or ``None`` before it is created.
     :return: The anchor, in UTC.
@@ -1002,7 +1005,8 @@ def _wait_anchor(row: PeriodicTask | None) -> datetime:
     if row is None:
         return utc_now()
     meta = _row_meta(row) or {}
-    if (stored := parse_aware_datetime(meta.get(INVENTORY_SYNC_SINCE_KEY))) is not None:
+    stored = parse_aware_datetime(meta.get(INVENTORY_SYNC_SINCE_KEY))
+    if stored is not None and stored <= utc_now():
         return stored
     if not isinstance(row.start_time, datetime):
         return _UNKNOWN_SEED_TIME
@@ -1105,9 +1109,9 @@ async def seed_system_periodic_tasks() -> None:
     carry the first-run relationship in their meta: the default names its
     followers, and each follower names the default, so a follower's first run
     waits for the default's first completed sync. Each follower also carries when
-    its schedule was first seeded, which bounds that wait, and the default holds
-    the same anchors so the first run it starts matches the follower's own
-    request. Nothing is written when the default is not seeded, which leaves a
+    its schedule was first seeded and the ``INVENTORY_SYNC_FOLLOWER_MAX_WAIT``
+    window, which together bound that wait, and the default holds the same
+    values so the first run it starts matches the follower's own request. Nothing is written when the default is not seeded, which leaves a
     standalone or operator-scheduled install unchanged.
 
     :raises SQLAlchemyError: When the celery-beat store cannot be read for the
@@ -1139,6 +1143,11 @@ async def seed_system_periodic_tasks() -> None:
         else {}
     )
     since = {follower: anchor.isoformat() for follower, anchor in anchors.items()}
+    # Serialised here so the scheduled callable, which lives in another app,
+    # reads the window from its own request rather than from tasks settings.
+    max_wait = int(
+        tasks_settings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT.schedule.run_every.total_seconds()
+    )
     if primary_interval is not None:
         periodic_tasks.append(
             _inventory_sync_schedule(
@@ -1149,6 +1158,7 @@ async def seed_system_periodic_tasks() -> None:
                     {
                         INVENTORY_SYNC_FOLLOWERS_KEY: followers,
                         INVENTORY_SYNC_FOLLOWERS_SINCE_KEY: since,
+                        INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY: max_wait,
                     }
                     if followers
                     else None
@@ -1164,6 +1174,7 @@ async def seed_system_periodic_tasks() -> None:
                 {
                     INVENTORY_SYNC_AFTER_KEY: ordered_after,
                     INVENTORY_SYNC_SINCE_KEY: since[entry.syncer],
+                    INVENTORY_SYNC_MAX_WAIT_KEY: max_wait,
                 }
                 if ordered_after
                 else None
