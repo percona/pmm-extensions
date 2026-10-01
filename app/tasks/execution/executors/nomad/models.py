@@ -1194,7 +1194,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         its allocation ``running`` while it waits to be released, unless a
         producing step failed: Nomad then reports the allocation ``failed`` even
         though the hold still runs. Listing both statuses covers every run still
-        waiting on its hold; one whose hold has already exited is left to the
+        waiting on its hold; one whose hold has already exited, as a ``failed``
+        allocation retained until Nomad collects it can be, is left to the
         regular sync.
 
         Readiness is judged on each job's newest allocation, the one a sync
@@ -1207,7 +1208,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         it stops the request however slowly Nomad is answering.
 
         :return: The ``JobID`` of every job whose newest listed allocation
-            satisfies :func:`_detect_capture_hold_ready`.
+            satisfies :func:`_detect_capture_hold_ready` and whose hold step is
+            still running.
         :raises aiohttp.ClientError: If Nomad cannot be reached or answers with an
             error status.
         :raises ValueError: If Nomad answers with a body that is not JSON.
@@ -1235,6 +1237,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             job_id
             for job_id, alloc in newest.items()
             if _detect_capture_hold_ready(alloc)
+            and _capture_hold_step_state(alloc) == NOMAD_RUNNING_TASK_STATE
         )
 
     async def dispatch_task(

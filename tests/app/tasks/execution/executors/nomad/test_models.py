@@ -7089,6 +7089,34 @@ class TestNomadCaptureHoldReadyJobIds:
         assert ready == frozenset()
 
     @pytest.mark.asyncio
+    async def test_failed_allocation_with_exited_hold_is_not_listed(self) -> None:
+        """Assert a retained failed allocation whose hold has exited is skipped.
+
+        Nomad keeps such an allocation until it collects it; reporting it would
+        keep the finishing-run probe from short-circuiting on an empty result
+        for as long as the allocation lingers.
+        """
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(
+                self._LISTING_URL,
+                payload=[
+                    self._alloc(
+                        "job-exited-hold",
+                        {
+                            "run-script": {"State": "dead", "Failed": True},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "dead"},
+                        },
+                        client_status=NomadAllocStatusEnum.FAILED,
+                    ),
+                ],
+            )
+            async with executor:
+                ready = await executor.capture_hold_ready_job_ids()
+
+        assert ready == frozenset()
+
+    @pytest.mark.asyncio
     async def test_empty_allocation_list_returns_empty_set(self) -> None:
         """Assert a cluster with no running allocation reports no job."""
         executor = _build_executor()
