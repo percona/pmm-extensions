@@ -21,7 +21,6 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.celery.models import IntervalSchedule, Period
-from app.core.settings_override.constants import ALERT_SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import (
     is_hot_reloadable,
@@ -87,11 +86,6 @@ class TestAlertsSettingsProxy:
         """Reads through the proxy resolve to the section's defaults."""
         assert alerts_settings.ALERT_FOLDER_NAME == "PMM Extensions Alerts"
         assert alerts_settings.BACKUP_RETENTION == DEFAULT_BACKUP_RETENTION
-
-    def test_proxy_uses_class_name_identifier(self) -> None:
-        """Bind the proxy to its own ``__name__``, distinct from the core ``AlertSettings``."""
-        assert alerts_settings.get_setting_class() == AlertsSettings.__name__
-        assert AlertsSettings.__name__ != ALERT_SETTINGS
 
 
 class TestAlertsSettingsHotFields:

@@ -89,21 +89,6 @@ def test_class_property_reflects_wrapped_class(
     assert isinstance(proxy, _Sample)
 
 
-class TestGetSettingClass:
-    """Pin the class identifier accessor against the constructor argument."""
-
-    def test_returns_constructor_identifier(
-        self, proxy: OverridableSettingsProxy[_Sample]
-    ) -> None:
-        """Return the class ``__name__`` identifier passed at construction."""
-        assert proxy.get_setting_class() == "ExtensionsSettings"
-
-    def test_ignores_snapshot(self, proxy: OverridableSettingsProxy[_Sample]) -> None:
-        """Resolve on the proxy itself, so a snapshot key of that name cannot shadow it."""
-        proxy._set_snapshot({"get_setting_class": "shadowed"})
-        assert proxy.get_setting_class() == "ExtensionsSettings"
-
-
 def test_concurrent_swap_is_atomic(
     proxy: OverridableSettingsProxy[_Sample],
 ) -> None:

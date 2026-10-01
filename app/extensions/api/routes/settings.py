@@ -290,18 +290,17 @@ async def _append_local_class_export(
     :param proxy: The live override proxy for the class.
     :param requested: Parsed export selectors, or ``None`` for a full export.
     """
-    class_name = str(setting_class)
-    if requested is not None and class_name not in requested:
+    if requested is not None and setting_class not in requested:
         return
     block = await build_settings_class_values(
         session=session,
-        setting_class=class_name,
+        setting_class=setting_class,
         settings_cls=settings_cls,
         proxy=proxy,
     )
     if requested is not None:
-        block = _filter_class_block(class_name, block, requested)
-    payload[class_name] = block
+        block = _filter_class_block(setting_class, block, requested)
+    payload[setting_class] = block
 
 
 async def _append_tasks_export_block(

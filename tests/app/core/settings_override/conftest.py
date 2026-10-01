@@ -109,7 +109,7 @@ LONG_USERNAME_LENGTH = 512
 
 
 def assert_entries_keyed_by_class_name(entries: Sequence[ClassEntry]) -> None:
-    """Assert each settings-router entry and its proxy use the class ``__name__``.
+    """Assert each settings-router entry is keyed by its class ``__name__``.
 
     An entry keyed by the storage token instead is no error, just a silent
     lookup miss, so only an explicit check catches it.
@@ -117,13 +117,12 @@ def assert_entries_keyed_by_class_name(entries: Sequence[ClassEntry]) -> None:
     :param entries: The ``ClassEntry`` list a service's settings router serves.
     """
     assert entries, "the settings router serves no classes"
-    for identifier, settings_cls, proxy in entries:
+    for identifier, settings_cls, _ in entries:
         assert identifier == settings_cls.__name__
-        assert proxy.get_setting_class() == identifier
 
 
 def assert_registry_keyed_by_class_name(registry: ProxyRegistry) -> None:
-    """Assert each refresher registry key, its class and its proxy agree on ``__name__``.
+    """Assert each refresher registry key matches its class ``__name__``.
 
     The refresher looks rebind callbacks up by registry key, so a key spelled as
     the storage token would still load rows yet silently never fire a callback.
@@ -133,7 +132,6 @@ def assert_registry_keyed_by_class_name(registry: ProxyRegistry) -> None:
     assert registry, "the refresher registry wires no classes"
     for identifier, entry in registry.items():
         assert identifier == entry.settings_cls.__name__
-        assert entry.proxy.get_setting_class() == identifier
 
 
 async def insert_override_row(

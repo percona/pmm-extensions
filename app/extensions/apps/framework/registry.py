@@ -569,7 +569,7 @@ def collect_app_owned_settings_classes(
                     " APP_OWNED_SETTINGS_CLASSES entry must be an"
                     f" AppOwnedClassEntry, got {type(entry).__name__}.",
                 )
-            class_id = str(entry.setting_class)
+            class_id = entry.setting_class
             if class_id in seen_classes:
                 raise ValueError(
                     f"Settings class {class_id!r} is declared"
