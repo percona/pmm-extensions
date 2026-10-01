@@ -185,35 +185,42 @@ class ClientRegistry:
         Closes every client still in the cache, then force-closes any clients
         :meth:`invalidate` deferred via :class:`PendingCloses`. The pending
         sweep runs in a nested ``finally`` so it still executes when an active
-        close is cancelled or raises -- ``_closed`` already blocks a later
-        ``close_all`` retry. Safe to call multiple times; subsequent calls have
-        no effect once the registry is closed.
+        close is cancelled or raises. Safe to call multiple times: after the
+        registry is closed, later calls skip the already-cleared cache and
+        re-run only the pending sweep so a transient deferred-close failure
+        remains retryable.
         """
         async with self._close_lock:
             if self.closed:
-                return
-            self._closed = True
-            # Seal before any await so a concurrent invalidate cannot register
-            # a deferred close after force_close has already returned.
-            self._pending_closes.seal()
-            clients = list(self._clients.values())
+                # Retry path: cache clients were already closed; only the
+                # pending sweep can still make progress.
+                clients: list[BaseRemoteAPI] = []
+            else:
+                self._closed = True
+                # Seal before any await so a concurrent invalidate cannot
+                # register a deferred close after force_close has returned.
+                self._pending_closes.seal()
+                clients = list(self._clients.values())
 
         try:
             try:
-                results = await asyncio.gather(
-                    *(client.close() for client in clients), return_exceptions=True
-                )
-                for client, result in zip(clients, results, strict=False):
-                    if isinstance(result, Exception):
-                        logger.warning(
-                            "Error closing client %s: %s",
-                            client.redacted_base_url,
-                            result,
-                        )
+                if clients:
+                    results = await asyncio.gather(
+                        *(client.close() for client in clients),
+                        return_exceptions=True,
+                    )
+                    for client, result in zip(clients, results, strict=False):
+                        if isinstance(result, Exception):
+                            logger.warning(
+                                "Error closing client %s: %s",
+                                client.redacted_base_url,
+                                result,
+                            )
             finally:
                 # Pending sweep must run even if an active close is cancelled
                 # or raises: retired clients held by streams would otherwise
-                # remain open with no later close_all to find them.
+                # remain open. A later close_all can retry this sweep if a
+                # deferred close fails transiently.
                 await self._pending_closes.force_close()
         finally:
             self._clients.clear()
