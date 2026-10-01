@@ -1329,7 +1329,7 @@ class TestServicePrincipalWriteRouteRequests:
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     def test_a_read_needs_no_credential(self, client: TestClient) -> None:
-        """Serve a read declaring nothing, the restriction being method-scoped."""
+        """Serve a read-only route declaring nothing, which the restriction skips."""
         response = client.get("/read")
 
         assert response.status_code == status.HTTP_200_OK

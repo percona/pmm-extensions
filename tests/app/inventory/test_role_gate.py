@@ -129,7 +129,7 @@ def _requires_the_principal(route: APIRoute) -> bool:
     """Return whether the route's resolved dependencies include the restriction.
 
     :param route: The route to inspect.
-    :return: True when the service-principal check guards the route.
+    :return: ``True`` when the service-principal check guards the route.
     """
     return get_current_service_principal in _top_level_calls(route)
 
@@ -138,7 +138,7 @@ def _declares_the_exemption(route: APIRoute) -> bool:
     """Return whether the route's resolved dependencies include the exemption.
 
     :param route: The route to inspect.
-    :return: True when the route declares ``ExemptFromServicePrincipalDep``.
+    :return: ``True`` when the route declares ``ExemptFromServicePrincipalDep``.
     """
     return get_service_principal_exempt_caller in _top_level_calls(route)
 

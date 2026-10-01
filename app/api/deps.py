@@ -228,7 +228,7 @@ def requires_service_principal(
 
     :param methods: The HTTP methods the route answers.
     :param dependencies: The route's own and inherited dependencies.
-    :return: True when any method is unsafe and the route does not declare
+    :return: ``True`` when any method is unsafe and the route does not declare
         :data:`ExemptFromServicePrincipalDep`.
     """
     return (
@@ -237,7 +237,7 @@ def requires_service_principal(
 
 
 class ServicePrincipalWriteRoute(APIRoute):
-    """Build a route whose unsafe methods admit only the service principal.
+    """Build a route admitting only the service principal when any method is unsafe.
 
     Set as a router's ``route_class`` so a write route added to it is
     syncer-only by default, and one a human may call has to say so by declaring
@@ -273,10 +273,9 @@ class ServicePrincipalWriteRoute(APIRoute):
         """
         route_dependencies = list(dependencies or ())
         if requires_service_principal(methods or {"GET"}, route_dependencies):
-            # FastAPI resolves decorator dependencies in order, so the restriction
-            # goes first, ahead of one that could 404. include_router rebuilds each
-            # route from its predecessor's dependencies, which already carry it
-            # behind whatever the inclusion prepends, so move it rather than add it.
+            # include_router rebuilds each route from its predecessor's dependencies,
+            # which already carry the restriction behind whatever the inclusion
+            # prepends, so move it to the front rather than add it again.
             route_dependencies = [
                 IsServicePrincipalDep,
                 *(dep for dep in route_dependencies if dep != IsServicePrincipalDep),
