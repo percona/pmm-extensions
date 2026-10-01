@@ -45,6 +45,13 @@ export interface TaskLogsState {
   streamStatus: StreamStatus;
   finishStatus?: FinishStatus;
   error?: StreamError;
+  /**
+   * Whether a reconnect resumed from the received offsets. Those offsets are
+   * live-stream offsets, which the persisted log of a run that finished
+   * meanwhile does not share, so a resumed log is only trustworthy once
+   * reloaded in full.
+   */
+  resumed: boolean;
 }
 
 interface IncomingLog {
@@ -104,6 +111,7 @@ export function useTaskLogs(
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
   const [finishStatus, setFinishStatus] = useState<FinishStatus | undefined>();
   const [error, setError] = useState<StreamError | undefined>();
+  const [resumed, setResumed] = useState(false);
 
   const offsetsRef = useRef<Record<string, number>>({});
   // Stable ref so onclose can read current streamStatus without re-registering.
@@ -120,6 +128,7 @@ export function useTaskLogs(
     setStepOrder([]);
     setFinishStatus(undefined);
     setError(undefined);
+    setResumed(false);
     streamStatusRef.current = 'connecting';
     setStreamStatus('connecting');
 
@@ -139,6 +148,9 @@ export function useTaskLogs(
       const params = Object.entries(offsetsRef.current).map(
         ([key, offset]) => `${encodeURIComponent(`${key}_offset`)}=${offset}`,
       );
+      if (params.length && !disposed) {
+        setResumed(true);
+      }
       if (tail !== undefined && tail > 0) {
         params.unshift(`tail=${encodeURIComponent(String(tail))}`);
       }
@@ -341,5 +353,5 @@ export function useTaskLogs(
     };
   }, [taskHistoryId, tail, attempt]);
 
-  return { textByStep, stepOrder, streamStatus, finishStatus, error };
+  return { textByStep, stepOrder, streamStatus, finishStatus, error, resumed };
 }

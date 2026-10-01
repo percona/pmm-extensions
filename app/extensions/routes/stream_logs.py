@@ -171,7 +171,9 @@ async def task_history_logs_event_stream(
 
     ``finish`` is reserved for a terminal status. A stream that ends while the
     reconciled run is still live (for example, the executor had not started it
-    yet) emits a 409 ``extensions-error`` for the client to retry instead.
+    yet) emits a 409 ``extensions-error`` for the client to retry instead. A 409
+    from the log read itself is reconciled the same way before it reaches the
+    client, so a run that died before starting finishes rather than retrying.
 
     :param tasks_client: The TaskAPI client for interacting with the Tasks service.
     :param task_history_id: The ID of the task history whose logs to stream.
@@ -182,15 +184,24 @@ async def task_history_logs_event_stream(
     """
     try:
         with tasks_client.auth(access_token) as tasks_api:
-            # No read timeout: log stream can stall under backpressure (e.g. ~26MB)
-            # and must not be killed by the default sock_read=120.
-            async for log_entry in tasks_api.stream(
-                f"/history/{task_history_id}/logs/",
-                params=request.query_params,
-                timeout=ClientTimeout(sock_read=None),
-            ):
-                if log_entry:
-                    yield f"data: {log_entry.decode()}\n\n"
+            try:
+                # No read timeout: log stream can stall under backpressure (e.g. ~26MB)
+                # and must not be killed by the default sock_read=120.
+                async for log_entry in tasks_api.stream(
+                    f"/history/{task_history_id}/logs/",
+                    params=request.query_params,
+                    timeout=ClientTimeout(sock_read=None),
+                ):
+                    if log_entry:
+                        yield f"data: {log_entry.decode()}\n\n"
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_409_CONFLICT:
+                    raise
+                logger.debug(
+                    "Task history %s is not streaming yet: %s",
+                    task_history_id,
+                    exc.detail,
+                )
         with tasks_client.auth(get_internal_token()) as sync_api:
             task_history = as_json_object(
                 await sync_api.post(f"/history/{task_history_id}/sync/")

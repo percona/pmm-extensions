@@ -192,7 +192,7 @@ export function TaskLogViewer({ taskHistoryId, taskStatus, height = 480 }: TaskL
   const reloadLiveLog = liveLogState === 'ended' && !running;
   const tailLines = logTailChoiceToParam(logTailChoice);
   const effectiveTailLines = running || keepLiveLog ? undefined : tailLines;
-  const { textByStep, stepOrder, streamStatus, finishStatus, error } = useTaskLogs(
+  const { textByStep, stepOrder, streamStatus, finishStatus, error, resumed } = useTaskLogs(
     taskHistoryId,
     effectiveTailLines,
     reloadLiveLog ? 1 : 0,
@@ -215,13 +215,14 @@ export function TaskLogViewer({ taskHistoryId, taskStatus, height = 480 }: TaskL
       }
       const complete =
         streamStatus === 'finished' &&
+        !resumed &&
         finishStatus !== undefined &&
         Object.prototype.hasOwnProperty.call(TERMINAL_FINISH_STATUS, finishStatus);
       setLiveLog({ historyId: taskHistoryId, state: complete ? 'complete' : 'ended' });
     } else if (running && liveLogState === undefined) {
       setLiveLog({ historyId: taskHistoryId, state: 'open' });
     }
-  }, [running, streamStatus, finishStatus, taskHistoryId, liveLogState]);
+  }, [running, streamStatus, finishStatus, resumed, taskHistoryId, liveLogState]);
   const { eventsByStep, stepOrder: eventStepOrder } = useExecutionEvents(taskHistoryId, running);
 
   const [topTab, setTopTab] = useState<TopTab>('stdout');

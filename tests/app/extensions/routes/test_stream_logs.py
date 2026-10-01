@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 from starlette.status import (
     HTTP_200_OK,
     HTTP_409_CONFLICT,
+    HTTP_410_GONE,
     HTTP_503_SERVICE_UNAVAILABLE,
 )
 
@@ -269,7 +270,7 @@ def test_logs_event_stream_lost_run_still_finishes(
     ]
 
 
-def test_logs_event_stream_forwards_upstream_not_started_409(
+def test_logs_event_stream_upstream_not_started_409_stays_retryable_while_live(
     test_client, mock_tasks_client, task_history_response
 ):
     """Assert the Tasks API's not-started 409 reaches the client as a 409 frame."""
@@ -277,6 +278,9 @@ def test_logs_event_stream_forwards_upstream_not_started_409(
         status_code=HTTP_409_CONFLICT,
         detail="Allocation a has not started a task yet",
     )
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": TaskHistoryStatusEnum.RUNNING
+    }
 
     response = test_client.get(f"/stream-logs/{task_history_response.id}")
 
@@ -286,9 +290,54 @@ def test_logs_event_stream_forwards_upstream_not_started_409(
             json.dumps(
                 {
                     "code": HTTP_409_CONFLICT,
-                    "detail": "Allocation a has not started a task yet",
+                    "detail": f"Task history is {TaskHistoryStatusEnum.RUNNING}.",
                 }
             ),
+        )
+    ]
+
+
+def test_logs_event_stream_upstream_409_for_a_run_that_died_finishes_it(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert a not-started 409 is reconciled before the client is told to retry.
+
+    A run whose allocation never started and whose job is gone answers 409
+    until a sync settles it; reconciling here ends the viewer's stream with
+    that terminal status instead of spending its retry budget.
+    """
+    mock_tasks_client.stream.side_effect = HTTPException(
+        status_code=HTTP_409_CONFLICT,
+        detail="Allocation a has not started a task yet",
+    )
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": TaskHistoryStatusEnum.LOST
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        ("finish", json.dumps({"status": TaskHistoryStatusEnum.LOST}))
+    ]
+    mock_tasks_client.post.assert_called_once_with(
+        f"/history/{task_history_response.id}/sync/"
+    )
+
+
+def test_logs_event_stream_upstream_410_is_not_reconciled(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert an expired run's 410 is forwarded as-is, without a sync."""
+    mock_tasks_client.stream.side_effect = HTTPException(
+        status_code=HTTP_410_GONE, detail="gone"
+    )
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (
+            "extensions-error",
+            json.dumps({"code": HTTP_410_GONE, "detail": "gone"}),
         )
     ]
     mock_tasks_client.post.assert_not_called()

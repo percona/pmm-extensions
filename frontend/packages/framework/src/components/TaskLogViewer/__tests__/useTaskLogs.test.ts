@@ -420,6 +420,7 @@ describe('useTaskLogs', () => {
       await settle();
       expect(result.current.textByStep.s?.stdout).toBe('first line');
       expect(result.current.error).toBeUndefined();
+      expect(result.current.resumed).toBe(false);
     });
 
     it('does not reconnect after a 410', async () => {
@@ -445,12 +446,14 @@ describe('useTaskLogs', () => {
       await settle();
 
       await pushNotStarted(0);
+      expect(result.current.resumed).toBe(false);
       await advance(NOT_STARTED_RETRY_DELAYS_MS[0]);
 
       expect(fetchedUrls()).toEqual([
         '/stream-logs/1',
         '/stream-logs/1?backup_main_stdout_offset=10&_stderr_offset=3',
       ]);
+      expect(result.current.resumed).toBe(true);
       expect(result.current.textByStep.backup_main.stdout).toBe('a');
       expect(result.current.textByStep[''].stderr).toBe('b');
       expect(result.current.stepOrder).toEqual(['backup_main', '']);

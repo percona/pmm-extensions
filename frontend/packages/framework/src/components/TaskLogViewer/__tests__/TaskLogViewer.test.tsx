@@ -195,6 +195,43 @@ describe('TaskLogViewer', () => {
     expect(output.textContent).toBe('line-1\n');
   });
 
+  it('reloads a live log that resumed from its offsets, even after a clean finish', async () => {
+    const { rerender } = render(
+      <QueryWrapper>
+        <TaskLogViewer taskHistoryId="7" taskStatus="RUNNING" />
+      </QueryWrapper>,
+    );
+    await flushPromises();
+
+    act(() => {
+      getHandle('7').pushMessage({ msg: 'line-1\n', step: 'setup', type: 'stdout', offset: 1 });
+      getHandle('7').pushNamed('extensions-error', {
+        code: 409,
+        detail: 'Task history is running.',
+      });
+    });
+    await waitFor(() => expect(logFetchUrls()).toHaveLength(2), { timeout: 3000 });
+    await flushPromises();
+    act(() => {
+      getHandle('7').pushMessage({ msg: 'line-2\n', step: 'setup', type: 'stdout', offset: 2 });
+      getHandle('7').pushNamed('finish', { status: 'success' });
+    });
+    await waitFor(() => expect(screen.getByText('Done')).toBeInTheDocument());
+
+    rerender(
+      <QueryWrapper>
+        <TaskLogViewer taskHistoryId="7" taskStatus="SUCCESS" />
+      </QueryWrapper>,
+    );
+    await flushPromises();
+
+    expect(logFetchUrls()).toEqual([
+      '/stream-logs/7',
+      '/stream-logs/7?setup_stdout_offset=1',
+      '/stream-logs/7?tail=1000',
+    ]);
+  });
+
   it('reloads a live log whose finish carried a non-terminal status', async () => {
     const { rerender } = render(
       <QueryWrapper>
