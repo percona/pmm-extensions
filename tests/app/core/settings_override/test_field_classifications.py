@@ -106,6 +106,7 @@ class TestAdvancedMarkers:
             "timeout",
             "minify_payload",
             "log_socket_read_timeout",
+            "log_stream_max_connections",
             "cert_expiry_warn_days",
             "check_cert_expiry_interval",
             "log_anonymization_max_withheld_bytes",

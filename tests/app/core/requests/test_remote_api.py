@@ -48,6 +48,7 @@ from app.core.requests.remote_api import (
     as_json_object,
     BaseRemoteAPI,
     is_non_json_success,
+    POOL_WAIT_WARN_SECONDS,
     UPSTREAM_NON_JSON_HEADER,
 )
 from app.core.requests.remote_api import (
@@ -70,6 +71,7 @@ _CREDENTIAL_ENDPOINT = "http://svcuser:svcpass@remote.internal:9000/api/inventor
 _CREDENTIAL_SECRET = "svcpass"
 _REDACTED_BASE_URL = "http://svcuser:****@remote.internal:9000"
 _LIVE_BASE_URL = "http://svcuser:svcpass@remote.internal:9000"
+_STREAM_START_BOUND = 2.0
 
 
 @pytest.fixture
@@ -1395,3 +1397,184 @@ class TestSessionLifecycleLogging:
 
         assert _CREDENTIAL_SECRET not in session_url
         assert CREDENTIAL_URL_MASK not in session_url
+
+
+class _OneStreamSlotRemoteAPI(RemoteAPI):
+    """Cap the long-lived pool at a single connection."""
+
+    STREAM_CONNECTION_LIMIT = 1
+
+
+@asynccontextmanager
+async def _held_stream_server(release: asyncio.Event) -> AsyncGenerator[str]:
+    """Serve a stream that stays open until ``release``, and a quick JSON route.
+
+    ``/held`` writes one chunk immediately, then holds the response open until
+    the test sets ``release``, the way a live log follow holds its connection.
+
+    :param release: Set by the test to let every held stream finish.
+    :yield: The base URL the server listens on.
+    """
+
+    async def held(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        await response.write(b"first")
+        await release.wait()
+        await response.write(b"last")
+        return response
+
+    async def quick(_request: web.Request) -> web.Response:
+        return web.json_response({"ok": True})
+
+    server = web.Application()
+    server.router.add_get("/held", held)
+    server.router.add_get("/quick", quick)
+    runner = web.AppRunner(server, shutdown_timeout=1)
+    await runner.setup()
+    try:
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        _, port = runner.addresses[0][:2]
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        release.set()
+        await runner.cleanup()
+
+
+class _HeldReader:
+    """Read ``/held`` in a background task, recording each chunk on arrival.
+
+    :param api: The opened client to stream through.
+    """
+
+    def __init__(self, api: RemoteAPI) -> None:
+        self.chunks: list[bytes] = []
+        self.started = asyncio.Event()
+        self.task = asyncio.create_task(self._read(api))
+
+    async def _read(self, api: RemoteAPI) -> None:
+        """Consume the stream, flagging :attr:`started` on the first chunk.
+
+        :param api: The opened client to stream through.
+        """
+        async for chunk in api.stream_chunks("/held"):
+            self.chunks.append(chunk)
+            self.started.set()
+
+
+class TestLongLivedStreamPool:
+    """Cover the separate connection pool long-lived streaming responses use."""
+
+    pytestmark = pytest.mark.asyncio
+
+    async def test_more_open_streams_than_the_short_call_cap_all_start(self) -> None:
+        """Start every stream when more are open than the per-host short-call cap.
+
+        Eleven held streams to one host exceed the ten connections per host the
+        short-call pool allows, so the eleventh starts only if streams draw on
+        a pool of their own.
+        """
+        release = asyncio.Event()
+        async with (
+            _held_stream_server(release) as endpoint,
+            RemoteAPI(endpoint=endpoint) as api,
+        ):
+            readers = [_HeldReader(api) for _ in range(11)]
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(reader.started.wait() for reader in readers)),
+                    _STREAM_START_BOUND,
+                )
+            finally:
+                release.set()
+                await asyncio.gather(*(reader.task for reader in readers))
+
+        assert all(reader.chunks == [b"first", b"last"] for reader in readers)
+
+    async def test_a_short_call_is_served_while_the_stream_pool_is_full(self) -> None:
+        """Serve a plain request at once while every stream slot is taken."""
+        release = asyncio.Event()
+        async with (
+            _held_stream_server(release) as endpoint,
+            _OneStreamSlotRemoteAPI(endpoint=endpoint) as api,
+        ):
+            reader = _HeldReader(api)
+            try:
+                await asyncio.wait_for(reader.started.wait(), _STREAM_START_BOUND)
+                answer = await asyncio.wait_for(api.get("/quick"), _STREAM_START_BOUND)
+            finally:
+                release.set()
+                await reader.task
+
+        assert answer == {"ok": True}
+
+    async def test_a_stream_queued_for_a_slot_logs_the_wait(self, caplog) -> None:
+        """Warn when a stream waited past the threshold for a pooled connection."""
+        release = asyncio.Event()
+        async with (
+            _held_stream_server(release) as endpoint,
+            _OneStreamSlotRemoteAPI(endpoint=endpoint) as api,
+        ):
+            with caplog.at_level(logging.WARNING, logger=api.logger.name):
+                holder = _HeldReader(api)
+                await asyncio.wait_for(holder.started.wait(), _STREAM_START_BOUND)
+                queued = _HeldReader(api)
+                await asyncio.sleep(POOL_WAIT_WARN_SECONDS + 0.3)
+                started_while_held = queued.started.is_set()
+                release.set()
+                await asyncio.gather(holder.task, queued.task)
+
+        assert not started_while_held
+        assert b"".join(queued.chunks) == b"firstlast"
+        waits = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "for a pooled connection" in record.getMessage()
+        ]
+        assert len(waits) == 1
+        assert "(GET /held)" in waits[0]
+
+    async def test_a_request_that_never_queues_logs_no_wait(self, caplog) -> None:
+        """Stay silent for a request that found a free connection."""
+        release = asyncio.Event()
+        async with (
+            _held_stream_server(release) as endpoint,
+            RemoteAPI(endpoint=endpoint) as api,
+        ):
+            with caplog.at_level(logging.WARNING, logger=api.logger.name):
+                answer = await api.get("/quick")
+
+        assert answer == {"ok": True}
+        assert "for a pooled connection" not in caplog.text
+
+    async def test_a_client_that_never_streams_opens_no_stream_pool(self) -> None:
+        """Leave the long-lived pool unbuilt until a stream needs it."""
+        release = asyncio.Event()
+        async with (
+            _held_stream_server(release) as endpoint,
+            RemoteAPI(endpoint=endpoint) as api,
+        ):
+            answer = await api.get("/quick")
+            stream_session = api._stream_session
+
+        assert answer == {"ok": True}
+        assert stream_session is None
+
+    async def test_exit_closes_the_stream_pool_it_built_once(self) -> None:
+        """Reuse one long-lived session and close it with the short-call one."""
+        release = asyncio.Event()
+        release.set()
+        async with _held_stream_server(release) as endpoint:
+            api = RemoteAPI(endpoint=endpoint)
+            async with api:
+                await _HeldReader(api).task
+                stream_session = api._stream_session
+                await _HeldReader(api).task
+                reused = api._stream_session is stream_session
+
+        assert stream_session is not None
+        assert reused
+        assert stream_session.closed
+        assert api._stream_session is None
