@@ -619,6 +619,32 @@ class NomadAllocStatusEnum(StrEnum):
     UNKNOWN = "unknown"
 
 
+class NomadEvalStatusEnum(StrEnum):
+    """Reproduce Nomad's possible evaluation statuses.
+
+    :cvar BLOCKED: Enum value for evaluations waiting for cluster capacity.
+    :cvar PENDING: Enum value for evaluations waiting for a scheduler.
+    :cvar COMPLETE: Enum value for completed evaluations.
+    :cvar FAILED: Enum value for failed evaluations.
+    :cvar CANCELED: Enum value for canceled evaluations.
+    """
+
+    BLOCKED = "blocked"
+    PENDING = "pending"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
+# Evaluation statuses under which Nomad may still place the job's work. A
+# client without capacity completes the dispatch evaluation and parks the work
+# in a ``blocked`` one, so a job with no allocation is queued, not dead, while
+# any of its evaluations is in this set.
+_LIVE_EVAL_STATUSES = frozenset(
+    {NomadEvalStatusEnum.PENDING, NomadEvalStatusEnum.BLOCKED}
+)
+
+
 class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     """Represent a Nomad task executor.
 
@@ -1485,43 +1511,33 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     ) -> tuple[dict[str, Any], str] | None:
         """Resolve the current allocation for a running task history.
 
-        Walks any ``FollowupEvalID`` chain to land on the latest allocation. If
-        the allocation is gone, mutates ``queue_item.status`` to FAILED or LOST
-        and returns ``None`` so the caller knows to bail out without further
-        work.
+        Walks any ``FollowupEvalID`` chain to land on the latest allocation. When
+        the tracked lookup finds none, the job's evaluations decide. An
+        allocation placed by the run's own evaluation chain — the tracked eval or
+        a ``BlockedEval`` it spawned once capacity freed — is adopted as the
+        run's. Otherwise, while any evaluation is still live (see
+        ``_LIVE_EVAL_STATUSES``) the work is queued and the row stays RUNNING
+        until ``PENDING_ALLOCATION_TIMEOUT_SECONDS`` elapses from ``started_at``,
+        after which the job is withdrawn and the row goes LOST. With every
+        evaluation terminal the job is withdrawn and the row goes FAILED. Both
+        withdrawals are best-effort so a Nomad error cannot leave the row
+        RUNNING. A job Nomad no longer has goes LOST with nothing to withdraw.
+
+        Every terminal outcome mutates ``queue_item`` and returns ``None`` so the
+        caller knows to bail out without further work.
 
         :param queue_item: The running task history record.
-        :type queue_item: TaskHistory
         :return: ``(alloc, job_id)`` when an allocation is found, or ``None``
             when the caller should return early.
-        :rtype: tuple[dict[str, Any], str] | None
         """
         try:
-            alloc = self.get_allocation_for_task_history(queue_item)
-            job_id = alloc["JobID"]
-            while followup_eval_id := alloc.get("FollowupEvalID"):
-                alloc = self.get_last_allocation(job_id, followup_eval_id)
-                queue_item.execution_request.tracking["task_states"] = {}
+            return self._follow_reschedules(
+                queue_item, self.get_allocation_for_task_history(queue_item)
+            )
         except AllocationNotFoundError:
             logger.debug("Allocation not found for task history %s", queue_item.id)
-        else:
-            return alloc, job_id
         try:
             job = self.get_job_for_task_history(queue_item)
-            if all(
-                evaluation.get("Status") != NomadAllocStatusEnum.PENDING
-                for evaluation in self.backend.job.get_evaluations(job["ID"])
-            ):
-                logger.warning(
-                    "No allocations or pending evaluations found for task history %s",
-                    queue_item.id,
-                )
-                queue_item.status = TaskHistoryStatusEnum.FAILED
-                queue_item.set_failure_reason(
-                    "The executor job produced no allocation and has no pending "
-                    "evaluation."
-                )
-                queue_item.started_at = None
         except JobNotFoundError:
             logger.warning(
                 "Lost job and allocation from task history %s", queue_item.id
@@ -1530,7 +1546,134 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             queue_item.set_failure_reason(
                 _terminal_status_reason(TaskHistoryStatusEnum.LOST, {})
             )
+            return None
+        evaluations = self.backend.job.get_evaluations(job["ID"])
+        if (
+            resolved := self._find_chain_allocation(queue_item, job["ID"], evaluations)
+        ) is not None:
+            return resolved
+        if any(
+            evaluation.get("Status") in _LIVE_EVAL_STATUSES
+            for evaluation in evaluations
+        ):
+            if self._should_escalate_pending_allocation(queue_item):
+                logger.warning(
+                    "Job %s of task history %s has produced no allocation past the "
+                    "pending-allocation timeout; marking LOST",
+                    job["ID"],
+                    queue_item.id,
+                )
+                self._withdraw_job(job["ID"], queue_item, TaskHistoryStatusEnum.LOST)
+                queue_item.finished_at = utc_now()
+                queue_item.status = TaskHistoryStatusEnum.LOST
+                queue_item.set_failure_reason(
+                    _terminal_status_reason(TaskHistoryStatusEnum.LOST, {})
+                )
+            return None
+        logger.warning(
+            "No allocations or pending evaluations found for task history %s",
+            queue_item.id,
+        )
+        self._withdraw_job(job["ID"], queue_item, TaskHistoryStatusEnum.FAILED)
+        queue_item.status = TaskHistoryStatusEnum.FAILED
+        queue_item.set_failure_reason(
+            "The executor job produced no allocation and has no pending evaluation."
+        )
+        queue_item.started_at = None
         return None
+
+    def _follow_reschedules(
+        self, queue_item: TaskHistory, alloc: dict[str, Any]
+    ) -> tuple[dict[str, Any], str]:
+        """Walk an allocation's ``FollowupEvalID`` chain to its latest successor.
+
+        :param queue_item: The running task history record; its tracked task
+            states are reset on every hop, since they belonged to the
+            superseded allocation.
+        :param alloc: The allocation to start from.
+        :return: ``(alloc, job_id)`` for the latest allocation in the chain.
+        :raises AllocationNotFoundError: If a successor has not been placed yet.
+        """
+        job_id = alloc["JobID"]
+        while followup_eval_id := alloc.get("FollowupEvalID"):
+            alloc = self.get_last_allocation(job_id, followup_eval_id)
+            queue_item.execution_request.tracking["task_states"] = {}
+        return alloc, job_id
+
+    def _find_chain_allocation(
+        self,
+        queue_item: TaskHistory,
+        job_id: str,
+        evaluations: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str] | None:
+        """Find an allocation placed by the run's own evaluation chain.
+
+        Nomad places work queued for capacity under the ``blocked`` evaluation's
+        id, not the dispatch evaluation the row tracks, so the tracked eval's
+        ``BlockedEval`` links are followed (stopping at a missing link or a
+        cycle) and each is looked up, deepest first. The tracked eval itself is
+        always looked up last: Nomad writes an allocation before marking its
+        evaluation terminal, so this re-read sees a placement that landed after
+        the tracked lookup but before ``evaluations`` was read.
+
+        Matching on the chain rather than on the job alone keeps a job reused
+        across runs from adopting another run's allocation.
+
+        :param queue_item: The running task history record.
+        :param job_id: The Nomad job id.
+        :param evaluations: The job's evaluations as Nomad returned them.
+        :return: ``(alloc, job_id)`` for the first allocation found, or ``None``
+            when no evaluation in the chain has placed one.
+        """
+        tracked_eval_id = queue_item.execution_request.tracking.get("evaluation_id")
+        if not tracked_eval_id:
+            return None
+        by_id = {evaluation.get("ID"): evaluation for evaluation in evaluations}
+        chain = [tracked_eval_id]
+        while (
+            blocked_eval_id := by_id.get(chain[-1], {}).get("BlockedEval")
+        ) and blocked_eval_id not in chain:
+            chain.append(blocked_eval_id)
+        for eval_id in reversed(chain):
+            try:
+                return self._follow_reschedules(
+                    queue_item, self.get_last_allocation(job_id, eval_id)
+                )
+            except AllocationNotFoundError:
+                logger.debug(
+                    "No allocation placed by evaluation %s of task history %s",
+                    eval_id,
+                    queue_item.id,
+                )
+        return None
+
+    def _withdraw_job(
+        self,
+        job_id: str,
+        queue_item: TaskHistory,
+        outcome: TaskHistoryStatusEnum,
+    ) -> None:
+        """Ask Nomad to deregister a job whose run ends without an allocation.
+
+        The call is best-effort. Withdrawing stops Nomad from still placing work the row is about to
+        report terminal. A Nomad error is logged and swallowed: holding the row
+        RUNNING instead would block every re-dispatch of the same task, target
+        and payload with a 409.
+
+        :param job_id: The Nomad job to deregister.
+        :param queue_item: The task history record being terminalized.
+        :param outcome: The terminal status the row is about to take.
+        """
+        try:
+            self.backend.job.deregister_job(job_id)
+        except BaseNomadException:
+            logger.warning(
+                "Could not deregister job %s for task history %s; marking %s anyway",
+                job_id,
+                queue_item.id,
+                outcome.name,
+                exc_info=True,
+            )
 
     def _stamp_finished_at(
         self, queue_item: TaskHistory, alloc: dict[str, Any]
@@ -1745,16 +1888,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 alloc["ID"],
                 queue_item.id,
             )
-            try:
-                self.backend.job.deregister_job(job["ID"])
-            except BaseNomadException:
-                logger.warning(
-                    "Could not deregister job %s while escalating task history "
-                    "%s past the pending-allocation timeout; marking LOST anyway",
-                    job["ID"],
-                    queue_item.id,
-                    exc_info=True,
-                )
+            self._withdraw_job(job["ID"], queue_item, TaskHistoryStatusEnum.LOST)
             queue_item.finished_at = utc_now()
             queue_item.status = TaskHistoryStatusEnum.LOST
             queue_item.set_failure_reason(
