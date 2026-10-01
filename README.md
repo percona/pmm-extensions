@@ -4,7 +4,7 @@
 
 | Name                                                                                                                                |    Stmts |     Miss |   Branch |   BrPart |   Cover |   Missing |
 |------------------------------------------------------------------------------------------------------------------------------------ | -------: | -------: | -------: | -------: | ------: | --------: |
-| app/api/deps.py                                                                                                                     |       95 |        0 |       22 |        0 |    100% |           |
+| app/api/deps.py                                                                                                                     |      107 |        0 |       24 |        0 |    100% |           |
 | app/api/main.py                                                                                                                     |        6 |        0 |        0 |        0 |    100% |           |
 | app/api/routes/config.py                                                                                                            |        9 |        0 |        0 |        0 |    100% |           |
 | app/api/routes/oauth.py                                                                                                             |       77 |        0 |       14 |        0 |    100% |           |
@@ -56,7 +56,7 @@
 | app/core/requests/connectivity.py                                                                                                   |       33 |        0 |        8 |        0 |    100% |           |
 | app/core/requests/registry.py                                                                                                       |       64 |        3 |       22 |        3 |     93% |101, 112, 171 |
 | app/core/requests/remote\_api.py                                                                                                    |      382 |        3 |       78 |        2 |     99% |369, 1022-\>1021, 1135, 1147 |
-| app/core/security.py                                                                                                                |       10 |        0 |        0 |        0 |    100% |           |
+| app/core/security.py                                                                                                                |       13 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/alembic\_ops.py                                                                                         |      154 |       15 |       56 |       14 |     86% |93, 96, 98, 100-\>102, 120, 122, 158, 160, 174, 176, 217, 261, 306, 335, 361-362 |
 | app/core/settings\_override/api/export.py                                                                                           |        9 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/api/models.py                                                                                           |       24 |        0 |        0 |        0 |    100% |           |
@@ -431,9 +431,9 @@
 | app/inventory/migrations/versions/2026\_09\_25\_2106-13204e7e1043\_merge\_inventory\_migration\_heads.py                            |       12 |        0 |        0 |        0 |    100% |           |
 | app/inventory/models.py                                                                                                             |      161 |        0 |        8 |        0 |    100% |           |
 | app/inventory/routes/collection.py                                                                                                  |       15 |        0 |        0 |        0 |    100% |           |
-| app/inventory/routes/nodes.py                                                                                                       |       78 |        2 |        4 |        0 |     95% |  329, 331 |
+| app/inventory/routes/nodes.py                                                                                                       |       78 |        2 |        4 |        0 |     95% |  337, 339 |
 | app/inventory/routes/schemas.py                                                                                                     |       42 |        0 |        0 |        0 |    100% |           |
-| app/inventory/routes/services.py                                                                                                    |       74 |        3 |        6 |        0 |     91% |248, 250, 287 |
+| app/inventory/routes/services.py                                                                                                    |       74 |        3 |        6 |        0 |     91% |258, 260, 297 |
 | app/inventory/routes/tables.py                                                                                                      |       34 |        0 |        0 |        0 |    100% |           |
 | app/inventory/settings/routes.py                                                                                                    |       12 |        0 |        0 |        0 |    100% |           |
 | app/main.py                                                                                                                         |       95 |       23 |        6 |        1 |     74% |   279-333 |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33773** | **1915** | **8160** |  **680** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33788** | **1915** | **8162** |  **680** | **93%** |           |
 
 
 ## Setup coverage badge
