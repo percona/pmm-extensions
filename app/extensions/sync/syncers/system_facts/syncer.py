@@ -31,8 +31,6 @@ from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from typing import Any, ClassVar
 
-from async_lru import alru_cache
-
 from app.core.pagination import fetch_all_items, PaginatedResponse, Pagination
 from app.core.utils.date_time import make_datetime_utc, utc_now
 from app.extensions.crud import SyncItemManager
@@ -608,7 +606,6 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
             )
         ]
 
-    @alru_cache
     async def get_unmeasured_candidates(self) -> list[CreatedNode]:
         """Return the nodes this run probes for their first measurement.
 
