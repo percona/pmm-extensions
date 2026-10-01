@@ -32,7 +32,13 @@ from unittest.mock import AsyncMock, call, MagicMock, patch
 
 import pytest
 import requests
-from aiohttp import ClientError, ClientRequest, ClientResponseError, ClientTimeout
+from aiohttp import (
+    ClientError,
+    ClientRequest,
+    ClientResponseError,
+    ClientTimeout,
+    ContentTypeError,
+)
 from aioresponses import aioresponses
 from fastapi import status
 from nomad.api.exceptions import BaseNomadException, URLNotFoundNomadException
@@ -338,8 +344,8 @@ def _nomad_error(status_code: int) -> NomadRequestError:
 def _serve(canned: Any, fallback: Any, *args: Any) -> Any:
     """Resolve one stubbed Nomad answer, raising it when it is an exception.
 
-    :param canned: The configured answer: a body, a callable, an exception, or None.
-    :param fallback: What to answer when ``canned`` is None.
+    :param canned: The configured answer: a body, a callable, an exception, or ``None``.
+    :param fallback: What to answer when ``canned`` is ``None``.
     :param args: Passed to ``canned`` when it is callable.
     :return: The body to answer with.
     """
@@ -10065,11 +10071,15 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
     @staticmethod
     @contextmanager
     def _capture(
-        executor: NomadExecutor, body: Any
+        body: Any,
     ) -> Generator[list[tuple[str, str, dict[str, Any]]], None, None]:
         """Answer every request with ``body``, recording the requests made.
 
-        :param executor: The executor whose ``_request`` to intercept.
+        Patched on the class, not on the executor under test: an un-entered
+        executor runs its call on a private instance built by
+        ``_calling_executor``, so an instance patch would never be reached and
+        the request would go to a real socket.
+
         :param body: The JSON body each call answers with.
         :yield: The recorded ``(method, path, kwargs)`` of every request.
         """
@@ -10085,7 +10095,7 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
             ctx.__aexit__ = AsyncMock(return_value=False)
             return ctx
 
-        with patch.object(executor, "_request", side_effect=_request):
+        with patch.object(NomadExecutor, "_request", side_effect=_request):
             yield requests
 
     @pytest.mark.asyncio
@@ -10094,7 +10104,7 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
         executor = _build_executor(stub_nomad=False)
         task = _build_task(task_id="wire-reg")
 
-        with self._capture(executor, {"EvalID": "e-1"}) as requests:
+        with self._capture({"EvalID": "e-1"}) as requests:
             await executor.register_job(task)
 
         assert len(requests) == 1
@@ -10109,22 +10119,33 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
         task = _build_task(task_id="wire-dispatch", parameterized=True)
         queue_item = _build_queue_item(task=task, meta={"target": "n"})
 
-        with self._capture(
-            executor, {"DispatchedJobID": "d-1", "EvalID": "e-1"}
-        ) as requests:
+        with self._capture({"DispatchedJobID": "d-1", "EvalID": "e-1"}) as requests:
             await executor.dispatch_job(queue_item, task)
 
         assert len(requests) == 1
         method, path, kwargs = requests[0]
         assert (method, path) == ("POST", "/v1/job/wire-dispatch/dispatch")
-        assert set(kwargs["json"]) == {"Payload", "Meta", "IdPrefixTemplate"}
+        # The values, not just the key set: ``IdPrefixTemplate`` is the
+        # concatenation this port rewrote, and a mangled ``Payload`` reaches
+        # Nomad as a job that cannot run.
+        body = kwargs["json"]
+        assert set(body) == {"Payload", "Meta", "IdPrefixTemplate"}
+        assert body["Payload"] is None
+        assert body["IdPrefixTemplate"] == f"{slugify(task.name)}-{task.id}"
+        assert body["Meta"] == {
+            "target": "n",
+            "staleness_threshold_seconds": str(
+                tasks_settings.STALENESS_THRESHOLD_SECONDS
+            ),
+            "scheduled_at": str(int(queue_item.created_at.timestamp())),
+        }
 
     @pytest.mark.asyncio
     async def test_get_job_gets_the_job_endpoint(self) -> None:
         """Assert a job read is a bare ``GET /v1/job/{id}``."""
         executor = _build_executor(stub_nomad=False)
 
-        with self._capture(executor, {"ID": "wire-get"}) as requests:
+        with self._capture({"ID": "wire-get"}) as requests:
             await executor.get_job("wire-get")
 
         assert len(requests) == 1
@@ -10142,12 +10163,20 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
         """
         executor = _build_executor(stub_nomad=False)
 
-        with self._capture(executor, []) as requests:
+        with self._capture([]) as requests:
             await executor.get_hosts()
 
         method, path, kwargs = requests[0]
         assert (method, path) == ("GET", "/v1/nodes")
-        assert set(kwargs["params"]) == {"filter"}
+        # The expression too, not just the key: a filter that names the wrong
+        # driver or status would still be a ``filter`` and would still answer.
+        assert kwargs["params"] == {
+            "filter": (
+                f"Status == {NODE_STATUS_READY} "
+                f"and {RAW_EXEC_DRIVER} in Drivers "
+                f"and Drivers.{RAW_EXEC_DRIVER}.Healthy == true"
+            )
+        }
 
     @pytest.mark.asyncio
     async def test_get_host_states_sends_no_filter_at_all(self) -> None:
@@ -10158,7 +10187,7 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
         """
         executor = _build_executor(stub_nomad=False)
 
-        with self._capture(executor, []) as requests:
+        with self._capture([]) as requests:
             await executor.get_host_states()
 
         assert len(requests) == 1
@@ -10170,7 +10199,7 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
 class TestPortedNomadCallsKeepTheirErrorContract:
     """Pin that a Nomad failure still arrives as a ``BaseNomadException``.
 
-    Two callers outside this package depend on it and neither is obvious from
+    Callers outside this package depend on it, and none of them is obvious from
     the executor: ``app.tasks.main.nomad_exception_handler`` answers a route with
     502 and "make sure the agent is online", and ``app.tasks.celery`` raises the
     periodic-dispatch failure alert on ``BaseNomadException``. Moving these calls
@@ -10237,13 +10266,61 @@ class TestPortedNomadCallsKeepTheirErrorContract:
         ctx.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch.object(executor, "_request", return_value=ctx),
+            patch.object(NomadExecutor, "_request", return_value=ctx),
             pytest.raises(NomadRequestError) as exc_info,
         ):
             await executor.get_hosts()
 
         assert isinstance(exc_info.value, BaseNomadException)
         assert exc_info.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+
+    @pytest.mark.parametrize(
+        ("decode_failure", "expected_message"),
+        [
+            (
+                json.JSONDecodeError("Expecting value", "{not json", 0),
+                "GET /v1/nodes failed",
+            ),
+            (
+                ContentTypeError(request_info=MagicMock(), history=()),
+                "with a body that is not JSON",
+            ),
+        ],
+        ids=["labelled-json-that-does-not-parse", "not-labelled-json-at-all"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_body_that_will_not_decode_is_still_a_nomad_error(
+        self, decode_failure: Exception, expected_message: str
+    ) -> None:
+        """Assert a body the client cannot read does not escape as a bare error.
+
+        ``response.json()`` raises on both of these, and neither is a
+        ``ClientError``: ``JSONDecodeError`` is a ``ValueError``, and
+        ``ContentTypeError`` is a ``ClientResponseError`` whose status was fine.
+        Letting either through would answer a route with 500 instead of 502 and
+        skip the periodic-dispatch alert, which is the contract the rest of this
+        class is about.
+
+        The message matters for the second one: a ``ContentTypeError`` carries
+        the answering status, so reporting it the way a real error status is
+        reported would say "Nomad answered 200" to an operator reading the log.
+        """
+        executor = _build_executor(stub_nomad=False)
+        response = AsyncMock()
+        response.raise_for_status = MagicMock()
+        response.json = AsyncMock(side_effect=decode_failure)
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.object(NomadExecutor, "_request", return_value=ctx),
+            pytest.raises(NomadRequestError) as exc_info,
+        ):
+            await executor.get_hosts()
+
+        assert isinstance(exc_info.value, BaseNomadException)
+        assert expected_message in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_the_calls_use_the_executors_timeout_not_the_sessions(self) -> None:
@@ -10268,7 +10345,7 @@ class TestPortedNomadCallsKeepTheirErrorContract:
             seen.append(kwargs.get("timeout"))
             return ctx
 
-        with patch.object(executor, "_request", side_effect=_request):
+        with patch.object(NomadExecutor, "_request", side_effect=_request):
             await executor.get_hosts()
 
         assert seen[0].total == CONFIGURED_NOMAD_TIMEOUT
@@ -10285,18 +10362,21 @@ class TestPortedNomadCallsRunOnAnUnenteredExecutor:
     dispatch route, every Celery task and the connectivity check all hold one.
     While these calls went through the synchronous ``self.backend`` that was
     fine; as aiohttp calls the same line raised ``AttributeError: 'NoneType'
-    object has no attribute 'request'``, the dispatch answered 500, and an
-    om_inventory sweep failed on every host it had.
+    object has no attribute 'request'`` and the dispatch answered 500.
 
     Sending those callers to the entered executor instead is not available: a
-    Celery worker has no ``app.state``, so there is no holder there to ask.
+    Celery worker has no ``app.state``, so there is no holder there to ask. So
+    the call runs on a private executor instead, and these tests are about what
+    "private" has to mean: nothing the shared instance holds may be opened,
+    closed or mutated on its behalf.
+
+    :cvar NODES: One ready node, in the shape ``GET /v1/nodes`` answers with.
+    :cvar CALLERS: Callers to race in
+        :meth:`test_concurrent_callers_each_get_a_live_session`.
     """
 
-    #: One ready node, in the shape ``GET /v1/nodes`` answers with.
     NODES = [{"Name": "node-1", "Address": "10.0.0.1"}]
-
-    #: Borrowers to race in :meth:`test_concurrent_borrowers_each_get_a_live_session`.
-    BORROWERS = 20
+    CALLERS = 20
 
     @staticmethod
     @contextmanager
@@ -10309,9 +10389,9 @@ class TestPortedNomadCallsRunOnAnUnenteredExecutor:
         which is precisely the bug.
 
         Records ``(session, closed)`` as the call is served rather than the
-        session alone: by the time the block exits every borrowed session has
-        been closed on purpose, so only the state at call time says whether a
-        borrower was handed a usable one.
+        session alone: by the time the block exits every private session has
+        been closed on purpose, so only the state at call time says whether the
+        call was served on a usable one.
 
         :param body: The JSON body each call answers with.
         :yield: The ``(session, closed-at-call-time)`` of each recorded call.
@@ -10345,19 +10425,62 @@ class TestPortedNomadCallsRunOnAnUnenteredExecutor:
         assert hosts == {"node-1": "10.0.0.1"}
 
     @pytest.mark.asyncio
-    async def test_a_borrowed_session_is_not_left_open(self) -> None:
-        """Assert the executor is back to un-entered once the call returns.
+    async def test_the_call_leaves_the_shared_executor_untouched(self) -> None:
+        """Assert the call opens nothing on the executor it was invoked on.
 
-        A borrower that kept the session would leak one per request-less caller,
-        and would also quietly turn the shared settings object into an entered
-        executor for everybody after it.
+        With no ``NOMAD`` override that executor *is* the YAML settings object,
+        one instance process-wide. Opening a session on it would quietly turn it
+        into an entered executor for everybody after it; closing the session
+        afterwards would drop the cached :attr:`backend` and the
+        ``requests.Session`` with it, so the next synchronous
+        ``self.backend.*`` call - the allocation reads on the sync path - would
+        rebuild its client for nothing.
         """
         executor = _build_executor(stub_nomad=False)
+        backend_before = executor.backend
 
         with self._answer(self.NODES):
             await executor.get_hosts()
 
         assert executor.session is None
+        assert executor.backend is backend_before
+
+    @pytest.mark.asyncio
+    async def test_an_override_copy_taken_mid_call_has_no_session_to_inherit(
+        self,
+    ) -> None:
+        """Assert a ``model_copy`` of the executor cannot inherit a live borrow.
+
+        The settings-override snapshot is built with ``model_copy``, which
+        carries pydantic private attributes across. Any session or borrow
+        bookkeeping left on the shared instance while a call is in flight would
+        therefore be inherited by the snapshot's copy - which would then raise
+        ``RuntimeError: Session is closed`` once the original retired it, not a
+        ``BaseNomadException``, so a route would answer a bare 500 and the
+        periodic-dispatch alert would be skipped.
+        """
+        executor = _build_executor(stub_nomad=False)
+        copies: list[NomadExecutor] = []
+        response = AsyncMock()
+        response.raise_for_status = MagicMock()
+        response.json = AsyncMock(return_value=self.NODES)
+
+        def _request(_session: Any, *_args: Any, **_kwargs: Any) -> Any:
+            # Snapshot while the request is in flight: that is the window the
+            # previous borrow bookkeeping was visible in.
+            copies.append(executor.model_copy())
+            ctx = AsyncMock()
+            ctx.__aenter__ = AsyncMock(return_value=response)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            return ctx
+
+        with patch(
+            "aiohttp.ClientSession.request", autospec=True, side_effect=_request
+        ):
+            await executor.get_hosts()
+
+        assert len(copies) == 1
+        assert copies[0].session is None
 
     @pytest.mark.asyncio
     async def test_an_entered_executor_keeps_the_session_it_was_given(self) -> None:
@@ -10380,25 +10503,27 @@ class TestPortedNomadCallsRunOnAnUnenteredExecutor:
             assert not owned.closed
 
     @pytest.mark.asyncio
-    async def test_concurrent_borrowers_each_get_a_live_session(self) -> None:
-        """Assert one borrower cannot close the session another is still using.
+    async def test_concurrent_callers_each_get_a_live_session(self) -> None:
+        """Assert one caller cannot close the session another is still using.
 
         With no ``NOMAD`` override ``get_executor`` returns the YAML settings
         object itself - one instance shared process-wide - so concurrent
-        request-less callers borrow on the *same* executor. Deciding whether to
-        open with a bare ``is None`` test would let the first to finish close a
-        session the others are still holding.
+        request-less callers all arrive on the *same* executor. Each one's
+        session has to be its own, or the first to finish closes a session the
+        others are still serving from.
         """
         executor = _build_executor(stub_nomad=False)
 
         with self._answer(self.NODES) as sessions:
             results = await asyncio.gather(
-                *(executor.get_hosts() for _ in range(self.BORROWERS)),
+                *(executor.get_hosts() for _ in range(self.CALLERS)),
                 return_exceptions=True,
             )
 
         assert [r for r in results if isinstance(r, BaseException)] == []
         assert all(r == {"node-1": "10.0.0.1"} for r in results)
-        assert len(sessions) == self.BORROWERS
+        assert len(sessions) == self.CALLERS
         assert not any(closed for _, closed in sessions)
+        # One private session each, so no two calls can have shared one.
+        assert len({id(session) for session, _ in sessions}) == self.CALLERS
         assert executor.session is None

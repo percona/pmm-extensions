@@ -24,7 +24,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
-import requests.exceptions
 from fastapi import status
 from httpx import ASGITransport, AsyncClient
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -51,7 +50,10 @@ from app.tasks.connectivity.service import _cached_check_connectivity
 from app.tasks.crud import TaskHistoryLogManager, TaskHistoryManager, TaskManager
 from app.tasks.deps import get_request_executor, get_session
 from app.tasks.execution.exceptions import TaskNotStartedInExecutorError
-from app.tasks.execution.executors.nomad.exceptions import AllocationNotFoundError
+from app.tasks.execution.executors.nomad.exceptions import (
+    AllocationNotFoundError,
+    NomadRequestError,
+)
 from app.tasks.execution.executors.nomad.steps import (
     NomadStep,
     RUN_SCRIPT_OUTPUT_FILES_PATH,
@@ -87,6 +89,11 @@ from tests.app.tasks.conftest import (
 )
 
 MOCK_FILE_SIZE = 1024
+# What ``app.tasks.main.nomad_exception_handler`` answers with. The routes no
+# longer phrase their own 502 detail, so this is the one a client now sees.
+NOMAD_UNREACHABLE_DETAIL = (
+    "Failed to get a response from Nomad, make sure the agent is online."
+)
 # Derived rather than spelled out: ``_chain_on_failure`` chains on any terminal
 # status but SUCCESS, so a literal list silently stops covering the policy the
 # moment a terminal status is added.
@@ -1912,58 +1919,61 @@ async def test_get_executor_host_states(test_client, mock_executor):
 
 @pytest.mark.asyncio
 async def test_get_executor_host_states_unreachable(test_client, mock_executor):
-    """Assert /hosts/states/ answers 502 rather than 500 when the backend is down."""
+    """Assert /hosts/states/ answers 502 rather than 500 when the backend is down.
+
+    A request that never got an answer arrives as ``NomadRequestError`` with no
+    status now that this call is off python-nomad, and the app-level
+    ``BaseNomadException`` handler is what turns it into the 502.
+    """
     mock_executor.get_host_states = AsyncMock(
-        side_effect=requests.exceptions.ConnectionError("boom")
+        side_effect=NomadRequestError("GET /v1/nodes failed: boom")
     )
     response = test_client.get("/hosts/states/")
     assert response.status_code == status.HTTP_502_BAD_GATEWAY
-    assert response.json()["detail"].startswith("Executor backend unreachable:")
+    assert response.json()["detail"] == NOMAD_UNREACHABLE_DETAIL
 
 
 @pytest.mark.asyncio
 async def test_get_executor_host_states_nomad_returns_non_json(
     test_client, mock_executor
 ):
-    """Assert /hosts/states/ returns 502 JSON when executor raises JSONDecodeError."""
-    mock_executor.get_host_states.side_effect = requests.exceptions.JSONDecodeError(
-        "Expecting value", "doc", 0
+    """Assert /hosts/states/ returns 502 JSON when the body will not parse.
+
+    ``_nomad_json`` catches the ``JSONDecodeError`` and re-raises it as a
+    ``NomadRequestError``, so the route sees the same shape as a transport
+    failure rather than a bare ``ValueError`` that would answer 500.
+    """
+    mock_executor.get_host_states.side_effect = NomadRequestError(
+        "GET /v1/nodes failed: JSONDecodeError('Expecting value')"
     )
     response = test_client.get("/hosts/states/")
     assert response.status_code == status.HTTP_502_BAD_GATEWAY
     assert response.headers["content-type"].startswith("application/json")
-    body = response.json()
-    assert "detail" in body
-    assert body["detail"].startswith("Executor backend unreachable:")
+    assert response.json()["detail"] == NOMAD_UNREACHABLE_DETAIL
 
 
 @pytest.mark.asyncio
 async def test_get_executor_hosts_nomad_returns_non_json(test_client, mock_executor):
-    """Assert /hosts/ returns 502 JSON when executor raises JSONDecodeError."""
-    mock_executor.get_hosts.side_effect = requests.exceptions.JSONDecodeError(
-        "Expecting value", "doc", 0
+    """Assert /hosts/ returns 502 JSON when the body will not parse."""
+    mock_executor.get_hosts.side_effect = NomadRequestError(
+        "GET /v1/nodes failed: JSONDecodeError('Expecting value')"
     )
     response = test_client.get("/hosts/")
     assert response.status_code == status.HTTP_502_BAD_GATEWAY
     assert response.headers["content-type"].startswith("application/json")
-    body = response.json()
-    assert "detail" in body
-    assert body["detail"].startswith("Executor backend unreachable:")
+    assert response.json()["detail"] == NOMAD_UNREACHABLE_DETAIL
 
 
 @pytest.mark.asyncio
 async def test_get_executor_hosts_nomad_unreachable(test_client, mock_executor):
-    """Assert /hosts/ returns 502 JSON when executor raises ConnectionError."""
-    mock_executor.get_hosts.side_effect = requests.exceptions.ConnectionError(
-        "Connection refused"
+    """Assert /hosts/ returns 502 JSON when the request gets no answer."""
+    mock_executor.get_hosts.side_effect = NomadRequestError(
+        "GET /v1/nodes failed: ClientConnectorError('Connection refused')"
     )
     response = test_client.get("/hosts/")
     assert response.status_code == status.HTTP_502_BAD_GATEWAY
     assert response.headers["content-type"].startswith("application/json")
-    body = response.json()
-    assert "detail" in body
-    assert body["detail"].startswith("Executor backend unreachable:")
-    assert "Connection refused" in body["detail"]
+    assert response.json()["detail"] == NOMAD_UNREACHABLE_DETAIL
 
 
 @pytest.mark.asyncio
