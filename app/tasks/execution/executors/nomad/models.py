@@ -24,7 +24,7 @@ import time
 from base64 import b64decode
 from binascii import b2a_base64
 from collections import defaultdict
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Collection
 from datetime import datetime, UTC
 from enum import StrEnum
 from functools import cached_property
@@ -50,6 +50,7 @@ from app.core.requests import BaseRemoteAPI, StoredCredentialHeaderMixin
 from app.core.settings_override.registry import (
     hot_field,
     InheritedMarkers,
+    not_overridable_field,
     ReloadClassification,
     REMOTE_API_TLS_MARKERS,
 )
@@ -667,6 +668,15 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     :param check_cert_expiry_interval: Beat schedule for ``check_nomad_cert_expiry``
         (e.g. once per day). Set to ``None`` to skip registering the periodic task
         in ``app.tasks.db.seed`` (Celery beat will not run the check).
+    :param finishing_sync_interval_seconds: Tick, in seconds, of the periodic
+        ``sync_finishing_tasks`` probe that syncs a run as soon as its producing
+        steps end instead of waiting for the regular sweep, and the deadline of
+        each tick's Nomad listing. A finished run's status lands within about two
+        ticks plus the terminal log-drain budget, so keep it well under the
+        latency a run's status is expected to meet. Read when ``app.tasks.db.seed``
+        builds the schedule, so it is not overridable at runtime. Set to ``None``
+        to skip registering the probe, leaving finished runs to the sweep.
+        Defaults to 1.
     :param api_key: Credential sent as ``Authorization: <auth_scheme> <api_key>``
         on both the synchronous and the asynchronous request path. It takes
         precedence over any userinfo embedded in ``endpoint``, which is stripped
@@ -746,6 +756,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             metadata={"reload": ReloadClassification.HOT, "advanced": True},
             default_factory=lambda: IntervalSchedule(every=1, period=Period.DAYS),
         )
+    )
+    finishing_sync_interval_seconds: int | None = (  # ty: ignore[invalid-assignment]
+        not_overridable_field(1, ge=1, advanced=True)
     )
     api_key: AuthCredentialSecretStr | None = None
     auth_scheme: AuthSchemeStr = hot_field(  # ty: ignore[invalid-assignment]
@@ -1210,17 +1223,20 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             )
         return alloc
 
-    async def capture_hold_ready_job_ids(self) -> frozenset[str]:
-        """Return the job IDs whose newest allocation is capture-hold ready.
+    async def capture_hold_ready_job_ids(
+        self, job_ids: Collection[str]
+    ) -> frozenset[str]:
+        """Return which of ``job_ids`` have a capture-hold-ready newest allocation.
 
-        One list call covers every live allocation, so detecting finished runs
-        costs the same whatever the number of RUNNING histories. The hold keeps
-        its allocation ``running`` while it waits to be released, unless a
-        producing step failed: Nomad then reports the allocation ``failed`` even
-        though the hold still runs. Listing both statuses covers every run still
-        waiting on its hold; one whose hold has already exited, as a ``failed``
-        allocation retained until Nomad collects it can be, is left to the
-        regular sync.
+        One list call covers every given job, so detecting finished runs costs a
+        single request whatever the number of RUNNING histories. The listing is
+        filtered to those jobs on the Nomad side, so its size follows the runs PMM
+        Extensions is waiting on rather than the whole cluster. The hold keeps its
+        allocation ``running`` while it waits to be released, unless a producing
+        step failed: Nomad then reports the allocation ``failed`` even though the
+        hold still runs. Listing both statuses covers every run still waiting on
+        its hold; one whose hold has already exited, as a ``failed`` allocation
+        retained until Nomad collects it can be, is left to the regular sync.
 
         Readiness is judged on each job's newest allocation, the one a sync
         resolves. A rescheduled job keeps its failed predecessor, which still
@@ -1231,24 +1247,30 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         It carries no deadline of its own: the caller bounds it, and cancelling
         it stops the request however slowly Nomad is answering.
 
-        :return: The ``JobID`` of every job whose newest listed allocation
+        :param job_ids: The ``JobID`` values to check. Nothing is requested when
+            it is empty.
+        :return: The ``JobID`` of every given job whose newest listed allocation
             satisfies :func:`_detect_capture_hold_ready` and whose hold step is
             still running.
         :raises aiohttp.ClientError: If Nomad cannot be reached or answers with an
             error status.
         :raises ValueError: If Nomad answers with a body that is not JSON.
         """
+        if not job_ids:
+            return frozenset()
+        statuses = " or ".join(
+            f'ClientStatus == "{alloc_status}"'
+            for alloc_status in (
+                NomadAllocStatusEnum.PENDING,
+                NomadAllocStatusEnum.RUNNING,
+                NomadAllocStatusEnum.FAILED,
+            )
+        )
+        jobs = " or ".join(f"JobID == {json.dumps(job_id)}" for job_id in job_ids)
         async with self._request(
             "GET",
             "/v1/allocations",
-            params={
-                "filter": (
-                    f'ClientStatus == "{NomadAllocStatusEnum.PENDING}"'
-                    f' or ClientStatus == "{NomadAllocStatusEnum.RUNNING}"'
-                    f' or ClientStatus == "{NomadAllocStatusEnum.FAILED}"'
-                ),
-                "task_states": "true",
-            },
+            params={"filter": f"({statuses}) and ({jobs})", "task_states": "true"},
         ) as response:
             response.raise_for_status()
             allocations = await response.json()

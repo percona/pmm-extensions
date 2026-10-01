@@ -7697,7 +7697,7 @@ class TestNomadCaptureHoldDetection:
 
 
 class TestNomadCaptureHoldReadyJobIds:
-    """Cover the cluster-wide listing of capture-hold-ready jobs."""
+    """Cover the listing of capture-hold-ready jobs."""
 
     @staticmethod
     def _alloc(
@@ -7756,18 +7756,46 @@ class TestNomadCaptureHoldReadyJobIds:
                 ],
             )
             async with executor:
-                ready = await executor.capture_hold_ready_job_ids()
+                ready = await executor.capture_hold_ready_job_ids(
+                    ["job-ready", "job-producing", "job-no-hold", "job-failed"]
+                )
 
         assert ready == frozenset({"job-ready", "job-failed"})
+
+    @pytest.mark.asyncio
+    async def test_listing_is_filtered_to_the_given_jobs(self) -> None:
+        """Assert Nomad is asked only about the given jobs, never the whole cluster.
+
+        Each job ID is quoted as a JSON string literal, so one carrying a quote
+        cannot break out of the filter expression.
+        """
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(self._LISTING_URL, payload=[])
+            async with executor:
+                await executor.capture_hold_ready_job_ids(["job-a", 'job-"b'])
+
         (_, (request,)) = nomad.requests.popitem()
         assert request.kwargs["params"] == {
             "filter": (
-                f'ClientStatus == "{NomadAllocStatusEnum.PENDING}"'
+                f'(ClientStatus == "{NomadAllocStatusEnum.PENDING}"'
                 f' or ClientStatus == "{NomadAllocStatusEnum.RUNNING}"'
-                f' or ClientStatus == "{NomadAllocStatusEnum.FAILED}"'
+                f' or ClientStatus == "{NomadAllocStatusEnum.FAILED}")'
+                ' and (JobID == "job-a" or JobID == "job-\\"b")'
             ),
             "task_states": "true",
         }
+
+    @pytest.mark.asyncio
+    async def test_no_job_ids_makes_no_request(self) -> None:
+        """Assert an empty job list returns at once without calling Nomad."""
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            async with executor:
+                ready = await executor.capture_hold_ready_job_ids([])
+
+        assert ready == frozenset()
+        assert nomad.requests == {}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -7810,7 +7838,7 @@ class TestNomadCaptureHoldReadyJobIds:
                 ],
             )
             async with executor:
-                ready = await executor.capture_hold_ready_job_ids()
+                ready = await executor.capture_hold_ready_job_ids(["job-retried"])
 
         assert ready == frozenset()
 
@@ -7838,18 +7866,18 @@ class TestNomadCaptureHoldReadyJobIds:
                 ],
             )
             async with executor:
-                ready = await executor.capture_hold_ready_job_ids()
+                ready = await executor.capture_hold_ready_job_ids(["job-exited-hold"])
 
         assert ready == frozenset()
 
     @pytest.mark.asyncio
     async def test_empty_allocation_list_returns_empty_set(self) -> None:
-        """Assert a cluster with no running allocation reports no job."""
+        """Assert a job with no live allocation is not reported."""
         executor = _build_executor()
         with aioresponses() as nomad:
             nomad.get(self._LISTING_URL, payload=[])
             async with executor:
-                ready = await executor.capture_hold_ready_job_ids()
+                ready = await executor.capture_hold_ready_job_ids(["job-a"])
 
         assert ready == frozenset()
 
@@ -7861,7 +7889,7 @@ class TestNomadCaptureHoldReadyJobIds:
             nomad.get(self._LISTING_URL, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             async with executor:
                 with pytest.raises(ClientResponseError):
-                    await executor.capture_hold_ready_job_ids()
+                    await executor.capture_hold_ready_job_ids(["job-a"])
 
     @pytest.mark.asyncio
     async def test_non_json_body_propagates(self) -> None:
@@ -7875,7 +7903,7 @@ class TestNomadCaptureHoldReadyJobIds:
             )
             async with executor:
                 with pytest.raises(json.JSONDecodeError):
-                    await executor.capture_hold_ready_job_ids()
+                    await executor.capture_hold_ready_job_ids(["job-a"])
 
 
 class TestNomadCaptureHoldRelease:

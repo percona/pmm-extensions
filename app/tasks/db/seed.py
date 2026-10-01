@@ -42,6 +42,7 @@ from app.tasks.db import get_async_session_maker
 from app.tasks.db.engine import engine
 from app.tasks.execution.executors.nomad.constants import (
     CHECK_NOMAD_CERT_EXPIRY_TASK_NAME,
+    SYNC_FINISHING_TASKS_TASK_NAME,
 )
 from app.tasks.execution.executors.nomad.steps import (
     LAUNCH_CHECK_EXIT_CODE,
@@ -51,12 +52,10 @@ from app.tasks.execution.executors.nomad.steps import (
 )
 from app.tasks.models import (
     EXECUTE_TASK_BY_NAME_TASK,
-    FINISHING_SYNC_INTERVAL_SECONDS,
     INVENTORY_COLLECTION_TASK_NAME,
     INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FOLLOWERS_KEY,
     INVENTORY_SYNC_TASK_NAME,
-    SYNC_FINISHING_TASKS_TASK_NAME,
     SYNC_RUNNING_TASKS_TASK_NAME,
     SYSTEM_USER,
     Task,
@@ -824,19 +823,7 @@ SYSTEM_PERIODIC_TASKS = [
                 extra_kwargs={"expire_seconds": 30},
             ),
         ],
-    ),
-    SystemPeriodicTaskSchedule(
-        schedule=IntervalSchedule(
-            every=FINISHING_SYNC_INTERVAL_SECONDS, period=Period.SECONDS
-        ),
-        tasks=[
-            SystemPeriodicTaskData(
-                name=SYNC_FINISHING_TASKS_TASK_NAME,
-                task_name="app.tasks.celery.sync_finishing_tasks",
-                extra_kwargs={"expire_seconds": FINISHING_SYNC_INTERVAL_SECONDS},
-            ),
-        ],
-    ),
+    )
 ]
 
 _nomad_cert_schedule = tasks_settings.NOMAD.check_cert_expiry_interval
@@ -848,6 +835,23 @@ if _nomad_cert_schedule is not None:
                 SystemPeriodicTaskData(
                     name=CHECK_NOMAD_CERT_EXPIRY_TASK_NAME,
                     task_name="app.tasks.celery.check_nomad_cert_expiry",
+                ),
+            ],
+        ),
+    )
+
+_finishing_sync_interval = tasks_settings.NOMAD.finishing_sync_interval_seconds
+if _finishing_sync_interval is not None:
+    SYSTEM_PERIODIC_TASKS.append(
+        SystemPeriodicTaskSchedule(
+            schedule=IntervalSchedule(
+                every=_finishing_sync_interval, period=Period.SECONDS
+            ),
+            tasks=[
+                SystemPeriodicTaskData(
+                    name=SYNC_FINISHING_TASKS_TASK_NAME,
+                    task_name="app.tasks.celery.sync_finishing_tasks",
+                    extra_kwargs={"expire_seconds": _finishing_sync_interval},
                 ),
             ],
         ),

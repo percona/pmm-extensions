@@ -1142,13 +1142,6 @@ INVENTORY_SYNC_AFTER_KEY = "after_syncer"
 INVENTORY_SYNC_FIRST_RUN_KEY = "first_run_only"
 INVENTORY_COLLECTION_TASK_NAME = "inventory-collection"
 SYNC_RUNNING_TASKS_TASK_NAME = "tasks__sync_running_tasks"
-SYNC_FINISHING_TASKS_TASK_NAME = "tasks__sync_finishing_tasks"
-#: Tick of the finishing-run probe, and the timeout of its Nomad listing. A
-#: finished run's status must be stored within 5 s, and the sync the probe
-#: dispatches still spends the terminal log-drain budget first, so the tick
-#: leaves most of that bound to the drain. Bounding the listing by the tick
-#: keeps a hung Nomad from holding one worker per tick.
-FINISHING_SYNC_INTERVAL_SECONDS = 1
 
 #: Maintenance / system task names excluded from user-facing task lists.
 #: The cert-expiry member is a literal matching

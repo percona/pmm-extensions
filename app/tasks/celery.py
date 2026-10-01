@@ -83,12 +83,14 @@ from app.tasks.deps import (
     prepare_task_history,
 )
 from app.tasks.execution.models import BaseExecutor
-from app.tasks.execution.nomad_lifecycle import normalize_nomad_config_value
+from app.tasks.execution.nomad_lifecycle import (
+    normalize_nomad_config_value,
+    WorkerNomadClient,
+)
 from app.tasks.execution_request_secrets import ENCRYPTED_META_KEYS
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
     DispatchLock,
-    FINISHING_SYNC_INTERVAL_SECONDS,
     SYSTEM_USER,
     Task,
     TaskBackendEnum,
@@ -198,6 +200,25 @@ def stop_settings_override_refresher(**kwargs: Any) -> None:
         (unused).
     """
     _refresher.stop()
+
+
+_finishing_probe_client = WorkerNomadClient()
+
+
+@worker_process_shutdown.connect
+def close_finishing_probe_client(**kwargs: Any) -> None:
+    """Close the Nomad client the finishing-run probe kept open in this process.
+
+    A no-op when the probe never ran here. The close runs on ``celery.loop``,
+    the loop that opened the client.
+
+    :param kwargs: The ``worker_process_shutdown`` signal keyword arguments
+        (unused).
+    """
+    if _finishing_probe_client.is_open:
+        celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
+            _finishing_probe_client.close()
+        )
 
 
 @celery.task(
@@ -513,7 +534,7 @@ def sync_running_tasks() -> None:
     )
 
 
-@celery.task
+@celery.task(ignore_result=True)
 def sync_finishing_tasks() -> None:
     """Define Celery task to sync running tasks whose steps have finished."""
     celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
@@ -987,41 +1008,26 @@ async def sync_running_items() -> None:
 async def sync_finishing_items() -> None:
     """Sync RUNNING histories whose producing steps have ended, ahead of the sweep.
 
-    One Nomad list call reports every job whose allocation is capture-hold
-    ready; the histories tracking those jobs are claimed through the sweep's
-    own lock and handed to the same ``sync_task_history`` task, which stamps
-    the status, drains the logs and releases the hold. Each claimed history is
-    its own Celery task so that concurrent finishers drain in parallel.
+    Only lock-free RUNNING histories tracking a Nomad job are considered, so a
+    tick with none of them, or with only Celery-backend runs, returns without
+    calling Nomad. One Nomad list call, filtered to those jobs, reports which
+    are capture-hold ready; their histories are claimed through the sweep's own
+    lock and handed to the same ``sync_task_history`` task, which stamps the
+    status, drains the logs and releases the hold. Each claimed history is its
+    own Celery task so that concurrent finishers drain in parallel.
 
-    A failed or slow Nomad listing is logged and left to the sweep, which still
-    covers the run. The whole listing, opening the executor's HTTP client
-    included, is cancelled once it outlasts one tick, so a Nomad that hangs or
-    answers a byte at a time cannot pile up probes across the worker pool.
-    Closing the client the probe opened is left outside that deadline: a close
-    cancelled partway leaves the shared executor holding a closed session that
-    every later tick would reuse.
+    The listing goes through the worker process's long-lived Nomad client, so a
+    tick reuses a pooled connection rather than opening one. A failed or slow
+    listing is logged and left to the sweep, which still covers the run. The
+    whole listing is cancelled once it outlasts one tick, so a Nomad that hangs
+    or answers a byte at a time cannot pile up probes across the worker pool.
     """
+    interval = normalize_nomad_config_value(
+        tasks_settings.NOMAD
+    ).finishing_sync_interval_seconds
+    if interval is None:
+        return
     async_session = get_async_session_maker()
-    async with async_session() as session:
-        if not await TaskHistoryManager.exists(
-            session, status=TaskHistoryStatusEnum.RUNNING
-        ):
-            return
-    nomad = normalize_nomad_config_value(tasks_settings.NOMAD)
-    try:
-        async with AsyncExitStack() as stack:
-            async with asyncio.timeout(FINISHING_SYNC_INTERVAL_SECONDS):
-                if nomad.session is None:
-                    await stack.enter_async_context(nomad)
-                ready_job_ids = await nomad.capture_hold_ready_job_ids()
-    except (ClientError, TimeoutError, ValueError):
-        logger.warning(
-            "Could not list Nomad allocations; leaving finished runs to the sweep",
-            exc_info=True,
-        )
-        return
-    if not ready_job_ids:
-        return
     async with async_session() as session:
         running = await TaskHistoryManager.list(
             session,
@@ -1035,13 +1041,32 @@ async def sync_finishing_items() -> None:
             ],
             status=TaskHistoryStatusEnum.RUNNING,
         )
-        finishing_ids = [
-            history.id
-            for history in running
-            if history.execution_request.tracking.get("job_id") in ready_job_ids
-        ]
-        if not finishing_ids:
-            return
+    history_ids_by_job: dict[str, list[int]] = {}
+    for history in running:
+        if job_id := (history.execution_request.tracking or {}).get("job_id"):
+            history_ids_by_job.setdefault(job_id, []).append(history.id)
+    if not history_ids_by_job:
+        return
+    try:
+        async with asyncio.timeout(interval):
+            nomad = await _finishing_probe_client.get()
+            ready_job_ids = await nomad.capture_hold_ready_job_ids(
+                history_ids_by_job.keys()
+            )
+    except (ClientError, TimeoutError, ValueError):
+        logger.warning(
+            "Could not list Nomad allocations; leaving finished runs to the sweep",
+            exc_info=True,
+        )
+        return
+    finishing_ids = [
+        history_id
+        for job_id in ready_job_ids
+        for history_id in history_ids_by_job.get(job_id, [])
+    ]
+    if not finishing_ids:
+        return
+    async with async_session() as session:
         claimed = await _claim_syncs(session, col(TaskHistory.id).in_(finishing_ids))
     if claimed:
         logger.debug("Dispatching sync of %d finishing tasks", len(claimed))

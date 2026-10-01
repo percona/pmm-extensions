@@ -22,3 +22,6 @@ job-spec step, or derive from one, belong in :mod:`.steps` instead.
 
 #: Seeded name of the Nomad-only periodic task that checks TLS cert expiry.
 CHECK_NOMAD_CERT_EXPIRY_TASK_NAME = "tasks__check_nomad_cert_expiry"
+
+#: Seeded name of the Nomad-only periodic task that syncs runs whose steps finished.
+SYNC_FINISHING_TASKS_TASK_NAME = "tasks__sync_finishing_tasks"

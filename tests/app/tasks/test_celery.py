@@ -17,11 +17,12 @@
 
 import asyncio
 import logging
+from collections.abc import Collection
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientConnectionError, ClientSession
@@ -53,6 +54,7 @@ from app.tasks.celery import (
     _purge_task_history_logs,
     _raise_if_identical_task_conflict,
     check_nomad_cert_expiry,
+    close_finishing_probe_client,
     delete_task_history,
     dispatch_queue_item,
     get_executor_for_task,
@@ -64,9 +66,11 @@ from app.tasks.celery import (
     sync_running_items,
     task_revoked_handler,
 )
+from app.tasks.config import tasks_settings
 from app.tasks.crud import TaskHistoryLogManager, TaskHistoryManager, TaskManager
 from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.models import BaseExecutor
+from app.tasks.execution.nomad_lifecycle import WorkerNomadClient
 from app.tasks.execution_request_secrets import (
     CONFIG_META_KEY,
     ENCRYPTED_META_KEYS,
@@ -1667,30 +1671,46 @@ class TestSyncFinishingItems:
         return history.id
 
     @staticmethod
-    @contextmanager
-    def _probe(session: AsyncSession, ready_job_ids: frozenset[str]):
+    @asynccontextmanager
+    async def _probe(session: AsyncSession, ready_job_ids: frozenset[str]):
         """Run the probe against ``session`` with Nomad reporting ``ready_job_ids``.
 
-        Yields the patched ``group`` so a test can read the dispatched
-        signatures, and the patched listing so it can tell whether Nomad was
-        asked at all.
+        Each use gets its own worker client, closed on exit, so no test inherits
+        a client another one opened. Yields the patched ``group`` so a test can
+        read the dispatched signatures, and the patched listing so it can tell
+        whether Nomad was asked at all.
         """
-        with (
-            patch(
-                f"{MODULE}.get_async_session_maker",
-                return_value=MagicMock(
-                    return_value=_SharedSessionContextManager(session)
+        client = WorkerNomadClient()
+        try:
+            with (
+                patch(
+                    f"{MODULE}.get_async_session_maker",
+                    return_value=MagicMock(
+                        return_value=_SharedSessionContextManager(session)
+                    ),
                 ),
-            ),
-            patch.object(
-                NomadExecutor,
-                "capture_hold_ready_job_ids",
-                autospec=True,
-                return_value=ready_job_ids,
-            ) as mock_listing,
-            patch(f"{MODULE}.group") as mock_group,
-        ):
-            yield mock_group, mock_listing
+                patch(f"{MODULE}._finishing_probe_client", client),
+                patch.object(
+                    NomadExecutor,
+                    "capture_hold_ready_job_ids",
+                    autospec=True,
+                    return_value=ready_job_ids,
+                ) as mock_listing,
+                patch(f"{MODULE}.group") as mock_group,
+            ):
+                yield mock_group, mock_listing
+        finally:
+            await client.close()
+
+    @staticmethod
+    @contextmanager
+    def _tick(seconds: float):
+        """Run the probe with its tick, and so its listing deadline, at ``seconds``."""
+        nomad = tasks_settings.NOMAD.model_copy(
+            update={"finishing_sync_interval_seconds": seconds}
+        )
+        with patch(f"{MODULE}.normalize_nomad_config_value", return_value=nomad):
+            yield
 
     @staticmethod
     def _dispatched_ids(mock_group: MagicMock) -> list[int]:
@@ -1714,9 +1734,31 @@ class TestSyncFinishingItems:
     @pytest.mark.asyncio
     async def test_no_running_history_skips_nomad(self, session: AsyncSession):
         """Assert an idle system returns before asking Nomad anything."""
-        with self._probe(session, frozenset({"job-a"})) as (mock_group, mock_listing):
+        async with self._probe(session, frozenset({"job-a"})) as (
+            mock_group,
+            mock_listing,
+        ):
             await sync_finishing_items()
 
+        mock_listing.assert_not_called()
+        mock_group.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disabled_probe_skips_database_and_nomad(self, session: AsyncSession):
+        """Assert a probe left unset in the Nomad config does nothing at all."""
+        await self._seed_running(session, {"job_id": "job-a"})
+
+        async with self._probe(session, frozenset({"job-a"})) as (
+            mock_group,
+            mock_listing,
+        ):
+            with (
+                self._tick(None),
+                patch(f"{MODULE}.get_async_session_maker") as mock_session_maker,
+            ):
+                await sync_finishing_items()
+
+        mock_session_maker.assert_not_called()
         mock_listing.assert_not_called()
         mock_group.assert_not_called()
 
@@ -1726,19 +1768,19 @@ class TestSyncFinishingItems:
     ):
         """Assert only the hold-ready history is claimed and dispatched.
 
-        The listing also reports a job with no RUNNING history, which must be
-        ignored rather than dispatched.
+        Nomad is asked about the jobs RUNNING histories track and nothing else.
         """
         ready = await self._seed_running(session, {"job_id": "job-a"})
         busy = await self._seed_running(session, {"job_id": "job-b"})
 
-        with self._probe(session, frozenset({"job-a", "job-foreign"})) as (
+        async with self._probe(session, frozenset({"job-a"})) as (
             mock_group,
             mock_listing,
         ):
             await sync_finishing_items()
 
-        mock_listing.assert_awaited_once_with(ANY)
+        mock_listing.assert_awaited_once()
+        assert set(mock_listing.await_args.args[1]) == {"job-a", "job-b"}
         assert self._dispatched_ids(mock_group) == [ready]
         assert await self._lock_of(session, ready) is not None
         assert await self._lock_of(session, busy) is None
@@ -1758,7 +1800,7 @@ class TestSyncFinishingItems:
             for index in range(3)
         ]
 
-        with self._probe(session, frozenset({"job-0", "job-1", "job-2"})) as (
+        async with self._probe(session, frozenset({"job-0", "job-1", "job-2"})) as (
             mock_group,
             _,
         ):
@@ -1774,22 +1816,34 @@ class TestSyncFinishingItems:
             session, {"job_id": "job-a"}, sync_in_progress_started_at=locked_at
         )
 
-        with self._probe(session, frozenset({"job-a"})) as (mock_group, _):
+        async with self._probe(session, frozenset({"job-a"})) as (
+            mock_group,
+            mock_listing,
+        ):
             await sync_finishing_items()
 
+        mock_listing.assert_not_called()
         mock_group.assert_not_called()
         stored_lock = await self._lock_of(session, locked)
         assert stored_lock is not None
         assert stored_lock.replace(tzinfo=None) == locked_at.replace(tzinfo=None)
 
     @pytest.mark.asyncio
-    async def test_skips_history_without_job_id(self, session: AsyncSession):
-        """Assert a history with no tracked job is left to the sweep."""
+    async def test_history_without_job_id_skips_nomad(self, session: AsyncSession):
+        """Assert a run tracking no Nomad job, a Celery-backend one, never asks Nomad.
+
+        Such a run can never become capture-hold ready, so it must not keep the
+        listing firing on every tick for as long as it runs.
+        """
         untracked = await self._seed_running(session, {"evaluation_id": "eval-1"})
 
-        with self._probe(session, frozenset({"job-a"})) as (mock_group, _):
+        async with self._probe(session, frozenset({"job-a"})) as (
+            mock_group,
+            mock_listing,
+        ):
             await sync_finishing_items()
 
+        mock_listing.assert_not_called()
         mock_group.assert_not_called()
         assert await self._lock_of(session, untracked) is None
 
@@ -1812,7 +1866,7 @@ class TestSyncFinishingItems:
         """Assert a failed listing is logged and leaves the run to the sweep."""
         history_id = await self._seed_running(session, {"job_id": "job-a"})
 
-        with self._probe(session, frozenset()) as (mock_group, mock_listing):
+        async with self._probe(session, frozenset()) as (mock_group, mock_listing):
             mock_listing.side_effect = failure
             await sync_finishing_items()
 
@@ -1830,74 +1884,64 @@ class TestSyncFinishingItems:
         """Assert a listing that outlasts one tick is cut off, not waited on.
 
         A trickling response defeats a per-read timeout, so the probe bounds the
-        whole listing; the run is left to the sweep and the client is closed.
+        whole listing; the run is left to the sweep, and the client stays open
+        for the next tick.
         """
         history_id = await self._seed_running(session, {"job_id": "job-a"})
         listings: list[NomadExecutor] = []
 
-        async def never_answers(executor: NomadExecutor) -> frozenset[str]:
+        async def never_answers(
+            executor: NomadExecutor, job_ids: Collection[str]
+        ) -> frozenset[str]:
+            del job_ids
             listings.append(executor)
             await asyncio.Event().wait()
             return frozenset({"job-a"})
 
-        with (
-            self._probe(session, frozenset()) as (mock_group, mock_listing),
-            patch(f"{MODULE}.FINISHING_SYNC_INTERVAL_SECONDS", 0.05),
-        ):
+        async with self._probe(session, frozenset()) as (mock_group, mock_listing):
             mock_listing.side_effect = never_answers
-            await asyncio.wait_for(sync_finishing_items(), timeout=5)
+            with self._tick(0.05):
+                await asyncio.wait_for(sync_finishing_items(), timeout=5)
+            client = listings[0].session
+            assert client is not None
+            assert not client.closed
 
         mock_group.assert_not_called()
         assert await self._lock_of(session, history_id) is None
-        assert listings[0].session is None
         assert any(
             record.levelno == logging.WARNING and record.name == MODULE
             for record in caplog.records
         )
 
     @pytest.mark.asyncio
-    async def test_listing_runs_on_an_open_client_closed_afterwards(
-        self, session: AsyncSession
-    ):
-        """Assert the probe opens the executor's HTTP client for the listing only."""
+    async def test_ticks_reuse_one_open_client(self, session: AsyncSession):
+        """Assert every tick lists through the same client, left open between ticks.
+
+        Opening a client per tick would pay a TCP and TLS handshake every second,
+        inside the same deadline as the listing itself.
+        """
         await self._seed_running(session, {"job_id": "job-a"})
         clients_seen: list[ClientSession | None] = []
 
-        async def record(executor: NomadExecutor) -> frozenset[str]:
+        async def record(
+            executor: NomadExecutor, job_ids: Collection[str]
+        ) -> frozenset[str]:
+            del job_ids
             clients_seen.append(executor.session)
             return frozenset()
 
-        with self._probe(session, frozenset()) as (_, mock_listing):
+        async with self._probe(session, frozenset()) as (_, mock_listing):
             mock_listing.side_effect = record
             await sync_finishing_items()
-
-        executor = mock_listing.await_args.args[0]
-        assert clients_seen[0] is not None
-        assert executor.session is None
-
-    @pytest.mark.asyncio
-    async def test_slow_close_is_not_cut_off_by_the_tick(self, session: AsyncSession):
-        """Assert a close that outlasts the tick still runs to completion.
-
-        A close cancelled partway leaves the shared executor holding a closed
-        session, which every later tick would skip reopening and then reuse.
-        """
-        await self._seed_running(session, {"job_id": "job-a"})
-        real_close = ClientSession.close
-
-        async def slow_close(client: ClientSession) -> None:
-            await real_close(client)
-            await asyncio.sleep(0.3)
-
-        with (
-            self._probe(session, frozenset()) as (_, mock_listing),
-            patch(f"{MODULE}.FINISHING_SYNC_INTERVAL_SECONDS", 0.1),
-            patch.object(ClientSession, "close", slow_close),
-        ):
             await sync_finishing_items()
+            executors = [awaited.args[0] for awaited in mock_listing.await_args_list]
+            assert executors[0] is executors[1]
+            assert executors[0] is not tasks_settings.NOMAD
+            assert clients_seen[0] is not None
+            assert clients_seen[0] is clients_seen[1]
+            assert not clients_seen[0].closed
 
-        executor = mock_listing.await_args.args[0]
-        assert executor.session is None
+        assert executors[0].session is None
 
     @pytest.mark.asyncio
     async def test_finished_run_turns_terminal_between_sweeps(
@@ -1924,18 +1968,44 @@ class TestSyncFinishingItems:
         executor = MagicMock()
         executor.sync_task_history = AsyncMock(side_effect=stamp_success)
 
-        with (
-            self._probe(session, frozenset({"job-a"})) as (mock_group, _),
-            patch(f"{MODULE}.get_executor_for_task", return_value=executor),
-        ):
-            await sync_finishing_items()
-            for dispatched_id in self._dispatched_ids(mock_group):
-                await sync_queue_item(dispatched_id)
+        async with self._probe(session, frozenset({"job-a"})) as (mock_group, _):
+            with patch(f"{MODULE}.get_executor_for_task", return_value=executor):
+                await sync_finishing_items()
+                for dispatched_id in self._dispatched_ids(mock_group):
+                    await sync_queue_item(dispatched_id)
 
         session.expire_all()
         stored = await TaskHistoryManager.get_or_404(session, id=history_id)
         assert stored.status == TaskHistoryStatusEnum.SUCCESS
         assert stored.sync_in_progress_started_at is None
+
+
+class TestCloseFinishingProbeClient:
+    """Test the worker-shutdown close of the finishing-run probe's client."""
+
+    def test_closes_an_open_client_on_the_worker_loop(self):
+        """Assert an open client is closed on ``celery.loop``."""
+        client = MagicMock(is_open=True)
+        client.close = MagicMock(return_value="close-coro")
+        with (
+            patch(f"{MODULE}._finishing_probe_client", client),
+            patch(f"{MODULE}.celery") as mock_celery,
+        ):
+            close_finishing_probe_client()
+
+        mock_celery.loop.run_until_complete.assert_called_once_with("close-coro")
+
+    def test_never_opened_client_leaves_the_loop_alone(self):
+        """Assert a process where the probe never ran does not touch the loop."""
+        client = MagicMock(is_open=False)
+        with (
+            patch(f"{MODULE}._finishing_probe_client", client),
+            patch(f"{MODULE}.celery") as mock_celery,
+        ):
+            close_finishing_probe_client()
+
+        mock_celery.loop.run_until_complete.assert_not_called()
+        client.close.assert_not_called()
 
 
 @asynccontextmanager

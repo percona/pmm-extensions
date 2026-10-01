@@ -44,6 +44,7 @@ from app.tasks.db.seed import (
 )
 from app.tasks.execution.executors.nomad.constants import (
     CHECK_NOMAD_CERT_EXPIRY_TASK_NAME,
+    SYNC_FINISHING_TASKS_TASK_NAME,
 )
 from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.executors.nomad.steps import (
@@ -51,11 +52,9 @@ from app.tasks.execution.executors.nomad.steps import (
     NomadStep,
 )
 from app.tasks.models import (
-    FINISHING_SYNC_INTERVAL_SECONDS,
     INTERNAL_TASK_NAMES,
     INVENTORY_COLLECTION_TASK_NAME,
     INVENTORY_SYNC_TASK_NAME,
-    SYNC_FINISHING_TASKS_TASK_NAME,
     SYNC_RUNNING_TASKS_TASK_NAME,
     TaskBackendEnum,
 )
@@ -1269,37 +1268,41 @@ def test_nomad_cert_expiry_periodic_task_seeded() -> None:
     raise AssertionError("tasks__check_nomad_cert_expiry task not found")
 
 
-def test_finishing_sync_schedule_within_bound() -> None:
+def test_finishing_sync_default_within_bound() -> None:
     """Assert the finishing-run probe leaves the default drain inside the 5 s bound.
 
     A finished run waits up to one tick to be noticed and up to one more for the
     probe's listing, whose timeout is the tick interval; the sync it dispatches
     then spends up to the terminal log-drain budget before the status is saved.
-    The drain is read off the executor's defaults, so raising either drain knob
-    past the bound fails here.
+    Every term is read off the executor's defaults, so raising the tick or either
+    drain knob past the bound fails here.
     """
     status_bound_seconds = 5
-    drain_fields = NomadExecutor.model_fields
+    fields = NomadExecutor.model_fields
     drain_budget_seconds = (
-        drain_fields["terminal_log_drain_max_attempts"].default
-        * drain_fields["terminal_log_drain_interval"].default
+        fields["terminal_log_drain_max_attempts"].default
+        * fields["terminal_log_drain_interval"].default
     )
-    assert (
-        2 * FINISHING_SYNC_INTERVAL_SECONDS + drain_budget_seconds
-        < status_bound_seconds
-    )
-    for schedule, tasks in SYSTEM_PERIODIC_TASKS:
-        for entry in tasks:
-            if entry.name == SYNC_FINISHING_TASKS_TASK_NAME:
-                assert entry.task_name == "app.tasks.celery.sync_finishing_tasks"
-                assert schedule == IntervalSchedule(
-                    every=FINISHING_SYNC_INTERVAL_SECONDS, period=Period.SECONDS
-                )
-                assert entry.extra_kwargs == {
-                    "expire_seconds": FINISHING_SYNC_INTERVAL_SECONDS
-                }
-                return
-    raise AssertionError(f"{SYNC_FINISHING_TASKS_TASK_NAME} task not found")
+    tick_seconds = fields["finishing_sync_interval_seconds"].default
+    assert 2 * tick_seconds + drain_budget_seconds < status_bound_seconds
+
+
+def test_finishing_sync_periodic_task_seeded() -> None:
+    """Assert the finishing-run probe is seeded on the Nomad tick only when set."""
+    interval = tasks_settings.NOMAD.finishing_sync_interval_seconds
+    seeded = [
+        (schedule, entry)
+        for schedule, tasks in SYSTEM_PERIODIC_TASKS
+        for entry in tasks
+        if entry.name == SYNC_FINISHING_TASKS_TASK_NAME
+    ]
+    if interval is None:
+        assert seeded == []
+        return
+    ((schedule, entry),) = seeded
+    assert entry.task_name == "app.tasks.celery.sync_finishing_tasks"
+    assert schedule == IntervalSchedule(every=interval, period=Period.SECONDS)
+    assert entry.extra_kwargs == {"expire_seconds": interval}
 
 
 def test_purge_task_history_logs_periodic_task_seeded() -> None:
