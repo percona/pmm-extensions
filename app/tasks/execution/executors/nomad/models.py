@@ -1186,6 +1186,26 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             )
         return alloc
 
+    def capture_hold_ready_job_ids(self) -> frozenset[str]:
+        """Return the job IDs whose running allocation is capture-hold ready.
+
+        One list call covers every running allocation, so detecting finished runs
+        costs the same whatever the number of RUNNING histories. A hold keeps its
+        allocation ``running`` after the producing steps die, which is why the
+        ``running`` filter cannot miss a hold-ready allocation.
+
+        :return: The ``JobID`` of every running allocation for which
+            :func:`_detect_capture_hold_ready` holds.
+        :raises BaseNomadException: If Nomad cannot be reached or rejects the call.
+        """
+        allocations = self.backend.allocations.get_allocations(
+            filter_=f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"',
+            task_states=True,
+        )
+        return frozenset(
+            alloc["JobID"] for alloc in allocations if _detect_capture_hold_ready(alloc)
+        )
+
     async def dispatch_task(
         self,
         session: AsyncSession,

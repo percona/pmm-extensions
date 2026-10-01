@@ -6968,6 +6968,70 @@ class TestNomadCaptureHoldDetection:
         assert _status_from_step_states(alloc) == TaskHistoryStatusEnum.FAILED
 
 
+class TestNomadCaptureHoldReadyJobIds:
+    """Cover the cluster-wide listing of capture-hold-ready jobs."""
+
+    @staticmethod
+    def _alloc(job_id: str, task_states: dict[str, dict[str, str]]) -> dict[str, Any]:
+        """Return a running allocation stub for ``job_id``."""
+        return {
+            "ID": f"alloc-{job_id}",
+            "JobID": job_id,
+            "ClientStatus": NomadAllocStatusEnum.RUNNING,
+            "TaskStates": task_states,
+        }
+
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    def test_returns_job_ids_of_hold_ready_allocations(
+        self, mock_nomad_cls: MagicMock
+    ) -> None:
+        """Assert only allocations whose producers are done and hold is up count."""
+        get_allocations = mock_nomad_cls.return_value.allocations.get_allocations
+        get_allocations.return_value = [
+            self._alloc(
+                "job-ready",
+                {
+                    "run-script": {"State": "dead"},
+                    NomadStep.LOG_CAPTURE_HOLD: {"State": "running"},
+                },
+            ),
+            self._alloc(
+                "job-producing",
+                {
+                    "run-script": {"State": "running"},
+                    NomadStep.LOG_CAPTURE_HOLD: {"State": "pending"},
+                },
+            ),
+            self._alloc("job-no-hold", {"run-script": {"State": "dead"}}),
+        ]
+
+        ready = _build_executor().capture_hold_ready_job_ids()
+
+        assert ready == frozenset({"job-ready"})
+        get_allocations.assert_called_once_with(
+            filter_=f'ClientStatus == "{NomadAllocStatusEnum.RUNNING}"',
+            task_states=True,
+        )
+
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    def test_empty_allocation_list_returns_empty_set(
+        self, mock_nomad_cls: MagicMock
+    ) -> None:
+        """Assert a cluster with no running allocation reports no job."""
+        mock_nomad_cls.return_value.allocations.get_allocations.return_value = []
+
+        assert _build_executor().capture_hold_ready_job_ids() == frozenset()
+
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    def test_nomad_error_propagates(self, mock_nomad_cls: MagicMock) -> None:
+        """Assert a Nomad failure reaches the caller, which owns the fallback."""
+        get_allocations = mock_nomad_cls.return_value.allocations.get_allocations
+        get_allocations.side_effect = BaseNomadException("unreachable")
+
+        with pytest.raises(BaseNomadException):
+            _build_executor().capture_hold_ready_job_ids()
+
+
 class TestNomadCaptureHoldRelease:
     """Cover the hold-release signal and its guards."""
 

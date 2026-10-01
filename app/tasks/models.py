@@ -1142,6 +1142,7 @@ INVENTORY_SYNC_AFTER_KEY = "after_syncer"
 INVENTORY_SYNC_FIRST_RUN_KEY = "first_run_only"
 INVENTORY_COLLECTION_TASK_NAME = "inventory-collection"
 SYNC_RUNNING_TASKS_TASK_NAME = "tasks__sync_running_tasks"
+SYNC_FINISHING_TASKS_TASK_NAME = "tasks__sync_finishing_tasks"
 
 #: Maintenance / system task names excluded from user-facing task lists.
 #: The cert-expiry member is a literal matching

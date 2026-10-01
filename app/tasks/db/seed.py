@@ -55,6 +55,7 @@ from app.tasks.models import (
     INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FOLLOWERS_KEY,
     INVENTORY_SYNC_TASK_NAME,
+    SYNC_FINISHING_TASKS_TASK_NAME,
     SYNC_RUNNING_TASKS_TASK_NAME,
     SYSTEM_USER,
     Task,
@@ -811,6 +812,11 @@ SYSTEM_TASKS = [
     ),
 ]
 
+#: Tick of the finishing-run probe. A finished run's status must be stored
+#: within 5 s, and the sync the probe dispatches still spends the terminal
+#: log-drain budget first, so the tick leaves most of that bound to the drain.
+FINISHING_SYNC_INTERVAL_SECONDS = 1
+
 SYSTEM_PERIODIC_TASKS = [
     SystemPeriodicTaskSchedule(
         schedule=IntervalSchedule(every=30, period=Period.SECONDS),
@@ -821,7 +827,19 @@ SYSTEM_PERIODIC_TASKS = [
                 extra_kwargs={"expire_seconds": 30},
             ),
         ],
-    )
+    ),
+    SystemPeriodicTaskSchedule(
+        schedule=IntervalSchedule(
+            every=FINISHING_SYNC_INTERVAL_SECONDS, period=Period.SECONDS
+        ),
+        tasks=[
+            SystemPeriodicTaskData(
+                name=SYNC_FINISHING_TASKS_TASK_NAME,
+                task_name="app.tasks.celery.sync_finishing_tasks",
+                extra_kwargs={"expire_seconds": FINISHING_SYNC_INTERVAL_SECONDS},
+            ),
+        ],
+    ),
 ]
 
 _nomad_cert_schedule = tasks_settings.NOMAD.check_cert_expiry_interval

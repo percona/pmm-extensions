@@ -33,6 +33,7 @@ from app.tasks.db.seed import (
     _launch_check_shell,
     _LOG_CAPTURE_HOLD_TASK,
     EFFECTIVE_INTERPRETER_PATH,
+    FINISHING_SYNC_INTERVAL_SECONDS,
     LOG_CAPTURE_HOLD_SHELL,
     NOMAD_EXEC_ARTIFACT,
     NOMAD_EXEC_PYTHON_ARTIFACT,
@@ -53,6 +54,7 @@ from app.tasks.models import (
     INTERNAL_TASK_NAMES,
     INVENTORY_COLLECTION_TASK_NAME,
     INVENTORY_SYNC_TASK_NAME,
+    SYNC_FINISHING_TASKS_TASK_NAME,
     SYNC_RUNNING_TASKS_TASK_NAME,
     TaskBackendEnum,
 )
@@ -1253,6 +1255,29 @@ def test_nomad_cert_expiry_periodic_task_seeded() -> None:
                 assert entry.task_name == "app.tasks.celery.check_nomad_cert_expiry"
                 return
     raise AssertionError("tasks__check_nomad_cert_expiry task not found")
+
+
+def test_finishing_sync_schedule_within_bound() -> None:
+    """Assert the finishing-run probe ticks well inside the 5-second status bound.
+
+    A tick only detects the finished run; the sync it dispatches still spends up
+    to the terminal log-drain budget before the status is saved, so the tick has
+    to leave most of the bound to that drain.
+    """
+    status_bound_seconds = 5
+    for schedule, tasks in SYSTEM_PERIODIC_TASKS:
+        for entry in tasks:
+            if entry.name == SYNC_FINISHING_TASKS_TASK_NAME:
+                assert entry.task_name == "app.tasks.celery.sync_finishing_tasks"
+                assert schedule == IntervalSchedule(
+                    every=FINISHING_SYNC_INTERVAL_SECONDS, period=Period.SECONDS
+                )
+                assert entry.extra_kwargs == {
+                    "expire_seconds": FINISHING_SYNC_INTERVAL_SECONDS
+                }
+                assert status_bound_seconds > FINISHING_SYNC_INTERVAL_SECONDS
+                return
+    raise AssertionError(f"{SYNC_FINISHING_TASKS_TASK_NAME} task not found")
 
 
 def test_purge_task_history_logs_periodic_task_seeded() -> None:

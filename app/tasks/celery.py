@@ -28,6 +28,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from celery import group
 from celery import Task as CeleryTask
 from celery.app.task import Context
 from celery.signals import (
@@ -510,6 +511,14 @@ def sync_running_tasks() -> None:
 
 
 @celery.task
+def sync_finishing_tasks() -> None:
+    """Define Celery task to sync running tasks whose steps have finished."""
+    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
+        sync_finishing_items()
+    )
+
+
+@celery.task
 def purge_task_history_logs() -> None:
     """Define Celery task to purge aged task-execution logs."""
     celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
@@ -920,6 +929,41 @@ async def _raise_if_identical_task_conflict(
             )
 
 
+def _sync_lock_free() -> ColumnElement[bool]:
+    """Return the predicate matching histories no sync currently holds.
+
+    :return: ``True`` for a history whose sync lock was never taken or has outlived
+        ``SYNC_LOCK_TTL``.
+    """
+    return or_(
+        col(TaskHistory.sync_in_progress_started_at).is_(None),
+        col(TaskHistory.sync_in_progress_started_at)
+        < (utc_now() - tasks_settings.SYNC_LOCK_TTL),
+    )
+
+
+async def _claim_syncs(
+    session: AsyncSession, *whereclause: ColumnElement[bool]
+) -> list[int]:
+    """Take the sync lock on every free RUNNING history matching ``whereclause``.
+
+    The claim is one atomic UPDATE, so a history another claimant holds is
+    skipped rather than synced twice.
+
+    :param session: The session to run the claim in.
+    :param whereclause: Extra filters narrowing which histories to claim.
+    :return: The ids of the histories this call claimed.
+    """
+    return await TaskHistoryManager.update_where(
+        session,
+        {"sync_in_progress_started_at": func.now()},
+        _sync_lock_free(),
+        *whereclause,
+        returning=("id",),
+        status=TaskHistoryStatusEnum.RUNNING,
+    )
+
+
 async def sync_running_items() -> None:
     """Sync running tasks in the task history.
 
@@ -929,22 +973,67 @@ async def sync_running_items() -> None:
     """
     async_session = get_async_session_maker()
     async with async_session() as session:
-        result = await TaskHistoryManager.update_where(
-            session,
-            {"sync_in_progress_started_at": func.now()},
-            or_(
-                col(TaskHistory.sync_in_progress_started_at).is_(None),
-                col(TaskHistory.sync_in_progress_started_at)
-                < (utc_now() - tasks_settings.SYNC_LOCK_TTL),
-            ),
-            returning=("id",),
-            status=TaskHistoryStatusEnum.RUNNING,
-        )
+        result = await _claim_syncs(session)
         args = [(item_id,) for item_id in result]
         if args:
             logger.debug("Dispatching sync of %d running tasks", len(args))
             chunk_size = 100
             sync_task_history.chunks(args, chunk_size).apply_async()
+
+
+async def sync_finishing_items() -> None:
+    """Sync RUNNING histories whose producing steps have ended, ahead of the sweep.
+
+    One Nomad list call reports every job whose allocation is capture-hold
+    ready; the histories tracking those jobs are claimed through the sweep's
+    own lock and handed to the same ``sync_task_history`` task, which stamps
+    the status, drains the logs and releases the hold. Each claimed history is
+    its own Celery task so that concurrent finishers drain in parallel.
+
+    A Nomad failure is logged and left to the sweep, which still covers the run.
+    """
+    async_session = get_async_session_maker()
+    async with async_session() as session:
+        if not await TaskHistoryManager.exists(
+            session, status=TaskHistoryStatusEnum.RUNNING
+        ):
+            return
+    try:
+        ready_job_ids = normalize_nomad_config_value(
+            tasks_settings.NOMAD
+        ).capture_hold_ready_job_ids()
+    except BaseNomadException:
+        logger.warning(
+            "Could not list Nomad allocations; leaving finished runs to the sweep",
+            exc_info=True,
+        )
+        return
+    if not ready_job_ids:
+        return
+    async with async_session() as session:
+        running = await TaskHistoryManager.list(
+            session,
+            _sync_lock_free(),
+            query_options=[
+                undefer(
+                    typing.cast(
+                        "QueryableAttribute[Any]", TaskHistory.execution_request
+                    )
+                )
+            ],
+            status=TaskHistoryStatusEnum.RUNNING,
+        )
+        finishing_ids = [
+            history.id
+            for history in running
+            if history.execution_request.tracking.get("job_id") in ready_job_ids
+        ]
+        if not finishing_ids:
+            return
+        claimed = await _claim_syncs(session, col(TaskHistory.id).in_(finishing_ids))
+    if claimed:
+        logger.debug("Dispatching sync of %d finishing tasks", len(claimed))
+        group([sync_task_history.s(history_id) for history_id in claimed]).apply_async()
 
 
 async def sync_queue_item(queue_id: int) -> TaskHistory:
