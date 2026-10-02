@@ -15,7 +15,6 @@
 
 """Define routes for the Tasks API."""
 
-import asyncio
 import json
 import logging
 import os
@@ -575,11 +574,12 @@ async def stream_task_history_logs(
     if task_history.status == TaskHistoryStatusEnum.RUNNING:
         try:
             if isinstance(executor, BaseRemoteAPI):
-                await executor.run_in_thread_held(
-                    executor.preflight_stream_logs, task_history
-                )
+                # Held for the call, so a client retirement waiting on
+                # close_when_idle cannot close the executor under it.
+                async with executor.hold():
+                    await executor.preflight_stream_logs(task_history)
             else:
-                await asyncio.to_thread(executor.preflight_stream_logs, task_history)
+                await executor.preflight_stream_logs(task_history)
         except TaskNotStartedInExecutorError as exc:
             raise HTTPConflictException(str(exc)) from None
         stream_logs_generator = (
