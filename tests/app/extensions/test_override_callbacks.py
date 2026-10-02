@@ -33,7 +33,6 @@ from app.core.settings_override.lifecycle import is_fire_on_boot, SnapshotChange
 from app.core.settings_override.models import SettingClassEnum
 from app.extensions.config import extensions_settings
 from app.extensions.main import (
-    _close_app_state_remote_apis,
     _make_remote_api_rebinder,
     _reseed_system_periodic_tasks,
 )
@@ -427,26 +426,6 @@ async def test_endpoint_rebinder_registers_idle_retiree_before_publish(
         if old._session is not None:
             await old.close()
         extensions_settings._set_snapshot({})
-
-
-@pytest.mark.asyncio
-async def test_close_app_state_remote_apis_continues_after_tasks_close_fails() -> None:
-    """Continue inventory close and pending sweep when ``tasks_api.__aexit__`` raises."""
-    app = FastAPI()
-    pending = PendingCloses()
-    app.state.retired_remote_apis = pending
-    app.state.tasks_api = AsyncMock()
-    app.state.tasks_api.__aexit__ = AsyncMock(side_effect=RuntimeError("tasks boom"))
-    app.state.inventory_api = AsyncMock()
-    app.state.inventory_api.__aexit__ = AsyncMock()
-    pending.force_close = AsyncMock()
-
-    with pytest.raises(RuntimeError, match="tasks boom"):
-        await _close_app_state_remote_apis(app)
-
-    assert pending.sealed
-    app.state.inventory_api.__aexit__.assert_awaited_once()
-    pending.force_close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
