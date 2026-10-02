@@ -687,6 +687,7 @@ class TestBoundedFollowerWait:
         assert any(r.levelno == logging.WARNING for r in caplog.records)
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
     async def test_tolerates_an_anchor_stamped_on_a_slightly_fast_clock(
         self, extensions_maker, mocker
     ) -> None:
