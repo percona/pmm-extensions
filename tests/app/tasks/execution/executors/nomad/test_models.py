@@ -18,6 +18,7 @@
 import asyncio
 import json
 import logging
+import re
 from base64 import b64encode
 from binascii import b2a_base64
 from collections import defaultdict
@@ -29,6 +30,7 @@ from unittest.mock import AsyncMock, call, MagicMock, patch
 import pytest
 import requests
 from aiohttp import ClientError, ClientRequest, ClientResponseError, ClientTimeout
+from aioresponses import aioresponses
 from fastapi import status
 from nomad.api.exceptions import BaseNomadException, URLNotFoundNomadException
 from pydantic import ValidationError
@@ -7726,6 +7728,99 @@ class TestDrainTerminalLogs:
         assert stdout == "head\ntail\n"
         assert stderr == "boot\nlate\n"
 
+    @staticmethod
+    def _hold_ready_alloc() -> dict[str, Any]:
+        """Return an allocation whose producer is dead behind a running hold."""
+        return {
+            "ID": "alloc-1",
+            "CreateIndex": ALLOCATION_CREATE_INDEX,
+            "TaskStates": {
+                "run-script": {
+                    "State": "dead",
+                    "StartedAt": "2024-01-01T00:00:00Z",
+                },
+                NomadStep.LOG_CAPTURE_HOLD: {
+                    "State": "running",
+                    "StartedAt": "2024-01-01T00:00:01Z",
+                },
+            },
+        }
+
+    async def _persist_hold_ready(
+        self, mock_nomad_cls, session, history, snapshots
+    ) -> None:
+        """Run a terminal persist on a hold-ready allocation with ``snapshots``."""
+        mock_backend = MagicMock()
+        mock_nomad_cls.return_value = mock_backend
+        mock_backend.client.stream_logs.stream.side_effect = self._growing_stream(
+            snapshots
+        )
+        alloc = self._hold_ready_alloc()
+        mock_backend.allocation.get_allocation.return_value = alloc
+        history.anonymize_mask = 0
+        history.status = TaskHistoryStatusEnum.SUCCESS
+        executor = _build_executor(
+            terminal_log_drain_max_attempts=self.DRAIN_MAX_ATTEMPTS
+        )
+        await executor._persist_nomad_task_logs(
+            writer_session=session,
+            queue_item=history,
+            alloc=alloc,
+            previous_allocation_id="alloc-1",
+            capture_hold_ready=True,
+        )
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.tasks.execution.executors.nomad.models.asyncio.sleep",
+        new_callable=AsyncMock,
+    )
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_hold_ready_drain_ends_on_first_quiet_refetch(
+        self, mock_nomad_cls, mock_sleep, session, created_task_with_history
+    ):
+        """Assert a hold-ready drain stops once a re-fetch finds nothing new.
+
+        The producers are dead and the hold keeps the allocation alive, so a
+        re-fetch a full interval later that returns no bytes on any stream means
+        the tail is read, even for a stream that never produced anything.
+        """
+        await self._persist_hold_ready(
+            mock_nomad_cls,
+            session,
+            created_task_with_history,
+            {("run-script", TaskLogType.STDOUT): ["out\n"]},
+        )
+
+        stdout = await self._stream_content(
+            session, created_task_with_history.id, "run-script", TaskLogType.STDOUT
+        )
+        assert stdout == "out\n"
+        assert mock_sleep.await_count == 1
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.tasks.execution.executors.nomad.models.asyncio.sleep",
+        new_callable=AsyncMock,
+    )
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_hold_ready_drain_reads_a_tail_flushed_after_the_first_fetch(
+        self, mock_nomad_cls, mock_sleep, session, created_task_with_history
+    ):
+        """Assert a hold-ready drain keeps reading while the tail still lands."""
+        await self._persist_hold_ready(
+            mock_nomad_cls,
+            session,
+            created_task_with_history,
+            {("run-script", TaskLogType.STDOUT): ["out\n", "out\ntail\n"]},
+        )
+
+        stdout = await self._stream_content(
+            session, created_task_with_history.id, "run-script", TaskLogType.STDOUT
+        )
+        assert stdout == "out\ntail\n"
+        assert mock_sleep.await_count == self.EXPECTED_SLEEPS_ALL_STREAMS_DRAINED
+
 
 class TestNomadCaptureHoldDetection:
     """Cover the log-capture-hold terminal-detection helpers."""
@@ -7814,6 +7909,216 @@ class TestNomadCaptureHoldDetection:
         )
 
         assert _status_from_step_states(alloc) == TaskHistoryStatusEnum.FAILED
+
+
+class TestNomadCaptureHoldReadyJobIds:
+    """Cover the listing of capture-hold-ready jobs."""
+
+    @staticmethod
+    def _alloc(
+        job_id: str,
+        task_states: dict[str, dict[str, Any]],
+        client_status: NomadAllocStatusEnum = NomadAllocStatusEnum.RUNNING,
+        create_index: int = 1,
+    ) -> dict[str, Any]:
+        """Return an allocation stub for ``job_id``."""
+        return {
+            "ID": f"alloc-{job_id}-{create_index}",
+            "JobID": job_id,
+            "ClientStatus": client_status,
+            "CreateIndex": create_index,
+            "TaskStates": task_states,
+        }
+
+    _LISTING_URL = re.compile(r"^http://localhost:4646/v1/allocations\?")
+
+    @pytest.mark.asyncio
+    async def test_returns_job_ids_of_hold_ready_allocations(self) -> None:
+        """Assert only allocations whose producers are done and hold is up count.
+
+        The listing asks Nomad for pending, running and failed allocations with
+        their task states: Nomad reports an allocation ``failed`` as soon as a
+        producing step fails, even while its hold still runs.
+        """
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(
+                self._LISTING_URL,
+                payload=[
+                    self._alloc(
+                        "job-ready",
+                        {
+                            "run-script": {"State": "dead"},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "running"},
+                        },
+                    ),
+                    self._alloc(
+                        "job-producing",
+                        {
+                            "run-script": {"State": "running"},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "pending"},
+                        },
+                    ),
+                    self._alloc("job-no-hold", {"run-script": {"State": "dead"}}),
+                    self._alloc(
+                        "job-failed",
+                        {
+                            "run-script": {"State": "dead", "Failed": True},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "running"},
+                        },
+                        client_status=NomadAllocStatusEnum.FAILED,
+                    ),
+                ],
+            )
+            async with executor:
+                ready = await executor.capture_hold_ready_job_ids(
+                    ["job-ready", "job-producing", "job-no-hold", "job-failed"]
+                )
+
+        assert ready == frozenset({"job-ready", "job-failed"})
+
+    @pytest.mark.asyncio
+    async def test_listing_is_filtered_to_the_given_jobs(self) -> None:
+        """Assert Nomad is asked only about the given jobs, never the whole cluster.
+
+        Each job ID is quoted as a JSON string literal, so one carrying a quote
+        cannot break out of the filter expression.
+        """
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(self._LISTING_URL, payload=[])
+            async with executor:
+                await executor.capture_hold_ready_job_ids(["job-a", 'job-"b'])
+
+        (_, (request,)) = nomad.requests.popitem()
+        assert request.kwargs["params"] == {
+            "filter": (
+                f'(ClientStatus == "{NomadAllocStatusEnum.PENDING}"'
+                f' or ClientStatus == "{NomadAllocStatusEnum.RUNNING}"'
+                f' or ClientStatus == "{NomadAllocStatusEnum.FAILED}")'
+                ' and (JobID == "job-a" or JobID == "job-\\"b")'
+            ),
+            "task_states": "true",
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_job_ids_makes_no_request(self) -> None:
+        """Assert an empty job list returns at once without calling Nomad."""
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            async with executor:
+                ready = await executor.capture_hold_ready_job_ids([])
+
+        assert ready == frozenset()
+        assert nomad.requests == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "replacement_status",
+        [NomadAllocStatusEnum.PENDING, NomadAllocStatusEnum.RUNNING],
+    )
+    async def test_superseded_failed_allocation_does_not_mark_its_job_ready(
+        self, replacement_status: NomadAllocStatusEnum
+    ) -> None:
+        """Assert readiness is judged on the job's newest allocation only.
+
+        A rescheduled job keeps its failed predecessor, which still looks
+        hold-ready, beside the replacement every sync resolves; reporting the
+        job would re-dispatch a sync of the still-running replacement on every
+        tick.
+        """
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(
+                self._LISTING_URL,
+                payload=[
+                    self._alloc(
+                        "job-retried",
+                        {
+                            "run-script": {"State": "dead", "Failed": True},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "running"},
+                        },
+                        client_status=NomadAllocStatusEnum.FAILED,
+                        create_index=10,
+                    ),
+                    self._alloc(
+                        "job-retried",
+                        {
+                            "run-script": {"State": "pending"},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "pending"},
+                        },
+                        client_status=replacement_status,
+                        create_index=20,
+                    ),
+                ],
+            )
+            async with executor:
+                ready = await executor.capture_hold_ready_job_ids(["job-retried"])
+
+        assert ready == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_failed_allocation_with_exited_hold_is_not_listed(self) -> None:
+        """Assert a retained failed allocation whose hold has exited is skipped.
+
+        Nomad keeps such an allocation until it collects it; reporting it would
+        keep the finishing-run probe from short-circuiting on an empty result
+        for as long as the allocation lingers.
+        """
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(
+                self._LISTING_URL,
+                payload=[
+                    self._alloc(
+                        "job-exited-hold",
+                        {
+                            "run-script": {"State": "dead", "Failed": True},
+                            NomadStep.LOG_CAPTURE_HOLD: {"State": "dead"},
+                        },
+                        client_status=NomadAllocStatusEnum.FAILED,
+                    ),
+                ],
+            )
+            async with executor:
+                ready = await executor.capture_hold_ready_job_ids(["job-exited-hold"])
+
+        assert ready == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_empty_allocation_list_returns_empty_set(self) -> None:
+        """Assert a job with no live allocation is not reported."""
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(self._LISTING_URL, payload=[])
+            async with executor:
+                ready = await executor.capture_hold_ready_job_ids(["job-a"])
+
+        assert ready == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_error_status_propagates(self) -> None:
+        """Assert a Nomad error status reaches the caller, which owns the fallback."""
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(self._LISTING_URL, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            async with executor:
+                with pytest.raises(ClientResponseError):
+                    await executor.capture_hold_ready_job_ids(["job-a"])
+
+    @pytest.mark.asyncio
+    async def test_non_json_body_propagates(self) -> None:
+        """Assert a 2xx whose body is not JSON reaches the caller as ``ValueError``."""
+        executor = _build_executor()
+        with aioresponses() as nomad:
+            nomad.get(
+                self._LISTING_URL,
+                body="<html>proxy error</html>",
+                content_type="application/json",
+            )
+            async with executor:
+                with pytest.raises(json.JSONDecodeError):
+                    await executor.capture_hold_ready_job_ids(["job-a"])
 
 
 class TestNomadCaptureHoldRelease:
