@@ -38,6 +38,7 @@ from app.tasks.execution.nomad_lifecycle import (
     normalize_nomad_config_value,
 )
 from app.tasks.models import TaskBackendEnum
+from tests.app.core.requests.pending_close_helpers import patch_paused_close_when_idle
 
 _NOMAD_A = {"endpoint": "https://nomad-a.example.org"}
 _NOMAD_B = {"endpoint": "https://nomad-b.example.org"}
@@ -154,7 +155,7 @@ async def test_aexit_force_closes_a_deferred_retiree() -> None:
     _override_nomad(_NOMAD_A)
     held = asyncio.Event()
 
-    async def consumer(client) -> None:
+    async def consumer(client: NomadExecutor) -> None:
         async with client.hold():
             held.set()
             await asyncio.Event().wait()
@@ -240,16 +241,7 @@ async def test_aexit_force_closes_idle_retiree_cancelled_mid_reconcile(
     try:
         await holder.__aenter__()
         retired = holder.current
-        entered = asyncio.Event()
-        resume = asyncio.Event()
-        original = NomadExecutor.close_when_idle
-
-        async def paused_close_when_idle(self, pending=None) -> None:
-            entered.set()
-            await resume.wait()
-            await original(self, pending=pending)
-
-        mocker.patch.object(NomadExecutor, "close_when_idle", paused_close_when_idle)
+        entered, resume = patch_paused_close_when_idle(mocker, NomadExecutor)
 
         _override_nomad(_NOMAD_B)
         reconcile_task = asyncio.create_task(holder.reconcile())
@@ -284,16 +276,7 @@ async def test_aexit_force_closes_mid_reconcile_before_close_when_idle(
     try:
         await holder.__aenter__()
         retired = holder.current
-        entered = asyncio.Event()
-        resume = asyncio.Event()
-        original = NomadExecutor.close_when_idle
-
-        async def paused_close_when_idle(self, pending=None) -> None:
-            entered.set()
-            await resume.wait()
-            await original(self, pending=pending)
-
-        mocker.patch.object(NomadExecutor, "close_when_idle", paused_close_when_idle)
+        entered, resume = patch_paused_close_when_idle(mocker, NomadExecutor)
 
         async with retired.hold():
             _override_nomad(_NOMAD_B)

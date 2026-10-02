@@ -630,8 +630,6 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         if self._close_done is not None:
             # Shield so cancelling this waiter does not cancel the shared
             # future other close() / force_close joiners still need.
-            # A later close that finds the teardown already finished still
-            # logs the already-closed line (password-redacted).
             already_closed = self._close_done.done()
             shared = self._close_done
             try:
@@ -665,9 +663,6 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 )
             self._session = None
         except BaseException as exc:
-            # Leave the client on PendingCloses and clear ``_close_done`` so a
-            # later close (e.g. force_close) can retry; publish the failure to
-            # anyone already joined on ``done``.
             self._close_done = None
             if not done.done():
                 done.set_exception(exc)
@@ -676,8 +671,6 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 done.exception()
             raise
         else:
-            # Only after a successful close: drop pending tracking and wake
-            # joiners. Keep the client discoverable for the whole await above.
             self.clear_deferred_close()
             if not done.done():
                 done.set_result(None)

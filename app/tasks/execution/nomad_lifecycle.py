@@ -97,9 +97,6 @@ class NomadLifecycle:
         self._current_config: dict[str, Any] | None = None
         self._lock = asyncio.Lock()
         self._pending_closes = PendingCloses()
-        # Set under ``_lock`` in ``__aexit__`` so a reconcile waiting on the
-        # lock cannot publish a fresh executor after teardown has cleared
-        # ``_current`` (sealing PendingCloses alone does not stop that path).
         self._closing = False
 
     @property
@@ -157,10 +154,6 @@ class NomadLifecycle:
         """
         try:
             async with self._lock:
-                # Mark closing before any await so a reconcile queued on this lock
-                # refuses to publish after we clear ``_current``. Seal pending so a
-                # reconcile that already left the lock cannot register after the
-                # sweep either.
                 self._closing = True
                 self._pending_closes.seal()
                 if self._current is not None:
@@ -223,8 +216,6 @@ class NomadLifecycle:
             new = await desired.__aenter__()
             old, self._current = self._current, new
             self._current_config = desired_config
-            # Register before releasing the lock so __aexit__ cannot miss a
-            # client that has left _current but not yet entered close_when_idle.
             if old is not None and not old.remember_pending_close(self._pending_closes):
                 close_immediately = True
         if old is not None:

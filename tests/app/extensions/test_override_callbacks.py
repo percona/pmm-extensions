@@ -41,6 +41,7 @@ from app.extensions.settings_override import (
     invalidate_pmm_clients,
 )
 from app.extensions.snippets.config import snippets_settings
+from tests.app.core.requests.pending_close_helpers import patch_paused_close_when_idle
 
 
 def _awaited_endpoints(invalidate: AsyncMock) -> list[str]:
@@ -385,16 +386,7 @@ async def test_endpoint_rebinder_registers_idle_retiree_before_publish(
     )
     mocker.patch.object(Settings, "invalidate_client", new=AsyncMock())
 
-    entered = asyncio.Event()
-    resume = asyncio.Event()
-    original = RemoteAPI.close_when_idle
-
-    async def paused_close_when_idle(self: RemoteAPI, pending=None) -> None:
-        entered.set()
-        await resume.wait()
-        await original(self, pending=pending)
-
-    mocker.patch.object(RemoteAPI, "close_when_idle", paused_close_when_idle)
+    entered, resume = patch_paused_close_when_idle(mocker, RemoteAPI)
 
     rebind = _make_remote_api_rebinder(
         app,

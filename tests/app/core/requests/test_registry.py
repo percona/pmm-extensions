@@ -21,8 +21,9 @@ import pytest
 from pytest_mock import MockerFixture
 
 from app.core.requests.registry import ClientRegistry
-from app.core.requests.remote_api import RemoteAPI
+from app.core.requests.remote_api import PendingCloses, RemoteAPI
 from app.core.utils.fields import CREDENTIAL_URL_MASK
+from tests.app.core.requests.pending_close_helpers import patch_paused_close_when_idle
 
 
 @pytest.mark.asyncio
@@ -123,16 +124,7 @@ async def test_close_all_force_closes_mid_invalidate_before_close_when_idle(
     """
     registry = ClientRegistry()
     client = await registry.get(RemoteAPI, endpoint="https://a.example.org")
-    entered = asyncio.Event()
-    resume = asyncio.Event()
-    original = RemoteAPI.close_when_idle
-
-    async def paused_close_when_idle(self: RemoteAPI, pending=None) -> None:
-        entered.set()
-        await resume.wait()
-        await original(self, pending=pending)
-
-    mocker.patch.object(RemoteAPI, "close_when_idle", paused_close_when_idle)
+    entered, resume = patch_paused_close_when_idle(mocker, RemoteAPI)
 
     async with client.hold():
         invalidate_task = asyncio.create_task(
@@ -162,16 +154,7 @@ async def test_close_all_force_closes_idle_client_cancelled_mid_invalidate(
     """Keep an idle eviction on pending so cancel mid-close cannot leak."""
     registry = ClientRegistry()
     client = await registry.get(RemoteAPI, endpoint="https://a.example.org")
-    entered = asyncio.Event()
-    resume = asyncio.Event()
-    original = RemoteAPI.close_when_idle
-
-    async def paused_close_when_idle(self: RemoteAPI, pending=None) -> None:
-        entered.set()
-        await resume.wait()
-        await original(self, pending=pending)
-
-    mocker.patch.object(RemoteAPI, "close_when_idle", paused_close_when_idle)
+    entered, resume = patch_paused_close_when_idle(mocker, RemoteAPI)
 
     invalidate_task = asyncio.create_task(registry.invalidate("https://a.example.org"))
     await asyncio.wait_for(entered.wait(), timeout=5)
@@ -275,7 +258,7 @@ class _FailingCloseRemoteAPI(RemoteAPI):
         """Raise instead of closing, so the registry has a failure to report."""
         raise RuntimeError(_CLOSE_FAILURE)
 
-    async def close_when_idle(self, pending=None) -> None:
+    async def close_when_idle(self, pending: PendingCloses | None = None) -> None:
         """Raise on the eviction path the same way."""
         raise RuntimeError(_CLOSE_FAILURE)
 

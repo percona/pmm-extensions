@@ -182,17 +182,11 @@ def _make_remote_api_rebinder(
             return
         # Check after the await: teardown may have sealed while we were opening.
         if pending is not None and pending.sealed:
-            # Track before close so a failed/cancelled discard stays visible
-            # to the shutdown sweep.
             new_api.track_pending_close(pending)
             await new_api.close()
             return
-        # Register before publishing so shutdown can find the old client even
-        # on the idle path, or if this task is cancelled mid-close.
-        if pending is not None and not old.remember_pending_close(pending):
-            new_api.track_pending_close(pending)
-            await new_api.close()
-            return
+        if pending is not None:
+            old.remember_pending_close(pending)
         setattr(app.state, name, new_api)
         await old.close_when_idle(pending=pending)
 

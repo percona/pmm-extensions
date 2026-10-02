@@ -154,8 +154,6 @@ class ClientRegistry:
                 self._locks.pop(key, None)
             if not matching:
                 return
-            # Register before releasing the lock so close_all cannot miss a
-            # client that has left _clients but not yet entered close_when_idle.
             deferred: list[BaseRemoteAPI] = []
             immediate: list[BaseRemoteAPI] = []
             for _key, client in matching:
@@ -217,10 +215,6 @@ class ClientRegistry:
                                 result,
                             )
             finally:
-                # Pending sweep must run even if an active close is cancelled
-                # or raises: retired clients held by streams would otherwise
-                # remain open. A later close_all can retry this sweep if a
-                # deferred close fails transiently.
                 await self._pending_closes.force_close()
         finally:
             self._clients.clear()
