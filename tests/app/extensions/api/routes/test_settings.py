@@ -41,8 +41,14 @@ from app.core.requests import RemoteAPI
 from app.core.settings_override.api import build_settings_router
 from app.core.settings_override.api import routes as settings_routes
 from app.core.settings_override.cache import build_snapshot
+from app.core.settings_override.constants import (
+    ALERT_SETTINGS,
+    EXTENSIONS_SETTINGS,
+    SETTINGS,
+    SNIPPETS_SETTINGS,
+    TASKS_SETTINGS,
+)
 from app.core.settings_override.manager import SettingsOverrideManager
-from app.core.settings_override.models import SettingClassEnum
 from app.core.settings_override.registry import ReloadClassification, SECRET_STR_MASK
 from app.core.utils import json_serializer
 from app.core.utils.date_time import make_datetime_utc, utc_now
@@ -70,6 +76,7 @@ from app.extensions.snippets.config import (
 )
 from tests.app.core.settings_override.conftest import (
     ALERT_SETTINGS_TOKEN,
+    assert_entries_keyed_by_class_name,
     EXTENSIONS_SETTINGS_TOKEN,
     insert_override_row,
     PMM_API_KEY,
@@ -290,7 +297,7 @@ def reduced_activation_client_fixture(
         session_dep=Annotated[AsyncSession, Depends(get_reduced_session)],
         admin_dep=Depends(lambda: None),
         actor_dep=Annotated[str, Depends(lambda: "test-admin")],
-        remote_classes=[(SettingClassEnum.TASKS_SETTINGS, "/admin/settings")],
+        remote_classes=[(TASKS_SETTINGS, "/admin/settings")],
         remote_api_dep=TaskAPI,
         app_owned_classes=collect_app_owned_settings_classes(REDUCED_ACTIVATION),
         resolve_app_metadata=resolve_app_settings_metadata,
@@ -298,6 +305,14 @@ def reduced_activation_client_fixture(
     app.include_router(router, prefix=REDUCED_SETTINGS_PREFIX)
     app.dependency_overrides[get_tasks_api] = _mock_tasks_api
     return TestClient(app, raise_server_exceptions=False)
+
+
+class TestExtensionsSettingsClassEntries:
+    """Key the Extensions settings router by class identifier, never the storage token."""
+
+    def test_entries_are_keyed_by_class_name(self) -> None:
+        """Name each entry, and bind its proxy, by the class ``__name__``."""
+        assert_entries_keyed_by_class_name(EXTENSIONS_ADMIN_SETTINGS_CLASSES)
 
 
 @pytest.mark.asyncio
@@ -312,7 +327,7 @@ class TestReducedActivationSettings:
         assert response.status_code == status.HTTP_200_OK
         alert_group = _find_group(
             response.json(),
-            SettingClassEnum.ALERT_SETTINGS.value,
+            ALERT_SETTINGS,
         )
         assert alert_group["is_app_owned"] is False
         assert alert_group["app_id"] is None
@@ -326,7 +341,7 @@ class TestReducedActivationSettings:
         assert response.status_code == status.HTTP_200_OK
         groups = {group["setting_class"] for group in response.json()["groups"]}
         assert "AlertsSettings" not in groups
-        assert SettingClassEnum.ALERT_SETTINGS.value in groups
+        assert ALERT_SETTINGS in groups
 
     async def test_health_report_settings_not_wired_at_all(
         self, reduced_activation_client: TestClient
@@ -381,14 +396,14 @@ class TestExtensionsSettingsList:
         payload = response.json()
         groups = {group["setting_class"] for group in payload["groups"]}
         assert groups == {
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
-            SettingClassEnum.SNIPPETS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
+            SNIPPETS_SETTINGS,
             "AlertsSettings",
             "HealthReportSettings",
             "InventoryAppSettings",
-            SettingClassEnum.SETTINGS.value,
-            SettingClassEnum.TASKS_SETTINGS.value,
-            SettingClassEnum.ALERT_SETTINGS.value,
+            SETTINGS,
+            TASKS_SETTINGS,
+            ALERT_SETTINGS,
             "OmInventorySettings",
         }
 
@@ -400,7 +415,7 @@ class TestExtensionsSettingsList:
         keys = {
             entry["key"]
             for group in payload["groups"]
-            if group["setting_class"] == SettingClassEnum.EXTENSIONS_SETTINGS.value
+            if group["setting_class"] == EXTENSIONS_SETTINGS
             for entry in group["settings"]
         }
 
@@ -414,10 +429,10 @@ class TestExtensionsSettingsList:
         response = api_admin_client.get("/api/extensions/admin/settings/")
         assert response.status_code == status.HTTP_200_OK
         core_and_remote = {
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
-            SettingClassEnum.SNIPPETS_SETTINGS.value,
-            SettingClassEnum.ALERT_SETTINGS.value,
-            SettingClassEnum.TASKS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
+            SNIPPETS_SETTINGS,
+            ALERT_SETTINGS,
+            TASKS_SETTINGS,
         }
         for group in response.json()["groups"]:
             if group["setting_class"] in core_and_remote:
@@ -481,7 +496,7 @@ class TestExtensionsSettingsList:
         assert response.status_code == status.HTTP_200_OK
         alert_group = _find_group(
             response.json(),
-            SettingClassEnum.ALERT_SETTINGS.value,
+            ALERT_SETTINGS,
         )
         assert alert_group["is_app_owned"] is False
         assert alert_group["app_id"] is None
@@ -502,7 +517,7 @@ class TestExtensionsSettingsList:
         extensions_entry = next(
             group
             for group in payload["groups"]
-            if group["setting_class"] == SettingClassEnum.EXTENSIONS_SETTINGS.value
+            if group["setting_class"] == EXTENSIONS_SETTINGS
         )
         reloads = {entry["reload"] for entry in extensions_entry["settings"]}
         assert reloads == {
@@ -517,7 +532,7 @@ class TestExtensionsSettingsList:
         response = api_admin_client.get("/api/extensions/admin/settings/")
         extensions_setting = _find_setting(
             response.json(),
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "SYNC_REFRESH_TIME",
         )
         assert extensions_setting["has_override"] is False
@@ -535,7 +550,7 @@ class TestExtensionsSettingsList:
         assert response.status_code == status.HTTP_200_OK
         extensions_setting = _find_setting(
             response.json(),
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "CONNECTIVITY_CHECK_DEFAULT",
         )
         assert extensions_setting["default_value"] is False
@@ -548,7 +563,7 @@ class TestExtensionsSettingsList:
         extensions_settings_group = next(
             group
             for group in response.json()["groups"]
-            if group["setting_class"] == SettingClassEnum.EXTENSIONS_SETTINGS.value
+            if group["setting_class"] == EXTENSIONS_SETTINGS
         )
         keys = {entry["key"] for entry in extensions_settings_group["settings"]}
         assert "SESSION_REFRESH" not in keys
@@ -578,7 +593,7 @@ class TestExtensionsSettingsList:
         response = api_admin_client.get("/api/extensions/admin/settings/")
         entry = _find_setting(
             response.json(),
-            SettingClassEnum.SNIPPETS_SETTINGS.value,
+            SNIPPETS_SETTINGS,
             "PREVIEW_MAX_CHARS",
         )
         assert entry["is_complex"] is False
@@ -600,7 +615,7 @@ class TestExtensionsSettingsGet:
         assert response.status_code == status.HTTP_200_OK
         body = response.json()
         assert body["key"] == "SYNC_REFRESH_TIME"
-        assert body["setting_class"] == SettingClassEnum.EXTENSIONS_SETTINGS.value
+        assert body["setting_class"] == EXTENSIONS_SETTINGS
         assert body["reload"] == ReloadClassification.HOT.value
         assert body["has_override"] is False
 
@@ -783,17 +798,17 @@ class TestExtensionsSettingsPatch:
         list_payload = api_admin_client.get("/api/extensions/admin/settings/").json()
         sync = _find_setting(
             list_payload,
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "SYNC_REFRESH_TIME",
         )
         ttl = _find_setting(
             list_payload,
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "ARTIFACT_DOWNLOAD_TTL",
         )
         check = _find_setting(
             list_payload,
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "CONNECTIVITY_CHECK_DEFAULT",
         )
         expected_ttl = 1200
@@ -915,7 +930,7 @@ class TestExtensionsSettingsPatch:
         list_payload = api_admin_client.get("/api/extensions/admin/settings/").json()
         entry = _find_setting(
             list_payload,
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "DIAGNOSTICS_DELIVERY",
         )
 
@@ -945,7 +960,7 @@ class TestExtensionsSettingsPatch:
         list_payload = api_admin_client.get("/api/extensions/admin/settings/").json()
         entry = _find_setting(
             list_payload,
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             _DELIVERY_INPUTS_KEY,
         )
         assert entry["reload"] == ReloadClassification.HOT.value
@@ -981,7 +996,7 @@ class TestExtensionsSettingsPatch:
         list_payload = api_admin_client.get("/api/extensions/admin/settings/").json()
         entry = _find_setting(
             list_payload,
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             _DELIVERY_INPUTS_KEY,
         )
         assert entry["value"]["endpoint"] == endpoint
@@ -1719,12 +1734,12 @@ class TestExtensionsSettingsNestedOverrides:
         list_payload = api_admin_client.get("/api/extensions/admin/settings/").json()
         overridden = _find_setting(
             list_payload,
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "SESSION_REFRESH__SAMESITE",
         )
         sibling = _find_setting(
             list_payload,
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "SESSION_REFRESH__MAX_AGE",
         )
         assert overridden["has_override"] is True
@@ -1818,7 +1833,7 @@ class TestExtensionsSettingsAlertSettings:
         )
         assert response.status_code == status.HTTP_200_OK
         payload = response.json()
-        assert payload["setting_class"] == SettingClassEnum.ALERT_SETTINGS.value
+        assert payload["setting_class"] == ALERT_SETTINGS
         assert payload["key"] == "SOURCE_PREFIX"
 
     async def test_patch_alert_setting(self, api_admin_client: TestClient) -> None:
@@ -1961,7 +1976,7 @@ class TestExtensionsSettingsCredentialUrlRedaction:
         assert response.status_code == status.HTTP_200_OK
         entry = _find_setting(
             response.json(),
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "INVENTORY_ENDPOINT",
         )
         assert "inv-secret" not in entry["value"]
@@ -2101,7 +2116,7 @@ class TestExtensionsSettingsInlineRebind:
         spy = AsyncMock()
         original = getattr(extensions_app.state, "override_callbacks", None)
         extensions_app.state.override_callbacks = {
-            (SettingClassEnum.EXTENSIONS_SETTINGS, "INVENTORY_ENDPOINT"): spy,
+            (EXTENSIONS_SETTINGS, "INVENTORY_ENDPOINT"): spy,
         }
         extensions_settings._set_snapshot({})
         yield spy
@@ -2153,14 +2168,14 @@ class TestExtensionsOverridesLifespanWiring:
             async with extensions_overrides_lifespan(FastAPI()):
                 keys = set(extensions_app.state.override_callbacks)
             assert keys == {
-                (SettingClassEnum.EXTENSIONS_SETTINGS, "INVENTORY_ENDPOINT"),
-                (SettingClassEnum.EXTENSIONS_SETTINGS, "TASKS_ENDPOINT"),
-                (SettingClassEnum.SETTINGS, "PMM"),
-                (SettingClassEnum.SETTINGS, "LOGGING"),
-                (SettingClassEnum.SNIPPETS_SETTINGS, "SYNC_INTERVAL"),
+                (EXTENSIONS_SETTINGS, "INVENTORY_ENDPOINT"),
+                (EXTENSIONS_SETTINGS, "TASKS_ENDPOINT"),
+                (SETTINGS, "PMM"),
+                (SETTINGS, "LOGGING"),
+                (SNIPPETS_SETTINGS, "SYNC_INTERVAL"),
                 ("AlertsSettings", "BACKUP_INTERVAL"),
                 ("InventoryAppSettings", "COLLECTION_INTERVAL"),
-                (SettingClassEnum.EXTENSIONS_SETTINGS, "APP_DRAIN"),
+                (EXTENSIONS_SETTINGS, "APP_DRAIN"),
                 ("OmInventorySettings", "ENABLED"),
                 ("OmInventorySettings", "SCHEDULE"),
             }
@@ -2177,7 +2192,7 @@ class TestGlobalSettingsClass:
         response = api_admin_client.get("/api/extensions/admin/settings/")
         assert response.status_code == status.HTTP_200_OK
         groups = {g["setting_class"] for g in response.json()["groups"]}
-        assert SettingClassEnum.SETTINGS.value in groups
+        assert SETTINGS in groups
 
     async def test_pmm_leaf_patch_persists(
         self, api_admin_client: TestClient, override_session: AsyncSession
@@ -2269,9 +2284,7 @@ class TestGlobalSettingsClass:
         """Expose six LogLevel options (aliases excluded) with int values."""
         response = api_admin_client.get("/api/extensions/admin/settings/")
         assert response.status_code == status.HTTP_200_OK
-        logging_row = _find_setting(
-            response.json(), SettingClassEnum.SETTINGS.value, "LOGGING"
-        )
+        logging_row = _find_setting(response.json(), SETTINGS, "LOGGING")
         assert logging_row["options"] == [
             {"label": "CRITICAL", "value": 50},
             {"label": "ERROR", "value": 40},
@@ -2282,7 +2295,7 @@ class TestGlobalSettingsClass:
         ]
         non_enum = _find_setting(
             response.json(),
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "SYNC_REFRESH_TIME",
         )
         assert non_enum["options"] is None
@@ -2337,18 +2350,14 @@ class TestGlobalSettingsClass:
     ) -> None:
         """Assert the ``SECRET_KEY`` value is never serialised in the LIST payload."""
         response = api_admin_client.get("/api/extensions/admin/settings/")
-        entry = _find_setting(
-            response.json(), SettingClassEnum.SETTINGS.value, "SECRET_KEY"
-        )
+        entry = _find_setting(response.json(), SETTINGS, "SECRET_KEY")
         # SecretStr is redacted by Pydantic's secret-aware JSON dump.
         assert entry["value"] in (None, "**********")
 
     async def test_pmm_api_key_not_leaked(self, api_admin_client: TestClient) -> None:
         """Assert the nested PMM ``api_key`` secret is not serialised in the LIST."""
         response = api_admin_client.get("/api/extensions/admin/settings/")
-        entry = _find_setting(
-            response.json(), SettingClassEnum.SETTINGS.value, "PMM__api_key"
-        )
+        entry = _find_setting(response.json(), SETTINGS, "PMM__api_key")
         assert entry["value"] in (None, "**********")
 
 
@@ -2563,9 +2572,7 @@ class TestExtensionsSettingsSecretsEncryptedAtRest:
         )
 
         list_payload = api_admin_client.get("/api/extensions/admin/settings/").json()
-        entry = _find_setting(
-            list_payload, SettingClassEnum.SETTINGS.value, "PMM__api_key"
-        )
+        entry = _find_setting(list_payload, SETTINGS, "PMM__api_key")
         assert entry["value"] == SECRET_STR_MASK
         serialized = json_serializer(list_payload)
         assert serialized
@@ -2851,7 +2858,7 @@ class TestExtensionsSettingsProvenance:
 
         entry = _find_setting(
             response.json(),
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "SYNC_REFRESH_TIME",
         )
         assert entry["updated_by"] == admin_user.username
@@ -2895,7 +2902,7 @@ class TestExtensionsSettingsProvenance:
 
         entry = _find_setting(
             response.json(),
-            SettingClassEnum.EXTENSIONS_SETTINGS.value,
+            EXTENSIONS_SETTINGS,
             "SYNC_REFRESH_TIME",
         )
         assert entry["has_override"] is False
@@ -3015,16 +3022,14 @@ class TestSettingsComputedKeys:
     ) -> None:
         """Serve the computed ``EXTENSIONS_INTERNAL_TOKEN``, never its excluded input."""
         response = api_admin_client.get("/api/extensions/admin/settings/")
-        keys = _class_keys(response.json(), SettingClassEnum.SETTINGS.value)
+        keys = _class_keys(response.json(), SETTINGS)
         assert "EXTENSIONS_INTERNAL_TOKEN" in keys
         assert "EXTENSIONS_INTERNAL_TOKEN_INPUT" not in keys
 
     async def test_list_advertises_base_dir(self, api_admin_client: TestClient) -> None:
         """Serve ``BASE_DIR`` too: every computed key is part of the public surface."""
         response = api_admin_client.get("/api/extensions/admin/settings/")
-        assert "BASE_DIR" in _class_keys(
-            response.json(), SettingClassEnum.SETTINGS.value
-        )
+        assert "BASE_DIR" in _class_keys(response.json(), SETTINGS)
 
     async def test_detail_masks_the_token_and_refuses_overrides(
         self, api_admin_client: TestClient

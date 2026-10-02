@@ -1280,6 +1280,10 @@ class InventoryCollectWrite(BaseModel):
     :param retired_before: The cutoff a tombstone must predate to be eligible.
         The caller pins one value for a whole run so successive batches cannot
         drift into collecting a tombstone that was too young a moment earlier.
+    :param link_pin_retired_before: The cutoff a linked tombstone must predate
+        for its link to stop pinning it. Required rather than defaulted: either
+        extreme a default could pick silently keeps every link's successor
+        forever or releases it at once.
     :param keep: The ids the caller knows are still referenced, per entity type.
         Ancestors of a kept entity are retained without being listed.
     :param limit: The most entities to collect per type in this call.
@@ -1290,6 +1294,7 @@ class InventoryCollectWrite(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     retired_before: UTCDatetime
+    link_pin_retired_before: UTCDatetime
     keep: dict[RetirableEntityName, list[int]] = {}
     limit: PositiveInt = 500
     dry_run: bool = True

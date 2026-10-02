@@ -25,9 +25,10 @@ from sqlmodel.pool import StaticPool
 
 from app.core.config import settings
 from app.core.db.utils import get_async_session_maker_from_engine
+from app.core.settings_override.constants import TASKS_SETTINGS
 from app.core.settings_override.lifecycle import ProxyEntry, refresh_all
 from app.core.settings_override.manager import SettingsOverrideManager
-from app.core.settings_override.models import SettingClassEnum, SettingOverride
+from app.core.settings_override.models import SettingOverride
 from app.core.utils import json_serializer
 from app.tasks.config import (
     PreExecutionCheckMode,
@@ -61,7 +62,7 @@ async def _override_session_maker() -> AsyncGenerator[async_sessionmaker, None]:
 def _tasks_proxies() -> dict:
     """Return the Tasks-side proxy registry mirroring the lifespan wiring."""
     return {
-        SettingClassEnum.TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
+        TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
     }
 
 

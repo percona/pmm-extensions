@@ -15,10 +15,20 @@
 
 """Define tests for the app.inventory.main module."""
 
-import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.inventory.main import inventory_app, inventory_lifespan
+import pytest
+from fastapi import FastAPI
+
+from app.inventory.main import (
+    inventory_app,
+    inventory_lifespan,
+    inventory_overrides_lifespan,
+)
 from app.inventory.main import lifespan as inventory_module_lifespan
+from tests.app.core.settings_override.conftest import (
+    assert_registry_keyed_by_class_name,
+)
 
 
 def test_inventory_app_lifespan_is_always_set():
@@ -30,6 +40,23 @@ def test_inventory_app_lifespan_is_always_set():
     now wraps ``default_lifespan`` with the settings-override refresher.
     """
     assert inventory_module_lifespan is inventory_lifespan
+
+
+class TestInventoryOverridesLifespanRegistry:
+    """Pin the registry the Inventory override refresher is started with."""
+
+    @pytest.mark.asyncio
+    async def test_registry_is_keyed_by_class_name(self) -> None:
+        """Key each entry by the class ``__name__``, never the storage token."""
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=None)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        refresher = MagicMock(return_value=cm)
+        with patch("app.inventory.main.settings_override_refresher", refresher):
+            async with inventory_overrides_lifespan(FastAPI()):
+                pass
+
+        assert_registry_keyed_by_class_name(refresher.call_args.args[1])
 
 
 class TestNestedListOpenAPI:

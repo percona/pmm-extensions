@@ -22,14 +22,16 @@ from fastapi import APIRouter
 from app.api.deps import AdminUsername, IsAdminDep
 from app.core.settings_override.api import build_settings_router
 from app.core.settings_override.api.routes import ClassEntry
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import ANONYMIZER_SETTINGS, TASKS_SETTINGS
 from app.tasks.anonymizer.config import anonymizer_settings, AnonymizerSettings
 from app.tasks.config import tasks_settings, TasksSettings
 from app.tasks.deps import SessionDep
 
-TASKS_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [
-    (SettingClassEnum.TASKS_SETTINGS, TasksSettings, tasks_settings),
-    (SettingClassEnum.ANONYMIZER_SETTINGS, AnonymizerSettings, anonymizer_settings),
+# The proxies are annotated as their settings class so attribute reads stay
+# typed, which ty then cannot match to the ``OverridableSettingsProxy`` slot.
+TASKS_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [  # ty: ignore[invalid-assignment]
+    (TASKS_SETTINGS, TasksSettings, tasks_settings),
+    (ANONYMIZER_SETTINGS, AnonymizerSettings, anonymizer_settings),
 ]
 
 _settings_router = build_settings_router(

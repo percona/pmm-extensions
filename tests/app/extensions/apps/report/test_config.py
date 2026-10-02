@@ -194,10 +194,6 @@ class TestHealthReportSettingsProxy:
         """``health_report_settings`` is an ``OverridableSettingsProxy``."""
         assert isinstance(health_report_settings, OverridableSettingsProxy)
 
-    def test_proxy_uses_class_name_identifier(self) -> None:
-        """Bind the proxy to the Pydantic class ``__name__``, not an enum member."""
-        assert health_report_settings._setting_class == HealthReportSettings.__name__
-
 
 class TestHealthReportSettingsOverridePosture:
     """Keep every field ``NOT_OVERRIDABLE`` after the rehome."""

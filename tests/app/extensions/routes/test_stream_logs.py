@@ -16,6 +16,7 @@
 """Define tests for the app.extensions.routes.stream_logs module."""
 
 import asyncio
+import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -24,12 +25,17 @@ import pytest
 from aioresponses import aioresponses, CallbackResult
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from starlette.status import HTTP_200_OK, HTTP_503_SERVICE_UNAVAILABLE
+from starlette.status import (
+    HTTP_200_OK,
+    HTTP_409_CONFLICT,
+    HTTP_410_GONE,
+    HTTP_503_SERVICE_UNAVAILABLE,
+)
 
 from app.core.config import settings
 from app.core.requests import RemoteAPI
+from app.core.settings_override.constants import EXTENSIONS_SETTINGS
 from app.core.settings_override.lifecycle import SnapshotChange
-from app.core.settings_override.models import SettingClassEnum
 from app.extensions.config import extensions_settings
 from app.extensions.deps import (
     get_current_user,
@@ -191,6 +197,185 @@ def test_logs_event_stream_finishes_on_empty_log_stream(
     assert TaskHistoryStatusEnum.SUCCESS.value in streamed_content
 
 
+def _sse_frames(streamed_content: str) -> list[tuple[str | None, str]]:
+    """Split an SSE body into ``(event, data)`` pairs, ``event`` ``None`` when unnamed.
+
+    :param streamed_content: The decoded ``text/event-stream`` response body.
+    :return: One pair per frame, in emission order.
+    """
+    frames: list[tuple[str | None, str]] = []
+    for block in streamed_content.split("\n\n"):
+        if not block:
+            continue
+        fields = dict(line.split(": ", 1) for line in block.splitlines())
+        frames.append((fields.get("event"), fields["data"]))
+    return frames
+
+
+@pytest.mark.parametrize(
+    "reconciled_status",
+    [TaskHistoryStatusEnum.RUNNING, TaskHistoryStatusEnum.PENDING],
+)
+def test_logs_event_stream_ending_before_a_terminal_status_emits_retryable_409(
+    test_client, mock_tasks_client, task_history_response, reconciled_status
+):
+    """Assert a stream ending while the run is still live asks the client to retry.
+
+    A ``finish`` frame tells the viewer the log is complete, so it is reserved
+    for a terminal status; a run the executor has not started yet ends its
+    stream early and gets a 409 error frame instead.
+    """
+    mock_tasks_client.stream.side_effect = lambda *_args, **_kwargs: (
+        mock_stream_logs_generator([])
+    )
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": reconciled_status
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert response.status_code == HTTP_200_OK
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (
+            "extensions-error",
+            json.dumps(
+                {
+                    "code": HTTP_409_CONFLICT,
+                    "detail": f"Task history is {reconciled_status}.",
+                }
+            ),
+        )
+    ]
+
+
+def test_logs_event_stream_lost_run_still_finishes(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert a LOST run ends with ``finish`` even though it never finished.
+
+    LOST is terminal without an observed outcome, so the stream must still
+    close it rather than ask the client to retry a run that will not resume.
+    """
+    mock_tasks_client.stream.side_effect = lambda *_args, **_kwargs: (
+        mock_stream_logs_generator([])
+    )
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": TaskHistoryStatusEnum.LOST
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        ("finish", json.dumps({"status": TaskHistoryStatusEnum.LOST}))
+    ]
+
+
+def test_logs_event_stream_upstream_not_started_409_stays_retryable_while_live(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert the Tasks API's not-started 409 reaches the client as a 409 frame."""
+    mock_tasks_client.stream.side_effect = HTTPException(
+        status_code=HTTP_409_CONFLICT,
+        detail="Allocation a has not started a task yet",
+    )
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": TaskHistoryStatusEnum.RUNNING
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (
+            "extensions-error",
+            json.dumps(
+                {
+                    "code": HTTP_409_CONFLICT,
+                    "detail": f"Task history is {TaskHistoryStatusEnum.RUNNING}.",
+                }
+            ),
+        )
+    ]
+
+
+def test_logs_event_stream_upstream_409_for_a_run_that_died_finishes_it(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert a not-started 409 is reconciled before the client is told to retry.
+
+    A run whose allocation never started and whose job is gone answers 409
+    until a sync settles it; reconciling here ends the viewer's stream with
+    that terminal status instead of spending its retry budget.
+    """
+    mock_tasks_client.stream.side_effect = [
+        HTTPException(
+            status_code=HTTP_409_CONFLICT,
+            detail="Allocation a has not started a task yet",
+        ),
+        mock_stream_logs_generator([]),
+    ]
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": TaskHistoryStatusEnum.LOST
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        ("finish", json.dumps({"status": TaskHistoryStatusEnum.LOST}))
+    ]
+    mock_tasks_client.post.assert_called_once_with(
+        f"/history/{task_history_response.id}/sync/"
+    )
+
+
+def test_logs_event_stream_upstream_409_for_a_run_that_finished_reads_its_logs(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert a run that finished between the 409 and the sync streams its log.
+
+    A short run can complete in that window; finishing without re-reading
+    would end the viewer's live log empty, and the viewer keeps a cleanly
+    finished live log as complete.
+    """
+    mock_tasks_client.stream.side_effect = [
+        HTTPException(
+            status_code=HTTP_409_CONFLICT,
+            detail="Allocation a has not started a task yet",
+        ),
+        mock_stream_logs_generator([b'{"msg": "persisted line"}']),
+    ]
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (None, '{"msg": "persisted line"}'),
+        ("finish", json.dumps({"status": TaskHistoryStatusEnum.SUCCESS})),
+    ]
+    logs_path = f"/history/{task_history_response.id}/logs/"
+    assert [call.args[0] for call in mock_tasks_client.stream.call_args_list] == [
+        logs_path,
+        logs_path,
+    ]
+
+
+def test_logs_event_stream_upstream_410_is_not_reconciled(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert an expired run's 410 is forwarded as-is, without a sync."""
+    mock_tasks_client.stream.side_effect = HTTPException(
+        status_code=HTTP_410_GONE, detail="gone"
+    )
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (
+            "extensions-error",
+            json.dumps({"code": HTTP_410_GONE, "detail": "gone"}),
+        )
+    ]
+    mock_tasks_client.post.assert_not_called()
+
+
 def test_logs_event_stream_forwards_tail_query_param(
     mocker, test_client, mock_tasks_client, task_history_response
 ):
@@ -333,7 +518,7 @@ async def _tasks_endpoint_rebinder():
     extensions_settings._set_snapshot({"TASKS_ENDPOINT": NEW_TASKS_ENDPOINT})
     async with extensions_overrides_lifespan(extensions_app):
         callbacks = extensions_app.state.override_callbacks
-    return callbacks[(SettingClassEnum.EXTENSIONS_SETTINGS, "TASKS_ENDPOINT")]
+    return callbacks[(EXTENSIONS_SETTINGS, "TASKS_ENDPOINT")]
 
 
 @pytest.mark.usefixtures("real_client_route_overrides")

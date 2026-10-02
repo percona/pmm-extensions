@@ -21,7 +21,7 @@ from typing import Any, ClassVar
 from pydantic import Field, field_validator
 
 from app.core.config import BaseYamlSettings
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import ANONYMIZER_SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import hot_field, materialize_via_owning_model
 from app.core.utils import run_pydantic_type_validator
@@ -102,5 +102,5 @@ class AnonymizerSettings(BaseYamlSettings):
 
 
 anonymizer_settings: AnonymizerSettings = OverridableSettingsProxy(
-    AnonymizerSettings, setting_class=SettingClassEnum.ANONYMIZER_SETTINGS
+    AnonymizerSettings, setting_class=ANONYMIZER_SETTINGS
 )

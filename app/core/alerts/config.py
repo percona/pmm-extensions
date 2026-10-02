@@ -23,7 +23,7 @@ from pydantic import field_validator, ValidationError
 from app.core.alerts.models import Alert, AlertService, BaseAlertProvider
 from app.core.alerts.providers.pagerduty import PagerDutyEventsAlertProvider
 from app.core.config import BaseYamlSettings
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import ALERT_SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import hot_field, materialize_via_owning_model
 from app.core.utils.fields import NonEmptyStr
@@ -84,7 +84,7 @@ class AlertSettings(BaseYamlSettings):
 
 
 alert_settings: AlertSettings = OverridableSettingsProxy(
-    AlertSettings, setting_class=SettingClassEnum.ALERT_SETTINGS
+    AlertSettings, setting_class=ALERT_SETTINGS
 )
 
 

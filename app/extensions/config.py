@@ -54,7 +54,7 @@ from app.core.health import (
     API_READINESS_TIMEOUT as DEFAULT_API_READINESS_TIMEOUT,
 )
 from app.core.models import BaseCaseInsensitiveModel, BaseLowercaseModel
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import EXTENSIONS_SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import (
     coerce_field_value,
@@ -883,7 +883,7 @@ class ExtensionsSettings(BaseYamlAppSettings):
 
 
 extensions_settings: ExtensionsSettings = OverridableSettingsProxy(
-    ExtensionsSettings, setting_class=SettingClassEnum.EXTENSIONS_SETTINGS
+    ExtensionsSettings, setting_class=EXTENSIONS_SETTINGS
 )
 
 

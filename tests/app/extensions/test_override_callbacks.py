@@ -29,8 +29,12 @@ from app.core.celery.models import IntervalSchedule
 from app.core.config import PMMSettings, Settings, settings
 from app.core.requests import RemoteAPI
 from app.core.requests.remote_api import PendingCloses
+from app.core.settings_override.constants import (
+    EXTENSIONS_SETTINGS,
+    SETTINGS,
+    SNIPPETS_SETTINGS,
+)
 from app.core.settings_override.lifecycle import is_fire_on_boot, SnapshotChange
-from app.core.settings_override.models import SettingClassEnum
 from app.extensions.config import extensions_settings
 from app.extensions.main import (
     _make_remote_api_rebinder,
@@ -639,11 +643,11 @@ async def test_reseed_callback_registered_for_sync_interval() -> None:
         async with extensions_main.extensions_overrides_lifespan(FastAPI()):
             callbacks = extensions_main.extensions_app.state.override_callbacks
         assert (
-            SettingClassEnum.SNIPPETS_SETTINGS,
+            SNIPPETS_SETTINGS,
             "SYNC_INTERVAL",
         ) in callbacks
         assert (
-            callbacks[(SettingClassEnum.SNIPPETS_SETTINGS, "SYNC_INTERVAL")]
+            callbacks[(SNIPPETS_SETTINGS, "SYNC_INTERVAL")]
             is extensions_main._reseed_system_periodic_tasks
         )
     finally:
@@ -699,12 +703,9 @@ async def test_logging_and_app_drain_callbacks_registered() -> None:
     try:
         async with extensions_main.extensions_overrides_lifespan(FastAPI()):
             callbacks = extensions_main.extensions_app.state.override_callbacks
+        assert callbacks[(SETTINGS, "LOGGING")] is apply_logging_dictconfig
         assert (
-            callbacks[(SettingClassEnum.SETTINGS, "LOGGING")]
-            is apply_logging_dictconfig
-        )
-        assert (
-            callbacks[(SettingClassEnum.EXTENSIONS_SETTINGS, "APP_DRAIN")]
+            callbacks[(EXTENSIONS_SETTINGS, "APP_DRAIN")]
             is extensions_main._reseed_system_periodic_tasks
         )
     finally:

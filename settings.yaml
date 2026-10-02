@@ -47,11 +47,15 @@ default:
     INVENTORY:
       # Tombstone collection. A retired node/service/schema/table is deleted
       # permanently once it has been retired for COLLECTION_RETENTION AND
-      # nothing PMM Extensions persisted still resolves it. Deletion is irreversible and
+      # nothing PMM Extensions persisted still resolves it; a standing identity
+      # link only defers this, for IDENTITY_LINK_PIN_RETENTION. Deletion is irreversible and
       # cascades to the entity's subtree, so shortening the retention widens
       # what a run removes. Nothing is ever deleted while the interval is null.
       COLLECTION_INTERVAL: null  # Celery beat interval seeded for inventory-collection, e.g. "1 days"
       COLLECTION_RETENTION: 30 days
+      # How long a confirmed identity link stays reversible before collection
+      # may take its successor.
+      IDENTITY_LINK_PIN_RETENTION: 180 days
       # Entities of each type one API call may collect, and the most calls one
       # scheduled run issues before leaving the rest to the next tick.
       COLLECTION_BATCH_SIZE: 500
@@ -410,7 +414,7 @@ default:
       PORT: null
       NAME: tasks.db
     SYNC_LOCK_TTL: 300  # TaskHistory sync lock timeout (seconds)
-    # PENDING_ALLOCATION_TIMEOUT_SECONDS: 3600  # Max seconds a RUNNING row may wait for an allocation to produce TaskStates before escalating to LOST
+    # PENDING_ALLOCATION_TIMEOUT_SECONDS: 3600  # Max seconds a RUNNING row may wait for Nomad to place its work or for its allocation to produce TaskStates before escalating to LOST
     PRE_EXECUTION_CONNECTIVITY_CHECK: warn  # disabled | warn | block
     INVENTORY_SYNC_INTERVAL: null  # Celery beat interval seeded for inventory-sync, e.g. "15 minutes"; null seeds no schedule
     INVENTORY_SYNC_SYNCER: null  # Dotted "module.ClassName" syncer the seeded schedule targets; null runs every configured syncer

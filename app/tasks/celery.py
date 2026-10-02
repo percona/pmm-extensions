@@ -59,8 +59,8 @@ from app.core.exceptions import (
     HTTPConflictException,
 )
 from app.core.pmm import await_annotation, schedule_annotation
+from app.core.settings_override.constants import ANONYMIZER_SETTINGS, TASKS_SETTINGS
 from app.core.settings_override.lifecycle import ProxyEntry, ProxyRegistry
-from app.core.settings_override.models import SettingClassEnum
 from app.core.settings_override.worker import WorkerRefresher
 from app.core.utils import utc_now
 from app.core.utils.fields import DatabaseDialect
@@ -122,10 +122,8 @@ def build_tasks_override_proxies() -> ProxyRegistry:
     :return: The Tasks and Anonymizer proxy entries keyed by class identifier.
     """
     return {
-        SettingClassEnum.TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
-        SettingClassEnum.ANONYMIZER_SETTINGS: ProxyEntry(
-            anonymizer_settings, AnonymizerSettings
-        ),
+        TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
+        ANONYMIZER_SETTINGS: ProxyEntry(anonymizer_settings, AnonymizerSettings),
     }
 
 

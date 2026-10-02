@@ -36,6 +36,11 @@ from app.core.exceptions import HTTPBadGatewayException, HTTPServiceUnavailableE
 from app.core.health import build_health_router
 from app.core.requests import RemoteAPI
 from app.core.requests.remote_api import PendingCloses
+from app.core.settings_override.constants import (
+    EXTENSIONS_SETTINGS,
+    SETTINGS,
+    SNIPPETS_SETTINGS,
+)
 from app.core.settings_override.lifecycle import (
     CallbackRegistry,
     previous_or_base,
@@ -43,7 +48,6 @@ from app.core.settings_override.lifecycle import (
     settings_override_refresher,
     SnapshotChange,
 )
-from app.core.settings_override.models import SettingClassEnum
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.utils.fields import CredentialHttpUrl
 from app.extensions.api.router import api_router
@@ -280,7 +284,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
     callbacks.update(
         {
             (
-                SettingClassEnum.EXTENSIONS_SETTINGS,
+                EXTENSIONS_SETTINGS,
                 "INVENTORY_ENDPOINT",
             ): _make_remote_api_rebinder(
                 app,
@@ -293,7 +297,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
                 ssl_certfile=inventory_settings.SSL_CERTFILE,
             ),
             (
-                SettingClassEnum.EXTENSIONS_SETTINGS,
+                EXTENSIONS_SETTINGS,
                 "TASKS_ENDPOINT",
             ): _make_remote_api_rebinder(
                 app,
@@ -305,14 +309,14 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
                 ssl_keyfile=tasks_settings.SSL_KEYFILE,
                 ssl_certfile=tasks_settings.SSL_CERTFILE,
             ),
-            (SettingClassEnum.SETTINGS, "PMM"): invalidate_pmm_clients,
-            (SettingClassEnum.SETTINGS, "LOGGING"): apply_logging_dictconfig,
+            (SETTINGS, "PMM"): invalidate_pmm_clients,
+            (SETTINGS, "LOGGING"): apply_logging_dictconfig,
             (
-                SettingClassEnum.SNIPPETS_SETTINGS,
+                SNIPPETS_SETTINGS,
                 "SYNC_INTERVAL",
             ): _reseed_system_periodic_tasks,
             (
-                SettingClassEnum.EXTENSIONS_SETTINGS,
+                EXTENSIONS_SETTINGS,
                 "APP_DRAIN",
             ): _reseed_system_periodic_tasks,
         }

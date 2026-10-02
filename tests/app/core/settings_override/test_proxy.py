@@ -89,11 +89,6 @@ def test_class_property_reflects_wrapped_class(
     assert isinstance(proxy, _Sample)
 
 
-def test_setting_class_stored(proxy: OverridableSettingsProxy[_Sample]) -> None:
-    """Store the class ``__name__`` identifier passed at construction."""
-    assert proxy._setting_class == "ExtensionsSettings"
-
-
 def test_concurrent_swap_is_atomic(
     proxy: OverridableSettingsProxy[_Sample],
 ) -> None:

@@ -25,7 +25,6 @@ __all__ = [
     "OverridableSettingsProxy",
     "RefreshCallback",
     "ReloadClassification",
-    "SettingClassEnum",
     "SettingOverride",
     "SettingsOverrideManager",
     "SnapshotChange",
@@ -71,7 +70,6 @@ from app.core.settings_override.lifecycle import (
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import (
     setting_class_token,
-    SettingClassEnum,
     SettingOverride,
 )
 from app.core.settings_override.proxy import OverridableSettingsProxy

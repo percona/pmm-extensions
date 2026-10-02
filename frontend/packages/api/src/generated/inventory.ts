@@ -167,19 +167,13 @@ export interface paths {
      * Collect Retired Entities
      * @description Delete the tombstones the caller's retained set does not cover.
      *
-     *     Entities are walked deepest-first — table, schema, service, node — so an
-     *     interrupted run can only leave deleted descendants under a surviving
-     *     ancestor rather than an orphan.
-     *
-     *     A type that fills its ``limit`` ends the walk. Deleting an ancestor cascades
-     *     to descendants the cap had excluded, and those ids would then be missing from
-     *     ``deleted`` — leaving the caller unable to clear their bookkeeping and making
-     *     the reported set a false record of what was removed. Stopping keeps
-     *     ``deleted`` exhaustive; the ancestors are collected on the next batch, which
-     *     ``remaining`` asks for.
+     *     Entities are walked deepest-first, so an interrupted run never leaves a
+     *     live row beneath a deleted ancestor. A type that fills its ``limit`` ends
+     *     the walk, so ``deleted`` is exhaustive and ``remaining`` asks for the next
+     *     batch.
      *
      *     :param session: The asynchronous database session.
-     *     :param body: The cutoff, the retained ids, and the batch controls.
+     *     :param body: The cutoffs, the retained ids, and the batch controls.
      *     :return: The collected ids per entity type, and whether more are waiting.
      */
     post: operations['collection_collect_retired_entities_collection_collect_post'];
@@ -375,10 +369,9 @@ export interface paths {
      *     The path names the **predecessor** — the survivor of a confirmation, and the
      *     row the operator is acting on in all three decisions.
      *
-     *     Carries ``IsAuthenticatedDep`` and deliberately not ``IsServicePrincipalDep``:
-     *     an identity link is an operator judgement, not a row the syncer owns. The
-     *     app-wide unsafe-method gate already makes the route admin-only for a human
-     *     while admitting the principal by identity.
+     *     Open to an admin as well as the service principal, unlike the other node
+     *     writes: an identity link is an operator judgement, not a row the syncer
+     *     owns.
      *
      *     :param session: The async database session.
      *     :param node: The predecessor addressed by the path, retired or not.
@@ -790,8 +783,9 @@ export interface paths {
      *
      *     The path names the **predecessor** — the survivor of a confirmation.
      *
-     *     Carries ``IsAuthenticatedDep`` and deliberately not ``IsServicePrincipalDep``:
-     *     an identity link is an operator judgement, not a row the syncer owns.
+     *     Open to an admin as well as the service principal, unlike the other
+     *     service writes: an identity link is an operator judgement, not a row the
+     *     syncer owns.
      *
      *     :param session: The async database session.
      *     :param service: The predecessor addressed by the path, retired or not.
@@ -1273,6 +1267,10 @@ export interface components {
      *     :param retired_before: The cutoff a tombstone must predate to be eligible.
      *         The caller pins one value for a whole run so successive batches cannot
      *         drift into collecting a tombstone that was too young a moment earlier.
+     *     :param link_pin_retired_before: The cutoff a linked tombstone must predate
+     *         for its link to stop pinning it. Required rather than defaulted: either
+     *         extreme a default could pick silently keeps every link's successor
+     *         forever or releases it at once.
      *     :param keep: The ids the caller knows are still referenced, per entity type.
      *         Ancestors of a kept entity are retained without being listed.
      *     :param limit: The most entities to collect per type in this call.
@@ -1298,6 +1296,11 @@ export interface components {
        * @default 500
        */
       limit: number;
+      /**
+       * Link Pin Retired Before
+       * Format: date-time
+       */
+      link_pin_retired_before: string;
       /**
        * Retired Before
        * Format: date-time

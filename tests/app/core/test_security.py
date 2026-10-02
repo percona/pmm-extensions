@@ -15,6 +15,7 @@
 
 """Define tests for the app.core.security module."""
 
+import pytest
 from pydantic import SecretStr
 
 from app.core.config import settings
@@ -22,7 +23,9 @@ from app.core.security import (
     crypto_serializer,
     crypto_timestamp_serializer,
     get_internal_token,
+    has_unsafe_method,
     is_bearer_authenticated,
+    SAFE_HTTP_METHODS,
 )
 from tests.app.conftest import make_request
 
@@ -124,3 +127,40 @@ class TestBearerHeaderEdgeCases:
         """``Bearer`` alone (no trailing space) is not a Bearer credential."""
         request = make_request(authorization="Bearer")
         assert is_bearer_authenticated(request) is False
+
+
+class TestHasUnsafeMethod:
+    """Cover the predicate separating state-changing method sets from reads."""
+
+    @pytest.mark.parametrize(
+        ("methods", "expected"),
+        [
+            ({"POST"}, True),
+            ({"PUT"}, True),
+            ({"PATCH"}, True),
+            ({"DELETE"}, True),
+            ({"GET", "POST"}, True),
+            (set(SAFE_HTTP_METHODS), False),
+            ({"GET"}, False),
+            (set(), False),
+            ({"get"}, False),
+            ({"post"}, True),
+        ],
+        ids=[
+            "post",
+            "put",
+            "patch",
+            "delete",
+            "mixed",
+            "all_safe",
+            "get",
+            "empty",
+            "lowercase_get",
+            "lowercase_post",
+        ],
+    )
+    def test_any_unsafe_method_makes_the_set_unsafe(
+        self, methods: set[str], *, expected: bool
+    ) -> None:
+        """Flag a set holding at least one method outside the safe ones."""
+        assert has_unsafe_method(methods) is expected

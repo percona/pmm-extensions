@@ -28,13 +28,15 @@ from app import main as main_module
 from app.api.deps import get_current_user, require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.settings_override.cache import build_snapshot
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import INVENTORY_SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.utils.date_time import utc_now
 from app.inventory.config import inventory_settings, InventorySettings
 from app.inventory.deps import get_session
 from app.inventory.main import inventory_app
+from app.inventory.settings.routes import INVENTORY_ADMIN_SETTINGS_CLASSES
 from tests.app.core.settings_override.conftest import (
+    assert_entries_keyed_by_class_name,
     insert_override_row,
     INVENTORY_SETTINGS_TOKEN,
 )
@@ -72,16 +74,20 @@ def non_admin_client_fixture(
     inventory_app.dependency_overrides = {}
 
 
+class TestInventorySettingsClassEntries:
+    """Key the Inventory settings router by class identifier, never the storage token."""
+
+    def test_entries_are_keyed_by_class_name(self) -> None:
+        """Name each entry, and bind its proxy, by the class ``__name__``."""
+        assert_entries_keyed_by_class_name(INVENTORY_ADMIN_SETTINGS_CLASSES)
+
+
 class TestInventorySettingsBootstrap:
     """The Inventory override framework is wired end-to-end."""
 
     def test_proxy_is_overridable(self) -> None:
         """Assert ``inventory_settings`` is an override-aware proxy, not a plain lazy one."""
         assert isinstance(inventory_settings, OverridableSettingsProxy)
-
-    def test_enum_member_matches_class_name(self) -> None:
-        """Assert the new enum member's value equals the Pydantic class name."""
-        assert SettingClassEnum.INVENTORY_SETTINGS.value == InventorySettings.__name__
 
     @pytest.mark.asyncio
     async def test_non_hot_override_row_is_skipped(self, session: AsyncSession) -> None:
@@ -154,15 +160,32 @@ class TestInventorySettingsRouter:
         response = admin_client.get("/admin/settings/")
         assert response.status_code == status.HTTP_200_OK
         classes = {g["setting_class"] for g in response.json()["groups"]}
-        assert classes == {SettingClassEnum.INVENTORY_SETTINGS.value}
+        assert classes == {INVENTORY_SETTINGS}
 
     async def test_get_field_returns_metadata(self, admin_client: TestClient) -> None:
         """Assert GET on a single field returns its metadata."""
         response = admin_client.get("/admin/settings/InventorySettings/UVICORN_PORT")
         assert response.status_code == status.HTTP_200_OK
-        assert response.json()["setting_class"] == (
-            SettingClassEnum.INVENTORY_SETTINGS.value
+        assert response.json()["setting_class"] == (INVENTORY_SETTINGS)
+
+    async def test_get_by_storage_token_returns_404(
+        self, admin_client: TestClient
+    ) -> None:
+        """Reject the storage token in the path; the router speaks the class ``__name__``."""
+        response = admin_client.get(
+            f"/admin/settings/{INVENTORY_SETTINGS_TOKEN}/UVICORN_PORT"
         )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    async def test_patch_by_storage_token_returns_404(
+        self, admin_client: TestClient
+    ) -> None:
+        """Return 404 before field validation, so the token never reaches a row write."""
+        response = admin_client.patch(
+            f"/admin/settings/{INVENTORY_SETTINGS_TOKEN}",
+            json={"UVICORN_PORT": 9999},
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
     async def test_non_admin_list_forbidden(self, non_admin_client: TestClient) -> None:
         """Assert a non-admin caller is rejected from the admin-gated LIST."""

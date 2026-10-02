@@ -50,3 +50,12 @@ class TaskDataNotFoundInExecutorError(Exception):
         self.resource_id = resource_id
         self.job_id = job_id
         self.evaluation_id = evaluation_id
+
+
+class TaskNotStartedInExecutorError(Exception):
+    """Define exception for a running task the executor has not started yet.
+
+    Distinct from :class:`TaskDataNotFoundInExecutorError`, which means the data
+    is gone: this one means it does not exist *yet*, so callers answer it with a
+    retryable conflict rather than a 410.
+    """

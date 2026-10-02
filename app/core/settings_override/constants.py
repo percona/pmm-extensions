@@ -40,6 +40,19 @@ SETTINGOVERRIDE_UPDATED_BY_COLUMN = "updated_by"
 #: the three cannot drift apart.
 SETTING_CLASS_MAX_LENGTH = 255
 
+# In-process identifiers of the core-wired settings classes, each the class
+# ``__name__``. Plain strings rather than an enum because app-owned classes join
+# the same identifier space at runtime, so no closed set exists to enumerate.
+# They are never the ``settingoverride.setting_class`` storage token, which only
+# ``setting_class_token`` derives.
+EXTENSIONS_SETTINGS = "ExtensionsSettings"
+TASKS_SETTINGS = "TasksSettings"
+SNIPPETS_SETTINGS = "SnippetsSettings"
+SETTINGS = "Settings"
+ALERT_SETTINGS = "AlertSettings"
+ANONYMIZER_SETTINGS = "AnonymizerSettings"
+INVENTORY_SETTINGS = "InventorySettings"
+
 #: Member list the ``settingoverride.setting_class`` CHECK enumerated immediately
 #: before the drop migration widened the column. Downgrades re-add this exact
 #: list and delete rows naming a class outside it.

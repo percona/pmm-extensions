@@ -34,7 +34,13 @@ from app.core.settings_override.api import (
     build_settings_router,
 )
 from app.core.settings_override.api.routes import ClassEntry
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import (
+    ALERT_SETTINGS,
+    EXTENSIONS_SETTINGS,
+    SETTINGS,
+    SNIPPETS_SETTINGS,
+    TASKS_SETTINGS,
+)
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import FieldMetadata
 from app.core.utils.date_time import utc_now
@@ -56,14 +62,17 @@ from app.extensions.snippets.config import snippets_settings, SnippetsSettings
 # TasksSettings is owned by the Tasks sub-app, so PMM Extensions proxies it server-side
 # through ``tasks_api`` (mounted at ``/admin/settings``) rather than registering
 # it as a local class. The React Settings page reaches it via ``/api/extensions``
-# only.
-EXTENSIONS_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [
-    (SettingClassEnum.EXTENSIONS_SETTINGS, ExtensionsSettings, extensions_settings),
-    (SettingClassEnum.SNIPPETS_SETTINGS, SnippetsSettings, snippets_settings),
-    (SettingClassEnum.ALERT_SETTINGS, AlertSettings, alert_settings),
+# only. The proxies are annotated as their settings class so attribute reads
+# stay typed, which ty then cannot match to the ``OverridableSettingsProxy`` slot.
+EXTENSIONS_ADMIN_SETTINGS_CLASSES: list[
+    ClassEntry
+] = [  # ty: ignore[invalid-assignment]
+    (EXTENSIONS_SETTINGS, ExtensionsSettings, extensions_settings),
+    (SNIPPETS_SETTINGS, SnippetsSettings, snippets_settings),
+    (ALERT_SETTINGS, AlertSettings, alert_settings),
     # The global ``Settings`` class is refreshed only by the PMM Extensions web process, so
     # its override-eligible fields (e.g. ``PMM``, ``LOGGING``) are exposed here.
-    (SettingClassEnum.SETTINGS, Settings, settings),
+    (SETTINGS, Settings, settings),
 ]
 
 
@@ -77,10 +86,7 @@ def _extensions_setting_applicable(cls: str, field: FieldMetadata) -> bool:
     :param field: The introspected field metadata.
     :return: Whether the field applies under the active auth provider.
     """
-    if (
-        cls == SettingClassEnum.EXTENSIONS_SETTINGS
-        and field.key == "AMBIENT_SESSION_SSO_ENABLED"
-    ):
+    if cls == EXTENSIONS_SETTINGS and field.key == "AMBIENT_SESSION_SSO_ENABLED":
         return auth_config.get_active_auth_provider().supports_ambient_session
     return True
 
@@ -93,7 +99,7 @@ router = build_settings_router(
     admin_dep=IsApiAdmin,
     actor_dep=ApiAdminUsername,
     mutation_deps=[RequireBearerForUnsafeMethods],
-    remote_classes=[(SettingClassEnum.TASKS_SETTINGS, "/admin/settings")],
+    remote_classes=[(TASKS_SETTINGS, "/admin/settings")],
     remote_api_dep=TaskAPI,
     applicability=_extensions_setting_applicable,
     app_owned_classes=EXTENSIONS_APP_OWNED_SETTINGS_CLASSES,
@@ -260,11 +266,9 @@ def _wired_export_class_names() -> set[str]:
     :return: Core PMM Extensions, app-owned, and proxied Tasks class names.
     :rtype: set[str]
     """
-    names = {str(member) for member, _, _ in EXTENSIONS_ADMIN_SETTINGS_CLASSES}
-    names.update(
-        str(entry.setting_class) for entry in EXTENSIONS_APP_OWNED_SETTINGS_CLASSES
-    )
-    names.add(str(SettingClassEnum.TASKS_SETTINGS))
+    names = {name for name, _, _ in EXTENSIONS_ADMIN_SETTINGS_CLASSES}
+    names.update(entry.setting_class for entry in EXTENSIONS_APP_OWNED_SETTINGS_CLASSES)
+    names.add(TASKS_SETTINGS)
     return names
 
 
@@ -286,18 +290,17 @@ async def _append_local_class_export(
     :param proxy: The live override proxy for the class.
     :param requested: Parsed export selectors, or ``None`` for a full export.
     """
-    class_name = str(setting_class)
-    if requested is not None and class_name not in requested:
+    if requested is not None and setting_class not in requested:
         return
     block = await build_settings_class_values(
         session=session,
-        setting_class=class_name,
+        setting_class=setting_class,
         settings_cls=settings_cls,
         proxy=proxy,
     )
     if requested is not None:
-        block = _filter_class_block(class_name, block, requested)
-    payload[class_name] = block
+        block = _filter_class_block(setting_class, block, requested)
+    payload[setting_class] = block
 
 
 async def _append_tasks_export_block(
@@ -399,7 +402,6 @@ async def export_settings(
         ``OSError`` (e.g. a connection failure), an unexpected payload shape,
         or a missing ``TasksSettings`` group.
     """
-    tasks_key = str(SettingClassEnum.TASKS_SETTINGS)
     requested = (
         _parse_export_selectors(keys, _wired_export_class_names())
         if keys is not None
@@ -428,7 +430,7 @@ async def export_settings(
     await _append_tasks_export_block(
         payload,
         tasks_api=tasks_api,
-        tasks_key=tasks_key,
+        tasks_key=TASKS_SETTINGS,
         requested=requested,
     )
     return _export_yaml_response(payload)

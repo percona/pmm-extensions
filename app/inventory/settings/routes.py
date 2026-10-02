@@ -22,7 +22,7 @@ from fastapi import APIRouter
 from app.api.deps import AdminUsername, IsAdminDep
 from app.core.settings_override.api import build_settings_router
 from app.core.settings_override.api.routes import ClassEntry
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import INVENTORY_SETTINGS
 from app.inventory.config import inventory_settings, InventorySettings
 from app.inventory.deps import SessionDep
 
@@ -30,9 +30,11 @@ from app.inventory.deps import SessionDep
 # until one is promoted; the override framework (proxy, refresher, table) is
 # wired end-to-end regardless.
 
-INVENTORY_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [
+# The proxies are annotated as their settings class so attribute reads stay
+# typed, which ty then cannot match to the ``OverridableSettingsProxy`` slot.
+INVENTORY_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [  # ty: ignore[invalid-assignment]
     (
-        SettingClassEnum.INVENTORY_SETTINGS,
+        INVENTORY_SETTINGS,
         InventorySettings,
         inventory_settings,
     ),

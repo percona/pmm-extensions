@@ -36,7 +36,11 @@ from app.core.settings_override.api.routes import (
     _remote_wiring,
     _settings_response_from_field,
 )
-from app.core.settings_override.models import SettingClassEnum, SettingOverride
+from app.core.settings_override.constants import TASKS_SETTINGS
+from app.core.settings_override.models import (
+    setting_class_token,
+    SettingOverride,
+)
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import (
     annotated_type,
@@ -602,7 +606,7 @@ def test_chain_has_advanced_false_for_unresolvable_key() -> None:
 
 def test_remote_wiring_requires_dep_when_remote_classes_present() -> None:
     """Configuring ``remote_classes`` without ``remote_api_dep`` fails fast."""
-    remote_classes = [(SettingClassEnum.TASKS_SETTINGS, "/admin/settings")]
+    remote_classes = [(TASKS_SETTINGS, "/admin/settings")]
     with pytest.raises(ValueError, match="remote_api_dep is required"):
         _remote_wiring(remote_classes, None)
 
@@ -668,7 +672,7 @@ def _override_row(
     """
     return SettingOverride(
         id=row_id,
-        setting_class=SettingClassEnum.EXTENSIONS_SETTINGS,
+        setting_class=setting_class_token(ExtensionsSettings),
         key=key,
         value=1,
         is_active=True,
