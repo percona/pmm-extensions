@@ -18,11 +18,15 @@
 from collections.abc import Sequence
 from unittest.mock import MagicMock
 
+import pytest
 from pytest_mock import MockerFixture
 
 from app.extensions.apps.alters.pre_checks import MySQLPreChecks
 
 _MODULE = "app.extensions.apps.alters.pre_checks"
+_DATADIR = "/var/lib/mysql"
+_TABLE_SIZE_MB = 100.0
+_BYTES_PER_MB = 1024 * 1024
 
 
 def _make_checks(
@@ -67,3 +71,74 @@ def _connect_with_cursor(
     mocker.patch(f"{_MODULE}.pymysql.connect", return_value=connection)
     assert checks.connect_to_mysql() is True
     return cursor
+
+
+def _patch_disk_usage(mocker: MockerFixture, *, free_mb: float) -> MagicMock:
+    """Patch ``shutil.disk_usage`` so the datadir reports ``free_mb`` free."""
+    usage = mocker.patch(f"{_MODULE}.shutil.disk_usage")
+    usage.return_value = (_BYTES_PER_MB * 1000, 0, int(free_mb * _BYTES_PER_MB))
+    return usage
+
+
+def _disk_queries() -> list[tuple[object, ...]]:
+    """Return the table-size and datadir rows ``check_disk_space`` reads."""
+    return [(_TABLE_SIZE_MB,), ("datadir", _DATADIR)]
+
+
+class TestCheckDiskSpace:
+    """Test ``check_disk_space``."""
+
+    def test_passes_when_free_space_exceeds_table_size(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Free space above the table size lets the alter proceed."""
+        checks = _make_checks()
+        _connect_with_cursor(mocker, checks, fetchone=_disk_queries())
+        usage = _patch_disk_usage(mocker, free_mb=200)
+
+        assert checks.check_disk_space() is True
+        usage.assert_called_once_with(_DATADIR)
+
+    @pytest.mark.parametrize("free_mb", [100, 50], ids=["equal", "below"])
+    def test_fails_when_free_space_does_not_exceed_table_size(
+        self,
+        mocker: MockerFixture,
+        free_mb: float,
+    ) -> None:
+        """Free space at or below the table size blocks the alter."""
+        checks = _make_checks()
+        _connect_with_cursor(mocker, checks, fetchone=_disk_queries())
+        usage = _patch_disk_usage(mocker, free_mb=free_mb)
+
+        assert checks.check_disk_space() is False
+        usage.assert_called_once_with(_DATADIR)
+
+    def test_fails_when_table_size_is_unknown(self, mocker: MockerFixture) -> None:
+        """A missing table size stops the check before the filesystem is touched."""
+        checks = _make_checks()
+        _connect_with_cursor(mocker, checks, fetchone=[None])
+        usage = _patch_disk_usage(mocker, free_mb=200)
+
+        assert checks.check_disk_space() is False
+        usage.assert_not_called()
+
+    def test_fails_when_datadir_is_missing(self, mocker: MockerFixture) -> None:
+        """A missing datadir stops the check before the filesystem is touched."""
+        checks = _make_checks()
+        _connect_with_cursor(mocker, checks, fetchone=[(_TABLE_SIZE_MB,), None])
+        usage = _patch_disk_usage(mocker, free_mb=200)
+
+        assert checks.check_disk_space() is False
+        usage.assert_not_called()
+
+    def test_fails_when_disk_usage_raises(self, mocker: MockerFixture) -> None:
+        """An unreadable datadir partition fails the disk check."""
+        checks = _make_checks()
+        _connect_with_cursor(mocker, checks, fetchone=_disk_queries())
+        usage = mocker.patch(
+            f"{_MODULE}.shutil.disk_usage",
+            side_effect=OSError("offline"),
+        )
+
+        assert checks.check_disk_space() is False
+        usage.assert_called_once_with(_DATADIR)
