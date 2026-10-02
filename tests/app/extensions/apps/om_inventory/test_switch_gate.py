@@ -13,12 +13,16 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Test ``run_probe``'s own ``ENABLED`` check.
+"""Test ``run_probe``'s own ``ENABLED`` check, and the one way past it.
 
 ``trigger_probe`` refuses a manual trigger while ``ENABLED`` is off, but beat calls
 the task directly, and the worker reads ``ENABLED`` from a snapshot that can lag the
 API process that accepted a trigger. In both cases the sweep must be recorded as
 refused. A run left ``RUNNING`` would hold every host until ``STALE_RUN_AFTER``.
+
+That lag cuts the other way for the sweep PMM fires the moment it turns the switch
+on, so the endpoint hands its own fresher read down as ``enabled_confirmed`` and the
+worker honours it rather than refusing a sweep the switch allows.
 """
 
 from contextlib import nullcontext
@@ -86,6 +90,46 @@ class TestRunProbeWhileSwitchedOff:
         :param session: The database session.
         """
         returned_id = await run_probe(execution_id=None, node_ids=None)
+
+        stored = await ProbeRunManager.get(session, id=returned_id)
+        assert stored.status is ProbeRunStatus.SKIPPED
+        assert stored.error == SWITCHED_OFF_DETAIL
+
+    @pytest.mark.asyncio
+    async def test_a_trigger_that_already_read_the_switch_is_run(
+        self, session: AsyncSession
+    ) -> None:
+        """Run the sweep the endpoint confirmed, despite the stale snapshot.
+
+        This is the enable-then-trigger case: ``ENABLED`` here stands for the
+        worker's snapshot, which still says off, while the endpoint read the
+        applied override and said on.
+
+        :param session: The database session.
+        """
+        run = await ProbeRunManager.save(session, ProbeRun(scope=None))
+
+        returned_id = await run_probe(
+            execution_id=run.id, node_ids=None, enabled_confirmed=True
+        )
+
+        assert returned_id == run.id
+        stored = await ProbeRunManager.get(session, id=run.id)
+        assert stored.status is not ProbeRunStatus.SKIPPED
+        assert stored.error != SWITCHED_OFF_DETAIL
+
+    @pytest.mark.asyncio
+    async def test_a_scheduled_run_cannot_claim_the_switch_was_read(
+        self, session: AsyncSession
+    ) -> None:
+        """Keep beat on the snapshot: it has no fresher read to offer.
+
+        Beat calls the task with no arguments, so the default is what decides
+        whether the periodic sweep can outlive the switch being turned off.
+
+        :param session: The database session.
+        """
+        returned_id = await run_probe()
 
         stored = await ProbeRunManager.get(session, id=returned_id)
         assert stored.status is ProbeRunStatus.SKIPPED
