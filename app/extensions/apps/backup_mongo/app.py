@@ -34,7 +34,9 @@ app. The restore subpackage is a structurally-bound child app declared via
 derived router), so it is no longer mounted as a ``/restores`` sub-router here.
 """
 
-from app.extensions.apps.backup_mongo.api_routes import router as backup_mongo_custom_router
+from app.extensions.apps.backup_mongo.api_routes import (
+    router as backup_mongo_custom_router,
+)
 from app.extensions.apps.backup_mongo.config.app import app as config_app
 from app.extensions.apps.backup_mongo.deps import (
     build_backup_mongo_api_task_response,

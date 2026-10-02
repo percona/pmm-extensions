@@ -16,7 +16,7 @@
 """Derive the AppSchema for the PBM Configuration child app.
 
 Extends rather than copies: the form is
-:class:`~app.sep.apps.backup_mongo.config.models.BackupConfigForm`, a subclass of
+:class:`~app.extensions.apps.backup_mongo.config.models.BackupConfigForm`, a subclass of
 its parent's ``BackupForm``, and the layout is the parent's sections plus one.
 ``derive_form_sections`` is strict in both directions -- a field naming a section
 absent from the layout raises, and so does a layout section no field claims -- so
@@ -39,7 +39,7 @@ cluster-wide PBM config stops being a side effect of creating a backup and
 becomes something an operator asks for.
 """
 
-from app.sep.apps.backup_mongo.config.models import (
+from app.extensions.apps.backup_mongo.config.models import (
     ADVANCED_SECTION,
     AZURE_SECTION,
     AZURE_TUNING_SECTION,
@@ -54,15 +54,15 @@ from app.sep.apps.backup_mongo.config.models import (
     S3_SECTION,
     S3_TUNING_SECTION,
 )
-from app.sep.apps.backup_mongo.models import StorageType
-from app.sep.apps.backup_mongo.views import backup_mongo_views
-from app.sep.apps.framework.form_dsl import (
+from app.extensions.apps.backup_mongo.models import StorageType
+from app.extensions.apps.backup_mongo.views import backup_mongo_views
+from app.extensions.apps.framework.form_dsl import (
     derive_app_schema,
     FormLayout,
     SectionLayout,
     TASK_SECTION_LAYOUT,
 )
-from app.sep.apps.framework.rules import F, FieldGate
+from app.extensions.apps.framework.rules import F, FieldGate
 
 
 def _only_for(storage_type: StorageType) -> tuple[FieldGate, ...]:

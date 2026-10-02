@@ -17,8 +17,7 @@
 
 from typing import Annotated
 
-from app.inventory.models import ServiceTypeEnum
-from app.sep.apps.backup_mongo.models import (
+from app.extensions.apps.backup_mongo.models import (
     _BackupMongoTaskForm,
     _COMPRESSION_CHOICES,
     _NOT_FILESYSTEM_STORAGE,
@@ -29,18 +28,19 @@ from app.sep.apps.backup_mongo.models import (
     CompressionAlgorithm,
     StorageType,
 )
-from app.sep.apps.framework.form_dsl import (
+from app.extensions.apps.framework.form_dsl import (
     Choices,
     FieldWidget,
     ServiceRef,
     Ui,
 )
+from app.inventory.models import ServiceTypeEnum
 
 ADVANCED_SECTION = "Advanced"
 #: One section per storage backend, each hidden unless ``storage_type`` selects it.
 #: The alternative -- every backend's fields in one Storage section, each carrying
 #: its own ``Forbidden`` -- puts ~80 fields in a section showing ten. Mirrors the
-#: per-variant sections in ``app/sep/apps/mysql_backups/views.py``.
+#: per-variant sections in ``app/extensions/apps/mysql_backups/views.py``.
 S3_SECTION = "StorageS3"
 S3_TUNING_SECTION = "StorageS3Tuning"
 MINIO_SECTION = "StorageMinio"

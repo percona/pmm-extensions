@@ -305,7 +305,7 @@ def _validate_priority_yaml(value: str) -> str:
 # A non-empty Node Priority YAML string, validated as a node -> number mapping.
 BackupPriorityYaml = Annotated[NonEmptyStr, AfterValidator(_validate_priority_yaml)]
 
-#: Storage backends SEP builds a PBM config for, each declaring the form-field
+#: Storage backends PMM Extensions builds a PBM config for, each declaring the form-field
 #: prefix that identifies its fields and which of them PBM requires. Validation is
 #: driven off this table rather than written per pair of backends: the old shape
 #: asserted "none of the *other* backend's fields are set" by naming them, which is
@@ -737,7 +737,7 @@ class BackupConfigStorageS3SSE(BaseCaseInsensitiveModel):
     """Represent S3 server-side encryption settings.
 
     ``sseCustomerKey`` is deliberately absent. It is the encryption key itself, so
-    it falls under the same rule as the access keys beside it: SEP has nowhere safe
+    it falls under the same rule as the access keys beside it: PMM Extensions has nowhere safe
     to keep it, and read-merge-write carries whatever the CLI set through untouched.
     ``kmsKeyID`` is an identifier rather than a secret, so it is settable here.
     """
@@ -1274,7 +1274,7 @@ class BackupCreate(
     backup_with_users_and_roles: bool = False
     # --- the rest of PBM's config file -------------------------------------
     # Credentials are absent by design throughout: storage.*.credentials and
-    # serverSideEncryption.sseCustomerKey are the secrets SEP has nowhere safe to
+    # serverSideEncryption.sseCustomerKey are the secrets PMM Extensions has nowhere safe to
     # keep. Read-merge-write carries whatever the pbm CLI set for them through an
     # apply untouched.
     pitr_oplog_only: bool = False
@@ -1420,7 +1420,7 @@ class BackupForm(_BackupMongoTaskForm):
     task runs on, not of one backup, and asking for it beside the database service
     reads as something the operator must fill in per run. It is declared once, as
     an advanced setting, on
-    :class:`~app.sep.apps.backup_mongo.config.models.BackupConfigForm`. The field
+    :class:`~app.extensions.apps.backup_mongo.config.models.BackupConfigForm`. The field
     survives on :class:`BackupCreate` and :class:`BackupTaskWrite`, so a caller
     that sends it still gets it -- what changed is that the backups *form* no
     longer offers it, and an unset value falls back to ``$HOME/.mongodb_uri``

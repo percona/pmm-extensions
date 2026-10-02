@@ -25,14 +25,14 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from app.sep.apps.backup_mongo.config.models import BackupConfigForm
-from app.sep.apps.backup_mongo.config.schema import backup_mongo_config_schema
-from app.sep.apps.backup_mongo.models import (
+from app.extensions.apps.backup_mongo.config.models import BackupConfigForm
+from app.extensions.apps.backup_mongo.config.schema import backup_mongo_config_schema
+from app.extensions.apps.backup_mongo.models import (
     _STORAGE_BACKENDS,
     BackupCreate,
     BackupType,
 )
-from app.sep.apps.backup_mongo.spec import (
+from app.extensions.apps.backup_mongo.spec import (
     _STORAGE_BUILDERS,
     BackupMongoResolved,
     build_backup_mongo_spec,

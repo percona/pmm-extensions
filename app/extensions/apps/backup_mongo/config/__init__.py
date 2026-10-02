@@ -15,6 +15,6 @@
 
 """Expose the MongoDB PBM Configuration child app."""
 
-from app.sep.apps.backup_mongo.config.app import app
+from app.extensions.apps.backup_mongo.config.app import app
 
 __all__ = ["app"]

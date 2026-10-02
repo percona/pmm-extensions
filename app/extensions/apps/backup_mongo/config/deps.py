@@ -15,9 +15,9 @@
 
 """Define the PBM Configuration child app's create dependency."""
 
-from app.sep.apps.backup_mongo.config.models import BackupConfigCreate
-from app.sep.apps.backup_mongo.deps import build_backup_task_payload
-from app.sep.deps import InventoryAPI
+from app.extensions.apps.backup_mongo.config.models import BackupConfigCreate
+from app.extensions.apps.backup_mongo.deps import build_backup_task_payload
+from app.extensions.deps import InventoryAPI
 from app.tasks.models import TaskWrite
 
 

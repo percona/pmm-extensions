@@ -27,8 +27,8 @@ from unittest.mock import AsyncMock
 
 from fastapi import status
 
-from app.sep.inventory import CreatedService
-from tests.app.sep.apps.backup_mongo.test_api_routes import (
+from app.extensions.inventory import CreatedService
+from tests.app.extensions.apps.backup_mongo.test_api_routes import (
     build_backup_task,
     build_backup_write_body,
     build_execute_response,

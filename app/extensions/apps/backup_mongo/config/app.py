@@ -33,10 +33,10 @@ to keep that secret in OM or SEP, so they stay readable-but-not-writable here an
 are changed with the ``pbm`` CLI on the host.
 """
 
-from app.sep.apps.backup_mongo.config.deps import build_config_task_payload
-from app.sep.apps.backup_mongo.config.schema import backup_mongo_config_schema
-from app.sep.apps.backup_mongo.models import OWNER
-from app.sep.apps.framework.apps import AppCapabilities, TaskExecutionApp
+from app.extensions.apps.backup_mongo.config.deps import build_config_task_payload
+from app.extensions.apps.backup_mongo.config.schema import backup_mongo_config_schema
+from app.extensions.apps.backup_mongo.models import OWNER
+from app.extensions.apps.framework.apps import AppCapabilities, TaskExecutionApp
 
 app = TaskExecutionApp(
     key="backup_mongo/config",

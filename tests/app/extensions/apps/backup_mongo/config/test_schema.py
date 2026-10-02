@@ -17,9 +17,9 @@
 
 import pytest
 
-from app.sep.apps.backup_mongo.config.schema import backup_mongo_config_schema
-from app.sep.apps.backup_mongo.models import BackupCreate, BackupTaskWrite
-from app.sep.apps.backup_mongo.schema import backup_mongo_schema
+from app.extensions.apps.backup_mongo.config.schema import backup_mongo_config_schema
+from app.extensions.apps.backup_mongo.models import BackupCreate, BackupTaskWrite
+from app.extensions.apps.backup_mongo.schema import backup_mongo_schema
 
 
 def _field_names(schema, section_title):
