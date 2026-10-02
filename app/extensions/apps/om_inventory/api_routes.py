@@ -545,7 +545,10 @@ async def trigger_probe(
         raise HTTPConflictException(detail=conflict_detail(blocking, node_ids))
 
     run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids or None))
-    run_om_probe.delay(str(run.id), node_ids or None)
+    # The switch was read above, in the process that applies its override, so the
+    # worker is told not to read its own snapshot again -- see run_probe's own
+    # doc comment on the lag between the two.
+    run_om_probe.delay(str(run.id), node_ids or None, enabled_confirmed=True)
     return ProbeRunAccepted(
         run_id=run.id,
         status=str(run.status),

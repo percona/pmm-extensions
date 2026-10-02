@@ -34,7 +34,10 @@ logger = logging.getLogger(__name__)
 @owned_by("om_inventory")
 @celery.task
 def run_om_probe(
-    execution_id: str | None = None, node_ids: list[str] | None = None
+    execution_id: str | None = None,
+    node_ids: list[str] | None = None,
+    *,
+    enabled_confirmed: bool = False,
 ) -> str:
     """Run one probe sweep and return its id.
 
@@ -45,10 +48,19 @@ def run_om_probe(
     :param execution_id: An already-created run's id, or ``None`` to mint one.
     :param node_ids: The hosts to refresh, or ``None`` for the whole estate. The
         scheduled sweep passes nothing, which is what keeps it a full refresh.
+    :param enabled_confirmed: Carried through to :func:`run_probe`, which documents
+        it. Keyword-only, so the endpoint has to name it at the call site and the
+        Tasks layer carries it as a kwarg. Defaulted, so beat's own zero-argument
+        call keeps reading the switch, and so a task enqueued before this argument
+        existed still resolves.
     :return: The run's id, as a string.
     """
     # ty-attr-ok: Celery installs `loop` at runtime.
     resolved = celery.loop.run_until_complete(
-        run_probe(UUID(execution_id) if execution_id else None, node_ids)
+        run_probe(
+            UUID(execution_id) if execution_id else None,
+            node_ids,
+            enabled_confirmed=enabled_confirmed,
+        )
     )
     return str(resolved)
