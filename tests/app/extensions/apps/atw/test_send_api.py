@@ -47,6 +47,7 @@ from app.extensions.apps.atw.models import (
     AtwSendLog,
     AtwSendStatusEnum,
 )
+from app.extensions.bundle_upload import plan as delivery_plan
 from app.extensions.bundle_upload.plan import DeliveryPlan, DeliveryPlanExecutor
 from app.extensions.bundle_upload.resolver import DRIFTED_INPUTS_REASON
 from app.extensions.config import DeliveryPlanInputs, extensions_settings
@@ -908,17 +909,18 @@ class TestAtwCaseSearch:
         assert RUNAWAY_TERM not in caplog.text
         assert RUNAWAY_PATTERN not in caplog.text
 
-    @pytest.mark.usefixtures("case_search_configured")
+    @pytest.mark.timeout(10, method="signal")
+    @pytest.mark.usefixtures("runaway_case_search_configured")
     async def test_time_spent_opening_the_executor_comes_out_of_the_match_budget(
         self, admin_api_client: AsyncClient, mocker: MockerFixture
     ) -> None:
-        """Hand the match only what is left of the route's bound once it starts.
+        """Answer a runaway match after a slow open within the route's bound.
 
-        Opening the executor here leaves less of the bound than the match's own
-        cap, so a budget at the cap would mean the deadline never reached it.
+        The match's own cap is raised past the bound, so only the time left of
+        the route's deadline can stop the match once the executor has opened.
         """
-        bound_seconds = 1.0
-        open_seconds = 0.9
+        bound_seconds = 2.0
+        open_seconds = 1.0
         open_executor = api_routes.get_delivery_executor
 
         @asynccontextmanager
@@ -928,18 +930,23 @@ class TestAtwCaseSearch:
                 yield executor
 
         mocker.patch.object(api_routes, "CASE_SEARCH_TIMEOUT_SECONDS", bound_seconds)
+        mocker.patch.object(delivery_plan, "TERM_MATCH_TIMEOUT_SECONDS", 5.0)
         mocker.patch.object(api_routes, "get_delivery_executor", _slow_to_open)
         spy = mocker.spy(regex, "fullmatch")
 
+        started = time.monotonic()
         with aioresponses() as mock:
-            mock.get(
-                re.compile(r".*"), status=status.HTTP_200_OK, payload={"result": []}
-            )
             response = await admin_api_client.get(
-                _CASE_SEARCH_PATH, params={"term": "CS00"}
+                _CASE_SEARCH_PATH, params={"term": RUNAWAY_TERM}
             )
 
+            assert not mock.requests
+        elapsed = time.monotonic() - started
+
         assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"available": False, "matches": []}
+        assert elapsed < bound_seconds + 0.5
+        spy.assert_called_once()
         assert 0 <= spy.call_args.kwargs["timeout"] <= bound_seconds - open_seconds
 
     @pytest.mark.usefixtures("case_search_configured")
