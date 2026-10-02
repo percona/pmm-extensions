@@ -23,7 +23,7 @@ from collections import defaultdict
 from collections.abc import Hashable
 from typing import Any, ClassVar, TypeVar
 
-from app.core.requests.remote_api import BaseRemoteAPI, RemoteAPI
+from app.core.requests.remote_api import BaseRemoteAPI, PendingCloses, RemoteAPI
 
 T = TypeVar("T", bound=BaseRemoteAPI)
 logger = logging.getLogger(__name__)
@@ -56,6 +56,7 @@ class ClientRegistry:
         )
         self._close_lock: asyncio.Lock = asyncio.Lock()
         self._closed: bool = False
+        self._pending_closes = PendingCloses()
 
     @property
     def closed(self) -> bool:
@@ -126,9 +127,14 @@ class ClientRegistry:
 
         Eviction is immediate; the close is not. A client with consumers still
         in flight stays open until its last one releases, so an SSE stream or a
-        file download that resolved it survives the rebind. This method
-        therefore does not guarantee the client is closed by the time it
-        returns, only that no new work is handed it.
+        file download that resolved it survives the rebind. Evicted clients are
+        registered on this registry's :class:`PendingCloses` *under the same
+        lock* as the cache removal, so :meth:`close_all` cannot seal and sweep
+        in the gap before :meth:`~BaseRemoteAPI.close_when_idle` runs — even
+        if this task is cancelled mid-await, or the client was idle and would
+        otherwise never touch pending. This method therefore does not guarantee
+        the client is closed by the time it returns, only that no new work is
+        handed it.
 
         :param endpoint: The endpoint URL whose cached clients to evict.
             Compared trailing-slash-insensitively against each client's
@@ -146,14 +152,26 @@ class ClientRegistry:
             for key, _client in matching:
                 del self._clients[key]
                 self._locks.pop(key, None)
+            if not matching:
+                return
+            deferred: list[BaseRemoteAPI] = []
+            immediate: list[BaseRemoteAPI] = []
+            for _key, client in matching:
+                if client.remember_pending_close(self._pending_closes):
+                    deferred.append(client)
+                else:
+                    immediate.append(client)
 
-        if not matching:
-            return
+        closing = immediate + deferred
         results = await asyncio.gather(
-            *(client.close_when_idle() for _key, client in matching),
+            *(client.close() for client in immediate),
+            *(
+                client.close_when_idle(pending=self._pending_closes)
+                for client in deferred
+            ),
             return_exceptions=True,
         )
-        for (_key, client), result in zip(matching, results, strict=False):
+        for client, result in zip(closing, results, strict=False):
             if isinstance(result, Exception):
                 logger.warning(
                     "Error closing client %s: %s", client.redacted_base_url, result
@@ -162,27 +180,42 @@ class ClientRegistry:
     async def close_all(self) -> None:
         """Close all RemoteAPI clients and clear the registry.
 
-        This method closes all clients in the registry and clears the internal cache.
-        It is safe to call this method multiple times; subsequent calls will have no
-        effect if the registry is already closed.
+        Closes every client still in the cache, then force-closes any clients
+        :meth:`invalidate` deferred via :class:`PendingCloses`. The pending
+        sweep runs in a nested ``finally`` so it still executes when an active
+        close is cancelled or raises. Safe to call multiple times: after the
+        registry is closed, later calls skip the already-cleared cache and
+        re-run only the pending sweep so a transient deferred-close failure
+        remains retryable.
         """
         async with self._close_lock:
             if self.closed:
-                return
-            self._closed = True
-            clients = list(self._clients.values())
+                # Retry path: cache clients were already closed; only the
+                # pending sweep can still make progress.
+                clients: list[BaseRemoteAPI] = []
+            else:
+                self._closed = True
+                # Seal before any await so a concurrent invalidate cannot
+                # register a deferred close after force_close has returned.
+                self._pending_closes.seal()
+                clients = list(self._clients.values())
 
         try:
-            results = await asyncio.gather(
-                *(client.close() for client in clients), return_exceptions=True
-            )
-            for client, result in zip(clients, results, strict=False):
-                if isinstance(result, Exception):
-                    logger.warning(
-                        "Error closing client %s: %s",
-                        client.redacted_base_url,
-                        result,
+            try:
+                if clients:
+                    results = await asyncio.gather(
+                        *(client.close() for client in clients),
+                        return_exceptions=True,
                     )
+                    for client, result in zip(clients, results, strict=False):
+                        if isinstance(result, Exception):
+                            logger.warning(
+                                "Error closing client %s: %s",
+                                client.redacted_base_url,
+                                result,
+                            )
+            finally:
+                await self._pending_closes.force_close()
         finally:
             self._clients.clear()
             self._locks.clear()

@@ -20,6 +20,7 @@ __all__ = [
     "BaseRemoteAPI",
     "CredentialHeaderMixin",
     "JSONBody",
+    "PendingCloses",
     "RemoteAPI",
     "StoredCredentialHeaderMixin",
     "as_json_array",
@@ -370,6 +371,104 @@ async def _iter_lines_from_chunks(
         yield bytes(buffer)
 
 
+class PendingCloses:
+    """Track clients whose :meth:`BaseRemoteAPI.close_when_idle` deferred a close.
+
+    Each owning component keeps its own instance so a shutdown sweep only
+    reaches clients that owner itself retired. A client that drains normally
+    before shutdown is removed here and is not force-closed again.
+
+    Clients are keyed by identity: :class:`BaseRemoteAPI` compares by field
+    values, so a value-keyed set would collapse two retired instances that
+    shared an endpoint.
+
+    :meth:`seal` (and :meth:`force_close`) permanently refuse new deferrals so a
+    rebind that races shutdown cannot register a client after the sweep has
+    already run. :meth:`add` returns ``False`` when sealed; the caller must
+    close immediately. Callers that open a *replacement* client during
+    shutdown also check :attr:`sealed` and discard the replacement instead of
+    publishing it (the active slot is owned by teardown once sealing starts).
+    """
+
+    def __init__(self) -> None:
+        self._clients: dict[int, BaseRemoteAPI] = {}
+        self._sealed = False
+
+    @property
+    def sealed(self) -> bool:
+        """Return whether shutdown has sealed this collection against new deferrals."""
+        return self._sealed
+
+    def seal(self) -> None:
+        """Reject further deferrals; late retirements must close immediately."""
+        self._sealed = True
+
+    def add(self, client: "BaseRemoteAPI") -> bool:
+        """Remember ``client`` until it drains or :meth:`force_close` runs.
+
+        :param client: The client whose close was deferred.
+        :return: ``True`` when registered for deferred close, ``False`` when
+            this collection is already sealed and the caller must close
+            ``client`` now (use :meth:`track` if that immediate close must
+            stay discoverable on failure).
+        """
+        if self._sealed:
+            return False
+        self._clients[id(client)] = client
+        return True
+
+    def track(self, client: "BaseRemoteAPI") -> None:
+        """Remember ``client`` until a successful close removes it.
+
+        Unlike :meth:`add`, this registers even when sealed so an immediate
+        close that fails or is cancelled stays discoverable for a later
+        :meth:`force_close`. Callers that discard a late replacement use this
+        before awaiting :meth:`~BaseRemoteAPI.close`.
+
+        :param client: The client to keep tracked until a close succeeds.
+        """
+        self._clients[id(client)] = client
+
+    def discard(self, client: "BaseRemoteAPI") -> None:
+        """Drop ``client`` after a normal deferred close.
+
+        :param client: The client that closed (or was force-closed).
+        """
+        self._clients.pop(id(client), None)
+
+    async def force_close(self) -> None:
+        """Seal, then close every still-deferred client.
+
+        Sealing happens before any ``await`` so a concurrent rebind that tries
+        to register after this returns cannot reintroduce a leak.
+        Only the hold-triggered close flag is cleared before ``close`` so a
+        concurrent :meth:`BaseRemoteAPI.hold` finally will not start another
+        close from ``_close_when_idle``. The client stays registered here until
+        a *successful* session close removes it, so a failed or cancelled close
+        remains discoverable for a later sweep. If that hold already began
+        tearing down the session, :meth:`BaseRemoteAPI.close` joins the
+        in-progress operation so this sweep still waits for the socket to
+        finish closing. Safe to call when empty.
+        """
+        self._sealed = True
+        clients = list(self._clients.values())
+        if not clients:
+            return
+        for client in clients:
+            client.clear_hold_triggered_close()
+        results = await asyncio.gather(
+            *(client.close() for client in clients),
+            return_exceptions=True,
+        )
+        for client, result in zip(clients, results, strict=False):
+            if isinstance(result, Exception):
+                client.logger.warning(
+                    "Error force-closing client %s: %s",
+                    client.redacted_base_url,
+                    result,
+                )
+
+
 class BaseRemoteAPI(BaseCaseInsensitiveModel):
     """Base class for interacting with external APIs.
 
@@ -404,6 +503,12 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     _session: ClientSession | None = None
     _in_flight: int = 0
     _close_when_idle: bool = False
+    _pending_closes: PendingCloses | None = None
+    # Set while :meth:`__aexit__` runs so a concurrent :meth:`close` (e.g.
+    # shutdown ``force_close``) awaits the same session teardown instead of
+    # racing a second one. Cleared on failure so a later close can retry;
+    # left completed on success so late joiners still observe the finish.
+    _close_done: asyncio.Future[None] | None = None
     _extra_headers: ContextVar[dict[str, str] | None] = PrivateAttr(
         default_factory=lambda: ContextVar("api_extra_headers", default=None)
     )
@@ -477,6 +582,10 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         :rtype: BaseRemoteAPI
         """
         if getattr(self, "_session", None) is None:
+            # A prior close may have left ``_close_done`` completed; clear it
+            # so a later close on this reopened session is not treated as a
+            # join on the finished teardown.
+            self._close_done = None
             self.logger.debug("Opening ClientSession for %s", self.redacted_base_url)
             connector = TCPConnector(
                 ssl=self.ssl_context,
@@ -505,23 +614,66 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ) -> None:
         """Exit the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized.
+        Closes the aiohttp ``ClientSession`` if it was initialized. Concurrent
+        callers join the in-progress teardown via a shielded ``_close_done``
+        wait so cancelling one waiter cannot cancel the shared close state.
+        If the owning close is cancelled, a joiner that is not itself
+        cancelling takes over teardown so the session does not stay open.
+        Deferred-close bookkeeping is cleared only after a *successful*
+        session close, so a failed or cancelled teardown stays discoverable
+        on :class:`PendingCloses` and a later :meth:`close` can retry.
 
         :param exc_type: The exception type, if any.
-        :type exc_type: type[BaseException] | None
         :param exc_val: The exception value, if any.
-        :type exc_val: BaseException | None
         :param exc_tb: The traceback, if any.
-        :type exc_tb: TracebackType | None
         """
-        if self._session and not self._session.closed:
-            self.logger.debug("Closing ClientSession for %s", self.redacted_base_url)
-            await self._session.close()
+        if self._close_done is not None:
+            # Shield so cancelling this waiter does not cancel the shared
+            # future other close() / force_close joiners still need.
+            already_closed = self._close_done.done()
+            shared = self._close_done
+            try:
+                await asyncio.shield(shared)
+            except asyncio.CancelledError:
+                # The owning close may have published CancelledError into
+                # ``shared`` without this task being cancelled. Take over
+                # teardown so the session does not stay open; only re-raise
+                # when we ourselves are being cancelled.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling() == 0:
+                    return await self.__aexit__(exc_type, exc_val, exc_tb)
+                raise
+            if already_closed:
+                self.logger.debug(
+                    "ClientSession already closed for %s", self.redacted_base_url
+                )
+            return None
+
+        done = asyncio.get_running_loop().create_future()
+        self._close_done = done
+        try:
+            if self._session and not self._session.closed:
+                self.logger.debug(
+                    "Closing ClientSession for %s", self.redacted_base_url
+                )
+                await self._session.close()
+            else:
+                self.logger.debug(
+                    "ClientSession already closed for %s", self.redacted_base_url
+                )
+            self._session = None
+        except BaseException as exc:
+            self._close_done = None
+            if not done.done():
+                done.set_exception(exc)
+                # Mark retrieved when nobody joined, so asyncio does not warn
+                # about an orphaned future exception on this failure path.
+                done.exception()
+            raise
         else:
-            self.logger.debug(
-                "ClientSession already closed for %s", self.redacted_base_url
-            )
-        self._session = None
+            self.clear_deferred_close()
+            if not done.done():
+                done.set_result(None)
 
     async def open(self) -> Self:
         """Open the asynchronous context manager.
@@ -536,9 +688,71 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     async def close(self) -> None:
         """Close the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized.
+        Closes the aiohttp ``ClientSession`` if it was initialized. If a close is
+        already in progress (a draining :meth:`hold`, or another caller), waits
+        for that teardown to finish instead of starting a second one. A failed
+        close leaves the client retryable for a later call.
         """
         await self.__aexit__(None, None, None)
+
+    def clear_deferred_close(self) -> None:
+        """Drop deferred-close bookkeeping without closing the session.
+
+        Called after a *successful* session close (from :meth:`__aexit__`) so
+        the owner no longer tracks this client for a shutdown sweep.
+        :meth:`PendingCloses.force_close` does *not* call this before awaiting
+        :meth:`close`; it only clears the hold-triggered flag via
+        :meth:`clear_hold_triggered_close` so a failed close stays discoverable.
+        """
+        pending = self._pending_closes
+        if pending is not None:
+            pending.discard(self)
+            self._pending_closes = None
+        self._close_when_idle = False
+
+    def clear_hold_triggered_close(self) -> None:
+        """Clear the hold-triggered close flag without leaving :class:`PendingCloses`.
+
+        :meth:`PendingCloses.force_close` calls this before awaiting
+        :meth:`close` so a concurrent :meth:`hold` finally no longer sees
+        ``_close_when_idle`` and starts a redundant close; :meth:`close` is
+        still joinable via ``_close_done`` if teardown already began. The
+        client stays registered on the owner's pending set until a successful
+        session close removes it.
+        """
+        self._close_when_idle = False
+
+    def remember_pending_close(self, pending: PendingCloses) -> bool:
+        """Register on ``pending`` so a shutdown sweep can still force-close us.
+
+        Callers register *before* publishing a replacement or awaiting
+        :meth:`close_when_idle`, so a concurrent seal/sweep cannot miss a
+        client that has left the live slot but not yet deferred. Cache owners
+        (the RemoteAPI registry, NomadLifecycle) do that under their eviction
+        lock; the app.state rebinder does it on the same no-await stretch
+        between the sealed check and ``setattr``. Idempotent when already
+        registered on ``pending``.
+
+        :param pending: The calling owner's deferred-close collection.
+        :return: ``True`` when registered for deferred close, ``False`` when
+            ``pending`` is already sealed and the caller must close this
+            client now.
+        """
+        if not pending.add(self):
+            return False
+        self._pending_closes = pending
+        return True
+
+    def track_pending_close(self, pending: PendingCloses) -> None:
+        """Register on ``pending`` even when sealed, for an immediate close.
+
+        Used when discarding a late replacement: the close runs now, but the
+        owner must still find us if that close fails or is cancelled.
+
+        :param pending: The owner's deferred-close collection, sealed or not.
+        """
+        pending.track(self)
+        self._pending_closes = pending
 
     @asynccontextmanager
     async def hold(self) -> AsyncGenerator[Self, None]:
@@ -548,7 +762,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         including the ones it issues after an earlier response finished, so the
         accounting unit is the hold rather than the individual HTTP call. The
         releaser that drops the count to zero performs a close that
-        :meth:`close_when_idle` deferred.
+        :meth:`close_when_idle` deferred. That close stays discoverable on the
+        owner's :class:`PendingCloses` until the session teardown finishes, so
+        a concurrent shutdown sweep can await the same operation.
 
         The release runs during cancellation too, when the consuming task is
         cancelled by a client disconnecting mid-response, so the deferred close
@@ -563,19 +779,31 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         finally:
             self._in_flight -= 1
             if not self._in_flight and self._close_when_idle:
-                self._close_when_idle = False
                 await asyncio.shield(self.close())
 
-    async def close_when_idle(self) -> None:
+    async def close_when_idle(self, pending: PendingCloses | None = None) -> None:
         """Close the session now when idle, or once the last consumer releases.
 
         Unlike :meth:`close`, which closes unconditionally, this waits on the
         consumers registered by :meth:`hold`, and imposes no deadline on them.
         Callers that retire a client on a settings rebind use this so an
         in-flight stream or download is not cut off mid-response.
+
+        When the close is deferred and ``pending`` is given, this client is
+        registered there so the owner's shutdown path can still force-close it
+        if the holder never unwinds. If ``pending`` is already sealed (shutdown
+        has begun), the close runs immediately instead of being deferred past
+        the sweep.
+
+        :param pending: The calling owner's deferred-close collection, or
+            ``None`` when the caller does not track retirements for shutdown.
         """
         if self._in_flight:
             self._close_when_idle = True
+            if pending is not None and not self.remember_pending_close(pending):
+                self._close_when_idle = False
+                await self.close()
+                return
             return
         await self.close()
 
