@@ -50,6 +50,4 @@ class AlertsSettings(BaseYamlSettings):
     )  # ty: ignore[invalid-assignment]
 
 
-alerts_settings: AlertsSettings = OverridableSettingsProxy(
-    AlertsSettings, setting_class=AlertsSettings.__name__
-)
+alerts_settings: AlertsSettings = OverridableSettingsProxy(AlertsSettings)
