@@ -615,6 +615,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         Closes the aiohttp ``ClientSession`` if it was initialized. Concurrent
         callers join the in-progress teardown via a shielded ``_close_done``
         wait so cancelling one waiter cannot cancel the shared close state.
+        If the owning close is cancelled, a joiner that is not itself
+        cancelling takes over teardown so the session does not stay open.
         Deferred-close bookkeeping is cleared only after a *successful*
         session close, so a failed or cancelled teardown stays discoverable
         on :class:`PendingCloses` and a later :meth:`close` can retry.
@@ -632,12 +634,23 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
             # A later close that finds the teardown already finished still
             # logs the already-closed line (password-redacted).
             already_closed = self._close_done.done()
-            await asyncio.shield(self._close_done)
+            shared = self._close_done
+            try:
+                await asyncio.shield(shared)
+            except asyncio.CancelledError:
+                # The owning close may have published CancelledError into
+                # ``shared`` without this task being cancelled. Take over
+                # teardown so the session does not stay open; only re-raise
+                # when we ourselves are being cancelled.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling() == 0:
+                    return await self.__aexit__(exc_type, exc_val, exc_tb)
+                raise
             if already_closed:
                 self.logger.debug(
                     "ClientSession already closed for %s", self.redacted_base_url
                 )
-            return
+            return None
 
         done = asyncio.get_running_loop().create_future()
         self._close_done = done

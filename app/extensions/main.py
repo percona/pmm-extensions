@@ -381,34 +381,39 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     at startup) on shutdown, so a client a rebind callback swapped in mid-run is
     the one that gets closed. Clients a rebind retired while still held are
     tracked on ``app.state.retired_remote_apis`` and force-closed here if their
-    holders never unwound. The override refresher is drained *before* that
-    close so a sealed rebind cannot open a replacement while the sweep runs;
-    discarded replacements are still owner-tracked until their close succeeds.
+    holders never unwound. The override lifespan sits in a ``try`` so its
+    exit drains the refresher first; a matching ``finally`` then closes the
+    clients even when the body, ``default_lifespan``, or refresher teardown
+    raises or is cancelled. Discarded sealed-path replacements stay
+    owner-tracked until their close succeeds.
 
     :param app: The FastAPI application instance.
     :return: ``None``, once the lifespans have been entered.
     """
     clients_opened = False
-    async with extensions_overrides_lifespan(app):
-        await extensions_startup()
-        app.state.inventory_api = await RemoteAPI(
-            endpoint=extensions_settings.INVENTORY_ENDPOINT,
-            ssl_cafile=settings.SSL_CAFILE,
-            ssl_keyfile=inventory_settings.SSL_KEYFILE,
-            ssl_certfile=inventory_settings.SSL_CERTFILE,
-        ).open()
-        app.state.tasks_api = await RemoteAPI(
-            endpoint=extensions_settings.TASKS_ENDPOINT,
-            ssl_cafile=settings.SSL_CAFILE,
-            ssl_keyfile=tasks_settings.SSL_KEYFILE,
-            ssl_certfile=tasks_settings.SSL_CERTFILE,
-        ).open()
-        clients_opened = True
-        async with default_lifespan(app):
-            yield
-    # Refresher drained above: sealed rebinds can no longer race this sweep.
-    if clients_opened:
-        await _close_app_state_remote_apis(app)
+    try:
+        async with extensions_overrides_lifespan(app):
+            await extensions_startup()
+            app.state.inventory_api = await RemoteAPI(
+                endpoint=extensions_settings.INVENTORY_ENDPOINT,
+                ssl_cafile=settings.SSL_CAFILE,
+                ssl_keyfile=inventory_settings.SSL_KEYFILE,
+                ssl_certfile=inventory_settings.SSL_CERTFILE,
+            ).open()
+            app.state.tasks_api = await RemoteAPI(
+                endpoint=extensions_settings.TASKS_ENDPOINT,
+                ssl_cafile=settings.SSL_CAFILE,
+                ssl_keyfile=tasks_settings.SSL_KEYFILE,
+                ssl_certfile=tasks_settings.SSL_CERTFILE,
+            ).open()
+            clients_opened = True
+            async with default_lifespan(app):
+                yield
+    finally:
+        # Refresher drained above (overrides ``__aexit__``); close even when
+        # that path raised or was cancelled.
+        if clients_opened:
+            await _close_app_state_remote_apis(app)
 
 
 lifespan = extensions_lifespan

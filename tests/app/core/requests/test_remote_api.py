@@ -941,6 +941,39 @@ class TestDrainOnRebind:
         await closer
         assert remote_api._session is None
 
+    async def test_joiner_takes_over_when_owner_close_is_cancelled(
+        self, remote_api, mocker
+    ):
+        """Take over teardown when the owning close is cancelled mid-session.close."""
+        await remote_api.open()
+        session = remote_api._session
+        assert session is not None
+        entered_close = asyncio.Event()
+        finish_close = asyncio.Event()
+        real_close = session.close
+
+        async def paused_session_close() -> None:
+            entered_close.set()
+            await finish_close.wait()
+            await real_close()
+
+        mocker.patch.object(session, "close", paused_session_close)
+
+        owner = asyncio.create_task(remote_api.close())
+        await asyncio.wait_for(entered_close.wait(), timeout=5)
+        joiner = asyncio.create_task(remote_api.close())
+        await asyncio.sleep(0)
+
+        owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+
+        assert not joiner.cancelled()
+        finish_close.set()
+        await joiner
+        assert remote_api._session is None
+        assert not joiner.cancelled()
+
     async def test_idle_close_does_not_register_on_pending(self, remote_api):
         """Skip pending registration when the close runs immediately."""
         pending = PendingCloses()
