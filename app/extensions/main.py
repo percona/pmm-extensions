@@ -144,11 +144,12 @@ def _make_remote_api_rebinder(
     them at shutdown even on the idle path (where
     :meth:`~app.core.requests.remote_api.BaseRemoteAPI.close_when_idle` would
     otherwise skip pending) or if this callback is cancelled mid-close. When
-    ``pending`` is already sealed (teardown has begun while the override
-    refresher is still nested above the close ``finally``), the replacement is
-    closed and discarded instead of published — sealing alone only forces the
-    *outgoing* client; a post-teardown ``setattr`` would leak the new session.
-    Discarded replacements are :meth:`~app.core.requests.remote_api.BaseRemoteAPI.track_pending_close`
+    ``pending`` is already sealed (``_close_app_state_remote_apis`` has begun —
+    including while an in-request PATCH/DELETE rebind still runs after the
+    override refresher drained), the replacement is closed and discarded
+    instead of published — sealing alone only forces the *outgoing* client; a
+    post-teardown ``setattr`` would leak the new session. Discarded
+    replacements are :meth:`~app.core.requests.remote_api.BaseRemoteAPI.track_pending_close`
     registered before that close so a failed or cancelled discard stays
     visible to the shutdown sweep.
 
@@ -339,8 +340,12 @@ async def _close_app_state_remote_apis(app: FastAPI) -> None:
 
     Nested ``finally`` so a failure closing one client cannot skip the others
     or the deferred :meth:`~app.core.requests.remote_api.PendingCloses.force_close`
-    sweep. Seal before any await so a concurrent rebind cannot register after
-    the sweep or publish a replacement into a slot teardown already owns.
+    sweep. Seal before any await so a concurrent rebind — including an
+    in-request PATCH/DELETE that fires after the override refresher drained —
+    cannot register after the sweep or publish a replacement into a slot
+    teardown already owns.
+
+    :param app: The FastAPI application whose ``state`` holds the clients.
     """
     app.state.retired_remote_apis.seal()
     try:
@@ -384,8 +389,10 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     holders never unwound. The override lifespan sits in a ``try`` so its
     exit drains the refresher first; a matching ``finally`` then closes the
     clients even when the body, ``default_lifespan``, or refresher teardown
-    raises or is cancelled. Discarded sealed-path replacements stay
-    owner-tracked until their close succeeds.
+    raises or is cancelled. Drain alone is not enough: PATCH/DELETE can still
+    fire the same rebinders in-request after the refresher exits, so the close
+    seals ``retired_remote_apis`` before any await. Discarded sealed-path
+    replacements stay owner-tracked until their close succeeds.
 
     :param app: The FastAPI application instance.
     :return: ``None``, once the lifespans have been entered.
@@ -410,8 +417,6 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             async with default_lifespan(app):
                 yield
     finally:
-        # Refresher drained above (overrides ``__aexit__``); close even when
-        # that path raised or was cancelled.
         if clients_opened:
             await _close_app_state_remote_apis(app)
 

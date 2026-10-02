@@ -424,6 +424,8 @@ class PendingCloses:
         close that fails or is cancelled stays discoverable for a later
         :meth:`force_close`. Callers that discard a late replacement use this
         before awaiting :meth:`~BaseRemoteAPI.close`.
+
+        :param client: The client to keep tracked until a close succeeds.
         """
         self._clients[id(client)] = client
 
@@ -622,11 +624,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         on :class:`PendingCloses` and a later :meth:`close` can retry.
 
         :param exc_type: The exception type, if any.
-        :type exc_type: type[BaseException] | None
         :param exc_val: The exception value, if any.
-        :type exc_val: BaseException | None
         :param exc_tb: The traceback, if any.
-        :type exc_tb: TracebackType | None
         """
         if self._close_done is not None:
             # Shield so cancelling this waiter does not cancel the shared
@@ -733,10 +732,13 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     def remember_pending_close(self, pending: PendingCloses) -> bool:
         """Register on ``pending`` so a shutdown sweep can still force-close us.
 
-        Owners call this under their eviction lock *before* awaiting
+        Callers register *before* publishing a replacement or awaiting
         :meth:`close_when_idle`, so a concurrent seal/sweep cannot miss a
-        client that has left the live cache but not yet deferred. Idempotent
-        when already registered on ``pending``.
+        client that has left the live slot but not yet deferred. Cache owners
+        (the RemoteAPI registry, NomadLifecycle) do that under their eviction
+        lock; the app.state rebinder does it on the same no-await stretch
+        between the sealed check and ``setattr``. Idempotent when already
+        registered on ``pending``.
 
         :param pending: The calling owner's deferred-close collection.
         :return: ``True`` when registered for deferred close, ``False`` when
@@ -753,6 +755,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
 
         Used when discarding a late replacement: the close runs now, but the
         owner must still find us if that close fails or is cancelled.
+
+        :param pending: The owner's deferred-close collection, sealed or not.
         """
         pending.track(self)
         self._pending_closes = pending
