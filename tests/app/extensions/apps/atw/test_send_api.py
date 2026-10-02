@@ -17,12 +17,14 @@
 
 import asyncio
 import re
+import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+import regex
 from aioresponses import aioresponses
 from fastapi import status
 from httpx import AsyncClient
@@ -48,6 +50,7 @@ from app.extensions.apps.atw.models import (
 from app.extensions.bundle_upload.plan import DeliveryPlan, DeliveryPlanExecutor
 from app.extensions.bundle_upload.resolver import DRIFTED_INPUTS_REASON
 from app.extensions.config import DeliveryPlanInputs, extensions_settings
+from tests.app.extensions.runaway_term_pattern import RUNAWAY_PATTERN, RUNAWAY_TERM
 
 _BASE = "/api/apps/atw"
 _CASE_SEARCH_PATH = f"{_BASE}/case-search/"
@@ -599,9 +602,10 @@ class TestStartSendJobRuntimeInputs:
         assert response.json()["detail"] == DRIFTED_INPUTS_REASON
 
 
-def _case_search_plan() -> DeliveryPlan:
+def _case_search_plan(term_pattern: str = r"[A-Za-z0-9 ._-]+") -> DeliveryPlan:
     """Build a configured receiver that also declares a case search.
 
+    :param term_pattern: The pattern the whole typed term must match.
     :return: The plan a deployment ships once case search is configured.
     """
     return DeliveryPlan(
@@ -611,7 +615,7 @@ def _case_search_plan() -> DeliveryPlan:
             "path": "api/now/table/case",
             "headers": {"x-sn-apikey": {"source": "secret", "name": "api_key"}},
             "query": {"sysparm_query": {"source": "term", "prefix": "123TEXTQUERY321"}},
-            "term_pattern": r"[A-Za-z0-9 ._-]+",
+            "term_pattern": term_pattern,
             "results_pointer": "/result",
             "reference_pointer": "/number",
             "title_pointer": "/short_description",
@@ -628,6 +632,17 @@ def case_search_configured_fixture(mocker: MockerFixture) -> None:
     """Configure a receiver whose plan declares a case-search section."""
     mocker.patch.object(
         extensions_settings, "DIAGNOSTICS_DELIVERY", _case_search_plan()
+    )
+    mocker.patch.object(extensions_settings, "DIAGNOSTICS_DELIVERY_INPUTS", None)
+
+
+@pytest.fixture(name="runaway_case_search_configured")
+def runaway_case_search_configured_fixture(mocker: MockerFixture) -> None:
+    """Configure a receiver whose case search declares a backtracking pattern."""
+    mocker.patch.object(
+        extensions_settings,
+        "DIAGNOSTICS_DELIVERY",
+        _case_search_plan(term_pattern=RUNAWAY_PATTERN),
     )
     mocker.patch.object(extensions_settings, "DIAGNOSTICS_DELIVERY_INPUTS", None)
 
@@ -830,7 +845,7 @@ class TestAtwCaseSearch:
     ) -> None:
         """Bound a search issued while someone is still typing."""
 
-        async def _slow_search(_self: Any, _term: str) -> list[Any]:
+        async def _slow_search(_self: Any, _term: str, **_kwargs: Any) -> list[Any]:
             await asyncio.sleep(1)
             return []
 
@@ -868,6 +883,64 @@ class TestAtwCaseSearch:
 
         assert response.status_code == status.HTTP_200_OK
         assert response.json() == {"available": False, "matches": []}
+
+    # The signal method interrupts a match ``re`` would never return from, so a
+    # regression fails this test alone instead of tearing down the whole run.
+    @pytest.mark.timeout(10, method="signal")
+    @pytest.mark.usefixtures("runaway_case_search_configured")
+    async def test_a_runaway_term_pattern_reports_unavailable_promptly(
+        self, admin_api_client: AsyncClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Answer a backtracking match with unavailability rather than a hang."""
+        started = time.monotonic()
+        with aioresponses() as mock:
+            response = await admin_api_client.get(
+                _CASE_SEARCH_PATH, params={"term": RUNAWAY_TERM}
+            )
+
+            assert not mock.requests
+        elapsed = time.monotonic() - started
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"available": False, "matches": []}
+        assert elapsed < api_routes.CASE_SEARCH_TIMEOUT_SECONDS
+        assert "Diagnostics case search failed (DeliveryPlanError)" in caplog.text
+        assert RUNAWAY_TERM not in caplog.text
+        assert RUNAWAY_PATTERN not in caplog.text
+
+    @pytest.mark.usefixtures("case_search_configured")
+    async def test_time_spent_opening_the_executor_comes_out_of_the_match_budget(
+        self, admin_api_client: AsyncClient, mocker: MockerFixture
+    ) -> None:
+        """Hand the match only what is left of the route's bound once it starts.
+
+        Opening the executor here leaves less of the bound than the match's own
+        cap, so a budget at the cap would mean the deadline never reached it.
+        """
+        bound_seconds = 1.0
+        open_seconds = 0.9
+        open_executor = api_routes.get_delivery_executor
+
+        @asynccontextmanager
+        async def _slow_to_open(*args: Any, **kwargs: Any) -> Any:
+            await asyncio.sleep(open_seconds)
+            async with open_executor(*args, **kwargs) as executor:
+                yield executor
+
+        mocker.patch.object(api_routes, "CASE_SEARCH_TIMEOUT_SECONDS", bound_seconds)
+        mocker.patch.object(api_routes, "get_delivery_executor", _slow_to_open)
+        spy = mocker.spy(regex, "fullmatch")
+
+        with aioresponses() as mock:
+            mock.get(
+                re.compile(r".*"), status=status.HTTP_200_OK, payload={"result": []}
+            )
+            response = await admin_api_client.get(
+                _CASE_SEARCH_PATH, params={"term": "CS00"}
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert 0 <= spy.call_args.kwargs["timeout"] <= bound_seconds - open_seconds
 
     @pytest.mark.usefixtures("case_search_configured")
     async def test_a_term_carrying_receiver_query_syntax_reaches_no_receiver(

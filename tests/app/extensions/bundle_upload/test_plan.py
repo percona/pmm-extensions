@@ -15,15 +15,18 @@
 
 """Define tests for the config-driven delivery plan schema and executor."""
 
+import asyncio
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import pytest
+import regex
 from aiohttp import MultipartWriter
 from aioresponses import aioresponses
 from fastapi import HTTPException, status
 from pydantic import ValidationError
+from pytest_mock import MockerFixture
 
 from app.core.exceptions import HTTPBadGatewayException, HTTPConflictException
 from app.core.requests import RemoteAPI
@@ -34,8 +37,10 @@ from app.extensions.bundle_upload.plan import (
     DeliveryPlanError,
     DeliveryPlanExecutor,
     StepRecord,
+    TERM_MATCH_TIMEOUT_SECONDS,
 )
 from app.extensions.bundle_upload.seam import BundleSource, BundleUploader
+from tests.app.extensions.runaway_term_pattern import RUNAWAY_PATTERN, RUNAWAY_TERM
 
 _BASE_URL = "http://localhost:8000/"
 _UPLOAD_URL = "http://localhost:8000/attachment/upload"
@@ -651,6 +656,30 @@ class TestCaseSearchStepValidation:
     def test_a_term_pattern_that_is_not_a_regex_is_refused(self):
         """Reject an unusable constraint when the plan is parsed, not per search."""
         payload = _case_search_plan(term_pattern="[unclosed")
+
+        with pytest.raises(ValidationError, match="not a valid regular expression"):
+            DeliveryPlan(**payload)
+
+    def test_a_pattern_only_the_matching_engine_accepts_is_accepted(self):
+        r"""Validate the pattern with the engine that will match it.
+
+        ``\p{L}`` is refused by the standard library's ``re`` but accepted by
+        ``regex``, so a validator on the wrong engine would refuse a plan the
+        search could run, or admit one it cannot.
+        """
+        payload = _case_search_plan(term_pattern=r"\p{L}+")
+        step = DeliveryPlan(**payload).case_search
+
+        assert step is not None
+        assert step.term_pattern == r"\p{L}+"
+
+    def test_a_pattern_only_the_matching_engine_refuses_is_refused(self):
+        """Refuse at load a pattern the search could never compile.
+
+        ``re`` reads ``[[:foo:]]`` as a plain set, while ``regex`` refuses the
+        unknown POSIX class, so only the matching engine catches it.
+        """
+        payload = _case_search_plan(term_pattern="[[:foo:]]")
 
         with pytest.raises(ValidationError, match="not a valid regular expression"):
             DeliveryPlan(**payload)
@@ -2533,6 +2562,115 @@ class TestDeliveryPlanCaseSearch:
             ]
 
         assert requested == [_CASE_SEARCH_URL]
+
+    async def test_a_unicode_term_matches_a_property_class_pattern(
+        self, api: RemoteAPI
+    ):
+        """Send a term admitted by a pattern only the matching engine supports."""
+        executor = DeliveryPlanExecutor(
+            DeliveryPlan(
+                **_case_search_plan(
+                    term_pattern=r"\p{L}+", query={"q": {"source": "term"}}
+                )
+            ),
+            api,
+        )
+        with aioresponses() as mock:
+            mock.get(
+                re.compile(rf"{re.escape(_CASE_SEARCH_URL)}.*"),
+                status=status.HTTP_200_OK,
+                payload={"result": []},
+            )
+            async with api:
+                await executor.search_cases("Ünïcode")
+
+            requests = [req for reqs in mock.requests.values() for req in reqs]
+
+        assert requests[0].kwargs["params"] == {"q": "Ünïcode"}
+
+
+@pytest.mark.asyncio
+class TestCaseSearchTermMatchBound:
+    """Cover the time bound on holding the term against the plan's pattern."""
+
+    # The signal method interrupts a match ``re`` would never return from, so a
+    # regression fails this test alone instead of tearing down the whole run.
+    @pytest.mark.timeout(10, method="signal")
+    async def test_a_runaway_pattern_is_refused(self, api: RemoteAPI):
+        """Abort a backtracking match instead of holding the event loop."""
+        executor = DeliveryPlanExecutor(
+            DeliveryPlan(**_case_search_plan(term_pattern=RUNAWAY_PATTERN)), api
+        )
+
+        with aioresponses() as mock:
+            with pytest.raises(DeliveryPlanError) as caught:
+                await executor.search_cases(RUNAWAY_TERM)
+
+            assert not mock.requests
+        assert RUNAWAY_PATTERN not in str(caught.value)
+        assert RUNAWAY_TERM not in str(caught.value)
+
+    async def test_a_spent_deadline_refuses_without_requesting(self, api: RemoteAPI):
+        """Refuse at once when the caller's deadline has already passed.
+
+        ``regex`` reads a negative timeout as no timeout at all, so a spent
+        deadline that reached it unclamped would leave the match unbounded.
+        """
+        executor = DeliveryPlanExecutor(DeliveryPlan(**_case_search_plan()), api)
+        bound = asyncio.Timeout(asyncio.get_running_loop().time() - 1)
+
+        with aioresponses() as mock:
+            with pytest.raises(DeliveryPlanError):
+                await executor.search_cases("CS00", bound=bound)
+
+            assert not mock.requests
+
+    async def test_the_budget_is_capped_by_the_remaining_deadline(
+        self, api: RemoteAPI, mocker: MockerFixture
+    ):
+        """Spend on the match only what the caller's deadline still allows."""
+        spy = mocker.spy(regex, "fullmatch")
+        executor = DeliveryPlanExecutor(DeliveryPlan(**_case_search_plan()), api)
+        remaining = 0.05
+        bound = asyncio.Timeout(asyncio.get_running_loop().time() + remaining)
+
+        with aioresponses() as mock:
+            mock.get(
+                _CASE_SEARCH_URL, status=status.HTTP_200_OK, payload={"result": []}
+            )
+            async with api:
+                await executor.search_cases("CS00", bound=bound)
+
+        assert 0 < spy.call_args.kwargs["timeout"] <= remaining
+
+    @pytest.mark.parametrize(
+        "make_bound",
+        [
+            lambda _now: None,
+            lambda _now: asyncio.Timeout(None),
+            lambda now: asyncio.Timeout(now + 60),
+        ],
+        ids=["no_bound", "unscheduled_bound", "distant_bound"],
+    )
+    async def test_the_budget_never_exceeds_its_cap(
+        self,
+        api: RemoteAPI,
+        mocker: MockerFixture,
+        make_bound: Callable[[float], asyncio.Timeout | None],
+    ):
+        """Hold the event loop for at most the fixed budget, however distant the deadline."""
+        spy = mocker.spy(regex, "fullmatch")
+        executor = DeliveryPlanExecutor(DeliveryPlan(**_case_search_plan()), api)
+        bound = make_bound(asyncio.get_running_loop().time())
+
+        with aioresponses() as mock:
+            mock.get(
+                _CASE_SEARCH_URL, status=status.HTTP_200_OK, payload={"result": []}
+            )
+            async with api:
+                await executor.search_cases("CS00", bound=bound)
+
+        assert spy.call_args.kwargs["timeout"] == TERM_MATCH_TIMEOUT_SECONDS
 
 
 @pytest.mark.asyncio
