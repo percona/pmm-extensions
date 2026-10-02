@@ -17,7 +17,7 @@
 
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useTaskLogs } from '../../../hooks/useTaskLogs';
+import { NOT_STARTED_RETRY_DELAYS_MS, useTaskLogs } from '../../../hooks/useTaskLogs';
 import { flushPromises, mockStreamFetch } from '../../../../tests/eventSourceStub';
 
 // Manual mock keeps axios out of the resolution graph.
@@ -365,5 +365,163 @@ describe('useTaskLogs', () => {
     await flushPromises();
 
     expect(result.current.textByStep).toEqual({});
+  });
+
+  describe('when the run has not started yet (409)', () => {
+    const NOT_STARTED = { code: 409, detail: 'Task history is running.' };
+    const LAST_DELAY = NOT_STARTED_RETRY_DELAYS_MS[NOT_STARTED_RETRY_DELAYS_MS.length - 1];
+
+    const fetchedUrls = () =>
+      mock.fetchSpy.mock.calls.map(([url]) => (typeof url === 'string' ? url : (url as URL).href));
+
+    const settle = () =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+        await flushPromises();
+      });
+
+    const advance = async (ms: number) => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+      await settle();
+    };
+
+    const pushNotStarted = async (attempt: number) => {
+      mock.pending[attempt].pushNamed('extensions-error', NOT_STARTED);
+      await settle();
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('reconnects after the backoff delay and then streams the output', async () => {
+      const { result } = renderHook(() => useTaskLogs(1));
+      await settle();
+
+      await pushNotStarted(0);
+
+      expect(result.current.streamStatus).toBe('connecting');
+      expect(result.current.error).toBeUndefined();
+      await advance(NOT_STARTED_RETRY_DELAYS_MS[0] - 1);
+      expect(mock.fetchSpy).toHaveBeenCalledTimes(1);
+
+      await advance(1);
+
+      expect(mock.fetchSpy).toHaveBeenCalledTimes(2);
+      act(() => {
+        mock.pending[1].pushMessage({ msg: 'first line', step: 's', type: 'stdout', offset: 10 });
+      });
+      await settle();
+      expect(result.current.textByStep.s?.stdout).toBe('first line');
+      expect(result.current.error).toBeUndefined();
+      expect(result.current.resumed).toBe(false);
+    });
+
+    it('does not reconnect after a 410', async () => {
+      const { result } = renderHook(() => useTaskLogs(1));
+      await settle();
+
+      mock.pending[0].pushNamed('extensions-error', { code: 410, detail: 'gone' });
+      await settle();
+      await advance(LAST_DELAY * 2);
+
+      expect(mock.fetchSpy).toHaveBeenCalledTimes(1);
+      expect(result.current.streamStatus).toBe('error');
+      expect(result.current.error?.code).toBe(410);
+    });
+
+    it('resumes from the tracked offsets and keeps the text already received', async () => {
+      const { result } = renderHook(() => useTaskLogs(1));
+      await settle();
+      act(() => {
+        mock.pending[0].pushMessage({ msg: 'a', step: 'backup_main', type: 'stdout', offset: 10 });
+        mock.pending[0].pushMessage({ msg: 'b', step: '', type: 'stderr', offset: 3 });
+      });
+      await settle();
+
+      await pushNotStarted(0);
+      expect(result.current.resumed).toBe(false);
+      await advance(NOT_STARTED_RETRY_DELAYS_MS[0]);
+
+      expect(fetchedUrls()).toEqual([
+        '/stream-logs/1',
+        '/stream-logs/1?backup_main_stdout_offset=10&_stderr_offset=3',
+      ]);
+      expect(result.current.resumed).toBe(true);
+      expect(result.current.textByStep.backup_main.stdout).toBe('a');
+      expect(result.current.textByStep[''].stderr).toBe('b');
+      expect(result.current.stepOrder).toEqual(['backup_main', '']);
+    });
+
+    it('keeps tail on the reconnect', async () => {
+      renderHook(() => useTaskLogs(1, 100));
+      await settle();
+
+      await pushNotStarted(0);
+      await advance(NOT_STARTED_RETRY_DELAYS_MS[0]);
+
+      expect(fetchedUrls()).toEqual(['/stream-logs/1?tail=100', '/stream-logs/1?tail=100']);
+    });
+
+    it('gives up with the 409 once the retry budget is spent', async () => {
+      const { result } = renderHook(() => useTaskLogs(1));
+      await settle();
+
+      for (const [attempt, delay] of NOT_STARTED_RETRY_DELAYS_MS.entries()) {
+        await pushNotStarted(attempt);
+        expect(result.current.error).toBeUndefined();
+        await advance(delay);
+        expect(mock.fetchSpy).toHaveBeenCalledTimes(attempt + 2);
+      }
+      await pushNotStarted(NOT_STARTED_RETRY_DELAYS_MS.length);
+      await advance(LAST_DELAY * 2);
+
+      expect(mock.fetchSpy).toHaveBeenCalledTimes(NOT_STARTED_RETRY_DELAYS_MS.length + 1);
+      expect(result.current.streamStatus).toBe('error');
+      expect(result.current.error?.code).toBe(409);
+    });
+
+    it('restarts the retry budget after a log line arrives', async () => {
+      const { result } = renderHook(() => useTaskLogs(1));
+      await settle();
+      const retries = NOT_STARTED_RETRY_DELAYS_MS.length;
+
+      let attempt = 0;
+      for (; attempt < retries - 1; attempt += 1) {
+        await pushNotStarted(attempt);
+        await advance(NOT_STARTED_RETRY_DELAYS_MS[attempt]);
+      }
+      act(() => {
+        mock.pending[attempt].pushMessage({ msg: 'x', step: 's', type: 'stdout', offset: 1 });
+      });
+      await settle();
+      for (const delay of NOT_STARTED_RETRY_DELAYS_MS) {
+        await pushNotStarted(attempt);
+        await advance(delay);
+        attempt += 1;
+      }
+
+      expect(mock.fetchSpy).toHaveBeenCalledTimes(attempt + 1);
+      expect(result.current.error).toBeUndefined();
+      expect(result.current.textByStep.s.stdout).toBe('x');
+    });
+
+    it('does not reconnect after unmounting during the backoff', async () => {
+      const { result, unmount } = renderHook(() => useTaskLogs(1));
+      await settle();
+
+      await pushNotStarted(0);
+      expect(result.current.streamStatus).toBe('connecting');
+      unmount();
+      await advance(LAST_DELAY * 2);
+
+      expect(mock.fetchSpy).toHaveBeenCalledTimes(1);
+    });
   });
 });

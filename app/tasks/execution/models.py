@@ -242,7 +242,10 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         Executors that resolve Nomad allocations (or similar) only inside
         :meth:`stream_logs` must override this to run that resolution here, so
         :class:`~app.tasks.execution.exceptions.TaskDataNotFoundInExecutorError`
-        can be handled as HTTP error responses.
+        (data gone) and
+        :class:`~app.tasks.execution.exceptions.TaskNotStartedInExecutorError`
+        (nothing to stream yet, answered with a retryable 409) can be handled as
+        HTTP error responses.
 
         :param queue_item: The task history record that will be streamed.
         """
