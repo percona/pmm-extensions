@@ -2323,14 +2323,24 @@ class Xtrabackup(Restore):
         if not encrypted:
             raise BackupError("No .xbcrypt files found to decrypt under %s" % (path,))
 
-        # Honour XB_PARALLEL. 0 and unset (stored as 0) stay bounded at 4;
-        # a configured value is the pool size, not a CPU-count cap.
-        with thread_pool.ThreadPool(self.xb_parallel or 4) as pool:
+        # XB_PARALLEL may be an int or a numeric string. 0, unset, and a
+        # non-numeric value stay bounded at 4; a configured value is the pool
+        # size, not a CPU-count cap.
+        try:
+            workers = int(self.xb_parallel)
+        except (TypeError, ValueError):
+            workers = 4
+        else:
+            workers = workers or 4
+        with thread_pool.ThreadPool(workers) as pool:
             pool.map(self._run_decrypt_file_aes256, encrypted)
         self.logger.info("Decryption completed")
 
     def _run_decrypt_file_aes256(self, file_path):
         """Decrypt one ``.xbcrypt`` file in place and remove the ciphertext.
+
+        A non-zero exit removes any partial plaintext ``xbcrypt`` wrote and
+        leaves the ciphertext in place.
 
         :param file_path: Path to a ``.xbcrypt`` file.
         :raises BackupError: If xbcrypt exits non-zero.
@@ -2350,6 +2360,7 @@ class Xtrabackup(Restore):
         )
         _, err = proc.communicate()
         if proc.returncode != 0:
+            output.unlink(missing_ok=True)
             raise BackupError("xbcrypt failed on %s: %s" % (file_path, err))
         os.remove(file_path)
 

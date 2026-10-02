@@ -247,6 +247,8 @@ class TestAes256RoundTrip:
         backup_dir.mkdir()
         ciphertext = backup_dir / "ibdata1.xbcrypt"
         ciphertext.write_text("CORRUPT_MARKER\n")
+        partial = backup_dir / "ibdata1"
+        partial.write_text("partial plaintext")
 
         restore_inst, backup_error, _ = _restore_instance(
             _DECRYPT_METHODS,
@@ -257,6 +259,7 @@ class TestAes256RoundTrip:
         with pytest.raises(backup_error, match="ibdata1.xbcrypt"):
             restore_inst.decrypt_aes(str(backup_dir))
         assert ciphertext.exists()
+        assert not partial.exists()
 
     def test_no_xbcrypt_files_raises(self, tmp_path: Path) -> None:
         """Assert an empty directory fails instead of succeeding with nothing done."""
@@ -310,7 +313,7 @@ class TestAes256RoundTrip:
 class TestDecryptAesParallelism:
     """Assert restore decrypts via a bounded pool of argv lists, never a shell pipeline."""
 
-    def _decrypt(self, tmp_path: Path, xb_parallel: int):
+    def _decrypt(self, tmp_path: Path, xb_parallel: int | str | None):
         """Run decrypt against two files and return ``(pool_sizes, calls)``."""
         keyfile = _write_keyfile(tmp_path / "aes.key")
         backup_dir = tmp_path / "backup"
@@ -354,6 +357,17 @@ class TestDecryptAesParallelism:
         pool_sizes, calls, targets = self._decrypt(tmp_path, xb_parallel=2)
         assert pool_sizes == [2]
         self._assert_argv_lists(calls, targets)
+
+    @pytest.mark.parametrize(
+        ("xb_parallel", "expected"),
+        [("0", 4), ("6", 6), ("nope", 4), (None, 4)],
+    )
+    def test_non_int_xb_parallel_is_coerced(
+        self, tmp_path: Path, xb_parallel: str | None, expected: int
+    ) -> None:
+        """Assert a string or missing ``XB_PARALLEL`` becomes an int pool size."""
+        pool_sizes, _, _ = self._decrypt(tmp_path, xb_parallel=xb_parallel)
+        assert pool_sizes == [expected]
 
     @staticmethod
     def _assert_argv_lists(calls, targets: list[Path]) -> None:
