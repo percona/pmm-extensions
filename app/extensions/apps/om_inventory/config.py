@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the OpenManager Inventory settings section.
+"""Define the Operations Inventory settings section.
 
 Read straight off YAML/env under ``EXTENSIONS.OM_INVENTORY`` rather than mounted as a field
 on ``ExtensionsSettings``, for the same reason the other app sections do it: importing this module
@@ -58,12 +58,12 @@ class OmInventorySettings(BaseYamlSettings):
 
     :cvar SETTINGS_PREFIXES: Places this section under ``EXTENSIONS.OM_INVENTORY``.
     :param ENABLED: Whether the sweep may run at all, scheduled *or* manually
-        triggered, independent of ``SCHEDULE``. Mirrors PMM's OpenManager on/off
-        switch: pmm-managed flips this (not ``SCHEDULE``) when an operator toggles
-        OpenManager, so the configured cadence survives being turned off and back on
-        rather than being overwritten each time. Defaults to ``False``, matching
+        triggered, independent of ``SCHEDULE``. Mirrors PMM's Operations for
+        MongoDB on/off switch: pmm-managed flips this (not ``SCHEDULE``) when an
+        operator toggles it, so the configured cadence survives being turned off
+        and back on rather than being overwritten each time. Defaults to ``False``, matching
         PMM's own default for that switch, so a fresh deployment's estate does not
-        start sweeping until OpenManager is actually turned on somewhere.
+        start sweeping until Operations for MongoDB is actually turned on somewhere.
     :param SCHEDULE: How often the probe sweeps the estate, while ``ENABLED``. ``None``
         unregisters the periodic job regardless of ``ENABLED``, leaving the trigger
         endpoint as the only way facts are refreshed.
