@@ -27,12 +27,19 @@ worker honours it rather than refusing a sweep the switch allows.
 
 from contextlib import nullcontext
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.extensions.apps.om_inventory import service as service_module
+from app.extensions.apps.om_inventory import (
+    celery as celery_module,
+)
+from app.extensions.apps.om_inventory import (
+    service as service_module,
+)
+from app.extensions.apps.om_inventory.celery import run_om_probe
 from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.crud import ProbeRunManager
 from app.extensions.apps.om_inventory.models import ProbeRun, ProbeRunStatus
@@ -134,3 +141,42 @@ class TestRunProbeWhileSwitchedOff:
         stored = await ProbeRunManager.get(session, id=returned_id)
         assert stored.status is ProbeRunStatus.SKIPPED
         assert stored.error == SWITCHED_OFF_DETAIL
+
+
+class TestRunOmProbeCarriesTheFlag:
+    """Keep the Celery wrapper wired to the sweep it stands in front of.
+
+    Nothing else exercises this hop. The endpoint names the keyword and the gate
+    reads it, so a wrapper that dropped it on the floor would put every triggered
+    sweep back on the worker's snapshot with every test still green.
+    """
+
+    def test_a_confirmed_trigger_reaches_the_sweep(self, mocker: MockerFixture) -> None:
+        """Forward the endpoint's read, and the ids it came with.
+
+        :param mocker: Patches the sweep and the loop the task drives it on.
+        """
+        run_id = uuid4()
+        probe = mocker.patch.object(celery_module, "run_probe")
+        mocker.patch.object(
+            celery_module.celery.loop, "run_until_complete", return_value=run_id
+        )
+
+        returned = run_om_probe(str(run_id), ["node-1"], enabled_confirmed=True)
+
+        assert returned == str(run_id)
+        probe.assert_called_once_with(run_id, ["node-1"], enabled_confirmed=True)
+
+    def test_a_scheduled_call_confirms_nothing(self, mocker: MockerFixture) -> None:
+        """Leave beat's zero-argument call reading the switch itself.
+
+        :param mocker: Patches the sweep and the loop the task drives it on.
+        """
+        probe = mocker.patch.object(celery_module, "run_probe")
+        mocker.patch.object(
+            celery_module.celery.loop, "run_until_complete", return_value=uuid4()
+        )
+
+        run_om_probe()
+
+        probe.assert_called_once_with(None, None, enabled_confirmed=False)
