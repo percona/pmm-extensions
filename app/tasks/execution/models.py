@@ -180,7 +180,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         """
 
     @abstractmethod
-    def get_hosts(self) -> dict[str, str]:
+    async def get_hosts(self) -> dict[str, str]:
         """Get the list of valid executor hosts.
 
         :return: A dictionary with node names as key and the respective addresses
@@ -188,7 +188,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         :rtype: list[str]
         """
 
-    def get_host_states(self) -> list[ExecutorHostState]:
+    async def get_host_states(self) -> list[ExecutorHostState]:
         """Describe every host the backend knows about, usable or not.
 
         Deliberately concrete rather than abstract: a backend with nothing to add
@@ -207,7 +207,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
             ExecutorHostState(
                 name=name, address=address, reachable=True, driver_healthy=True
             )
-            for name, address in self.get_hosts().items()
+            for name, address in (await self.get_hosts()).items()
         ]
 
     @abstractmethod
@@ -235,7 +235,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         # an async generator, so overrides would not match this signature.
         yield  # pragma: no cover
 
-    def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
+    async def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
         """Validate executor state before :meth:`stream_logs` sends response headers.
 
         Streaming responses commit status and headers before the body iterator runs.
@@ -246,6 +246,10 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         :class:`~app.tasks.execution.exceptions.TaskNotStartedInExecutorError`
         (nothing to stream yet, answered with a retryable 409) can be handled as
         HTTP error responses.
+
+        Asynchronous because an implementation's validation may be a Nomad read:
+        :meth:`NomadExecutor.preflight_stream_logs` resolves the allocation, and
+        on this branch the job lookup behind it is an aiohttp call.
 
         :param queue_item: The task history record that will be streamed.
         """
