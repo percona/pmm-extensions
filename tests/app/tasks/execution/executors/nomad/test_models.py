@@ -75,6 +75,7 @@ from app.tasks.execution.executors.nomad.models import (
     NOMAD_DEAD_JOB_STATUS,
     nomad_task_states_to_execution_events,
     NomadAllocStatusEnum,
+    NomadEvalStatusEnum,
     NomadExecutor,
     RAW_EXEC_DRIVER,
 )
@@ -1827,36 +1828,99 @@ class TestPreflightStreamLogs:
     def _executor(
         mock_nomad_cls: MagicMock,
         allocations: list[list[dict[str, Any]]],
-        evaluation_status: str = NomadAllocStatusEnum.COMPLETE,
+        evaluation_status: str = NomadEvalStatusEnum.COMPLETE,
+        evaluations: list[dict[str, Any]] | None = None,
     ) -> tuple[NomadExecutor, MagicMock]:
         """Build an executor whose Nomad backend answers the preflight's reads.
 
         :param mock_nomad_cls: The patched ``Nomad`` class.
         :param allocations: One allocation listing per successive read.
-        :param evaluation_status: The ``Status`` of the job's only evaluation.
+        :param evaluation_status: The ``Status`` of the job's only evaluation,
+            used when ``evaluations`` is not given.
+        :param evaluations: The job's full evaluation listing, for a chain.
         :return: The executor and its mocked backend.
         """
         mock_backend = MagicMock()
         mock_nomad_cls.return_value = mock_backend
         mock_backend.allocations.get_allocations.side_effect = allocations
         mock_backend.job.get_job.return_value = {"ID": "job-1"}
-        mock_backend.job.get_evaluations.return_value = [
-            {"ID": "eval-1", "Status": evaluation_status}
-        ]
+        mock_backend.job.get_evaluations.return_value = (
+            evaluations
+            if evaluations is not None
+            else [{"ID": "eval-1", "Status": evaluation_status}]
+        )
         return _build_executor(), mock_backend
 
+    @pytest.mark.parametrize(
+        "evaluation_status",
+        [NomadEvalStatusEnum.PENDING, NomadEvalStatusEnum.BLOCKED],
+    )
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_no_allocation_with_pending_evaluation_is_not_started(self, mock_nomad_cls):
-        """Assert a job Nomad is still placing is reported as not started."""
+    def test_no_allocation_with_live_evaluation_is_not_started(
+        self, mock_nomad_cls, evaluation_status
+    ):
+        """Assert a job Nomad is still placing or holding for capacity is not started.
+
+        A ``blocked`` evaluation is work queued until the cluster frees
+        capacity, so its run is alive and the viewer should keep retrying.
+        """
         executor, mock_backend = self._executor(
-            mock_nomad_cls, [[]], evaluation_status=NomadAllocStatusEnum.PENDING
+            mock_nomad_cls, [[], []], evaluation_status=evaluation_status
         )
 
         with pytest.raises(TaskNotStartedInExecutorError):
             executor.preflight_stream_logs(_build_queue_item())
 
         mock_backend.job.get_evaluations.assert_called_once_with("job-1")
-        mock_backend.allocations.get_allocations.assert_called_once()
+        allocation_read = call(
+            filter_='JobID == "job-1" and EvalID == "eval-1"', reverse=True
+        )
+        assert mock_backend.allocations.get_allocations.call_args_list == [
+            allocation_read,
+            allocation_read,
+        ]
+
+    @pytest.mark.parametrize(
+        "other_evaluations",
+        [[], [{"ID": "eval-9", "Status": NomadEvalStatusEnum.BLOCKED}]],
+        ids=["sole-run", "another-run-blocked"],
+    )
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    def test_allocation_placed_by_blocked_evaluation_is_found(
+        self, mock_nomad_cls, other_evaluations
+    ):
+        """Assert work placed after waiting for capacity is streamed, not gone.
+
+        Nomad places it under the ``blocked`` evaluation the tracked one spawned,
+        while the history still tracks the dispatch evaluation. A non-parameterized
+        job is shared by every run of its task and target, so another run's
+        ``blocked`` evaluation must not hide this run's placed allocation.
+        """
+        started = self._alloc(
+            NomadAllocStatusEnum.RUNNING,
+            EvalID="eval-2",
+            TaskStates={"step1": {"State": "running", "StartedAt": "1"}},
+        )
+        executor, mock_backend = self._executor(
+            mock_nomad_cls,
+            [[], [started]],
+            evaluations=[
+                {
+                    "ID": "eval-1",
+                    "Status": NomadEvalStatusEnum.COMPLETE,
+                    "BlockedEval": "eval-2",
+                },
+                {"ID": "eval-2", "Status": NomadEvalStatusEnum.COMPLETE},
+                *other_evaluations,
+            ],
+        )
+
+        assert executor.preflight_stream_logs(_build_queue_item()) is None
+
+        assert mock_backend.allocations.get_allocations.call_args_list == [
+            call(filter_='JobID == "job-1" and EvalID == "eval-1"', reverse=True),
+            call(filter_='JobID == "job-1" and EvalID == "eval-2"', reverse=True),
+        ]
 
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     def test_no_allocation_and_nothing_pending_stays_gone(self, mock_nomad_cls):
@@ -1970,6 +2034,64 @@ class TestPreflightStreamLogs:
         executor, _ = self._executor(mock_nomad_cls, [[alloc]])
 
         assert executor.preflight_stream_logs(_build_queue_item()) is None
+
+
+class TestStreamAllocation:
+    """Test NomadExecutor._stream_allocation."""
+
+    @staticmethod
+    def _backend(
+        mock_nomad_cls: MagicMock, allocations: list[list[dict[str, Any]]]
+    ) -> MagicMock:
+        """Wire a backend whose dispatch evaluation spawned a ``blocked`` one.
+
+        :param mock_nomad_cls: The patched ``Nomad`` class.
+        :param allocations: One allocation listing per successive read.
+        :return: The mocked backend.
+        """
+        mock_backend = MagicMock()
+        mock_nomad_cls.return_value = mock_backend
+        mock_backend.allocations.get_allocations.side_effect = allocations
+        mock_backend.job.get_evaluations.return_value = [
+            {
+                "ID": "eval-1",
+                "Status": NomadEvalStatusEnum.COMPLETE,
+                "BlockedEval": "eval-2",
+            },
+            {"ID": "eval-2", "Status": NomadEvalStatusEnum.COMPLETE},
+        ]
+        return mock_backend
+
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    def test_tracked_allocation_skips_the_evaluation_read(self, mock_nomad_cls):
+        """Assert an allocation under the tracked evaluation costs one read."""
+        alloc = {"ID": "alloc-1", "JobID": "job-1", "EvalID": "eval-1"}
+        mock_backend = self._backend(mock_nomad_cls, [[alloc]])
+
+        assert _build_executor()._stream_allocation("job-1", "eval-1") == alloc
+
+        mock_backend.job.get_evaluations.assert_not_called()
+
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    def test_allocation_placed_by_blocked_evaluation_is_found(self, mock_nomad_cls):
+        """Assert a miss on the tracked evaluation follows its ``BlockedEval``."""
+        alloc = {"ID": "alloc-2", "JobID": "job-1", "EvalID": "eval-2"}
+        mock_backend = self._backend(mock_nomad_cls, [[], [alloc]])
+
+        assert _build_executor()._stream_allocation("job-1", "eval-1") == alloc
+
+        mock_backend.job.get_evaluations.assert_called_once_with("job-1")
+        assert mock_backend.allocations.get_allocations.call_args_list[-1] == call(
+            filter_='JobID == "job-1" and EvalID == "eval-2"', reverse=True
+        )
+
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    def test_nothing_placed_along_the_chain_raises(self, mock_nomad_cls):
+        """Assert the stream still reports a missing allocation when none exists."""
+        self._backend(mock_nomad_cls, [[], [], []])
+
+        with pytest.raises(AllocationNotFoundError):
+            _build_executor()._stream_allocation("job-1", "eval-1")
 
 
 class TestDispatchTask:
