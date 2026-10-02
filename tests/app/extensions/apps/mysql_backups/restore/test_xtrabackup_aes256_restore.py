@@ -26,10 +26,12 @@ just that the right argv was built.
 """
 
 import ast
+import multiprocessing.pool as thread_pool
 import os
 import stat
 import subprocess
 import types
+from pathlib import Path
 
 import pytest
 
@@ -98,8 +100,39 @@ class _FakeRestoreProc:
         self.returncode = returncode
 
     def communicate(self):
-        """Return ``(stdout, stderr)`` -- unused by ``decrypt_aes``."""
+        """Return ``(stdout, stderr)``. stderr is included in ``BackupError``."""
         return b"", b""
+
+
+_DECRYPT_METHODS = ("decrypt_aes", "_run_decrypt_file_aes256")
+
+
+class _RecordingThreadPool:
+    """Synchronous stand-in for ``multiprocessing.pool.ThreadPool``.
+
+    Keeps the requested ``processes`` count. ``_CapturingThreadPool`` is what
+    records that pool size. ``decrypt_aes`` enters the pool with ``with``.
+    """
+
+    def __init__(self, processes: int) -> None:
+        self.processes = processes
+
+    def __enter__(self) -> "_RecordingThreadPool":
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+    def map(self, func, iterable):
+        """Apply ``func`` to each item synchronously, mirroring ``ThreadPool.map``."""
+        return [func(item) for item in iterable]
+
+
+def _write_keyfile(path: Path) -> Path:
+    """Create an AES key file at ``path`` and return it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("key")
+    return path
 
 
 def _restore_instance(
@@ -115,9 +148,8 @@ def _restore_instance(
     restore payload: methods are lifted verbatim via AST into a synthetic
     class over a controlled namespace. ``real_subprocess=True`` keeps the
     real ``subprocess`` module so a stand-in ``xbcrypt`` executable actually
-    runs; ``real_subprocess=False`` fakes ``Popen`` and records the shell
-    command string it was given (``calls``), for cheap command-shape
-    assertions that don't need a real process.
+    runs; ``real_subprocess=False`` fakes ``Popen`` and records each argv list
+    and the keyword arguments it was given (``calls``).
 
     :param method_names: The restore payload method names to lift.
     :param real_subprocess: Whether to keep the real ``subprocess`` module.
@@ -125,22 +157,24 @@ def _restore_instance(
         ``real_subprocess`` is True).
     :param extra_namespace: Extra globals (e.g. ``XBCRYPT_BIN``) merged into
         the exec namespace before the class is compiled.
-    :return: A ``(instance, BackupError, calls)`` tuple; ``calls`` is the
-        list of shell command strings the faked ``Popen`` was given (always
-        ``[]`` when ``real_subprocess`` is True).
+    :return: A ``(instance, BackupError, calls)`` tuple. ``calls`` is
+        ``(argv, kwargs)`` pairs from the faked ``Popen`` (always ``[]`` when
+        ``real_subprocess`` is True).
     """
-    calls: list[str] = []
+    calls: list[tuple[object, dict[str, object]]] = []
 
     class _FakeSubprocess:
         PIPE = -1
 
         @staticmethod
-        def Popen(cmd, **_kwargs):  # noqa: N802
-            calls.append(cmd)
+        def Popen(cmd, **kwargs):  # noqa: N802
+            calls.append((cmd, kwargs))
             return _FakeRestoreProc(returncode)
 
     namespace: dict[str, object] = {
         "os": os,
+        "Path": Path,
+        "thread_pool": thread_pool,
         "subprocess": subprocess if real_subprocess else _FakeSubprocess,
     }
     exec("class BackupError(Exception):\n    pass", namespace)
@@ -174,6 +208,7 @@ class TestAes256RoundTrip:
     def test_mariadb_backup_encrypt_verify_restore_round_trip(self, tmp_path) -> None:
         """Assert file content -- not just command shape -- survives the round trip."""
         fake_bin = _write_fake_xbcrypt(tmp_path)
+        keyfile = _write_keyfile(tmp_path / "aes.key")
         backup_dir = tmp_path / "backup"
         backup_dir.mkdir()
         original = "top-secret-backup-content\n"
@@ -190,10 +225,11 @@ class TestAes256RoundTrip:
         assert is_encrypted_dir(str(backup_dir), method="aes256") is True
 
         restore_inst, _, _ = _restore_instance(
-            ("is_encrypted", "decrypt_aes"),
+            ("is_encrypted", *_DECRYPT_METHODS),
             real_subprocess=True,
             extra_namespace={"XBCRYPT_BIN": fake_bin},
         )
+        restore_inst.xtrabackup_aes256_keyfile = str(keyfile)
         assert restore_inst.is_encrypted(str(backup_dir)) == "aes"
 
         restore_inst.decrypt_aes(str(backup_dir))
@@ -206,42 +242,141 @@ class TestAes256RoundTrip:
     def test_corrupt_xbcrypt_input_raises_backuperror(self, tmp_path) -> None:
         """Assert a corrupted ``.xbcrypt`` file fails restore, not silently drops data."""
         fake_bin = _write_fake_xbcrypt(tmp_path)
+        keyfile = _write_keyfile(tmp_path / "aes.key")
         backup_dir = tmp_path / "backup"
         backup_dir.mkdir()
-        (backup_dir / "ibdata1.xbcrypt").write_text("CORRUPT_MARKER\n")
+        ciphertext = backup_dir / "ibdata1.xbcrypt"
+        ciphertext.write_text("CORRUPT_MARKER\n")
+        partial = backup_dir / "ibdata1"
+        partial.write_text("partial plaintext")
 
         restore_inst, backup_error, _ = _restore_instance(
-            ("decrypt_aes",),
+            _DECRYPT_METHODS,
             real_subprocess=True,
             extra_namespace={"XBCRYPT_BIN": fake_bin},
         )
-        with pytest.raises(backup_error):
+        restore_inst.xtrabackup_aes256_keyfile = str(keyfile)
+        with pytest.raises(backup_error, match="ibdata1.xbcrypt"):
             restore_inst.decrypt_aes(str(backup_dir))
+        assert ciphertext.exists()
+        assert not partial.exists()
+
+    def test_no_xbcrypt_files_raises(self, tmp_path: Path) -> None:
+        """Assert an empty directory fails instead of succeeding with nothing done."""
+        keyfile = _write_keyfile(tmp_path / "aes.key")
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        restore_inst, backup_error, calls = _restore_instance(
+            _DECRYPT_METHODS,
+            real_subprocess=False,
+        )
+        restore_inst.xtrabackup_aes256_keyfile = str(keyfile)
+        with pytest.raises(backup_error, match="No .xbcrypt files"):
+            restore_inst.decrypt_aes(str(empty))
+        assert calls == []
+
+    def test_spaces_and_metacharacters_decrypt_without_shell(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Assert a spaced path and a metacharacter filename decrypt and execute nothing."""
+        monkeypatch.chdir(tmp_path)
+        fake_bin = _write_fake_xbcrypt(tmp_path)
+        # A slash cannot appear in one filename, so the touch target is a single
+        # path component. A shell would create it in the working directory, which
+        # is ``tmp_path``.
+        marker = "sep2115-pwned"
+        touched = tmp_path / marker
+        keyfile = _write_keyfile(tmp_path / "key dir" / f"k$(touch {marker});'q'.key")
+        backup_dir = tmp_path / "daily backup"
+        backup_dir.mkdir()
+        filename = f"x$(touch {marker});'quote'.xbcrypt"
+        original = "secret backup\n"
+        ciphertext = backup_dir / filename
+        ciphertext.write_text(original[:-1][::-1] + "\n")
+
+        restore_inst, _, _ = _restore_instance(
+            _DECRYPT_METHODS,
+            real_subprocess=True,
+            extra_namespace={"XBCRYPT_BIN": fake_bin},
+        )
+        restore_inst.xtrabackup_aes256_keyfile = str(keyfile)
+        restore_inst.decrypt_aes(str(backup_dir))
+
+        restored = backup_dir / filename.removesuffix(".xbcrypt")
+        assert restored.read_text() == original
+        assert not ciphertext.exists()
+        assert not touched.exists()
+        assert not (backup_dir / marker).exists()
 
 
 class TestDecryptAesParallelism:
-    """Assert restore's xbcrypt parallelism is bounded, not the legacy ``-P 0``."""
+    """Assert restore decrypts via a bounded pool of argv lists, never a shell pipeline."""
 
-    def _decrypt_command(self, xb_parallel: int) -> str:
-        inst, _, calls = _restore_instance(("decrypt_aes",), real_subprocess=False)
+    def _decrypt(self, tmp_path: Path, xb_parallel: int | str | None):
+        """Run decrypt against two files and return ``(pool_sizes, calls)``."""
+        keyfile = _write_keyfile(tmp_path / "aes.key")
+        backup_dir = tmp_path / "backup"
+        backup_dir.mkdir()
+        targets = [backup_dir / "a.xbcrypt", backup_dir / "b.xbcrypt"]
+        for path in targets:
+            path.write_text("enc")
+        pool_sizes: list[int] = []
+
+        class _CapturingThreadPool(_RecordingThreadPool):
+            def __init__(self, processes: int) -> None:
+                pool_sizes.append(processes)
+                super().__init__(processes)
+
+        inst, _, calls = _restore_instance(
+            _DECRYPT_METHODS,
+            real_subprocess=False,
+            extra_namespace={
+                "thread_pool": types.SimpleNamespace(ThreadPool=_CapturingThreadPool)
+            },
+        )
+        inst.xtrabackup_aes256_keyfile = str(keyfile)
         inst.xb_parallel = xb_parallel
-        inst.decrypt_aes("/backups/host1")
-        assert len(calls) == 1
-        return calls[0]
+        inst.decrypt_aes(str(backup_dir))
+        return pool_sizes, calls, targets
 
-    def test_legacy_missing_xb_parallel_is_bounded_not_unlimited(self) -> None:
-        """Assert ``xb_parallel=0`` (legacy task default) never becomes ``xargs -P 0``.
+    def test_legacy_missing_xb_parallel_is_bounded_not_unlimited(
+        self, tmp_path: Path
+    ) -> None:
+        """Assert ``xb_parallel=0`` (legacy task default) requests 4 workers.
 
-        GNU ``xargs -P 0`` means "run as many processes as possible" -- the
-        exact CPU-starvation risk SEP-565 calls out. Legacy task data with no
-        ``XB_PARALLEL`` key resolves ``xb_parallel`` to ``0``; falling back to
-        ``4`` (the same default new tasks get) keeps it bounded.
+        Legacy task data with no ``XB_PARALLEL`` key resolves ``xb_parallel``
+        to ``0``. Falling back to 4 keeps that from becoming unlimited parallelism.
         """
-        cmd = self._decrypt_command(xb_parallel=0)
-        assert "-P 0 " not in cmd
-        assert "-P 4 " in cmd
+        pool_sizes, calls, targets = self._decrypt(tmp_path, xb_parallel=0)
+        assert pool_sizes == [4]
+        self._assert_argv_lists(calls, targets)
 
-    def test_configured_value_passes_through(self) -> None:
-        """Assert an explicit operator-configured value is used as-is."""
-        cmd = self._decrypt_command(xb_parallel=2)
-        assert "-P 2 " in cmd
+    def test_configured_value_passes_through(self, tmp_path: Path) -> None:
+        """Assert an explicit operator-configured value is the pool size."""
+        pool_sizes, calls, targets = self._decrypt(tmp_path, xb_parallel=2)
+        assert pool_sizes == [2]
+        self._assert_argv_lists(calls, targets)
+
+    @pytest.mark.parametrize(
+        ("xb_parallel", "expected"),
+        [("0", 4), ("6", 6), ("nope", 4), (None, 4)],
+    )
+    def test_non_int_xb_parallel_is_coerced(
+        self, tmp_path: Path, xb_parallel: str | None, expected: int
+    ) -> None:
+        """Assert a string or missing ``XB_PARALLEL`` becomes an int pool size."""
+        pool_sizes, _, _ = self._decrypt(tmp_path, xb_parallel=xb_parallel)
+        assert pool_sizes == [expected]
+
+    @staticmethod
+    def _assert_argv_lists(calls, targets: list[Path]) -> None:
+        """Assert each decrypt is an argv list and ``shell`` is not passed."""
+        assert len(calls) == len(targets)
+        inputs = set()
+        for cmd, kwargs in calls:
+            assert isinstance(cmd, list)
+            assert cmd[1] == "-d"
+            assert "--encrypt-algo=AES256" in cmd
+            assert "shell" not in kwargs
+            inputs.update(arg for arg in cmd if str(arg).startswith("--input="))
+        assert inputs == {f"--input={path}" for path in targets}
