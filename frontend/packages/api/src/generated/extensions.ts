@@ -2402,10 +2402,10 @@ export interface paths {
      *     runs as a forked side-car process, which reaches the new value through its own
      *     settings refresher rather than through this request.
      *
-     *     ``ENABLED`` is what PMM's OpenManager switch calls, via this same route with
+     *     ``ENABLED`` is what PMM's Operations for MongoDB switch calls, via this same route with
      *     the credential of the pmm-managed ``--extensions-token`` flag (see
      *     ``require_minimum_role``'s service-principal bypass): it flips independently
-     *     of ``SCHEDULE``, so the configured cadence survives OpenManager being turned
+     *     of ``SCHEDULE``, so the configured cadence survives Operations for MongoDB being turned
      *     off and back on rather than being overwritten each time.
      *
      *     :param request: The incoming request; its ``app.state`` carries the rebind
@@ -2582,7 +2582,7 @@ export interface paths {
      *
      *     :param session: The database session.
      *     :param request: The optional scope. Absent, or an empty list, means everything.
-     *     :raises HTTPServiceUnavailableException: When PMM's OpenManager switch has
+     *     :raises HTTPServiceUnavailableException: When PMM's Operations for MongoDB switch has
      *         ``ENABLED`` off.
      *     :raises HTTPNotFoundException: When a requested node id is not in the estate.
      *     :raises HTTPConflictException: When a requested host is already being refreshed.
