@@ -265,3 +265,56 @@ class TestCheckTableTriggers:
             "EVENT_OBJECT_SCHEMA",
             "EVENT_OBJECT_TABLE",
         )
+
+
+def _executed_sql(cursor: MagicMock) -> list[str]:
+    """Return the SQL strings passed to ``cursor.execute``, in order."""
+    return [call.args[0] for call in cursor.execute.call_args_list]
+
+
+class TestRunAllChecks:
+    """Test ``run_all_checks``."""
+
+    def test_passes_when_every_check_passes(self, mocker: MockerFixture) -> None:
+        """Disk, foreign-key, and trigger checks all passing lets the alter proceed."""
+        checks = _make_checks()
+        _connect_with_cursor(
+            mocker,
+            checks,
+            fetchone=_disk_queries(),
+            fetchall=[[], []],
+        )
+        _patch_disk_usage(mocker, free_mb=200)
+
+        assert checks.run_all_checks() is True
+
+    def test_skips_disk_space_when_filesystem_checks_are_disabled(
+        self, mocker: MockerFixture
+    ) -> None:
+        """The skip flag leaves the real disk check uncalled."""
+        checks = _make_checks(skip_filesystem_checks=True)
+        cursor = _connect_with_cursor(mocker, checks, fetchall=[[], []])
+        disk_space = mocker.spy(checks, "check_disk_space")
+
+        assert checks.run_all_checks() is True
+        assert disk_space.call_count == 0
+        sql = _executed_sql(cursor)
+        assert any("REFERENCED_TABLE_SCHEMA = %s" in query for query in sql)
+        assert any("EVENT_OBJECT_SCHEMA = %s" in query for query in sql)
+
+    def test_fails_when_one_check_fails_and_later_checks_still_run(
+        self, mocker: MockerFixture
+    ) -> None:
+        """A foreign-key failure fails the aggregate, and the trigger check still runs."""
+        checks = _make_checks()
+        cursor = _connect_with_cursor(
+            mocker,
+            checks,
+            fetchone=_disk_queries(),
+            fetchall=[[_FOREIGN_KEY_ROW], []],
+        )
+        _patch_disk_usage(mocker, free_mb=200)
+
+        assert checks.run_all_checks() is False
+        sql = _executed_sql(cursor)
+        assert any("EVENT_OBJECT_SCHEMA = %s" in query for query in sql)
