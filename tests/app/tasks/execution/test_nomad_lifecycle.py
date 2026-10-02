@@ -32,7 +32,7 @@ from app.tasks.deps import (
     resolve_request_executor,
 )
 from app.tasks.execution.executors.celery.models import CeleryExecutor
-from app.tasks.execution.executors.nomad import NomadExecutor
+from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.nomad_lifecycle import (
     NomadLifecycle,
     normalize_nomad_config_value,
