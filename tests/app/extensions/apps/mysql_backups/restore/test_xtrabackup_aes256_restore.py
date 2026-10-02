@@ -108,10 +108,10 @@ _DECRYPT_METHODS = ("decrypt_aes", "_run_decrypt_file_aes256")
 
 
 class _RecordingThreadPool:
-    """Stand in for ``multiprocessing.pool.ThreadPool`` that runs synchronously.
+    """Synchronous stand-in for ``multiprocessing.pool.ThreadPool``.
 
-    Records nothing itself; subclasses capture the requested ``processes`` count.
-    ``decrypt_aes`` enters the pool with ``with``, so the context manager is required.
+    Keeps the requested ``processes`` count. ``_CapturingThreadPool`` is what
+    records that pool size. ``decrypt_aes`` enters the pool with ``with``.
     """
 
     def __init__(self, processes: int) -> None:
@@ -276,14 +276,16 @@ class TestAes256RoundTrip:
         assert calls == []
 
     def test_spaces_and_metacharacters_decrypt_without_shell(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Assert a spaced path and a metacharacter filename decrypt and execute nothing."""
+        monkeypatch.chdir(tmp_path)
         fake_bin = _write_fake_xbcrypt(tmp_path)
         # A slash cannot appear in one filename, so the touch target is a single
-        # path component. A shell would create it in the process working directory.
+        # path component. A shell would create it in the working directory, which
+        # is ``tmp_path``.
         marker = "sep2115-pwned"
-        touched = Path.cwd() / marker
+        touched = tmp_path / marker
         keyfile = _write_keyfile(tmp_path / "key dir" / f"k$(touch {marker});'q'.key")
         backup_dir = tmp_path / "daily backup"
         backup_dir.mkdir()
@@ -298,16 +300,13 @@ class TestAes256RoundTrip:
             extra_namespace={"XBCRYPT_BIN": fake_bin},
         )
         restore_inst.xtrabackup_aes256_keyfile = str(keyfile)
-        try:
-            restore_inst.decrypt_aes(str(backup_dir))
+        restore_inst.decrypt_aes(str(backup_dir))
 
-            restored = backup_dir / filename.removesuffix(".xbcrypt")
-            assert restored.read_text() == original
-            assert not ciphertext.exists()
-            assert not touched.exists()
-            assert not (backup_dir / marker).exists()
-        finally:
-            touched.unlink(missing_ok=True)
+        restored = backup_dir / filename.removesuffix(".xbcrypt")
+        assert restored.read_text() == original
+        assert not ciphertext.exists()
+        assert not touched.exists()
+        assert not (backup_dir / marker).exists()
 
 
 class TestDecryptAesParallelism:
