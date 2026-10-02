@@ -18,6 +18,7 @@
 from collections.abc import Sequence
 from unittest.mock import MagicMock
 
+import pymysql
 import pytest
 from pytest_mock import MockerFixture
 
@@ -142,3 +143,125 @@ class TestCheckDiskSpace:
 
         assert checks.check_disk_space() is False
         usage.assert_called_once_with(_DATADIR)
+
+
+def _assert_query_targets(
+    cursor: MagicMock,
+    checks: MySQLPreChecks,
+    *predicates: str,
+) -> None:
+    """Assert the execute call binds ``checks`` schema and table to ``predicates``."""
+    query, params = cursor.execute.call_args.args
+    assert params == (checks.schema, checks.table)
+    for predicate in predicates:
+        assert f"{predicate} = %s" in query
+
+
+_FOREIGN_KEY_ROW = (
+    "otherdb",
+    "children",
+    "fk_orders",
+    "order_id",
+    "appdb",
+    "orders",
+    "id",
+)
+_TRIGGER_ROW = ("appdb", "orders", "appdb", "orders_bi", "INSERT")
+
+
+class TestCheckForeignKeyReferences:
+    """Test ``check_foreign_key_references``."""
+
+    def test_passes_when_nothing_references_the_table(
+        self, mocker: MockerFixture
+    ) -> None:
+        """No referencing foreign keys lets the alter proceed."""
+        checks = _make_checks()
+        cursor = _connect_with_cursor(mocker, checks, fetchall=[[]])
+
+        assert checks.check_foreign_key_references() is True
+        _assert_query_targets(
+            cursor,
+            checks,
+            "REFERENCED_TABLE_SCHEMA",
+            "REFERENCED_TABLE_NAME",
+        )
+
+    def test_fails_when_a_foreign_key_references_the_table(
+        self, mocker: MockerFixture
+    ) -> None:
+        """A referencing foreign key blocks the alter."""
+        checks = _make_checks()
+        cursor = _connect_with_cursor(mocker, checks, fetchall=[[_FOREIGN_KEY_ROW]])
+
+        assert checks.check_foreign_key_references() is False
+        _assert_query_targets(
+            cursor,
+            checks,
+            "REFERENCED_TABLE_SCHEMA",
+            "REFERENCED_TABLE_NAME",
+        )
+
+    def test_fails_when_the_cursor_raises(self, mocker: MockerFixture) -> None:
+        """A query error blocks the alter."""
+        checks = _make_checks()
+        cursor = _connect_with_cursor(
+            mocker,
+            checks,
+            execute_error=pymysql.Error("foreign key lookup failed"),
+        )
+
+        assert checks.check_foreign_key_references() is False
+        _assert_query_targets(
+            cursor,
+            checks,
+            "REFERENCED_TABLE_SCHEMA",
+            "REFERENCED_TABLE_NAME",
+        )
+
+
+class TestCheckTableTriggers:
+    """Test ``check_table_triggers``."""
+
+    def test_passes_when_the_table_has_no_triggers(self, mocker: MockerFixture) -> None:
+        """No triggers lets the alter proceed."""
+        checks = _make_checks()
+        cursor = _connect_with_cursor(mocker, checks, fetchall=[[]])
+
+        assert checks.check_table_triggers() is True
+        _assert_query_targets(
+            cursor,
+            checks,
+            "EVENT_OBJECT_SCHEMA",
+            "EVENT_OBJECT_TABLE",
+        )
+
+    def test_fails_when_the_table_has_a_trigger(self, mocker: MockerFixture) -> None:
+        """A trigger on the table blocks the alter."""
+        checks = _make_checks()
+        cursor = _connect_with_cursor(mocker, checks, fetchall=[[_TRIGGER_ROW]])
+
+        assert checks.check_table_triggers() is False
+        _assert_query_targets(
+            cursor,
+            checks,
+            "EVENT_OBJECT_SCHEMA",
+            "EVENT_OBJECT_TABLE",
+        )
+
+    def test_fails_when_the_cursor_raises(self, mocker: MockerFixture) -> None:
+        """A query error blocks the alter."""
+        checks = _make_checks()
+        cursor = _connect_with_cursor(
+            mocker,
+            checks,
+            execute_error=pymysql.Error("trigger lookup failed"),
+        )
+
+        assert checks.check_table_triggers() is False
+        _assert_query_targets(
+            cursor,
+            checks,
+            "EVENT_OBJECT_SCHEMA",
+            "EVENT_OBJECT_TABLE",
+        )
