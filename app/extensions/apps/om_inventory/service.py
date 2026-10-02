@@ -850,7 +850,10 @@ async def _fail_run(run_id: UUID, error: str) -> None:
 
 
 async def run_probe(
-    execution_id: UUID | None = None, node_ids: list[str] | None = None
+    execution_id: UUID | None = None,
+    node_ids: list[str] | None = None,
+    *,
+    enabled_confirmed: bool = False,
 ) -> UUID:
     """Run one probe sweep and write what it found into the estate.
 
@@ -859,16 +862,31 @@ async def run_probe(
 
     ``ENABLED`` is re-checked here rather than only at the trigger endpoint because
     beat calls this task directly, and because the worker reads ``ENABLED`` from its
-    own override snapshot, which can disagree with the API process that accepted the
-    trigger. Either way the run is recorded ``SKIPPED`` with the switch named as the
-    reason, never left ``RUNNING``, where it would hold every host until
-    ``STALE_RUN_AFTER`` reaps it.
+    own override snapshot, which can lag the API process by up to
+    ``SETTINGS_OVERRIDE.REFRESH_INTERVAL``. A sweep refused for either reason is
+    recorded ``SKIPPED`` with the switch named, never left ``RUNNING``, where it
+    would hold every host until ``STALE_RUN_AFTER`` reaps it.
+
+    ``enabled_confirmed`` is how the trigger endpoint says it has already read the
+    switch, so this skips its own read. That lag is otherwise worst exactly where it
+    is least wanted: PMM turns ``ENABLED`` on and immediately triggers a sweep, so
+    the estate is not empty for a whole ``SCHEDULE`` interval, and the worker picks
+    that sweep up still holding the pre-change snapshot. The one sweep whose purpose
+    is to spare the wait is the one guaranteed to be refused, and a first-time user
+    meets an error on the first page they open.
+
+    Only the endpoint sets it, and only after its own 503 check passed in the process
+    that applied the override. Beat passes nothing and keeps reading the snapshot: it
+    has no fresher read to offer, and the periodic sweep is exactly what ``ENABLED``
+    off is meant to stop.
 
     :param execution_id: An already-created run's id, passed by the trigger endpoint.
         ``None`` mints a fresh run.
     :param node_ids: The hosts to refresh, or ``None`` for the whole estate. Taken
         from the caller rather than read back off the run row so a scheduled sweep,
         which has no row until this function makes one, takes the same path.
+    :param enabled_confirmed: Whether the caller has already checked ``ENABLED``
+        against a read this worker's snapshot may not have caught up with yet.
     :return: The run's id.
     """
     session_maker = get_async_session_maker()
@@ -879,7 +897,7 @@ async def run_probe(
             run = await ProbeRunManager.get(session, id=execution_id)
         run_id = run.id
 
-        if not om_inventory_settings.ENABLED:
+        if not enabled_confirmed and not om_inventory_settings.ENABLED:
             run.status = ProbeRunStatus.SKIPPED
             run.finished_at = utc_now()
             run.error = SWITCHED_OFF_DETAIL
