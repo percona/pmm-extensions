@@ -572,7 +572,7 @@ async def stream_task_history_logs(
         raise HTTPConflictException("Task history is pending.")
     if task_history.status == TaskHistoryStatusEnum.RUNNING:
         try:
-            executor.preflight_stream_logs(task_history)
+            await executor.preflight_stream_logs(task_history)
         except TaskNotStartedInExecutorError as exc:
             raise HTTPConflictException(str(exc)) from None
         stream_logs_generator = (

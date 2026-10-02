@@ -3088,7 +3088,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         except ClientError:
             return (_NOMAD_LOG_STREAM_CLIENT_ERROR, alloc, stream_start)
 
-    def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
+    async def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
         """Resolve allocation for live log streaming before HTTP response headers are sent.
 
         A miss is re-read along the tracked evaluation's placement chain once
@@ -3116,7 +3116,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         try:
             alloc = self.get_last_allocation(job_id, eval_id)
         except AllocationNotFoundError:
-            self.get_job(job_id)
+            await self.get_job(job_id)
             evaluations = self.backend.job.get_evaluations(job_id)
             try:
                 alloc = self._last_chain_allocation(

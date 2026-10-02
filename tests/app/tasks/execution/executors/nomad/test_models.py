@@ -2006,33 +2006,40 @@ class TestPreflightStreamLogs:
         allocations: list[list[dict[str, Any]]],
         evaluation_status: str = NomadEvalStatusEnum.COMPLETE,
         evaluations: list[dict[str, Any]] | None = None,
+        job: Any = None,
     ) -> tuple[NomadExecutor, MagicMock]:
         """Build an executor whose Nomad backend answers the preflight's reads.
+
+        The preflight's job read goes through ``_nomad_json``, not
+        ``backend.job``, so it is stubbed with :func:`_stub_nomad_calls`; the
+        allocation and evaluation listings are still python-nomad.
 
         :param mock_nomad_cls: The patched ``Nomad`` class.
         :param allocations: One allocation listing per successive read.
         :param evaluation_status: The ``Status`` of the job's only evaluation,
             used when ``evaluations`` is not given.
         :param evaluations: The job's full evaluation listing, for a chain.
+        :param job: Answer for ``GET /v1/job/{id}``, an exception included.
         :return: The executor and its mocked backend.
         """
         mock_backend = MagicMock()
         mock_nomad_cls.return_value = mock_backend
         mock_backend.allocations.get_allocations.side_effect = allocations
-        mock_backend.job.get_job.return_value = {"ID": "job-1"}
         mock_backend.job.get_evaluations.return_value = (
             evaluations
             if evaluations is not None
             else [{"ID": "eval-1", "Status": evaluation_status}]
         )
+        _stub_nomad_calls(job=job or {"ID": "job-1"})
         return _build_executor(), mock_backend
 
     @pytest.mark.parametrize(
         "evaluation_status",
         [NomadEvalStatusEnum.PENDING, NomadEvalStatusEnum.BLOCKED],
     )
+    @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_no_allocation_with_live_evaluation_is_not_started(
+    async def test_no_allocation_with_live_evaluation_is_not_started(
         self, mock_nomad_cls, evaluation_status
     ):
         """Assert a job Nomad is still placing or holding for capacity is not started.
@@ -2045,7 +2052,7 @@ class TestPreflightStreamLogs:
         )
 
         with pytest.raises(TaskNotStartedInExecutorError):
-            executor.preflight_stream_logs(_build_queue_item())
+            await executor.preflight_stream_logs(_build_queue_item())
 
         mock_backend.job.get_evaluations.assert_called_once_with("job-1")
         allocation_read = call(
@@ -2061,8 +2068,9 @@ class TestPreflightStreamLogs:
         [[], [{"ID": "eval-9", "Status": NomadEvalStatusEnum.BLOCKED}]],
         ids=["sole-run", "another-run-blocked"],
     )
+    @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_allocation_placed_by_blocked_evaluation_is_found(
+    async def test_allocation_placed_by_blocked_evaluation_is_found(
         self, mock_nomad_cls, other_evaluations
     ):
         """Assert work placed after waiting for capacity is streamed, not gone.
@@ -2091,15 +2099,16 @@ class TestPreflightStreamLogs:
             ],
         )
 
-        assert executor.preflight_stream_logs(_build_queue_item()) is None
+        assert await executor.preflight_stream_logs(_build_queue_item()) is None
 
         assert mock_backend.allocations.get_allocations.call_args_list == [
             call(filter_='JobID == "job-1" and EvalID == "eval-1"', reverse=True),
             call(filter_='JobID == "job-1" and EvalID == "eval-2"', reverse=True),
         ]
 
+    @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_no_allocation_and_nothing_pending_stays_gone(self, mock_nomad_cls):
+    async def test_no_allocation_and_nothing_pending_stays_gone(self, mock_nomad_cls):
         """Assert a job with no allocation and no pending evaluation is gone.
 
         The allocation is re-read once after the evaluations are seen to be
@@ -2108,7 +2117,7 @@ class TestPreflightStreamLogs:
         executor, mock_backend = self._executor(mock_nomad_cls, [[], []])
 
         with pytest.raises(AllocationNotFoundError):
-            executor.preflight_stream_logs(_build_queue_item())
+            await executor.preflight_stream_logs(_build_queue_item())
 
         allocation_read = call(
             filter_='JobID == "job-1" and EvalID == "eval-1"', reverse=True
@@ -2118,8 +2127,9 @@ class TestPreflightStreamLogs:
             allocation_read,
         ]
 
+    @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_allocation_placed_between_reads_is_not_started(self, mock_nomad_cls):
+    async def test_allocation_placed_between_reads_is_not_started(self, mock_nomad_cls):
         """Assert an allocation placed while the evaluation completed is not gone.
 
         The first read misses the allocation and the evaluation read then sees
@@ -2130,10 +2140,11 @@ class TestPreflightStreamLogs:
         )
 
         with pytest.raises(TaskNotStartedInExecutorError):
-            executor.preflight_stream_logs(_build_queue_item())
+            await executor.preflight_stream_logs(_build_queue_item())
 
+    @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_allocation_placed_between_reads_with_task_states_passes(
+    async def test_allocation_placed_between_reads_with_task_states_passes(
         self, mock_nomad_cls
     ):
         """Assert a re-read allocation that already lists its steps lets the stream open."""
@@ -2143,18 +2154,20 @@ class TestPreflightStreamLogs:
         )
         executor, _ = self._executor(mock_nomad_cls, [[], [started]])
 
-        assert executor.preflight_stream_logs(_build_queue_item()) is None
+        assert await executor.preflight_stream_logs(_build_queue_item()) is None
 
+    @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_no_allocation_and_job_gone_raises_job_not_found(self, mock_nomad_cls):
+    async def test_no_allocation_and_job_gone_raises_job_not_found(
+        self, mock_nomad_cls
+    ):
         """Assert a vanished job keeps answering as gone, not as not-yet-started."""
-        executor, mock_backend = self._executor(mock_nomad_cls, [[]])
-        mock_backend.job.get_job.side_effect = URLNotFoundNomadException(
-            MagicMock(text="not found")
+        executor, mock_backend = self._executor(
+            mock_nomad_cls, [[]], job=_nomad_error(status.HTTP_404_NOT_FOUND)
         )
 
         with pytest.raises(JobNotFoundError):
-            executor.preflight_stream_logs(_build_queue_item())
+            await executor.preflight_stream_logs(_build_queue_item())
 
         mock_backend.job.get_evaluations.assert_not_called()
 
@@ -2162,9 +2175,10 @@ class TestPreflightStreamLogs:
         "client_status",
         [NomadAllocStatusEnum.PENDING, NomadAllocStatusEnum.RUNNING],
     )
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("task_states", [{}, None])
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_live_allocation_without_task_states_is_not_started(
+    async def test_live_allocation_without_task_states_is_not_started(
         self, mock_nomad_cls, task_states, client_status
     ):
         """Assert a live allocation that reports no task state yet is not started."""
@@ -2174,7 +2188,7 @@ class TestPreflightStreamLogs:
         executor, _ = self._executor(mock_nomad_cls, [[alloc]])
 
         with pytest.raises(TaskNotStartedInExecutorError):
-            executor.preflight_stream_logs(_build_queue_item())
+            await executor.preflight_stream_logs(_build_queue_item())
 
     @pytest.mark.parametrize(
         "client_status",
@@ -2184,8 +2198,9 @@ class TestPreflightStreamLogs:
             NomadAllocStatusEnum.COMPLETE,
         ],
     )
+    @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_dead_allocation_without_task_states_passes(
+    async def test_dead_allocation_without_task_states_passes(
         self, mock_nomad_cls, client_status
     ):
         """Assert a dead allocation with no task state falls through to the stream.
@@ -2195,10 +2210,11 @@ class TestPreflightStreamLogs:
         """
         executor, _ = self._executor(mock_nomad_cls, [[self._alloc(client_status)]])
 
-        assert executor.preflight_stream_logs(_build_queue_item()) is None
+        assert await executor.preflight_stream_logs(_build_queue_item()) is None
 
+    @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    def test_allocation_with_pending_steps_passes(self, mock_nomad_cls):
+    async def test_allocation_with_pending_steps_passes(self, mock_nomad_cls):
         """Assert an allocation listing steps that have not started yet passes.
 
         The live stream waits for the first step in-stream, so the preflight
@@ -2209,7 +2225,7 @@ class TestPreflightStreamLogs:
         )
         executor, _ = self._executor(mock_nomad_cls, [[alloc]])
 
-        assert executor.preflight_stream_logs(_build_queue_item()) is None
+        assert await executor.preflight_stream_logs(_build_queue_item()) is None
 
 
 class TestStreamAllocation:
@@ -3593,13 +3609,20 @@ class TestSyncTaskHistoryQueuedEvaluations:
         mock_nomad_cls: MagicMock,
         evaluations: list[dict[str, Any]],
         placed: dict[str, list[dict[str, Any]]] | None = None,
+        job: Any = None,
     ) -> MagicMock:
         """Wire a Nomad backend whose allocations are keyed by evaluation id.
+
+        The job read goes through ``_nomad_json`` rather than ``backend.job``, so
+        it is stubbed with :func:`_stub_nomad_calls` like the other ``_backend``
+        helpers here; the evaluations and allocations are still python-nomad.
 
         :param mock_nomad_cls: The patched ``Nomad`` class.
         :param evaluations: The job's evaluations.
         :param placed: Allocations Nomad returns per ``EvalID`` filter; any
             other filter finds none.
+        :param job: Answer for ``GET /v1/job/{id}``, an exception included.
+            Defaults to a still-running dispatched job.
         :return: The backend mock.
         """
         placed = placed or {}
@@ -3617,13 +3640,16 @@ class TestSyncTaskHistoryQueuedEvaluations:
         )
         mock_backend.allocations.get_allocations.side_effect = get_allocations
         mock_backend.client.stream_logs.stream.return_value = ""
-        mock_backend.job.get_job.return_value = {
-            "ID": "job-1",
-            "Status": "running",
-            "Stop": False,
-            "Dispatched": True,
-        }
         mock_backend.job.get_evaluations.return_value = evaluations
+        _stub_nomad_calls(
+            job=job
+            or {
+                "ID": "job-1",
+                "Status": "running",
+                "Stop": False,
+                "Dispatched": True,
+            }
+        )
         return mock_backend
 
     @staticmethod
@@ -3900,9 +3926,8 @@ class TestSyncTaskHistoryQueuedEvaluations:
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_lost_job_is_not_withdrawn(self, mock_nomad_cls):
         """Assert a job Nomad no longer has ends LOST with nothing to deregister."""
-        mock_backend = self._backend(mock_nomad_cls, [])
-        mock_backend.job.get_job.side_effect = URLNotFoundNomadException(
-            MagicMock(text="not found")
+        mock_backend = self._backend(
+            mock_nomad_cls, [], job=_nomad_error(status.HTTP_404_NOT_FOUND)
         )
         executor = _build_executor()
 
@@ -4094,13 +4119,16 @@ class TestSyncTaskHistoryQueuedEvaluations:
             "PENDING_ALLOCATION_TIMEOUT_SECONDS",
             PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
         )
-        mock_backend = self._backend(mock_nomad_cls, evaluations)
-        mock_backend.job.get_job.return_value = {
-            "ID": "job-1",
-            "Status": "running",
-            "Stop": False,
-            "Dispatched": False,
-        }
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            evaluations,
+            job={
+                "ID": "job-1",
+                "Status": "running",
+                "Stop": False,
+                "Dispatched": False,
+            },
+        )
         executor = _build_executor()
 
         result = await executor._sync_task_history(
