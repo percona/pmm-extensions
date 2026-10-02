@@ -91,7 +91,7 @@ EOF
 }
 
 #
-# Executes an SQL query
+# Runs an SQL query, leaving both of mysql's streams to the caller
 #
 # Globals:
 #   USER
@@ -103,26 +103,96 @@ EOF
 #   1: arguments to be passed to mysql
 #   2: the query
 #
+function mysql_client() {
+    local args=$1
+    local query=$2
+    # Credentials go in on stdin so they never show up in the process list.
+    # shellcheck disable=SC2086
+    printf "[client]\nuser=%s\npassword=\"%s\"\nhost=%s\nport=%s" "${USER}" "${PASSWORD}" "${HOST}" "${PORT}" |
+        mysql --defaults-file=/dev/stdin --protocol=tcp \
+            ${args} -e "${query}"
+}
+
+#
+# Prints stdin without the client's mylogin.cnf notices
+#
+function drop_mylogin_notice() {
+    # grep -v exits 1 when it drops every line, which is still a success here.
+    grep -v "mylogin.cnf" || true
+}
+
+#
+# Prints the captured client output followed by a newline, or nothing if empty
+#
+# Arguments:
+#   1: the captured output
+#
+function print_output() {
+    if [[ -n $1 ]]; then
+        printf '%s\n' "$1"
+    fi
+}
+
+#
+# Executes an SQL query and prints its output merged with mysql's stderr
+#
+# Arguments:
+#   1: arguments to be passed to mysql
+#   2: the query
+#
 function mysql_exec() {
     local args=$1
     local query=$2
     local retvalue
     local retoutput
-    # shellcheck disable=SC2086
     # Filter the mylogin.cnf notice only after capturing mysql's own status:
     # grep -v exits 1 when it emits nothing, which a successful empty result set
     # also produces, so folding it into the same pipeline reports failure for a
     # query that worked.
-    retoutput=$(printf "[client]\nuser=%s\npassword=\"%s\"\nhost=%s\nport=%s" "${USER}" "${PASSWORD}" "${HOST}" "${PORT}" |
-        mysql --defaults-file=/dev/stdin --protocol=tcp \
-            ${args} -e "${query}" 2>&1)
+    retoutput=$(mysql_client "${args}" "${query}" 2>&1)
     retvalue=$?
-    retoutput=$(printf "%s" "${retoutput}" | grep -v "mylogin.cnf" || true)
+    retoutput=$(printf "%s" "${retoutput}" | drop_mylogin_notice)
 
-    if [[ -n $retoutput ]]; then
-        retoutput+=$'\n'
+    print_output "${retoutput}"
+    return $retvalue
+}
+
+#
+# Executes an SQL query whose output is parsed, printing mysql's stderr only
+# when the query fails
+#
+# The client can write a notice to stderr on a query that succeeds, and a
+# merged stream would turn it into table names or a corrupt path.
+#
+# Arguments:
+#   1: arguments to be passed to mysql
+#   2: the query
+#
+function mysql_stdout() {
+    local args=$1
+    local query=$2
+    local err_file
+    local retvalue
+    local retoutput
+    local reterror
+
+    # Without a place to park stderr, a merged value beats losing the error text.
+    if ! err_file=$(mktemp 2> /dev/null); then
+        mysql_exec "${args}" "${query}"
+        return
     fi
-    printf "%s" "${retoutput//%/%%}"
+    retoutput=$(mysql_client "${args}" "${query}" 2> "${err_file}")
+    retvalue=$?
+    if ((retvalue != 0)); then
+        reterror=$(drop_mylogin_notice < "${err_file}")
+        if [[ -n $retoutput && -n $reterror ]]; then
+            retoutput+=$'\n'
+        fi
+        retoutput+=$reterror
+    fi
+    rm -f "${err_file}"
+
+    print_output "${retoutput}"
     return $retvalue
 }
 
@@ -234,7 +304,7 @@ parse_args "$@"
 function run_dumps() {
     if [[ $DUMP_ALL -eq 1 || $DUMP_MAIN -eq 1 ]]; then
         echo "............ DUMPING MAIN DATABASE ............"
-        if ! TABLES=$(mysql_exec -BN "SHOW TABLES $RUNTIME_OPTION"); then
+        if ! TABLES=$(mysql_stdout -BN "SHOW TABLES $RUNTIME_OPTION"); then
             echo "Could not list the main tables from the ProxySQL admin interface (check --defaults-file): $TABLES"
             TABLES=""
         fi
@@ -257,7 +327,7 @@ function run_dumps() {
 
     if [[ $DUMP_ALL -eq 1 || $DUMP_STATS -eq 1 ]]; then
         echo "............ DUMPING STATS DATABASE ............"
-        if ! TABLES=$(mysql_exec -BN "SHOW TABLES FROM stats"); then
+        if ! TABLES=$(mysql_stdout -BN "SHOW TABLES FROM stats"); then
             echo "Could not list the stats tables from the ProxySQL admin interface (check --defaults-file): $TABLES"
             TABLES=""
         fi
@@ -280,7 +350,7 @@ function run_dumps() {
 
     if [[ $DUMP_ALL -eq 1 || $DUMP_MONITOR -eq 1 ]]; then
         echo "............ DUMPING MONITOR DATABASE ............"
-        if ! TABLES=$(mysql_exec -BN "SHOW TABLES FROM monitor"); then
+        if ! TABLES=$(mysql_stdout -BN "SHOW TABLES FROM monitor"); then
             echo "Could not list the monitor tables from the ProxySQL admin interface (check --defaults-file): $TABLES"
             TABLES=""
         fi
@@ -303,7 +373,7 @@ function run_dumps() {
 
     if [[ $DUMP_ALL -eq 1 || $DUMP_FILES -eq 1 ]]; then
         if [[ -z $TABLE_FILTER ]]; then
-            if ! DATADIR=$(mysql_exec -BN "SELECT variable_value FROM global_variables WHERE variable_name='admin-datadir'"); then
+            if ! DATADIR=$(mysql_stdout -BN "SELECT variable_value FROM global_variables WHERE variable_name='admin-datadir'"); then
                 echo "Could not read admin-datadir from the ProxySQL admin interface (check --defaults-file): $DATADIR"
                 DATADIR=""
             fi
