@@ -72,6 +72,10 @@ from app.tasks.execution_request_secrets import (
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
     DispatchLock,
+    INVENTORY_SYNC_AFTER_KEY,
+    INVENTORY_SYNC_FIRST_RUN_KEY,
+    INVENTORY_SYNC_MAX_WAIT_KEY,
+    INVENTORY_SYNC_SINCE_KEY,
     Task,
     TaskBackendEnum,
     TaskExecutionRequest,
@@ -85,7 +89,9 @@ from tests.app.db_schema import apply_schema
 from tests.app.factories import TaskFactory
 from tests.app.tasks.conftest import (
     overwrite_execution_request,
+    PMM_SYNCER,
     stored_execution_request,
+    SYSTEM_FACTS_SYNCER,
 )
 
 MODULE = "app.tasks.celery"
@@ -774,6 +780,78 @@ class TestIdenticalTaskConflictStatusScoping:
             match=r"Identical queue item already running \(\d+\)\.",
         ):
             await _raise_if_identical_task_conflict(queue_item, session)
+
+
+_FOLLOWER_BEAT_META = {
+    "syncer": SYSTEM_FACTS_SYNCER,
+    INVENTORY_SYNC_AFTER_KEY: PMM_SYNCER,
+    INVENTORY_SYNC_SINCE_KEY: "2026-09-01T00:00:00+00:00",
+    INVENTORY_SYNC_MAX_WAIT_KEY: 86400,
+}
+
+
+async def _beat_fire_refused_behind_a_start(
+    session: AsyncSession, start_meta: dict[str, object]
+) -> bool:
+    """Return whether a follower's beat fire is refused while ``start_meta`` runs.
+
+    :param session: The session the guard queries.
+    :param start_meta: The meta of the leader-started first run in flight.
+    :return: Whether the guard raised for the beat fire.
+    """
+    task = await _create_pg_task(session)
+    await _seed_pg_history(
+        session, task_id=task.id, task_name=task.name, meta=start_meta
+    )
+    beat_fire = _pg_queue_item(
+        task, meta=dict(_FOLLOWER_BEAT_META), item_id=_UNSEEDED_ITEM_ID
+    )
+    try:
+        await _raise_if_identical_task_conflict(beat_fire, session)
+    except HTTPConflictException:
+        return True
+    return False
+
+
+class TestFollowerFirstRunDeduplication:
+    """Pin the guard behaviour a leader-started follower first run relies on.
+
+    The start carries the follower's beat-row meta plus the first-run flag, and
+    the guard matches the incoming request's meta by containment, so a beat fire
+    is held back only while the start carries every key the fire does.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_start_carrying_the_anchor_holds_back_the_beat_fire(
+        self, session: AsyncSession
+    ) -> None:
+        """Assert a beat fire is refused while a full start of the follower runs."""
+        start_meta = {**_FOLLOWER_BEAT_META, INVENTORY_SYNC_FIRST_RUN_KEY: True}
+
+        assert await _beat_fire_refused_behind_a_start(session, start_meta)
+
+    @pytest.mark.asyncio
+    async def test_a_start_missing_the_anchor_lets_the_beat_fire_through(
+        self, session: AsyncSession
+    ) -> None:
+        """Assert why the start must forward the anchor: without it, no refusal."""
+        start_meta = {
+            key: value
+            for key, value in _FOLLOWER_BEAT_META.items()
+            if key != INVENTORY_SYNC_SINCE_KEY
+        } | {INVENTORY_SYNC_FIRST_RUN_KEY: True}
+
+        assert not await _beat_fire_refused_behind_a_start(session, start_meta)
+
+    @pytest.mark.postgres
+    @pytest.mark.asyncio
+    async def test_a_start_carrying_the_anchor_holds_back_the_beat_fire_on_postgres(
+        self, postgres_session: AsyncSession
+    ) -> None:
+        """Assert the same refusal through the ``jsonb`` containment path."""
+        start_meta = {**_FOLLOWER_BEAT_META, INVENTORY_SYNC_FIRST_RUN_KEY: True}
+
+        assert await _beat_fire_refused_behind_a_start(postgres_session, start_meta)
 
 
 class TestIdenticalTaskConflictEncryptedLeaves:

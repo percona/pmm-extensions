@@ -284,6 +284,82 @@ class TestTasksSettings:
         )
 
 
+class TestInventorySyncFollowerMaxWait:
+    """Test the bound on how long a follower schedule waits on the pinned default."""
+
+    def test_defaults_to_one_day(self) -> None:
+        """Assert the wait defaults to the host-facts schedule's daily interval."""
+        wait = TasksSettings().INVENTORY_SYNC_FOLLOWER_MAX_WAIT
+
+        assert (wait.every, wait.period) == (1, Period.DAYS)
+
+    def test_parses_the_string_form(self) -> None:
+        """Assert the ``"6 hours"`` YAML form its neighbouring intervals take."""
+        wait = TasksSettings(
+            INVENTORY_SYNC_FOLLOWER_MAX_WAIT="6 hours"
+        ).INVENTORY_SYNC_FOLLOWER_MAX_WAIT
+
+        assert wait.schedule.run_every == timedelta(hours=6)
+
+    def test_reads_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Assert the setting is configurable through its prefixed variable.
+
+        The environment source decodes a model-typed field as JSON, so the
+        string form is quoted there.
+        """
+        monkeypatch.setenv("TASKS__INVENTORY_SYNC_FOLLOWER_MAX_WAIT", '"2 hours"')
+
+        wait = TasksSettings().INVENTORY_SYNC_FOLLOWER_MAX_WAIT
+
+        assert wait.schedule.run_every == timedelta(hours=2)
+
+    @pytest.mark.parametrize(
+        "value", ["0 days", "-1 hours", "soon", "1 fortnights", "", None]
+    )
+    def test_rejects_a_wait_that_is_not_a_positive_interval(
+        self, value: str | None
+    ) -> None:
+        """Assert a wait that is empty, non-positive or unparseable is refused.
+
+        ``None`` is refused too: with no bound the follower would again wait
+        forever on a primary that never completes.
+        """
+        with pytest.raises(ValidationError):
+            TasksSettings(INVENTORY_SYNC_FOLLOWER_MAX_WAIT=value)
+
+    def test_rejects_a_wait_longer_than_a_timedelta_holds(self) -> None:
+        """Assert a wait the seeder could never turn into a duration is refused.
+
+        ``IntervalSchedule`` bounds ``every`` only as positive, so without this
+        the value would load and then fail every boot's seed.
+        """
+        with pytest.raises(ValidationError, match="longest representable"):
+            TasksSettings(INVENTORY_SYNC_FOLLOWER_MAX_WAIT="1000000000 days")
+
+    def test_rejects_a_wait_shorter_than_one_second(self) -> None:
+        """Assert a wait the whole-second window would truncate to zero is refused.
+
+        The follower reads a zero window as unusable, so every run would log a
+        warning suggesting corrupt meta rather than a deliberate short wait.
+        """
+        with pytest.raises(ValidationError, match="shorter than one second"):
+            TasksSettings(INVENTORY_SYNC_FOLLOWER_MAX_WAIT="500 microseconds")
+
+    @pytest.mark.parametrize(
+        ("value", "seconds"),
+        [
+            pytest.param("1 seconds", 1, id="one-second"),
+            pytest.param("1000000 microseconds", 1, id="one-second-in-microseconds"),
+        ],
+    )
+    def test_accepts_a_wait_of_one_second(self, value: str, seconds: int) -> None:
+        """Assert the shortest whole-second wait still loads."""
+        settings = TasksSettings(INVENTORY_SYNC_FOLLOWER_MAX_WAIT=value)
+
+        run_every = settings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT.schedule.run_every
+        assert run_every.total_seconds() == seconds
+
+
 class TestSyncerNameConstants:
     """Test that the suite's hand-kept syncer paths match the real classes."""
 

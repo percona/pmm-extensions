@@ -17,8 +17,9 @@
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from datetime import datetime, UTC
 from typing import Any
 
 from sqlalchemy import inspect
@@ -34,7 +35,7 @@ from app.core.celery.utils import (
     SystemPeriodicTaskData,
     SystemPeriodicTaskSchedule,
 )
-from app.core.utils.date_time import utc_now
+from app.core.utils.date_time import make_datetime_utc, parse_aware_datetime, utc_now
 from app.core.utils.fields import DatabaseDialect
 from app.tasks.config import tasks_settings
 from app.tasks.crud import TaskManager
@@ -54,6 +55,10 @@ from app.tasks.models import (
     INVENTORY_COLLECTION_TASK_NAME,
     INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FOLLOWERS_KEY,
+    INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY,
+    INVENTORY_SYNC_FOLLOWERS_SINCE_KEY,
+    INVENTORY_SYNC_MAX_WAIT_KEY,
+    INVENTORY_SYNC_SINCE_KEY,
     INVENTORY_SYNC_TASK_NAME,
     SYNC_RUNNING_TASKS_TASK_NAME,
     SYSTEM_USER,
@@ -879,10 +884,10 @@ def _inventory_sync_schedule_name(syncer: str) -> str:
 def _inventory_sync_schedule(
     name: str,
     syncer: str | None,
-    interval: IntervalSchedule | None,
-    ordering: Mapping[str, str | list[str]] | None = None,
-) -> SystemPeriodicTaskSchedule | None:
-    """Build one inventory-sync schedule, or ``None`` when unconfigured.
+    interval: IntervalSchedule,
+    ordering: Mapping[str, str | int | list[str] | dict[str, str]] | None = None,
+) -> SystemPeriodicTaskSchedule:
+    """Build one inventory-sync schedule.
 
     ``inventory-sync`` is a ``Task`` row rather than a Celery function, so the
     entry uses the same indirection an operator-created schedule uses: it points
@@ -905,14 +910,11 @@ def _inventory_sync_schedule(
 
     :param name: The seeded row name this schedule owns.
     :param syncer: The syncer to pin, or ``None`` to run every configured one.
-    :param interval: How often the schedule fires, or ``None`` to seed nothing.
+    :param interval: How often the schedule fires.
     :param ordering: Meta keys ordering this schedule's first run against the
         pinned default, or ``None`` for none. Ignored when ``syncer`` is unset.
-    :return: The schedule to append to the seeded set, or ``None`` when
-        ``interval`` is unset.
+    :return: The schedule to append to the seeded set.
     """
-    if interval is None:
-        return None
     kwargs = {
         "task_name": INVENTORY_SYNC_TASK_NAME,
         "periodic_task_name": name,
@@ -953,27 +955,88 @@ def _schedule_covers_syncer(row: PeriodicTask, syncer: str | None) -> bool:
         ``None`` for the sync-all default.
     :return: Whether the row makes seeding the default redundant.
     """
-    try:
-        decoded = json.loads(row.kwargs) if row.kwargs else None
-    except json.JSONDecodeError:
-        return True
-    if not isinstance(decoded, dict):
-        return True
-    execution_data = decoded.get("execution_data")
-    meta = execution_data.get("meta") if isinstance(execution_data, dict) else None
-    existing = meta.get("syncer") if isinstance(meta, dict) else None
+    meta = _row_meta(row)
+    existing = meta.get("syncer") if meta is not None else None
     if not isinstance(existing, str) or not existing.strip():
         return True
     return syncer is None or existing == syncer
 
 
-async def _seeded_inventory_sync_schedule(
-    name: str,
-    syncer: str | None,
-    interval: IntervalSchedule | None,
-    ordering: Mapping[str, str | list[str]] | None = None,
-) -> SystemPeriodicTaskSchedule | None:
-    """Return the schedule to seed, or ``None`` when unset or already covered.
+def _row_meta(row: PeriodicTask) -> dict[str, Any] | None:
+    """Return the ``execution_data.meta`` a beat row hands its task, if readable.
+
+    :param row: A periodic-task row whose ``kwargs`` may be operator-edited.
+    :return: The meta mapping, or ``None`` when ``kwargs`` does not decode to
+        the expected shape at any level.
+    """
+    try:
+        decoded = json.loads(row.kwargs) if row.kwargs else None
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    execution_data = decoded.get("execution_data")
+    meta = execution_data.get("meta") if isinstance(execution_data, dict) else None
+    return meta if isinstance(meta, dict) else None
+
+
+#: The anchor of a follower row whose creation time is lost, early enough that
+#: any window has already elapsed from it.
+_UNKNOWN_SEED_TIME = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _wait_anchor(row: PeriodicTask | None) -> datetime:
+    """Return when a follower's schedule row was first seeded.
+
+    The anchor is kept in the row's own meta because every boot rewrites the
+    row, and ``date_changed`` moves with each rewrite. A row without a readable
+    anchor, as an older build left it, falls back to its ``start_time``, which
+    the first seed stamped as the row was created; an earlier ``last_run_at``
+    wins in case an operator moved that marker forward. A stored anchor later
+    than now, as an edit or a skewed clock can leave it, is unreadable too,
+    since keeping it would hold the follower back past the window. A row that
+    has lost its ``start_time`` as well has no trustworthy creation time left,
+    so it is released at once rather than held back again from a
+    ``last_run_at`` that moves with each fire.
+
+    :param row: The follower's existing row, or ``None`` before it is created.
+    :return: The anchor, in UTC.
+    """
+    if row is None:
+        return utc_now()
+    meta = _row_meta(row) or {}
+    stored = parse_aware_datetime(meta.get(INVENTORY_SYNC_SINCE_KEY))
+    if stored is not None and stored <= utc_now():
+        return stored
+    if not isinstance(row.start_time, datetime):
+        return _UNKNOWN_SEED_TIME
+    return min(
+        make_datetime_utc(at)
+        for at in (row.start_time, row.last_run_at)
+        if isinstance(at, datetime)
+    )
+
+
+async def _follower_wait_anchors(followers: Sequence[str]) -> dict[str, datetime]:
+    """Return each follower's wait anchor, keyed by follower.
+
+    :param followers: The fully qualified syncers of the per-syncer schedules.
+    :return: The anchors, read from each follower's own row where it exists.
+    :raises SQLAlchemyError: When the celery-beat store cannot be read.
+    """
+    async with get_celery_beat_session_maker()() as session:
+        return {
+            follower: _wait_anchor(
+                await PeriodicTaskManager.first(
+                    session, name=_inventory_sync_schedule_name(follower)
+                )
+            )
+            for follower in followers
+        }
+
+
+async def _seeds_inventory_sync_schedule(name: str, syncer: str | None) -> bool:
+    """Return whether to seed the schedule named ``name`` for ``syncer``.
 
     An operator's manually attached interval stays authoritative, so the default
     is omitted when a schedule they own already covers the configured syncer.
@@ -998,13 +1061,8 @@ async def _seeded_inventory_sync_schedule(
 
     :param name: The seeded row name this schedule owns.
     :param syncer: The syncer to pin, or ``None`` to run every configured one.
-    :param interval: How often the schedule fires, or ``None`` to seed nothing.
-    :param ordering: Meta keys carrying the schedule's first-run relationship to
-        the pinned default, or ``None`` for none.
-    :return: The schedule to seed, or ``None``.
+    :return: Whether no operator-managed schedule already covers ``syncer``.
     """
-    if (schedule := _inventory_sync_schedule(name, syncer, interval, ordering)) is None:
-        return None
     session_maker = get_celery_beat_session_maker()
     already_seeded = False
     try:
@@ -1021,7 +1079,7 @@ async def _seeded_inventory_sync_schedule(
             "seeder already owns rather than dropping it.",
             INVENTORY_SYNC_TASK_NAME,
         )
-        return schedule if already_seeded else None
+        return already_seeded
     covered = any(
         _schedule_covers_syncer(row, syncer)
         for row in rows
@@ -1033,8 +1091,7 @@ async def _seeded_inventory_sync_schedule(
             "already covers it.",
             INVENTORY_SYNC_TASK_NAME,
         )
-        return None
-    return schedule
+    return not covered
 
 
 async def seed_system_periodic_tasks() -> None:
@@ -1051,40 +1108,79 @@ async def seed_system_periodic_tasks() -> None:
     When the pinned default is seeded, it and each per-syncer schedule it seeds
     carry the first-run relationship in their meta: the default names its
     followers, and each follower names the default, so a follower's first run
-    waits for the default's first completed sync. Nothing is written when the
-    default is not seeded, which leaves a standalone or operator-scheduled
-    install unchanged.
+    waits for the default's first completed sync. Each follower also carries when
+    its schedule was first seeded and the ``INVENTORY_SYNC_FOLLOWER_MAX_WAIT``
+    window, which together bound that wait, and the default holds the same
+    values so the first run it starts matches the follower's own request.
+    Nothing is written when the default is not seeded, which leaves a standalone
+    or operator-scheduled install unchanged.
 
-    :raises SQLAlchemyError: When the celery-beat store cannot be written.
+    :raises SQLAlchemyError: When the celery-beat store cannot be read for the
+        followers' anchors, or cannot be written.
     """
     periodic_tasks = list(SYSTEM_PERIODIC_TASKS)
     leader = tasks_settings.INVENTORY_SYNC_SYNCER
-    followers = [entry.syncer for entry in tasks_settings.INVENTORY_SYNC_SCHEDULES]
-    primary = await _seeded_inventory_sync_schedule(
-        INVENTORY_SYNC_SCHEDULE_NAME,
-        leader,
-        tasks_settings.INVENTORY_SYNC_INTERVAL,
-        {INVENTORY_SYNC_FOLLOWERS_KEY: followers} if followers else None,
+    entries = tasks_settings.INVENTORY_SYNC_SCHEDULES
+    followers = [entry.syncer for entry in entries]
+    primary_interval = tasks_settings.INVENTORY_SYNC_INTERVAL
+    if primary_interval is not None and not await _seeds_inventory_sync_schedule(
+        INVENTORY_SYNC_SCHEDULE_NAME, leader
+    ):
+        primary_interval = None
+    seeded_entries = [
+        entry
+        for entry in entries
+        if await _seeds_inventory_sync_schedule(
+            _inventory_sync_schedule_name(entry.syncer), entry.syncer
+        )
+    ]
+    ordered_after = leader if primary_interval is not None else None
+    # Only seeded followers get an anchor: one an operator schedule covers has
+    # no row to keep it in, so it would read as new, and rewrite the default's
+    # meta, on every boot.
+    anchors = (
+        await _follower_wait_anchors([entry.syncer for entry in seeded_entries])
+        if ordered_after
+        else {}
     )
-    if primary is not None:
-        periodic_tasks.append(primary)
-    ordering = (
-        {INVENTORY_SYNC_AFTER_KEY: leader} if primary is not None and leader else None
-    )
-    periodic_tasks.extend(
-        [
-            schedule
-            for entry in tasks_settings.INVENTORY_SYNC_SCHEDULES
-            if (
-                schedule := await _seeded_inventory_sync_schedule(
-                    _inventory_sync_schedule_name(entry.syncer),
-                    entry.syncer,
-                    entry.interval,
-                    ordering,
-                )
+    since = {follower: anchor.isoformat() for follower, anchor in anchors.items()}
+    # Serialised here so the scheduled callable, which lives in another app,
+    # reads the window from its own request rather than from tasks settings.
+    window = tasks_settings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT.schedule.run_every
+    max_wait = int(window.total_seconds())
+    if primary_interval is not None:
+        periodic_tasks.append(
+            _inventory_sync_schedule(
+                INVENTORY_SYNC_SCHEDULE_NAME,
+                leader,
+                primary_interval,
+                (
+                    {
+                        INVENTORY_SYNC_FOLLOWERS_KEY: followers,
+                        INVENTORY_SYNC_FOLLOWERS_SINCE_KEY: since,
+                        INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY: max_wait,
+                    }
+                    if followers
+                    else None
+                ),
             )
-            is not None
-        ]
+        )
+    periodic_tasks.extend(
+        _inventory_sync_schedule(
+            _inventory_sync_schedule_name(entry.syncer),
+            entry.syncer,
+            entry.interval,
+            (
+                {
+                    INVENTORY_SYNC_AFTER_KEY: ordered_after,
+                    INVENTORY_SYNC_SINCE_KEY: since[entry.syncer],
+                    INVENTORY_SYNC_MAX_WAIT_KEY: max_wait,
+                }
+                if ordered_after
+                else None
+            ),
+        )
+        for entry in seeded_entries
     )
     await init_periodic_tasks_db(periodic_tasks, SYSTEM_PERIODIC_TASK_PREFIX)
 

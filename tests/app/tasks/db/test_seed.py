@@ -1277,22 +1277,12 @@ def test_purge_task_history_logs_periodic_task_seeded() -> None:
 class TestInventorySyncSchedule:
     """Test the default inventory-sync schedule entry builder."""
 
-    def test_returns_none_when_interval_unset(self) -> None:
-        """Assert no entry is built when no interval is configured."""
-        assert (
-            seed_module._inventory_sync_schedule(
-                seed_module.INVENTORY_SYNC_SCHEDULE_NAME, PMM_SYNCER, None
-            )
-            is None
-        )
-
     def test_builds_entry_pinned_to_the_configured_syncer(self) -> None:
         """Assert the entry carries the execute-by-name shape and the syncer."""
         schedule = seed_module._inventory_sync_schedule(
             seed_module.INVENTORY_SYNC_SCHEDULE_NAME, PMM_SYNCER, FIFTEEN_MINUTES
         )
 
-        assert schedule is not None
         (entry,) = schedule.tasks
         assert entry.name == seed_module.INVENTORY_SYNC_SCHEDULE_NAME
         assert entry.task_name == "app.tasks.celery.execute_task_by_name"
@@ -1308,7 +1298,6 @@ class TestInventorySyncSchedule:
             seed_module.INVENTORY_SYNC_SCHEDULE_NAME, None, FIFTEEN_MINUTES
         )
 
-        assert schedule is not None
         (entry,) = schedule.tasks
         assert entry.extra_kwargs is not None
         kwargs = json.loads(entry.extra_kwargs["kwargs"])
@@ -1321,7 +1310,6 @@ class TestInventorySyncSchedule:
             seed_module.INVENTORY_SYNC_SCHEDULE_NAME, PMM_SYNCER, FIFTEEN_MINUTES
         )
 
-        assert schedule is not None
         assert schedule.schedule == FIFTEEN_MINUTES
 
     def test_a_per_syncer_name_is_derived_from_the_full_path(self) -> None:

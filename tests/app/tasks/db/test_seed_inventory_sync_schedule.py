@@ -25,7 +25,7 @@ the read path and the write path on different databases.
 import inspect
 import json
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import datetime, timedelta, UTC
 from typing import Any
 
 import pytest
@@ -63,6 +63,10 @@ from app.tasks.models import (
     INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FIRST_RUN_KEY,
     INVENTORY_SYNC_FOLLOWERS_KEY,
+    INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY,
+    INVENTORY_SYNC_FOLLOWERS_SINCE_KEY,
+    INVENTORY_SYNC_MAX_WAIT_KEY,
+    INVENTORY_SYNC_SINCE_KEY,
     INVENTORY_SYNC_TASK_NAME,
 )
 from tests.app.db_schema import apply_schema
@@ -321,11 +325,8 @@ async def test_unreadable_beat_store_skips_a_first_time_default(
         side_effect=SQLAlchemyError("beat store unreadable"),
     )
 
-    assert (
-        await seed_module._seeded_inventory_sync_schedule(
-            seed_module.INVENTORY_SYNC_SCHEDULE_NAME, PMM_SYNCER, FIFTEEN_MINUTES
-        )
-        is None
+    assert not await seed_module._seeds_inventory_sync_schedule(
+        seed_module.INVENTORY_SYNC_SCHEDULE_NAME, PMM_SYNCER
     )
 
 
@@ -580,18 +581,11 @@ async def test_a_store_failure_withholds_a_first_time_entry(
         side_effect=SQLAlchemyError("beat store unreadable"),
     )
 
-    assert (
-        await seed_module._seeded_inventory_sync_schedule(
-            with_system_facts_schedule, SYSTEM_FACTS_SYNCER, ONE_DAY
-        )
-    ) is not None
-    assert (
-        await seed_module._seeded_inventory_sync_schedule(
-            seed_module._inventory_sync_schedule_name(MYSQL_SYNCER),
-            MYSQL_SYNCER,
-            ONE_DAY,
-        )
-        is None
+    assert await seed_module._seeds_inventory_sync_schedule(
+        with_system_facts_schedule, SYSTEM_FACTS_SYNCER
+    )
+    assert not await seed_module._seeds_inventory_sync_schedule(
+        seed_module._inventory_sync_schedule_name(MYSQL_SYNCER), MYSQL_SYNCER
     )
     assert owned.name == with_system_facts_schedule
 
@@ -629,16 +623,44 @@ async def test_the_pinned_default_names_its_followers(
 
     (primary,) = await _seeded_rows(beat_maker)
     (follower,) = await _rows_named(beat_maker, with_system_facts_schedule)
+    anchor = _meta(follower)[INVENTORY_SYNC_SINCE_KEY]
     assert _meta(primary) == {
         "syncer": PMM_SYNCER,
         INVENTORY_SYNC_FOLLOWERS_KEY: [SYSTEM_FACTS_SYNCER],
+        INVENTORY_SYNC_FOLLOWERS_SINCE_KEY: {SYSTEM_FACTS_SYNCER: anchor},
+        INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY: 86400,
     }
     assert _meta(follower) == {
         "syncer": SYSTEM_FACTS_SYNCER,
         INVENTORY_SYNC_AFTER_KEY: PMM_SYNCER,
+        INVENTORY_SYNC_SINCE_KEY: anchor,
+        INVENTORY_SYNC_MAX_WAIT_KEY: 86400,
     }
     assert primary.start_time is not None
     assert follower.start_time is not None
+
+
+@pytest.mark.asyncio
+async def test_the_configured_wait_is_written_into_both_rows(
+    with_system_facts_schedule, beat_maker, mocker
+) -> None:
+    """Assert both rows carry the configured window, in whole seconds.
+
+    The scheduled callable lives in another app, so the window reaches it
+    through the request rather than through tasks settings.
+    """
+    mocker.patch.object(
+        tasks_settings,
+        "INVENTORY_SYNC_FOLLOWER_MAX_WAIT",
+        IntervalScheduleOption(every=6, period=Period.HOURS),
+    )
+
+    await seed_module.seed_system_periodic_tasks()
+
+    (primary,) = await _seeded_rows(beat_maker)
+    (follower,) = await _rows_named(beat_maker, with_system_facts_schedule)
+    assert _meta(primary)[INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY] == 6 * 3600
+    assert _meta(follower)[INVENTORY_SYNC_MAX_WAIT_KEY] == 6 * 3600
 
 
 @pytest.mark.asyncio
@@ -831,6 +853,8 @@ async def test_the_leader_kick_is_the_seeded_follower_request_as_a_first_run(
         PMM_SYNCER,
         _meta(primary)[INVENTORY_SYNC_FOLLOWERS_KEY],
         [SystemFactsSyncer(inventory_api=mock_remote_api, tasks_api=mock_remote_api)],
+        _meta(primary)[INVENTORY_SYNC_FOLLOWERS_SINCE_KEY],
+        _meta(primary)[INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY],
     )
 
     (kick,) = send_task.call_args_list
@@ -841,6 +865,324 @@ async def test_the_leader_kick_is_the_seeded_follower_request_as_a_first_run(
     kicked_meta = kick.kwargs["kwargs"]["execution_data"]["meta"]
     assert kicked_meta == {**_meta(follower), INVENTORY_SYNC_FIRST_RUN_KEY: True}
     inspect.signature(run_scheduled_inventory_sync).bind(**kicked_meta)
+
+
+class TestFollowerWaitAnchor:
+    """Test the persisted start of a follower's bounded wait on the default."""
+
+    @staticmethod
+    def _at(mocker, now: datetime) -> None:
+        """Pin the clock the seeder stamps a new follower's anchor with."""
+        mocker.patch.object(seed_module, "utc_now", return_value=now)
+
+    @staticmethod
+    async def _anchors(
+        beat_maker: async_sessionmaker[AsyncSession], follower_name: str
+    ) -> tuple[str, str]:
+        """Return the follower's own anchor and the one the default holds for it."""
+        (primary,) = await _seeded_rows(beat_maker)
+        (follower,) = await _rows_named(beat_maker, follower_name)
+        return (
+            _meta(follower)[INVENTORY_SYNC_SINCE_KEY],
+            _meta(primary)[INVENTORY_SYNC_FOLLOWERS_SINCE_KEY][SYSTEM_FACTS_SYNCER],
+        )
+
+    @staticmethod
+    async def _insert_follower_row(
+        beat_maker: async_sessionmaker[AsyncSession],
+        name: str,
+        meta: dict[str, Any] | None = None,
+        timing: dict[str, datetime | None] | None = None,
+    ) -> PeriodicTask:
+        """Insert a follower row as an older build left it, with the given timing."""
+        async with beat_maker() as session:
+            await _insert_operator_row(
+                session,
+                json.dumps(
+                    {
+                        "task_name": INVENTORY_SYNC_TASK_NAME,
+                        "execution_data": {
+                            "meta": {"syncer": SYSTEM_FACTS_SYNCER, **(meta or {})}
+                        },
+                    }
+                ),
+                name=name,
+            )
+        async with beat_maker() as session:
+            row = await BasePeriodicTaskManager.first(session, name=name)
+            assert row is not None
+            for field, value in (timing or {}).items():
+                setattr(row, field, value)
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return row
+
+    @pytest.mark.asyncio
+    async def test_stamps_a_new_follower_with_the_seed_time(
+        self, with_system_facts_schedule, beat_maker, mocker
+    ) -> None:
+        """Assert a first-time follower's wait starts now, on both rows."""
+        seeded_at = datetime(2026, 9, 1, 12, tzinfo=UTC)
+        self._at(mocker, seeded_at)
+
+        await seed_module.seed_system_periodic_tasks()
+
+        own, held = await self._anchors(beat_maker, with_system_facts_schedule)
+        assert own == held == seeded_at.isoformat()
+
+    @pytest.mark.asyncio
+    async def test_a_restart_inside_the_window_keeps_the_anchor(
+        self, with_system_facts_schedule, beat_maker, mocker
+    ) -> None:
+        """Assert reseeding on a later boot does not restart the wait.
+
+        An install restarting more often than the window would otherwise never
+        see it elapse.
+        """
+        seeded_at = datetime(2026, 9, 1, 12, tzinfo=UTC)
+        self._at(mocker, seeded_at)
+        await seed_module.seed_system_periodic_tasks()
+
+        self._at(mocker, seeded_at + timedelta(hours=6))
+        await seed_module.seed_system_periodic_tasks()
+
+        own, held = await self._anchors(beat_maker, with_system_facts_schedule)
+        assert own == held == seeded_at.isoformat()
+
+    @pytest.mark.asyncio
+    async def test_rewriting_the_row_keeps_the_anchor(
+        self, with_system_facts_schedule, beat_maker, mocker
+    ) -> None:
+        """Assert a reseed that changes the follower's row leaves its anchor alone.
+
+        The rewrite bumps ``date_changed``, which is why that column cannot be
+        the anchor.
+        """
+        seeded_at = datetime(2026, 9, 1, 12, tzinfo=UTC)
+        self._at(mocker, seeded_at)
+        await seed_module.seed_system_periodic_tasks()
+        mocker.patch.object(
+            tasks_settings,
+            "INVENTORY_SYNC_SCHEDULES",
+            [
+                InventorySyncSchedule(
+                    syncer=SYSTEM_FACTS_SYNCER,
+                    interval=IntervalScheduleOption(every=6, period=Period.HOURS),
+                )
+            ],
+        )
+
+        self._at(mocker, seeded_at + timedelta(hours=1))
+        await seed_module.seed_system_periodic_tasks()
+
+        (follower,) = await _rows_named(beat_maker, with_system_facts_schedule)
+        assert (follower.schedule_model.every, follower.schedule_model.period) == (
+            6,
+            Period.HOURS,
+        )
+        own, held = await self._anchors(beat_maker, with_system_facts_schedule)
+        assert own == held == seeded_at.isoformat()
+
+    @pytest.mark.asyncio
+    async def test_a_changed_window_keeps_the_anchor(
+        self, with_system_facts_schedule, beat_maker, mocker
+    ) -> None:
+        """Assert a reboot with a new window rewrites the window, not the anchor.
+
+        Changing ``INVENTORY_SYNC_FOLLOWER_MAX_WAIT`` resizes a wait already under
+        way rather than starting a new one.
+        """
+        seeded_at = datetime(2026, 9, 1, 12, tzinfo=UTC)
+        self._at(mocker, seeded_at)
+        await seed_module.seed_system_periodic_tasks()
+        mocker.patch.object(
+            tasks_settings,
+            "INVENTORY_SYNC_FOLLOWER_MAX_WAIT",
+            IntervalScheduleOption(every=6, period=Period.HOURS),
+        )
+
+        self._at(mocker, seeded_at + timedelta(hours=1))
+        await seed_module.seed_system_periodic_tasks()
+
+        own, held = await self._anchors(beat_maker, with_system_facts_schedule)
+        assert own == held == seeded_at.isoformat()
+        (primary,) = await _seeded_rows(beat_maker)
+        (follower,) = await _rows_named(beat_maker, with_system_facts_schedule)
+        assert _meta(primary)[INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY] == 6 * 3600
+        assert _meta(follower)[INVENTORY_SYNC_MAX_WAIT_KEY] == 6 * 3600
+
+    @pytest.mark.parametrize(
+        ("timing", "expected"),
+        [
+            pytest.param(
+                {"start_time": -10, "last_run_at": -5}, -10, id="first-seed-marker"
+            ),
+            pytest.param(
+                {"start_time": -2, "last_run_at": -5}, -5, id="marker-moved-forward"
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_derives_an_upgraded_row_anchor_from_its_first_seed(
+        self,
+        with_system_facts_schedule,
+        beat_maker,
+        mocker,
+        timing: dict[str, int | None],
+        expected: int,
+    ) -> None:
+        """Assert a row an older build seeded starts its wait from its first seed.
+
+        The first seed stamped ``start_time`` as it created the row, so a row
+        older than the window is released on upgrade rather than made to wait a
+        fresh day; an earlier run wins over a marker an operator moved forward.
+        """
+        base = utc_now()
+        await self._insert_follower_row(
+            beat_maker,
+            with_system_facts_schedule,
+            timing={
+                field: None if days is None else base + timedelta(days=days)
+                for field, days in timing.items()
+            },
+        )
+        self._at(mocker, base + timedelta(days=1))
+
+        await seed_module.seed_system_periodic_tasks()
+
+        own, held = await self._anchors(beat_maker, with_system_facts_schedule)
+        assert own == held == (base + timedelta(days=expected)).isoformat()
+
+    @pytest.mark.parametrize(
+        "last_run_days",
+        [
+            pytest.param(-1, id="ran-since"),
+            pytest.param(None, id="never-ran"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_releases_an_upgraded_row_whose_marker_was_cleared(
+        self,
+        with_system_facts_schedule,
+        beat_maker,
+        mocker,
+        last_run_days: int | None,
+    ) -> None:
+        """Assert a row with no creation time left is released, not held back again.
+
+        ``last_run_at`` and ``date_changed`` move with every fire and reseed, so
+        anchoring on them would make an old schedule wait one more window.
+        """
+        base = utc_now()
+        await self._insert_follower_row(
+            beat_maker,
+            with_system_facts_schedule,
+            timing={
+                "start_time": None,
+                "last_run_at": (
+                    None
+                    if last_run_days is None
+                    else base + timedelta(days=last_run_days)
+                ),
+            },
+        )
+        self._at(mocker, base)
+
+        await seed_module.seed_system_periodic_tasks()
+
+        own, held = await self._anchors(beat_maker, with_system_facts_schedule)
+        assert own == held == seed_module._UNKNOWN_SEED_TIME.isoformat()
+        assert base - seed_module._UNKNOWN_SEED_TIME > timedelta(days=365)
+
+    @pytest.mark.asyncio
+    async def test_an_operator_covered_follower_leaves_the_default_unchanged(
+        self, with_system_facts_schedule, beat_maker, mocker
+    ) -> None:
+        """Assert a follower with no row of its own gets no anchor to restamp.
+
+        Stamping it would give it a fresh anchor on every boot, rewriting the
+        default's row each time while no follower row ever kept the value.
+        """
+        async with beat_maker() as session:
+            await _insert_operator_row(session, _operator_kwargs(SYSTEM_FACTS_SYNCER))
+        seeded_at = datetime(2026, 9, 1, 12, tzinfo=UTC)
+        self._at(mocker, seeded_at)
+        await seed_module.seed_system_periodic_tasks()
+        (before,) = await _seeded_rows(beat_maker)
+
+        self._at(mocker, seeded_at + timedelta(hours=6))
+        await seed_module.seed_system_periodic_tasks()
+
+        (after,) = await _seeded_rows(beat_maker)
+        assert _meta(after)[INVENTORY_SYNC_FOLLOWERS_SINCE_KEY] == {}
+        assert after.kwargs == before.kwargs
+        assert await _rows_named(beat_maker, with_system_facts_schedule) == []
+
+    @pytest.mark.parametrize(
+        "stored",
+        [
+            pytest.param("yesterday", id="garbage"),
+            pytest.param(42, id="not-a-string"),
+            pytest.param("2026-09-01T00:00:00", id="naive"),
+            pytest.param("9998-01-01T00:00:00+00:00", id="future"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_rederives_an_unreadable_stored_anchor(
+        self, with_system_facts_schedule, beat_maker, mocker, stored: object
+    ) -> None:
+        """Assert a broken stored anchor is rebuilt from the row, not reset to now."""
+        base = utc_now()
+        await self._insert_follower_row(
+            beat_maker,
+            with_system_facts_schedule,
+            {INVENTORY_SYNC_SINCE_KEY: stored},
+            {"start_time": base - timedelta(days=10)},
+        )
+        self._at(mocker, base)
+
+        await seed_module.seed_system_periodic_tasks()
+
+        own, _ = await self._anchors(beat_maker, with_system_facts_schedule)
+        assert own == (base - timedelta(days=10)).isoformat()
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param("{not json", id="undecodable"),
+            pytest.param("[]", id="not-an-object"),
+            pytest.param('{"execution_data": "meta"}', id="execution-data-not-object"),
+            pytest.param('{"execution_data": {"meta": []}}', id="meta-not-object"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_survives_malformed_row_kwargs(
+        self, with_system_facts_schedule, beat_maker, mocker, kwargs: str
+    ) -> None:
+        """Assert hand-edited row ``kwargs`` cannot fail the seeder at startup.
+
+        Both rows are seeded first, so when undecodable ``kwargs`` make the
+        beat-store lookup fail, the seeder re-seeds them instead of withholding
+        a first-time default.
+        """
+        base = utc_now()
+        await seed_module.seed_system_periodic_tasks()
+        async with beat_maker() as session:
+            row = await BasePeriodicTaskManager.first(
+                session, name=with_system_facts_schedule
+            )
+            assert row is not None
+            row.kwargs = kwargs
+            row.start_time = base - timedelta(days=2)
+            session.add(row)
+            await session.commit()
+        self._at(mocker, base)
+
+        await seed_module.seed_system_periodic_tasks()
+
+        own, held = await self._anchors(beat_maker, with_system_facts_schedule)
+        assert own == held == (base - timedelta(days=2)).isoformat()
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,8 @@
 import logging
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, UTC
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -45,6 +47,7 @@ from app.extensions.inventory import (
     CreatedTable,
 )
 from app.extensions.models import (
+    SyncInstance,
     SyncInstanceWrite,
     SyncInventoryEntityTypeEnum,
     SyncItemWrite,
@@ -56,6 +59,8 @@ from app.tasks.models import (
     EXECUTE_TASK_BY_NAME_TASK,
     INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FIRST_RUN_KEY,
+    INVENTORY_SYNC_MAX_WAIT_KEY,
+    INVENTORY_SYNC_SINCE_KEY,
     INVENTORY_SYNC_TASK_NAME,
 )
 from tests.app.factories import (
@@ -349,7 +354,18 @@ async def _record_run(
         )
 
 
-def _follower_kick(follower: str, leader: str) -> dict[str, object]:
+_SEEDED_AT = datetime(2026, 9, 1, tzinfo=UTC)
+_SEEDED_AT_ISO = _SEEDED_AT.isoformat()
+_ONE_DAY = timedelta(days=1)
+_ONE_DAY_SECONDS = int(_ONE_DAY.total_seconds())
+
+
+def _follower_kick(
+    follower: str,
+    leader: str,
+    since: str | None = None,
+    max_wait: int | None = None,
+) -> dict[str, object]:
     """Return the ``execute_task_by_name`` kwargs that start ``follower`` once."""
     return {
         "task_name": INVENTORY_SYNC_TASK_NAME,
@@ -357,6 +373,12 @@ def _follower_kick(follower: str, leader: str) -> dict[str, object]:
             "meta": {
                 "syncer": follower,
                 INVENTORY_SYNC_AFTER_KEY: leader,
+                **({INVENTORY_SYNC_SINCE_KEY: since} if since is not None else {}),
+                **(
+                    {INVENTORY_SYNC_MAX_WAIT_KEY: max_wait}
+                    if max_wait is not None
+                    else {}
+                ),
                 INVENTORY_SYNC_FIRST_RUN_KEY: True,
             }
         },
@@ -380,7 +402,12 @@ async def test_a_follower_defers_until_the_leader_completes(
         return_value=[_FollowerSyncer(inventory_api=mock_remote_api)],
     )
 
-    note = await run_scheduled_inventory_sync(syncer=_FOLLOWER, after_syncer=_LEADER)
+    note = await run_scheduled_inventory_sync(
+        syncer=_FOLLOWER,
+        after_syncer=_LEADER,
+        after_syncer_since=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        after_syncer_max_wait=_ONE_DAY_SECONDS,
+    )
 
     assert note is not None
     assert _LEADER in note
@@ -507,6 +534,329 @@ async def test_a_scheduled_run_that_loses_the_claim_still_raises(
         await run_scheduled_inventory_sync(syncer=_FOLLOWER, after_syncer=_LEADER)
 
 
+class TestBoundedFollowerWait:
+    """Test that a follower stops waiting on a leader that never completes a pass."""
+
+    @pytest.fixture
+    def follower_run(self, mocker, extensions_maker, mock_remote_api):
+        """Route the run at the in-memory DB with only the follower configured."""
+        _route_sessions(mocker, extensions_maker)
+        mocker.patch(
+            "app.extensions.apps.inventory.sync.get_syncers_standalone",
+            return_value=[_FollowerSyncer(inventory_api=mock_remote_api)],
+        )
+
+    @staticmethod
+    def _at(mocker, now: datetime) -> None:
+        """Pin the clock the wait is measured against."""
+        mocker.patch("app.extensions.apps.inventory.sync.utc_now", return_value=now)
+
+    @staticmethod
+    async def _follower_runs(
+        maker: async_sessionmaker[AsyncSession],
+    ) -> list[SyncInstance]:
+        """Return every recorded run of the follower."""
+        async with maker() as session:
+            return await SyncInstanceManager.list(session, syncer=_FOLLOWER)
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
+    async def test_skips_inside_the_window_and_says_when_it_ends(
+        self, extensions_maker, mocker
+    ) -> None:
+        """Skip the run while the window is open, naming the leader and the deadline.
+
+        The note must also say the follower starts earlier if the leader
+        completes first, so an operator reading the log knows both ways out.
+        """
+        self._at(mocker, _SEEDED_AT + _ONE_DAY - timedelta(seconds=1))
+
+        note = await run_scheduled_inventory_sync(
+            syncer=_FOLLOWER,
+            after_syncer=_LEADER,
+            after_syncer_since=_SEEDED_AT_ISO,
+            after_syncer_max_wait=_ONE_DAY_SECONDS,
+        )
+
+        assert note is not None
+        assert f"once {_LEADER} completes" in note
+        assert "or at 2026-09-02T00:00:00Z" in note
+        assert await self._follower_runs(extensions_maker) == []
+
+    @pytest.mark.parametrize(
+        "elapsed",
+        [
+            pytest.param(_ONE_DAY, id="at-the-deadline"),
+            pytest.param(_ONE_DAY + timedelta(days=30), id="long-after"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "leader_history",
+        [
+            pytest.param(None, id="leader-never-ran"),
+            pytest.param(SyncStatusEnum.FAILED, id="leader-always-failed"),
+        ],
+    )
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
+    async def test_runs_once_the_window_has_elapsed(
+        self,
+        extensions_maker,
+        mocker,
+        elapsed: timedelta,
+        leader_history: SyncStatusEnum | None,
+    ) -> None:
+        """Run the follower's sync with no skip note once the window has passed.
+
+        It applies whether the leader has no recorded run at all, as with a
+        disabled row, or only runs that could not list the inventory.
+        """
+        if leader_history is not None:
+            await _record_run(extensions_maker, _LEADER, leader_history)
+        self._at(mocker, _SEEDED_AT + elapsed)
+
+        note = await run_scheduled_inventory_sync(
+            syncer=_FOLLOWER,
+            after_syncer=_LEADER,
+            after_syncer_since=_SEEDED_AT_ISO,
+            after_syncer_max_wait=_ONE_DAY_SECONDS,
+        )
+
+        assert note is None
+        (run,) = await self._follower_runs(extensions_maker)
+        assert run.status == SyncStatusEnum.SUCCESS
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
+    async def test_logs_the_release(self, mocker, caplog) -> None:
+        """Log that the follower ran without its leader, naming both."""
+        self._at(mocker, _SEEDED_AT + _ONE_DAY)
+
+        with caplog.at_level(logging.INFO, logger="app.extensions.apps.inventory.sync"):
+            await run_scheduled_inventory_sync(
+                syncer=_FOLLOWER,
+                after_syncer=_LEADER,
+                after_syncer_since=_SEEDED_AT_ISO,
+                after_syncer_max_wait=_ONE_DAY_SECONDS,
+            )
+
+        assert _FOLLOWER in caplog.text
+        assert _LEADER in caplog.text
+
+    @pytest.mark.parametrize(
+        "anchor",
+        [
+            pytest.param(None, id="missing"),
+            pytest.param("", id="empty"),
+            pytest.param("yesterday", id="garbage"),
+            pytest.param("2026-09-01T00:00:00", id="naive"),
+            pytest.param(12345, id="not-a-string"),
+            pytest.param("9998-01-01T00:00:00+00:00", id="future"),
+            pytest.param(
+                (_SEEDED_AT + timedelta(minutes=5, seconds=1)).isoformat(),
+                id="beyond-skew",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
+    async def test_an_unreadable_anchor_does_not_wedge_the_follower(
+        self, extensions_maker, mocker, caplog, anchor: Any
+    ) -> None:
+        """Run the follower, with a warning, when the anchor is unusable.
+
+        The anchor sits in operator-editable row ``kwargs``, and a request queued
+        by an older seeder has none; neither may make the wait unbounded. An
+        anchor further ahead than a small clock skew, as an edit leaves it, is
+        unusable too, since it would push the deadline arbitrarily far out.
+        """
+        self._at(mocker, _SEEDED_AT)
+
+        with caplog.at_level(
+            logging.WARNING, logger="app.extensions.apps.inventory.sync"
+        ):
+            note = await run_scheduled_inventory_sync(
+                syncer=_FOLLOWER,
+                after_syncer=_LEADER,
+                after_syncer_since=anchor,
+                after_syncer_max_wait=_ONE_DAY_SECONDS,
+            )
+
+        assert note is None
+        assert len(await self._follower_runs(extensions_maker)) == 1
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
+    async def test_tolerates_an_anchor_stamped_on_a_slightly_fast_clock(
+        self, extensions_maker, mocker
+    ) -> None:
+        """Keep waiting on an anchor a little ahead of this worker's clock.
+
+        The seeder stamps the anchor on another process's clock, and the first
+        beat fire follows the seed at once, so a small skew must not release the
+        follower ahead of its leader at bring-up.
+        """
+        self._at(mocker, _SEEDED_AT - timedelta(minutes=1))
+
+        note = await run_scheduled_inventory_sync(
+            syncer=_FOLLOWER,
+            after_syncer=_LEADER,
+            after_syncer_since=_SEEDED_AT_ISO,
+            after_syncer_max_wait=_ONE_DAY_SECONDS,
+        )
+
+        assert note is not None
+        assert "or at 2026-09-02T00:00:00Z" in note
+        assert await self._follower_runs(extensions_maker) == []
+
+    @pytest.mark.parametrize(
+        "max_wait",
+        [
+            pytest.param(None, id="missing"),
+            pytest.param("86400", id="not-an-int"),
+            pytest.param(True, id="bool"),
+            pytest.param(0, id="zero"),
+            pytest.param(-1, id="negative"),
+            pytest.param(10**12, id="deadline-overflows"),
+            pytest.param(10**20, id="window-overflows"),
+        ],
+    )
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
+    async def test_an_unreadable_window_does_not_wedge_the_follower(
+        self, extensions_maker, mocker, caplog, max_wait: Any
+    ) -> None:
+        """Run the follower, with a warning, when the window is unusable.
+
+        The window sits in the same operator-editable ``kwargs`` as the anchor,
+        and a request queued before the seeder wrote it has none.
+        """
+        self._at(mocker, _SEEDED_AT + timedelta(seconds=1))
+
+        with caplog.at_level(
+            logging.WARNING, logger="app.extensions.apps.inventory.sync"
+        ):
+            note = await run_scheduled_inventory_sync(
+                syncer=_FOLLOWER,
+                after_syncer=_LEADER,
+                after_syncer_since=_SEEDED_AT_ISO,
+                after_syncer_max_wait=max_wait,
+            )
+
+        assert note is None
+        assert len(await self._follower_runs(extensions_maker)) == 1
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
+    async def test_normalises_an_offset_anchor_to_utc(self, mocker) -> None:
+        """Measure an anchor written with a non-UTC offset from the same instant."""
+        self._at(mocker, _SEEDED_AT + _ONE_DAY - timedelta(seconds=1))
+
+        note = await run_scheduled_inventory_sync(
+            syncer=_FOLLOWER,
+            after_syncer=_LEADER,
+            after_syncer_since="2026-09-01T02:00:00+02:00",
+            after_syncer_max_wait=_ONE_DAY_SECONDS,
+        )
+
+        assert note is not None
+        assert "2026-09-02T00:00:00Z" in note
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
+    async def test_honours_a_configured_window(self, extensions_maker, mocker) -> None:
+        """Release the follower after the window its request carries."""
+        self._at(mocker, _SEEDED_AT + timedelta(hours=1))
+
+        note = await run_scheduled_inventory_sync(
+            syncer=_FOLLOWER,
+            after_syncer=_LEADER,
+            after_syncer_since=_SEEDED_AT_ISO,
+            after_syncer_max_wait=3600,
+        )
+
+        assert note is None
+        assert len(await self._follower_runs(extensions_maker)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
+    async def test_a_completed_leader_releases_the_follower_inside_the_window(
+        self, extensions_maker, mocker
+    ) -> None:
+        """Run the follower as soon as the leader completes, before the deadline."""
+        await _record_run(extensions_maker, _LEADER)
+        self._at(mocker, _SEEDED_AT)
+
+        note = await run_scheduled_inventory_sync(
+            syncer=_FOLLOWER,
+            after_syncer=_LEADER,
+            after_syncer_since=_SEEDED_AT_ISO,
+            after_syncer_max_wait=_ONE_DAY_SECONDS,
+        )
+
+        assert note is None
+        assert len(await self._follower_runs(extensions_maker)) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("follower_run")
+    async def test_a_started_first_run_after_the_window_still_defers_to_a_prior_run(
+        self, extensions_maker, mocker
+    ) -> None:
+        """Skip a started first run past the window once the follower has run."""
+        await _record_run(extensions_maker, _FOLLOWER)
+        self._at(mocker, _SEEDED_AT + _ONE_DAY)
+
+        note = await run_scheduled_inventory_sync(
+            syncer=_FOLLOWER,
+            after_syncer=_LEADER,
+            after_syncer_since=_SEEDED_AT_ISO,
+            after_syncer_max_wait=_ONE_DAY_SECONDS,
+            first_run_only=True,
+        )
+
+        assert note is not None
+        assert _FOLLOWER in note
+        assert len(await self._follower_runs(extensions_maker)) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_late_leader_does_not_start_a_released_follower_again(
+        self, extensions_maker, mocker, mock_remote_api
+    ) -> None:
+        """Send no first-run start when the leader completes after the release.
+
+        The follower ran on its own once the window passed, so its own history
+        is what stops the leader's run from starting it a second time.
+        """
+        _route_sessions(mocker, extensions_maker)
+        mocker.patch(
+            "app.extensions.apps.inventory.sync.get_syncers_standalone",
+            return_value=[
+                _LeaderSyncer(inventory_api=mock_remote_api),
+                _FollowerSyncer(inventory_api=mock_remote_api),
+            ],
+        )
+        send_task = mocker.patch.object(celery, "send_task")
+        self._at(mocker, _SEEDED_AT + _ONE_DAY)
+        await run_scheduled_inventory_sync(
+            syncer=_FOLLOWER,
+            after_syncer=_LEADER,
+            after_syncer_since=_SEEDED_AT_ISO,
+            after_syncer_max_wait=_ONE_DAY_SECONDS,
+        )
+
+        await run_scheduled_inventory_sync(
+            syncer=_LEADER,
+            follower_syncers=[_FOLLOWER],
+            follower_syncers_since={_FOLLOWER: _SEEDED_AT_ISO},
+            follower_syncers_max_wait=_ONE_DAY_SECONDS,
+        )
+
+        send_task.assert_not_called()
+        assert len(await self._follower_runs(extensions_maker)) == 1
+
+
 class TestStartFollowerFirstRuns:
     """Test the leader-side start of followers that have never run."""
 
@@ -528,6 +878,89 @@ class TestStartFollowerFirstRuns:
         send_task.assert_called_once_with(
             EXECUTE_TASK_BY_NAME_TASK,
             kwargs=_follower_kick(_MYSQL_STUB_NAME, _PMM_STUB_NAME),
+        )
+
+    @pytest.mark.asyncio
+    async def test_forwards_the_follower_wait_anchor(self, extensions_maker, send_task):
+        """Carry the anchor and window so the start holds every key its fire has.
+
+        The identical-task guard matches meta by containment, so a start without
+        either would stop refusing a beat fire of the follower in flight.
+        """
+        await _record_run(extensions_maker, _PMM_STUB_NAME)
+
+        await start_follower_first_runs(
+            _PMM_STUB_NAME,
+            [_MYSQL_STUB_NAME],
+            [_StubPMMSyncer(), _StubMySQLSyncer()],
+            {_MYSQL_STUB_NAME: _SEEDED_AT_ISO},
+            _ONE_DAY_SECONDS,
+        )
+
+        send_task.assert_called_once_with(
+            EXECUTE_TASK_BY_NAME_TASK,
+            kwargs=_follower_kick(
+                _MYSQL_STUB_NAME, _PMM_STUB_NAME, _SEEDED_AT_ISO, _ONE_DAY_SECONDS
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        "since",
+        [
+            pytest.param({}, id="follower-absent"),
+            pytest.param({_MYSQL_STUB_NAME: 42}, id="anchor-not-a-string"),
+            pytest.param(["not", "a", "mapping"], id="not-a-mapping"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_omits_an_anchor_it_does_not_hold(
+        self, extensions_maker, send_task, since: Any
+    ):
+        """Start the follower without an anchor when none usable was handed over.
+
+        An operator-covered follower is listed by the leader but not seeded, so
+        it has no anchor; operator-edited meta may hold anything at all.
+        """
+        await _record_run(extensions_maker, _PMM_STUB_NAME)
+
+        await start_follower_first_runs(
+            _PMM_STUB_NAME,
+            [_MYSQL_STUB_NAME],
+            [_StubPMMSyncer(), _StubMySQLSyncer()],
+            since,
+        )
+
+        send_task.assert_called_once_with(
+            EXECUTE_TASK_BY_NAME_TASK,
+            kwargs=_follower_kick(_MYSQL_STUB_NAME, _PMM_STUB_NAME),
+        )
+
+    @pytest.mark.parametrize(
+        "max_wait",
+        [
+            pytest.param(None, id="missing"),
+            pytest.param("86400", id="not-an-int"),
+            pytest.param(True, id="bool"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_omits_a_window_it_does_not_hold(
+        self, extensions_maker, send_task, max_wait: Any
+    ):
+        """Start the follower without a window when none usable was handed over."""
+        await _record_run(extensions_maker, _PMM_STUB_NAME)
+
+        await start_follower_first_runs(
+            _PMM_STUB_NAME,
+            [_MYSQL_STUB_NAME],
+            [_StubPMMSyncer(), _StubMySQLSyncer()],
+            {_MYSQL_STUB_NAME: _SEEDED_AT_ISO},
+            max_wait,
+        )
+
+        send_task.assert_called_once_with(
+            EXECUTE_TASK_BY_NAME_TASK,
+            kwargs=_follower_kick(_MYSQL_STUB_NAME, _PMM_STUB_NAME, _SEEDED_AT_ISO),
         )
 
     @pytest.mark.asyncio
@@ -658,13 +1091,19 @@ async def _assert_the_leader_run_starts_its_follower(
     )
     send_task = mocker.patch.object(celery, "send_task")
 
-    await run_scheduled_inventory_sync(syncer=_LEADER, follower_syncers=[_FOLLOWER])
+    await run_scheduled_inventory_sync(
+        syncer=_LEADER,
+        follower_syncers=[_FOLLOWER],
+        follower_syncers_since={_FOLLOWER: _SEEDED_AT_ISO},
+        follower_syncers_max_wait=_ONE_DAY_SECONDS,
+    )
 
     async with maker() as session:
         assert await SyncItemManager.inventory_sync_completed(session, _LEADER)
         assert await SyncInstanceManager.list(session, syncer=_FOLLOWER) == []
     send_task.assert_called_once_with(
-        EXECUTE_TASK_BY_NAME_TASK, kwargs=_follower_kick(_FOLLOWER, _LEADER)
+        EXECUTE_TASK_BY_NAME_TASK,
+        kwargs=_follower_kick(_FOLLOWER, _LEADER, _SEEDED_AT_ISO, _ONE_DAY_SECONDS),
     )
 
 
