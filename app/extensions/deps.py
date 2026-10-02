@@ -19,7 +19,6 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from typing import Annotated, Any, Literal, overload
 
-import aiohttp
 from fastapi import Depends, HTTPException, Request
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -258,19 +257,15 @@ async def get_username_mapping() -> dict[str, str]:
     account) and map each actor's ID to their username. Caching should be
     implemented in the provider's SDK to avoid repeated API calls.
 
+    Any provider failure yields an empty mapping (logged with its traceback) so
+    a display-name lookup never fails the request that asked for it.
+
     :return: A dictionary mapping actor IDs to usernames.
     """
     try:
         users = await User.get_actors()
         return {str(user.id): user.username for user in users}
-    except (
-        AttributeError,
-        TimeoutError,
-        ValueError,
-        KeyError,
-        HTTPException,
-        aiohttp.ClientError,
-    ):
+    except Exception:
         logger.exception("Failed to get username mapping from the auth provider")
         return {}
 
