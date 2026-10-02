@@ -71,6 +71,7 @@ declare DUMP_FILES=0
 declare TABLE_FILTER=""
 declare OUTPUT_MODE="stdout"
 declare OUTPUT_FILE=""
+declare ERR_FILE=""
 
 function usage() {
     cat << EOF
@@ -164,6 +165,8 @@ function mysql_exec() {
 # The client can write a notice to stderr on a query that succeeds, and a
 # merged stream would turn it into table names or a corrupt path.
 #
+# Globals:
+#   ERR_FILE
 # Arguments:
 #   1: arguments to be passed to mysql
 #   2: the query
@@ -171,26 +174,24 @@ function mysql_exec() {
 function mysql_stdout() {
     local args=$1
     local query=$2
-    local err_file
     local retvalue
     local retoutput
     local reterror
 
     # Without a place to park stderr, a merged value beats losing the error text.
-    if ! err_file=$(mktemp 2> /dev/null); then
+    if [[ -z $ERR_FILE ]]; then
         mysql_exec "${args}" "${query}"
         return
     fi
-    retoutput=$(mysql_client "${args}" "${query}" 2> "${err_file}")
+    retoutput=$(mysql_client "${args}" "${query}" 2> "${ERR_FILE}")
     retvalue=$?
     if ((retvalue != 0)); then
-        reterror=$(drop_mylogin_notice < "${err_file}")
+        reterror=$(drop_mylogin_notice < "${ERR_FILE}")
         if [[ -n $retoutput && -n $reterror ]]; then
             retoutput+=$'\n'
         fi
         retoutput+=$reterror
     fi
-    rm -f "${err_file}"
 
     print_output "${retoutput}"
     return $retvalue
@@ -202,7 +203,7 @@ function parse_args() {
     # TODO: kennt, what happens if we don't have a functional getopt()?
     # Check if we have a functional getopt(1)
     if ! getopt --test; then
-        if ! go_out="$(getopt --options=h --longoptions=defaults-file:,runtime,main,stats,monitor,files,table::,output:,help \
+        if ! go_out="$(getopt --options=h --longoptions=defaults-file:,runtime,main,stats,monitor,files,table:,output:,help \
             --name="$(basename "$0")" -- "$@")"; then
             # no place to send output
             echo "Script error: getopt() failed" >&2
@@ -299,6 +300,11 @@ function parse_args() {
 }
 
 parse_args "$@"
+
+# One file serves every parsed query, and the EXIT trap removes it even when a
+# timeout kills the run mid-query. GNU rm reports an empty operand even with -f.
+trap '[[ -z $ERR_FILE ]] || rm -f "${ERR_FILE}"' EXIT
+ERR_FILE=$(mktemp 2> /dev/null) || ERR_FILE=""
 
 # Function to execute the main script logic
 function run_dumps() {

@@ -25,7 +25,9 @@ display-only dumps keep showing everything the client wrote.
 
 import os
 import shutil
+import signal
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,6 +50,9 @@ ADMIN_CNF = (
 )
 HOST_PRIORITY = "[node1]\nweight=10\n"
 TABLE_DUMP = "+----+\n| id |\n+----+\n| 1  |\n+----+\n"
+DEFAULT_DATADIR = "/var/lib/proxysql"
+# What ``getopt --test`` exits with when it is the GNU one.
+GNU_GETOPT_TEST_STATUS = 4
 
 # The stub answers by the first rule whose pattern occurs in the ``-e`` query, so
 # the specific listings precede the generic ``SHOW TABLES`` they also contain.
@@ -63,6 +68,9 @@ STUB_MYSQL = """\
 #!/usr/bin/env bash
 cat > "{root}/stdin.log"
 printf '%s\\n' "$*" >> "{root}/calls.log"
+if [[ -f "{root}/hang" ]]; then
+    sleep 30
+fi
 query=""
 while (( $# )); do
     if [[ $1 == -e ]]; then
@@ -84,6 +92,18 @@ done
 echo "stub mysql: unexpected query: $query" >&2
 exit 99
 """
+
+
+def _has_gnu_getopt() -> bool:
+    """Return whether ``getopt`` is the GNU one the script hands its options to.
+
+    The script runs ``getopt`` only when ``getopt --test`` exits 4, as the GNU
+    one does; elsewhere its own loop reads the options as given.
+
+    :return: ``True`` when ``getopt --test`` exits 4.
+    """
+    probe = subprocess.run(["getopt", "--test"], capture_output=True, check=False)
+    return probe.returncode == GNU_GETOPT_TEST_STATUS
 
 
 def _has_runtime() -> bool:
@@ -204,6 +224,25 @@ class ProxysqlHarness:
             'echo "$path"'
         )
 
+    def stage_default_datadir(self) -> None:
+        """Serve ``host_priority.conf`` from the script's fallback data directory.
+
+        The fallback is an absolute path outside the test's reach, so a ``cat``
+        stub answers for that one file and hands every other path to the real one.
+        """
+        real = shutil.which("cat")
+        stub = self.bin_dir / "cat"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'if [[ $1 == "{DEFAULT_DATADIR}/host_priority.conf" ]]; then\n'
+            f"    printf '%s' '{HOST_PRIORITY}'\n"
+            "    exit 0\n"
+            "fi\n"
+            f'exec "{real}" "$@"\n',
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
     def break_mktemp(self) -> None:
         """Make ``mktemp`` fail, as it does on a full or read-only temp directory."""
         self._stub_mktemp("echo 'mktemp: No space left on device' >&2\nexit 1")
@@ -236,21 +275,51 @@ class ProxysqlHarness:
         :return: The completed process.
         """
         self._write_rules()
-        env = {
+        return subprocess.run(
+            self._command(args),
+            capture_output=True,
+            text=True,
+            env=self._env(),
+            cwd=self.root,
+            timeout=60,
+            check=False,
+        )
+
+    def spawn(self, *args: str) -> subprocess.Popen[bytes]:
+        """Start the shipped script in its own process group, output discarded.
+
+        :param args: Options passed after ``--defaults-file``.
+        :return: The running process, whose group a test can signal.
+        """
+        self._write_rules()
+        return subprocess.Popen(
+            self._command(args),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=self._env(),
+            cwd=self.root,
+            start_new_session=True,
+        )
+
+    def _command(self, args: tuple[str, ...]) -> list[str]:
+        """Return the command line that runs the script with the staged config.
+
+        :param args: Options passed after ``--defaults-file``.
+        :return: The argument vector.
+        """
+        return ["bash", str(SCRIPT), "--defaults-file", str(self.admin_cnf), *args]
+
+    def _env(self) -> dict[str, str]:
+        """Return the environment that puts the stubs first on ``PATH``.
+
+        :return: The environment for the script.
+        """
+        return {
             **os.environ,
             "PATH": f"{self.bin_dir}{os.pathsep}{os.environ['PATH']}",
             "TMPDIR": str(self.tmp_dir),
             "LC_ALL": "C",
         }
-        return subprocess.run(
-            ["bash", str(SCRIPT), "--defaults-file", str(self.admin_cnf), *args],
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=self.root,
-            timeout=60,
-            check=False,
-        )
 
 
 @pytest.fixture
@@ -324,20 +393,29 @@ def _database(title: str, sections: str) -> str:
     )
 
 
-HEALTHY_FULL_RUN = (
-    _database(
-        "MAIN",
-        _section("mysql_servers", TABLE_DUMP) + _section("mysql_users", TABLE_DUMP),
+def _full_run(dump: str) -> str:
+    """Return the report of a default run whose every table dump prints ``dump``.
+
+    :param dump: The body printed inside each table section.
+    :return: The report text after the ``getopt`` probe's output.
+    """
+    return (
+        _database(
+            "MAIN",
+            _section("mysql_servers", dump) + _section("mysql_users", dump),
+        )
+        + _database("STATS", _section("stats.stats_mysql_global", dump))
+        + _database("MONITOR", _section("monitor.mysql_server_ping_log", dump))
+        + "............ DUMPING HOST PRIORITY FILE ............\n"
+        + HOST_PRIORITY
+        + "............ END OF DUMPING HOST PRIORITY FILE ............\n\n"
+        + "............ DUMPING PROXYSQL ADMIN CNF FILE ............\n"
+        + ADMIN_CNF
+        + "............ END OF DUMPING PROXYSQL ADMIN CNF FILE ............\n\n"
     )
-    + _database("STATS", _section("stats.stats_mysql_global", TABLE_DUMP))
-    + _database("MONITOR", _section("monitor.mysql_server_ping_log", TABLE_DUMP))
-    + "............ DUMPING HOST PRIORITY FILE ............\n"
-    + HOST_PRIORITY
-    + "............ END OF DUMPING HOST PRIORITY FILE ............\n\n"
-    + "............ DUMPING PROXYSQL ADMIN CNF FILE ............\n"
-    + ADMIN_CNF
-    + "............ END OF DUMPING PROXYSQL ADMIN CNF FILE ............\n\n"
-)
+
+
+HEALTHY_FULL_RUN = _full_run(TABLE_DUMP)
 
 
 class TestHealthyHost:
@@ -399,6 +477,33 @@ class TestNoticeOnSuccess:
         ) in result.stdout
         assert "Could not read admin-datadir" not in result.stdout
 
+    def test_default_run_shows_notice_only_inside_dumps(self, harness):
+        """Print the healthy report with the notice in each dump and nowhere else."""
+        harness.notice = NOTICE
+
+        result = harness.run()
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == _getopt_probe_output() + _full_run(
+            f"{NOTICE}\n{TABLE_DUMP}"
+        )
+
+    def test_empty_datadir_falls_back_despite_notice(self, harness):
+        """Read the fallback data directory when the server reports none."""
+        harness.notice = NOTICE
+        harness.stage_default_datadir()
+        harness.answer(Rule("admin-datadir"))
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert (
+            "............ DUMPING HOST PRIORITY FILE ............\n"
+            f"{HOST_PRIORITY}"
+            "............ END OF DUMPING HOST PRIORITY FILE ............\n"
+        ) in result.stdout
+        assert "Could not read admin-datadir" not in result.stdout
+
     def test_table_filter_applies_to_real_tables_only(self, harness):
         """Match ``--table`` against the real names alone."""
         harness.notice = NOTICE
@@ -421,6 +526,32 @@ class TestNoticeOnSuccess:
             "mysql_servers",
             "mysql_users",
         ]
+
+
+class TestTableFilter:
+    """Accept ``--table`` with its name in either of the usual option forms."""
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            pytest.param(("--table", "users"), id="separate"),
+            pytest.param(
+                ("--table=users",),
+                id="attached",
+                marks=pytest.mark.skipif(
+                    not _has_gnu_getopt(),
+                    reason="only GNU getopt splits an attached option value",
+                ),
+            ),
+        ],
+    )
+    def test_dumps_only_matching_tables(self, harness, args):
+        """Dump the tables whose name contains the filter, and only those."""
+        result = harness.run("--main", *args)
+
+        assert result.returncode == 0, result.stdout
+        assert _dumped_tables(result.stdout) == ["mysql_users"]
+        assert len(_dump_queries(harness.calls)) == 1
 
 
 class TestFailureKeepsClientError:
@@ -469,6 +600,27 @@ class TestFailureKeepsClientError:
 
         assert NOTICE in result.stdout
         assert ACCESS_DENIED in result.stdout
+        assert _dump_queries(harness.calls) == []
+
+    def test_failure_quotes_output_then_error(self, harness):
+        """Quote what the client printed on stdout, then its error on the next line."""
+        harness.answer(Rule("SHOW TABLES", "partial\n", f"{ACCESS_DENIED}\n", 1))
+
+        result = harness.run("--main")
+
+        assert f"(check --defaults-file): partial\n{ACCESS_DENIED}\n" in result.stdout
+        assert _dump_queries(harness.calls) == []
+
+    def test_silent_failure_still_reports_the_listing(self, harness):
+        """Report the failed listing even when the client printed nothing."""
+        harness.answer(Rule("SHOW TABLES", status=1))
+
+        result = harness.run("--main")
+
+        assert (
+            "Could not list the main tables from the ProxySQL admin interface "
+            "(check --defaults-file): \n"
+        ) in result.stdout
         assert _dump_queries(harness.calls) == []
 
     def test_failure_drops_mylogin_notice(self, harness):
@@ -580,6 +732,47 @@ class TestTempFiles:
         result = harness.run("--main")
 
         assert _dumped_tables(result.stdout) == ["mysql_servers", "mysql_users"]
+
+    def test_failing_mktemp_still_dumps_real_tables_beside_notice(self, harness):
+        """Dump the real tables when the fallback merges the notice back in.
+
+        Without a file for stderr the listing falls back to the merged stream,
+        so each word of the notice is tried as a table too: the price of keeping
+        the error text when ``mktemp`` fails.
+        """
+        harness.break_mktemp()
+        harness.notice = NOTICE
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert "Could not list" not in result.stdout
+        assert _dumped_tables(result.stdout) == [
+            *NOTICE.split(),
+            "mysql_servers",
+            "mysql_users",
+        ]
+
+    def test_killed_run_removes_temp_file(self, harness):
+        """Remove the captured stream when a timeout kills the run mid-query."""
+        harness.pin_mktemp()
+        (harness.root / "hang").touch()
+        proc = harness.spawn("--main")
+        try:
+            deadline = time.monotonic() + 30
+            while not harness.calls and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert harness.calls, "the script never reached the client"
+
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=30)
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+
+        assert harness.temp_files
+        assert not any(path.exists() for path in harness.temp_files)
 
     def test_failing_mktemp_still_reports_error(self, harness):
         """Fall back to the merged stream rather than losing the client's error."""
