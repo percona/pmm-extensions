@@ -442,14 +442,14 @@
 | app/tasks/anonymizer/anonymize.py                                                                                                   |       56 |        0 |       18 |        3 |     96% |75-\>82, 97-\>104, 118-\>122 |
 | app/tasks/anonymizer/config.py                                                                                                      |       30 |        1 |        6 |        1 |     94% |        81 |
 | app/tasks/anonymizer/entities.py                                                                                                    |       28 |        0 |        2 |        0 |    100% |           |
-| app/tasks/celery.py                                                                                                                 |      384 |       10 |       88 |        8 |     96% |281-\>295, 290-\>292, 507, 580-584, 769, 776-\>780, 835, 1038, 1107, 1130-1131, 1234-\>1249 |
+| app/tasks/celery.py                                                                                                                 |      388 |       10 |       88 |        8 |     96% |287-\>301, 296-\>298, 513, 586-590, 788, 795-\>799, 854, 1057, 1126, 1149-1150, 1253-\>1268 |
 | app/tasks/config.py                                                                                                                 |       67 |        0 |       12 |        0 |    100% |           |
 | app/tasks/connectivity/constants.py                                                                                                 |        5 |        0 |        0 |        0 |    100% |           |
 | app/tasks/connectivity/models.py                                                                                                    |       11 |        0 |        0 |        0 |    100% |           |
 | app/tasks/connectivity/payload.py                                                                                                   |       70 |        1 |        8 |        1 |     97% |       170 |
 | app/tasks/connectivity/routes.py                                                                                                    |       16 |        0 |        2 |        0 |    100% |           |
 | app/tasks/connectivity/service.py                                                                                                   |      146 |        2 |       54 |        6 |     96% |173, 432-\>431, 452-\>451, 458-\>457, 473, 485-\>484 |
-| app/tasks/crud.py                                                                                                                   |      303 |        5 |       80 |        6 |     97% |199, 608-\>610, 611, 613, 738, 928 |
+| app/tasks/crud.py                                                                                                                   |      318 |        5 |       80 |        6 |     97% |200, 609-\>611, 612, 614, 739, 929 |
 | app/tasks/db/engine.py                                                                                                              |        7 |        0 |        0 |        0 |    100% |           |
 | app/tasks/db/seed.py                                                                                                                |      149 |       11 |       38 |        6 |     89% |828-\>841, 842-\>856, 1104-1125, 1136, 1148, 1181 |
 | app/tasks/deps.py                                                                                                                   |      110 |        3 |       30 |        0 |     98% |     64-66 |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33860** | **1910** | **8184** |  **680** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33879** | **1910** | **8184** |  **680** | **93%** |           |
 
 
 ## Setup coverage badge
