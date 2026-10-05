@@ -35,9 +35,12 @@ from collections.abc import (
     AsyncGenerator,
     AsyncIterable,
     AsyncIterator,
+    Awaitable,
+    Callable,
     Generator,
     Iterable,
     Mapping,
+    Sequence,
 )
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
@@ -371,6 +374,37 @@ async def _iter_lines_from_chunks(
         yield bytes(buffer)
 
 
+async def _close_logging_failures(
+    clients: Sequence["BaseRemoteAPI"],
+    close: Callable[["BaseRemoteAPI"], Awaitable[None]] | None = None,
+    *,
+    action: str = "closing",
+) -> None:
+    """Close each client; log failures without raising.
+
+    :param clients: Clients to close.
+    :param close: Per-client close factory; defaults to each client's
+        :meth:`~BaseRemoteAPI.close`.
+    :param action: Verb interpolated into the warning (``closing``,
+        ``force-closing``).
+    """
+    if not clients:
+        return
+    closer = close or (lambda client: client.close())
+    results = await asyncio.gather(
+        *(closer(client) for client in clients),
+        return_exceptions=True,
+    )
+    for client, result in zip(clients, results, strict=False):
+        if isinstance(result, Exception):
+            client.logger.warning(
+                "Error %s client %s: %s",
+                action,
+                client.redacted_base_url,
+                result,
+            )
+
+
 class PendingCloses:
     """Track clients whose :meth:`BaseRemoteAPI.close_when_idle` deferred a close.
 
@@ -456,17 +490,7 @@ class PendingCloses:
             return
         for client in clients:
             client.clear_hold_triggered_close()
-        results = await asyncio.gather(
-            *(client.close() for client in clients),
-            return_exceptions=True,
-        )
-        for client, result in zip(clients, results, strict=False):
-            if isinstance(result, Exception):
-                client.logger.warning(
-                    "Error force-closing client %s: %s",
-                    client.redacted_base_url,
-                    result,
-                )
+        await _close_logging_failures(clients, action="force-closing")
 
 
 class BaseRemoteAPI(BaseCaseInsensitiveModel):

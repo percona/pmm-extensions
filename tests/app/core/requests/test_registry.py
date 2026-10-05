@@ -194,8 +194,9 @@ async def test_close_all_still_force_closes_when_active_result_handling_raises(
                 await original_close(self)
 
             mocker.patch.object(RemoteAPI, "close", close_active_fails)
-            mocker.patch(
-                "app.core.requests.registry.logger.warning",
+            mocker.patch.object(
+                active.logger,
+                "warning",
                 side_effect=RuntimeError("log boom"),
             )
 

@@ -18,15 +18,18 @@
 __all__ = ["ClientRegistry"]
 
 import asyncio
-import logging
 from collections import defaultdict
 from collections.abc import Hashable
 from typing import Any, ClassVar, TypeVar
 
-from app.core.requests.remote_api import BaseRemoteAPI, PendingCloses, RemoteAPI
+from app.core.requests.remote_api import (
+    _close_logging_failures,
+    BaseRemoteAPI,
+    PendingCloses,
+    RemoteAPI,
+)
 
 T = TypeVar("T", bound=BaseRemoteAPI)
-logger = logging.getLogger(__name__)
 
 
 class ClientRegistry:
@@ -160,18 +163,10 @@ class ClientRegistry:
             for client in clients:
                 client.remember_pending_close(self._pending_closes)
 
-        results = await asyncio.gather(
-            *(
-                client.close_when_idle(pending=self._pending_closes)
-                for client in clients
-            ),
-            return_exceptions=True,
+        await _close_logging_failures(
+            clients,
+            close=lambda client: client.close_when_idle(pending=self._pending_closes),
         )
-        for client, result in zip(clients, results, strict=False):
-            if isinstance(result, Exception):
-                logger.warning(
-                    "Error closing client %s: %s", client.redacted_base_url, result
-                )
 
     async def close_all(self) -> None:
         """Close all RemoteAPI clients and clear the registry.
@@ -198,18 +193,7 @@ class ClientRegistry:
 
         try:
             try:
-                if clients:
-                    results = await asyncio.gather(
-                        *(client.close() for client in clients),
-                        return_exceptions=True,
-                    )
-                    for client, result in zip(clients, results, strict=False):
-                        if isinstance(result, Exception):
-                            logger.warning(
-                                "Error closing client %s: %s",
-                                client.redacted_base_url,
-                                result,
-                            )
+                await _close_logging_failures(clients)
             finally:
                 await self._pending_closes.force_close()
         finally:
