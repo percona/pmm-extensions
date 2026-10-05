@@ -18,7 +18,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from unittest.mock import patch
 
 import pytest
@@ -781,6 +781,56 @@ class TestDrainOnRebind:
             assert remote_api._close_when_idle is False
 
         await pending.force_close()
+
+    async def test_force_close_while_stream_awaits_response(self) -> None:
+        """Force-close while ``stream_chunks`` is still awaiting the upstream response.
+
+        Unlike the bare-``hold()`` cases, this keeps a real request in flight so
+        shutdown's sweep is exercised against an open socket, not only the
+        accounting flag the ticket asked to verify.
+        """
+        pending = PendingCloses()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handler(_request: web.Request) -> web.Response:
+            entered.set()
+            await release.wait()
+            return web.Response(body=b"chunk")
+
+        server = web.Application()
+        server.router.add_route("*", "/{tail:.*}", handler)
+        runner = web.AppRunner(server)
+        await runner.setup()
+        task: asyncio.Task[list[bytes]] | None = None
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            _, port = runner.addresses[0][:2]
+            api = RemoteAPI(endpoint=f"http://127.0.0.1:{port}/")
+            await api.open()
+
+            async def consume() -> list[bytes]:
+                return [chunk async for chunk in api.stream_chunks("/slow/")]
+
+            task = asyncio.create_task(consume())
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            await api.close_when_idle(pending=pending)
+            assert id(api) in pending._clients
+            assert api._session is not None
+
+            await pending.force_close()
+            assert api._session is None
+            assert pending._clients == {}
+            assert api._close_when_idle is False
+        finally:
+            release.set()
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                with suppress(Exception, asyncio.CancelledError):
+                    await task
+            await runner.cleanup()
 
     async def test_force_close_clears_flag_so_hold_does_not_close_again(
         self, remote_api, mocker

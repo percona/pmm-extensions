@@ -174,76 +174,81 @@ async def _rebind_inventory_under_hold(app: FastAPI):
 
 
 @pytest.mark.asyncio
-async def test_extensions_lifespan_force_closes_deferred_retiree_on_normal_exit(
-    mocker,
-) -> None:
-    """Sweep a mid-hold app.state retiree through ``extensions_lifespan``'s normal exit."""
-    app = FastAPI()
-    hold = None
-    new = None
-    try:
-        async with _stubbed_extensions_lifespan(mocker, app):
-            old, new, hold = await _rebind_inventory_under_hold(app)
+class TestAppStateShutdownSweep:
+    """Cover ``extensions_lifespan`` teardown of active and deferred RemoteAPI clients."""
 
-        assert old._session is None
-        assert app.state.retired_remote_apis.sealed
-    finally:
-        if hold is not None:
-            await hold.__aexit__(None, None, None)
-        if new is not None and new._session is not None:
-            await new.close()
-        extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+    async def test_extensions_lifespan_force_closes_deferred_retiree_on_normal_exit(
+        self,
+        mocker,
+    ) -> None:
+        """Sweep a mid-hold app.state retiree through ``extensions_lifespan``'s normal exit."""
+        app = FastAPI()
+        hold = None
+        new = None
+        try:
+            async with _stubbed_extensions_lifespan(mocker, app):
+                old, new, hold = await _rebind_inventory_under_hold(app)
 
+            assert old._session is None
+            assert app.state.retired_remote_apis.sealed
+        finally:
+            if hold is not None:
+                await hold.__aexit__(None, None, None)
+            if new is not None and new._session is not None:
+                await new.close()
+            extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
 
-@pytest.mark.asyncio
-async def test_extensions_lifespan_force_closes_deferred_retiree_on_body_error(
-    mocker,
-) -> None:
-    """Sweep a mid-hold retiree when the lifespan body raises (finally still runs)."""
-    app = FastAPI()
-    hold = None
-    new = None
-    old = None
+    async def test_extensions_lifespan_force_closes_deferred_retiree_on_body_error(
+        self,
+        mocker,
+    ) -> None:
+        """Sweep a mid-hold retiree when the lifespan body raises (finally still runs)."""
+        app = FastAPI()
+        hold = None
+        new = None
+        old = None
 
-    async def _body_that_raises() -> None:
-        nonlocal old, new, hold
-        async with _stubbed_extensions_lifespan(mocker, app):
-            old, new, hold = await _rebind_inventory_under_hold(app)
-            raise RuntimeError("body boom")
+        async def _body_that_raises() -> None:
+            nonlocal old, new, hold
+            async with _stubbed_extensions_lifespan(mocker, app):
+                old, new, hold = await _rebind_inventory_under_hold(app)
+                raise RuntimeError("body boom")
 
-    try:
-        with pytest.raises(RuntimeError, match="body boom"):
-            await _body_that_raises()
+        try:
+            with pytest.raises(RuntimeError, match="body boom"):
+                await _body_that_raises()
 
-        assert old is not None
-        assert old._session is None
-        assert app.state.retired_remote_apis.sealed
-    finally:
-        if hold is not None:
-            await hold.__aexit__(None, None, None)
-        if new is not None and new._session is not None:
-            await new.close()
-        extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+            assert old is not None
+            assert old._session is None
+            assert app.state.retired_remote_apis.sealed
+        finally:
+            if hold is not None:
+                await hold.__aexit__(None, None, None)
+            if new is not None and new._session is not None:
+                await new.close()
+            extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
 
+    async def test_close_app_state_remote_apis_continues_after_tasks_close_fails(
+        self,
+    ) -> None:
+        """Continue inventory close and pending sweep when ``tasks_api.__aexit__`` raises."""
+        app = FastAPI()
+        pending = PendingCloses()
+        app.state.retired_remote_apis = pending
+        app.state.tasks_api = AsyncMock()
+        app.state.tasks_api.__aexit__ = AsyncMock(
+            side_effect=RuntimeError("tasks boom")
+        )
+        app.state.inventory_api = AsyncMock()
+        app.state.inventory_api.__aexit__ = AsyncMock()
+        pending.force_close = AsyncMock()
 
-@pytest.mark.asyncio
-async def test_close_app_state_remote_apis_continues_after_tasks_close_fails() -> None:
-    """Continue inventory close and pending sweep when ``tasks_api.__aexit__`` raises."""
-    app = FastAPI()
-    pending = PendingCloses()
-    app.state.retired_remote_apis = pending
-    app.state.tasks_api = AsyncMock()
-    app.state.tasks_api.__aexit__ = AsyncMock(side_effect=RuntimeError("tasks boom"))
-    app.state.inventory_api = AsyncMock()
-    app.state.inventory_api.__aexit__ = AsyncMock()
-    pending.force_close = AsyncMock()
+        with pytest.raises(RuntimeError, match="tasks boom"):
+            await _close_app_state_remote_apis(app)
 
-    with pytest.raises(RuntimeError, match="tasks boom"):
-        await _close_app_state_remote_apis(app)
-
-    assert pending.sealed
-    app.state.inventory_api.__aexit__.assert_awaited_once()
-    pending.force_close.assert_awaited_once()
+        assert pending.sealed
+        app.state.inventory_api.__aexit__.assert_awaited_once()
+        pending.force_close.assert_awaited_once()
 
 
 @pytest.fixture
