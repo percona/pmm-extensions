@@ -334,7 +334,8 @@ Host = client-host
 [mysql]
 Password = mysql-secret
 Database = appdb
-"""
+""",
+        encoding="utf-8",
     )
     return config_file
 
