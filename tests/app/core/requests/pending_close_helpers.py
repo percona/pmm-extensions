@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Shared helpers for pausing :meth:`~app.core.requests.remote_api.BaseRemoteAPI.close_when_idle`."""
+"""Provide helpers that pause :meth:`~app.core.requests.remote_api.BaseRemoteAPI.close_when_idle`."""
 
 from __future__ import annotations
 

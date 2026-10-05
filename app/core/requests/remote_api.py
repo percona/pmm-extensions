@@ -749,13 +749,11 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     def remember_pending_close(self, pending: PendingCloses) -> bool:
         """Register on ``pending`` so a shutdown sweep can still force-close us.
 
-        Callers register *before* publishing a replacement or awaiting
+        Callers must register *before* publishing a replacement or awaiting
         :meth:`close_when_idle`, so a concurrent seal/sweep cannot miss a
-        client that has left the live slot but not yet deferred. Cache owners
-        (the RemoteAPI registry, NomadLifecycle) do that under their eviction
-        lock; the app.state rebinder does it on the same no-await stretch
-        between the sealed check and ``setattr``. Idempotent when already
-        registered on ``pending``.
+        client that has left the live slot but not yet deferred. Prefer doing
+        that under the same lock (or on the same no-await stretch) as the
+        eviction or swap. Idempotent when already registered on ``pending``.
 
         :param pending: The calling owner's deferred-close collection.
         :return: ``True`` when registered for deferred close, ``False`` when
