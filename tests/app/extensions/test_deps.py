@@ -15,8 +15,9 @@
 
 """Define tests for base PMM Extensions dependencies."""
 
+import asyncio
 import inspect
-from typing import Annotated
+from typing import Annotated, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import unquote
 
@@ -82,6 +83,7 @@ from app.extensions.deps import (
     resolve_ambient_session_token,
     resolve_pmm_api,
     task_path,
+    USERNAME_MAPPING_FAILURE_WINDOW,
 )
 from app.extensions.inventory import CreatedNode, CreatedSchema
 from app.extensions.models import (
@@ -536,6 +538,127 @@ class TestGetUsernameMapping:
         assert sorted(mapping.values()) == sorted(
             row["login"] for row in grafana_org_users
         )
+
+
+@pytest.mark.usefixtures("clock")
+class TestUsernameMappingFailureWindow:
+    """Test that ``get_username_mapping`` remembers a failed listing for a window."""
+
+    @pytest.fixture
+    def clock(self, mocker: MockerFixture) -> list[float]:
+        """Patch the module clock with a hand-advanced value."""
+        now = [1000.0]
+        mocker.patch("app.extensions.deps.monotonic", side_effect=lambda: now[0])
+        return now
+
+    @staticmethod
+    def _patch_actors(mocker: MockerFixture, **kwargs: Any) -> AsyncMock:
+        """Replace ``User.get_actors`` with an ``AsyncMock`` built from ``kwargs``."""
+        return mocker.patch(
+            "app.extensions.deps.User.get_actors", new=mocker.AsyncMock(**kwargs)
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failure_is_remembered_inside_the_window(
+        self, mocker: MockerFixture, clock: list[float]
+    ) -> None:
+        """Assert a call just inside the window skips the provider."""
+        get_actors = self._patch_actors(mocker, side_effect=TimeoutError())
+
+        assert await get_username_mapping() == {}
+        clock[0] += USERNAME_MAPPING_FAILURE_WINDOW - 0.1
+        assert await get_username_mapping() == {}
+
+        get_actors.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_provider_is_retried_once_the_window_ends(
+        self, mocker: MockerFixture, clock: list[float]
+    ) -> None:
+        """Assert the first call after the window reaches the provider again."""
+        user = CasdoorUserFactory.build()
+        get_actors = self._patch_actors(mocker, side_effect=[TimeoutError(), [user]])
+
+        assert await get_username_mapping() == {}
+        clock[0] += USERNAME_MAPPING_FAILURE_WINDOW
+
+        assert await get_username_mapping() == {str(user.id): user.username}
+        assert get_actors.await_count == 2  # noqa: PLR2004
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("actor_count", [1, 0], ids=["actors", "empty"])
+    async def test_a_success_is_not_stored(
+        self, mocker: MockerFixture, actor_count: int
+    ) -> None:
+        """Assert every successful call reaches the provider; its SDK owns caching.
+
+        An empty listing is a success too, not a failure that opens the window.
+        """
+        users = CasdoorUserFactory.batch(actor_count)
+        get_actors = self._patch_actors(mocker, return_value=users)
+        expected = {str(user.id): user.username for user in users}
+
+        assert await get_username_mapping() == expected
+        assert await get_username_mapping() == expected
+
+        assert get_actors.await_count == 2  # noqa: PLR2004
+
+    @pytest.mark.asyncio
+    async def test_cancellation_propagates_without_opening_a_window(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Assert an uncaught exception still raises and leaves no window behind."""
+        get_actors = self._patch_actors(
+            mocker, side_effect=[asyncio.CancelledError(), []]
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await get_username_mapping()
+        await get_username_mapping()
+
+        assert get_actors.await_count == 2  # noqa: PLR2004
+
+    @pytest.mark.asyncio
+    async def test_an_overlapping_success_closes_the_window(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Assert a success landing after a concurrent failure reopens the provider.
+
+        Otherwise callers would keep getting raw ids for the rest of the window
+        although the provider has already answered.
+        """
+        user = CasdoorUserFactory.build()
+        release = asyncio.Event()
+
+        async def first_slow_then_failing() -> list[CasdoorUser]:
+            if get_actors.await_count == 2:  # noqa: PLR2004
+                raise TimeoutError
+            if get_actors.await_count == 1:
+                await release.wait()
+            return [user]
+
+        get_actors = self._patch_actors(mocker, side_effect=first_slow_then_failing)
+
+        pending = asyncio.create_task(get_username_mapping())
+        await asyncio.sleep(0)
+        assert await get_username_mapping() == {}
+        release.set()
+        assert await pending == {str(user.id): user.username}
+
+        assert await get_username_mapping() == {str(user.id): user.username}
+        assert get_actors.await_count == 3  # noqa: PLR2004
+
+    @pytest.mark.asyncio
+    async def test_a_remembered_failure_is_logged_once(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Assert calls answered from the window do not repeat the traceback."""
+        self._patch_actors(mocker, side_effect=TimeoutError())
+
+        await get_username_mapping()
+        await get_username_mapping()
+
+        assert sum(1 for r in caplog.records if r.exc_info) == 1
 
 
 class TestGetInventoryApi:

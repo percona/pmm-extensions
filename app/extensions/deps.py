@@ -17,6 +17,7 @@
 
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from time import monotonic
 from typing import Annotated, Any, Literal, overload
 
 from fastapi import Depends, HTTPException, Request
@@ -249,25 +250,62 @@ async def resolve_ambient_exchange_token(
         return None
 
 
+USERNAME_MAPPING_FAILURE_WINDOW = 30.0
+"""Seconds a failed actor listing is answered with an empty map without a retry."""
+
+
+class FailureWindow:
+    """Remember a failure for a fixed number of seconds after it is observed."""
+
+    def __init__(self, seconds: float) -> None:
+        """Start with no failure remembered."""
+        self.seconds = seconds
+        self._retry_at = float("-inf")
+
+    def is_open(self) -> bool:
+        """Return whether a failure was recorded less than ``seconds`` ago."""
+        return monotonic() < self._retry_at
+
+    def open(self) -> None:
+        """Remember a failure observed now."""
+        self._retry_at = monotonic() + self.seconds
+
+    def close(self) -> None:
+        """Forget any remembered failure."""
+        self._retry_at = float("-inf")
+
+
+username_mapping_failure_window = FailureWindow(USERNAME_MAPPING_FAILURE_WINDOW)
+
+
 async def get_username_mapping() -> dict[str, str]:
     """Create a mapping from actor ID to username using the active auth provider.
 
     Fetch every actor from the active provider (its users plus any identity
     that can run tasks without being listed as a user, such as a Grafana service
-    account) and map each actor's ID to their username. Caching should be
-    implemented in the provider's SDK to avoid repeated API calls.
+    account) and map each actor's ID to their username. A successful listing is
+    not cached here: the provider SDKs already cache it for 300 s.
 
     Any provider failure yields an empty mapping (logged with its traceback) so
-    a display-name lookup never fails the request that asked for it.
+    a display-name lookup never fails the request that asked for it. The SDKs
+    never cache a failure, so it is remembered here for
+    ``USERNAME_MAPPING_FAILURE_WINDOW`` (30 s): calls inside the window return
+    the empty mapping at once instead of each waiting on a downed provider.
 
     :return: A dictionary mapping actor IDs to usernames.
     """
+    if username_mapping_failure_window.is_open():
+        return {}
     try:
         users = await User.get_actors()
-        return {str(user.id): user.username for user in users}
     except Exception:
         logger.exception("Failed to get username mapping from the auth provider")
+        username_mapping_failure_window.open()
         return {}
+    # A concurrent call may have opened the window while this one was in flight;
+    # the provider has answered since, so stop serving raw ids.
+    username_mapping_failure_window.close()
+    return {str(user.id): user.username for user in users}
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
