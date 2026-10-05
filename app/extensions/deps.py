@@ -17,6 +17,7 @@
 
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from contextlib import suppress
 from time import monotonic
 from typing import Annotated, Any, Literal, overload
 
@@ -47,6 +48,7 @@ from app.core.exceptions import (
 from app.core.pagination import fetch_all_dict_items
 from app.core.requests import as_json_object, RemoteAPI
 from app.core.security import is_bearer_authenticated, SAFE_HTTP_METHODS
+from app.core.utils.cache import TTLCache
 from app.core.utils.fields import URL
 from app.extensions.clients.pmm import PMMRemoteAPI
 from app.extensions.config import extensions_settings
@@ -254,28 +256,15 @@ USERNAME_MAPPING_FAILURE_WINDOW = 30.0
 """Seconds a failed actor listing is answered with an empty map without a retry."""
 
 
-class FailureWindow:
-    """Remember a failure for a fixed number of seconds after it is observed."""
-
-    def __init__(self, seconds: float) -> None:
-        """Start with no failure remembered."""
-        self.seconds = seconds
-        self._retry_at = float("-inf")
-
-    def is_open(self) -> bool:
-        """Return whether a failure was recorded less than ``seconds`` ago."""
-        return monotonic() < self._retry_at
-
-    def open(self) -> None:
-        """Remember a failure observed now."""
-        self._retry_at = monotonic() + self.seconds
-
-    def close(self) -> None:
-        """Forget any remembered failure."""
-        self._retry_at = float("-inf")
+_username_mapping_failure: TTLCache[bool] = TTLCache(
+    ttl=USERNAME_MAPPING_FAILURE_WINDOW, maxsize=1, typed=False
+)
+_USERNAME_MAPPING_FAILURE_KEY = ()
 
 
-username_mapping_failure_window = FailureWindow(USERNAME_MAPPING_FAILURE_WINDOW)
+def reset_username_mapping_failure_window() -> None:
+    """Forget any failure ``get_username_mapping`` is remembering."""
+    _username_mapping_failure.clear()
 
 
 async def get_username_mapping() -> dict[str, str]:
@@ -294,17 +283,23 @@ async def get_username_mapping() -> dict[str, str]:
 
     :return: A dictionary mapping actor IDs to usernames.
     """
-    if username_mapping_failure_window.is_open():
+    with _username_mapping_failure.lock, suppress(KeyError):
+        _username_mapping_failure.get(_USERNAME_MAPPING_FAILURE_KEY, monotonic())
         return {}
     try:
         users = await User.get_actors()
     except Exception:
         logger.exception("Failed to get username mapping from the auth provider")
-        username_mapping_failure_window.open()
+        with _username_mapping_failure.lock:
+            now = monotonic()
+            _username_mapping_failure.set(
+                _USERNAME_MAPPING_FAILURE_KEY, value=True, now=now
+            )
+            _username_mapping_failure.evict_if_needed(now)
         return {}
     # A concurrent call may have opened the window while this one was in flight;
     # the provider has answered since, so stop serving raw ids.
-    username_mapping_failure_window.close()
+    reset_username_mapping_failure_window()
     return {str(user.id): user.username for user in users}
 
 

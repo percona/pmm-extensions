@@ -546,14 +546,23 @@ class TestUsernameMappingFailureWindow:
 
     @pytest.fixture
     def clock(self, mocker: MockerFixture) -> list[float]:
-        """Patch the module clock with a hand-advanced value."""
+        """Patch the module clock with a hand-advanced value.
+
+        :param mocker: The pytest-mock fixture that installs the patch.
+        :return: A one-item list holding the current time; advance ``clock[0]``.
+        """
         now = [1000.0]
         mocker.patch("app.extensions.deps.monotonic", side_effect=lambda: now[0])
         return now
 
     @staticmethod
     def _patch_actors(mocker: MockerFixture, **kwargs: Any) -> AsyncMock:
-        """Replace ``User.get_actors`` with an ``AsyncMock`` built from ``kwargs``."""
+        """Replace ``User.get_actors`` with an ``AsyncMock`` built from ``kwargs``.
+
+        :param mocker: The pytest-mock fixture that installs the patch.
+        :param kwargs: Arguments forwarded to ``AsyncMock``, such as ``side_effect``.
+        :return: The installed mock, for await assertions.
+        """
         return mocker.patch(
             "app.extensions.deps.User.get_actors", new=mocker.AsyncMock(**kwargs)
         )

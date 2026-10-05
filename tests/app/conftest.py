@@ -68,7 +68,7 @@ from app.extensions.deps import (
     get_session,
     get_tasks_api,
     require_bearer_for_unsafe_methods,
-    username_mapping_failure_window,
+    reset_username_mapping_failure_window,
 )
 from app.extensions.inventory import (
     CreatedNode,
@@ -277,7 +277,7 @@ def _username_mapping_failure_window_cleared() -> None:
     The window is process-wide, so one test with a failing provider would
     otherwise answer every later test's lookup with an empty mapping.
     """
-    username_mapping_failure_window.close()
+    reset_username_mapping_failure_window()
 
 
 @pytest.fixture(scope="session")
