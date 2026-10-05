@@ -1132,16 +1132,14 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ) -> AsyncGenerator[ClientResponse, None]:
         """Define internal method to perform an HTTP request.
 
-        Yields the aiohttp `ClientResponse` object for further processing.
+        Yields the aiohttp ``ClientResponse`` object for further processing.
 
         :param method: The HTTP method to use for the request.
-        :type method: str
         :param path: The API endpoint path to request.
-        :type path: str
         :param kwargs: Additional keyword arguments to pass to the request.
-        :type kwargs: Any
-        :yield: The aiohttp `ClientResponse` object.
-        :rtype: AsyncGenerator[ClientResponse, None]
+        :yield: The aiohttp ``ClientResponse`` object.
+        :raises RuntimeError: If the client has no open session (never opened,
+            or already closed, including by a shutdown force-close).
         """
         prepared_path = self.prepare_path(path)
         if extra_headers := self._extra_headers.get():
@@ -1166,6 +1164,13 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 extra_sensitive_body_fields=self._extra_sensitive_body_fields.get(),
             ),
         )
+        if self._session is None:
+            # Force-close (and a never-opened client) leave ``_session`` as
+            # ``None``; raise clearly instead of ``AttributeError`` on
+            # ``None.request``.
+            raise RuntimeError(
+                f"RemoteAPI client for {self.redacted_base_url} is closed"
+            )
         async with (
             self.hold(),
             self._session.request(method, prepared_path, **kwargs) as response,

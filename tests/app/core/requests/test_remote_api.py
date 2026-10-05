@@ -782,6 +782,20 @@ class TestDrainOnRebind:
 
         await pending.force_close()
 
+    async def test_request_after_force_close_raises_client_closed(
+        self, remote_api
+    ) -> None:
+        """Raise a clear error when a holder calls again after force-close."""
+        pending = PendingCloses()
+        await remote_api.open()
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            await pending.force_close()
+            with pytest.raises(RuntimeError, match="is closed"):
+                async with remote_api._request("GET", "/after-close/"):
+                    pass
+
     async def test_force_close_while_stream_awaits_response(self) -> None:
         """Force-close while ``stream_chunks`` is still awaiting the upstream response.
 
