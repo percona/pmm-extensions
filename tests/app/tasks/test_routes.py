@@ -64,7 +64,6 @@ from app.tasks.execution_request_secrets import (
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.main import tasks_app
 from app.tasks.models import (
-    DispatchLock,
     ExecutionEvent,
     ExecutorHostState,
     LogCaptureStatusEnum,
@@ -2669,12 +2668,17 @@ async def test_execute_task_name_refreshes_execution_request_before_annotation(
         "app.tasks.celery.DispatchLockManager.delete_where",
         new_callable=AsyncMock,
     )
+    # The lock row is added and committed on its own session now, rather than
+    # through ``DispatchLockManager.create``, so the session maker is what has to
+    # be stubbed: this test runs against SQLite, which has no dispatchlock table.
+    lock_session = AsyncMock()
+    lock_session_cm = AsyncMock()
+    lock_session_cm.__aenter__ = AsyncMock(return_value=lock_session)
+    lock_session_cm.__aexit__ = AsyncMock(return_value=False)
     mocker.patch(
-        "app.tasks.celery.DispatchLockManager.create",
-        new_callable=AsyncMock,
-        return_value=MagicMock(spec=DispatchLock),
+        "app.tasks.celery.get_async_session_maker",
+        return_value=MagicMock(return_value=lock_session_cm),
     )
-    mocker.patch("app.tasks.celery.DispatchLockManager.delete", new_callable=AsyncMock)
     mocker.patch(
         "app.tasks.celery._raise_if_identical_task_conflict", new_callable=AsyncMock
     )
