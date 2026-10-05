@@ -13,15 +13,20 @@
         "type": "string"
       },
       "AppInfo": {
-        "description": "Represent the response of ``GET /api/extensions/app-info``.\n\n:param footer_text: The rendered sidebar footer text (application summary\n    and version by default).",
+        "description": "Represent the response of ``GET /api/extensions/app-info``.\n\n:param footer_text: The rendered sidebar footer text (application summary\n    and version by default).\n:param version: The running PMM Extensions version, identical to the\n    OpenAPI ``info.version``. Independent of ``FOOTER_TEMPLATE``.",
         "properties": {
           "footer_text": {
             "title": "Footer Text",
             "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
           }
         },
         "required": [
-          "footer_text"
+          "footer_text",
+          "version"
         ],
         "title": "AppInfo",
         "type": "object"
@@ -23442,7 +23447,7 @@
     },
     "/api/extensions/app-info/": {
       "get": {
-        "description": "Return shell metadata for the React frontend.\n\nRender ``footer_text`` from the shared :func:`render_footer_text` helper.\nThe helper reads the hot ``FOOTER_TEMPLATE`` setting per request, so a live\n``EXTENSIONS__FOOTER_TEMPLATE`` override is reflected without a restart.\nAccess is gated by the router-level ``IsApiAuthenticated`` dependency.\n\n:return: The rendered footer text.",
+        "description": "Return shell metadata for the React frontend.\n\nRender ``footer_text`` from the shared :func:`render_footer_text` helper.\nThe helper reads the hot ``FOOTER_TEMPLATE`` setting per request, so a live\n``EXTENSIONS__FOOTER_TEMPLATE`` override is reflected without a restart.\nAccess is gated by the router-level ``IsApiAuthenticated`` dependency.\n\n:return: The rendered footer text and the running version.",
         "operationId": "extensions_get_app_info_api_extensions_app_info__get",
         "responses": {
           "200": {

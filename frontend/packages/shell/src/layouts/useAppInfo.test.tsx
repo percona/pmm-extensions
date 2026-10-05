@@ -34,10 +34,14 @@ function wrapper({ children }: { children: ReactNode }) {
 
 describe('useAppInfo', () => {
   it('fetches and returns the rendered footer text', async () => {
-    server.use(http.get(APP_INFO_URL, () => HttpResponse.json({ footer_text: 'Footer v9.9.9' })));
+    server.use(
+      http.get(APP_INFO_URL, () =>
+        HttpResponse.json({ footer_text: 'Footer v9.9.9', version: 'v9.9.9' }),
+      ),
+    );
     const { result } = renderHook(() => useAppInfo(), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data).toEqual({ footer_text: 'Footer v9.9.9' });
+    expect(result.current.data).toEqual({ footer_text: 'Footer v9.9.9', version: 'v9.9.9' });
   });
 
   it('surfaces an error when the request fails', async () => {

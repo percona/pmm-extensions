@@ -3643,7 +3643,7 @@ export interface paths {
      *     ``EXTENSIONS__FOOTER_TEMPLATE`` override is reflected without a restart.
      *     Access is gated by the router-level ``IsApiAuthenticated`` dependency.
      *
-     *     :return: The rendered footer text.
+     *     :return: The rendered footer text and the running version.
      */
     get: operations['extensions_get_app_info_api_extensions_app_info__get'];
     put?: never;
@@ -4230,10 +4230,14 @@ export interface components {
      *
      *     :param footer_text: The rendered sidebar footer text (application summary
      *         and version by default).
+     *     :param version: The running PMM Extensions version, identical to the
+     *         OpenAPI ``info.version``. Independent of ``FOOTER_TEMPLATE``.
      */
     AppInfo: {
       /** Footer Text */
       footer_text: string;
+      /** Version */
+      version: string;
     };
     /**
      * AppInfoResponse

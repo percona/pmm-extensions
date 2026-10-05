@@ -25,6 +25,7 @@ override applies without restarting the application.
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app import __version__
 from app.extensions.deps import render_footer_text
 
 router = APIRouter()
@@ -35,9 +36,12 @@ class AppInfo(BaseModel):
 
     :param footer_text: The rendered sidebar footer text (application summary
         and version by default).
+    :param version: The running PMM Extensions version, identical to the
+        OpenAPI ``info.version``. Independent of ``FOOTER_TEMPLATE``.
     """
 
     footer_text: str
+    version: str
 
 
 @router.get("/")
@@ -49,6 +53,6 @@ async def get_app_info() -> AppInfo:
     ``EXTENSIONS__FOOTER_TEMPLATE`` override is reflected without a restart.
     Access is gated by the router-level ``IsApiAuthenticated`` dependency.
 
-    :return: The rendered footer text.
+    :return: The rendered footer text and the running version.
     """
-    return AppInfo(footer_text=render_footer_text())
+    return AppInfo(footer_text=render_footer_text(), version=__version__)
