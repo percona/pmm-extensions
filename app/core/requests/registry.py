@@ -154,24 +154,20 @@ class ClientRegistry:
                 self._locks.pop(key, None)
             if not matching:
                 return
-            deferred: list[BaseRemoteAPI] = []
-            immediate: list[BaseRemoteAPI] = []
-            for _key, client in matching:
-                if client.remember_pending_close(self._pending_closes):
-                    deferred.append(client)
-                else:
-                    immediate.append(client)
+            # Always succeeds: close_all seals only after setting closed, and
+            # we return early on closed under this same lock.
+            clients = [client for _key, client in matching]
+            for client in clients:
+                client.remember_pending_close(self._pending_closes)
 
-        closing = immediate + deferred
         results = await asyncio.gather(
-            *(client.close() for client in immediate),
             *(
                 client.close_when_idle(pending=self._pending_closes)
-                for client in deferred
+                for client in clients
             ),
             return_exceptions=True,
         )
-        for client, result in zip(closing, results, strict=False):
+        for client, result in zip(clients, results, strict=False):
             if isinstance(result, Exception):
                 logger.warning(
                     "Error closing client %s: %s", client.redacted_base_url, result

@@ -206,7 +206,6 @@ class NomadLifecycle:
         desired_config = desired.model_dump(
             mode="json", context=PRESERVE_CREDENTIALS_CONTEXT
         )
-        close_immediately = False
         old: NomadExecutor | None = None
         async with self._lock:
             if self._closing:
@@ -216,10 +215,9 @@ class NomadLifecycle:
             new = await desired.__aenter__()
             old, self._current = self._current, new
             self._current_config = desired_config
-            if old is not None and not old.remember_pending_close(self._pending_closes):
-                close_immediately = True
+            if old is not None:
+                # Always succeeds: __aexit__ seals only after setting _closing,
+                # and we return early on _closing under this same lock.
+                old.remember_pending_close(self._pending_closes)
         if old is not None:
-            if close_immediately:
-                await old.close()
-            else:
-                await old.close_when_idle(pending=self._pending_closes)
+            await old.close_when_idle(pending=self._pending_closes)
