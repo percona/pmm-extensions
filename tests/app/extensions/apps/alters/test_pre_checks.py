@@ -93,7 +93,7 @@ class TestCheckDiskSpace:
     def test_passes_when_free_space_exceeds_table_size(
         self, mocker: MockerFixture
     ) -> None:
-        """Free space above the table size lets the alter proceed."""
+        """Assert free space above the table size lets the alter proceed."""
         checks = _make_checks()
         _connect_with_cursor(mocker, checks, fetchone=_disk_queries())
         usage = _patch_disk_usage(mocker, free_mb=200)
@@ -107,7 +107,7 @@ class TestCheckDiskSpace:
         mocker: MockerFixture,
         free_mb: float,
     ) -> None:
-        """Free space at or below the table size blocks the alter."""
+        """Assert free space at or below the table size blocks the alter."""
         checks = _make_checks()
         _connect_with_cursor(mocker, checks, fetchone=_disk_queries())
         usage = _patch_disk_usage(mocker, free_mb=free_mb)
@@ -116,7 +116,7 @@ class TestCheckDiskSpace:
         usage.assert_called_once_with(_DATADIR)
 
     def test_fails_when_table_size_is_unknown(self, mocker: MockerFixture) -> None:
-        """A missing table size stops the check before the filesystem is touched."""
+        """Assert a missing table size stops the check before the filesystem is touched."""
         checks = _make_checks()
         _connect_with_cursor(mocker, checks, fetchone=[None])
         usage = _patch_disk_usage(mocker, free_mb=200)
@@ -125,7 +125,7 @@ class TestCheckDiskSpace:
         usage.assert_not_called()
 
     def test_fails_when_datadir_is_missing(self, mocker: MockerFixture) -> None:
-        """A missing datadir stops the check before the filesystem is touched."""
+        """Assert a missing datadir stops the check before the filesystem is touched."""
         checks = _make_checks()
         _connect_with_cursor(mocker, checks, fetchone=[(_TABLE_SIZE_MB,), None])
         usage = _patch_disk_usage(mocker, free_mb=200)
@@ -134,7 +134,7 @@ class TestCheckDiskSpace:
         usage.assert_not_called()
 
     def test_fails_when_disk_usage_raises(self, mocker: MockerFixture) -> None:
-        """An unreadable datadir partition fails the disk check."""
+        """Assert an unreadable datadir partition fails the disk check."""
         checks = _make_checks()
         _connect_with_cursor(mocker, checks, fetchone=_disk_queries())
         usage = mocker.patch(
@@ -176,7 +176,7 @@ class TestCheckForeignKeyReferences:
     def test_passes_when_nothing_references_the_table(
         self, mocker: MockerFixture
     ) -> None:
-        """No referencing foreign keys lets the alter proceed."""
+        """Assert no referencing foreign keys lets the alter proceed."""
         checks = _make_checks()
         cursor = _connect_with_cursor(mocker, checks, fetchall=[[]])
 
@@ -191,7 +191,7 @@ class TestCheckForeignKeyReferences:
     def test_fails_when_a_foreign_key_references_the_table(
         self, mocker: MockerFixture
     ) -> None:
-        """A referencing foreign key blocks the alter."""
+        """Assert a referencing foreign key blocks the alter."""
         checks = _make_checks()
         cursor = _connect_with_cursor(mocker, checks, fetchall=[[_FOREIGN_KEY_ROW]])
 
@@ -204,7 +204,7 @@ class TestCheckForeignKeyReferences:
         )
 
     def test_fails_when_the_cursor_raises(self, mocker: MockerFixture) -> None:
-        """A query error blocks the alter."""
+        """Assert a query error blocks the alter."""
         checks = _make_checks()
         cursor = _connect_with_cursor(
             mocker,
@@ -225,7 +225,7 @@ class TestCheckTableTriggers:
     """Test ``check_table_triggers``."""
 
     def test_passes_when_the_table_has_no_triggers(self, mocker: MockerFixture) -> None:
-        """No triggers lets the alter proceed."""
+        """Assert no triggers lets the alter proceed."""
         checks = _make_checks()
         cursor = _connect_with_cursor(mocker, checks, fetchall=[[]])
 
@@ -238,7 +238,7 @@ class TestCheckTableTriggers:
         )
 
     def test_fails_when_the_table_has_a_trigger(self, mocker: MockerFixture) -> None:
-        """A trigger on the table blocks the alter."""
+        """Assert a trigger on the table blocks the alter."""
         checks = _make_checks()
         cursor = _connect_with_cursor(mocker, checks, fetchall=[[_TRIGGER_ROW]])
 
@@ -251,7 +251,7 @@ class TestCheckTableTriggers:
         )
 
     def test_fails_when_the_cursor_raises(self, mocker: MockerFixture) -> None:
-        """A query error blocks the alter."""
+        """Assert a query error blocks the alter."""
         checks = _make_checks()
         cursor = _connect_with_cursor(
             mocker,
@@ -277,7 +277,7 @@ class TestRunAllChecks:
     """Test ``run_all_checks``."""
 
     def test_passes_when_every_check_passes(self, mocker: MockerFixture) -> None:
-        """Disk, foreign-key, and trigger checks all passing lets the alter proceed."""
+        """Assert disk, foreign-key, and trigger checks all passing lets the alter proceed."""
         checks = _make_checks()
         _connect_with_cursor(
             mocker,
@@ -292,7 +292,7 @@ class TestRunAllChecks:
     def test_skips_disk_space_when_filesystem_checks_are_disabled(
         self, mocker: MockerFixture
     ) -> None:
-        """The skip flag leaves the real disk check uncalled."""
+        """Assert the skip flag leaves the real disk check uncalled."""
         checks = _make_checks(skip_filesystem_checks=True)
         cursor = _connect_with_cursor(mocker, checks, fetchall=[[], []])
         disk_space = mocker.spy(checks, "check_disk_space")
@@ -306,7 +306,7 @@ class TestRunAllChecks:
     def test_fails_when_one_check_fails_and_later_checks_still_run(
         self, mocker: MockerFixture
     ) -> None:
-        """A foreign-key failure fails the aggregate, and the trigger check still runs."""
+        """Assert a foreign-key failure fails the aggregate, and the trigger check still runs."""
         checks = _make_checks()
         cursor = _connect_with_cursor(
             mocker,
@@ -351,20 +351,20 @@ class TestReadMyCnf:
     """Test ``read_my_cnf`` as it behaves today."""
 
     def test_merges_client_and_mysql_sections(self, tmp_path: Path) -> None:
-        """A Path my.cnf returns both sections, with mysql winning shared keys."""
+        """Assert a Path my.cnf returns both sections, with mysql winning shared keys."""
         checks = _make_checks()
 
         assert checks.read_my_cnf(_write_my_cnf(tmp_path)) == _MERGED_MY_CNF
 
     def test_none_raises_attribute_error(self) -> None:
-        """Passing None raises AttributeError."""
+        """Assert None raises AttributeError."""
         checks = _make_checks()
 
         with pytest.raises(AttributeError):
             checks.read_my_cnf(None)
 
     def test_string_path_raises_attribute_error(self, tmp_path: Path) -> None:
-        """Passing a string path raises AttributeError."""
+        """Assert a string path raises AttributeError."""
         checks = _make_checks()
         config_file = _write_my_cnf(tmp_path)
 
