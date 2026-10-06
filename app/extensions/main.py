@@ -205,8 +205,8 @@ async def _reseed_system_periodic_tasks(_: SnapshotChange) -> None:
     ``InventoryAppSettings.COLLECTION_INTERVAL`` (``extensions__inventory_collection``)
     and ``OmInventorySettings.ENABLED``/``SCHEDULE`` (``extensions__run_om_probe``), each
     of which the rebuild seeds or drops as the interval is set or cleared (or, for
-    ``OmInventorySettings``, as PMM's OpenManager switch turns the sweep on or off
-    without touching the configured cadence), since the app's schedule thunk
+    ``OmInventorySettings``, as PMM's Operations for MongoDB switch turns the sweep
+    on or off without touching the configured cadence), since the app's schedule thunk
     contributes nothing while disabled or unset. Rebuilds the system periodic-task
     set via
     :func:`app.extensions.db.seed.get_system_periodic_tasks` -- which re-reads the now-live

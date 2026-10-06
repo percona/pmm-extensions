@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Register OpenManager Bootstrap as a ``BaseApp``.
+"""Register Operations Bootstrap as a ``BaseApp``.
 
 Owns MongoDB provisioning execution: pre-flight checks, install/configure/
 `rs.initiate`, and the persisted run/state-machine history for it — the write
@@ -43,7 +43,7 @@ from app.extensions.apps.om_bootstrap.schema import om_bootstrap_schema
 
 app = BaseApp(
     name="om_bootstrap",
-    display_name="OpenManager Bootstrap",
+    display_name="Operations Bootstrap",
     uri_path="/om_bootstrap",
     css_class="om_bootstrap",
     sidebar=False,

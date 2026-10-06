@@ -38,6 +38,7 @@ becomes a real consumer.
 """
 
 __all__ = [
+    "TERM_MATCH_TIMEOUT_SECONDS",
     "AnyStepValue",
     "CaseMatch",
     "CaseSearchStep",
@@ -63,13 +64,14 @@ __all__ = [
     "UploadStep",
 ]
 
+import asyncio
 import logging
-import re
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Self
 from urllib.parse import urlparse
 
+import regex
 from fastapi import HTTPException
 from pydantic import (
     BaseModel,
@@ -105,6 +107,12 @@ _QUERY_MAP = "query"
 #: no name of its own, and this label is deliberately not reserved against
 #: resolution-step names. ``StepRecord.kind`` is what tells the two apart.
 _UPLOAD_STEP_LABEL = "upload"
+
+#: The longest the case-search term may be held against the plan's pattern. The
+#: match runs on the event-loop thread and holds it until it aborts, so this is
+#: kept far below any route bound; a legitimate pattern over a term as long as
+#: the route's ``MAX_CASE_SEARCH_TERM_LENGTH`` admits finishes in microseconds.
+TERM_MATCH_TIMEOUT_SECONDS = 0.25
 
 
 class LiteralValue(BaseModel):
@@ -390,8 +398,8 @@ class CaseSearchStep(RequestStep):
         :raises ValueError: When the pattern is not a valid regular expression.
         """
         try:
-            re.compile(value)
-        except re.error as err:
+            regex.compile(value)
+        except regex.error as err:
             raise ValueError(
                 f"Case-search term pattern is not a valid regular expression: {err}"
             ) from None
@@ -591,6 +599,22 @@ class DeliveryPlan(BaseModel):
                 available_outputs={},
             )
         return self
+
+
+def _term_match_timeout(bound: asyncio.Timeout | None) -> float:
+    """Return how long the term match may run before it is aborted.
+
+    :param bound: The caller's own timeout, or ``None`` when the caller has none.
+    :return: The match budget in seconds, never above
+        ``TERM_MATCH_TIMEOUT_SECONDS`` and never negative.
+    """
+    deadline = None if bound is None else bound.when()
+    if deadline is None:
+        return TERM_MATCH_TIMEOUT_SECONDS
+    remaining = deadline - asyncio.get_running_loop().time()
+    # ``regex`` reads a negative timeout as no timeout at all, so a spent
+    # deadline must reach it as zero, which aborts at once.
+    return min(TERM_MATCH_TIMEOUT_SECONDS, max(remaining, 0.0))
 
 
 class DeliveryPlanError(Exception):
@@ -839,7 +863,9 @@ class DeliveryPlanExecutor:
                 if not is_non_json_success(err):
                     raise
 
-    async def search_cases(self, term: str) -> list[CaseMatch]:
+    async def search_cases(
+        self, term: str, *, bound: asyncio.Timeout | None = None
+    ) -> list[CaseMatch]:
         """Issue the plan's declared case search for ``term``, sending nothing.
 
         Runs none of the plan's resolution steps and records no step trail: a
@@ -857,11 +883,19 @@ class DeliveryPlanExecutor:
         plan declared and answer with rows the plan never selected; refusing the
         term is the only way to keep the declared query the whole query.
 
+        The match runs on the event-loop thread, where no ``asyncio`` timeout
+        can interrupt it, so it carries its own budget: at most
+        ``TERM_MATCH_TIMEOUT_SECONDS``, and never past ``bound``'s deadline.
+
         :param term: The caller's typed search term.
+        :param bound: The caller's own timeout, whose deadline the match may not
+            outlast, or ``None`` for no bound beyond the match budget.
         :return: The matched cases, in the order the receiver returned them.
         :raises DeliveryPlanError: When the plan declares no case-search step,
-            the term does not match the pattern the plan declares, or the
-            response does not match the pointers the plan declares.
+            the term does not match the pattern the plan declares or cannot be
+            held against it within its budget, or the response does not match
+            the pointers the plan declares. No message echoes the term or the
+            pattern.
         :raises HTTPException: Propagates the project exception ``RemoteAPI``
             raises for an upstream error status, including a redirect the
             receiver answered with.
@@ -869,7 +903,16 @@ class DeliveryPlanExecutor:
         step = self._plan.case_search
         if step is None:
             raise DeliveryPlanError("The delivery plan declares no case-search step.")
-        if re.fullmatch(step.term_pattern, term) is None:
+        try:
+            matched = regex.fullmatch(
+                step.term_pattern, term, timeout=_term_match_timeout(bound)
+            )
+        except TimeoutError:
+            raise DeliveryPlanError(
+                "The search term could not be held against the pattern the plan "
+                "declares in time."
+            ) from None
+        if matched is None:
             raise DeliveryPlanError(
                 "The search term does not match the pattern the plan declares."
             )
