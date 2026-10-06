@@ -61,7 +61,11 @@ RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
 OTHER_RUN_ID = UUID("22222222-2222-4222-8222-222222222222")
 
 
-def _spec(os_: OperatingSystem, run_id: UUID | None = RUN_ID) -> BootstrapSpec:
+def _spec(
+    os_: OperatingSystem,
+    run_id: UUID | None = RUN_ID,
+    member_configs: dict[str, MemberConfig] | None = None,
+) -> BootstrapSpec:
     return BootstrapSpec(
         install_method=InstallMethod.PACKAGES,
         os=os_,
@@ -72,6 +76,7 @@ def _spec(os_: OperatingSystem, run_id: UUID | None = RUN_ID) -> BootstrapSpec:
         log_path="/var/log/mongodb/mongod.log",
         port=27017,
         bind_ip="0.0.0.0",
+        member_configs=member_configs or {},
     )
 
 
@@ -1192,3 +1197,64 @@ class TestRollbackCommands:
         assert not config.exists()
         assert not data.exists()
         assert not marker.exists()
+
+
+class TestPerMemberBindIP:
+    """Assert mongod.conf's bindIp comes from the member when it names one.
+
+    The safe default for a replica-set member is its *own* address, and a
+    three-member set has three different ones -- a single run-level ``bind_ip``
+    can only be ``0.0.0.0`` or wrong for two of the three, which is why
+    ``MemberConfig`` carries one at all (PMM-15664).
+    """
+
+    @staticmethod
+    def _config_for(host: str, spec: BootstrapSpec, step: str) -> str:
+        action = PackagesInstallStrategy().build_step(step, host, spec)
+        return "\n".join(action.command)
+
+    def test_member_bind_ip_wins_over_the_run_level_one(self) -> None:
+        """Use the member's own address where it names one."""
+        spec = _spec(
+            OperatingSystem.UBUNTU,
+            member_configs={"node00": MemberConfig(bind_ip="10.0.0.1")},
+        )
+
+        assert "bindIp: 10.0.0.1" in self._config_for(
+            "node00", spec, "configure_mongod"
+        )
+
+    def test_a_host_the_run_does_not_name_keeps_the_run_level_one(self) -> None:
+        """Leave every other host on the run's value."""
+        spec = _spec(
+            OperatingSystem.UBUNTU,
+            member_configs={"node00": MemberConfig(bind_ip="10.0.0.1")},
+        )
+
+        assert "bindIp: 0.0.0.0" in self._config_for("node01", spec, "configure_mongod")
+
+    def test_a_member_config_without_a_bind_ip_keeps_the_run_level_one(self) -> None:
+        """Treat a member that sets only election settings as naming no address."""
+        spec = _spec(
+            OperatingSystem.UBUNTU,
+            member_configs={"node00": MemberConfig(priority=0, votes=False)},
+        )
+
+        assert "bindIp: 0.0.0.0" in self._config_for("node00", spec, "configure_mongod")
+
+    def test_enable_auth_rewrites_the_same_bind_ip(self) -> None:
+        """Keep the finalize step's rewrite on the member's address too.
+
+        ``enable_auth`` rewrites the whole of mongod.conf, so if it read the
+        run-level value it would silently undo the per-member one several steps
+        after it was applied.
+        """
+        spec = _spec(
+            OperatingSystem.UBUNTU,
+            member_configs={"node00": MemberConfig(bind_ip="10.0.0.1")},
+        )
+        action = PackagesInstallStrategy().build_finalize_step(
+            "enable_auth", "node00", spec
+        )
+
+        assert "bindIp: 10.0.0.1" in "\n".join(action.command)

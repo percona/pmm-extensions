@@ -176,7 +176,15 @@ class TestTriggerRun:
         persistence.
         """
         client = api_client(regular_user, session, _fake_tasks_api())
-        override = {"priority": 0, "votes": False, "hidden": True, "delay_secs": 300}
+        override = {
+            "priority": 0,
+            "votes": False,
+            "hidden": True,
+            "delay_secs": 300,
+            # Echoed back whether or not it was sent, so a PMM that asked for a
+            # per-member address can tell an older side-car from one that applied it.
+            "bind_ip": None,
+        }
         response = client.post(
             f"{BASE}/runs",
             json={

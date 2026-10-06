@@ -86,6 +86,7 @@ from app.extensions.apps.om_bootstrap.strategy import (
     InstallMethod,
     InstallStrategy,
     MemberConfig,
+    NO_CONTROL_CHARS_PATTERN,
     OperatingSystem,
     StepAction,
     StepRecord,
@@ -127,12 +128,10 @@ HostName = Annotated[
 #: the injection vector itself.
 _ABSOLUTE_PATH_PATTERN = r"^(?:/[^/\s\x00]+){2,}$"
 
-#: No whitespace or other control characters. ``replica_set_name`` and
-#: ``bind_ip`` both land in ``mongod.conf`` via a quoted heredoc
-#: (``_mongod_config``, strategies/packages.py) — inert against the *shell*,
-#: since the heredoc delimiter is quoted, but a newline in either value would
-#: still inject an arbitrary extra line into the YAML mongod parses.
-_NO_CONTROL_CHARS_PATTERN = r"^[^\s\x00-\x1f]+$"
+#: Re-exported from :mod:`strategy`, which owns it now that ``MemberConfig``
+#: validates its own per-member ``bind_ip`` against the same rule. One definition,
+#: because two would drift and the weaker one would be the hole.
+_NO_CONTROL_CHARS_PATTERN = NO_CONTROL_CHARS_PATTERN
 
 
 class TriggerRunRequest(BaseModel):

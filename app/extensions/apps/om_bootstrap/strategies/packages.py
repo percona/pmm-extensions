@@ -138,7 +138,7 @@ def _shell_step(body: str, *, timeout_s: int = 30) -> StepAction:
     return StepAction(command=["sh", "-c", body], timeout_s=timeout_s)
 
 
-def _mongod_config(spec: BootstrapSpec, *, with_auth: bool) -> str:
+def _mongod_config(spec: BootstrapSpec, host: str, *, with_auth: bool) -> str:
     """Render ``mongod.conf``'s contents, with or without the security block.
 
     Shared by :meth:`PackagesInstallStrategy._configure_mongod` (``with_auth=False``,
@@ -149,6 +149,8 @@ def _mongod_config(spec: BootstrapSpec, *, with_auth: bool) -> str:
     apart under maintenance.
 
     :param spec: The host's bootstrap spec.
+    :param host: The host this config is for, which decides its ``bindIp``: a
+        member may name its own, and the run-level value applies to the rest.
     :param with_auth: Whether to include ``security.authorization``/``keyFile``.
     :return: The full config file contents, including a trailing newline on the
         last section.
@@ -158,8 +160,13 @@ def _mongod_config(spec: BootstrapSpec, *, with_auth: bool) -> str:
         if with_auth
         else ""
     )
+    # Per-member first, the run's value otherwise. The safe default is a host's own
+    # address, and a three-member set has three different ones -- a single run-level
+    # value can only be 0.0.0.0 or wrong for two of the three.
+    member = spec.member_configs.get(host)
+    bind_ip = (member.bind_ip if member and member.bind_ip else None) or spec.bind_ip
     return (
-        f"net:\n  bindIp: {spec.bind_ip}\n  port: {spec.port}\n"
+        f"net:\n  bindIp: {bind_ip}\n  port: {spec.port}\n"
         f"storage:\n  dbPath: {spec.data_path}\n"
         f"{security}"
         f"replication:\n  replSetName: {spec.replica_set_name}\n"
@@ -327,19 +334,17 @@ class PackagesInstallStrategy:
     def build_step(
         self,
         step_name: str,
-        host: str,  # noqa: ARG002
+        host: str,
         spec: BootstrapSpec,
         params: dict[str, str] | None = None,
     ) -> StepAction:
         """Build the action for one of :meth:`plan_steps`' names.
 
         :param step_name: One of :meth:`plan_steps`' names.
-        :param host: The node name being bootstrapped. Unused by every step below
-            today — each builds a command to run *on* ``host``, not one
-            referencing it — kept in the signature because
-            :class:`~app.extensions.apps.om_bootstrap.strategy.InstallStrategy` requires
-            it and a future step (e.g. one resolving this host's advertised
-            address for ``configure_mongod``) will need it.
+        :param host: The node name being bootstrapped. Used by ``configure_mongod``,
+            whose ``bindIp`` may be this member's own address rather than the run's;
+            every other step builds a command to run *on* ``host`` rather than one
+            naming it, so they ignore it.
         :param spec: The host's bootstrap spec.
         :param params: ``{"key_file_content": ...}`` for ``distribute_keyfile``;
             ignored by every other step.
@@ -354,7 +359,9 @@ class PackagesInstallStrategy:
             "pre_check": self._pre_check,
             "configure_repository": self._configure_repository,
             "install_package": self._install_package,
-            "configure_mongod": self._configure_mongod,
+            # The only two steps that need the host: mongod.conf's bindIp can be
+            # this member's own address rather than the run's.
+            "configure_mongod": lambda s: self._configure_mongod(s, host),
             "start_service": self._start_service,
             "verify": self._verify,
         }
@@ -501,7 +508,7 @@ class PackagesInstallStrategy:
             timeout_s=300,
         )
 
-    def _configure_mongod(self, spec: BootstrapSpec) -> StepAction:
+    def _configure_mongod(self, spec: BootstrapSpec, host: str) -> StepAction:
         """Write ``mongod.conf`` enabling replication, with authorization left off.
 
         Deliberately does **not** set ``security.authorization``/``keyFile`` here,
@@ -572,9 +579,10 @@ class PackagesInstallStrategy:
         own default (``/var/log/mongodb/mongod.log``) does not.
 
         :param spec: The host's bootstrap spec.
+        :param host: The host being configured, which decides its ``bindIp``.
         :return: The step action.
         """
-        config = _mongod_config(spec, with_auth=False)
+        config = _mongod_config(spec, host, with_auth=False)
         quoted_data_path = shlex.quote(spec.data_path)
         quoted_log_dir = shlex.quote(posixpath.dirname(spec.log_path))
         command = (
@@ -788,16 +796,15 @@ class PackagesInstallStrategy:
     def build_finalize_step(
         self,
         step_name: str,
-        host: str,  # noqa: ARG002
+        host: str,
         spec: BootstrapSpec,
         params: dict[str, str] | None = None,  # noqa: ARG002
     ) -> StepAction:
         """Build the action for one of :meth:`plan_finalize_steps`' names.
 
         :param step_name: One of :meth:`plan_finalize_steps`' names.
-        :param host: The node name being finalized. Unused — see
-            :meth:`build_step`'s own docstring on why the signature carries it
-            anyway.
+        :param host: The node name being finalized. Used by ``enable_auth``, which
+            rewrites mongod.conf and therefore needs this member's ``bindIp``.
         :param spec: The host's bootstrap spec.
         :param params: Unused — ``enable_auth`` needs no secret it doesn't
             already have on disk (:data:`KEY_FILE_PATH`, planted by
@@ -807,13 +814,13 @@ class PackagesInstallStrategy:
             :meth:`plan_finalize_steps`' names.
         """
         if step_name == "enable_auth":
-            return self._enable_auth(spec)
+            return self._enable_auth(spec, host)
         raise ValueError(
             f"{step_name!r} is not a PackagesInstallStrategy finalize step; "
             f"expected one of {self.plan_finalize_steps(spec)}"
         )
 
-    def _enable_auth(self, spec: BootstrapSpec) -> StepAction:
+    def _enable_auth(self, spec: BootstrapSpec, host: str) -> StepAction:
         """Turn MongoDB authorization on, now that the first user exists.
 
         Rewrites the *same* :data:`CONFIG_PATH` :meth:`_configure_mongod` wrote,
@@ -841,9 +848,10 @@ class PackagesInstallStrategy:
         came back up on the new config rather than forking and then exiting.
 
         :param spec: The host's bootstrap spec.
+        :param host: The host being configured, which decides its ``bindIp``.
         :return: The step action.
         """
-        config = _mongod_config(spec, with_auth=True)
+        config = _mongod_config(spec, host, with_auth=True)
         readiness = _mongosh_eval_command("db.adminCommand('ping').ok", spec.port)
         command = (
             f"cat > {CONFIG_PATH} <<'MONGOD_CONF' && systemctl restart mongod "
