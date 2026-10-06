@@ -36,6 +36,7 @@ from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.nomad_lifecycle import (
     NomadLifecycle,
     normalize_nomad_config_value,
+    WorkerNomadClient,
 )
 from app.tasks.models import TaskBackendEnum
 from tests.app.core.requests.pending_close_helpers import patch_paused_close_when_idle
@@ -469,3 +470,67 @@ async def test_reconcile_rebinds_when_only_the_endpoint_password_rotates() -> No
         assert holder.current._endpoint_credential_header == encode_basic_auth(
             "nomad-user", "rotated-secret"
         )
+
+
+@pytest.mark.asyncio
+async def test_worker_client_reuses_one_executor_across_calls() -> None:
+    """Hand back the same open executor while the config is unchanged."""
+    _override_nomad(_NOMAD_A)
+    client = WorkerNomadClient()
+    first = await client.get()
+    try:
+        assert await client.get() is first
+        assert first.session is not None
+        assert not first.session.closed
+        assert first is not tasks_settings.NOMAD
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_client_rebuilds_on_config_change() -> None:
+    """Close the old executor and open one for the new config once it changes."""
+    _override_nomad(_NOMAD_A)
+    client = WorkerNomadClient()
+    old = await client.get()
+    _override_nomad(_NOMAD_B)
+    try:
+        new = await client.get()
+        assert new is not old
+        assert str(new.endpoint).startswith("https://nomad-b.example.org")
+        assert old.session is None
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_client_reopens_a_closed_session() -> None:
+    """Open a fresh executor when the held one's session was closed under it."""
+    _override_nomad(_NOMAD_A)
+    client = WorkerNomadClient()
+    old = await client.get()
+    assert old.session is not None
+    await old.session.close()
+    try:
+        new = await client.get()
+        assert new is not old
+        assert new.session is not None
+        assert not new.session.closed
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_client_close_releases_and_forgets() -> None:
+    """Close the held executor's session and report the holder as closed."""
+    _override_nomad(_NOMAD_A)
+    client = WorkerNomadClient()
+    assert not client.is_open
+    executor = await client.get()
+    assert client.is_open
+
+    await client.close()
+    await client.close()
+
+    assert not client.is_open
+    assert executor.session is None

@@ -16,6 +16,8 @@
 """Define tests for the app.tasks.celery module."""
 
 import asyncio
+import logging
+from collections.abc import Collection
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
@@ -23,6 +25,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import ClientConnectionError, ClientSession
 from cryptography import x509
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
@@ -51,19 +54,23 @@ from app.tasks.celery import (
     _purge_task_history_logs,
     _raise_if_identical_task_conflict,
     check_nomad_cert_expiry,
+    close_finishing_probe_client,
     delete_task_history,
     dispatch_queue_item,
     get_executor_for_task,
     maybe_dispatch_chain,
     prepare_periodic_task_history,
     purge_task_history_logs,
+    sync_finishing_items,
     sync_queue_item,
     sync_running_items,
     task_revoked_handler,
 )
+from app.tasks.config import tasks_settings
 from app.tasks.crud import TaskHistoryLogManager, TaskHistoryManager, TaskManager
 from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.models import BaseExecutor
+from app.tasks.execution.nomad_lifecycle import WorkerNomadClient
 from app.tasks.execution_request_secrets import (
     CONFIG_META_KEY,
     ENCRYPTED_META_KEYS,
@@ -1741,6 +1748,380 @@ class TestSyncRunningItems:
             await sync_running_items()
 
         mock_sync_task.chunks.assert_not_called()
+
+
+class TestSyncFinishingItems:
+    """Test the finishing-run probe, ``sync_finishing_items``."""
+
+    @staticmethod
+    async def _seed_running(
+        session: AsyncSession,
+        tracking: dict[str, str],
+        *,
+        sync_in_progress_started_at: datetime | None = None,
+    ) -> int:
+        """Persist a RUNNING history whose execution request carries ``tracking``.
+
+        :return: The new history's id, read before any later ``expire_all`` can
+            make the instance lazy-load outside the event loop.
+        """
+        task = await TaskManager.create(
+            session,
+            TaskWrite.model_validate(
+                TaskFactory.build(backend=TaskBackendEnum.NOMAD, alert_on_fail=False)
+            ),
+        )
+        history = await TaskHistoryManager.save(
+            session,
+            TaskHistory(
+                task_id=task.id,
+                task=task,
+                execution_request=TaskExecutionRequest(
+                    task=task.name, target="node-1", meta={}, tracking=tracking
+                ),
+                status=TaskHistoryStatusEnum.RUNNING,
+                sync_in_progress_started_at=sync_in_progress_started_at,
+            ),
+        )
+        assert history.id is not None
+        return history.id
+
+    @staticmethod
+    @asynccontextmanager
+    async def _probe(session: AsyncSession, ready_job_ids: frozenset[str]):
+        """Run the probe against ``session`` with Nomad reporting ``ready_job_ids``.
+
+        Each use gets its own worker client, closed on exit, so no test inherits
+        a client another one opened. Yields the patched ``group`` so a test can
+        read the dispatched signatures, and the patched listing so it can tell
+        whether Nomad was asked at all.
+        """
+        client = WorkerNomadClient()
+        try:
+            with (
+                patch(
+                    f"{MODULE}.get_async_session_maker",
+                    return_value=MagicMock(
+                        return_value=_SharedSessionContextManager(session)
+                    ),
+                ),
+                patch(f"{MODULE}._finishing_probe_client", client),
+                patch.object(
+                    NomadExecutor,
+                    "capture_hold_ready_job_ids",
+                    autospec=True,
+                    return_value=ready_job_ids,
+                ) as mock_listing,
+                patch(f"{MODULE}.group") as mock_group,
+            ):
+                yield mock_group, mock_listing
+        finally:
+            await client.close()
+
+    @staticmethod
+    @contextmanager
+    def _tick(seconds: float | None):
+        """Run the probe with its tick, and so its listing deadline, at ``seconds``."""
+        nomad = tasks_settings.NOMAD.model_copy(
+            update={"finishing_sync_interval_seconds": seconds}
+        )
+        with patch(f"{MODULE}.normalize_nomad_config_value", return_value=nomad):
+            yield
+
+    @staticmethod
+    def _dispatched_ids(mock_group: MagicMock) -> list[int]:
+        """Return the history ids of the signatures handed to ``group``."""
+        if not mock_group.called:
+            return []
+        signatures = list(mock_group.call_args.args[0])
+        assert {signature.task for signature in signatures} == {
+            "app.tasks.celery.sync_task_history"
+        }
+        mock_group.return_value.apply_async.assert_called_once_with()
+        return sorted(signature.args[0] for signature in signatures)
+
+    @staticmethod
+    async def _lock_of(session: AsyncSession, history_id: int) -> datetime | None:
+        """Return the stored ``sync_in_progress_started_at`` of a history."""
+        session.expire_all()
+        history = await TaskHistoryManager.get_or_404(session, id=history_id)
+        return history.sync_in_progress_started_at
+
+    @pytest.mark.asyncio
+    async def test_no_running_history_skips_nomad(self, session: AsyncSession):
+        """Assert an idle system returns before asking Nomad anything."""
+        async with self._probe(session, frozenset({"job-a"})) as (
+            mock_group,
+            mock_listing,
+        ):
+            await sync_finishing_items()
+
+        mock_listing.assert_not_called()
+        mock_group.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disabled_probe_skips_database_and_nomad(self, session: AsyncSession):
+        """Assert a probe left unset in the Nomad config does nothing at all."""
+        await self._seed_running(session, {"job_id": "job-a"})
+
+        async with self._probe(session, frozenset({"job-a"})) as (
+            mock_group,
+            mock_listing,
+        ):
+            with (
+                self._tick(None),
+                patch(f"{MODULE}.get_async_session_maker") as mock_session_maker,
+            ):
+                await sync_finishing_items()
+
+        mock_session_maker.assert_not_called()
+        mock_listing.assert_not_called()
+        mock_group.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatches_only_histories_whose_job_is_hold_ready(
+        self, session: AsyncSession
+    ):
+        """Assert only the hold-ready history is claimed and dispatched.
+
+        Nomad is asked about the jobs RUNNING histories track and nothing else.
+        """
+        ready = await self._seed_running(session, {"job_id": "job-a"})
+        busy = await self._seed_running(session, {"job_id": "job-b"})
+
+        async with self._probe(session, frozenset({"job-a"})) as (
+            mock_group,
+            mock_listing,
+        ):
+            await sync_finishing_items()
+
+        mock_listing.assert_awaited_once()
+        assert set(mock_listing.await_args.args[1]) == {"job-a", "job-b"}
+        assert self._dispatched_ids(mock_group) == [ready]
+        assert await self._lock_of(session, ready) is not None
+        assert await self._lock_of(session, busy) is None
+
+    @pytest.mark.asyncio
+    async def test_concurrent_finishers_dispatch_as_independent_tasks(
+        self, session: AsyncSession
+    ):
+        """Assert runs finishing in one tick sync in parallel, never in a chunk.
+
+        A chunk runs its items one after another in a single Celery task, and
+        every terminal sync spends at least one log-drain interval, so a chunk would
+        stack those drains end to end.
+        """
+        history_ids = [
+            await self._seed_running(session, {"job_id": f"job-{index}"})
+            for index in range(3)
+        ]
+
+        async with self._probe(session, frozenset({"job-0", "job-1", "job-2"})) as (
+            mock_group,
+            _,
+        ):
+            await sync_finishing_items()
+
+        assert self._dispatched_ids(mock_group) == sorted(history_ids)
+
+    @pytest.mark.asyncio
+    async def test_skips_history_already_locked(self, session: AsyncSession):
+        """Assert a history the sweep or the route is syncing is left to it."""
+        locked_at = utc_now()
+        locked = await self._seed_running(
+            session, {"job_id": "job-a"}, sync_in_progress_started_at=locked_at
+        )
+
+        async with self._probe(session, frozenset({"job-a"})) as (
+            mock_group,
+            mock_listing,
+        ):
+            await sync_finishing_items()
+
+        mock_listing.assert_not_called()
+        mock_group.assert_not_called()
+        stored_lock = await self._lock_of(session, locked)
+        assert stored_lock is not None
+        assert stored_lock.replace(tzinfo=None) == locked_at.replace(tzinfo=None)
+
+    @pytest.mark.asyncio
+    async def test_history_without_job_id_skips_nomad(self, session: AsyncSession):
+        """Assert a run tracking no Nomad job, a Celery-backend one, never asks Nomad.
+
+        Such a run can never become capture-hold ready, so it must not keep the
+        listing firing on every tick for as long as it runs.
+        """
+        untracked = await self._seed_running(session, {"evaluation_id": "eval-1"})
+
+        async with self._probe(session, frozenset({"job-a"})) as (
+            mock_group,
+            mock_listing,
+        ):
+            await sync_finishing_items()
+
+        mock_listing.assert_not_called()
+        mock_group.assert_not_called()
+        assert await self._lock_of(session, untracked) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            ClientConnectionError("unreachable"),
+            TimeoutError(),
+            ValueError("Expecting value"),
+        ],
+        ids=["transport-error", "listing-timeout", "non-json-body"],
+    )
+    async def test_nomad_error_logs_and_returns(
+        self,
+        session: AsyncSession,
+        caplog: pytest.LogCaptureFixture,
+        failure: Exception,
+    ):
+        """Assert a failed listing is logged and leaves the run to the sweep."""
+        history_id = await self._seed_running(session, {"job_id": "job-a"})
+
+        async with self._probe(session, frozenset()) as (mock_group, mock_listing):
+            mock_listing.side_effect = failure
+            await sync_finishing_items()
+
+        mock_group.assert_not_called()
+        assert await self._lock_of(session, history_id) is None
+        assert any(
+            record.levelno == logging.WARNING and record.name == MODULE
+            for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_slow_listing_is_abandoned_at_the_tick(
+        self, session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ):
+        """Assert a listing that outlasts one tick is cut off, not waited on.
+
+        A trickling response defeats a per-read timeout, so the probe bounds the
+        whole listing; the run is left to the sweep, and the client stays open
+        for the next tick.
+        """
+        history_id = await self._seed_running(session, {"job_id": "job-a"})
+        listings: list[NomadExecutor] = []
+
+        async def never_answers(
+            executor: NomadExecutor, job_ids: Collection[str]
+        ) -> frozenset[str]:
+            del job_ids
+            listings.append(executor)
+            await asyncio.Event().wait()
+            return frozenset({"job-a"})
+
+        async with self._probe(session, frozenset()) as (mock_group, mock_listing):
+            mock_listing.side_effect = never_answers
+            with self._tick(0.05):
+                await asyncio.wait_for(sync_finishing_items(), timeout=5)
+            client = listings[0].session
+            assert client is not None
+            assert not client.closed
+
+        mock_group.assert_not_called()
+        assert await self._lock_of(session, history_id) is None
+        assert any(
+            record.levelno == logging.WARNING and record.name == MODULE
+            for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_ticks_reuse_one_open_client(self, session: AsyncSession):
+        """Assert every tick lists through the same client, left open between ticks.
+
+        Opening a client per tick would pay a TCP and TLS handshake every second,
+        inside the same deadline as the listing itself.
+        """
+        await self._seed_running(session, {"job_id": "job-a"})
+        clients_seen: list[ClientSession | None] = []
+
+        async def record(
+            executor: NomadExecutor, job_ids: Collection[str]
+        ) -> frozenset[str]:
+            del job_ids
+            clients_seen.append(executor.session)
+            return frozenset()
+
+        async with self._probe(session, frozenset()) as (_, mock_listing):
+            mock_listing.side_effect = record
+            await sync_finishing_items()
+            await sync_finishing_items()
+            executors = [awaited.args[0] for awaited in mock_listing.await_args_list]
+            assert executors[0] is executors[1]
+            assert executors[0] is not tasks_settings.NOMAD
+            assert clients_seen[0] is not None
+            assert clients_seen[0] is clients_seen[1]
+            assert not clients_seen[0].closed
+
+        assert executors[0].session is None
+
+    @pytest.mark.asyncio
+    async def test_finished_run_turns_terminal_between_sweeps(
+        self, session: AsyncSession
+    ):
+        """Assert a finished run is stored terminal with no sweep in between.
+
+        The probe's dispatch is replayed through ``sync_queue_item``, the same
+        body the Celery ``sync_task_history`` task runs, so the stored status is
+        what a viewer would read before the next 30-second sweep fires.
+        """
+        history_id = await self._seed_running(session, {"job_id": "job-a"})
+
+        async def stamp_success(
+            item: TaskHistory,
+            *,
+            writer_session=None,
+            await_annotations: bool = False,
+        ) -> TaskHistory:
+            del writer_session, await_annotations
+            item.status = TaskHistoryStatusEnum.SUCCESS
+            return item
+
+        executor = MagicMock()
+        executor.sync_task_history = AsyncMock(side_effect=stamp_success)
+
+        async with self._probe(session, frozenset({"job-a"})) as (mock_group, _):
+            with patch(f"{MODULE}.get_executor_for_task", return_value=executor):
+                await sync_finishing_items()
+                for dispatched_id in self._dispatched_ids(mock_group):
+                    await sync_queue_item(dispatched_id)
+
+        session.expire_all()
+        stored = await TaskHistoryManager.get_or_404(session, id=history_id)
+        assert stored.status == TaskHistoryStatusEnum.SUCCESS
+        assert stored.sync_in_progress_started_at is None
+
+
+class TestCloseFinishingProbeClient:
+    """Test the worker-shutdown close of the finishing-run probe's client."""
+
+    def test_closes_an_open_client_on_the_worker_loop(self):
+        """Assert an open client is closed on ``celery.loop``."""
+        client = MagicMock(is_open=True)
+        client.close = MagicMock(return_value="close-coro")
+        with (
+            patch(f"{MODULE}._finishing_probe_client", client),
+            patch(f"{MODULE}.celery") as mock_celery,
+        ):
+            close_finishing_probe_client()
+
+        mock_celery.loop.run_until_complete.assert_called_once_with("close-coro")
+
+    def test_never_opened_client_leaves_the_loop_alone(self):
+        """Assert a process where the probe never ran does not touch the loop."""
+        client = MagicMock(is_open=False)
+        with (
+            patch(f"{MODULE}._finishing_probe_client", client),
+            patch(f"{MODULE}.celery") as mock_celery,
+        ):
+            close_finishing_probe_client()
+
+        mock_celery.loop.run_until_complete.assert_not_called()
+        client.close.assert_not_called()
 
 
 @asynccontextmanager
