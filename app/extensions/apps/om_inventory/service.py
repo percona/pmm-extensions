@@ -82,6 +82,7 @@ from app.extensions.apps.om_inventory.models import (
     ProbeRun,
     ProbeRunStatus,
 )
+from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
 from app.extensions.config import extensions_settings
 from app.extensions.db import get_async_session_maker
 from app.inventory.config import inventory_settings
@@ -195,6 +196,31 @@ def _record_for(entry: Any, host_results: dict[str, HostProbeResult]) -> dict | 
     # service id where the target carried one, since two same-named services on one
     # host are not two same-id services. See record_key.
     return result.records.get(record_key(entry.service.external_id, entry.service.name))
+
+
+#: Bound on a failed record's error as stored. The same cap dispatch.py puts on a
+#: failed dispatch's stderr: pymongo's server-selection errors carry the whole
+#: topology description, and the row only needs the part that says what happened.
+MAX_RECORD_ERROR = 500
+
+
+def _record_failure(record: dict[str, Any] | None) -> str | None:
+    """Return why a probe record is a failed attempt, or ``None`` if it is not.
+
+    The payload prints a record for every target, including one it could not query -
+    a refused connection or a rejected password - and marks that record
+    ``status: failed``. Such a record is not an answer: storing it as one moved
+    ``last_success_at`` and cleared ``failing_since`` for a database nobody could
+    read, and replaced the last good document with one stripped of every database
+    fact.
+
+    :param record: The probe record, or ``None`` when there was none.
+    :return: The failure detail, or ``None`` for a usable record or no record.
+    """
+    if not record or record.get("status") != STATUS_FAILED:
+        return None
+    error = str(record.get("error") or "no detail was reported")
+    return f"could not query the database: {error}"[:MAX_RECORD_ERROR]
 
 
 #: Probe-record fields that describe the **host** rather than any service on it.
@@ -492,7 +518,7 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
             outcome.orphaned += 1
         else:
             outcome.resolved += 1
-            if record:
+            if record and _record_failure(record) is None:
                 outcome.answered += 1
 
         _record_entity(
@@ -547,7 +573,7 @@ def _build_receipt(
                 # inventory holds none.
                 "service_id": entry.service.external_id,
                 "service_name": entry.service.name,
-                "answered": bool(record),
+                "answered": bool(record) and _record_failure(record) is None,
                 "error": outcome.service_errors.get(entry.service.external_id or ""),
             }
         )
@@ -695,6 +721,13 @@ def _record_entity(
             if host_result and host_result.error
             else "the host answered, but returned no record for this service"
         )
+        return
+
+    failure = _record_failure(record)
+    if failure is not None:
+        # A failed attempt like any other: no document, so the last good one stays,
+        # and no role, so the one it last answered with is not blanked out.
+        outcome.service_errors[entry.service.external_id] = failure
         return
 
     outcome.service_documents[entry.service.external_id] = build_document(

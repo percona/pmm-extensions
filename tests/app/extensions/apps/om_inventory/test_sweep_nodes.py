@@ -35,6 +35,7 @@ from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedServic
 from app.extensions.apps.om_inventory.models import NodeResolution
 from app.extensions.apps.om_inventory.service import (
     enumerate_estate,
+    MAX_RECORD_ERROR,
     STARTUP_RETRIES,
     sweep,
 )
@@ -319,6 +320,63 @@ async def test_a_failed_host_carries_its_error_and_its_time() -> None:
     assert node["answered"] is False
     assert node["error"] == "probe run FAILED: no output"
     assert node["duration_seconds"] == FAILED_HOST_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_a_service_whose_database_could_not_be_queried_did_not_answer() -> None:
+    """Fail a service whose record says its database refused the payload.
+
+    The host answered and printed a record, but the record is the payload saying it
+    could not get in. Counting it as an answer cleared the service's failure state
+    and replaced its last good document with one holding no database facts at all.
+    """
+    record = {
+        **RECORD,
+        "process": {**RECORD["process"], "running": True},
+        "database": None,
+        "status": "failed",
+        "error": "Authentication failed.",
+        "error_type": "OperationFailure",
+        "error_code": 18,
+    }
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00",
+                host_record={"os": "Ubuntu 24.04"},
+                records={DEFAULT_EXTERNAL_ID: record},
+            )
+        },
+    )
+
+    assert (outcome.resolved, outcome.answered) == (1, 0)
+    assert outcome.service_documents == {}
+    # No role either: the one the last good attempt saw must not be overwritten.
+    assert outcome.service_roles == {}
+    error = outcome.service_errors[DEFAULT_EXTERNAL_ID]
+    assert error == "could not query the database: Authentication failed."
+    service = outcome.nodes[0]["services"][0]
+    assert service["answered"] is False
+    assert service["error"] == error
+    # The host itself still answered; only its database did not.
+    assert outcome.nodes[0]["answered"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_failed_record_s_error_is_bounded() -> None:
+    """Cap the stored error, since pymongo's carries the whole topology."""
+    record = {**RECORD, "status": "failed", "error": "x" * 5000}
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00", records={DEFAULT_EXTERNAL_ID: record}
+            )
+        },
+    )
+
+    assert len(outcome.service_errors[DEFAULT_EXTERNAL_ID]) == MAX_RECORD_ERROR
 
 
 @pytest.mark.asyncio
