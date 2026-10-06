@@ -60,7 +60,7 @@ default:
       - OmInventorySettings.MAX_CONCURRENT_PROBES
       - OmInventorySettings.RUN_RETENTION
       - OmInventorySettings.STALE_RUN_AFTER
-      # PMM's OpenManager switch reaches ENABLED through the app's own
+      # PMM's Operations for MongoDB switch reaches ENABLED through the app's own
       # PATCH /config, which this allowlist gates like any other caller: left
       # out, the sweep can never be turned on.
       - OmInventorySettings.ENABLED

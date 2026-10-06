@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the OpenManager Bootstrap persistence model.
+"""Define the Operations Bootstrap persistence model.
 
 One table, and the design is the same call ``om_inventory``'s ``ProbeRun`` makes
 (``om_bootstrap`` owns the bootstrap's durable state): ``hosts`` is a

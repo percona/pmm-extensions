@@ -88,7 +88,7 @@ from app.inventory.config import inventory_settings
 
 logger = logging.getLogger(__name__)
 
-SWITCHED_OFF_DETAIL = "OM Inventory is switched off"
+SWITCHED_OFF_DETAIL = "Operations Inventory is switched off"
 """Why a sweep was refused while ``ENABLED`` is off, on the run row and the 503 alike."""
 
 
