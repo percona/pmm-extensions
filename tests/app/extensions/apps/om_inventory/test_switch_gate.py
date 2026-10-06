@@ -29,6 +29,7 @@ stale yes. ``run_probe`` republishes the snapshot from the row and reads that, s
 tests below pin the stored value against a deliberately stale proxy.
 """
 
+from collections.abc import Iterator
 from contextlib import nullcontext
 from unittest.mock import AsyncMock
 
@@ -49,6 +50,22 @@ from app.extensions.apps.om_inventory.crud import ProbeRunManager
 from app.extensions.apps.om_inventory.models import ProbeRun, ProbeRunStatus
 from app.extensions.apps.om_inventory.service import run_probe, SWITCHED_OFF_DETAIL
 from tests.app.extensions.apps.om_inventory.conftest import CLEAN_OUTCOME
+
+
+@pytest.fixture(autouse=True)
+def _reset_proxy_snapshot() -> Iterator[None]:
+    """Drop the snapshot ``run_probe`` published, so the next test starts from YAML.
+
+    The proxy is a module singleton shared across the whole session, and a
+    published snapshot *overrides* ``monkeypatch.setattr``. Without this the last
+    test here leaves its stored ``ENABLED`` in place for every later test in the
+    same xdist worker. The autouse reset in ``tests/app/conftest.py`` covers six
+    proxies by name and not this one, which is why ``test_config_api.py`` already
+    carries the same fixture.
+    """
+    yield
+    # ty-attr-ok: the proxy forwards to the wrapped class via __getattr__.
+    om_inventory_settings._set_snapshot({})
 
 
 async def _store_enabled(session: AsyncSession, *, enabled: bool) -> None:
