@@ -672,10 +672,14 @@ export interface paths {
      *
      *     No way the search itself can fail reaches the caller as an error: a
      *     deployment that declares no case-search section, stored inputs that no
-     *     longer fit the plan, a refused credential, an unreachable receiver and a
-     *     search that outran its bound all report the same unavailability, which the
-     *     caller renders as the plain text field rather than as a search that found
-     *     nothing.
+     *     longer fit the plan, a refused credential, an unreachable receiver, a term
+     *     pattern match that outran its budget and a search that outran its bound all
+     *     report the same unavailability, which the caller renders as the plain text
+     *     field rather than as a search that found nothing.
+     *
+     *     The term match runs on the event-loop thread, where this bound cannot
+     *     interrupt it, so the bound is handed to the match as well: time
+     *     spent opening the transport comes out of the match's allowance.
      *
      *     Restricted to administrators, unlike the app's other reads. The router
      *     resolves a minimum role for unsafe methods only, so a safe method carries

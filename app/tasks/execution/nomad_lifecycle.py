@@ -15,7 +15,7 @@
 
 """Own the entered NomadExecutor and rebind it when its override changes."""
 
-__all__ = ["NomadLifecycle", "normalize_nomad_config_value"]
+__all__ = ["NomadLifecycle", "WorkerNomadClient", "normalize_nomad_config_value"]
 
 import asyncio
 import logging
@@ -68,6 +68,18 @@ def normalize_nomad_config_value(value: object) -> NomadExecutor:
     if isinstance(value, Mapping):
         return NomadExecutor.model_validate(value)
     raise TypeError(f"Cannot normalize {type(value).__name__} to a NomadExecutor")
+
+
+def _config_fingerprint(executor: NomadExecutor) -> dict[str, Any]:
+    """Return the JSON dump of ``executor``'s config, credentials kept in clear.
+
+    Two executors built from the same configuration dump equal, and
+    ``NomadExecutor.model_validate`` rebuilds an equivalent executor from it.
+
+    :param executor: The executor to fingerprint.
+    :return: The executor's configuration as a JSON-compatible mapping.
+    """
+    return executor.model_dump(mode="json", context=PRESERVE_CREDENTIALS_CONTEXT)
 
 
 class NomadLifecycle:
@@ -127,9 +139,7 @@ class NomadLifecycle:
             ``NOMAD`` configuration and no session.
         """
         effective = normalize_nomad_config_value(tasks_settings.NOMAD)
-        return NomadExecutor.model_validate(
-            effective.model_dump(mode="json", context=PRESERVE_CREDENTIALS_CONTEXT)
-        )
+        return NomadExecutor.model_validate(_config_fingerprint(effective))
 
     async def __aenter__(self) -> Self:
         """Enter the executor the effective config calls for and publish self.
@@ -140,9 +150,7 @@ class NomadLifecycle:
         async with self._lock:
             desired = self._desired()
             self._current = await desired.__aenter__()
-            self._current_config = desired.model_dump(
-                mode="json", context=PRESERVE_CREDENTIALS_CONTEXT
-            )
+            self._current_config = _config_fingerprint(desired)
         self._app.state.nomad_lifecycle = self
         return self
 
@@ -203,9 +211,7 @@ class NomadLifecycle:
             :func:`normalize_nomad_config_value`).
         """
         desired = self._desired()
-        desired_config = desired.model_dump(
-            mode="json", context=PRESERVE_CREDENTIALS_CONTEXT
-        )
+        desired_config = _config_fingerprint(desired)
         old: NomadExecutor | None = None
         async with self._lock:
             if self._closing:
@@ -221,3 +227,61 @@ class NomadLifecycle:
                 old.remember_pending_close(self._pending_closes)
         if old is not None:
             await old.close_when_idle(pending=self._pending_closes)
+
+
+class WorkerNomadClient:
+    """Keep one entered :class:`NomadExecutor` open across a worker process's tasks.
+
+    Opens a private executor on the first :meth:`get` and returns that same
+    executor on later calls, so callers reuse one pooled connection instead of
+    opening a session per call. The executor is rebuilt when the effective
+    ``NOMAD`` config changes or its session has been closed, and :meth:`close`
+    releases it.
+
+    The executor is a private copy for the reason
+    :meth:`NomadLifecycle._desired` gives. Its session is bound to the event loop
+    that entered it, so one holder serves one worker process and its loop.
+    """
+
+    def __init__(self) -> None:
+        self._executor: NomadExecutor | None = None
+        self._config: dict[str, Any] | None = None
+
+    @property
+    def is_open(self) -> bool:
+        """Return whether an entered executor is currently held.
+
+        :return: ``True`` between a :meth:`get` and the next :meth:`close`.
+        """
+        return self._executor is not None
+
+    async def get(self) -> NomadExecutor:
+        """Return the held executor, entering a new one when it is stale or absent.
+
+        :return: An entered :class:`NomadExecutor` for the effective ``NOMAD``
+            configuration.
+        :raises ValidationError: If the effective config fingerprint cannot be
+            rebuilt into a :class:`NomadExecutor`.
+        :raises TypeError: If the effective ``NOMAD`` value is neither a mapping
+            nor a :class:`NomadExecutor`.
+        """
+        effective = normalize_nomad_config_value(tasks_settings.NOMAD)
+        config = _config_fingerprint(effective)
+        current = self._executor
+        if (
+            current is not None
+            and config == self._config
+            and current.session is not None
+            and not current.session.closed
+        ):
+            return current
+        await self.close()
+        executor = await NomadExecutor.model_validate(config).__aenter__()
+        self._executor, self._config = executor, config
+        return executor
+
+    async def close(self) -> None:
+        """Exit the held executor, if any, and forget it."""
+        executor, self._executor, self._config = self._executor, None, None
+        if executor is not None:
+            await executor.__aexit__(None, None, None)
