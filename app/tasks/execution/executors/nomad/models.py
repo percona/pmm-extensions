@@ -2332,9 +2332,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         allocation's logs stay readable. The first re-fetch, a full interval
         after the pre-drain fetch, that returns no new bytes on any stream then
         means every stream is read to EOF, and the drain ends there instead of
-        waiting out the budget for streams that will never advance. A re-fetch
-        that still returns bytes keeps it polling, so a tail ``logmon`` flushes
-        late is still read.
+        waiting out the budget for streams that will never advance. The quiet
+        re-fetch must be one in which every stream's read succeeded, since a
+        failed read returns no bytes either. A re-fetch that still returns bytes
+        keeps it polling, so a tail ``logmon`` flushes late is still read.
 
         Anonymization withholds each stream's trailing partial line until a
         newline completes it, so a stream holding a partial looks quiet. The
@@ -2369,12 +2370,13 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             candidates.update(
                 (step, log_type) for step in task_logs for log_type in TaskLogType
             )
-            fetch_failures.update(
+            failed_now = {
                 (step, log_type)
                 for step in task_logs
                 for log_type in TaskLogType
                 if task_logs[step].get(f"{log_type}_fetch_failed")
-            )
+            }
+            fetch_failures.update(failed_now)
             produced = {
                 (step, log_type)
                 for step in task_logs
@@ -2396,7 +2398,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     task_logs,
                     force_flush=True,
                 )
-            elif not withholding and (capture_hold_ready or advanced == candidates):
+            elif not withholding and (
+                advanced == candidates or (capture_hold_ready and not failed_now)
+            ):
                 break
 
         # Terminal flush: emit any trailing line that never received a newline.

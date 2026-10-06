@@ -7056,6 +7056,7 @@ class TestDrainTerminalLogs:
     DRAIN_MAX_ATTEMPTS = 5
     SHORT_DRAIN_MAX_ATTEMPTS = 3
     EXPECTED_SLEEPS_ALL_STREAMS_DRAINED = 2
+    FAILING_STDOUT_CALL = 2
 
     @staticmethod
     def _reconstruct_stream(chunks, state) -> str:
@@ -7820,6 +7821,59 @@ class TestDrainTerminalLogs:
         )
         assert stdout == "out\ntail\n"
         assert mock_sleep.await_count == self.EXPECTED_SLEEPS_ALL_STREAMS_DRAINED
+
+    @pytest.mark.asyncio
+    @patch(
+        "app.tasks.execution.executors.nomad.models.asyncio.sleep",
+        new_callable=AsyncMock,
+    )
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_hold_ready_drain_retries_after_a_failed_refetch(
+        self, mock_nomad_cls, mock_sleep, session, created_task_with_history
+    ):
+        """Assert a failed re-fetch is not mistaken for a quiet hold-ready stream.
+
+        A read that raises returns no bytes, exactly as a stream at EOF does, so
+        the drain must keep polling and still read the tail ``logmon`` flushes
+        once the read recovers.
+        """
+        mock_backend = MagicMock()
+        mock_nomad_cls.return_value = mock_backend
+        growing = self._growing_stream(
+            {("run-script", TaskLogType.STDOUT): ["out\n", "out\ntail\n"]}
+        )
+        stdout_calls = {"n": 0}
+
+        def fake_stream(alloc_id, *, task, type_, offset):
+            if type_ == TaskLogType.STDOUT:
+                stdout_calls["n"] += 1
+                if stdout_calls["n"] == self.FAILING_STDOUT_CALL:
+                    raise BaseNomadException(MagicMock(text="gone"))
+            return growing(alloc_id, task=task, type_=type_, offset=offset)
+
+        mock_backend.client.stream_logs.stream.side_effect = fake_stream
+        alloc = self._hold_ready_alloc()
+        mock_backend.allocation.get_allocation.return_value = alloc
+        history = created_task_with_history
+        history.anonymize_mask = 0
+        history.status = TaskHistoryStatusEnum.SUCCESS
+        executor = _build_executor(
+            terminal_log_drain_max_attempts=self.DRAIN_MAX_ATTEMPTS
+        )
+
+        await executor._persist_nomad_task_logs(
+            writer_session=session,
+            queue_item=history,
+            alloc=alloc,
+            previous_allocation_id="alloc-1",
+            capture_hold_ready=True,
+        )
+
+        stdout = await self._stream_content(
+            session, history.id, "run-script", TaskLogType.STDOUT
+        )
+        assert stdout == "out\ntail\n"
+        assert mock_sleep.await_count > 1
 
 
 class TestNomadCaptureHoldDetection:
