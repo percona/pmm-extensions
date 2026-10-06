@@ -4230,8 +4230,8 @@ export interface components {
      *
      *     :param footer_text: The rendered sidebar footer text (application summary
      *         and version by default).
-     *     :param version: The running PMM Extensions version, identical to the
-     *         OpenAPI ``info.version``. Independent of ``FOOTER_TEMPLATE``.
+     *     :param version: The running PMM Extensions version, sourced from
+     *         ``app.__version__``. Independent of ``FOOTER_TEMPLATE``.
      */
     AppInfo: {
       /** Footer Text */
