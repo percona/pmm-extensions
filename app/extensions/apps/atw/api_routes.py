@@ -872,10 +872,14 @@ async def atw_case_search(
 
     No way the search itself can fail reaches the caller as an error: a
     deployment that declares no case-search section, stored inputs that no
-    longer fit the plan, a refused credential, an unreachable receiver and a
-    search that outran its bound all report the same unavailability, which the
-    caller renders as the plain text field rather than as a search that found
-    nothing.
+    longer fit the plan, a refused credential, an unreachable receiver, a term
+    pattern match that outran its budget and a search that outran its bound all
+    report the same unavailability, which the caller renders as the plain text
+    field rather than as a search that found nothing.
+
+    The term match runs on the event-loop thread, where this bound cannot
+    interrupt it, so the bound is handed to the match as well: time
+    spent opening the transport comes out of the match's allowance.
 
     Restricted to administrators, unlike the app's other reads. The router
     resolves a minimum role for unsafe methods only, so a safe method carries
@@ -895,9 +899,9 @@ async def atw_case_search(
     if plan is None or plan.case_search is None:
         return AtwCaseSearchResponse(available=False, matches=[])
     try:
-        async with asyncio.timeout(CASE_SEARCH_TIMEOUT_SECONDS):
+        async with asyncio.timeout(CASE_SEARCH_TIMEOUT_SECONDS) as bound:
             async with get_delivery_executor(plan) as executor:
-                matches = await executor.search_cases(term)
+                matches = await executor.search_cases(term, bound=bound)
     except Exception as error:  # noqa: BLE001 -- degraded, never surfaced to the dialog
         # ``RemoteAPI.request`` maps an upstream error body's ``detail`` onto
         # the exception it raises, so rendering the exception would log a value

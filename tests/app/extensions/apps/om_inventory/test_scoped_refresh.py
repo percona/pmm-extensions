@@ -80,7 +80,7 @@ PRUNED = 2
 def _enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """Turn the sweep on for this module.
 
-    ``ENABLED`` defaults to off (PMM's OpenManager switch starts a fresh
+    ``ENABLED`` defaults to off (PMM's Operations for MongoDB switch starts a fresh
     deployment unswept), but every test here posts to ``/runs`` to exercise
     scoping and conflict rules that have nothing to do with that switch.
 
@@ -269,7 +269,7 @@ class TestTriggerScope:
         two_hosts: AsyncSession,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Refuse a manual trigger while PMM's OpenManager switch is off.
+        """Refuse a manual trigger while PMM's Operations for MongoDB switch is off.
 
         ``app.py``'s periodic-task thunk already keeps a disabled deployment off
         Celery beat; without this check a caller could still start a sweep on

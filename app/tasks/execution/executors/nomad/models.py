@@ -25,7 +25,7 @@ import time
 from base64 import b64decode
 from binascii import b2a_base64
 from collections import defaultdict
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Collection
 from datetime import datetime, UTC
 from enum import StrEnum
 from functools import cached_property
@@ -52,6 +52,7 @@ from app.core.requests import BaseRemoteAPI, StoredCredentialHeaderMixin
 from app.core.settings_override.registry import (
     hot_field,
     InheritedMarkers,
+    not_overridable_field,
     ReloadClassification,
     REMOTE_API_TLS_MARKERS,
 )
@@ -329,6 +330,19 @@ def _alloc_task_states(alloc: dict[str, Any]) -> dict[str, Any]:
         )
         return {}
     return task_states or {}
+
+
+def _evaluations_by_id(evaluations: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Key a job's evaluations by id, dropping any Nomad returned without one.
+
+    :param evaluations: The job's evaluations as Nomad returned them.
+    :return: The evaluations keyed by their ``ID``.
+    """
+    return {
+        evaluation["ID"]: evaluation
+        for evaluation in evaluations
+        if evaluation.get("ID")
+    }
 
 
 def _alloc_step_state(alloc: dict[str, Any], step: str) -> dict[str, Any]:
@@ -757,6 +771,16 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     :param check_cert_expiry_interval: Beat schedule for ``check_nomad_cert_expiry``
         (e.g. once per day). Set to ``None`` to skip registering the periodic task
         in ``app.tasks.db.seed`` (Celery beat will not run the check).
+    :param finishing_sync_interval_seconds: Tick, in seconds, of the periodic
+        ``sync_finishing_tasks`` probe that syncs a run as soon as its producing
+        steps end instead of waiting for the regular sweep, and the deadline of
+        each tick's Nomad listing. A finished run's status lands within about two
+        ticks plus one ``terminal_log_drain_interval``, since a hold-ready drain
+        ends on its first quiet re-fetch, so keep it well under the
+        latency a run's status is expected to meet. Read when ``app.tasks.db.seed``
+        builds the schedule, so it is not overridable at runtime. Set to ``None``
+        to skip registering the probe, leaving finished runs to the sweep.
+        Defaults to ``1``.
     :param api_key: Credential sent as ``Authorization: <auth_scheme> <api_key>``
         on both the synchronous and the asynchronous request path. It takes
         precedence over any userinfo embedded in ``endpoint``, which is stripped
@@ -839,6 +863,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             metadata={"reload": ReloadClassification.HOT, "advanced": True},
             default_factory=lambda: IntervalSchedule(every=1, period=Period.DAYS),
         )
+    )
+    finishing_sync_interval_seconds: int | None = (  # ty: ignore[invalid-assignment]
+        not_overridable_field(1, ge=1, advanced=True)
     )
     api_key: AuthCredentialSecretStr | None = None
     auth_scheme: AuthSchemeStr = hot_field(  # ty: ignore[invalid-assignment]
@@ -1324,6 +1351,69 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             )
         return alloc
 
+    async def capture_hold_ready_job_ids(
+        self, job_ids: Collection[str]
+    ) -> frozenset[str]:
+        """Return which of ``job_ids`` have a capture-hold-ready newest allocation.
+
+        One list call covers every given job, so detecting finished runs costs a
+        single request whatever the number of RUNNING histories. The listing is
+        filtered to those jobs on the Nomad side, so its size follows the runs PMM
+        Extensions is waiting on rather than the whole cluster. The hold keeps its
+        allocation ``running`` while it waits to be released, unless a producing
+        step failed: Nomad then reports the allocation ``failed`` even though the
+        hold still runs. Listing both statuses covers every run still waiting on
+        its hold; one whose hold has already exited, as a ``failed`` allocation
+        retained until Nomad collects it can be, is left to the regular sync.
+
+        Readiness is judged on each job's newest allocation, the one a sync
+        resolves. A rescheduled job keeps its failed predecessor, which still
+        looks hold-ready, beside a ``pending`` or ``running`` replacement, so
+        those statuses are listed too and the newer replacement decides.
+
+        The call goes through the executor's own HTTP client, which must be open.
+        It carries no deadline of its own: the caller bounds it, and cancelling
+        it stops the request however slowly Nomad is answering.
+
+        :param job_ids: The ``JobID`` values to check. Nothing is requested when
+            it is empty.
+        :return: The ``JobID`` of every given job whose newest listed allocation
+            satisfies :func:`_detect_capture_hold_ready` and whose hold step is
+            still running.
+        :raises aiohttp.ClientError: If Nomad cannot be reached or answers with an
+            error status.
+        :raises ValueError: If Nomad answers with a body that is not JSON.
+        """
+        if not job_ids:
+            return frozenset()
+        statuses = " or ".join(
+            f'ClientStatus == "{alloc_status}"'
+            for alloc_status in (
+                NomadAllocStatusEnum.PENDING,
+                NomadAllocStatusEnum.RUNNING,
+                NomadAllocStatusEnum.FAILED,
+            )
+        )
+        jobs = " or ".join(f"JobID == {json.dumps(job_id)}" for job_id in job_ids)
+        async with self._request(
+            "GET",
+            "/v1/allocations",
+            params={"filter": f"({statuses}) and ({jobs})", "task_states": "true"},
+        ) as response:
+            response.raise_for_status()
+            allocations = await response.json()
+        newest: dict[str, dict[str, Any]] = {}
+        for alloc in allocations:
+            current = newest.get(alloc["JobID"])
+            if current is None or alloc["CreateIndex"] > current["CreateIndex"]:
+                newest[alloc["JobID"]] = alloc
+        return frozenset(
+            job_id
+            for job_id, alloc in newest.items()
+            if _detect_capture_hold_ready(alloc)
+            and _capture_hold_step_state(alloc) == NOMAD_RUNNING_TASK_STATE
+        )
+
     async def dispatch_task(
         self,
         session: AsyncSession,
@@ -1618,18 +1708,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             task_logs[step][log_type] = step_delta.text
         return task_logs
 
-    def _job_has_pending_evaluation(self, job_id: str) -> bool:
-        """Return whether Nomad still has a pending evaluation for ``job_id``.
-
-        :param job_id: The Nomad job whose evaluations to inspect.
-        :return: ``True`` while Nomad may still place an allocation for the job.
-        :raises BaseNomadException: When Nomad cannot list the job's evaluations.
-        """
-        return any(
-            evaluation.get("Status") == NomadEvalStatusEnum.PENDING
-            for evaluation in self.backend.job.get_evaluations(job_id)
-        )
-
     def _resolve_running_allocation(
         self, queue_item: TaskHistory
     ) -> tuple[dict[str, Any], str] | None:
@@ -1805,11 +1883,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         )
         if not tracked_eval_id:
             return None
-        evaluations_by_id = {
-            evaluation["ID"]: evaluation
-            for evaluation in evaluations
-            if evaluation.get("ID")
-        }
+        evaluations_by_id = _evaluations_by_id(evaluations)
         try:
             return self._follow_reschedules(
                 queue_item,
@@ -2179,7 +2253,11 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         )
         if force_flush:
             drain_failures = await self._drain_terminal_logs(
-                writer_session, queue_item, alloc, alloc_epoch
+                writer_session,
+                queue_item,
+                alloc,
+                alloc_epoch,
+                capture_hold_ready=capture_hold_ready,
             )
             await self._force_flush_remaining_streams(writer_session, queue_item.id)
             await self._record_capture_outcomes(
@@ -2339,6 +2417,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         queue_item: TaskHistory,
         alloc: dict[str, Any],
         alloc_epoch: int,
+        *,
+        capture_hold_ready: bool = False,
     ) -> set[tuple[str, TaskLogType]]:
         """Fetch Nomad logs after terminal detection until every stream is quiet.
 
@@ -2361,6 +2441,16 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         only one stream polls the full window (correctness over latency; the
         window is ``hot``-tunable).
 
+        When ``capture_hold_ready`` is set, every producing step is already dead
+        behind a live hold, so no stream can start writing later and the
+        allocation's logs stay readable. The first re-fetch, a full interval
+        after the pre-drain fetch, that returns no new bytes on any stream then
+        means every stream is read to EOF, and the drain ends there instead of
+        waiting out the budget for streams that will never advance. The quiet
+        re-fetch must be one in which every stream's read succeeded, since a
+        failed read returns no bytes either. A re-fetch that still returns bytes
+        keeps it polling, so a tail ``logmon`` flushes late is still read.
+
         Anonymization withholds each stream's trailing partial line until a
         newline completes it, so a stream holding a partial looks quiet. The
         early-exit is suppressed while any stream is still withholding, and a
@@ -2373,6 +2463,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param alloc: The current Nomad allocation dict.
         :param alloc_epoch: The allocation's ``CreateIndex``, threaded into each
             write so a superseded allocation's bytes are discarded.
+        :param capture_hold_ready: Whether the allocation's producing steps have
+            all stopped behind a live hold step, which lets one quiet re-fetch
+            end the drain.
         :return: The ``(step, stream)`` pairs whose re-fetch failed at any point
             during the drain, so the caller can record their capture as
             incomplete rather than trust the pre-drain fetch alone.
@@ -2391,12 +2484,13 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             candidates.update(
                 (step, log_type) for step in task_logs for log_type in TaskLogType
             )
-            fetch_failures.update(
+            failed_now = {
                 (step, log_type)
                 for step in task_logs
                 for log_type in TaskLogType
                 if task_logs[step].get(f"{log_type}_fetch_failed")
-            )
+            }
+            fetch_failures.update(failed_now)
             produced = {
                 (step, log_type)
                 for step in task_logs
@@ -2418,7 +2512,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     task_logs,
                     force_flush=True,
                 )
-            elif advanced == candidates and not withholding:
+            elif not withholding and (
+                advanced == candidates or (capture_hold_ready and not failed_now)
+            ):
                 break
 
         # Terminal flush: emit any trailing line that never received a newline.
@@ -3056,16 +3152,22 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
         """Resolve allocation for live log streaming before HTTP response headers are sent.
 
-        A miss is re-read once after the evaluations are seen to be settled:
-        Nomad can place the allocation and complete its evaluation between the
-        two reads, and only a second miss means nothing is coming.
+        A miss is re-read along the tracked evaluation's placement chain once
+        the job's evaluations have been read: Nomad can place the allocation
+        and complete its evaluation between the two reads, and work that waited
+        for capacity is placed under the ``blocked`` evaluation the tracked one
+        spawned. Only a miss on that chain while some evaluation of the job is
+        still live is reported as not started, since the job is shared by every
+        run of its task and target; a miss with no live evaluation means
+        nothing is coming.
 
         :param queue_item: The running task history whose logs are about to stream.
         :raises TaskNotStartedInExecutorError: When Nomad is still placing the
-            allocation, or has placed it but reports no task state yet.
+            allocation or holding it for capacity, or has placed it but reports
+            no task state yet.
         :raises JobNotFoundError: When the job itself is gone.
-        :raises AllocationNotFoundError: When the job has no allocation and nothing
-            is pending that would produce one.
+        :raises AllocationNotFoundError: When the job has no allocation and no live
+            evaluation that would produce one.
         :raises KeyError: When the history's tracking carries no job or
             evaluation id.
         :raises BaseNomadException: When a Nomad read fails for another reason,
@@ -3076,11 +3178,20 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             alloc = self.get_last_allocation(job_id, eval_id)
         except AllocationNotFoundError:
             self.get_job(job_id)
-            if self._job_has_pending_evaluation(job_id):
-                raise TaskNotStartedInExecutorError(
-                    f"Nomad has not placed an allocation for job {job_id} yet"
-                ) from None
-            alloc = self.get_last_allocation(job_id, eval_id)
+            evaluations = self.backend.job.get_evaluations(job_id)
+            try:
+                alloc = self._last_chain_allocation(
+                    job_id, eval_id, _evaluations_by_id(evaluations)
+                )
+            except AllocationNotFoundError:
+                if any(
+                    evaluation.get("Status") in _LIVE_EVAL_STATUSES
+                    for evaluation in evaluations
+                ):
+                    raise TaskNotStartedInExecutorError(
+                        f"Nomad has not placed an allocation for job {job_id} yet"
+                    ) from None
+                raise
         if not _alloc_task_states(alloc) and alloc.get("ClientStatus") in {
             NomadAllocStatusEnum.PENDING,
             NomadAllocStatusEnum.RUNNING,
@@ -3097,6 +3208,28 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         """
         tracking = queue_item.execution_request.tracking or {}
         return (tracking["job_id"], tracking["evaluation_id"])
+
+    def _stream_allocation(self, job_id: str, eval_id: str) -> dict[str, Any]:
+        """Return the allocation a run's live log streams from.
+
+        Work that waited for capacity is placed under the ``blocked`` evaluation
+        the tracked one spawned, and the history keeps the tracked id until a
+        sync adopts the new one, so a miss is retried along the placement chain.
+
+        :param job_id: The Nomad job id.
+        :param eval_id: The evaluation id the history tracks.
+        :return: The allocation the evaluation chain placed.
+        :raises AllocationNotFoundError: If no evaluation in the chain has placed
+            an allocation.
+        :raises BaseNomadException: If Nomad fails a read.
+        """
+        try:
+            return self.get_last_allocation(job_id, eval_id)
+        except AllocationNotFoundError:
+            evaluations = self.backend.job.get_evaluations(job_id)
+        return self._last_chain_allocation(
+            job_id, eval_id, _evaluations_by_id(evaluations)
+        )
 
     async def stream_logs(
         self,
@@ -3119,7 +3252,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             log messages.
         """
         job_id, eval_id = self.job_eval_ids_for_stream_logs(queue_item)
-        alloc = await self.run_in_thread_held(self.get_last_allocation, job_id, eval_id)
+        alloc = await self.run_in_thread_held(self._stream_allocation, job_id, eval_id)
         active_streams = set()
         queue = asyncio.Queue()
         push_logs_tasks = []
