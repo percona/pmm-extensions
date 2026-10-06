@@ -82,6 +82,7 @@ from app.extensions.apps.om_inventory.models import (
     NodeResolution,
     ProbeRun,
     ProbeRunStatus,
+    ScanFailure,
 )
 from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
 from app.extensions.config import extensions_settings
@@ -199,7 +200,46 @@ def _record_for(entry: Any, host_results: dict[str, HostProbeResult]) -> dict | 
     return result.records.get(record_key(entry.service.external_id, entry.service.name))
 
 
-def _record_failure(record: dict[str, Any] | None) -> str | None:
+#: pymongo's exception classes for "could not reach the server at all", as the
+#: payload reports them in a failed record's ``error_type``.
+_UNREACHABLE_ERRORS = frozenset(
+    {
+        "AutoReconnect",
+        "ConnectionFailure",
+        "NetworkTimeout",
+        "ServerSelectionTimeoutError",
+    }
+)
+#: MongoDB's ``AuthenticationFailed``.
+_AUTHENTICATION_FAILED = 18
+#: What a payload whose interpreter cannot import its one dependency reports. The
+#: venv was built but ``pymongo`` is not in it, which is an environment failure, not
+#: a database one.
+_IMPORT_ERRORS = frozenset({"ImportError", "ModuleNotFoundError"})
+
+
+def classify_record_failure(record: dict[str, Any]) -> ScanFailure:
+    """Return what kind of failure a record the payload marked failed is.
+
+    Keyed off the exception type and server code the payload records beside the
+    message, never the message itself.
+
+    :param record: A record with ``status: failed``.
+    :return: The failure's kind.
+    """
+    error_type = record.get("error_type")
+    if error_type == "OperationFailure" and (
+        record.get("error_code") == _AUTHENTICATION_FAILED
+    ):
+        return ScanFailure.DATABASE_AUTH_FAILED
+    if error_type in _UNREACHABLE_ERRORS:
+        return ScanFailure.DATABASE_UNREACHABLE
+    if error_type in _IMPORT_ERRORS:
+        return ScanFailure.ENVIRONMENT_SETUP_FAILED
+    return ScanFailure.DATABASE_ERROR
+
+
+def _record_failure(record: dict[str, Any] | None) -> tuple[str, ScanFailure] | None:
     """Return why a probe record is a failed attempt, or ``None`` if it is not.
 
     The payload prints a record for every target, including one it could not query -
@@ -208,12 +248,16 @@ def _record_failure(record: dict[str, Any] | None) -> str | None:
     failed attempt and keeps the last good document.
 
     :param record: The probe record, or ``None`` when there was none.
-    :return: The failure detail, or ``None`` for a usable record or no record.
+    :return: The failure detail and its kind, or ``None`` for a usable record or no
+        record.
     """
     if not record or record.get("status") != STATUS_FAILED:
         return None
     error = str(record.get("error") or "no detail was reported")
-    return f"could not query the database: {error[:MAX_ERROR_DETAIL]}"
+    return (
+        f"could not query the database: {error[:MAX_ERROR_DETAIL]}",
+        classify_record_failure(record),
+    )
 
 
 def _answered(record: dict[str, Any] | None) -> bool:
@@ -392,6 +436,10 @@ class SweepOutcome:
         dispatch's own error where it had one, and otherwise that it answered nothing;
         the estate row and the receipt both read it, so the two cannot give an
         operator two different reasons for one failure.
+    :param service_error_codes: What kind of failure each of ``service_errors`` is,
+        keyed the same way.
+    :param host_error_codes: What kind of failure each of ``host_errors`` is, keyed
+        the same way.
     """
 
     total: int = 0
@@ -409,6 +457,30 @@ class SweepOutcome:
     attempted: set[str] = dc_field(default_factory=set)
     dispatched: set[str] = dc_field(default_factory=set)
     host_errors: dict[str, str] = dc_field(default_factory=dict)
+    service_error_codes: dict[str, ScanFailure] = dc_field(default_factory=dict)
+    host_error_codes: dict[str, ScanFailure] = dc_field(default_factory=dict)
+
+    def fail_service(self, service_id: str, error: str, code: ScanFailure) -> None:
+        """Record why a service did not answer, and what kind of failure that is.
+
+        One call for both, so a service cannot end up with a reason and no code.
+
+        :param service_id: PMM's service id.
+        :param error: The failure detail.
+        :param code: Its kind.
+        """
+        self.service_errors[service_id] = error
+        self.service_error_codes[service_id] = code
+
+    def fail_host(self, node_id: str, error: str, code: ScanFailure) -> None:
+        """Record why a host did not answer, and what kind of failure that is.
+
+        :param node_id: PMM's node id.
+        :param error: The failure detail.
+        :param code: Its kind.
+        """
+        self.host_errors[node_id] = error
+        self.host_error_codes[node_id] = code
 
 
 #: How long to wait for PMM Extensions' own APIs before calling a sweep failed, and how often
@@ -543,9 +615,16 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
             continue
         # The fallback is not decoration: a dispatch that succeeded and printed no
         # host line has no error of its own, and that *is* the finding.
-        outcome.host_errors[host.node_id] = (
-            result.error or "the host has an executor but returned no probe record"
-        )
+        if result.error:
+            outcome.fail_host(
+                host.node_id, result.error, result.error_code or ScanFailure.UNKNOWN
+            )
+        else:
+            outcome.fail_host(
+                host.node_id,
+                "the scan finished but reported nothing about this node",
+                ScanFailure.NO_OUTPUT,
+            )
 
     node_ids_by_host = _index_hosts(outcome)
 
@@ -755,11 +834,18 @@ def _record_entity(
     outcome.attempted.add(entry.service.external_id)
 
     if record is None:
-        outcome.service_errors[entry.service.external_id] = (
-            host_result.error
-            if host_result and host_result.error
-            else "the host answered, but returned no record for this service"
-        )
+        if host_result and host_result.error:
+            outcome.fail_service(
+                entry.service.external_id,
+                host_result.error,
+                host_result.error_code or ScanFailure.UNKNOWN,
+            )
+        else:
+            outcome.fail_service(
+                entry.service.external_id,
+                "the node answered, but the scan reported nothing for this service",
+                ScanFailure.NO_OUTPUT,
+            )
         return
 
     failure = _record_failure(record)
@@ -767,7 +853,7 @@ def _record_entity(
         # A failed attempt like any other: no document, so the last good one stays,
         # and no role, so the one it last answered with is not blanked out. Only what
         # it read off the host itself is refreshed.
-        outcome.service_errors[entry.service.external_id] = failure
+        outcome.fail_service(entry.service.external_id, *failure)
         outcome.service_process_facts[entry.service.external_id] = _process_facts(
             record
         )
@@ -852,6 +938,9 @@ async def persist_estate(outcome: SweepOutcome, run_id: UUID) -> None:
                 # the hosts no probe was ever dispatched to.
                 executor=host.executor_document,
                 error=None if document else outcome.host_errors.get(host.node_id),
+                error_code=None
+                if document
+                else outcome.host_error_codes.get(host.node_id),
                 run_id=run_id,
                 attempted=attempted,
             )
@@ -870,6 +959,7 @@ async def persist_estate(outcome: SweepOutcome, run_id: UUID) -> None:
                 role=outcome.service_roles.get(service_id),
                 observed=outcome.service_documents.get(service_id),
                 error=outcome.service_errors.get(service_id),
+                error_code=outcome.service_error_codes.get(service_id),
                 process_facts=outcome.service_process_facts.get(service_id),
                 run_id=run_id,
                 attempted=service_id in outcome.attempted,

@@ -32,7 +32,7 @@ from app.extensions.apps.om_inventory.dispatch import HostProbeResult
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
-from app.extensions.apps.om_inventory.models import NodeResolution
+from app.extensions.apps.om_inventory.models import NodeResolution, ScanFailure
 from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
 from app.extensions.apps.om_inventory.service import (
     enumerate_estate,
@@ -488,8 +488,9 @@ async def test_a_host_that_answered_nothing_at_all_still_says_something() -> Non
     )
 
     assert outcome.host_errors["node00"] == (
-        "the host has an executor but returned no probe record"
+        "the scan finished but reported nothing about this node"
     )
+    assert outcome.host_error_codes["node00"] == ScanFailure.NO_OUTPUT
 
 
 @pytest.mark.asyncio

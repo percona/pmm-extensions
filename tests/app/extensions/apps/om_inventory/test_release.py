@@ -31,7 +31,7 @@ import pytest
 from app.extensions.apps.om_inventory.dispatch import probe_host
 from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import MappedService
-from app.extensions.apps.om_inventory.models import NodeResolution
+from app.extensions.apps.om_inventory.models import NodeResolution, ScanFailure
 from tests.app.extensions.apps.om_inventory.conftest import HOST
 
 HISTORY_ID = 779
@@ -126,7 +126,11 @@ class TestReleaseOnAbandonedDispatch:
         result = await probe_host(api, HOST, entries())
 
         assert stop_calls(api) == [f"/history/{HISTORY_ID}/stop/"]
-        assert "TimeoutError" in (result.error or "")
+        assert result.error == (
+            f"the scan did not finish within 1s (task history {HISTORY_ID} is "
+            "still running)"
+        )
+        assert result.error_code == ScanFailure.TIMED_OUT
         # The sweep still reports the probe as failed — releasing the queue item is
         # cleanup, not a rescue of the data this host owed.
         assert result.records == {}
@@ -141,14 +145,16 @@ class TestReleaseOnAbandonedDispatch:
         result = await probe_host(api, HOST, entries())
 
         assert stop_calls(api) == [f"/history/{HISTORY_ID}/stop/"]
-        assert "TimeoutError" in (result.error or "")
+        assert "the scan did not finish" in (result.error or "")
         # The operator needs to know which id is now blocking this host: the stop
         # route raises exactly where the allocation is gone, which is the case most
         # likely to have caused the abandonment.
         assert f"task history {HISTORY_ID} could not be released" in (
             result.error or ""
         )
-        assert "block this host's next probe" in (result.error or "")
+        assert "block this node's next scan" in (result.error or "")
+        # The stuck run outranks the timeout: it is the part that will not clear.
+        assert result.error_code == ScanFailure.BLOCKED
 
     @pytest.mark.asyncio
     async def test_a_finished_run_is_not_stopped(self) -> None:

@@ -155,6 +155,7 @@ def _service_response(service: OmService) -> ServiceResponse:
         failing_since=service.failing_since,
         consecutive_failures=service.consecutive_failures,
         last_error=service.last_error,
+        last_error_code=service.last_error_code,
     )
 
 
@@ -193,6 +194,7 @@ def _host_response(host: OmHost, services: list[OmService]) -> HostResponse:
         failing_since=host.failing_since,
         consecutive_failures=host.consecutive_failures,
         last_error=host.last_error,
+        last_error_code=host.last_error_code,
         services=[_service_response(service) for service in services],
     )
 
