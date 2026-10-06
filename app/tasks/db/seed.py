@@ -42,6 +42,7 @@ from app.tasks.db import get_async_session_maker
 from app.tasks.db.engine import engine
 from app.tasks.execution.executors.nomad.constants import (
     CHECK_NOMAD_CERT_EXPIRY_TASK_NAME,
+    SYNC_FINISHING_TASKS_TASK_NAME,
 )
 from app.tasks.execution.executors.nomad.steps import (
     LAUNCH_CHECK_EXIT_CODE,
@@ -578,6 +579,7 @@ NOMAD_EXEC_ARTIFACT = {
     "TaskGroups": [
         {
             "Name": "execution",
+            "ReschedulePolicy": {"Attempts": 0},
             "Tasks": [
                 deepcopy(_CHECK_STALENESS_TASK),
                 _check_launchable_task("interpreter", allow_strip=True),
@@ -833,6 +835,23 @@ if _nomad_cert_schedule is not None:
                 SystemPeriodicTaskData(
                     name=CHECK_NOMAD_CERT_EXPIRY_TASK_NAME,
                     task_name="app.tasks.celery.check_nomad_cert_expiry",
+                ),
+            ],
+        ),
+    )
+
+_finishing_sync_interval = tasks_settings.NOMAD.finishing_sync_interval_seconds
+if _finishing_sync_interval is not None:
+    SYSTEM_PERIODIC_TASKS.append(
+        SystemPeriodicTaskSchedule(
+            schedule=IntervalSchedule(
+                every=_finishing_sync_interval, period=Period.SECONDS
+            ),
+            tasks=[
+                SystemPeriodicTaskData(
+                    name=SYNC_FINISHING_TASKS_TASK_NAME,
+                    task_name="app.tasks.celery.sync_finishing_tasks",
+                    extra_kwargs={"expire_seconds": _finishing_sync_interval},
                 ),
             ],
         ),

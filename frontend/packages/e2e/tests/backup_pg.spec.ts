@@ -167,7 +167,7 @@ async function mockBackupPgApis(page: Page, apiState: ApiState): Promise<void> {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ footer_text: 'PMM Extensions' }),
+        body: JSON.stringify({ footer_text: 'PMM Extensions', version: 'v0.0.0-test' }),
       });
     }
 
