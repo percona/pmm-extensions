@@ -16,7 +16,7 @@
 """Define auth utility functions."""
 
 from app.core.auth.config import get_active_auth_provider
-from app.core.auth.models import BaseTokenPayload, BaseUser
+from app.core.auth.models import BaseUser
 
 
 def get_user_model() -> type[BaseUser]:
@@ -25,11 +25,3 @@ def get_user_model() -> type[BaseUser]:
     :return: The active provider's user model class.
     """
     return get_active_auth_provider().user_model
-
-
-def get_token_payload_model() -> type[BaseTokenPayload]:
-    """Return the token-payload model class of the active authentication provider.
-
-    :return: The active provider's token-payload model class.
-    """
-    return get_active_auth_provider().token_payload_model

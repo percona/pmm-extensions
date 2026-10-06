@@ -21,12 +21,11 @@ from typing import ClassVar
 
 from app.core.auth.base import BaseAuthProvider
 from app.core.auth.models import (
-    BaseTokenPayload,
     BaseUser,
     OAuthToken,
     SessionExchangeTokenResponse,
 )
-from app.core.auth.providers.grafana.models import GrafanaTokenPayload, GrafanaUser
+from app.core.auth.providers.grafana.models import GrafanaUser
 from app.core.auth.providers.grafana.sdk import GrafanaSDK
 
 
@@ -39,13 +38,11 @@ class GrafanaAuthProvider(GrafanaSDK, BaseAuthProvider):
     lifecycle hook.
 
     :cvar user_model: The Grafana user model.
-    :cvar token_payload_model: The Grafana token-payload model.
     :cvar supports_ambient_session: ``True`` -- Grafana validates an ambient
         session cookie, so ambient SSO applies under this provider.
     """
 
     user_model: ClassVar[type[BaseUser]] = GrafanaUser
-    token_payload_model: ClassVar[type[BaseTokenPayload]] = GrafanaTokenPayload
     supports_ambient_session: ClassVar[bool] = True
 
     @asynccontextmanager

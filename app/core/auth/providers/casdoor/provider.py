@@ -20,8 +20,8 @@ from contextlib import asynccontextmanager
 from typing import ClassVar
 
 from app.core.auth.base import BaseAuthProvider
-from app.core.auth.models import BaseTokenPayload, BaseUser
-from app.core.auth.providers.casdoor.models import CasdoorTokenPayload, CasdoorUser
+from app.core.auth.models import BaseUser
+from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.auth.providers.casdoor.sdk import CasdoorSDK
 
 
@@ -34,11 +34,9 @@ class CasdoorAuthProvider(CasdoorSDK, BaseAuthProvider):
     lifecycle hook.
 
     :cvar user_model: The Casdoor user model.
-    :cvar token_payload_model: The Casdoor token-payload model.
     """
 
     user_model: ClassVar[type[BaseUser]] = CasdoorUser
-    token_payload_model: ClassVar[type[BaseTokenPayload]] = CasdoorTokenPayload
 
     @asynccontextmanager
     async def lifespan(self) -> AsyncGenerator[None, None]:

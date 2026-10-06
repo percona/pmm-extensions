@@ -26,7 +26,10 @@ from typing import ClassVar
 
 import pytest
 from pydantic import BaseModel, ValidationError
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+)
 
 from app.core.auth.base import BaseAuthProvider
 from app.core.auth.config import (
@@ -35,8 +38,8 @@ from app.core.auth.config import (
     AuthSettings,
     detect_removed_auth_user_model,
 )
-from app.core.auth.models import BaseTokenPayload, BaseUser
-from app.core.auth.providers.casdoor.models import CasdoorTokenPayload, CasdoorUser
+from app.core.auth.models import BaseUser
+from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.auth.providers.casdoor.provider import CasdoorAuthProvider
 from app.core.auth.providers.grafana.provider import GrafanaAuthProvider
 
@@ -62,7 +65,6 @@ class StubAuthProvider(_StubSDK, BaseAuthProvider):
     """Bundle a stub SDK to exercise the CUSTOM provider class-path branch."""
 
     user_model: ClassVar[type[BaseUser]] = CasdoorUser
-    token_payload_model: ClassVar[type[BaseTokenPayload]] = CasdoorTokenPayload
 
 
 _STUB_PATH = f"{__name__}.StubAuthProvider"
@@ -269,6 +271,76 @@ class TestDeprecationShim:
         )
         assert list(settings.PROVIDER) == ["grafana"]
         assert isinstance(settings.active_provider, GrafanaAuthProvider)
+
+
+class EnvAuthSettings(AuthSettings):
+    """Read ``AuthSettings`` from init kwargs and the environment only."""
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Return the production init and env sources, dropping dotenv, secrets and YAML.
+
+        Delegating keeps the production ``AUTH__`` prefix stripping, which
+        rewrites the env source in place, so the test reads the environment
+        exactly as a deployment does.
+        """
+        sources = super().settings_customise_sources(
+            settings_cls,
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
+        return sources[:2]
+
+
+class TestRetiredCasdoorFrontEndpoint:
+    """Verify a deployment that still sets the retired ``front_endpoint`` starts."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "//:9999",
+            "https://casdoor.example",
+            "",
+            123,
+            None,
+            ["//:9999"],
+            {"path": "/"},
+        ],
+    )
+    def test_yaml_entry_is_ignored(self, value):
+        """Verify any ``front_endpoint`` value in the provider entry is dropped.
+
+        The non-URL values would have failed the old URL field, so they pin that
+        a stale entry can no longer block startup.
+        """
+        settings = IsolatedAuthSettings(
+            PROVIDER={"casdoor": {**_CASDOOR_CONFIG, "front_endpoint": value}}
+        )
+
+        provider = settings.active_provider
+        assert isinstance(provider, CasdoorAuthProvider)
+        assert "front_endpoint" not in provider.model_dump()
+
+    def test_env_var_is_ignored(self, monkeypatch):
+        """Verify ``AUTH__PROVIDER__CASDOOR__FRONT_ENDPOINT`` is dropped."""
+        for key, value in _CASDOOR_CONFIG.items():
+            monkeypatch.setenv(f"AUTH__PROVIDER__CASDOOR__{key.upper()}", value)
+        monkeypatch.setenv("AUTH__PROVIDER__CASDOOR__FRONT_ENDPOINT", "//:9999")
+
+        provider = EnvAuthSettings().active_provider
+
+        assert isinstance(provider, CasdoorAuthProvider)
+        assert str(provider.endpoint).rstrip("/") == _CASDOOR_CONFIG["endpoint"]
+        assert "front_endpoint" not in provider.model_dump()
 
 
 class TestRemovedAuthUserModelDetector:

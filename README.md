@@ -134,7 +134,6 @@ These are some, but not all, the possible settings you can have, per app:
 | ALLOW_CONCURRENT_SESSIONS  | all       | no       | False                                               | False                                            |
 | SSL_CAFILE                 | all       | no       | null                                                | null                                             |
 | AUTH__PROVIDER__CASDOOR__ENDPOINT          | all | yes | N/A                                             | `http://localhost:9999`                          |
-| AUTH__PROVIDER__CASDOOR__FRONT_ENDPOINT    | all | no  | The same as `AUTH__PROVIDER__CASDOOR__ENDPOINT` | `//:9999`                                        |
 | AUTH__PROVIDER__CASDOOR__CERTIFICATE_PATH  | all | no  | null                                            | null                                             |
 | AUTH__PROVIDER__CASDOOR__ORGANIZATION_NAME | all | no  | built-in                                        | N/A                                              |
 | AUTH__PROVIDER__CASDOOR__APPLICATION_NAME  | all | no  | app-built-in                                    | extensions-app                                          |

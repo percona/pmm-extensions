@@ -43,15 +43,12 @@ class CustomProviderUser(BaseUser):
     stub because the tests here only construct identities.
     """
 
-    from_code = _unsupported
     from_jwt = _unsupported
-    from_password = _unsupported
     from_token_payload = _unsupported
     get_oauth_token = _unsupported
     get_user = _unsupported
     get_users = _unsupported
     invalidate_oauth_token = _unsupported
-    invalidate_tokens_for_user = _unsupported
 
 
 def _build_user(**fields: Any) -> CustomProviderUser:
@@ -61,6 +58,37 @@ def _build_user(**fields: Any) -> CustomProviderUser:
     :return: The constructed identity.
     """
     return CustomProviderUser(id=uuid4(), username="tester", **fields)
+
+
+class TestBaseUserContract:
+    """Verify the operations an out-of-tree provider's user model must implement."""
+
+    def test_abstract_operations_are_exactly_the_routed_ones(self):
+        """Verify only operations the auth routes reach are abstract."""
+        assert BaseUser.__abstractmethods__ == {
+            "from_jwt",
+            "from_token_payload",
+            "get_oauth_token",
+            "get_user",
+            "get_users",
+            "invalidate_oauth_token",
+        }
+
+    def test_user_implementing_only_routed_operations_builds(self):
+        """Verify a provider that implements only the routed operations is concrete."""
+        assert _build_user(role=UserRole.VIEWER).username == "tester"
+
+    def test_user_still_defining_dropped_operations_builds(self):
+        """Verify a provider written against the wider contract keeps working."""
+
+        class LegacyProviderUser(CustomProviderUser):
+            from_code = _unsupported
+            from_password = _unsupported
+            invalidate_tokens_for_user = _unsupported
+
+        user = LegacyProviderUser(id=uuid4(), username="legacy", role=UserRole.ADMIN)
+
+        assert user.username == "legacy"
 
 
 class TestUserRoleOrdering:
