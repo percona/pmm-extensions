@@ -24,6 +24,7 @@ from typing import Any, Self, TYPE_CHECKING
 
 from fastapi import FastAPI
 
+from app.core.requests.remote_api import PendingCloses
 from app.core.utils.fields import PRESERVE_CREDENTIALS_CONTEXT
 from app.tasks.config import tasks_settings
 
@@ -91,8 +92,12 @@ class NomadLifecycle:
 
     :meth:`reconcile` is wired as the ``(TASKS_SETTINGS, NOMAD)`` rebind
     callback by ``tasks_lifespan``; it opens the new executor before swapping
-    and closes the old one afterwards, so a reader resolving :attr:`current`
-    after the swap sees the new open session.
+    and retires the old one afterwards, so a reader resolving :attr:`current`
+    after the swap sees the new open session. Deferred retirements are tracked
+    on this holder's :class:`PendingCloses` so :meth:`__aexit__` can still
+    force-close them at shutdown if a holder never unwinds. :meth:`__aexit__`
+    also marks the holder closing under the lock so a reconcile waiting there
+    cannot publish a fresh executor after ``_current`` is cleared.
 
     :param app: The FastAPI application whose ``state`` exposes the holder to
         request-scoped readers via ``get_executor``.
@@ -103,6 +108,8 @@ class NomadLifecycle:
         self._current: NomadExecutor | None = None
         self._current_config: dict[str, Any] | None = None
         self._lock = asyncio.Lock()
+        self._pending_closes = PendingCloses()
+        self._closing = False
 
     @property
     def current(self) -> NomadExecutor:
@@ -148,12 +155,25 @@ class NomadLifecycle:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
-        """Exit the entered executor and unpublish the holder on shutdown."""
-        async with self._lock:
-            if self._current is not None:
-                await self._current.__aexit__(None, None, None)
-                self._current = None
-        self._app.state.nomad_lifecycle = None
+        """Exit the entered executor and force-close any still-deferred retirees.
+
+        Nested ``finally`` so a failure closing the active executor still
+        force-closes deferred retirees and unpublishes the holder.
+        """
+        try:
+            async with self._lock:
+                self._closing = True
+                self._pending_closes.seal()
+                if self._current is not None:
+                    try:
+                        await self._current.__aexit__(None, None, None)
+                    finally:
+                        self._current = None
+        finally:
+            try:
+                await self._pending_closes.force_close()
+            finally:
+                self._app.state.nomad_lifecycle = None
 
     async def reconcile(self) -> None:
         """Rebind the entered executor when the effective NOMAD config changed.
@@ -161,8 +181,11 @@ class NomadLifecycle:
         Opens the new executor first, swaps the reference (a GIL-atomic
         assignment, so readers of :attr:`current` see either the old or the new
         executor but never a half-built one), then retires the old one. A no-op
-        when the config is unchanged. A construction failure propagates to the
-        refresher's per-cycle handler, leaving the old executor live.
+        when the config is unchanged, or when :meth:`__aexit__` has already
+        marked the holder closing (a callback waiting on the lock must not
+        publish a fresh session after teardown cleared ``_current``). A
+        construction failure propagates to the refresher's per-cycle handler,
+        leaving the old executor live.
 
         The new executor is entered *inside* the lock so the compare-and-swap is
         atomic against a concurrent reconcile. This is safe because
@@ -173,7 +196,12 @@ class NomadLifecycle:
 
         The old executor is retired rather than closed outright: routes that
         resolved it stream off that instance for the whole response, so it stays
-        open until the last of them releases it.
+        open until the last of them releases it. Retirement is registered on
+        :class:`PendingCloses` *under the same lock* as the swap, so
+        :meth:`__aexit__` cannot seal and sweep in the gap before
+        :meth:`~app.core.requests.remote_api.BaseRemoteAPI.close_when_idle`
+        runs — even if this task is cancelled mid-await, or the client was
+        idle and would otherwise never touch pending.
 
         :raises ValidationError: If the overridden config fingerprint cannot be
             reconstructed into a :class:`NomadExecutor` (propagated from
@@ -184,14 +212,21 @@ class NomadLifecycle:
         """
         desired = self._desired()
         desired_config = _config_fingerprint(desired)
+        old: NomadExecutor | None = None
         async with self._lock:
+            if self._closing:
+                return
             if desired_config == self._current_config:
                 return
             new = await desired.__aenter__()
             old, self._current = self._current, new
             self._current_config = desired_config
+            if old is not None:
+                # Always succeeds: __aexit__ seals only after setting _closing,
+                # and we return early on _closing under this same lock.
+                old.remember_pending_close(self._pending_closes)
         if old is not None:
-            await old.close_when_idle()
+            await old.close_when_idle(pending=self._pending_closes)
 
 
 class WorkerNomadClient:

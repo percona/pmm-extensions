@@ -117,7 +117,7 @@ def _scratch_name(suffix: str, *parts: object) -> str:
 _DEFAULT_WORK_DIR_NAME = _scratch_name(PARTIAL_SUFFIX, "030000", 4242)
 
 
-def _this_runs_scratch_name(suffix: str) -> str:
+def _this_runs_scratch_name(suffix: str, *, started_at: float | None = None) -> str:
     """Build the name this test process would give a scratch directory right now.
 
     Stamped off the real clock rather than the frozen ``TODAY``, so the start time
@@ -125,9 +125,14 @@ def _this_runs_scratch_name(suffix: str) -> str:
     owner's liveness off that field against the pid's real start time.
 
     :param suffix: The scratch suffix, read off the payload.
+    :param started_at: The instant to stamp, or the current time when omitted.
     :return: The directory name.
     """
-    return f".{real_time.strftime('%Y%m%d.%H%M%S')}.{os.getpid()}{suffix}"
+    if started_at is None:
+        stamp = real_time.strftime("%Y%m%d.%H%M%S")
+    else:
+        stamp = real_time.strftime("%Y%m%d.%H%M%S", real_time.localtime(started_at))
+    return f".{stamp}.{os.getpid()}{suffix}"
 
 
 def _exited_pid() -> int:
@@ -830,7 +835,9 @@ class TestReclaimInterruptedPublish:
         second its name records, which is the shape a live publication has.
         """
         owner_started = real_time.time()
-        aside = tmp_path / _this_runs_scratch_name(REPLACED_SUFFIX)
+        aside = tmp_path / _this_runs_scratch_name(
+            REPLACED_SUFFIX, started_at=owner_started
+        )
         aside.mkdir()
         (aside / "metadata").write_text("Finished dump at: previous\n")
         aged = owner_started - OLDER_THAN_ANY_GRACE_PERIOD

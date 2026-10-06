@@ -106,6 +106,12 @@ logger = logging.getLogger(__name__)
 
 _MAX_CHAIN_DEPTH = 10
 
+#: How old a dispatch-lock row must be before a later dispatch may clear it.
+#: Named because two places depend on the same number: the sweep that reclaims a
+#: lock whose dispatch died holding it, and the release path, which tolerates its
+#: own failure precisely because that sweep will reclaim the row.
+_DISPATCH_LOCK_STALE_SECONDS = 30
+
 
 @task_revoked.connect
 def task_revoked_handler(*, request: Context, expired: bool, **kwargs: Any) -> None:
@@ -749,12 +755,13 @@ async def _dispatch_queue_item(
     async with lock_session_maker() as lock_session:
         await DispatchLockManager.delete_where(
             lock_session,
-            col(DispatchLock.created_at) < (utc_now() - timedelta(seconds=30)),
+            col(DispatchLock.created_at)
+            < (utc_now() - timedelta(seconds=_DISPATCH_LOCK_STALE_SECONDS)),
             name=dispatch_lock_name,
         )
         try:
-            dispatch_lock = await DispatchLockManager.create(
-                lock_session, DispatchLock(name=dispatch_lock_name)
+            lock_created_at = await DispatchLockManager.claim(
+                lock_session, dispatch_lock_name
             )
         except IntegrityError as exc:
             raise HTTPConflictException("Identical dispatch in progress.") from exc
@@ -774,8 +781,20 @@ async def _dispatch_queue_item(
         else:
             schedule_annotation(result, "STARTED")
     finally:
-        async with lock_session_maker() as async_session:
-            await DispatchLockManager.delete(async_session, dispatch_lock)
+        # Raising here would turn an enqueued, running dispatch into a refusal
+        # that the client retries into a duplicate.
+        try:
+            async with lock_session_maker() as release_session:
+                await DispatchLockManager.release(
+                    release_session, dispatch_lock_name, lock_created_at
+                )
+        except Exception:
+            logger.exception(
+                "Could not release dispatch lock %s; it will be swept once it is "
+                "older than %ss",
+                dispatch_lock_name,
+                _DISPATCH_LOCK_STALE_SECONDS,
+            )
 
     if result.status.is_terminal():
         await maybe_record_run(result.id, executor)

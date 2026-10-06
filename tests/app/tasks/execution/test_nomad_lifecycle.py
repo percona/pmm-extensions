@@ -15,12 +15,15 @@
 
 """Tests for the NomadLifecycle holder and executor-resolution helpers."""
 
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp import encode_basic_auth
 from fastapi import FastAPI
 from pydantic import ValidationError
+from pytest_mock import MockerFixture
 
 from app.tasks.config import tasks_settings
 from app.tasks.deps import (
@@ -29,13 +32,14 @@ from app.tasks.deps import (
     resolve_request_executor,
 )
 from app.tasks.execution.executors.celery.models import CeleryExecutor
-from app.tasks.execution.executors.nomad import NomadExecutor
+from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.nomad_lifecycle import (
     NomadLifecycle,
     normalize_nomad_config_value,
     WorkerNomadClient,
 )
 from app.tasks.models import TaskBackendEnum
+from tests.app.core.requests.pending_close_helpers import patch_paused_close_when_idle
 
 _NOMAD_A = {"endpoint": "https://nomad-a.example.org"}
 _NOMAD_B = {"endpoint": "https://nomad-b.example.org"}
@@ -144,6 +148,157 @@ async def test_reconcile_swaps_and_drains_on_change() -> None:
         assert holder.current is not old
         assert str(holder.current.endpoint).startswith("https://nomad-b.example.org")
         assert old._session is None
+
+
+@pytest.mark.asyncio
+async def test_aexit_force_closes_a_deferred_retiree() -> None:
+    """Force-close a mid-hold retiree when the lifecycle shuts down."""
+    _override_nomad(_NOMAD_A)
+    held = asyncio.Event()
+
+    async def consumer(client: NomadExecutor) -> None:
+        async with client.hold():
+            held.set()
+            await asyncio.Event().wait()
+
+    try:
+        async with NomadLifecycle(FastAPI()) as holder:
+            old = holder.current
+            task = asyncio.create_task(consumer(old))
+            await asyncio.wait_for(held.wait(), timeout=5)
+            _override_nomad(_NOMAD_B)
+            await holder.reconcile()
+            assert old._session is not None
+
+        assert old._session is None
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        tasks_settings._set_snapshot({})
+
+
+@pytest.mark.asyncio
+async def test_reconcile_refuses_to_publish_after_aexit() -> None:
+    """Reject a reconcile queued past shutdown so it cannot open a fresh executor."""
+    _override_nomad(_NOMAD_A)
+    app = FastAPI()
+    holder = NomadLifecycle(app)
+    try:
+        await holder.__aenter__()
+        await holder.__aexit__(None, None, None)
+        assert holder._current is None
+        assert holder._closing is True
+
+        _override_nomad(_NOMAD_B)
+        await holder.reconcile()
+
+        assert holder._current is None
+    finally:
+        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.asyncio
+async def test_aexit_still_force_closes_when_active_close_fails(
+    mocker: MockerFixture,
+) -> None:
+    """Keep pending sweep and unpublish running when the active executor close raises."""
+    _override_nomad(_NOMAD_A)
+    app = FastAPI()
+    holder = NomadLifecycle(app)
+    old = None
+    try:
+        await holder.__aenter__()
+        old = holder.current
+        retired = await NomadExecutor.model_validate(_NOMAD_B).open()
+
+        async with retired.hold():
+            await retired.close_when_idle(pending=holder._pending_closes)
+            mocker.patch.object(
+                old, "__aexit__", AsyncMock(side_effect=RuntimeError("active boom"))
+            )
+
+            with pytest.raises(RuntimeError, match="active boom"):
+                await holder.__aexit__(None, None, None)
+
+            assert holder._current is None
+            assert retired._session is None
+            assert app.state.nomad_lifecycle is None
+    finally:
+        if old is not None and old._session is not None:
+            await old._session.close()
+            old._session = None
+        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.asyncio
+async def test_aexit_force_closes_idle_retiree_cancelled_mid_reconcile(
+    mocker: MockerFixture,
+) -> None:
+    """Register an idle reconcile under the lock so cancel mid-close cannot leak."""
+    _override_nomad(_NOMAD_A)
+    app = FastAPI()
+    holder = NomadLifecycle(app)
+    try:
+        await holder.__aenter__()
+        retired = holder.current
+        entered, resume = patch_paused_close_when_idle(mocker, NomadExecutor)
+
+        _override_nomad(_NOMAD_B)
+        reconcile_task = asyncio.create_task(holder.reconcile())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert id(retired) in holder._pending_closes._clients
+        assert retired._session is not None
+
+        reconcile_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reconcile_task
+
+        await holder.__aexit__(None, None, None)
+        assert retired._session is None
+        assert holder._pending_closes._clients == {}
+    finally:
+        tasks_settings._set_snapshot({})
+
+
+@pytest.mark.asyncio
+async def test_aexit_force_closes_mid_reconcile_before_close_when_idle(
+    mocker: MockerFixture,
+) -> None:
+    """Register the swap on pending under the lock so ``__aexit__`` cannot miss it.
+
+    Pause after reconcile has left ``close_when_idle``; the retired executor must
+    already be on pending from the locked swap, so ``__aexit__`` force-closes it
+    during the pause — not only after reconcile resumes.
+    """
+    _override_nomad(_NOMAD_A)
+    app = FastAPI()
+    holder = NomadLifecycle(app)
+    try:
+        await holder.__aenter__()
+        retired = holder.current
+        entered, resume = patch_paused_close_when_idle(mocker, NomadExecutor)
+
+        async with retired.hold():
+            _override_nomad(_NOMAD_B)
+            reconcile_task = asyncio.create_task(holder.reconcile())
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert id(retired) in holder._pending_closes._clients
+            assert retired._session is not None
+
+            await holder.__aexit__(None, None, None)
+            assert retired._session is None
+            assert holder._pending_closes.sealed
+
+            resume.set()
+            reconcile_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await reconcile_task
+
+            assert retired._session is None
+            assert holder._pending_closes._clients == {}
+    finally:
+        tasks_settings._set_snapshot({})
 
 
 @pytest.mark.asyncio
