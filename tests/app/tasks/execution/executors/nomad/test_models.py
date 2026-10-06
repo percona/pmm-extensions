@@ -328,10 +328,10 @@ def _build_executor(
 
 
 def _nomad_error(status_code: int) -> NomadRequestError:
-    """Build the error ``_nomad_json`` raises for ``status_code``.
+    """Build the error ``nomad_json`` raises for ``status_code``.
 
     Deliberately the executor's own error rather than the underlying
-    ``aiohttp.ClientResponseError``: ``_nomad_json`` converts every failure so
+    ``aiohttp.ClientResponseError``: ``nomad_json`` converts every failure so
     that it stays a ``BaseNomadException``, which the Tasks exception handler and
     the periodic-dispatch alert both depend on.
 
@@ -369,7 +369,7 @@ def _nomad_router(
     register: Any = None,
     dispatch: Any = None,
 ) -> tuple[Callable[..., Any], list[tuple[str, str, dict[str, Any]]]]:
-    """Build a stand-in for :meth:`NomadExecutor._nomad_json` and its call log.
+    """Build a stand-in for :meth:`NomadExecutor.nomad_json` and its call log.
 
     The dispatch path's five Nomad calls moved off the synchronous python-nomad
     client onto the inherited aiohttp session, so a test can no longer set
@@ -377,7 +377,7 @@ def _nomad_router(
     instead, and each argument takes a body, a callable receiving the job id, or
     an exception to raise.
 
-    Deliberately a stand-in for ``_nomad_json`` rather than for ``_request``:
+    Deliberately a stand-in for ``nomad_json`` rather than for ``_request``:
     most of these tests are about what the executor does with Nomad's answers,
     and routing them through a mock HTTP response would only restate aiohttp. The
     wire format those calls actually put on the socket - method, path and body -
@@ -392,7 +392,7 @@ def _nomad_router(
     """
     calls: list[tuple[str, str, dict[str, Any]]] = []
 
-    async def _nomad_json(method: str, path: str, **kwargs: Any) -> Any:
+    async def nomad_json(method: str, path: str, **kwargs: Any) -> Any:
         calls.append((method, path, kwargs))
         if method == "GET" and path == "/v1/nodes":
             return _serve(nodes, [])
@@ -404,7 +404,7 @@ def _nomad_router(
             return _serve(register, {"EvalID": "eval-1"})
         raise AssertionError(f"unrouted Nomad call: {method} {path}")
 
-    return _nomad_json, calls
+    return nomad_json, calls
 
 
 def _stub_nomad_calls(**answers: Any) -> list[tuple[str, str, dict[str, Any]]]:
@@ -419,12 +419,12 @@ def _stub_nomad_calls(**answers: Any) -> list[tuple[str, str, dict[str, Any]]]:
     """
     router, calls = _nomad_router(**answers)
 
-    async def _nomad_json(
+    async def nomad_json(
         _self: NomadExecutor, method: str, path: str, **kwargs: Any
     ) -> Any:
         return await router(method, path, **kwargs)
 
-    patcher = patch.object(NomadExecutor, "_nomad_json", _nomad_json)
+    patcher = patch.object(NomadExecutor, "nomad_json", nomad_json)
     patcher.start()
     _ACTIVE_NOMAD_STUBS.append(patcher)
     return calls
@@ -432,7 +432,7 @@ def _stub_nomad_calls(**answers: Any) -> list[tuple[str, str, dict[str, Any]]]:
 
 @contextmanager
 def _stub_nomad_api(
-    executor: NomadExecutor,
+    _executor: NomadExecutor,
     *,
     job: Any = None,
     nodes: Any = None,
@@ -445,7 +445,13 @@ def _stub_nomad_api(
     Use this where the test asserts on the calls; where the stub is only setup,
     ``_build_executor(nomad_job=...)`` keeps it out of the test body.
 
-    :param executor: The executor whose calls to intercept.
+    Patched on the class rather than the instance: ``nomad_json`` is public, and
+    pydantic refuses an instance attribute that is not a field. Scoping is not
+    lost in practice - a test builds the one executor it exercises - and the
+    un-entered path runs its call on a private executor the test never sees.
+
+    :param _executor: The executor the caller is exercising, kept for call-site
+        clarity about which one the stub is for.
     :param job: Answer for ``GET /v1/job/{id}``.
     :param nodes: Answer for ``GET /v1/nodes``.
     :param register: Answer for ``POST /v1/job/{id}``.
@@ -455,7 +461,7 @@ def _stub_nomad_api(
     router, calls = _nomad_router(
         job=job, nodes=nodes, register=register, dispatch=dispatch
     )
-    with patch.object(executor, "_nomad_json", side_effect=router):
+    with patch.object(NomadExecutor, "nomad_json", side_effect=router):
         yield calls
 
 
@@ -2015,7 +2021,7 @@ class TestPreflightStreamLogs:
     ) -> tuple[NomadExecutor, MagicMock]:
         """Build an executor whose Nomad backend answers the preflight's reads.
 
-        The preflight's job read goes through ``_nomad_json``, not
+        The preflight's job read goes through ``nomad_json``, not
         ``backend.job``, so it is stubbed with :func:`_stub_nomad_calls`; the
         allocation and evaluation listings are still python-nomad.
 
@@ -3618,7 +3624,7 @@ class TestSyncTaskHistoryQueuedEvaluations:
     ) -> MagicMock:
         """Wire a Nomad backend whose allocations are keyed by evaluation id.
 
-        The job read goes through ``_nomad_json`` rather than ``backend.job``, so
+        The job read goes through ``nomad_json`` rather than ``backend.job``, so
         it is stubbed with :func:`_stub_nomad_calls` like the other ``_backend``
         helpers here; the evaluations and allocations are still python-nomad.
 
@@ -10087,7 +10093,7 @@ class TestNomadStopReleasesCaptureHold:
 class TestPortedNomadCallsUseTheDocumentedEndpoints:
     """Pin the wire format of the five calls that moved off python-nomad.
 
-    Everything else in this module stubs :meth:`NomadExecutor._nomad_json` and so
+    Everything else in this module stubs :meth:`NomadExecutor.nomad_json` and so
     says nothing about what actually reaches the socket. python-nomad used to
     build these requests; now the executor does, and a wrong verb, path or body
     key would reach a live Nomad rather than a test. These assertions are that
@@ -10105,7 +10111,7 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
 
         Patched on the class, not on the executor under test: an un-entered
         executor runs its call on a private instance built by
-        ``_calling_executor``, so an instance patch would never be reached and
+        ``_private_executor``, so an instance patch would never be reached and
         the request would go to a real socket.
 
         :param body: The JSON body each call answers with.
@@ -10480,12 +10486,12 @@ class TestPortedNomadCallsRunOnAnUnenteredExecutor:
         """Assert a ``model_copy`` of the executor cannot inherit a live borrow.
 
         The settings-override snapshot is built with ``model_copy``, which
-        carries pydantic private attributes across. Any session or borrow
-        bookkeeping left on the shared instance while a call is in flight would
-        therefore be inherited by the snapshot's copy - which would then raise
-        ``RuntimeError: Session is closed`` once the original retired it, not a
-        ``BaseNomadException``, so a route would answer a bare 500 and the
-        periodic-dispatch alert would be skipped.
+        carries pydantic private attributes across. A session left on the shared
+        instance while a call is in flight would therefore be inherited by the
+        snapshot's copy, which would then raise ``RuntimeError: Session is
+        closed`` once the original retired it - not a ``BaseNomadException``, so
+        a route would answer a bare 500 and the periodic-dispatch alert would be
+        skipped.
         """
         executor = _build_executor(stub_nomad=False)
         copies: list[NomadExecutor] = []
@@ -10494,8 +10500,8 @@ class TestPortedNomadCallsRunOnAnUnenteredExecutor:
         response.json = AsyncMock(return_value=self.NODES)
 
         def _request(_session: Any, *_args: Any, **_kwargs: Any) -> Any:
-            # Snapshot while the request is in flight: that is the window the
-            # previous borrow bookkeeping was visible in.
+            # Snapshot while the request is in flight, which is the window a
+            # copy could inherit session state from.
             copies.append(executor.model_copy())
             ctx = AsyncMock()
             ctx.__aenter__ = AsyncMock(return_value=response)

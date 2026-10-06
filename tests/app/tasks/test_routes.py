@@ -1939,7 +1939,7 @@ async def test_get_executor_host_states_nomad_returns_non_json(
 ):
     """Assert /hosts/states/ returns 502 JSON when the body will not parse.
 
-    ``_nomad_json`` catches the ``JSONDecodeError`` and re-raises it as a
+    ``nomad_json`` catches the ``JSONDecodeError`` and re-raises it as a
     ``NomadRequestError``, so the route sees the same shape as a transport
     failure rather than a bare ``ValueError`` that would answer 500.
     """

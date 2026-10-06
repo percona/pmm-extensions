@@ -472,13 +472,11 @@ export interface paths {
      * Get Executor Hosts
      * @description Return the executor hosts from the executor.
      *
-     *     A connection failure or an unparseable body surfaces as a 502 JSON
-     *     response rather than a default 500 + text/plain that masks the real
-     *     failure on the dashboard banner. That is now the app-level
-     *     ``BaseNomadException`` handler's job (``app.tasks.main``): since this call
-     *     came off python-nomad it raises
-     *     :class:`~app.tasks.execution.executors.nomad.exceptions.NomadRequestError`
-     *     for both, so wrapping it here would only restate the handler.
+     *     A connection failure or an unparseable body arrives as
+     *     :class:`~app.tasks.execution.executors.nomad.exceptions.NomadRequestError`,
+     *     which the app-level ``BaseNomadException`` handler (``app.tasks.main``)
+     *     answers with a 502 JSON response rather than a 500 + text/plain that would
+     *     mask the real failure on the dashboard banner.
      *
      *     :param executor: The task executor backend used to fetch host metadata.
      *     :type executor: TaskExecutor
@@ -511,8 +509,8 @@ export interface paths {
      *     onboarded, or be onboarded and down, or be up with a broken driver, and those are
      *     three different things for whoever has to fix it.
      *
-     *     An unreachable backend surfaces as a 502 rather than a 500 with a text/plain
-     *     body, by the same route as ``/hosts/``: the app-level ``BaseNomadException``
+     *     An unreachable backend answers 502 rather than 500 with a text/plain body,
+     *     by the same route as ``/hosts/``: the app-level ``BaseNomadException``
      *     handler owns it.
      *
      *     :param executor: The task executor backend used to fetch host metadata.

@@ -889,10 +889,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         return self.log_stream_max_connections
 
     @asynccontextmanager
-    async def _calling_executor(self) -> AsyncGenerator[Self, None]:
-        """Yield an executor whose aiohttp session is open, for one call.
+    async def _private_executor(self) -> AsyncGenerator[Self, None]:
+        """Yield a private executor, entered for one call and closed after it.
 
-        Every ported call goes through :meth:`_nomad_json`, and the inherited
+        Every ported call goes through :meth:`nomad_json`, and the inherited
         ``_request`` reaches straight for ``self._session``. Only the executor
         :class:`~app.tasks.execution.nomad_lifecycle.NomadLifecycle` owns is ever
         entered, so that assumption holds for routes taking the ``TaskExecutor``
@@ -908,7 +908,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         entered executor instead: a worker has no ``app.state``, so there is no
         ``NomadLifecycle`` there to ask.
 
-        So an un-entered executor gets a **private** one instead, built the way
+        So an un-entered executor gets a **private** one, built the way
         :meth:`~app.tasks.execution.nomad_lifecycle.NomadLifecycle._desired`
         builds its own and for the same reason: nothing shared may be entered
         here. ``get_executor`` with no ``NOMAD`` override returns the YAML
@@ -921,21 +921,14 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         clients: the aiohttp session, the ``requests.Session`` and the cached
         :attr:`backend` that :meth:`__aexit__` drops with them.
 
-        The cost is one session per call on that path, where the previous shape
-        shared one. That is the price of not mutating an object other readers
-        hold, and it buys back the whole class of failure: no borrow count to
-        strand at a non-zero depth when a snapshot is copied mid-call or a second
-        cancellation arrives, and no shared ``backend`` discarded underneath the
-        synchronous calls that still use it.
+        The cost is one session per call on that path. That is the price of not
+        mutating an object other readers hold: there is no borrow count to
+        strand at a non-zero depth when a snapshot is copied mid-call or a
+        cancellation arrives, and no shared ``backend`` to discard underneath
+        the synchronous calls that still use it.
 
-        :return: ``self`` when its session is already open and usable - the
-            entered executor behind the ``TaskExecutor`` dependency - otherwise a
-            freshly-built private executor, entered for this call and closed
-            after it.
+        :yield: A freshly-built executor, entered for this call alone.
         """
-        if self.session is not None and not self.session.closed:
-            yield self
-            return
         private = NomadExecutor.model_validate(
             self.model_dump(mode="json", context=PRESERVE_CREDENTIALS_CONTEXT)
         )
@@ -1131,7 +1124,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             return await async_run(self.backend.jobs.parse, payload)
         return await super().parse_payload(payload, payload_format)
 
-    async def _nomad_json(self, method: str, path: str, **kwargs: Any) -> Any:
+    async def nomad_json(self, method: str, path: str, **kwargs: Any) -> Any:
         """Issue one Nomad API call on the aiohttp session and decode its JSON body.
 
         The dispatch path's Nomad calls run through here rather than through
@@ -1175,13 +1168,11 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             never got an answer at all.
         """
         kwargs.setdefault("timeout", ClientTimeout(total=self.timeout))
+        if self.session is None or self.session.closed:
+            async with self._private_executor() as private:
+                return await private.nomad_json(method, path, **kwargs)
         try:
-            async with (
-                self._calling_executor() as executor,
-                # Same class, other instance: on the un-entered path the open
-                # session belongs to the private executor, not to self.
-                executor._request(method, path, **kwargs) as response,  # noqa: SLF001
-            ):
+            async with self._request(method, path, **kwargs) as response:
                 response.raise_for_status()
                 return await response.json()
         except ContentTypeError as exc:
@@ -1217,7 +1208,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :raises ValueError: If the job status cannot be determined.
         :raises NomadRequestError: If Nomad refuses the registration.
         """
-        job_status = await self._nomad_json(
+        job_status = await self.nomad_json(
             "POST",
             f"/v1/job/{task.data['ID']}",
             json={"Job": task.data},
@@ -1286,7 +1277,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         if custom_prefix:
             custom_prefix = f"-{slugify(custom_prefix)}"
 
-        job_status = await self._nomad_json(
+        job_status = await self.nomad_json(
             "POST",
             f"/v1/job/{task.data['ID']}/dispatch",
             json={
@@ -1325,7 +1316,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             got no answer.
         """
         try:
-            return await self._nomad_json("GET", f"/v1/job/{job_id}")
+            return await self.nomad_json("GET", f"/v1/job/{job_id}")
         except NomadRequestError as exc:
             if exc.status_code != status.HTTP_404_NOT_FOUND:
                 raise
@@ -1366,7 +1357,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :raises NomadRequestError: If Nomad refuses the listing.
         """
         params = {"filter": filter_} if filter_ is not None else None
-        return await self._nomad_json("GET", "/v1/nodes", params=params)
+        return await self.nomad_json("GET", "/v1/nodes", params=params)
 
     async def get_hosts(self) -> dict[str, str]:
         """Get healthy node names from Nomad backend.
