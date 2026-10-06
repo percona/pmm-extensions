@@ -71,7 +71,7 @@ def gzip_compress(data: str, encoding: str = "utf-8") -> bytes:
     :rtype: bytes
     """
     buffer = BytesIO()
-    with GzipFile(fileobj=buffer, mode="wb") as gz:
+    with GzipFile(fileobj=buffer, mode="wb", mtime=0) as gz:
         gz.write(data.encode(encoding))
     return buffer.getvalue()
 
