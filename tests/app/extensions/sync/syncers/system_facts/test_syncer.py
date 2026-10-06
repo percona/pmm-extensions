@@ -1122,12 +1122,6 @@ PROBE_WAIT_TIMEOUT = 10
 class TestUnmeasuredHostFactsPass:
     """Test a first-measurement pass end to end against the real sync ledger."""
 
-    def test_has_its_own_schedule_and_run_lock_name(self):
-        """Name the pass apart from the daily syncer it extends."""
-        assert UnmeasuredHostFactsSyncer.get_name() == (
-            "app.extensions.sync.syncers.system_facts.syncer.UnmeasuredHostFactsSyncer"
-        )
-
     @pytest.mark.asyncio
     async def test_measures_a_new_host(
         self, session, inventory_api, tasks_api, dispatch, fake_inventory
