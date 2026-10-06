@@ -387,6 +387,14 @@ class TestSyncInstanceManagerHasRunSince:
         assert await SyncInstanceManager.has_run_since(session, _LEADER, mark) is True
 
     @pytest.mark.asyncio
+    async def test_true_for_a_run_begun_exactly_at_the_mark(self, session) -> None:
+        """Count a run that began at the mark itself."""
+        mark = utc_now().replace(microsecond=0)
+        await _record_run(session, _LEADER, [], at=mark)
+
+        assert await SyncInstanceManager.has_run_since(session, _LEADER, mark) is True
+
+    @pytest.mark.asyncio
     async def test_false_for_a_run_begun_before_the_mark(self, session) -> None:
         """Ignore a run that began before the mark."""
         await _record_run(session, _LEADER, [])

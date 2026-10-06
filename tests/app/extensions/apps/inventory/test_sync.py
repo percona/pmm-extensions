@@ -738,21 +738,18 @@ async def test_the_leader_run_starts_its_never_run_follower_on_postgres(
     )
 
 
-@pytest.mark.asyncio
-async def test_the_leader_run_catches_up_on_a_manual_first_pass(
-    extensions_maker, mocker, mock_remote_api
-):
-    """Start a follower whose leader first completed outside the schedule.
+async def _assert_the_leader_run_catches_up_on_a_manual_first_pass(
+    maker: async_sessionmaker[AsyncSession], mocker, mock_remote_api
+) -> None:
+    """Run the leader after a pass it did not start and check the follower starts.
 
     A pass made through the manual sync endpoint starts no follower itself, so
     the leader's next scheduled run starts the follower that ran only before it.
     """
-    send_task = _configure_leader_and_follower(
-        extensions_maker, mocker, mock_remote_api
-    )
+    send_task = _configure_leader_and_follower(maker, mocker, mock_remote_api)
     now = utc_now()
-    await _record_run(extensions_maker, _FOLLOWER, at=now - timedelta(hours=2))
-    await _record_run(extensions_maker, _LEADER, at=now - timedelta(hours=1))
+    await _record_run(maker, _FOLLOWER, at=now - timedelta(hours=2))
+    await _record_run(maker, _LEADER, at=now - timedelta(hours=1))
 
     await run_scheduled_inventory_sync(syncer=_LEADER, follower_syncers=[_FOLLOWER])
 
@@ -761,22 +758,69 @@ async def test_the_leader_run_catches_up_on_a_manual_first_pass(
     )
 
 
-@pytest.mark.asyncio
-async def test_the_leader_run_leaves_a_caught_up_follower(
-    extensions_maker, mocker, mock_remote_api
-):
-    """Start nothing from a steady-state leader run.
+async def _assert_the_leader_run_leaves_a_caught_up_follower(
+    maker: async_sessionmaker[AsyncSession], mocker, mock_remote_api
+) -> None:
+    """Run the leader in steady state and check it starts nothing.
 
     Once the follower has run after the leader's first pass, the leader runs
     every interval without starting it again.
     """
-    send_task = _configure_leader_and_follower(
-        extensions_maker, mocker, mock_remote_api
-    )
+    send_task = _configure_leader_and_follower(maker, mocker, mock_remote_api)
     now = utc_now()
-    await _record_run(extensions_maker, _LEADER, at=now - timedelta(hours=2))
-    await _record_run(extensions_maker, _FOLLOWER, at=now - timedelta(hours=1))
+    await _record_run(maker, _LEADER, at=now - timedelta(hours=2))
+    await _record_run(maker, _FOLLOWER, at=now - timedelta(hours=1))
 
     await run_scheduled_inventory_sync(syncer=_LEADER, follower_syncers=[_FOLLOWER])
 
     send_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_leader_run_catches_up_on_a_manual_first_pass(
+    extensions_maker, mocker, mock_remote_api
+):
+    """Start a follower whose leader first completed outside the schedule."""
+    await _assert_the_leader_run_catches_up_on_a_manual_first_pass(
+        extensions_maker, mocker, mock_remote_api
+    )
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_the_leader_run_catches_up_on_a_manual_first_pass_on_postgres(
+    postgres_session_maker, mocker, mock_remote_api
+):
+    """Start a follower that predates the first pass, on PostgreSQL.
+
+    There the pass's finish time is written by the database clock and the
+    follower's start by the worker, so both sides of the comparison are real.
+    """
+    await _assert_the_leader_run_catches_up_on_a_manual_first_pass(
+        postgres_session_maker, mocker, mock_remote_api
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_leader_run_leaves_a_caught_up_follower(
+    extensions_maker, mocker, mock_remote_api
+):
+    """Start nothing from a steady-state leader run."""
+    await _assert_the_leader_run_leaves_a_caught_up_follower(
+        extensions_maker, mocker, mock_remote_api
+    )
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_the_leader_run_leaves_a_caught_up_follower_on_postgres(
+    postgres_session_maker, mocker, mock_remote_api
+):
+    """Start nothing from a steady-state leader run, on PostgreSQL.
+
+    There the pass's finish time is written by the database clock and the
+    follower's start by the worker, so both sides of the comparison are real.
+    """
+    await _assert_the_leader_run_leaves_a_caught_up_follower(
+        postgres_session_maker, mocker, mock_remote_api
+    )
