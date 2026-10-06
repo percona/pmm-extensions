@@ -35,6 +35,7 @@ from app.core.config import create_app, default_lifespan, settings
 from app.core.exceptions import HTTPBadGatewayException, HTTPServiceUnavailableException
 from app.core.health import build_health_router
 from app.core.requests import RemoteAPI
+from app.core.requests.remote_api import PendingCloses
 from app.core.settings_override.constants import (
     EXTENSIONS_SETTINGS,
     SETTINGS,
@@ -122,6 +123,8 @@ def _make_remote_api_rebinder(
     name: str,
     proxy: OverridableSettingsProxy,
     key: Literal["INVENTORY_ENDPOINT", "TASKS_ENDPOINT"],
+    *,
+    pending: PendingCloses | None = None,
     **ssl: Any,
 ) -> RefreshCallback:
     """Build a rebind callback for an ``app.state`` RemoteAPI endpoint override.
@@ -129,7 +132,7 @@ def _make_remote_api_rebinder(
     The returned callback handles both deployment shapes. Under standalone
     ``extensions_lifespan`` the client lives in ``app.state.<name>``: it is rebuilt on
     the new endpoint and the old one retired. Under the combined ``app.main:app``
-    no ``app.state`` client exists -- ``get_*_client`` falls back to the
+    no ``app.state`` client exists — ``get_*_client`` falls back to the
     registry-cached ``get_remote_api`` per request, which already key-misses to
     the new HOT endpoint, so the callback evicts the ordered de-duplicated set
     of previous-and-current endpoints (covering endpoint moves as well as
@@ -140,13 +143,27 @@ def _make_remote_api_rebinder(
     Both shapes retire the outgoing client rather than closing it outright: the
     swap and the eviction stop it being handed to new work, and it closes once
     the consumers still holding it (an open log stream, a running download)
-    release.
+    release. App-state retirements are registered on ``pending`` *before* the
+    replacement is published, so :func:`extensions_lifespan` can force-close
+    them at shutdown even on the idle path (where
+    :meth:`~app.core.requests.remote_api.BaseRemoteAPI.close_when_idle` would
+    otherwise skip pending) or if this callback is cancelled mid-close. When
+    ``pending`` is already sealed (``_close_app_state_remote_apis`` has begun —
+    including while an in-request PATCH/DELETE rebind still runs after the
+    override refresher drained), the replacement is closed and discarded
+    instead of published — sealing alone only forces the *outgoing* client; a
+    post-teardown ``setattr`` would leak the new session. Discarded
+    replacements are :meth:`~app.core.requests.remote_api.BaseRemoteAPI.track_pending_close`
+    registered before that close so a failed or cancelled discard stays
+    visible to the shutdown sweep.
 
     :param app: The FastAPI application whose ``state`` holds the client.
     :param name: The ``app.state`` attribute name (``inventory_api`` /
         ``tasks_api``).
     :param proxy: The overridable settings proxy that owns the endpoint field.
     :param key: The top-level snapshot key for the endpoint field.
+    :param pending: Owner-scoped deferred-close collection for app-state
+        retirements, or ``None`` when the caller does not track them.
     :param ssl: SSL keyword arguments forwarded to :class:`RemoteAPI` (not HOT,
         captured once at wiring time).
     :return: The rebind callback.
@@ -167,8 +184,15 @@ def _make_remote_api_rebinder(
         except Exception:
             logger.exception("Failed to rebind %s; keeping previous client", name)
             return
+        # Check after the await: teardown may have sealed while we were opening.
+        if pending is not None and pending.sealed:
+            new_api.track_pending_close(pending)
+            await new_api.close()
+            return
+        if pending is not None:
+            old.remember_pending_close(pending)
         setattr(app.state, name, new_api)
-        await old.close_when_idle()
+        await old.close_when_idle(pending=pending)
 
     return _rebind
 
@@ -250,6 +274,8 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
         when an activated app's declaration is invalid; that function
         enumerates the cases.
     """
+    pending = PendingCloses()
+    app.state.retired_remote_apis = pending
     callbacks: CallbackRegistry = {
         (entry.setting_class, key): _reseed_system_periodic_tasks
         for entry in collect_app_owned_settings_classes()
@@ -265,6 +291,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
                 "inventory_api",
                 extensions_settings,
                 "INVENTORY_ENDPOINT",
+                pending=pending,
                 ssl_cafile=settings.SSL_CAFILE,
                 ssl_keyfile=inventory_settings.SSL_KEYFILE,
                 ssl_certfile=inventory_settings.SSL_CERTFILE,
@@ -277,6 +304,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
                 "tasks_api",
                 extensions_settings,
                 "TASKS_ENDPOINT",
+                pending=pending,
                 ssl_cafile=settings.SSL_CAFILE,
                 ssl_keyfile=tasks_settings.SSL_KEYFILE,
                 ssl_certfile=tasks_settings.SSL_CERTFILE,
@@ -303,6 +331,28 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
         callbacks=callbacks,
     ):
         yield
+
+
+async def _close_app_state_remote_apis(app: FastAPI) -> None:
+    """Seal and close active plus retired ``app.state`` RemoteAPI clients.
+
+    Nested ``finally`` so a failure closing one client cannot skip the others
+    or the deferred :meth:`~app.core.requests.remote_api.PendingCloses.force_close`
+    sweep. Seal before any await so a concurrent rebind — including an
+    in-request PATCH/DELETE that fires after the override refresher drained —
+    cannot register after the sweep or publish a replacement into a slot
+    teardown already owns.
+
+    :param app: The FastAPI application whose ``state`` holds the clients.
+    """
+    app.state.retired_remote_apis.seal()
+    try:
+        await app.state.tasks_api.__aexit__(None, None, None)
+    finally:
+        try:
+            await app.state.inventory_api.__aexit__(None, None, None)
+        finally:
+            await app.state.retired_remote_apis.force_close()
 
 
 @asynccontextmanager
@@ -332,32 +382,41 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     The clients are closed via ``app.state`` (not via the originals captured
     at startup) on shutdown, so a client a rebind callback swapped in mid-run is
-    the one that gets closed -- the swapped-out original was already closed by
-    the rebinder.
+    the one that gets closed. Clients a rebind retired while still held are
+    tracked on ``app.state.retired_remote_apis`` and force-closed here if their
+    holders never unwound. The override lifespan sits in a ``try`` so its
+    exit drains the refresher first; a matching ``finally`` then closes the
+    clients even when the body, ``default_lifespan``, or refresher teardown
+    raises or is cancelled. Drain alone is not enough: PATCH/DELETE can still
+    fire the same rebinders in-request after the refresher exits, so the close
+    seals ``retired_remote_apis`` before any await. Discarded sealed-path
+    replacements stay owner-tracked until their close succeeds.
 
     :param app: The FastAPI application instance.
     :return: ``None``, once the lifespans have been entered.
     """
-    async with extensions_overrides_lifespan(app):
-        await extensions_startup()
-        app.state.inventory_api = await RemoteAPI(
-            endpoint=extensions_settings.INVENTORY_ENDPOINT,
-            ssl_cafile=settings.SSL_CAFILE,
-            ssl_keyfile=inventory_settings.SSL_KEYFILE,
-            ssl_certfile=inventory_settings.SSL_CERTFILE,
-        ).open()
-        app.state.tasks_api = await RemoteAPI(
-            endpoint=extensions_settings.TASKS_ENDPOINT,
-            ssl_cafile=settings.SSL_CAFILE,
-            ssl_keyfile=tasks_settings.SSL_KEYFILE,
-            ssl_certfile=tasks_settings.SSL_CERTFILE,
-        ).open()
-        try:
+    clients_opened = False
+    try:
+        async with extensions_overrides_lifespan(app):
+            await extensions_startup()
+            app.state.inventory_api = await RemoteAPI(
+                endpoint=extensions_settings.INVENTORY_ENDPOINT,
+                ssl_cafile=settings.SSL_CAFILE,
+                ssl_keyfile=inventory_settings.SSL_KEYFILE,
+                ssl_certfile=inventory_settings.SSL_CERTFILE,
+            ).open()
+            app.state.tasks_api = await RemoteAPI(
+                endpoint=extensions_settings.TASKS_ENDPOINT,
+                ssl_cafile=settings.SSL_CAFILE,
+                ssl_keyfile=tasks_settings.SSL_KEYFILE,
+                ssl_certfile=tasks_settings.SSL_CERTFILE,
+            ).open()
+            clients_opened = True
             async with default_lifespan(app):
                 yield
-        finally:
-            await app.state.tasks_api.__aexit__(None, None, None)
-            await app.state.inventory_api.__aexit__(None, None, None)
+    finally:
+        if clients_opened:
+            await _close_app_state_remote_apis(app)
 
 
 lifespan = extensions_lifespan

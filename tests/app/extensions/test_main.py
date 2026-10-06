@@ -31,6 +31,7 @@ import app.extensions.main as main_module
 import app.extensions.routes.artifacts as artifacts_module
 from app.core.alerts.config import alert_settings, AlertSettings
 from app.core.auth.exceptions import BaseAuthProviderException
+from app.core.requests.remote_api import PendingCloses
 from app.core.security import crypto_timestamp_serializer
 from app.core.settings_override.constants import (
     ALERT_SETTINGS,
@@ -38,7 +39,11 @@ from app.core.settings_override.constants import (
     SETTINGS,
     SNIPPETS_SETTINGS,
 )
-from app.core.settings_override.lifecycle import ProxyEntry, ProxyRegistry
+from app.core.settings_override.lifecycle import (
+    ProxyEntry,
+    ProxyRegistry,
+    SnapshotChange,
+)
 from app.extensions.api.router import apps_router
 from app.extensions.apps.alerts.config import alerts_settings, AlertsSettings
 from app.extensions.apps.framework.base import BaseApp
@@ -56,6 +61,7 @@ from app.extensions.artifact_constants import ARTIFACT_DOWNLOAD_SALT
 from app.extensions.config import App, extensions_settings, ExtensionsSettings
 from app.extensions.deps import get_session, PROTECTED_APP_KEYS
 from app.extensions.main import (
+    _close_app_state_remote_apis,
     extensions_app,
     extensions_lifespan,
     warn_if_ambient_sso_inert,
@@ -114,6 +120,135 @@ def test_extensions_app_lifespan_is_always_set():
     ``"__main__"``, which would leave the lifespan as ``None``.
     """
     assert extensions_module_lifespan is extensions_lifespan
+
+
+@asynccontextmanager
+async def _stubbed_extensions_lifespan(mocker, app: FastAPI):
+    """Enter ``extensions_lifespan`` with startup/refresher I/O stubbed out.
+
+    Keeps the real pending wiring and endpoint rebinders so shutdown coverage
+    hits ``app.state.retired_remote_apis`` the same way production does.
+    """
+
+    @asynccontextmanager
+    async def fake_refresher(*_args, **_kwargs):
+        yield
+
+    @asynccontextmanager
+    async def fake_default_lifespan(_app: FastAPI):
+        yield
+
+    mocker.patch.object(main_module, "settings_override_refresher", fake_refresher)
+    mocker.patch.object(main_module, "default_lifespan", fake_default_lifespan)
+    mocker.patch.object(main_module, "extensions_startup", new_callable=AsyncMock)
+    original_callbacks = getattr(
+        main_module.extensions_app.state, "override_callbacks", None
+    )
+    try:
+        async with extensions_lifespan(app):
+            yield
+    finally:
+        main_module.extensions_app.state.override_callbacks = original_callbacks
+
+
+async def _rebind_inventory_under_hold(app: FastAPI):
+    """Rebind ``inventory_api`` while holding the startup client; leave the hold open.
+
+    :return: ``(old, new, hold)`` so the caller can assert and unwind the hold.
+    """
+    old = app.state.inventory_api
+    hold = old.hold()
+    await hold.__aenter__()
+    extensions_settings._set_snapshot(  # ty: ignore[unresolved-attribute]
+        {"INVENTORY_ENDPOINT": "https://new-inv-shutdown.example.org"}
+    )
+    rebind = main_module.extensions_app.state.override_callbacks[
+        (EXTENSIONS_SETTINGS, "INVENTORY_ENDPOINT")
+    ]
+    await rebind(SnapshotChange({}, {}))
+    new = app.state.inventory_api
+    assert new is not old
+    assert id(old) in app.state.retired_remote_apis._clients
+    assert old._session is not None
+    return old, new, hold
+
+
+@pytest.mark.asyncio
+class TestAppStateShutdownSweep:
+    """Cover ``extensions_lifespan`` teardown of active and deferred RemoteAPI clients."""
+
+    async def test_extensions_lifespan_force_closes_deferred_retiree_on_normal_exit(
+        self,
+        mocker,
+    ) -> None:
+        """Sweep a mid-hold app.state retiree through ``extensions_lifespan``'s normal exit."""
+        app = FastAPI()
+        hold = None
+        new = None
+        try:
+            async with _stubbed_extensions_lifespan(mocker, app):
+                old, new, hold = await _rebind_inventory_under_hold(app)
+
+            assert old._session is None
+            assert app.state.retired_remote_apis.sealed
+        finally:
+            if hold is not None:
+                await hold.__aexit__(None, None, None)
+            if new is not None and new._session is not None:
+                await new.close()
+            extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+    async def test_extensions_lifespan_force_closes_deferred_retiree_on_body_error(
+        self,
+        mocker,
+    ) -> None:
+        """Sweep a mid-hold retiree when the lifespan body raises (finally still runs)."""
+        app = FastAPI()
+        hold = None
+        new = None
+        old = None
+
+        async def _body_that_raises() -> None:
+            nonlocal old, new, hold
+            async with _stubbed_extensions_lifespan(mocker, app):
+                old, new, hold = await _rebind_inventory_under_hold(app)
+                raise RuntimeError("body boom")
+
+        try:
+            with pytest.raises(RuntimeError, match="body boom"):
+                await _body_that_raises()
+
+            assert old is not None
+            assert old._session is None
+            assert app.state.retired_remote_apis.sealed
+        finally:
+            if hold is not None:
+                await hold.__aexit__(None, None, None)
+            if new is not None and new._session is not None:
+                await new.close()
+            extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+    async def test_close_app_state_remote_apis_continues_after_tasks_close_fails(
+        self,
+    ) -> None:
+        """Continue inventory close and pending sweep when ``tasks_api.__aexit__`` raises."""
+        app = FastAPI()
+        pending = PendingCloses()
+        app.state.retired_remote_apis = pending
+        app.state.tasks_api = AsyncMock()
+        app.state.tasks_api.__aexit__ = AsyncMock(
+            side_effect=RuntimeError("tasks boom")
+        )
+        app.state.inventory_api = AsyncMock()
+        app.state.inventory_api.__aexit__ = AsyncMock()
+        pending.force_close = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="tasks boom"):
+            await _close_app_state_remote_apis(app)
+
+        assert pending.sealed
+        app.state.inventory_api.__aexit__.assert_awaited_once()
+        pending.force_close.assert_awaited_once()
 
 
 @pytest.fixture
