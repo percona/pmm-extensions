@@ -54,8 +54,8 @@
 | app/core/pagination/models.py                                                                                                       |       78 |        1 |       20 |        1 |     98% |        77 |
 | app/core/pmm.py                                                                                                                     |       51 |        1 |       10 |        1 |     97% |        53 |
 | app/core/requests/connectivity.py                                                                                                   |       33 |        0 |        8 |        0 |    100% |           |
-| app/core/requests/registry.py                                                                                                       |       64 |        3 |       22 |        3 |     93% |101, 112, 171 |
-| app/core/requests/remote\_api.py                                                                                                    |      382 |        3 |       78 |        2 |     99% |369, 1022-\>1021, 1135, 1147 |
+| app/core/requests/registry.py                                                                                                       |       63 |        2 |       16 |        2 |     95% |  105, 116 |
+| app/core/requests/remote\_api.py                                                                                                    |      465 |        3 |      108 |        4 |     99% |373, 691-\>696, 699-\>exit, 1277-\>1276, 1390, 1402 |
 | app/core/security.py                                                                                                                |       13 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/alembic\_ops.py                                                                                         |      154 |       15 |       56 |       14 |     86% |93, 96, 98, 100-\>102, 120, 122, 158, 160, 174, 176, 217, 261, 306, 335, 361-362 |
 | app/core/settings\_override/api/export.py                                                                                           |        9 |        0 |        0 |        0 |    100% |           |
@@ -326,7 +326,7 @@
 | app/extensions/db/seed.py                                                                                                           |       52 |        0 |       16 |        0 |    100% |           |
 | app/extensions/deps.py                                                                                                              |      269 |        1 |       50 |        1 |     99% |692-\>697, 713 |
 | app/extensions/inventory.py                                                                                                         |      103 |        4 |       12 |        1 |     96% |92, 103, 292, 329 |
-| app/extensions/main.py                                                                                                              |      124 |       15 |       12 |        2 |     88% |167-169, 341-360, 380-\>389, 514-518 |
+| app/extensions/main.py                                                                                                              |      142 |        6 |       18 |        3 |     94% |184-186, 418-\>exit, 439-\>448, 573-577 |
 | app/extensions/migrations/\_discovery.py                                                                                            |       41 |        2 |       20 |        3 |     92% |65, 97, 133-\>130 |
 | app/extensions/migrations/\_orphan\_heads.py                                                                                        |       37 |        0 |        8 |        0 |    100% |           |
 | app/extensions/migrations/\_version\_table.py                                                                                       |       13 |        0 |        2 |        0 |    100% |           |
@@ -460,7 +460,7 @@
 | app/tasks/execution/executors/nomad/models.py                                                                                       |     1006 |       66 |      340 |       15 |     93% |198, 390, 460-463, 464-\>exit, 504, 506-\>500, 555, 598, 923, 985-\>987, 1255-\>1260, 1264, 1270, 1305-1310, 2039, 2130, 2514-2516, 2542-2543, 2580-2581, 2615-2616, 3041, 3139-3140, 3214-3215, 3238-3294 |
 | app/tasks/execution/executors/nomad/steps.py                                                                                        |       20 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/models.py                                                                                                       |       73 |        2 |       14 |        0 |     98% |  233, 291 |
-| app/tasks/execution/nomad\_lifecycle.py                                                                                             |       54 |        0 |       12 |        2 |     97% |145-\>148, 187-\>exit |
+| app/tasks/execution/nomad\_lifecycle.py                                                                                             |       68 |        0 |       16 |        3 |     96% |159-\>165, 218-\>222, 222-\>exit |
 | app/tasks/execution/utils.py                                                                                                        |       26 |        0 |        6 |        0 |    100% |           |
 | app/tasks/execution\_request\_secrets.py                                                                                            |       70 |        0 |       28 |        0 |    100% |           |
 | app/tasks/hook\_resolver.py                                                                                                         |       29 |        0 |        6 |        0 |    100% |           |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33879** | **1910** | **8184** |  **680** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33993** | **1900** | **8218** |  **683** | **93%** |           |
 
 
 ## Setup coverage badge
