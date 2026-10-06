@@ -35,7 +35,6 @@ from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedServic
 from app.extensions.apps.om_inventory.models import NodeResolution
 from app.extensions.apps.om_inventory.service import (
     enumerate_estate,
-    MAX_RECORD_ERROR,
     STARTUP_RETRIES,
     sweep,
 )
@@ -56,6 +55,9 @@ SHARED_HOST_SECONDS = 8.25
 TASK_HISTORY_ID = 4711
 #: One refused connection then an answer: the cold start this workspace measured.
 RETRIED_ONCE = 2
+#: The stored failure detail's length limit. Pinned here rather than imported, so a
+#: change to the cap fails a test instead of passing silently.
+ERROR_DETAIL_CAP = 500
 
 #: A probe record shaped like the payload's NDJSON, trimmed to the fields asserted.
 RECORD: dict[str, Any] = {
@@ -376,7 +378,7 @@ async def test_a_failed_record_s_error_is_bounded() -> None:
         },
     )
 
-    assert len(outcome.service_errors[DEFAULT_EXTERNAL_ID]) == MAX_RECORD_ERROR
+    assert len(outcome.service_errors[DEFAULT_EXTERNAL_ID]) == ERROR_DETAIL_CAP
 
 
 @pytest.mark.asyncio

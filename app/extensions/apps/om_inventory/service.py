@@ -59,6 +59,7 @@ from app.extensions.apps.om_inventory.crud import (
 )
 from app.extensions.apps.om_inventory.dispatch import (
     HostProbeResult,
+    MAX_ERROR_DETAIL,
     probe_all,
     record_key,
 )
@@ -198,12 +199,6 @@ def _record_for(entry: Any, host_results: dict[str, HostProbeResult]) -> dict | 
     return result.records.get(record_key(entry.service.external_id, entry.service.name))
 
 
-#: Bound on a failed record's error as stored. The same cap dispatch.py puts on a
-#: failed dispatch's stderr: pymongo's server-selection errors carry the whole
-#: topology description, and the row only needs the part that says what happened.
-MAX_RECORD_ERROR = 500
-
-
 def _record_failure(record: dict[str, Any] | None) -> str | None:
     """Return why a probe record is a failed attempt, or ``None`` if it is not.
 
@@ -220,7 +215,7 @@ def _record_failure(record: dict[str, Any] | None) -> str | None:
     if not record or record.get("status") != STATUS_FAILED:
         return None
     error = str(record.get("error") or "no detail was reported")
-    return f"could not query the database: {error}"[:MAX_RECORD_ERROR]
+    return f"could not query the database: {error}"[:MAX_ERROR_DETAIL]
 
 
 #: Probe-record fields that describe the **host** rather than any service on it.

@@ -16,11 +16,9 @@
 """Test that a database the payload cannot query is reported as a failure.
 
 ``MongoClient`` connects lazily, so the first command is where a refused connection
-or a rejected password surfaces. Before the payload connected up front, that first
-command was inside the per-command handler: the failure became four command errors,
-the record kept ``status: ok``, and the orchestrator stored a mongod nobody could
-query as freshly probed. Measured against MongoDB 6.0.14 with a wrong password
-before the fix.
+or a rejected password surfaces. If that command were one of the per-command fact
+reads, the failure would become command errors, the record would stay
+``status: ok``, and a mongod nobody could query would be stored as freshly probed.
 
 pymongo is not installed where these tests run - it is the payload's own
 requirement, installed on the node - so a stand-in module is put in its place.

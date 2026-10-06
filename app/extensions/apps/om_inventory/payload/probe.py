@@ -507,17 +507,24 @@ def build_uri(target, userinfo, auth_source, connect_timeout_ms):
 
 
 def collect_database_facts(target, userinfo, auth_source, connect_timeout_ms):
-    """Return facts read from the database for one target.
+    """Return facts read from the database for one target, or why there are none.
 
-    Each command is run independently so one failure does not lose the others —
-    ``replSetGetStatus`` legitimately fails against a mongos or a standalone, and
-    that must not discard the ``buildInfo`` that came back fine.
+    The database is reached and authenticated against once, up front. Failing that
+    is a target-level failure: the result carries ``error``, ``error_type`` (the
+    exception class name) and ``error_code`` (the server's error code, ``None``
+    where there is none), and no facts.
+
+    Once connected, each command is run independently so one failure does not lose
+    the others — ``replSetGetStatus`` legitimately fails against a mongos or a
+    standalone, and that must not discard the ``buildInfo`` that came back fine.
+    Those failures go to ``command_errors`` and do not fail the target.
 
     :param target: The target mapping carrying ``host`` and ``port``.
     :param userinfo: The credentials prefix.
     :param auth_source: The database to authenticate against.
     :param connect_timeout_ms: Connect and server-selection timeout.
-    :return: A mapping of database facts and per-command errors.
+    :return: A mapping of database facts and per-command errors, or of the
+        target-level ``error``, ``error_type`` and ``error_code``.
     """
     from pymongo import MongoClient
     from pymongo.errors import PyMongoError
