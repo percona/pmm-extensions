@@ -138,6 +138,16 @@ def _shell_step(body: str, *, timeout_s: int = 30) -> StepAction:
     return StepAction(command=["sh", "-c", body], timeout_s=timeout_s)
 
 
+def _yaml_str(value: str) -> str:
+    """Render ``value`` as a quoted YAML scalar.
+
+    :param value: The string to emit.
+    :return: ``value`` double-quoted and escaped, so YAML reads it as a string
+        whatever its content.
+    """
+    return json.dumps(value)
+
+
 def _mongod_config(spec: BootstrapSpec, host: str, *, with_auth: bool) -> str:
     """Render ``mongod.conf``'s contents, with or without the security block.
 
@@ -165,13 +175,21 @@ def _mongod_config(spec: BootstrapSpec, host: str, *, with_auth: bool) -> str:
     # value can only be 0.0.0.0 or wrong for two of the three.
     member = spec.member_configs.get(host)
     bind_ip = (member.bind_ip if member and member.bind_ip else None) or spec.bind_ip
+    # Every string value is emitted as a quoted YAML scalar, raised in review. The
+    # validators bound these to no whitespace or control characters,
+    # which closes newline injection, but YAML still *types* a bare scalar by its
+    # content: `#...` is a comment, `null` is null, `[a,b]` a sequence, `*x` an alias,
+    # `0x10` an integer. An operator naming a path or an address containing any of
+    # those would get a config mongod misreads or refuses, with nothing saying why.
+    # json.dumps gives a double-quoted scalar with the escaping YAML expects, since
+    # JSON string syntax is a subset of YAML's.
     return (
-        f"net:\n  bindIp: {bind_ip}\n  port: {spec.port}\n"
-        f"storage:\n  dbPath: {spec.data_path}\n"
+        f"net:\n  bindIp: {_yaml_str(bind_ip)}\n  port: {spec.port}\n"
+        f"storage:\n  dbPath: {_yaml_str(spec.data_path)}\n"
         f"{security}"
-        f"replication:\n  replSetName: {spec.replica_set_name}\n"
-        f"processManagement:\n  fork: true\n  pidFilePath: {PID_FILE_PATH}\n"
-        f"systemLog:\n  destination: file\n  path: {spec.log_path}\n  logAppend: true\n"
+        f"replication:\n  replSetName: {_yaml_str(spec.replica_set_name)}\n"
+        f"processManagement:\n  fork: true\n  pidFilePath: {_yaml_str(PID_FILE_PATH)}\n"
+        f"systemLog:\n  destination: file\n  path: {_yaml_str(spec.log_path)}\n  logAppend: true\n"
     )
 
 

@@ -181,9 +181,12 @@ class TestTriggerRun:
             "votes": False,
             "hidden": True,
             "delay_secs": 300,
-            # Echoed back whether or not it was sent, so a PMM that asked for a
-            # per-member address can tell an older side-car from one that applied it.
-            "bind_ip": None,
+            # A concrete address, not None. Raised in review: None would pass even if
+            # a supplied value were dropped by model_dump, persistence or the response
+            # reconstruction -- which is the exact path this test exists to protect,
+            # since PMM reads the echo to tell an older side-car from one that applied
+            # the per-member address.
+            "bind_ip": "10.1.2.3",
         }
         response = client.post(
             f"{BASE}/runs",
