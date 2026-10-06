@@ -1134,21 +1134,9 @@ GENERIC_EXECUTOR_TASK_NAMES: frozenset[str] = frozenset(
 INVENTORY_SYNC_TASK_NAME = "inventory-sync"
 #: The Celery task every seeded or kicked ``inventory-sync`` run goes through.
 EXECUTE_TASK_BY_NAME_TASK = "app.tasks.celery.execute_task_by_name"
-#: Meta key naming the per-syncer schedules whose first run follows this one.
+#: Meta key naming the per-syncer schedules this one starts after its first pass.
 INVENTORY_SYNC_FOLLOWERS_KEY = "follower_syncers"
-#: Meta key mapping each follower to when its schedule was first seeded.
-INVENTORY_SYNC_FOLLOWERS_SINCE_KEY = "follower_syncers_since"
-#: Meta key holding, in whole seconds, how long the followers wait on this one.
-INVENTORY_SYNC_FOLLOWERS_MAX_WAIT_KEY = "follower_syncers_max_wait"
-#: Meta key naming the pinned syncer a per-syncer schedule waits on.
-INVENTORY_SYNC_AFTER_KEY = "after_syncer"
-#: Meta key holding when a per-syncer schedule was first seeded, which starts
-#: the bounded wait on the pinned syncer.
-INVENTORY_SYNC_SINCE_KEY = "after_syncer_since"
-#: Meta key holding, in whole seconds, how long a per-syncer schedule waits on
-#: the pinned syncer from its anchor.
-INVENTORY_SYNC_MAX_WAIT_KEY = "after_syncer_max_wait"
-#: Meta key marking a leader-started run that goes ahead only as the syncer's first.
+#: Meta key marking a leader-started run, which skips when its syncer is busy.
 INVENTORY_SYNC_FIRST_RUN_KEY = "first_run_only"
 INVENTORY_COLLECTION_TASK_NAME = "inventory-collection"
 SYNC_RUNNING_TASKS_TASK_NAME = "tasks__sync_running_tasks"

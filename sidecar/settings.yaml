@@ -323,12 +323,11 @@ default:
     # Daily rather than PMM's 15 minutes: a node's uid and sudo availability change
     # at provisioning time, not during operation, and each run costs a per-node venv
     # build plus a four-driver pip install. The full get_name() form is required
-    # here; the SYNCERS entry above takes the short auto-prefixed one. Its first run
-    # waits for the PMM default's first completed sync, which then starts it if it
-    # has never run, but for no longer than INVENTORY_SYNC_FOLLOWER_MAX_WAIT (one
-    # day by default), so an unreachable PMM cannot stop host facts for good. An
-    # operator-managed schedule that already covers this syncer replaces this
-    # entry and does not wait.
+    # here; the SYNCERS entry above takes the short auto-prefixed one. It runs daily
+    # from bring-up, whether or not PMM is reachable, and the PMM default starts it
+    # once more after its first completed sync, so host facts cover the nodes that
+    # sync brought in. An operator-managed schedule that already covers this
+    # syncer replaces this entry.
     INVENTORY_SYNC_SCHEDULES:
       - SYNCER: app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer
         INTERVAL: 1 days

@@ -422,17 +422,15 @@ default:
     # cadence differs from it. SYNCER takes the full BaseSyncer.get_name() form,
     # not the short EXTENSIONS.SYNCERS spelling. Rejected at validation if an entry
     # duplicates INVENTORY_SYNC_SYNCER, repeats another entry's syncer, or sits
-    # beside a sync-all default (an interval with no syncer pinned). While the pinned
-    # default above is seeded, an entry's first run waits for that syncer's first
-    # completed inventory sync, which then starts it if it has never run, but no
-    # longer than INVENTORY_SYNC_FOLLOWER_MAX_WAIT below. An entry an
-    # operator-managed schedule already covers is not seeded, and that schedule
-    # does not wait. Example:
+    # beside a sync-all default (an interval with no syncer pinned). An entry runs
+    # on its own interval from bring-up. While the pinned default above is seeded,
+    # its runs also start an entry that has not run since that syncer's first
+    # completed inventory sync, so the entry reads that inventory. An entry an
+    # operator-managed schedule already covers is not seeded. Example:
     #   INVENTORY_SYNC_SCHEDULES:
     #     - SYNCER: app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer
     #       INTERVAL: 1 days
     INVENTORY_SYNC_SCHEDULES: []
-    INVENTORY_SYNC_FOLLOWER_MAX_WAIT: 1 days  # Longest an INVENTORY_SYNC_SCHEDULES entry waits on the pinned default, from when its schedule was first seeded
     HOOK_MODULE_ALLOWLIST:  # Module roots a task hook path may import from; extend for out-of-tree apps
       - app.extensions.apps
     NOMAD:

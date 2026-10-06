@@ -98,35 +98,6 @@ def _validate_syncer_name(name: str) -> str:
 #: that was pinned on purpose, and a whitespace-only one would fail every firing.
 SyncerName = Annotated[str, AfterValidator(_validate_syncer_name)]
 
-
-def _validate_follower_max_wait(value: IntervalSchedule) -> IntervalSchedule:
-    """Return ``value`` when it spans whole seconds a ``timedelta`` holds, else raise.
-
-    :param value: A candidate :attr:`TasksSettings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT`.
-    :return: The validated interval, unchanged.
-    :raises ValueError: When ``every`` periods exceed ``timedelta``'s range, so
-        the seeder could never compute the window it writes into follower meta,
-        or come to less than one second, which that whole-second window would
-        truncate to zero and the follower would read as unusable on every run.
-    """
-    try:
-        run_every = value.schedule.run_every
-    except OverflowError:
-        raise ValueError(
-            f"{value} is longer than the longest representable duration"
-        ) from None
-    if run_every < timedelta(seconds=1):
-        raise ValueError(f"{value} is shorter than one second")
-    return value
-
-
-#: The value of :attr:`TasksSettings.INVENTORY_SYNC_FOLLOWER_MAX_WAIT`.
-#: ``IntervalSchedule`` bounds ``every`` only as positive, so an oversized one
-#: would otherwise load and then fail every boot's seed.
-FollowerMaxWait = Annotated[
-    IntervalSchedule, AfterValidator(_validate_follower_max_wait)
-]
-
 #: The longest syncer path an ``INVENTORY_SYNC_SCHEDULES`` entry may name. Its
 #: seeded row name is the path appended to a fixed prefix, and the celery-beat
 #: ``PeriodicTask.name`` column is bounded, so a longer path passes the dotted-path
@@ -220,19 +191,12 @@ class TasksSettings(BaseYamlAppSettings):
     :param INVENTORY_SYNC_SCHEDULES: Per-syncer schedules seeded beside the
         scalar default, for a syncer whose useful cadence differs from it. Each
         entry names a syncer in ``BaseSyncer.get_name()`` form and its own
-        interval. When the pinned ``INVENTORY_SYNC_SYNCER`` default is seeded,
-        each entry's seeded schedule is deferred until that syncer's first
-        completed inventory sync, which then starts the entry once if it has
-        never run, or until ``INVENTORY_SYNC_FOLLOWER_MAX_WAIT`` has passed; an
-        entry an operator-managed schedule already covers is not seeded, so that
-        schedule is not deferred. Read at startup. Defaults to no extra
-        schedules.
-    :param INVENTORY_SYNC_FOLLOWER_MAX_WAIT: How long an ``INVENTORY_SYNC_SCHEDULES``
-        entry waits on the pinned default, counted from when the entry's schedule
-        was first seeded. Once it has passed, the entry runs on its own interval
-        even if the default never completes a pass, so a default that is broken
-        or switched off cannot stop it for good. Read at startup. Defaults to one
-        day, the interval of the host-facts schedule it exists for.
+        interval, and runs on it from bring-up. When the pinned
+        ``INVENTORY_SYNC_SYNCER`` default is seeded, its runs also start each
+        seeded entry that has not run since that syncer's first completed
+        inventory sync, so the entry's next run reads that inventory; an entry an
+        operator-managed schedule already covers is not seeded. Read at
+        startup. Defaults to no extra schedules.
     :param LOG_STREAM_CAP_BYTES: The maximum captured-log bytes retained per
         ``(task_history_id, source, stream)``. As a stream grows past the cap
         the writer drops the oldest chunks, keeping a bounded recent tail so a
@@ -291,9 +255,6 @@ class TasksSettings(BaseYamlAppSettings):
     INVENTORY_SYNC_SYNCER: SyncerName | None = None
     INVENTORY_SYNC_SCHEDULES: UniqueList[InventorySyncSchedule] = Field(
         default_factory=list
-    )
-    INVENTORY_SYNC_FOLLOWER_MAX_WAIT: FollowerMaxWait = Field(
-        default_factory=lambda: IntervalSchedule(every=1, period=Period.DAYS)
     )
     LOG_STREAM_CAP_BYTES: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
         104857600, advanced=True

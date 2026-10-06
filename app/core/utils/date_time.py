@@ -17,7 +17,7 @@
 
 from datetime import datetime, UTC
 
-__all__ = ["make_datetime_utc", "parse_aware_datetime", "utc_now"]
+__all__ = ["make_datetime_utc", "utc_now"]
 
 
 def utc_now() -> datetime:
@@ -43,22 +43,3 @@ def make_datetime_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
-
-
-def parse_aware_datetime(value: object) -> datetime | None:
-    """Return ``value`` as a UTC datetime when it is an aware ISO-8601 string.
-
-    Meant for timestamps read back from untrusted or operator-editable data, so
-    any other value reads as missing instead of raising. A naive timestamp is
-    refused rather than assumed UTC, since nothing says which zone wrote it.
-
-    :param value: The candidate timestamp.
-    :return: The instant in UTC, or ``None`` when ``value`` is not one.
-    """
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-        return parsed.astimezone(UTC) if parsed.utcoffset() is not None else None
-    except (ValueError, OverflowError):
-        return None

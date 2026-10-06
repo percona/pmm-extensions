@@ -71,10 +71,7 @@ from app.tasks.execution_request_secrets import (
 )
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
-    INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FIRST_RUN_KEY,
-    INVENTORY_SYNC_MAX_WAIT_KEY,
-    INVENTORY_SYNC_SINCE_KEY,
     Task,
     TaskBackendEnum,
     TaskExecutionRequest,
@@ -88,7 +85,6 @@ from tests.app.db_schema import apply_schema
 from tests.app.factories import TaskFactory
 from tests.app.tasks.conftest import (
     overwrite_execution_request,
-    PMM_SYNCER,
     stored_execution_request,
     SYSTEM_FACTS_SYNCER,
 )
@@ -898,76 +894,68 @@ class TestIdenticalTaskConflictStatusScoping:
             await _raise_if_identical_task_conflict(queue_item, session)
 
 
-_FOLLOWER_BEAT_META = {
-    "syncer": SYSTEM_FACTS_SYNCER,
-    INVENTORY_SYNC_AFTER_KEY: PMM_SYNCER,
-    INVENTORY_SYNC_SINCE_KEY: "2026-09-01T00:00:00+00:00",
-    INVENTORY_SYNC_MAX_WAIT_KEY: 86400,
-}
+_FOLLOWER_BEAT_META = {"syncer": SYSTEM_FACTS_SYNCER}
+_FOLLOWER_START_META = {**_FOLLOWER_BEAT_META, INVENTORY_SYNC_FIRST_RUN_KEY: True}
 
 
-async def _beat_fire_refused_behind_a_start(
-    session: AsyncSession, start_meta: dict[str, object]
+async def _refused_behind(
+    session: AsyncSession,
+    in_flight_meta: dict[str, object],
+    incoming_meta: dict[str, object],
 ) -> bool:
-    """Return whether a follower's beat fire is refused while ``start_meta`` runs.
+    """Return whether a dispatch carrying ``incoming_meta`` is refused.
 
     :param session: The session the guard queries.
-    :param start_meta: The meta of the leader-started first run in flight.
-    :return: Whether the guard raised for the beat fire.
+    :param in_flight_meta: The meta of the run of the same task already in flight.
+    :param incoming_meta: The meta of the dispatch being checked.
+    :return: Whether the guard raised for the incoming dispatch.
     """
     task = await _create_pg_task(session)
     await _seed_pg_history(
-        session, task_id=task.id, task_name=task.name, meta=start_meta
+        session, task_id=task.id, task_name=task.name, meta=in_flight_meta
     )
-    beat_fire = _pg_queue_item(
-        task, meta=dict(_FOLLOWER_BEAT_META), item_id=_UNSEEDED_ITEM_ID
-    )
+    incoming = _pg_queue_item(task, meta=dict(incoming_meta), item_id=_UNSEEDED_ITEM_ID)
     try:
-        await _raise_if_identical_task_conflict(beat_fire, session)
+        await _raise_if_identical_task_conflict(incoming, session)
     except HTTPConflictException:
         return True
     return False
 
 
-class TestFollowerFirstRunDeduplication:
-    """Pin the guard behaviour a leader-started follower first run relies on.
+class TestFollowerStartDeduplication:
+    """Pin the guard behaviour a leader-started follower run relies on.
 
-    The start carries the follower's beat-row meta plus the first-run flag, and
-    the guard matches the incoming request's meta by containment, so a beat fire
-    is held back only while the start carries every key the fire does.
+    The start carries the follower's beat-row meta plus the started-run flag, and
+    the guard matches the incoming request's meta by containment, so the beat
+    fire is held back behind a start while a start behind a beat fire goes on to
+    meet that run's claim on the syncer, where it skips.
     """
 
     @pytest.mark.asyncio
-    async def test_a_start_carrying_the_anchor_holds_back_the_beat_fire(
+    async def test_a_start_in_flight_holds_back_the_beat_fire(
         self, session: AsyncSession
     ) -> None:
-        """Assert a beat fire is refused while a full start of the follower runs."""
-        start_meta = {**_FOLLOWER_BEAT_META, INVENTORY_SYNC_FIRST_RUN_KEY: True}
-
-        assert await _beat_fire_refused_behind_a_start(session, start_meta)
+        """Assert a beat fire is refused while a start of the follower runs."""
+        assert await _refused_behind(session, _FOLLOWER_START_META, _FOLLOWER_BEAT_META)
 
     @pytest.mark.asyncio
-    async def test_a_start_missing_the_anchor_lets_the_beat_fire_through(
+    async def test_a_beat_fire_in_flight_lets_the_start_through(
         self, session: AsyncSession
     ) -> None:
-        """Assert why the start must forward the anchor: without it, no refusal."""
-        start_meta = {
-            key: value
-            for key, value in _FOLLOWER_BEAT_META.items()
-            if key != INVENTORY_SYNC_SINCE_KEY
-        } | {INVENTORY_SYNC_FIRST_RUN_KEY: True}
-
-        assert not await _beat_fire_refused_behind_a_start(session, start_meta)
+        """Assert a start is not refused behind a beat fire, which lacks its flag."""
+        assert not await _refused_behind(
+            session, _FOLLOWER_BEAT_META, _FOLLOWER_START_META
+        )
 
     @pytest.mark.postgres
     @pytest.mark.asyncio
-    async def test_a_start_carrying_the_anchor_holds_back_the_beat_fire_on_postgres(
+    async def test_a_start_in_flight_holds_back_the_beat_fire_on_postgres(
         self, postgres_session: AsyncSession
     ) -> None:
         """Assert the same refusal through the ``jsonb`` containment path."""
-        start_meta = {**_FOLLOWER_BEAT_META, INVENTORY_SYNC_FIRST_RUN_KEY: True}
-
-        assert await _beat_fire_refused_behind_a_start(postgres_session, start_meta)
+        assert await _refused_behind(
+            postgres_session, _FOLLOWER_START_META, _FOLLOWER_BEAT_META
+        )
 
 
 class TestIdenticalTaskConflictEncryptedLeaves:
