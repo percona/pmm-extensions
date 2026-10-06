@@ -151,6 +151,7 @@ These are some, but not all, the possible settings you can have, per app:
 | TASKS__NOMAD__TIMEOUT      | tasks     | no       | 10                                                  | 10                                               |
 | TASKS__NOMAD__MINIFY_PAYLOAD | tasks   | no       | True                                                | True                                             |
 | TASKS__NOMAD__LOG_SOCKET_READ_TIMEOUT | tasks | no | 10                                        | 10                                               |
+| TASKS__NOMAD__LOG_STREAM_MAX_CONNECTIONS | tasks | no | 64                                     | 64                                               |
 | TASKS__SYNC_LOCK_TTL       | tasks     | no       | 300                                                 | 300                                              |
 | TASKS__ANONYMIZER__DEFAULT_ENTITIES | tasks | no | seven high-confidence entities (see below) | `[]` (anonymization disabled) |
 | TASKS__EXECUTE_MODE        | tasks     | no       | background                                          | N/A                                              |
@@ -287,6 +288,7 @@ Additional Nomad configuration options are available:
 
 - `TASKS__NOMAD__MINIFY_PAYLOAD`: Whether to minify payloads before dispatch
 - `TASKS__NOMAD__LOG_SOCKET_READ_TIMEOUT`: Socket read timeout for logs (in seconds)
+- `TASKS__NOMAD__LOG_STREAM_MAX_CONNECTIONS`: Most Nomad connections the live log viewer's follows may hold at once, across every viewer and running task. Each viewer of a running task opens one per logged step and log type. A changed value applies to streams opened after it lands; open streams keep their connections until they end. Nomad's `limits.http_max_conns_per_client` (100 by default) counts these together with the tasks service's other Nomad connections from the same address, so keep it at 64 or lower unless that limit has been raised.
 
 > [!CAUTION]
 > *Do not store secrets in settings.yaml, as the file is shared in the git repository.
