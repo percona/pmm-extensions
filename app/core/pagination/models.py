@@ -225,20 +225,15 @@ async def fetch_all_items(
     """Fetch every item by walking paginated upstream responses.
 
     :param get_page: Async callable returning one page for the given window.
-    :type get_page: Callable[[Pagination], Awaitable[PaginatedResponse[T]]]
     :param page_size: ``limit`` used for each upstream request.
-    :type page_size: PositiveInt
     :param stop_on_short_page: When ``False`` (default), rely on ``page.total``
         and stop once ``offset >= page.total``. When ``True``, or a callable
         returning ``True`` (no upstream ``total`` fallback), also stop when a
         page returns fewer or more items than ``page_size``.
-    :type stop_on_short_page: bool | Callable[[], bool]
     :param require_complete: When ``True``, refuse a walk that collects fewer items
         than the greatest ``page.total`` any page reported, so a listing that shrank
         or stopped answering mid-walk is not mistaken for the whole of it.
-    :type require_complete: bool
     :return: All items across every page, in upstream order.
-    :rtype: list[T]
     :raises IncompletePaginationError: If ``require_complete`` is set and the walk
         ended short of the greatest reported total.
     """

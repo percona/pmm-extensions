@@ -108,5 +108,8 @@ class TestSyncItemFinishedAt:
         """Keep the derived time out of the table and the model's dump."""
         item = _finished_item(datetime(2026, 10, 1, tzinfo=UTC), None)
 
-        assert "finished_at" not in SyncItem.__table__.columns
-        assert "finished_at" not in item.model_dump()
+        columns = SyncItem.__table__.columns
+
+        assert {"created_at", "updated_at"} <= set(columns.keys())
+        assert "finished_at" not in columns
+        assert item.model_dump().keys() == SyncItem.model_fields.keys()
