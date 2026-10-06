@@ -44,7 +44,6 @@ from sqlalchemy_celery_beat.models import Period
 
 from app.core.celery.models import IntervalSchedule
 from app.core.config import BaseYamlSettings
-from app.core.settings_override.constants import SNIPPETS_SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import (
     hot_field,
@@ -500,6 +499,4 @@ class SnippetsSettings(BaseYamlSettings):
         return v
 
 
-snippets_settings: SnippetsSettings = OverridableSettingsProxy(
-    SnippetsSettings, setting_class=SNIPPETS_SETTINGS
-)
+snippets_settings: SnippetsSettings = OverridableSettingsProxy(SnippetsSettings)
