@@ -270,7 +270,7 @@
 | app/extensions/apps/om\_bootstrap/persistence.py                                                                                    |       31 |        2 |        4 |        2 |     89% |    63, 70 |
 | app/extensions/apps/om\_bootstrap/reconcile.py                                                                                      |       68 |        1 |       24 |        2 |     97% |266-\>259, 300 |
 | app/extensions/apps/om\_bootstrap/schema.py                                                                                         |        2 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/om\_bootstrap/strategies/packages.py                                                                            |      142 |        2 |       24 |        2 |     98% |  434, 586 |
+| app/extensions/apps/om\_bootstrap/strategies/packages.py                                                                            |      147 |        2 |       24 |        2 |     98% |  480, 632 |
 | app/extensions/apps/om\_bootstrap/strategy.py                                                                                       |       72 |        3 |       16 |        3 |     93% |136, 138, 140 |
 | app/extensions/apps/om\_inventory/api\_routes.py                                                                                    |      124 |       25 |       28 |        2 |     73% |281, 292-293, 305-307, 325-326, 369, 382-384, 412-413, 430-431, 482-485, 536-\>535, 537, 544-545, 548-549 |
 | app/extensions/apps/om\_inventory/app.py                                                                                            |       12 |        1 |        2 |        1 |     86% |        59 |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **33993** | **1900** | **8218** |  **683** | **93%** |           |
+| **TOTAL**                                                                                                                           | **33998** | **1900** | **8218** |  **683** | **93%** |           |
 
 
 ## Setup coverage badge
