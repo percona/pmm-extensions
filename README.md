@@ -95,7 +95,7 @@
 | app/extensions/api/openapi.py                                                                                                       |        7 |        0 |        0 |        0 |    100% |           |
 | app/extensions/api/proxy.py                                                                                                         |       16 |        0 |        2 |        0 |    100% |           |
 | app/extensions/api/router.py                                                                                                        |       41 |        0 |        4 |        0 |    100% |           |
-| app/extensions/api/routes/app\_info.py                                                                                              |        8 |        0 |        0 |        0 |    100% |           |
+| app/extensions/api/routes/app\_info.py                                                                                              |        9 |        0 |        0 |        0 |    100% |           |
 | app/extensions/api/routes/app\_state.py                                                                                             |       44 |       12 |       10 |        2 |     59% |180, 186, 188-195, 202, 208-209, 237-238, 243-244, 251 |
 | app/extensions/api/routes/apps.py                                                                                                   |       22 |        3 |        2 |        1 |     83% |87, 107-108 |
 | app/extensions/api/routes/connectivity\_check.py                                                                                    |       75 |        0 |       24 |        0 |    100% |           |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34000** | **1896** | **8218** |  **682** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34001** | **1896** | **8218** |  **682** | **93%** |           |
 
 
 ## Setup coverage badge
