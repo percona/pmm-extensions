@@ -31,6 +31,7 @@ import os
 import stat
 import subprocess
 import types
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
@@ -123,7 +124,7 @@ class _RecordingThreadPool:
     def __exit__(self, *_exc: object) -> bool:
         return False
 
-    def map(self, func, iterable):
+    def map(self, func: Callable[[Path], None], iterable: Iterable[Path]) -> list[None]:
         """Apply ``func`` to each item synchronously, mirroring ``ThreadPool.map``."""
         return [func(item) for item in iterable]
 
@@ -273,6 +274,36 @@ class TestAes256RoundTrip:
         restore_inst.xtrabackup_aes256_keyfile = str(keyfile)
         with pytest.raises(backup_error, match="No .xbcrypt files"):
             restore_inst.decrypt_aes(str(empty))
+        assert calls == []
+
+    def test_empty_keyfile_raises_without_running_xbcrypt(self, tmp_path: Path) -> None:
+        """Assert an empty key path fails before any xbcrypt is started."""
+        backup_dir = tmp_path / "backup"
+        backup_dir.mkdir()
+        (backup_dir / "ibdata1.xbcrypt").write_text("enc")
+        restore_inst, backup_error, calls = _restore_instance(
+            _DECRYPT_METHODS,
+            real_subprocess=False,
+        )
+        restore_inst.xtrabackup_aes256_keyfile = ""
+        with pytest.raises(backup_error, match="not configured"):
+            restore_inst.decrypt_aes(str(backup_dir))
+        assert calls == []
+
+    def test_missing_keyfile_raises_without_running_xbcrypt(
+        self, tmp_path: Path
+    ) -> None:
+        """Assert a missing key file fails before any xbcrypt is started."""
+        backup_dir = tmp_path / "backup"
+        backup_dir.mkdir()
+        (backup_dir / "ibdata1.xbcrypt").write_text("enc")
+        restore_inst, backup_error, calls = _restore_instance(
+            _DECRYPT_METHODS,
+            real_subprocess=False,
+        )
+        restore_inst.xtrabackup_aes256_keyfile = str(tmp_path / "missing.key")
+        with pytest.raises(backup_error, match="not found"):
+            restore_inst.decrypt_aes(str(backup_dir))
         assert calls == []
 
     def test_spaces_and_metacharacters_decrypt_without_shell(
