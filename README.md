@@ -142,7 +142,7 @@
 | app/extensions/apps/archives/models.py                                                                                              |       76 |        0 |        4 |        0 |    100% |           |
 | app/extensions/apps/archives/spec.py                                                                                                |       55 |       10 |       24 |        7 |     76% |106, 133, 156-\>164, 166, 173, 177-180, 182-183 |
 | app/extensions/apps/archives/views.py                                                                                               |        6 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/atw/api\_routes.py                                                                                              |      272 |       50 |       48 |        2 |     80% |323, 441-442, 544-545, 549-555, 624, 628-657, 659-675, 684, 686-702, 722-724, 934-\>941, 935, 991-992, 994-997, 999-1002, 1020, 1038, 1077 |
+| app/extensions/apps/atw/api\_routes.py                                                                                              |      272 |       50 |       48 |        2 |     80% |323, 441-442, 544-545, 549-555, 624, 628-657, 659-675, 684, 686-702, 722-724, 938-\>945, 939, 995-1001, 1003-1006, 1024, 1081 |
 | app/extensions/apps/atw/app.py                                                                                                      |       15 |        0 |        4 |        0 |    100% |           |
 | app/extensions/apps/atw/batch.py                                                                                                    |       76 |        0 |        8 |        0 |    100% |           |
 | app/extensions/apps/atw/categories.py                                                                                               |       34 |        0 |        2 |        0 |    100% |           |
@@ -315,7 +315,7 @@
 | app/extensions/apps/topology/topology.py                                                                                            |      173 |        7 |       58 |        8 |     94% |118-119, 122-\>114, 153, 156-157, 226-\>228, 229-\>231, 407, 491-\>501, 505 |
 | app/extensions/artifact\_constants.py                                                                                               |        8 |        0 |        0 |        0 |    100% |           |
 | app/extensions/bundle\_upload/factory.py                                                                                            |       37 |        1 |       10 |        1 |     96% |        71 |
-| app/extensions/bundle\_upload/plan.py                                                                                               |      302 |        2 |       90 |        2 |     99% |1071, 1220 |
+| app/extensions/bundle\_upload/plan.py                                                                                               |      314 |        2 |       92 |        2 |     99% |1114, 1263 |
 | app/extensions/bundle\_upload/resolver.py                                                                                           |       56 |        0 |       14 |        0 |    100% |           |
 | app/extensions/bundle\_upload/seam.py                                                                                               |       12 |        0 |        0 |        0 |    100% |           |
 | app/extensions/clients/pmm.py                                                                                                       |      289 |        2 |       74 |        3 |     99% |558, 560, 973-\>975 |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34001** | **1896** | **8218** |  **682** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34013** | **1896** | **8220** |  **682** | **93%** |           |
 
 
 ## Setup coverage badge
