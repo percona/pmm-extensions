@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_496b29e8b370a2cb_app_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-06 17:29 +0000
+            created at 2026-10-06 17:41 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -602,8 +602,8 @@
     <p class="pln"><span class="n"><a id="t518" href="#t518">518</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t519" href="#t519">519</a></span><span class="t"><span class="str">    :param session: The database session.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t520" href="#t520">520</a></span><span class="t"><span class="str">    :param request: The optional scope. Absent, or an empty list, means everything.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t521" href="#t521">521</a></span><span class="t"><span class="str">    :raises HTTPServiceUnavailableException: When PMM&#x27;s OpenManager switch has</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t522" href="#t522">522</a></span><span class="t"><span class="str">        ``ENABLED`` off.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t521" href="#t521">521</a></span><span class="t"><span class="str">    :raises HTTPServiceUnavailableException: When PMM&#x27;s Operations for MongoDB</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t522" href="#t522">522</a></span><span class="t"><span class="str">        switch has ``ENABLED`` off.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t523" href="#t523">523</a></span><span class="t"><span class="str">    :raises HTTPNotFoundException: When a requested node id is not in the estate.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t524" href="#t524">524</a></span><span class="t"><span class="str">    :raises HTTPConflictException: When a requested host is already being refreshed.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t525" href="#t525">525</a></span><span class="t"><span class="str">    :return: The queued sweep.</span>&nbsp;</span><span class="r"></span></p>
@@ -697,11 +697,11 @@
     <p class="pln"><span class="n"><a id="t613" href="#t613">613</a></span><span class="t"><span class="str">    runs as a forked side-car process, which reaches the new value through its own</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t614" href="#t614">614</a></span><span class="t"><span class="str">    settings refresher rather than through this request.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t615" href="#t615">615</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t616" href="#t616">616</a></span><span class="t"><span class="str">    ``ENABLED`` is what PMM&#x27;s OpenManager switch calls, via this same route with</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t617" href="#t617">617</a></span><span class="t"><span class="str">    the credential of the pmm-managed ``--extensions-token`` flag (see</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t618" href="#t618">618</a></span><span class="t"><span class="str">    ``require_minimum_role``&#x27;s service-principal bypass): it flips independently</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t619" href="#t619">619</a></span><span class="t"><span class="str">    of ``SCHEDULE``, so the configured cadence survives OpenManager being turned</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t620" href="#t620">620</a></span><span class="t"><span class="str">    off and back on rather than being overwritten each time.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t616" href="#t616">616</a></span><span class="t"><span class="str">    ``ENABLED`` is what PMM&#x27;s Operations for MongoDB switch calls, via this same</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t617" href="#t617">617</a></span><span class="t"><span class="str">    route with the credential of the pmm-managed ``--extensions-token`` flag (see</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t618" href="#t618">618</a></span><span class="t"><span class="str">    ``require_minimum_role``&#x27;s service-principal bypass): it flips independently of</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t619" href="#t619">619</a></span><span class="t"><span class="str">    ``SCHEDULE``, so the configured cadence survives Operations for MongoDB being</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t620" href="#t620">620</a></span><span class="t"><span class="str">    turned off and back on rather than being overwritten each time.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t621" href="#t621">621</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t622" href="#t622">622</a></span><span class="t"><span class="str">    :param request: The incoming request; its ``app.state`` carries the rebind</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t623" href="#t623">623</a></span><span class="t"><span class="str">        callbacks fired for the keys this changed.</span>&nbsp;</span><span class="r"></span></p>
@@ -758,7 +758,7 @@
             <a class="nav" href="z_496b29e8b370a2cb_app_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-06 17:29 +0000
+            created at 2026-10-06 17:41 +0000
         </p>
     </div>
 </footer>
