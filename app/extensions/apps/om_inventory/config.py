@@ -61,9 +61,10 @@ class OmInventorySettings(BaseYamlSettings):
         triggered, independent of ``SCHEDULE``. Mirrors PMM's Operations for
         MongoDB on/off switch: pmm-managed flips this (not ``SCHEDULE``) when an
         operator toggles it, so the configured cadence survives being turned off
-        and back on rather than being overwritten each time. Defaults to ``False``, matching
-        PMM's own default for that switch, so a fresh deployment's estate does not
-        start sweeping until Operations for MongoDB is actually turned on somewhere.
+        and back on rather than being overwritten each time. Defaults to ``False``,
+        matching PMM's own default for that switch, so a fresh deployment's estate
+        does not start sweeping until Operations for MongoDB is actually turned on
+        somewhere.
     :param SCHEDULE: How often the probe sweeps the estate, while ``ENABLED``. ``None``
         unregisters the periodic job regardless of ``ENABLED``, leaving the trigger
         endpoint as the only way facts are refreshed.
