@@ -112,24 +112,6 @@ class HostNotMeasuredError(SyncError):
         super().__init__(f"No host observation written for node {node_id}")
 
 
-class IncompleteObservationsReadError(SyncError):
-    """Raise when the host-observation walk ends short of the reported total.
-
-    Reading too few observations would make measured hosts look unmeasured and
-    probe them again, so a short walk is refused rather than trusted.
-
-    :param collected: The number of observation rows the walk collected.
-    :param total: The number of rows the inventory reported.
-    """
-
-    def __init__(self, collected: int, total: int) -> None:
-        self.collected = collected
-        self.total = total
-        super().__init__(
-            f"Read {collected} host observations of the {total} the inventory reported"
-        )
-
-
 class SyncInstanceAlreadyInProgressError(SyncError):
     """Raise when a synchronization instance is already in progress.
 

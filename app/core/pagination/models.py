@@ -40,6 +40,19 @@ DEFAULT_PAGINATION_OFFSET = 0
 DEFAULT_PAGINATION_LIMIT = 50
 
 
+class IncompletePaginationError(RuntimeError):
+    """Raise when a paginated walk ends short of the total its pages reported.
+
+    :param collected: The number of items the walk collected.
+    :param total: The greatest total any page reported.
+    """
+
+    def __init__(self, collected: int, total: int) -> None:
+        self.collected = collected
+        self.total = total
+        super().__init__(f"Collected {collected} items of the {total} reported")
+
+
 class PaginatedDictPage(TypedDict):
     """Raw paginated upstream API page.
 
@@ -207,6 +220,7 @@ async def fetch_all_items(
     *,
     page_size: PositiveInt = MAX_PAGINATION_LIMIT,
     stop_on_short_page: bool | Callable[[], bool] = False,
+    require_complete: bool = False,
 ) -> list[T]:
     """Fetch every item by walking paginated upstream responses.
 
@@ -219,13 +233,21 @@ async def fetch_all_items(
         returning ``True`` (no upstream ``total`` fallback), also stop when a
         page returns fewer or more items than ``page_size``.
     :type stop_on_short_page: bool | Callable[[], bool]
+    :param require_complete: When ``True``, refuse a walk that collects fewer items
+        than the greatest ``page.total`` any page reported, so a listing that shrank
+        or stopped answering mid-walk is not mistaken for the whole of it.
+    :type require_complete: bool
     :return: All items across every page, in upstream order.
     :rtype: list[T]
+    :raises IncompletePaginationError: If ``require_complete`` is set and the walk
+        ended short of the greatest reported total.
     """
     all_items: list[T] = []
     offset = 0
+    reported_total = 0
     while True:
         page = await get_page(Pagination(offset=offset, limit=page_size))
+        reported_total = max(reported_total, page.total)
         if not page.items:
             break
         all_items.extend(page.items)
@@ -238,6 +260,8 @@ async def fetch_all_items(
             break
         if offset >= page.total:
             break
+    if require_complete and len(all_items) < reported_total:
+        raise IncompletePaginationError(len(all_items), reported_total)
     return all_items
 
 

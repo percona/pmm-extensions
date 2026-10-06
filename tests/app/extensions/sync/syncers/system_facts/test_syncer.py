@@ -20,7 +20,6 @@ import json
 from datetime import datetime, timedelta, UTC
 from typing import Any
 from unittest.mock import AsyncMock, call
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -29,6 +28,7 @@ from pydantic import UUID4, ValidationError
 
 from app.core.alerts.config import alert_service
 from app.core.exceptions import HTTPBadGatewayException
+from app.core.pagination import IncompletePaginationError
 from app.core.requests import RemoteAPI
 from app.core.utils.date_time import utc_now
 from app.extensions.crud import SyncInstanceManager, SyncItemManager
@@ -40,10 +40,7 @@ from app.extensions.models import (
     SyncItem,
     SyncStatusEnum,
 )
-from app.extensions.sync.exceptions import (
-    IncompleteObservationsReadError,
-    SyncFailError,
-)
+from app.extensions.sync.exceptions import SyncFailError
 from app.extensions.sync.models import TaskRunResult
 from app.extensions.sync.syncers.system_facts.syncer import (
     first_measurement_due,
@@ -893,24 +890,15 @@ NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 HOUR = timedelta(hours=1)
 
 
-def _attempt(status: SyncStatusEnum) -> SyncItem:
-    """Build one finished first-measurement attempt on a node."""
-    return SyncItem(
-        entity_id=MOCK_CREATED_NODE_ID,
-        entity_type=SyncInventoryEntityTypeEnum.NODE,
-        status=status,
-        sync_instance_id=uuid4(),
-    )
-
-
-def _due(own_attempts: list[SyncItem], finished_ago: timedelta | None) -> bool:
-    """Ask the policy whether a host is due, with the production retry values."""
+def _due(failures: int, finished_ago: timedelta | None) -> bool:
+    """Ask the policy whether a host is due, with the default retry values."""
+    fields = UnmeasuredHostFactsSyncer.model_fields
     return first_measurement_due(
-        own_attempts,
+        failures,
         None if finished_ago is None else NOW - finished_ago,
         NOW,
-        retries=UnmeasuredHostFactsSyncer.FIRST_MEASUREMENT_RETRIES,
-        retry_interval=UnmeasuredHostFactsSyncer.FIRST_MEASUREMENT_RETRY_INTERVAL,
+        retries=fields["first_measurement_retries"].default,
+        retry_interval=fields["first_measurement_retry_interval"].default,
     )
 
 
@@ -919,7 +907,7 @@ class TestFirstMeasurementDue:
 
     def test_a_host_never_attempted_is_due(self):
         """Measure a host no host-facts syncer has finished an attempt on."""
-        assert _due([], None) is True
+        assert _due(0, None) is True
 
     @pytest.mark.parametrize(
         ("finished_ago", "expected"),
@@ -928,7 +916,7 @@ class TestFirstMeasurementDue:
     )
     def test_retries_at_most_once_per_interval(self, finished_ago, expected):
         """Wait a full retry interval after the last finished attempt."""
-        assert _due([_attempt(SyncStatusEnum.FAILED)], finished_ago) is expected
+        assert _due(1, finished_ago) is expected
 
     @pytest.mark.parametrize(
         ("failures", "expected"),
@@ -937,19 +925,7 @@ class TestFirstMeasurementDue:
     )
     def test_stops_after_the_retry_cap(self, failures, expected):
         """Leave a host to the daily run once the first attempt and 3 retries failed."""
-        attempts = [_attempt(SyncStatusEnum.FAILED)] * failures
-
-        assert _due(attempts, 2 * HOUR) is expected
-
-    def test_a_success_clears_the_failure_count(self):
-        """Count only the failures after the newest success."""
-        attempts = [
-            *[_attempt(SyncStatusEnum.FAILED)] * 4,
-            _attempt(SyncStatusEnum.SUCCESS),
-            _attempt(SyncStatusEnum.FAILED),
-        ]
-
-        assert _due(attempts, 2 * HOUR) is True
+        assert _due(failures, 2 * HOUR) is expected
 
 
 def _node(index: int) -> CreatedNode:
@@ -1261,14 +1237,14 @@ class TestUnmeasuredHostFactsPass:
                     _page([_observation(FIRST_NODE_ID + 1)], total=3),
                     _page([], total=3),
                 ],
-                IncompleteObservationsReadError,
+                IncompletePaginationError,
             ),
             (
                 [
                     _page([_observation(FIRST_NODE_ID)], total=3),
                     _page([_observation(FIRST_NODE_ID + 1)], total=2),
                 ],
-                IncompleteObservationsReadError,
+                IncompletePaginationError,
             ),
         ],
         ids=[
@@ -1370,7 +1346,7 @@ class TestUnmeasuredHostFactsPass:
     async def test_a_success_in_the_ledger_clears_the_failure_count(
         self, session, inventory_api, tasks_api, dispatch
     ):
-        """Attempt a host again when a success followed its capped failures."""
+        """Count only the failures after the newest success against the cap."""
         for _ in range(4):
             await _record_attempt(
                 session,
@@ -1384,8 +1360,16 @@ class TestUnmeasuredHostFactsPass:
             UnmeasuredHostFactsSyncer,
             FIRST_NODE_ID,
             SyncStatusEnum.SUCCESS,
-            3 * HOUR,
+            4 * HOUR,
         )
+        for _ in range(3):
+            await _record_attempt(
+                session,
+                UnmeasuredHostFactsSyncer,
+                FIRST_NODE_ID,
+                SyncStatusEnum.FAILED,
+                3 * HOUR,
+            )
 
         await _run_pass(session, inventory_api, tasks_api)
 
@@ -1471,8 +1455,8 @@ class TestConcurrentFirstMeasurement:
     async def test_at_most_the_concurrency_cap_is_in_flight(
         self, session, inventory_api, tasks_api, fake_inventory, mocker
     ):
-        """Hold the cap's worth of probes in flight, then finish every host."""
-        cap = UnmeasuredHostFactsSyncer.FIRST_MEASUREMENT_CONCURRENCY
+        """Hold the configured cap of probes in flight, then finish every host."""
+        cap = 3
         fake_inventory.nodes[:] = [_node(index) for index in range(1, cap + 3)]
         in_flight = 0
         peak = 0
@@ -1492,7 +1476,9 @@ class TestConcurrentFirstMeasurement:
 
         mocker.patch.object(UnmeasuredHostFactsSyncer, "wait_for_task_output", probe)
 
-        run_id = await _run_pass(session, inventory_api, tasks_api)
+        run_id = await _run_pass(
+            session, inventory_api, tasks_api, first_measurement_concurrency=cap
+        )
 
         assert peak == cap
         statuses = await _statuses(session, run_id, NODE)

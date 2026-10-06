@@ -25,14 +25,14 @@ inventory HTTP API; the syncer never creates or deletes nodes or services.
 import asyncio
 import json
 import logging
-from collections import defaultdict
+from collections import Counter
 from collections.abc import Sequence
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from typing import Any, ClassVar
 
 from app.core.pagination import fetch_all_items, PaginatedResponse, Pagination
-from app.core.utils.date_time import make_datetime_utc, utc_now
+from app.core.utils.date_time import utc_now
 from app.extensions.crud import SyncItemManager
 from app.extensions.inventory import (
     CreatedEntity,
@@ -42,11 +42,15 @@ from app.extensions.inventory import (
     Node,
     Service,
 )
-from app.extensions.models import SyncInventoryEntityTypeEnum, SyncItem, SyncStatusEnum
+from app.extensions.models import SyncInventoryEntityTypeEnum, SyncStatusEnum
 from app.extensions.sync.exceptions import (
     ExecutorHostNotFoundError,
     HostNotMeasuredError,
-    IncompleteObservationsReadError,
+)
+from app.extensions.sync.fields import (
+    FirstMeasurementConcurrency,
+    FirstMeasurementRetries,
+    FirstMeasurementRetryInterval,
 )
 from app.extensions.sync.models import BaseTaskSyncer, TaskRunResult
 from app.inventory.models import (
@@ -455,17 +459,8 @@ class SystemFactsSyncer(BaseTaskSyncer):
         )
 
 
-def _finished_at(item: SyncItem) -> datetime:
-    """Return when a finished attempt reached its final status, in UTC.
-
-    :param item: A ``SUCCESS`` or ``FAILED`` item.
-    :return: Its last write time, or its creation time if it was never updated.
-    """
-    return make_datetime_utc(item.updated_at or item.created_at)
-
-
 def first_measurement_due(
-    own_attempts: Sequence[SyncItem],
+    failures: int,
     latest_finish: datetime | None,
     now: datetime,
     *,
@@ -474,11 +469,8 @@ def first_measurement_due(
 ) -> bool:
     """Return whether a never-measured host is due a measurement attempt.
 
-    The failure count restarts at every success, so only the failures after the
-    newest one count against ``retries``.
-
-    :param own_attempts: The first-measurement syncer's finished attempts on the
-        host, oldest first.
+    :param failures: The first-measurement syncer's failed attempts on the host
+        since its newest success, or since its first attempt if none succeeded.
     :param latest_finish: When the newest finished host-facts attempt on the host
         ended, by either syncer, or ``None`` if there is none.
     :param now: The current time, timezone-aware.
@@ -486,12 +478,6 @@ def first_measurement_due(
     :param retry_interval: The least time between two attempts.
     :return: Whether an attempt is due now.
     """
-    failures = 0
-    for attempt in own_attempts:
-        if attempt.status == SyncStatusEnum.SUCCESS:
-            failures = 0
-        elif attempt.status == SyncStatusEnum.FAILED:
-            failures += 1
     if failures > retries:
         return False
     return latest_finish is None or now - latest_finish >= retry_interval
@@ -503,21 +489,21 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
     Probes only active nodes that are co-located with an executor and have no host
     observation, so a run with nothing new dispatches no task. A host whose attempt
     writes no observation is retried at most once per
-    ``FIRST_MEASUREMENT_RETRY_INTERVAL`` for at most ``FIRST_MEASUREMENT_RETRIES``
+    ``first_measurement_retry_interval`` for at most ``first_measurement_retries``
     retries, then left to the daily ``SystemFactsSyncer`` refresh. The probes run
     concurrently, so a host does not wait behind the others' probes; every ledger
     write stays serial on the run's one session.
 
-    :cvar FIRST_MEASUREMENT_RETRIES: The retries after a failed first attempt.
-    :cvar FIRST_MEASUREMENT_RETRY_INTERVAL: The least time between two attempts on
+    :param first_measurement_retries: The retries after a failed first attempt.
+    :param first_measurement_retry_interval: The least time between two attempts on
         one host, counting either host-facts syncer's finished attempts.
-    :cvar FIRST_MEASUREMENT_CONCURRENCY: The most first-measurement probes in
+    :param first_measurement_concurrency: The most first-measurement probes in
         flight at once.
     """
 
-    FIRST_MEASUREMENT_RETRIES: ClassVar[int] = 3
-    FIRST_MEASUREMENT_RETRY_INTERVAL: ClassVar[timedelta] = timedelta(hours=1)
-    FIRST_MEASUREMENT_CONCURRENCY: ClassVar[int] = 8
+    first_measurement_retries: FirstMeasurementRetries = 3
+    first_measurement_retry_interval: FirstMeasurementRetryInterval = timedelta(hours=1)
+    first_measurement_concurrency: FirstMeasurementConcurrency = 8
     #: Each candidate's probe outcome, gathered before the serial ledger walk and
     #: consumed by ``fetch_node``.
     _prefetched: dict[int | None, Node | BaseException | None] = {}
@@ -531,29 +517,23 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
 
         :return: The observed node ids.
         :raises pydantic.ValidationError: If a page is not a valid observation page.
-        :raises IncompleteObservationsReadError: If fewer rows were read than the
-            inventory reported.
+        :raises app.core.pagination.IncompletePaginationError: If fewer rows were read
+            than the inventory reported.
         :raises fastapi.HTTPException: If the inventory API request fails.
         """
-        total = 0
 
         async def get_page(
             pagination: Pagination,
         ) -> PaginatedResponse[HostSystemObservationSummaryResponse]:
-            nonlocal total
-            page = PaginatedResponse[
+            return PaginatedResponse[
                 HostSystemObservationSummaryResponse
             ].model_validate(
                 await self.inventory_api.get(
                     "/nodes/system-observations", params=pagination.model_dump()
                 )
             )
-            total = max(total, page.total)
-            return page
 
-        observations = await fetch_all_items(get_page)
-        if len(observations) < total:
-            raise IncompleteObservationsReadError(len(observations), total)
+        observations = await fetch_all_items(get_page, require_complete=True)
         return {observation.node_id for observation in observations}
 
     async def is_measurable(self, node: CreatedNode) -> bool:
@@ -584,12 +564,15 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
             SyncInventoryEntityTypeEnum.NODE,
             node_ids,
         )
-        own_by_node: defaultdict[int | None, list[SyncItem]] = defaultdict(list)
+        failures: Counter[int | None] = Counter()
         for item in own:
-            own_by_node[item.entity_id].append(item)
+            if item.status == SyncStatusEnum.SUCCESS:
+                failures[item.entity_id] = 0
+            else:
+                failures[item.entity_id] += 1
         latest_finish: dict[int | None, datetime] = {}
         for item in (*own, *daily):
-            finished = _finished_at(item)
+            finished = item.finished_at
             latest_finish[item.entity_id] = max(
                 finished, latest_finish.get(item.entity_id, finished)
             )
@@ -598,11 +581,11 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
             node
             for node in nodes
             if first_measurement_due(
-                own_by_node[node.id],
+                failures[node.id],
                 latest_finish.get(node.id),
                 now,
-                retries=self.FIRST_MEASUREMENT_RETRIES,
-                retry_interval=self.FIRST_MEASUREMENT_RETRY_INTERVAL,
+                retries=self.first_measurement_retries,
+                retry_interval=self.first_measurement_retry_interval,
             )
         ]
 
@@ -614,8 +597,8 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
         :return: Active, co-located nodes without a host observation that the
             retry policy lets this run attempt.
         :raises pydantic.ValidationError: If an observation page is invalid.
-        :raises IncompleteObservationsReadError: If the observation read came up
-            short of the inventory's total.
+        :raises app.core.pagination.IncompletePaginationError: If the observation read
+            came up short of the inventory's total.
         :raises fastapi.HTTPException: If an inventory or tasks API request fails.
         """
         if not self.force_executor_host and not await self.get_available_hosts():
@@ -680,7 +663,7 @@ class UnmeasuredHostFactsSyncer(SystemFactsSyncer):
         awaited before the method returns.
         """
         candidates = await self.get_unmeasured_candidates()
-        limit = asyncio.Semaphore(self.FIRST_MEASUREMENT_CONCURRENCY)
+        limit = asyncio.Semaphore(self.first_measurement_concurrency)
         pending = {
             asyncio.create_task(self._probe(node, limit)): node for node in candidates
         }
