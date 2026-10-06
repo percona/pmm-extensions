@@ -2343,7 +2343,7 @@ class Xtrabackup(Restore):
         leaves the ciphertext in place.
 
         :param file_path: Path to a ``.xbcrypt`` file.
-        :raises BackupError: If xbcrypt exits non-zero.
+        :raises BackupError: If xbcrypt cannot be started or exits non-zero.
         """
         output = file_path.with_suffix("")
         cmd = [
@@ -2355,9 +2355,12 @@ class Xtrabackup(Restore):
             "--output=%s" % (output,),
         ]
         self.logger.info("Running: %s", " ".join(cmd))
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+        except OSError as exc:
+            raise BackupError("Cannot run %s: %s" % (XBCRYPT_BIN, exc))
         _, err = proc.communicate()
         if proc.returncode != 0:
             output.unlink(missing_ok=True)
