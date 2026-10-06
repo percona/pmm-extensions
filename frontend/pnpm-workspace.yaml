@@ -23,6 +23,7 @@ overrides:
   js-yaml@>=4.0.0 <4.3.2: 4.3.2
   undici@^7.0.0: 7.29.1
   ws@8.20.1: 8.21.0
+  tinypool@2.1.0: 2.1.1
   '@babel/core': 7.29.6
   immutable@<5.1.8: ^5.1.8
   react: 19.2.7
