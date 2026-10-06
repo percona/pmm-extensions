@@ -1048,8 +1048,8 @@ async def sync_finishing_items() -> None:
     if not history_ids_by_job:
         return
     try:
+        nomad = await _finishing_probe_client.get()
         async with asyncio.timeout(interval):
-            nomad = await _finishing_probe_client.get()
             ready_job_ids = await nomad.capture_hold_ready_job_ids(
                 history_ids_by_job.keys()
             )
