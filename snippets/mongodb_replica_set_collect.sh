@@ -35,6 +35,7 @@
 # diagnostic_categories:
 #  - SERVER_CRASHED_RESTART_NOT_SUCCESSFUL
 #  - PERFORMANCE_OTHER
+#  - REPLICA_SET_REPLICATION
 # service_type: mongodb
 # alerts:
 #   - MongoDBInstanceNotAvailable
