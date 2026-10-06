@@ -26,11 +26,11 @@ from app.core.auth.providers.casdoor.sdk import CasdoorSDK
 
 
 class CasdoorAuthProvider(CasdoorSDK, BaseAuthProvider):
-    """Compose the Casdoor SDK, user model, and token model into an auth provider.
+    """Compose the Casdoor SDK and user model into an auth provider.
 
     Inherit :class:`CasdoorSDK` first so the provider *is* its SDK -- its config
     maps flat onto the SDK fields (e.g. ``AUTH__PROVIDER__CASDOOR__ENDPOINT``) --
-    and the :class:`BaseAuthProvider` mixin second for the model bundle and the
+    and the :class:`BaseAuthProvider` mixin second for the user model and the
     lifecycle hook.
 
     :cvar user_model: The Casdoor user model.

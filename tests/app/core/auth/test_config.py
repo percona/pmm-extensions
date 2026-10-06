@@ -18,7 +18,9 @@
 Resolution is exercised through ``IsolatedAuthSettings`` -- an ``AuthSettings``
 subclass whose settings sources are restricted to init kwargs -- so provider
 resolution is tested on explicit input, isolated from the ambient
-environment/YAML settings sources.
+environment/YAML settings sources. Tests that must read a provider from the
+environment use ``EnvAuthSettings`` instead, which adds the production
+environment source but still skips dotenv, secret files and YAML.
 """
 
 from types import SimpleNamespace
@@ -290,6 +292,16 @@ class EnvAuthSettings(AuthSettings):
         Delegating keeps the production ``AUTH__`` prefix stripping, which
         rewrites the env source in place, so the test reads the environment
         exactly as a deployment does.
+
+        :param settings_cls: The settings class being configured.
+        :param init_settings: The init-arguments source.
+        :param env_settings: The environment-variable source, whose ``AUTH__``
+            prefixed names the production override rewrites in place.
+        :param dotenv_settings: The dotenv-file source; passed through to the
+            production override, then dropped.
+        :param file_secret_settings: The file-secret source; passed through to
+            the production override, then dropped.
+        :return: The init and environment sources, highest priority first.
         """
         sources = super().settings_customise_sources(
             settings_cls,
