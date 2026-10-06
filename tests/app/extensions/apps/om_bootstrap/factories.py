@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the DB-model factories for the OpenManager Bootstrap app's tests."""
+"""Define the DB-model factories for the Operations Bootstrap app's tests."""
 
 from polyfactory import Use
 from polyfactory.factories.sqlalchemy_factory import SQLAlchemyFactory
