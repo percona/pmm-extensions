@@ -2406,11 +2406,11 @@ export interface paths {
      *     runs as a forked side-car process, which reaches the new value through its own
      *     settings refresher rather than through this request.
      *
-     *     ``ENABLED`` is what PMM's OpenManager switch calls, via this same route with
-     *     the credential of the pmm-managed ``--extensions-token`` flag (see
-     *     ``require_minimum_role``'s service-principal bypass): it flips independently
-     *     of ``SCHEDULE``, so the configured cadence survives OpenManager being turned
-     *     off and back on rather than being overwritten each time.
+     *     ``ENABLED`` is what PMM's Operations for MongoDB switch calls, via this same
+     *     route with the credential of the pmm-managed ``--extensions-token`` flag (see
+     *     ``require_minimum_role``'s service-principal bypass): it flips independently of
+     *     ``SCHEDULE``, so the configured cadence survives Operations for MongoDB being
+     *     turned off and back on rather than being overwritten each time.
      *
      *     :param request: The incoming request; its ``app.state`` carries the rebind
      *         callbacks fired for the keys this changed.
@@ -2586,8 +2586,8 @@ export interface paths {
      *
      *     :param session: The database session.
      *     :param request: The optional scope. Absent, or an empty list, means everything.
-     *     :raises HTTPServiceUnavailableException: When PMM's OpenManager switch has
-     *         ``ENABLED`` off.
+     *     :raises HTTPServiceUnavailableException: When PMM's Operations for MongoDB
+     *         switch has ``ENABLED`` off.
      *     :raises HTTPNotFoundException: When a requested node id is not in the estate.
      *     :raises HTTPConflictException: When a requested host is already being refreshed.
      *     :return: The queued sweep.
@@ -3647,7 +3647,7 @@ export interface paths {
      *     ``EXTENSIONS__FOOTER_TEMPLATE`` override is reflected without a restart.
      *     Access is gated by the router-level ``IsApiAuthenticated`` dependency.
      *
-     *     :return: The rendered footer text.
+     *     :return: The rendered footer text and the running version.
      */
     get: operations['extensions_get_app_info_api_extensions_app_info__get'];
     put?: never;
@@ -4234,10 +4234,14 @@ export interface components {
      *
      *     :param footer_text: The rendered sidebar footer text (application summary
      *         and version by default).
+     *     :param version: The running PMM Extensions version, sourced from
+     *         ``app.__version__``. Independent of ``FOOTER_TEMPLATE``.
      */
     AppInfo: {
       /** Footer Text */
       footer_text: string;
+      /** Version */
+      version: string;
     };
     /**
      * AppInfoResponse

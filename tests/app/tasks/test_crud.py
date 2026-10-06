@@ -16,10 +16,12 @@
 """Define tests for the Tasks CRUD managers."""
 
 from datetime import datetime, timedelta, UTC
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -1613,6 +1615,102 @@ class TestDispatchLockManager:
         lock2 = DispatchLock(name="unique-lock")
         with pytest.raises(HTTPConflictException):
             await DispatchLockManager.save(session, lock2)
+
+    @pytest.mark.asyncio
+    async def test_claim_commits_the_row_without_reading_it_back(
+        self, session: AsyncSession
+    ) -> None:
+        """Assert ``claim`` persists the lock and takes no post-commit refresh.
+
+        ``save``'s ``session.refresh`` is a second pool checkout taken once the
+        row is committed, so under exhaustion it raises after the lock exists and
+        before its owner can release it. ``claim`` exists to avoid that, and the
+        row still has to be durably there afterwards or it locks nothing.
+        """
+        with patch.object(
+            session, "refresh", new=AsyncMock(wraps=session.refresh)
+        ) as refresh:
+            await DispatchLockManager.claim(session, "claimed-lock")
+
+        refresh.assert_not_awaited()
+        assert [lock.name for lock in await DispatchLockManager.list(session)] == [
+            "claimed-lock"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_claim_raises_integrity_error_on_a_held_lock(
+        self, session: AsyncSession
+    ) -> None:
+        """Assert a second claim surfaces the raw IntegrityError, usable after.
+
+        ``_dispatch_queue_item`` translates it into its own 409, so ``claim`` must
+        not translate it first. The session has to be usable afterwards too: the
+        failed statement leaves the transaction unusable until it is rolled back.
+        """
+        await DispatchLockManager.claim(session, "contended-lock")
+
+        with pytest.raises(IntegrityError):
+            await DispatchLockManager.claim(session, "contended-lock")
+
+        assert len(await DispatchLockManager.list(session)) == 1
+
+    @pytest.mark.asyncio
+    async def test_release_deletes_the_claimed_row(self, session: AsyncSession) -> None:
+        """Assert ``release`` clears the lock without a persisted instance."""
+        token = await DispatchLockManager.claim(session, "released-lock")
+
+        await DispatchLockManager.release(session, "released-lock", token)
+
+        assert await DispatchLockManager.list(session) == []
+
+    @pytest.mark.asyncio
+    async def test_release_is_quiet_about_a_lock_that_is_already_gone(
+        self, session: AsyncSession
+    ) -> None:
+        """Assert releasing a swept lock is not an error.
+
+        The stale-row sweep may have reclaimed it already, and the caller runs
+        this in a ``finally`` where raising would fail a completed dispatch.
+        """
+        await DispatchLockManager.release(session, "never-existed", utc_now())
+
+        assert await DispatchLockManager.list(session) == []
+
+    @pytest.mark.asyncio
+    async def test_release_leaves_a_later_dispatchs_row_alone(
+        self, session: AsyncSession
+    ) -> None:
+        """Assert an overrunning dispatch's release cannot free a live lock.
+
+        Keyed by name alone this is a double-dispatch window, which is what the
+        table exists to close. Walking it: A claims and overruns the stale
+        window, B's sweep reclaims A's row and B claims the same name, then A
+        finishes and releases. A's release must not take B's row, or C could
+        claim while B is still dispatching.
+        """
+        stale_after = timedelta(seconds=30)
+        token_a = utc_now() - 2 * stale_after
+        session.add(DispatchLock(name="overrun", created_at=token_a))
+        await session.commit()
+
+        await DispatchLockManager.delete_where(
+            session,
+            col(DispatchLock.created_at) < (utc_now() - stale_after),
+            name="overrun",
+        )
+        token_b = await DispatchLockManager.claim(session, "overrun")
+
+        await DispatchLockManager.release(session, "overrun", token_a)
+
+        # B holds the lock still, so a third dispatch of the same name cannot
+        # take it. ``claim`` rolls the failed statement back, leaving the session
+        # usable for the release below.
+        with pytest.raises(IntegrityError):
+            await DispatchLockManager.claim(session, "overrun")
+        # And the row that survived is B's, not some residue of A's: B's own
+        # token is what clears it.
+        await DispatchLockManager.release(session, "overrun", token_b)
+        assert await DispatchLockManager.list(session) == []
 
     @pytest.mark.asyncio
     async def test_delete_lock(self, session: AsyncSession) -> None:

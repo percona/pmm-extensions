@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the OpenManager Inventory persistence models.
+"""Define the Operations Inventory persistence models.
 
 Three tables, and the split between them is the design:
 

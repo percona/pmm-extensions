@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the OpenManager Inventory Celery entry point.
+"""Define the Operations Inventory Celery entry point.
 
 ``@owned_by("om_inventory")`` tags the task so the app-drain reconciler counts it
 toward this app rather than treating it as a core task. The module is included in the
