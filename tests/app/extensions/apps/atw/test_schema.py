@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.extensions.apps.atw.categories import ParentCategory
 from app.extensions.apps.atw.schema import _atw_category_browser_fail_rules
 from app.extensions.apps.framework.rules import FailRule
 
@@ -72,6 +73,13 @@ class TestCategoryBrowserFailRules:
         assert len(fired) == 1
         assert fired[0].error_fields == ["category"]
         assert fired[0].message == f'category must belong to "{parent_label}".'
+
+    @pytest.mark.parametrize(
+        "parent_category", [parent.name for parent in ParentCategory]
+    )
+    def test_parent_without_leaf_passes(self, parent_category: str) -> None:
+        """Verify a parent submitted with no leaf trips no rule."""
+        assert _fired_rules(parent_category, None) == []
 
     def test_leaf_without_parent_requires_parent(self) -> None:
         """Verify a new leaf submitted with no parent asks for the parent."""
