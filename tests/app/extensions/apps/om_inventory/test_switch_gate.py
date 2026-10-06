@@ -13,51 +13,73 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Test ``run_probe``'s own ``ENABLED`` check, and the one way past it.
+"""Test ``run_probe``'s own ``ENABLED`` check against the override as stored.
 
 ``trigger_probe`` refuses a manual trigger while ``ENABLED`` is off, but beat calls
-the task directly, and the worker reads ``ENABLED`` from a snapshot that can lag the
-API process that accepted a trigger. In both cases the sweep must be recorded as
-refused. A run left ``RUNNING`` would hold every host until ``STALE_RUN_AFTER``.
+the task directly, so the gate has to live here too. A sweep it refuses must be
+recorded ``SKIPPED``; a run left ``RUNNING`` would hold every host until
+``STALE_RUN_AFTER``.
 
-That lag cuts the other way for the sweep PMM fires the moment it turns the switch
-on, so the endpoint hands its own fresher read down as ``enabled_confirmed`` and the
-worker honours it rather than refusing a sweep the switch allows.
+A worker's own snapshot is not the thing to read. It advances only at task
+boundaries and at most once per ``SETTINGS_OVERRIDE.REFRESH_INTERVAL``, so it can
+disagree with the stored override in **either** direction, and each direction is a
+bug: a sweep triggered in the same breath as the PATCH that turned OM on gets
+refused on a stale no, and one enqueued shortly before the switch went off runs on a
+stale yes. ``run_probe`` republishes the snapshot from the row and reads that, so the
+tests below pin the stored value against a deliberately stale proxy.
 """
 
 from contextlib import nullcontext
 from unittest.mock import AsyncMock
-from uuid import uuid4
 
 import pytest
 from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.extensions.apps.om_inventory import (
-    celery as celery_module,
-)
+from app.core.settings_override.manager import SettingsOverrideManager
+from app.core.settings_override.models import setting_class_token, SettingOverride
 from app.extensions.apps.om_inventory import (
     service as service_module,
 )
-from app.extensions.apps.om_inventory.celery import run_om_probe
-from app.extensions.apps.om_inventory.config import om_inventory_settings
+from app.extensions.apps.om_inventory.config import (
+    om_inventory_settings,
+    OmInventorySettings,
+)
 from app.extensions.apps.om_inventory.crud import ProbeRunManager
 from app.extensions.apps.om_inventory.models import ProbeRun, ProbeRunStatus
 from app.extensions.apps.om_inventory.service import run_probe, SWITCHED_OFF_DETAIL
 from tests.app.extensions.apps.om_inventory.conftest import CLEAN_OUTCOME
 
 
-@pytest.fixture
-def _switched_off(
-    mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, session: AsyncSession
-) -> None:
-    """Turn ``ENABLED`` off and point ``run_probe`` at the test session.
+async def _store_enabled(session: AsyncSession, *, enabled: bool) -> None:
+    """Write the ``ENABLED`` override row ``run_probe`` republishes from.
 
-    :param mocker: Patches the session maker and the Nomad-bound sweep.
-    :param monkeypatch: Restores the real ``ENABLED`` after the test.
+    The row, not the proxy, is what the gate must obey, so every test below sets
+    this and leaves the in-process snapshot saying the opposite.
+
+    :param session: The session the override is written on.
+    :param enabled: The stored value of the switch.
+    """
+    await SettingsOverrideManager.create(
+        session,
+        SettingOverride(
+            setting_class=setting_class_token(OmInventorySettings),
+            key="ENABLED",
+            value=enabled,
+        ),
+    )
+
+
+@pytest.fixture
+def _sweep_on_the_test_session(mocker: MockerFixture, session: AsyncSession) -> None:
+    """Point ``run_probe`` at the test session and stub the Nomad-bound sweep.
+
+    ``ENABLED`` is deliberately not touched here: each test stores the override it
+    means to assert on, and sets the stale snapshot it means to be ignored.
+
+    :param mocker: Patches the session maker and the sweep.
     :param session: The session every ``run_probe`` block should reuse.
     """
-    monkeypatch.setattr(om_inventory_settings, "ENABLED", False)
     mocker.patch.object(
         service_module,
         "get_async_session_maker",
@@ -66,18 +88,21 @@ def _switched_off(
     mocker.patch.object(service_module, "sweep", AsyncMock(return_value=CLEAN_OUTCOME))
 
 
-@pytest.mark.usefixtures("_switched_off")
-class TestRunProbeWhileSwitchedOff:
-    """Record a refused sweep, rather than running it or leaving it in flight."""
+@pytest.mark.usefixtures("_sweep_on_the_test_session")
+class TestRunProbeReadsTheStoredSwitch:
+    """Obey the override row, whichever way this worker's snapshot is stale."""
 
     @pytest.mark.asyncio
     async def test_a_triggered_run_is_closed_as_skipped(
-        self, session: AsyncSession
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Close the trigger's row as ``SKIPPED``, naming the switch.
 
         :param session: The database session.
+        :param monkeypatch: Leaves the snapshot stale at on.
         """
+        monkeypatch.setattr(om_inventory_settings, "ENABLED", True)
+        await _store_enabled(session, enabled=False)
         run = await ProbeRunManager.save(session, ProbeRun(scope=None))
 
         returned_id = await run_probe(execution_id=run.id, node_ids=None)
@@ -90,12 +115,16 @@ class TestRunProbeWhileSwitchedOff:
 
     @pytest.mark.asyncio
     async def test_a_scheduled_run_is_recorded_as_skipped(
-        self, session: AsyncSession
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Record a beat-driven sweep as ``SKIPPED`` instead of a silent gap.
 
         :param session: The database session.
+        :param monkeypatch: Leaves the snapshot stale at on.
         """
+        monkeypatch.setattr(om_inventory_settings, "ENABLED", True)
+        await _store_enabled(session, enabled=False)
+
         returned_id = await run_probe(execution_id=None, node_ids=None)
 
         stored = await ProbeRunManager.get(session, id=returned_id)
@@ -103,80 +132,52 @@ class TestRunProbeWhileSwitchedOff:
         assert stored.error == SWITCHED_OFF_DETAIL
 
     @pytest.mark.asyncio
-    async def test_a_trigger_that_already_read_the_switch_is_run(
-        self, session: AsyncSession
+    async def test_a_stale_no_does_not_refuse_a_sweep_the_row_allows(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Run the sweep the endpoint confirmed, despite the stale snapshot.
+        """Run the sweep PMM triggers in the same breath as turning OM on.
 
-        This is the enable-then-trigger case: ``ENABLED`` here stands for the
-        worker's snapshot, which still says off, while the endpoint read the
-        applied override and said on.
+        This is the regression: the snapshot still says off because this worker
+        has not refreshed since the PATCH, and refusing here is what put a red
+        error on the first page a new user opens.
+
+        The assertion is the exact terminal state a clean sweep reaches, not
+        merely "not ``SKIPPED``" - a run left ``RUNNING`` would satisfy that and
+        is the other failure this gate exists to prevent.
 
         :param session: The database session.
+        :param monkeypatch: Leaves the snapshot stale at off.
         """
+        monkeypatch.setattr(om_inventory_settings, "ENABLED", False)
+        await _store_enabled(session, enabled=True)
         run = await ProbeRunManager.save(session, ProbeRun(scope=None))
 
-        returned_id = await run_probe(
-            execution_id=run.id, node_ids=None, enabled_confirmed=True
-        )
+        returned_id = await run_probe(execution_id=run.id, node_ids=None)
 
         assert returned_id == run.id
         stored = await ProbeRunManager.get(session, id=run.id)
-        assert stored.status is not ProbeRunStatus.SKIPPED
-        assert stored.error != SWITCHED_OFF_DETAIL
+        assert stored.status is ProbeRunStatus.SUCCESS
+        assert stored.error is None
+        assert stored.finished_at is not None
 
     @pytest.mark.asyncio
-    async def test_a_scheduled_run_cannot_claim_the_switch_was_read(
-        self, session: AsyncSession
+    async def test_a_stale_yes_does_not_run_a_sweep_the_row_forbids(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Keep beat on the snapshot: it has no fresher read to offer.
+        """Refuse a sweep enqueued before the switch went off.
 
-        Beat calls the task with no arguments, so the default is what decides
-        whether the periodic sweep can outlive the switch being turned off.
+        The other direction of the same lag, and the one a flag carried on the
+        message cannot fix: the snapshot says on, the row says off, and the row
+        is the authority.
 
         :param session: The database session.
+        :param monkeypatch: Leaves the snapshot stale at on.
         """
+        monkeypatch.setattr(om_inventory_settings, "ENABLED", True)
+        await _store_enabled(session, enabled=False)
+
         returned_id = await run_probe()
 
         stored = await ProbeRunManager.get(session, id=returned_id)
         assert stored.status is ProbeRunStatus.SKIPPED
         assert stored.error == SWITCHED_OFF_DETAIL
-
-
-class TestRunOmProbeCarriesTheFlag:
-    """Keep the Celery wrapper wired to the sweep it stands in front of.
-
-    Nothing else exercises this hop. The endpoint names the keyword and the gate
-    reads it, so a wrapper that dropped it on the floor would put every triggered
-    sweep back on the worker's snapshot with every test still green.
-    """
-
-    def test_a_confirmed_trigger_reaches_the_sweep(self, mocker: MockerFixture) -> None:
-        """Forward the endpoint's read, and the ids it came with.
-
-        :param mocker: Patches the sweep and the loop the task drives it on.
-        """
-        run_id = uuid4()
-        probe = mocker.patch.object(celery_module, "run_probe")
-        mocker.patch.object(
-            celery_module.celery.loop, "run_until_complete", return_value=run_id
-        )
-
-        returned = run_om_probe(str(run_id), ["node-1"], enabled_confirmed=True)
-
-        assert returned == str(run_id)
-        probe.assert_called_once_with(run_id, ["node-1"], enabled_confirmed=True)
-
-    def test_a_scheduled_call_confirms_nothing(self, mocker: MockerFixture) -> None:
-        """Leave beat's zero-argument call reading the switch itself.
-
-        :param mocker: Patches the sweep and the loop the task drives it on.
-        """
-        probe = mocker.patch.object(celery_module, "run_probe")
-        mocker.patch.object(
-            celery_module.celery.loop, "run_until_complete", return_value=uuid4()
-        )
-
-        run_om_probe()
-
-        probe.assert_called_once_with(None, None, enabled_confirmed=False)

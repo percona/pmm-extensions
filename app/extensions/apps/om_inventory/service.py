@@ -43,8 +43,12 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.config import settings
 from app.core.requests import RemoteAPI
 from app.core.security import get_internal_token
+from app.core.settings_override.lifecycle import publish_snapshot
 from app.core.utils.date_time import utc_now
-from app.extensions.apps.om_inventory.config import om_inventory_settings
+from app.extensions.apps.om_inventory.config import (
+    om_inventory_settings,
+    OmInventorySettings,
+)
 from app.extensions.apps.om_inventory.crud import (
     conflict_detail,
     conflicting_run,
@@ -850,10 +854,7 @@ async def _fail_run(run_id: UUID, error: str) -> None:
 
 
 async def run_probe(
-    execution_id: UUID | None = None,
-    node_ids: list[str] | None = None,
-    *,
-    enabled_confirmed: bool = False,
+    execution_id: UUID | None = None, node_ids: list[str] | None = None
 ) -> UUID:
     """Run one probe sweep and write what it found into the estate.
 
@@ -861,32 +862,26 @@ async def run_probe(
     id immediately, and only this function ever writes its terminal status.
 
     ``ENABLED`` is re-checked here rather than only at the trigger endpoint because
-    beat calls this task directly, and because the worker reads ``ENABLED`` from its
-    own override snapshot, which can lag the API process by up to
-    ``SETTINGS_OVERRIDE.REFRESH_INTERVAL``. A sweep refused for either reason is
-    recorded ``SKIPPED`` with the switch named, never left ``RUNNING``, where it
-    would hold every host until ``STALE_RUN_AFTER`` reaps it.
+    beat calls this task directly. A sweep refused for either that or the
+    single-flight check is recorded ``SKIPPED`` with the reason named, never left
+    ``RUNNING``, where it would hold every host until ``STALE_RUN_AFTER`` reaps it.
 
-    ``enabled_confirmed`` is how the trigger endpoint says it has already read the
-    switch, so this skips its own read. That lag is otherwise worst exactly where it
-    is least wanted: PMM turns ``ENABLED`` on and immediately triggers a sweep, so
-    the estate is not empty for a whole ``SCHEDULE`` interval, and the worker picks
-    that sweep up still holding the pre-change snapshot. The one sweep whose purpose
-    is to spare the wait is the one guaranteed to be refused, and a first-time user
-    meets an error on the first page they open.
-
-    Only the endpoint sets it, and only after its own 503 check passed in the process
-    that applied the override. Beat passes nothing and keeps reading the snapshot: it
-    has no fresher read to offer, and the periodic sweep is exactly what ``ENABLED``
-    off is meant to stop.
+    The check reads the override **as stored**, republishing the snapshot first,
+    because a worker's own snapshot advances only at task boundaries and at most
+    once per ``SETTINGS_OVERRIDE.REFRESH_INTERVAL``. Reading the snapshot alone is
+    wrong in both directions. PMM turns ``ENABLED`` on and immediately triggers a
+    sweep, so the estate is not empty for a whole ``SCHEDULE`` interval - and the
+    worker picks that sweep up still holding the pre-change value, so the one sweep
+    whose purpose is to spare the wait is the one guaranteed to be refused and a
+    first-time user meets an error on the first page they open. In the other
+    direction a sweep enqueued shortly before the switch went off would run on a
+    stale yes.
 
     :param execution_id: An already-created run's id, passed by the trigger endpoint.
         ``None`` mints a fresh run.
     :param node_ids: The hosts to refresh, or ``None`` for the whole estate. Taken
         from the caller rather than read back off the run row so a scheduled sweep,
         which has no row until this function makes one, takes the same path.
-    :param enabled_confirmed: Whether the caller has already checked ``ENABLED``
-        against a read this worker's snapshot may not have caught up with yet.
     :return: The run's id.
     """
     session_maker = get_async_session_maker()
@@ -897,7 +892,24 @@ async def run_probe(
             run = await ProbeRunManager.get(session, id=execution_id)
         run_id = run.id
 
-        if not enabled_confirmed and not om_inventory_settings.ENABLED:
+        # Decide against the override currently stored rather than the snapshot
+        # this child last refreshed. The worker's refresher advances only at task
+        # boundaries and at most once per ``SETTINGS_OVERRIDE.REFRESH_INTERVAL``,
+        # so without this a sweep triggered in the same breath as the PATCH that
+        # turned OM on reads the pre-PATCH value and refuses itself - and one
+        # triggered just before the switch went off would run on a stale yes.
+        # ``publish_snapshot`` fires no rebind callback, which is why this is safe
+        # here and not from a web process; see
+        # ``republish_extensions_settings_snapshot``.
+        # ``om_inventory_settings`` is annotated as the settings class it proxies,
+        # so passing it where a proxy is expected needs the same ignore
+        # ``app_owned_settings.py`` already carries for the identical hand-off.
+        await publish_snapshot(
+            om_inventory_settings,  # ty: ignore[invalid-argument-type]
+            session,
+            OmInventorySettings,
+        )
+        if not om_inventory_settings.ENABLED:
             run.status = ProbeRunStatus.SKIPPED
             run.finished_at = utc_now()
             run.error = SWITCHED_OFF_DETAIL
