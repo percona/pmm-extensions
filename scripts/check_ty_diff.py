@@ -70,11 +70,13 @@ class ChangedFiles:
         and renames the rest of the ones it moved.
     :param renames: Old path to new path, for the files the branch moved within
         the checked non-test surface.
+    :param tests: Changed Python files under ``tests/``, which neither pass checks.
     """
 
     head: tuple[str, ...]
     base: tuple[str, ...]
     renames: Mapping[str, str]
+    tests: tuple[str, ...] = ()
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
@@ -197,6 +199,7 @@ def parse_name_status(text: str) -> ChangedFiles:
     """
     head: list[str] = []
     base: list[str] = []
+    tests: list[str] = []
     renames: dict[str, str] = {}
     for raw in text.splitlines():
         status, _, operands = raw.partition("\t")
@@ -205,14 +208,19 @@ def parse_name_status(text: str) -> ChangedFiles:
             continue
         new = paths[-1] if status.startswith(("C", "R")) else paths[0]
         old = "" if status.startswith(("A", "C")) else paths[0]
-        if not new.endswith(".py") or new.startswith(TEST_ROOT):
+        if not new.endswith(".py"):
+            continue
+        if new.startswith(TEST_ROOT):
+            tests.append(new)
             continue
         head.append(new)
         if old and not old.startswith(TEST_ROOT):
             base.append(old)
             if old != new:
                 renames[old] = new
-    return ChangedFiles(head=tuple(head), base=tuple(base), renames=renames)
+    return ChangedFiles(
+        head=tuple(head), base=tuple(base), renames=renames, tests=tuple(tests)
+    )
 
 
 def changed_files(merge_base: str) -> ChangedFiles:
@@ -237,6 +245,56 @@ def changed_files(merge_base: str) -> ChangedFiles:
         "*.py",
     )
     return parse_name_status(text)
+
+
+def uncommitted_files(repo_root: Path) -> tuple[str, ...]:
+    """Return the non-test Python files with uncommitted changes.
+
+    These are the files a commit would bring into the checked surface, so
+    deletions and anything under ``tests/`` are left out, as they are from the
+    committed change set.
+
+    :param repo_root: The repository root, which the pathspec is resolved against.
+    :return: Repo-relative paths, in ``git status`` order.
+    :raises subprocess.CalledProcessError: Propagated from git.
+    """
+    rows = _git(
+        "status", "--porcelain", "--untracked-files=all", "--", "*.py", cwd=repo_root
+    ).splitlines()
+    paths: list[str] = []
+    for row in rows:
+        state, path = row[:2], row[3:].rpartition(" -> ")[2].strip('"')
+        if "D" in state or not path.endswith(".py") or path.startswith(TEST_ROOT):
+            continue
+        paths.append(path)
+    return tuple(paths)
+
+
+def unexamined_notice(changed: ChangedFiles, repo_root: Path) -> list[str]:
+    """Describe the Python changes this run did not check.
+
+    The run compares commits and checks non-test files only, so uncommitted
+    edits and changes under ``tests/`` are outside it whatever the verdict on
+    the files it did check, and a zero exit says nothing about them.
+
+    :param changed: The change set the committed diff produced.
+    :param repo_root: The repository root.
+    :return: One line per kind of unexamined change; empty when there is none.
+    :raises subprocess.CalledProcessError: Propagated from git.
+    """
+    lines: list[str] = []
+    uncommitted = uncommitted_files(repo_root)
+    if uncommitted:
+        lines.append(
+            f"{len(uncommitted)} uncommitted non-test Python file(s) were NOT examined: "
+            "this check compares commits. This is not a pass for them."
+        )
+    if changed.tests:
+        lines.append(
+            f"{len(changed.tests)} changed test file(s) were NOT examined: "
+            "tests/ is outside this check; `make typecheck` covers it."
+        )
+    return lines
 
 
 @contextmanager
@@ -428,8 +486,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     repo_root = Path(_git("rev-parse", "--show-toplevel").strip())
     merge_base = _git("merge-base", base_sha, "HEAD").strip()
     changed = changed_files(merge_base)
+    notice = unexamined_notice(changed, repo_root)
     if not changed.head:
-        print("No non-test Python files changed.")
+        print("\n".join(["No non-test Python files changed.", *notice]))
         return 0
 
     executable = resolve_ty()
@@ -446,11 +505,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     extra = surplus_diagnostics(head, base)
     if not extra:
         print(f"No new ty diagnostics across {len(changed.head)} changed file(s).")
+        for line in notice:
+            print(line)
         return 0
 
     print(f"{len(extra)} ty diagnostic(s) absent at {merge_base}:")
     for diagnostic in extra:
         print(f"  {diagnostic}")
+    for line in notice:
+        print(line)
     emit_annotations(extra)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:

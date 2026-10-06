@@ -77,6 +77,8 @@ build: venv app/
 pack:
 ifndef BUNDLE
 	@echo Exporting bundle
+	@differing=$$( { git diff --name-only "${RELEASE_VER}" -- app snippets; git ls-files --others --exclude-standard -- app snippets; } | sort -u | wc -l); \
+	[ "$$differing" -eq 0 ] || echo "WARNING: $$differing file(s) under app/ or snippets/ differ between the working tree and ${RELEASE_VER}. The bundle is a git archive of ${RELEASE_VER} and holds that revision's files, not the working tree's." >&2
 	@git archive --output=bundle.tgz --format=tar.gz "${RELEASE_VER}" app snippets
 else
 	@echo Copying custom bundle "${BUNDLE}"

@@ -212,6 +212,12 @@ on the same tree, and reproducing layer 2 means reproducing the forcing:
 BASE_SHA="$(git merge-base origin/main HEAD)" make typecheck-diff
 ```
 
+Run locally, it compares commits and checks non-test files only. Beside its
+verdict it names the Python changes it left unexamined — uncommitted non-test
+files, and changed files under `tests/` — without changing its exit status: a
+zero exit is not a pass for either, and `make typecheck` is what covers
+`tests/`.
+
 **Both layers run the pinned binary, never whatever `ty` is first on `PATH`.**
 Layer 1 gets that by invoking `make typecheck`, which runs `${VENV_BIN}/ty` — a
 bare `ty check` does not, and the two are only the same program under the parity

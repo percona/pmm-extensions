@@ -351,6 +351,126 @@ def test_empty_change_set_never_invokes_ty(monkeypatch, tmp_path):
     assert spy.calls == []
 
 
+def _git_with_status(root, name_status, status):
+    """Return a ``_git`` stand-in that also serves ``git status`` output.
+
+    :param root: Repository root the runner should resolve.
+    :param name_status: Raw ``git diff --name-status`` output to serve.
+    :param status: Raw ``git status --porcelain`` output to serve.
+    :return: A callable with ``_git``'s signature.
+    """
+    fallback = _fake_git(root, name_status)
+
+    def run(*args, cwd=None):
+        if args[0] == "status":
+            return status
+        return fallback(*args, cwd=cwd)
+
+    return run
+
+
+def test_empty_change_set_names_the_test_files_it_did_not_check(
+    monkeypatch, tmp_path, capsys
+):
+    """Say that changed tests were skipped, since a zero exit reads as a pass."""
+    code, _ = _run_main(
+        monkeypatch, tmp_path, "M\ttests/app/core/test_db.py\nM\tREADME.md\n"
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "1 changed test file(s) were NOT examined" in out
+    assert "uncommitted" not in out
+
+
+def test_empty_change_set_names_uncommitted_python_files(monkeypatch, tmp_path, capsys):
+    """Say that uncommitted edits were skipped when the committed diff is empty."""
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
+    status = " M app/core/db.py\n?? app/core/new_module.py\n"
+    monkeypatch.setattr(check_ty_diff, "_git", _git_with_status(tmp_path, "", status))
+    code = check_ty_diff.main(["--base-sha", BASE_SHA])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "2 uncommitted non-test Python file(s) were NOT examined" in out
+    assert "This is not a pass for them." in out
+
+
+def test_a_clean_empty_change_set_prints_only_the_plain_line(
+    monkeypatch, tmp_path, capsys
+):
+    """Add nothing when there is genuinely no Python change to report on."""
+    code, _ = _run_main(monkeypatch, tmp_path, "M\tREADME.md\n")
+
+    assert code == 0
+    assert capsys.readouterr().out == "No non-test Python files changed.\n"
+
+
+def test_a_passing_run_still_names_what_it_did_not_check(monkeypatch, tmp_path, capsys):
+    """Report skipped changes beside a clean verdict on the files that were checked."""
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
+    name_status = "M\tapp/inventory/crud.py\nM\ttests/app/inventory/test_crud.py\n"
+    monkeypatch.setattr(
+        check_ty_diff,
+        "_git",
+        _git_with_status(tmp_path, name_status, " M app/core/db.py\n"),
+    )
+    monkeypatch.setattr(check_ty_diff, "_ty_stdout", _TySpy(_output(), _output()))
+    code = check_ty_diff.main(["--base-sha", BASE_SHA])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "No new ty diagnostics across 1 changed file(s)." in out
+    assert "1 uncommitted non-test Python file(s) were NOT examined" in out
+    assert "1 changed test file(s) were NOT examined" in out
+
+
+def test_uncommitted_files_keeps_only_what_a_commit_would_bring_in(
+    monkeypatch, tmp_path
+):
+    """Leave out deletions and tests, and read a rename at its new path."""
+    status = (
+        " M app/core/db.py\n"
+        " D app/core/old.py\n"
+        " M tests/app/core/test_db.py\n"
+        "?? app/core/new_module.py\n"
+        "R  app/core/a.py -> app/core/b.py\n"
+    )
+    monkeypatch.setattr(check_ty_diff, "_git", _git_with_status(tmp_path, "", status))
+
+    assert check_ty_diff.uncommitted_files(tmp_path) == (
+        "app/core/db.py",
+        "app/core/new_module.py",
+        "app/core/b.py",
+    )
+
+
+def test_uncommitted_files_asks_git_from_the_repository_root(monkeypatch, tmp_path):
+    """Resolve the pathspec against the root, and list untracked files whatever the config."""
+    recorded: list[tuple[tuple[str, ...], object]] = []
+
+    def spy_git(*args, cwd=None):
+        recorded.append((args, cwd))
+        return ""
+
+    monkeypatch.setattr(check_ty_diff, "_git", spy_git)
+    check_ty_diff.uncommitted_files(tmp_path)
+
+    args, cwd = recorded[0]
+    assert cwd == tmp_path
+    assert "--untracked-files=all" in args
+
+
+def test_changed_test_files_are_recorded_but_not_checked():
+    """Keep ``tests/`` out of both passes while remembering what was skipped."""
+    changed = check_ty_diff.parse_name_status(
+        "M\tapp/core/db.py\nM\ttests/app/core/test_db.py\n"
+    )
+
+    assert changed.head == ("app/core/db.py",)
+    assert changed.tests == ("tests/app/core/test_db.py",)
+
+
 def test_per_file_matches_the_batched_verdict(monkeypatch, tmp_path):
     """Reach the same verdict one path at a time as in a single batch."""
     name_status = "M\tapp/inventory/crud.py\nM\tapp/api/deps.py\n"
