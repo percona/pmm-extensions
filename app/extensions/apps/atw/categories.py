@@ -60,6 +60,7 @@ class ParentCategory(StrEnum):
     CRASHES = "Crashes"
     PERFORMANCE_ISSUES = "Performance Issues"
     REPLICATION_HA = "Replication High / Availability"
+    BACKUP_RECOVERY = "Backup and Recovery"
 
 
 class ATWCategory(StrEnum):
@@ -97,6 +98,13 @@ class ATWCategory(StrEnum):
     )
     GALERA = ("Galera", ParentCategory.REPLICATION_HA)
     GROUP_REPLICATION = ("Group Replication", ParentCategory.REPLICATION_HA)
+    REPLICA_SET_REPLICATION = (
+        "Replica Set Replication",
+        ParentCategory.REPLICATION_HA,
+    )
+
+    # --- Backup and Recovery ---
+    BACKUP_PBM = ("Backup / PBM", ParentCategory.BACKUP_RECOVERY)
 
     def __new__(cls, label: str, parent: ParentCategory) -> "ATWCategory":  # noqa: D102
         obj = str.__new__(cls, label)

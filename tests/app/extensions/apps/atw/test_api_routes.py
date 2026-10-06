@@ -27,7 +27,7 @@ import pytest
 import pytest_asyncio
 from fastapi import status
 from fastapi.testclient import TestClient
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -81,6 +81,20 @@ def _mock_atw_snippet(
     if service_type is not None:
         snippet.meta["service_type"] = service_type
     return snippet
+
+
+def _get_listing(test_client: TestClient, snippets: list[Mock]) -> Response:
+    """Return the category listing response served for ``snippets``.
+
+    :param test_client: The API test client.
+    :param snippets: The snippets ``SnippetManager.list`` returns.
+    :return: The ``GET /api/apps/atw/`` response.
+    """
+    with patch(
+        "app.extensions.apps.atw.api_routes.SnippetManager.list",
+        new=AsyncMock(return_value=snippets),
+    ):
+        return test_client.get("/api/apps/atw/")
 
 
 async def _persist_atw_snippet(
@@ -193,11 +207,7 @@ class TestAtwListEndpoint:
             service_type="mysql",
         )
 
-        with patch(
-            "app.extensions.apps.atw.api_routes.SnippetManager.list",
-            new=AsyncMock(return_value=[snippet]),
-        ):
-            response = test_client.get("/api/apps/atw/")
+        response = _get_listing(test_client, [snippet])
 
         assert response.status_code == status.HTTP_200_OK
         assert "application/json" in response.headers["content-type"]
@@ -229,11 +239,7 @@ class TestAtwListEndpoint:
             sudo=SnippetSudoOption.ALWAYS,
         )
 
-        with patch(
-            "app.extensions.apps.atw.api_routes.SnippetManager.list",
-            new=AsyncMock(return_value=[snippet]),
-        ):
-            response = test_client.get("/api/apps/atw/")
+        response = _get_listing(test_client, [snippet])
 
         assert response.status_code == status.HTTP_200_OK
         assert response.json()[0]["snippets"][0]["sudo"] == "always"
@@ -262,11 +268,7 @@ class TestAtwListEndpoint:
             sudo=option,
         )
 
-        with patch(
-            "app.extensions.apps.atw.api_routes.SnippetManager.list",
-            new=AsyncMock(return_value=[snippet]),
-        ):
-            response = test_client.get("/api/apps/atw/")
+        response = _get_listing(test_client, [snippet])
 
         assert response.status_code == status.HTTP_200_OK
         assert response.json()[0]["snippets"][0]["sudo"] == expected
@@ -287,11 +289,7 @@ class TestAtwListEndpoint:
             },
         )
 
-        with patch(
-            "app.extensions.apps.atw.api_routes.SnippetManager.list",
-            new=AsyncMock(return_value=[snippet]),
-        ):
-            response = test_client.get("/api/apps/atw/")
+        response = _get_listing(test_client, [snippet])
 
         assert response.status_code == status.HTTP_200_OK
         payload = response.json()
@@ -322,11 +320,7 @@ class TestAtwListEndpoint:
             service_type="mongodb",
         )
 
-        with patch(
-            "app.extensions.apps.atw.api_routes.SnippetManager.list",
-            new=AsyncMock(return_value=[mysql_snippet, mongo_snippet]),
-        ):
-            response = test_client.get("/api/apps/atw/")
+        response = _get_listing(test_client, [mysql_snippet, mongo_snippet])
 
         assert response.status_code == status.HTTP_200_OK
         payload = response.json()
@@ -352,11 +346,7 @@ class TestAtwListEndpoint:
             service_type="generic",
         )
 
-        with patch(
-            "app.extensions.apps.atw.api_routes.SnippetManager.list",
-            new=AsyncMock(return_value=[snippet]),
-        ):
-            response = test_client.get("/api/apps/atw/")
+        response = _get_listing(test_client, [snippet])
 
         assert response.status_code == status.HTTP_200_OK
         payload = response.json()
@@ -373,11 +363,7 @@ class TestAtwListEndpoint:
             service_type=None,
         )
 
-        with patch(
-            "app.extensions.apps.atw.api_routes.SnippetManager.list",
-            new=AsyncMock(return_value=[snippet]),
-        ):
-            response = test_client.get("/api/apps/atw/")
+        response = _get_listing(test_client, [snippet])
 
         assert response.status_code == status.HTTP_200_OK
         payload = response.json()
@@ -396,11 +382,7 @@ class TestAtwListEndpoint:
             service_type="clickhouse",
         )
 
-        with patch(
-            "app.extensions.apps.atw.api_routes.SnippetManager.list",
-            new=AsyncMock(return_value=[snippet]),
-        ):
-            response = test_client.get("/api/apps/atw/")
+        response = _get_listing(test_client, [snippet])
 
         assert response.status_code == status.HTTP_200_OK
         payload = response.json()
@@ -418,11 +400,7 @@ class TestAtwListEndpoint:
             service_type="mysql",
         )
 
-        with patch(
-            "app.extensions.apps.atw.api_routes.SnippetManager.list",
-            new=AsyncMock(return_value=[snippet]),
-        ):
-            response = test_client.get("/api/apps/atw/")
+        response = _get_listing(test_client, [snippet])
 
         assert response.status_code == status.HTTP_200_OK
         payload = response.json()
@@ -433,6 +411,66 @@ class TestAtwListEndpoint:
         for category in ATWCategory:
             if category.name != "OVERALL_SLOWNESS":
                 assert (mysql_root, category.name) not in populated
+
+    def test_atw_list_backup_leaf_under_its_own_parent(
+        self, test_client: TestClient
+    ) -> None:
+        """Ensure a backup-tagged mongodb snippet lists under Backup and Recovery."""
+        snippet = _mock_atw_snippet(
+            filename="mongo/pbm.sh",
+            diagnostic_categories=["BACKUP_PBM"],
+            service_type="mongodb",
+        )
+
+        response = _get_listing(test_client, [snippet])
+
+        assert response.status_code == status.HTTP_200_OK
+        [row] = response.json()
+        assert row["category_root"] == CATEGORY_ROOT_LABELS[ServiceTypeEnum.MONGODB]
+        assert row["parent_category"] == "BACKUP_RECOVERY"
+        assert row["parent_category_label"] == "Backup and Recovery"
+        assert row["category"] == "BACKUP_PBM"
+        assert row["category_label"] == "Backup / PBM"
+        assert [s["name"] for s in row["snippets"]] == ["mongo/pbm.sh"]
+
+    def test_atw_list_replica_set_leaf_follows_existing_leaves(
+        self, test_client: TestClient
+    ) -> None:
+        """Ensure a multi-tagged snippet lists in each cell, in taxonomy order."""
+        snippet = _mock_atw_snippet(
+            filename="mongo/rs.sh",
+            diagnostic_categories=["REPLICA_SET_REPLICATION", "PERFORMANCE_OTHER"],
+            service_type="mongodb",
+        )
+
+        response = _get_listing(test_client, [snippet])
+
+        assert response.status_code == status.HTTP_200_OK
+        payload = response.json()
+        assert [(e["parent_category"], e["category"]) for e in payload] == [
+            ("PERFORMANCE_ISSUES", "PERFORMANCE_OTHER"),
+            ("REPLICATION_HA", "REPLICA_SET_REPLICATION"),
+        ]
+        assert payload[1]["category_label"] == "Replica Set Replication"
+
+    @pytest.mark.parametrize(
+        "declared",
+        ["Backup / PBM", "backup_pbm", "Replica Set Replication", "BACKUP_RECOVERY"],
+    )
+    def test_atw_list_ignores_labels_lowercase_and_parent_names(
+        self, test_client: TestClient, declared: str
+    ) -> None:
+        """Ensure only exact leaf member names place a snippet in a cell."""
+        snippet = _mock_atw_snippet(
+            filename="mongo/mistagged.sh",
+            diagnostic_categories=[declared],
+            service_type="mongodb",
+        )
+
+        response = _get_listing(test_client, [snippet])
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == []
 
     def test_atw_list_non_list_diagnostic_categories_not_substring_matched(
         self, test_client: TestClient
@@ -805,6 +843,44 @@ class TestAtwListApprovalFilter:
             )
             for category in declared:
                 assert snippet.filename in cells[(expected_root, category)]
+
+
+class TestAtwListMongoDBMembership:
+    """Verify where the builtin MongoDB replication and backup scripts list."""
+
+    @pytest.mark.asyncio
+    async def test_builtin_scripts_list_under_the_mongodb_leaves(
+        self,
+        async_api_client: AsyncClient,
+        session: AsyncSession,
+        snippets_dir: Path,
+    ) -> None:
+        """Ensure the shipped frontmatter files each script in its MongoDB cells."""
+        for filename in (
+            "mongodb_pbm_diagnostics.sh",
+            "mongodb_repl_lag_check.sh",
+            "mongodb_replica_set_collect.sh",
+        ):
+            await _persist_corpus_snippet(session, snippets_dir, filename=filename)
+
+        response = await async_api_client.get("/api/apps/atw/")
+
+        assert response.status_code == status.HTTP_200_OK
+        mongo_root = CATEGORY_ROOT_LABELS[ServiceTypeEnum.MONGODB]
+        cells = {
+            entry["category"]: {snippet["name"] for snippet in entry["snippets"]}
+            for entry in response.json()
+            if entry["category_root"] == mongo_root
+        }
+        assert cells == {
+            "SERVER_CRASHED_RESTART_NOT_SUCCESSFUL": {"mongodb_replica_set_collect.sh"},
+            "PERFORMANCE_OTHER": {"mongodb_replica_set_collect.sh"},
+            "REPLICA_SET_REPLICATION": {
+                "mongodb_repl_lag_check.sh",
+                "mongodb_replica_set_collect.sh",
+            },
+            "BACKUP_PBM": {"mongodb_pbm_diagnostics.sh"},
+        }
 
 
 class TestAtwListTitleFallback:
