@@ -869,10 +869,11 @@ async def run_probe(
     The check reads the override **as stored**, republishing the snapshot first,
     because a worker's own snapshot advances only at task boundaries and at most
     once per ``SETTINGS_OVERRIDE.REFRESH_INTERVAL``. Reading the snapshot alone is
-    wrong in both directions. PMM turns ``ENABLED`` on and immediately triggers a
-    sweep, so the estate is not empty for a whole ``SCHEDULE`` interval - and the
-    worker picks that sweep up still holding the pre-change value, so the one sweep
-    whose purpose is to spare the wait is the one guaranteed to be refused and a
+    sweep, so the estate is not empty for a whole ``SCHEDULE`` interval - and any
+    worker child that refreshed less than ``REFRESH_INTERVAL`` ago picks that sweep
+    up still holding the pre-change value, so the one sweep whose purpose is to
+    spare the wait is refused and a first-time user meets an error on the first
+    page they open. In the other
     first-time user meets an error on the first page they open. In the other
     direction a sweep enqueued shortly before the switch went off would run on a
     stale yes.
@@ -892,12 +893,6 @@ async def run_probe(
             run = await ProbeRunManager.get(session, id=execution_id)
         run_id = run.id
 
-        # Decide against the override currently stored rather than the snapshot
-        # this child last refreshed. The worker's refresher advances only at task
-        # boundaries and at most once per ``SETTINGS_OVERRIDE.REFRESH_INTERVAL``,
-        # so without this a sweep triggered in the same breath as the PATCH that
-        # turned OM on reads the pre-PATCH value and refuses itself - and one
-        # triggered just before the switch went off would run on a stale yes.
         # ``publish_snapshot`` fires no rebind callback, which is why this is safe
         # here and not from a web process; see
         # ``republish_extensions_settings_snapshot``.

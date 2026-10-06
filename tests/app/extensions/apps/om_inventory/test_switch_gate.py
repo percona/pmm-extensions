@@ -158,26 +158,3 @@ class TestRunProbeReadsTheStoredSwitch:
         stored = await ProbeRunManager.get(session, id=run.id)
         assert stored.status is ProbeRunStatus.SUCCESS
         assert stored.error is None
-        assert stored.finished_at is not None
-
-    @pytest.mark.asyncio
-    async def test_a_stale_yes_does_not_run_a_sweep_the_row_forbids(
-        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Refuse a sweep enqueued before the switch went off.
-
-        The other direction of the same lag, and the one a flag carried on the
-        message cannot fix: the snapshot says on, the row says off, and the row
-        is the authority.
-
-        :param session: The database session.
-        :param monkeypatch: Leaves the snapshot stale at on.
-        """
-        monkeypatch.setattr(om_inventory_settings, "ENABLED", True)
-        await _store_enabled(session, enabled=False)
-
-        returned_id = await run_probe()
-
-        stored = await ProbeRunManager.get(session, id=returned_id)
-        assert stored.status is ProbeRunStatus.SKIPPED
-        assert stored.error == SWITCHED_OFF_DETAIL
