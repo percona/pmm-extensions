@@ -22,6 +22,8 @@ import { apiClient } from '../client';
 export interface AppInfo {
   /** Rendered sidebar footer text (application summary and version by default). */
   footer_text: string;
+  /** Running PMM Extensions version, identical to the OpenAPI `info.version` (e.g. `v3.10.0.dev0`). */
+  version: string;
 }
 
 export const APP_INFO_QUERY_KEY = ['extensions', 'app-info'] as const;

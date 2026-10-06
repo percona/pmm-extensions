@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Register OpenManager Inventory as a ``BaseApp``.
+"""Register Operations Inventory as a ``BaseApp``.
 
 The first of the PMM Extensions apps that exist to do work on Nomad clients. This one only
 reads — it runs a payload on each database host and collects facts no metric
@@ -67,7 +67,7 @@ def _om_inventory_periodic_tasks() -> list[AppPeriodicTask]:
 
 app = BaseApp(
     name="om_inventory",
-    display_name="OpenManager Inventory",
+    display_name="Operations Inventory",
     uri_path="/om_inventory",
     css_class="om_inventory",
     group="diagnostics",
