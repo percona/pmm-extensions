@@ -2630,8 +2630,11 @@ class TestCaseSearchTermMatchBound:
     ):
         """Spend on the match only what the caller's deadline still allows."""
         spy = mocker.spy(regex, "fullmatch")
+        mocker.patch(
+            "app.extensions.bundle_upload.plan.TERM_MATCH_TIMEOUT_SECONDS", 10.0
+        )
         executor = DeliveryPlanExecutor(DeliveryPlan(**_case_search_plan()), api)
-        remaining = 0.05
+        remaining = 5.0
         bound = asyncio.Timeout(asyncio.get_running_loop().time() + remaining)
 
         with aioresponses() as mock:

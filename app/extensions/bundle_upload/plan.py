@@ -38,6 +38,7 @@ becomes a real consumer.
 """
 
 __all__ = [
+    "TERM_MATCH_TIMEOUT_SECONDS",
     "AnyStepValue",
     "CaseMatch",
     "CaseSearchStep",
