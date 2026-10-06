@@ -277,6 +277,10 @@ default:
     # clause separators no escape, so a term carrying them would widen the
     # search and return rows the plan never selected. Keep it to the characters
     # a real reference or title fragment needs; `.*` reopens the hole.
+    # It is compiled and matched by the `regex` engine, which is close to but
+    # not identical to Python's `re`, and a match that runs longer than a
+    # fraction of a second is aborted and reported as the search being
+    # unavailable, so avoid ambiguous repetition such as `(a|aa)+`.
     # The three pointers map the response: `results_pointer` addresses the list
     # of rows, and the other two are applied to each row. A row whose pointers
     # miss is skipped; a `results_pointer` addressing no list fails the search.
