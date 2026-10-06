@@ -155,12 +155,12 @@ def _restore_instance(
     :param method_names: The restore payload method names to lift.
     :param real_subprocess: Whether to keep the real ``subprocess`` module.
     :param returncode: Return code the faked ``Popen`` reports (ignored when
-        ``real_subprocess`` is True).
+        ``real_subprocess`` is ``True``).
     :param extra_namespace: Extra globals (e.g. ``XBCRYPT_BIN``) merged into
         the exec namespace before the class is compiled.
     :return: A ``(instance, BackupError, calls)`` tuple. ``calls`` is
         ``(argv, kwargs)`` pairs from the faked ``Popen`` (always ``[]`` when
-        ``real_subprocess`` is True).
+        ``real_subprocess`` is ``True``).
     """
     calls: list[tuple[object, dict[str, object]]] = []
 
@@ -344,7 +344,7 @@ class TestDecryptAesParallelism:
     """Assert restore decrypts via a bounded pool of argv lists, never a shell pipeline."""
 
     def _decrypt(self, tmp_path: Path, xb_parallel: int | str | None):
-        """Run decrypt against two files and return ``(pool_sizes, calls)``."""
+        """Run decrypt against two files and return ``(pool_sizes, calls, targets)``."""
         keyfile = _write_keyfile(tmp_path / "aes.key")
         backup_dir = tmp_path / "backup"
         backup_dir.mkdir()
