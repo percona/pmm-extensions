@@ -15,6 +15,7 @@
 
 """Define routes for the Tasks API."""
 
+import asyncio
 import json
 import logging
 import os
@@ -43,6 +44,7 @@ from app.core.exceptions import (
 )
 from app.core.pagination import PaginatedResponse
 from app.core.pagination.deps import PaginationDep
+from app.core.requests import BaseRemoteAPI
 from app.core.utils import utc_now
 from app.core.utils.fields import NonEmptyStr
 from app.tasks.celery import (
@@ -574,7 +576,12 @@ async def stream_task_history_logs(
         raise HTTPConflictException("Task history is pending.")
     if task_history.status == TaskHistoryStatusEnum.RUNNING:
         try:
-            executor.preflight_stream_logs(task_history)
+            if isinstance(executor, BaseRemoteAPI):
+                await executor.run_in_thread_held(
+                    executor.preflight_stream_logs, task_history
+                )
+            else:
+                await asyncio.to_thread(executor.preflight_stream_logs, task_history)
         except TaskNotStartedInExecutorError as exc:
             raise HTTPConflictException(str(exc)) from None
         stream_logs_generator = (

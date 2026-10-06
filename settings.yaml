@@ -448,6 +448,7 @@ default:
       TIMEOUT: 10  # Request timeout in seconds
       MINIFY_PAYLOAD: True  # Minify payloads before dispatch
       LOG_SOCKET_READ_TIMEOUT: 10  # Socket read timeout for logs
+      LOG_STREAM_MAX_CONNECTIONS: 64  # Nomad connections live log follows may hold at once
     ANONYMIZER:
       DEFAULT_ENTITIES:
         - CREDIT_CARD
