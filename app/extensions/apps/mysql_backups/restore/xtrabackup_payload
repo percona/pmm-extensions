@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing.pool as thread_pool
 import os
 import pwd
 import re
@@ -62,10 +63,6 @@ XTRABACKUP_BIN_MARIADB = os.getenv('PERCONA_BACKUP_XTRABACKUP_BIN_MARIADB', '/us
 
 DU_BIN = os.getenv('PERCONA_BACKUP_DU_BIN', '/usr/bin/du')
 XBCRYPT_BIN = os.getenv('PERCONA_BACKUP_XBCRYPT_BIN', '/usr/bin/xbcrypt')
-GZIP_BIN = os.getenv('PERCONA_BACKUP_GZIP_BIN', '/usr/bin/gzip')
-QPRESS_BIN = os.getenv('PERCONA_BACKUP_QPRESS_BIN', '/usr/bin/qpress')
-ZSTD_BIN = os.getenv('PERCONA_BACKUP_ZSTD_BIN', '/usr/bin/zstd')
-LZ4_BIN = os.getenv('PERCONA_BACKUP_LZ4_BIN', '/usr/bin/lz4')
 GCLOUD_BIN = os.getenv('PERCONA_BACKUP_GCLOUD_BIN', '/usr/bin/gcloud')
 AWS_BIN = os.getenv('PERCONA_BACKUP_AWS_BIN', '/usr/bin/aws')
 SSH_ARGS = '-o PasswordAuthentication=no -o StrictHostKeyChecking=no'
@@ -160,8 +157,6 @@ COMPRESSION_ALGORITHMS = {
 BACKUP_DIR_REGEX = {
     'X': '^2[0-9]{3}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}$',
 }
-
-VALID_POLICIES = ["mysql", "mongodb", "postgresql"]
 
 CFG_PATH = DEFAULT_CFG_DIR + '/dir_encrypt.yml'
 
@@ -839,15 +834,6 @@ class BaseBackup(object):
         self.logger.debug('backup_uuid cannot be deleted')
         raise NotImplementedError('backup_uuid cannot be deleted')
 
-    def get_policy(self):
-        """Retrieve the notification policy"""
-        policy = self.server_data.get("POLICY")
-        if policy in VALID_POLICIES:
-            self.logger.debug("Detected notification policy as %s", policy)
-            return policy
-        self.logger.error("Invalid policy detected: %s", policy)
-        return None
-
     def check_compression_algorithm(self, algorithm):
         """Check if an algorithm is usable
         :raises: BackupError if the algorithm is not compatible
@@ -858,37 +844,6 @@ class BaseBackup(object):
             self.logger.debug('Algorithm %s accepted for backup type %s', algorithm, self.backup_code)
             return
         raise BackupError('algorithm %s is not one of %s' % (algorithm, COMPRESSION_ALGORITHMS[self.backup_code]))
-
-    def compression_matches_ext(self, path):
-        """Check if the file extension of a path matches the configured algorithm"""
-        stripped_path = path
-        for ext in ['.xbcrypt', '.gpg']:
-            stripped_path = stripped_path.replace(ext, '')
-        return stripped_path.endswith({
-            '': stripped_path,
-            'gzip': '.gz',
-            'lz4': '.lz4',
-            'quicklz': '.qp',
-            'zstd': '.zst',
-        }.get(self.compression_algorithm))
-
-    def get_compression_ext(self):
-        """Get the expected file extension for compression"""
-        return {
-                'gzip': '.gz',
-                'lz4': '.lz4',
-                'quicklz': '.qp',
-                'zstd': '.zst',
-        }.get(self.compression_algorithm)
-
-    def get_compression_tool(self):
-        """Get the compression tool path"""
-        return {
-            'gzip': GZIP_BIN,
-            'lz4': LZ4_BIN,
-            'quicklz': QPRESS_BIN,
-            'zstd': ZSTD_BIN,
-        }.get(self.compression_algorithm)
 
     def notify(self, status, output, send_event=True):
         """Send notifications."""
@@ -1807,40 +1762,6 @@ class Restore(BaseBackup):  # pylint: disable=too-many-instance-attributes
         """ descrypt gpg files with dir_encrypt """
         decrypt_dir(path, self.gpg_password_file, self.logger)
 
-    @staticmethod
-    def is_binlog_compressed(path):
-        """
-        :return: Returns compression type
-        :rtype: str
-        """
-
-        for _, _, files in os.walk(path):
-            for filen in files:
-                if filen.endswith(".gz"):
-                    return "gz"
-            break
-
-        return False
-
-    def decompress_binlog(self, method, path):
-        """
-        Decompress the binary logs
-        """
-        self.logger.info('Decompressing binlogs...')
-
-        if method == 'gz':
-            decompress_cmd = ['/usr/bin/gzip', '-dr', path]
-        else:
-            raise BackupError('Decompression method not implemented: %s' % (method,))
-
-        self.logger.info('Running: %s', ' '.join(decompress_cmd))
-        decompress_proc = subprocess.Popen(decompress_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        _, err = decompress_proc.communicate()
-        if decompress_proc.returncode != 0:
-            raise BackupError('Decompression failed. Error: %s' % (err,))
-
-        self.logger.info('Decompressing binlogs complete')
-
 class Restorer(object):  # pylint: disable=too-many-instance-attributes
     """ Parent Restorer Class """
     def __init__(self, options):
@@ -2376,15 +2297,75 @@ class Xtrabackup(Restore):
         return False
 
     def decrypt_aes(self, path):
+        """Decrypt ``.xbcrypt`` files under ``path`` with xbcrypt/AES-256.
 
-        cmd = "find %s -name '*.xbcrypt' | rev | cut -f 2- -d '.' | rev | xargs -P %s -I {} sh -c '%s -d --encrypt-key-file=%s --encrypt-algo=AES256 --input={}.xbcrypt --output={} && rm {}.xbcrypt'" % (path, self.xb_parallel or 4, XBCRYPT_BIN, self.xtrabackup_aes256_keyfile)
-        self.logger.info('Running: %s', cmd)
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-        proc.communicate()
-        if proc.returncode != 0:
-            raise BackupError("Decryption failed")
+        Runs each decrypt as an argv list (no shell), so path/keyfile characters
+        cannot inject. Fails fast when nothing encrypted is present.
+
+        :param path: Directory containing ``.xbcrypt`` files to decrypt.
+        :raises BackupError: If the AES-256 key file is missing/unusable, no
+            ``.xbcrypt`` files are found, or any xbcrypt run exits non-zero.
+        """
+        keyfile = self.xtrabackup_aes256_keyfile
+        if not keyfile:
+            raise BackupError(
+                "AES-256 key file not configured: set XTRABACKUP_AES256_KEYFILE "
+                "to decrypt .xbcrypt files."
+            )
+        if not os.path.exists(keyfile):
+            raise BackupError("AES-256 key file not found: %s" % (keyfile,))
+
+        encrypted = [
+            p
+            for p in Path(path).rglob("*")
+            if p.is_file() and p.suffix == ".xbcrypt"
+        ]
+        if not encrypted:
+            raise BackupError("No .xbcrypt files found to decrypt under %s" % (path,))
+
+        # XB_PARALLEL may be an int or a numeric string. 0, unset, and a
+        # non-numeric value stay bounded at 4; a configured value is the pool
+        # size, not a CPU-count cap.
+        try:
+            workers = int(self.xb_parallel)
+        except (TypeError, ValueError):
+            workers = 4
         else:
-            self.logger.info('Decryption completed')
+            workers = workers or 4
+        with thread_pool.ThreadPool(workers) as pool:
+            pool.map(self._run_decrypt_file_aes256, encrypted)
+        self.logger.info("Decryption completed")
+
+    def _run_decrypt_file_aes256(self, file_path):
+        """Decrypt one ``.xbcrypt`` file in place and remove the ciphertext.
+
+        A non-zero exit removes any partial plaintext ``xbcrypt`` wrote and
+        leaves the ciphertext in place.
+
+        :param file_path: Path to a ``.xbcrypt`` file.
+        :raises BackupError: If xbcrypt cannot be started or exits non-zero.
+        """
+        output = file_path.with_suffix("")
+        cmd = [
+            XBCRYPT_BIN,
+            "-d",
+            "--encrypt-key-file=%s" % (self.xtrabackup_aes256_keyfile,),
+            "--encrypt-algo=AES256",
+            "--input=%s" % (file_path,),
+            "--output=%s" % (output,),
+        ]
+        self.logger.info("Running: %s", " ".join(cmd))
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+        except OSError as exc:
+            raise BackupError("Cannot run %s: %s" % (XBCRYPT_BIN, exc))
+        _, err = proc.communicate()
+        if proc.returncode != 0:
+            output.unlink(missing_ok=True)
+            raise BackupError("xbcrypt failed on %s: %s" % (file_path, err))
+        os.remove(file_path)
 
     def decompress_backup(self, path):
         """decompress qp files in path"""
