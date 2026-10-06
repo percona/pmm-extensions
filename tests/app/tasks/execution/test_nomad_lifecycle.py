@@ -48,6 +48,7 @@ _NOMAD_WITH_CREDS = {
 }
 _NOMAD_WITH_KEY = {**_NOMAD_A, "api_key": "glsa_realtoken"}
 _NOMAD_WITH_ROTATED_KEY = {**_NOMAD_A, "api_key": "glsa_rotated"}
+_STREAM_LIMIT = 3
 
 
 def _override_nomad(config: dict[str, object]) -> None:
@@ -399,6 +400,35 @@ async def test_reconcile_defers_the_old_close_while_a_consumer_holds() -> None:
             assert old._session is not None
 
         assert old._session is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_keeps_a_held_stream_pool_open_until_released() -> None:
+    """Close the retired executor's long-lived pool only once its holder releases."""
+    _override_nomad(_NOMAD_A)
+    async with NomadLifecycle(FastAPI()) as holder:
+        old = holder.current
+
+        async with old.hold():
+            stream_session = old._long_lived_session()
+            _override_nomad(_NOMAD_B)
+            await holder.reconcile()
+
+            assert not stream_session.closed
+
+        assert stream_session.closed
+        assert old._stream_session is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_applies_a_changed_stream_connection_limit() -> None:
+    """Size the new executor's long-lived pool from the overridden limit."""
+    _override_nomad(_NOMAD_A)
+    async with NomadLifecycle(FastAPI()) as holder:
+        _override_nomad({**_NOMAD_A, "log_stream_max_connections": _STREAM_LIMIT})
+        await holder.reconcile()
+
+        assert holder.current._long_lived_session().connector.limit == _STREAM_LIMIT
 
 
 @pytest.mark.asyncio
