@@ -12,7 +12,7 @@ overrides:
   js-yaml@>=4.0.0 <4.3.2: 4.3.2
   undici@^7.0.0: 7.29.1
   ws@8.20.1: 8.21.0
-  tinypool@2.1.0: 2.1.1
+  tinypool@<2.1.2: 2.1.2
   '@babel/core': 7.29.6
   immutable@<5.1.8: ^5.1.8
   react: 19.2.7
@@ -3381,8 +3381,8 @@ packages:
     resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
     engines: {node: '>=12.0.0'}
 
-  tinypool@2.1.1:
-    resolution: {integrity: sha512-4XfFD6zX0z4qfx6YcV6IqMKWBRllNM6YCnIABm3k0jW5+Ja54v0OVbavVM6bLoE1Ywuplb1C+Inbn6vqlBdgaA==}
+  tinypool@2.1.2:
+    resolution: {integrity: sha512-9YodfrxS9g9IbFr/KOjE5bAeJ0p61n3bW6mqvy0jtoeKd1kTW1Cxm0oulm6KX2lyM9Gl6WIe8nEbY7LWv5ZJww==}
     engines: {node: ^20.0.0 || >=22.0.0}
 
   tinyrainbow@2.0.0:
@@ -5667,7 +5667,7 @@ snapshots:
 
   oxfmt@0.49.0:
     dependencies:
-      tinypool: 2.1.1
+      tinypool: 2.1.2
     optionalDependencies:
       '@oxfmt/binding-android-arm-eabi': 0.49.0
       '@oxfmt/binding-android-arm64': 0.49.0
@@ -6040,7 +6040,7 @@ snapshots:
       fdir: 6.5.0(picomatch@4.0.7)
       picomatch: 4.0.7
 
-  tinypool@2.1.1: {}
+  tinypool@2.1.2: {}
 
   tinyrainbow@2.0.0: {}
 
