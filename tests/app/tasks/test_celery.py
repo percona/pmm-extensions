@@ -1704,7 +1704,7 @@ class TestSyncFinishingItems:
 
     @staticmethod
     @contextmanager
-    def _tick(seconds: float):
+    def _tick(seconds: float | None):
         """Run the probe with its tick, and so its listing deadline, at ``seconds``."""
         nomad = tasks_settings.NOMAD.model_copy(
             update={"finishing_sync_interval_seconds": seconds}
@@ -1792,7 +1792,7 @@ class TestSyncFinishingItems:
         """Assert runs finishing in one tick sync in parallel, never in a chunk.
 
         A chunk runs its items one after another in a single Celery task, and
-        every terminal sync spends the full log-drain budget, so a chunk would
+        every terminal sync spends at least one log-drain interval, so a chunk would
         stack those drains end to end.
         """
         history_ids = [
