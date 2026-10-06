@@ -129,7 +129,7 @@
 | app/extensions/apps/alerts/restore.py                                                                                               |       95 |        0 |       26 |        0 |    100% |           |
 | app/extensions/apps/alters/api\_routes.py                                                                                           |       38 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/alters/app.py                                                                                                   |       10 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/alters/deps.py                                                                                                  |      211 |       11 |       62 |       12 |     92% |101, 131-\>143, 137-\>136, 141-\>136, 144, 220-\>222, 347, 417-418, 557, 580-581, 701, 712, 714, 754-\>758 |
+| app/extensions/apps/alters/deps.py                                                                                                  |      211 |       11 |       62 |       11 |     92% |101, 131-\>143, 137-\>136, 141-\>136, 144, 347, 417-418, 557, 580-581, 701, 712, 714, 754-\>758 |
 | app/extensions/apps/alters/form\_backfill.py                                                                                        |       32 |        1 |       10 |        1 |     95% |       102 |
 | app/extensions/apps/alters/models.py                                                                                                |       49 |        1 |        6 |        1 |     96% |       121 |
 | app/extensions/apps/alters/schema.py                                                                                                |        7 |        0 |        0 |        0 |    100% |           |
@@ -145,7 +145,7 @@
 | app/extensions/apps/atw/api\_routes.py                                                                                              |      272 |       50 |       48 |        2 |     80% |323, 441-442, 544-545, 549-555, 624, 628-657, 659-675, 684, 686-702, 722-724, 938-\>945, 939, 995-1001, 1003-1006, 1024, 1081 |
 | app/extensions/apps/atw/app.py                                                                                                      |       15 |        0 |        4 |        0 |    100% |           |
 | app/extensions/apps/atw/batch.py                                                                                                    |       76 |        0 |        8 |        0 |    100% |           |
-| app/extensions/apps/atw/categories.py                                                                                               |       34 |        0 |        2 |        0 |    100% |           |
+| app/extensions/apps/atw/categories.py                                                                                               |       37 |        0 |        2 |        0 |    100% |           |
 | app/extensions/apps/atw/celery.py                                                                                                   |       23 |        6 |        2 |        0 |     68% |47, 59-62, 75 |
 | app/extensions/apps/atw/config.py                                                                                                   |       19 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/atw/crud.py                                                                                                     |       37 |        0 |        2 |        0 |    100% |           |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34099** | **1897** | **8246** |  **686** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34102** | **1897** | **8246** |  **685** | **93%** |           |
 
 
 ## Setup coverage badge
