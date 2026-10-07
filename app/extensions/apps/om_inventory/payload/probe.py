@@ -77,6 +77,11 @@ from urllib.parse import quote_plus, unquote_plus
 DEFAULT_AUTH_SOURCE = "admin"
 DEFAULT_CONNECT_TIMEOUT_MS = 5000
 
+#: Where an install puts mongod's data unless told otherwise: om_bootstrap's
+#: default ``data_path``, and the install form's. Free space is measured here, as
+#: the install's own ``pre_check`` measures it, so the two agree about a host.
+DEFAULT_DATA_PATH = "/var/lib/mongo"
+
 #: MongoDB's ``AuthenticationFailed`` error code.
 AUTHENTICATION_FAILED = 18
 #: Basename of the node-side credentials file, under ``$HOME``. The same file the
@@ -909,21 +914,37 @@ def collect_install_readiness():
             (name for binary, name in _PACKAGE_MANAGERS if shutil.which(binary)),
             None,
         ),
-        "data_dir_free_bytes": _free_bytes("/var/lib"),
+        "data_dir_free_bytes": _free_bytes(_nearest_directory(DEFAULT_DATA_PATH)),
     }
+
+
+def _nearest_directory(path):
+    """Return ``path`` if it is a directory, else its nearest ancestor that is.
+
+    The same walk ``pre_check`` makes before measuring: on a bare host the data
+    directory does not exist yet, and the filesystem it would be created on is the
+    one holding its nearest existing ancestor.
+
+    :param path: The directory to find.
+    :return: ``path`` or one of its ancestors; ``/`` at the latest.
+    """
+    while not os.path.isdir(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+    return path
 
 
 def _free_bytes(path):
     """Return the free byte count on the filesystem holding ``path``, or ``None``.
 
-    Measured at ``/var/lib`` rather than a database's own data directory: this runs
-    before an install decision is made, when no mongod has been installed yet to
-    have a ``dbPath`` of its own to measure. ``/var/lib`` is where both package
-    families put that default anyway — ``/var/lib/mongo`` from the RPMs,
-    ``/var/lib/mongodb`` from the debs — and it exists on a bare host, so it names
-    the filesystem an install would land on without needing one. Measuring ``/``
-    instead would describe a different disk on any host that keeps ``/var`` on its
-    own filesystem.
+    Called with :data:`DEFAULT_DATA_PATH` or its nearest existing ancestor, not a
+    fixed ``/var/lib``: a host can mount the data directory itself from a disk of
+    its own, and measuring its parent then reported room the install's
+    ``pre_check`` would not find - 7.4 GiB at ``/var/lib`` against 1 GiB at
+    ``/var/lib/mongo`` on the low-disk fault node, which every scan called fine and
+    every install refused.
 
     :param path: The path whose filesystem to measure.
     :return: The free byte count, or ``None`` if it could not be read.
