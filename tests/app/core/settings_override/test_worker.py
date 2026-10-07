@@ -85,15 +85,11 @@ def _make_registry() -> ProxyRegistry:
     """Compose a two-entry proxy registry over freshly-built proxies."""
     return {
         EXTENSIONS_SETTINGS: ProxyEntry(
-            OverridableSettingsProxy(
-                ExtensionsSettings, setting_class=ExtensionsSettings.__name__
-            ),
+            OverridableSettingsProxy(ExtensionsSettings),
             ExtensionsSettings,
         ),
         TASKS_SETTINGS: ProxyEntry(
-            OverridableSettingsProxy(
-                TasksSettings, setting_class=TasksSettings.__name__
-            ),
+            OverridableSettingsProxy(TasksSettings),
             TasksSettings,
         ),
     }
@@ -307,9 +303,7 @@ class TestWorkerRefresherStart:
         A freshly-forked child that finds an override already in the database
         must rebind at once; a later boundary refresh still fires on a real diff.
         """
-        proxy = OverridableSettingsProxy(
-            ExtensionsSettings, setting_class=ExtensionsSettings.__name__
-        )
+        proxy = OverridableSettingsProxy(ExtensionsSettings)
         registry = {EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings)}
         fired: list[SnapshotChange] = []
         clock = _FakeClock()
@@ -346,9 +340,7 @@ class TestWorkerRefresherStart:
         session_maker: async_sessionmaker,
     ) -> None:
         """Keep the child's inline seed silent for a boot-reproducing callback."""
-        proxy = OverridableSettingsProxy(
-            ExtensionsSettings, setting_class=ExtensionsSettings.__name__
-        )
+        proxy = OverridableSettingsProxy(ExtensionsSettings)
         registry = {EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings)}
         fired: list[SnapshotChange] = []
         override_value = not ExtensionsSettings().CONNECTIVITY_CHECK_DEFAULT
@@ -653,9 +645,7 @@ class TestWorkerRefresherMaybeRefresh:
         session_maker: async_sessionmaker,
     ) -> None:
         """Fire rebind callbacks when a watched override changes at the boundary."""
-        proxy = OverridableSettingsProxy(
-            ExtensionsSettings, setting_class=ExtensionsSettings.__name__
-        )
+        proxy = OverridableSettingsProxy(ExtensionsSettings)
         registry = {
             EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings),
         }
