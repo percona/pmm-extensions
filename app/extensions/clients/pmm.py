@@ -670,53 +670,6 @@ class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
             except ClientResponseError as err:
                 self._raise_upstream_no_body_error(response, err)
 
-    async def update_rule(
-        self,
-        uid: str,
-        name: str,
-        template_name: str,
-        folder_uid: str,
-        for_duration: str,
-        group: str,
-        labels: dict[str, str] | None = None,
-        params: list[dict[str, Any]] | None = None,
-    ) -> AlertRule | None:
-        """Update an existing PMM alert rule by deleting and recreating it.
-
-        The PMM API has no native update endpoint for alert rules; the only
-        supported pattern is to delete the existing rule and create a new one.
-
-        :param uid: The UID of the existing rule to replace.
-        :type uid: str
-        :param name: The display name of the new rule.
-        :type name: str
-        :param template_name: The template to base the new rule on.
-        :type template_name: str
-        :param folder_uid: The folder UID to place the new rule in.
-        :type folder_uid: str
-        :param for_duration: How long the condition must hold before firing.
-        :type for_duration: str
-        :param group: The rule group name.
-        :type group: str
-        :param labels: Optional labels to attach to the new rule.
-        :type labels: dict[str, str] | None
-        :param params: Optional template parameters for the new rule.
-        :type params: list[dict[str, Any]] | None
-        :return: The newly created alert rule, or ``None`` if the API returns
-            no data (PMM v3).
-        :rtype: AlertRule | None
-        """
-        await self.delete_rule(uid)
-        return await self.create_rule(
-            name=name,
-            template_name=template_name,
-            folder_uid=folder_uid,
-            for_duration=for_duration,
-            group=group,
-            labels=labels,
-            params=params,
-        )
-
     async def list_folders(self) -> list[Folder]:
         """List all Grafana folders available in PMM.
 

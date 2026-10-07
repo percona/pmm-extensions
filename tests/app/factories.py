@@ -29,7 +29,6 @@ from sqlalchemy_celery_beat import PeriodicTask
 
 from app.core.auth.models import OAuthToken, UserRole
 from app.core.auth.providers.casdoor.models import CasdoorUser
-from app.core.auth.providers.casdoor.sdk import CasdoorSDK
 from app.core.auth.providers.grafana.models import GrafanaUser
 from app.extensions.inventory import (
     CreatedNode,
@@ -94,10 +93,6 @@ def build_task_history(
         status=status,
         executed_by="test-user",
     )
-
-
-class CasdoorSDKFactory(ModelFactory[CasdoorSDK]):
-    """Define factory for CasdoorSDK instances."""
 
 
 class OAuthTokenFactory(ModelFactory[OAuthToken]):
