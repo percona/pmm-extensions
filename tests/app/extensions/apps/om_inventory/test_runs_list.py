@@ -134,3 +134,65 @@ class TestRunsListDateRangeFilter:
             str(newest.id),
             str(oldest.id),
         ]
+
+
+def receipt_node(
+    node_id: str, name: str, error: str | None = None, service_error: str | None = None
+) -> dict:
+    """One host as a run's receipt records it.
+
+    :param node_id: PMM's node id.
+    :param name: The node's name.
+    :param error: The host's own failure, if any.
+    :param service_error: A failure on its one service, if any.
+    :return: The receipt entry.
+    """
+    return {
+        "node_id": node_id,
+        "host_name": name,
+        "answered": error is None,
+        "error": error,
+        "services": [
+            {
+                "service_id": f"{node_id}-svc",
+                "answered": service_error is None,
+                "error": service_error,
+            }
+        ],
+    }
+
+
+class TestRunsListFailingNodes:
+    """Pin the failing nodes each run in the list names."""
+
+    @pytest.mark.asyncio
+    async def test_names_the_nodes_that_failed_their_own_or_a_service_s_scan(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Name a node whose dispatch failed and one whose service did, by name."""
+        run = await record_run(session, T0)
+        run.nodes = [
+            receipt_node("n-3", "node03", service_error="could not query the database"),
+            receipt_node("n-1", "node01"),
+            receipt_node("n-2", "node02", error="the scan did not finish within 180s"),
+        ]
+        await ProbeRunManager.save(session, run)
+
+        response = await api.get(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()[0]["failing_nodes"] == [
+            {"node_id": "n-2", "name": "node02"},
+            {"node_id": "n-3", "name": "node03"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_receipt_names_none(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Answer an empty list for a run recorded before receipts existed."""
+        await record_run(session, T0)
+
+        response = await api.get(f"{BASE}/runs")
+
+        assert response.json()[0]["failing_nodes"] == []

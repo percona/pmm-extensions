@@ -92,6 +92,7 @@ from app.extensions.apps.om_inventory.models import (
     ProbeRun,
     ProbeRunAccepted,
     ProbeRunDetail,
+    ProbeRunFailingNode,
     ProbeRunResponse,
     ServiceResponse,
     TriggerRequest,
@@ -214,6 +215,24 @@ def _counts(run: ProbeRun) -> ProbeCounts:
     )
 
 
+def _failing_nodes(nodes: list[dict] | None) -> list[ProbeRunFailingNode]:
+    """Name the nodes a run's receipt records a failure on, sorted by name.
+
+    A node fails when its own dispatch did, or when any service on it did. A node with
+    no automation agent is not one: nothing was dispatched, and nothing failed.
+
+    :param nodes: The run's receipt, or ``None`` for a run recorded before it had one.
+    :return: The failing nodes.
+    """
+    failing = [
+        ProbeRunFailingNode(node_id=node["node_id"], name=node.get("host_name"))
+        for node in nodes or []
+        if node.get("error")
+        or any(service.get("error") for service in node.get("services") or [])
+    ]
+    return sorted(failing, key=lambda node: (node.name or "", node.node_id))
+
+
 def _run_response(run: ProbeRun) -> ProbeRunResponse:
     """Project one run for the wire.
 
@@ -228,6 +247,7 @@ def _run_response(run: ProbeRun) -> ProbeRunResponse:
         counts=_counts(run),
         scope=run.scope,
         error=run.error,
+        failing_nodes=_failing_nodes(run.nodes),
     )
 
 

@@ -481,6 +481,17 @@ class ProbeCounts(BaseModel):
     hosts_answered: int = 0
 
 
+class ProbeRunFailingNode(BaseModel):
+    """Name one node a sweep failed to scan.
+
+    :param node_id: PMM's node id.
+    :param name: The node's name, which is what the Nodes page is addressed by.
+    """
+
+    node_id: str
+    name: str | None = None
+
+
 class ProbeRunResponse(BaseModel):
     """Carry one sweep's record.
 
@@ -493,6 +504,11 @@ class ProbeRunResponse(BaseModel):
         estate. Without it the counters cannot be read: "9 of 13 answered" means
         something different when the run was only ever asked about one host.
     :param error: The failure detail when the sweep itself raised.
+    :param failing_nodes: The nodes whose scan failed in this sweep - the node's own
+        dispatch, or any service on it - sorted by name. Carried on the list, unlike
+        the full receipt, because it is what tells one sweep from the next: the
+        history groups consecutive sweeps that failed on the same nodes, and links
+        each failure to its node.
     """
 
     run_id: UUID
@@ -502,6 +518,7 @@ class ProbeRunResponse(BaseModel):
     counts: ProbeCounts
     scope: list[str] | None = None
     error: str | None = None
+    failing_nodes: list[ProbeRunFailingNode] = Field(default_factory=list)
 
 
 class ProbeNodeService(BaseModel):

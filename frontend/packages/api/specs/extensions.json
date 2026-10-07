@@ -14064,6 +14064,13 @@
             ],
             "title": "Error"
           },
+          "failing_nodes": {
+            "items": {
+              "$ref": "#/components/schemas/om_inventory__ProbeRunFailingNode"
+            },
+            "title": "Failing Nodes",
+            "type": "array"
+          },
           "finished_at": {
             "anyOf": [
               {
@@ -14121,8 +14128,33 @@
         "title": "ProbeRunDetail",
         "type": "object"
       },
+      "om_inventory__ProbeRunFailingNode": {
+        "description": "Name one node a sweep failed to scan.\n\n:param node_id: PMM's node id.\n:param name: The node's name, which is what the Nodes page is addressed by.",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id"
+        ],
+        "title": "ProbeRunFailingNode",
+        "type": "object"
+      },
       "om_inventory__ProbeRunResponse": {
-        "description": "Carry one sweep's record.\n\n:param run_id: The sweep's id.\n:param status: ``running`` / ``success`` / ``partial`` / ``failed``.\n:param started_at: When it began.\n:param finished_at: When it reached a terminal status; ``None`` while running.\n:param counts: What it reached.\n:param scope: The hosts it was asked to refresh, or ``None`` for the whole\n    estate. Without it the counters cannot be read: \"9 of 13 answered\" means\n    something different when the run was only ever asked about one host.\n:param error: The failure detail when the sweep itself raised.",
+        "description": "Carry one sweep's record.\n\n:param run_id: The sweep's id.\n:param status: ``running`` / ``success`` / ``partial`` / ``failed``.\n:param started_at: When it began.\n:param finished_at: When it reached a terminal status; ``None`` while running.\n:param counts: What it reached.\n:param scope: The hosts it was asked to refresh, or ``None`` for the whole\n    estate. Without it the counters cannot be read: \"9 of 13 answered\" means\n    something different when the run was only ever asked about one host.\n:param error: The failure detail when the sweep itself raised.\n:param failing_nodes: The nodes whose scan failed in this sweep - the node's own\n    dispatch, or any service on it - sorted by name. Carried on the list, unlike\n    the full receipt, because it is what tells one sweep from the next: the\n    history groups consecutive sweeps that failed on the same nodes, and links\n    each failure to its node.",
         "properties": {
           "counts": {
             "$ref": "#/components/schemas/om_inventory__ProbeCounts"
@@ -14137,6 +14169,13 @@
               }
             ],
             "title": "Error"
+          },
+          "failing_nodes": {
+            "items": {
+              "$ref": "#/components/schemas/om_inventory__ProbeRunFailingNode"
+            },
+            "title": "Failing Nodes",
+            "type": "array"
           },
           "finished_at": {
             "anyOf": [
