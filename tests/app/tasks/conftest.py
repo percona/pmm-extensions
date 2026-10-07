@@ -54,6 +54,9 @@ MYSQL_SYNCER = "app.extensions.sync.syncers.mysql.syncer.MySQLSyncer"
 SYSTEM_FACTS_SYNCER = (
     "app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer"
 )
+UNMEASURED_HOST_FACTS_SYNCER = (
+    "app.extensions.sync.syncers.system_facts.syncer.UnmeasuredHostFactsSyncer"
+)
 
 #: The per-task hook-path fields the ``TaskWrite`` allow-list constrains.
 HOOK_PATH_FIELDS = ("alert_detail_builder", "run_result_recorder")
