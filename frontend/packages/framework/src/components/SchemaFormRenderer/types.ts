@@ -58,11 +58,7 @@ export interface RenderFieldArgs {
 export type RenderFieldOverride = (args: RenderFieldArgs) => ReactNode;
 
 export type {
-  AppSchema,
   AppField,
-  SectionField,
-  OneOfBranch,
-  OneOfGroup,
   FormSection,
   StringField,
   IntegerField,
@@ -88,5 +84,4 @@ export type {
   Predicate,
   FieldGate,
   CardinalityRule,
-  FailRule,
 } from '@pmm-extensions/api';

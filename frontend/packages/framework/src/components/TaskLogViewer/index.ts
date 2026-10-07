@@ -17,8 +17,6 @@
 
 export { TaskLogViewer } from './TaskLogViewer';
 export type { TaskLogViewerProps } from './TaskLogViewer';
-export { LOG_TAIL_LINE_OPTIONS } from './TaskLogViewer';
-export type { LogTailLineChoice } from './TaskLogViewer';
 export { LogStepTabs } from './LogStepTabs';
 export { LogOutputPane } from './LogOutputPane';
 export { ExecutionEventsPanel } from './ExecutionEventsPanel';

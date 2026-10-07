@@ -556,7 +556,9 @@ async def stream_task_history_logs(
     but not started by the executor), so the client should retry; a 410 means
     the live data is gone for good.
 
-    :param session: Database session for reading persisted logs.
+    :param session: Database session for reading a finished history's persisted
+        logs. It is closed before a running history's live stream, so the stream
+        does not hold a pool connection for its duration.
     :param executor: Executor serving the live stream of a running history.
     :param task_history: The task history whose logs to stream.
     :param offsets: Per-step, per-stream offsets to resume from.
@@ -572,6 +574,7 @@ async def stream_task_history_logs(
     if task_history.status == TaskHistoryStatusEnum.PENDING:
         raise HTTPConflictException("Task history is pending.")
     if task_history.status == TaskHistoryStatusEnum.RUNNING:
+        await session.close()
         try:
             if isinstance(executor, BaseRemoteAPI):
                 # Held for the call, so a client retirement waiting on
@@ -630,11 +633,26 @@ async def list_task_history_files(
     response_model=None,
 )
 async def stream_task_history_file(
+    session: SessionDep,
     executor: TaskExecutor,
     task_history: TaskHistoryWithTaskDep,
     path: str,
 ) -> StreamingResponse:
-    """Stream a file from a task history."""
+    """Stream a file from a task history.
+
+    The file is read from the executor alone, so the request's database session
+    is closed before the stream starts rather than holding a pool connection
+    for its duration.
+
+    :param session: Database session the task history was loaded through.
+    :param executor: Executor serving the file.
+    :param task_history: The finished task history whose output file to stream.
+    :param path: The file's path, relative to the task's ``output_files_path``.
+    :return: A streaming response of the file's bytes, or of a tar.gz archive
+        when the path is a directory.
+    :raises HTTPConflictException: When the history is not finished.
+    :raises HTTPBadRequestException: When the task has no ``output_files_path``.
+    """
     logger.debug("Requesting file %s for task history %s", path, task_history.id)
     if not task_history.status.is_finished():
         raise HTTPConflictException(f"Task history is {task_history.status}.")
@@ -642,6 +660,7 @@ async def stream_task_history_file(
         raise HTTPBadRequestException(
             f"Task {task_history.task.name} does not have output_files_path set."
         )
+    await session.close()
     return StreamingResponse(
         executor.stream_file(
             task_history,
