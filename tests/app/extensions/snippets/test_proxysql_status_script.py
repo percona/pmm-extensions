@@ -1090,6 +1090,26 @@ class TestAdminCnfRedaction:
                 "PROXYSQL_PASSWORD=[REDACTED]",
                 id="credential-with-trailing-comment-assignment",
             ),
+            pytest.param(
+                f"# PROXYSQL_PASSWORD+='{SECRET}'",
+                HIDDEN_LINE,
+                id="commented-out-append",
+            ),
+            pytest.param(
+                f"# PROXYSQL_PASSWORD[0]='{SECRET}'",
+                HIDDEN_LINE,
+                id="commented-out-subscript",
+            ),
+            pytest.param(
+                f"PROXYSQL_USERNAME=admin # PROXYSQL_PASSWORD+='{SECRET}'",
+                HIDDEN_LINE,
+                id="trailing-comment-append",
+            ),
+            pytest.param(
+                f"PROXYSQL_USERNAME=admin # PROXYSQL_PASSWORD[0]='{SECRET}'",
+                HIDDEN_LINE,
+                id="trailing-comment-subscript",
+            ),
         ],
     )
     def test_masks_credentials_in_comments(self, harness, line, expected):
@@ -1178,31 +1198,12 @@ class TestAdminCnfRedaction:
                 "PROXYSQL_PASSWORD=$'value-head\\'", "value-tail'", id="ansi-c"
             ),
             pytest.param(
-                "PROXYSQL_PASSWORD=${UNSET:-value-head", "value-tail}", id="expansion"
-            ),
-            pytest.param(
-                "PROXYSQL_PASSWORD=$(printf '%s' value-head",
-                "printf '%s' value-tail)",
-                id="command-substitution",
-            ),
-            pytest.param(
-                "PROXYSQL_PASSWORD=\"$(printf '%s' \"value-head",
-                'value-tail")"',
-                id="nested-quotes",
-            ),
-            pytest.param(
-                "PROXYSQL_PASSWORD=`printf '%s' value-head",
-                "printf '%s' value-tail`",
-                id="backticks",
-            ),
-            pytest.param("PROXYSQL_HOSTS=(value-head", "value-tail)", id="array"),
-            pytest.param(
                 'PROXYSQL_PASSWORD=value-head\\ #"', 'value-tail"', id="escaped-space"
             ),
         ],
     )
-    def test_hides_every_line_of_a_multiline_value(self, harness, head, tail):
-        """Hide each line of a value spanning lines, even one shaped like a comment."""
+    def test_hides_every_line_of_a_multiline_quoted_value(self, harness, head, tail):
+        """Hide each line of a quoted value, even one shaped like a comment."""
         harness.write_cnf(f"{head}\n#FOO=value-middle\n{tail}\nPROXYSQL_PORT='6032'\n")
 
         result = harness.run("--files")
@@ -1216,21 +1217,94 @@ class TestAdminCnfRedaction:
             "PROXYSQL_PORT='6032'",
         ]
 
-    def test_hides_a_continued_line(self, harness):
-        """Hide the line after a trailing backslash, which continues the value."""
-        harness.write_cnf(
-            "PROXYSQL_PASSWORD=value-head\\\nFOO=value-tail\nPROXYSQL_PORT='6032'\n"
-        )
+    @pytest.mark.parametrize(
+        "cnf",
+        [
+            pytest.param(
+                "PROXYSQL_PASSWORD=${UNSET:-value-head\n#FOO=value-middle\nvalue-tail}",
+                id="expansion",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$(printf '%s' value-head\n"
+                "#FOO=value-middle\n"
+                "printf '%s' value-tail)",
+                id="command-substitution",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=\"$(printf '%s' \"value-head\n"
+                "#FOO=value-middle\n"
+                'value-tail")"',
+                id="nested-quotes",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=`printf '%s' value-head\n"
+                "#FOO=value-middle\n"
+                "printf '%s' value-tail`",
+                id="backticks",
+            ),
+            pytest.param(
+                "PROXYSQL_HOSTS=(value-head\n#FOO=value-middle\nvalue-tail)",
+                id="array",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=value-head\\\nFOO=value-tail", id="continued-line"
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$\\\n{UNSET:-value-head\nVALUE=value-middle\n}",
+                id="opener-split-by-continuation",
+            ),
+            pytest.param(
+                'PROXYSQL_PASSWORD=value-head\\\n#"\nVALUE=value-middle\n"',
+                id="comment-sign-after-continuation",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$(case x in\n"
+                "x)\n"
+                "VALUE=value-middle\n"
+                "printf '%s' \"$VALUE\"\n"
+                ";;\n"
+                "esac)",
+                id="case-pattern",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$(case x in x) printf '%s' value-head\n"
+                "VALUE=value-middle\n"
+                ";; esac)",
+                id="case-pattern-on-one-line",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$(\n"
+                ":;# )\n"
+                "VALUE=value-middle\n"
+                "printf '%s' \"$VALUE\"\n"
+                ")",
+                id="comment-after-operator",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$(:;# )\nVALUE=value-middle\n)",
+                id="comment-after-operator-on-one-line",
+            ),
+            pytest.param(
+                "read -r PROXYSQL_PASSWORD <<'EOF'\n#FOO=value-body\nEOF",
+                id="here-document",
+            ),
+        ],
+    )
+    def test_hides_the_rest_after_an_unclosed_construct(self, harness, cnf):
+        """Hide every later line once a hidden line leaves more than a quote open.
+
+        Substitutions, expansions, arrays, continuations and here-documents end
+        by rules too wide to track, so nothing after one is trusted.
+        """
+        harness.write_cnf(f"{cnf}\nPROXYSQL_PORT='6032'\n")
 
         result = harness.run("--files")
 
+        # Only the section is checked: bash 3.2 misparses the case and comment
+        # files, so its ``source`` runs their inner lines and prints the value
+        # itself, before the section is reached.
         assert result.returncode == 0, result.stderr
-        assert "value-" not in result.stdout
-        assert _cnf_section(result.stdout) == [
-            HIDDEN_LINE,
-            HIDDEN_LINE,
-            "PROXYSQL_PORT='6032'",
-        ]
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE] * (cnf.count("\n") + 2)
 
     def test_hides_the_rest_of_a_never_closed_value(self, harness):
         """Hide every line after a quote the file never closes."""
@@ -1241,40 +1315,6 @@ class TestAdminCnfRedaction:
         assert result.returncode == 0, result.stderr
         assert "value-" not in result.stdout
         assert _cnf_section(result.stdout) == [HIDDEN_LINE, HIDDEN_LINE]
-
-    def test_hides_the_rest_after_a_here_document(self, harness):
-        """Hide every line after a here-document, whose body it does not track."""
-        harness.write_cnf(
-            "read -r PROXYSQL_PASSWORD <<'EOF'\n"
-            "#FOO=value-body\n"
-            "EOF\n"
-            "PROXYSQL_PORT='6032'\n"
-        )
-
-        result = harness.run("--files")
-
-        assert result.returncode == 0, result.stderr
-        assert "value-" not in result.stdout
-        assert _cnf_section(result.stdout) == [HIDDEN_LINE] * 4
-
-    def test_quote_in_a_comment_inside_a_value_opens_nothing(self, harness):
-        """Show the line after a value whose comment line holds a lone quote."""
-        harness.write_cnf(
-            "PROXYSQL_PASSWORD=$(printf '%s' value-head\n"
-            "# don't\n"
-            ")\n"
-            "PROXYSQL_PORT='6032'\n"
-        )
-
-        result = harness.run("--files")
-
-        assert result.returncode == 0, result.stderr
-        assert _cnf_section(result.stdout) == [
-            HIDDEN_LINE,
-            HIDDEN_LINE,
-            HIDDEN_LINE,
-            "PROXYSQL_PORT='6032'",
-        ]
 
     @pytest.mark.parametrize(
         "line",
