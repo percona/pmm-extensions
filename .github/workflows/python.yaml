@@ -109,6 +109,12 @@ jobs:
           cache: poetry
       - name: Install test dependencies
         run: poetry sync --no-root
+      - name: Install the shells the seed tests execute under
+        # tests/app/tasks/db/test_seed.py runs every seeded shell body under
+        # dash, busybox sh and bash, skipping any that is absent. The runner's
+        # preinstalled busybox-static prefers its own applets over PATH, so the
+        # distribution busybox package replaces it.
+        run: sudo apt-get update && sudo apt-get install -y dash busybox
       - name: Run tests
         env:
           EXTENSIONS_PAYLOAD_CHECK_PYTHON: ${{ steps.py39.outputs.python-path }}
