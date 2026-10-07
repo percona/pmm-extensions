@@ -21,7 +21,6 @@ from contextlib import asynccontextmanager
 from typing import ClassVar
 
 from app.core.auth.models import (
-    BaseTokenPayload,
     BaseUser,
     OAuthToken,
     SessionExchangeTokenResponse,
@@ -29,25 +28,21 @@ from app.core.auth.models import (
 
 
 class BaseAuthProvider(ABC):
-    """Compose the models and lifecycle of an authentication provider.
+    """Compose the user model and lifecycle of an authentication provider.
 
     A concrete provider subclasses its configuration-bearing model (typically a
     ``RemoteAPI`` SDK) first and this mixin second, so the provider *is* its SDK
-    and its config maps flat onto the SDK fields. It declares the user and token
-    models it serves via the two class variables below, which the auth seam
-    (``get_user_model`` / ``get_token_payload_model``) reads off the active
-    provider.
+    and its config maps flat onto the SDK fields. It declares the user model it
+    serves via ``user_model``, which the auth seam (``get_user_model``) reads off
+    the active provider.
 
     :cvar user_model: The provider's concrete :class:`BaseUser` subclass.
-    :cvar token_payload_model: The provider's concrete :class:`BaseTokenPayload`
-        subclass.
     :cvar supports_ambient_session: Whether the provider can sign a caller in
         from an ambient session cookie already carried on the request. Defaults
         to ``False``; a provider that validates such a cookie overrides it.
     """
 
     user_model: ClassVar[type[BaseUser]]
-    token_payload_model: ClassVar[type[BaseTokenPayload]]
     supports_ambient_session: ClassVar[bool] = False
 
     @asynccontextmanager
