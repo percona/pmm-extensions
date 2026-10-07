@@ -60,6 +60,7 @@ from app.tasks.models import (
     SYNC_RUNNING_TASKS_TASK_NAME,
     TaskBackendEnum,
 )
+from tests.app.host_payloads import missing_interpreter_is_fatal
 from tests.app.tasks.conftest import MYSQL_SYNCER, PMM_SYNCER
 
 FIFTEEN_MINUTES = IntervalSchedule(every=15, period=Period.MINUTES)
@@ -132,18 +133,24 @@ def _resolves_commands_through_path(argv: tuple[str, ...]) -> bool:
 
 @pytest.fixture(params=list(SHELL_INVOCATIONS))
 def shell(request: pytest.FixtureRequest) -> list[str]:
-    """Return the argv prefix that runs one named shell, skipping when absent.
+    """Return the argv prefix that runs one named shell, when it is usable here.
 
     The binary is resolved to an absolute path here because the call sites
-    replace ``PATH`` with a stub directory that does not carry it.
+    replace ``PATH`` with a stub directory that does not carry it. A shell that
+    is absent, or that runs its own applets ahead of ``PATH``, skips its case
+    on a developer checkout and fails it in CI, which installs all three.
     """
     binary, *applet = SHELL_INVOCATIONS[request.param]
     resolved = shutil.which(binary)
     if resolved is None:
-        pytest.skip(f"{binary} is not on PATH")
-    if not _resolves_commands_through_path((resolved, *applet)):
-        pytest.skip(f"{binary} runs its built-in applets ahead of PATH")
-    return [resolved, *applet]
+        unusable = f"{binary} is not on PATH"
+    elif not _resolves_commands_through_path((resolved, *applet)):
+        unusable = f"{binary} runs its built-in applets ahead of PATH"
+    else:
+        return [resolved, *applet]
+    if missing_interpreter_is_fatal():
+        pytest.fail(f"CI must provide every shell the seed tests run under: {unusable}")
+    pytest.skip(unusable)
 
 
 class LaunchCheckVariant(TypedDict):
