@@ -197,6 +197,155 @@ function mysql_stdout() {
     return $retvalue
 }
 
+#
+# Print what a config line leaves open for the next one: the closers of its
+# unclosed quotes, expansions and brackets, innermost last; a backslash if it
+# continues onto the next line; '<' after a here-document; or nothing
+#
+# Arguments:
+#   1: the line
+#   2: what the previous line left open
+#
+function cnf_open_state() {
+    local line=$1
+    local state=$2
+    local char next top
+    local escaped=-1
+    local i
+
+    # A here-document body ends at a delimiter this does not track, so
+    # everything after one stays hidden.
+    if [[ $state == "<" ]]; then
+        printf '%s' "$state"
+        return
+    fi
+    [[ $state == $'\\' ]] && state=""
+
+    for ((i = 0; i < ${#line}; i++)); do
+        char=${line:i:1}
+        next=${line:i+1:1}
+        top=${state#"${state%?}"}
+        if [[ $top == "'" ]]; then
+            [[ $char == "'" ]] && state=${state%?}
+        elif [[ $char == $'\\' ]]; then
+            if ((i == ${#line} - 1)); then
+                [[ -z $state ]] && state=$'\\'
+                break
+            fi
+            escaped=$((++i))
+        elif [[ $top == '$' ]]; then
+            [[ $char == "'" ]] && state=${state%?}
+        elif [[ $char == '$' && $next == '(' ]]; then
+            state+=")"
+            ((i++))
+        elif [[ $char == '$' && $next == '{' ]]; then
+            state+="}"
+            ((i++))
+        elif [[ $char == '`' && $top == '`' ]]; then
+            state=${state%?}
+        elif [[ $char == '`' ]]; then
+            state+='`'
+        elif [[ $top == '"' ]]; then
+            [[ $char == '"' ]] && state=${state%?}
+        elif [[ $char == '$' && $next == "'" ]]; then
+            state+='$'
+            ((i++))
+        elif [[ $char == "'" || $char == '"' ]]; then
+            state+=$char
+        elif [[ $char == '(' ]]; then
+            state+=")"
+        elif [[ -n $top && $char == "$top" ]]; then
+            state=${state%?}
+        elif [[ $char == '<' && $next == '<' ]]; then
+            if [[ ${line:i+2:1} != '<' ]]; then
+                printf '<'
+                return
+            fi
+            ((i += 2))
+        elif [[ $char == '#' ]] && { ((i == 0)) || { [[ ${line:i-1:1} == [[:space:]] ]] && ((escaped != i - 1)); }; }; then
+            break
+        fi
+    done
+    printf '%s' "$state"
+}
+
+#
+# Print a shell-style config file with every credential masked
+#
+# The file is free-form shell, so only blank lines, comments and plain
+# single KEY=value assignments are shown: any other line could hold a secret
+# the masking cannot find, and is replaced by a marker instead. The body runs
+# in a subshell so nocasematch does not leak into the rest of the script.
+#
+# Arguments:
+#   1: the config file
+#
+function print_redacted_cnf() (
+    local cnf=$1
+    local line
+    local state=""
+    local hidden="# [REDACTED: line not shown]"
+    local assignment='^([[:space:]]*(export[[:space:]]+)?)([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
+    local single_quoted="'[^']*'"
+    local double_quoted='"[^"\\$`]*"'
+    local bare=$'[^[:space:]\'"\\\\$`;&|<>()]*'
+    local plain_value="^(${single_quoted}|${double_quoted}|${bare})([[:space:]]+#.*)?[[:space:]]*\$"
+    local empty_value="^(''|\"\")?\$"
+    local secret_key='PASS|PWD|SECRET|TOKEN|KEY|AUTH|CRED'
+    local url_credentials='://[^/@[:space:]]*:[^/@[:space:]]*@'
+    local credential_text="(${secret_key})[A-Za-z0-9_]*[[:space:]]*=|${url_credentials}"
+    local comment='^([[:space:]]*#+[[:space:]]*)(.*)$'
+    local comment_lead export_lead key value token trailing shown
+
+    shopt -s nocasematch
+    while IFS= read -r line || [[ -n $line ]]; do
+        # A line inside an open quote or after a trailing backslash is part
+        # of the value above, however much it looks like its own assignment.
+        if [[ -n $state ]]; then
+            printf '%s\n' "$hidden"
+            state=$(cnf_open_state "$line" "$state")
+            continue
+        fi
+
+        comment_lead=""
+        if [[ $line =~ $comment ]]; then
+            comment_lead=${BASH_REMATCH[1]}
+            line=${BASH_REMATCH[2]}
+        fi
+
+        if [[ -z $comment_lead && $line =~ ^[[:space:]]*$ ]]; then
+            printf '%s\n' "$line"
+            continue
+        fi
+
+        key=""
+        if [[ $line =~ $assignment ]]; then
+            export_lead=${BASH_REMATCH[1]}
+            key=${BASH_REMATCH[3]}
+            value=${BASH_REMATCH[4]}
+        fi
+
+        shown=$hidden
+        if [[ -n $key && $value =~ $plain_value ]]; then
+            token=${BASH_REMATCH[1]}
+            trailing=${BASH_REMATCH[2]}
+            # A credential's trailing comment is dropped, since it may note
+            # the old value.
+            if [[ $key =~ $secret_key || $token =~ $url_credentials ]]; then
+                [[ $token =~ $empty_value ]] || token="[REDACTED]"
+                shown="${comment_lead}${export_lead}${key}=${token}"
+            elif [[ ! $trailing =~ $credential_text ]]; then
+                shown="${comment_lead}${line}"
+            fi
+        elif [[ -n $comment_lead ]]; then
+            [[ $line =~ $credential_text ]] || shown="${comment_lead}${line}"
+        else
+            state=$(cnf_open_state "$line" "")
+        fi
+        printf '%s\n' "$shown"
+    done < "$cnf"
+)
+
 function parse_args() {
     local go_out=""
 
@@ -395,7 +544,7 @@ function run_dumps() {
                 echo ""
             fi
 
-            ADMIN_CNF_CONTENT=$(cat "$DEFAULTS_FILE" 2> /dev/null)
+            ADMIN_CNF_CONTENT=$(print_redacted_cnf "$DEFAULTS_FILE" 2> /dev/null)
             if [[ -n $ADMIN_CNF_CONTENT ]]; then
                 echo "............ DUMPING PROXYSQL ADMIN CNF FILE ............"
                 echo "$ADMIN_CNF_CONTENT"
