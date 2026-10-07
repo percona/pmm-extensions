@@ -670,6 +670,8 @@ class FreshnessResponse(BaseModel):
     :param last_error: The most recent failure detail.
     :param last_error_code: What kind of failure it is, as a :class:`ScanFailure`
         value; ``None`` while healthy or when the failure predates classification.
+    :param last_run_id: The run that last attempted it, so a reader of the failure
+        can open the run that produced it; ``None`` until a run has.
     """
 
     observed: dict[str, Any] = Field(default_factory=dict)
@@ -680,6 +682,7 @@ class FreshnessResponse(BaseModel):
     consecutive_failures: int = 0
     last_error: str | None = None
     last_error_code: str | None = None
+    last_run_id: UUID | None = None
 
 
 class ServiceResponse(FreshnessResponse):

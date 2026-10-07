@@ -391,11 +391,14 @@ class TestTheCodeReachesTheRow:
     async def test_the_api_reports_the_code(
         self, api: AsyncClient, session: AsyncSession
     ) -> None:
-        """Return the code on the host listing, beside ``last_error``.
+        """Return the code and the run that produced it, beside ``last_error``.
+
+        The run id is what lets a reader of the failure open the run itself.
 
         :param api: The authenticated client.
         :param session: The database session.
         """
+        run_id = uuid4()
         await upsert_host(
             session,
             node_id=NODE_ID,
@@ -404,6 +407,7 @@ class TestTheCodeReachesTheRow:
             executor_host="db00",
             error="scan lost: no output",
             error_code=ScanFailure.SCAN_LOST,
+            run_id=run_id,
         )
         await session.commit()
 
@@ -413,3 +417,4 @@ class TestTheCodeReachesTheRow:
         host = response.json()["items"][0]
         assert host["last_error"] == "scan lost: no output"
         assert host["last_error_code"] == "scan_lost"
+        assert host["last_run_id"] == str(run_id)
