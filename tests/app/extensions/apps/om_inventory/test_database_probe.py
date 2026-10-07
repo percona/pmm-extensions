@@ -32,6 +32,7 @@ from unittest.mock import MagicMock, patch
 from app.extensions.apps.om_inventory.payload import probe as payload
 from app.extensions.apps.om_inventory.payload.probe import (
     collect_database_facts,
+    describe_database_error,
     STATUS_FAILED,
     STATUS_OK,
 )
@@ -50,18 +51,30 @@ class PyMongoError(Exception):
 class OperationFailure(PyMongoError):  # noqa: N818 - named as pymongo names it
     """Stand in for ``pymongo.errors.OperationFailure``, which carries a code."""
 
-    def __init__(self, message: str, code: int) -> None:
-        """Keep the server's error code, as pymongo's does.
+    def __init__(
+        self, message: str, code: int, details: dict[str, Any] | None = None
+    ) -> None:
+        """Keep the server's error code and reply, as pymongo's does.
 
         :param message: The error message.
         :param code: The server's error code.
+        :param details: The server's reply document.
         """
         super().__init__(message)
         self.code = code
+        self.details = details
 
 
 class ServerSelectionTimeoutError(PyMongoError):
     """Stand in for ``pymongo.errors.ServerSelectionTimeoutError``, which has none."""
+
+
+#: The topology description pymongo appends to a server-selection timeout.
+TOPOLOGY = (
+    ", Timeout: 5.0s, Topology Description: <TopologyDescription id: 6ac6, "
+    "topology_type: Single, servers: [<ServerDescription ('node00', 27017) "
+    "server_type: Unknown, rtt: None>]>"
+)
 
 
 def fake_pymongo(command: MagicMock) -> dict[str, ModuleType]:
@@ -99,7 +112,7 @@ def test_a_rejected_password_is_the_target_s_error() -> None:
 
     facts = collect(command)
 
-    assert facts["error"] == "Authentication failed."
+    assert facts["error"] == "the credentials for user root were rejected"
     assert facts["error_type"] == "OperationFailure"
     assert facts["error_code"] == AUTH_FAILED
     # Not four command errors restating it.
@@ -115,10 +128,63 @@ def test_an_unreachable_server_is_the_target_s_error() -> None:
 
     facts = collect(command)
 
-    assert facts["error"] == "node00:27017: Connection refused"
+    assert facts["error"] == "could not connect to node00:27017: Connection refused"
     assert facts["error_type"] == "ServerSelectionTimeoutError"
     assert facts["error_code"] is None
     command.assert_called_once_with("ping")
+
+
+def test_a_rejected_password_names_the_user_and_where_it_was_read() -> None:
+    """Point at the file to fix, not at the server's reply document."""
+    err = OperationFailure(
+        "Authentication failed., full error: {'ok': 0.0, 'errmsg': "
+        "'Authentication failed.', 'code': 18, 'codeName': 'AuthenticationFailed'}",
+        AUTH_FAILED,
+    )
+
+    described = describe_database_error(
+        err, TARGET, "pmm%40ops:secret@", "/root/.mongodb_uri", 5000
+    )
+
+    assert described == (
+        "the credentials for user pmm@ops (from /root/.mongodb_uri) were rejected"
+    )
+
+
+def test_a_server_that_never_answered_names_its_address_and_the_wait() -> None:
+    """Replace the topology description with the address and the timeout."""
+    err = ServerSelectionTimeoutError("No servers found yet" + TOPOLOGY)
+
+    described = describe_database_error(err, TARGET, "", None, 5000)
+
+    assert described == "no answer from node00:27017 within 5s"
+
+
+def test_a_refused_connection_keeps_the_cause_and_drops_the_timeouts() -> None:
+    """Keep the socket error, without pymongo's timeouts and topology."""
+    err = ServerSelectionTimeoutError(
+        "node00:27017: [Errno 111] Connection refused (configured timeouts: "
+        "socketTimeoutMS: 20000.0ms, connectTimeoutMS: 5000.0ms)" + TOPOLOGY
+    )
+
+    described = describe_database_error(err, TARGET, "", None, 5000)
+
+    assert (
+        described == "could not connect to node00:27017: [Errno 111] Connection refused"
+    )
+
+
+def test_another_server_error_is_its_message_alone() -> None:
+    """Report the server's own message, not the reply document around it."""
+    err = OperationFailure(
+        "Unauthorized, full error: {...}",
+        13,
+        {"errmsg": "command ping requires authentication", "code": 13},
+    )
+
+    described = describe_database_error(err, TARGET, "", None, 5000)
+
+    assert described == "command ping requires authentication"
 
 
 def test_one_failing_command_on_a_reachable_server_is_not_an_error() -> None:

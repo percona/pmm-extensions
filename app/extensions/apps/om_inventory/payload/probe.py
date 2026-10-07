@@ -72,10 +72,13 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote_plus
 
 DEFAULT_AUTH_SOURCE = "admin"
 DEFAULT_CONNECT_TIMEOUT_MS = 5000
+
+#: MongoDB's ``AuthenticationFailed`` error code.
+AUTHENTICATION_FAILED = 18
 #: Basename of the node-side credentials file, under ``$HOME``. The same file the
 #: PBM payloads and the MongoDB Status payload read.
 DEFAULT_CREDENTIALS_BASENAME = ".mongodb_uri"
@@ -506,13 +509,16 @@ def build_uri(target, userinfo, auth_source, connect_timeout_ms):
     return f"mongodb://{userinfo}{host}:{port}/?{query}"
 
 
-def collect_database_facts(target, userinfo, auth_source, connect_timeout_ms):
+def collect_database_facts(
+    target, userinfo, auth_source, connect_timeout_ms, credentials_file=None
+):
     """Return facts read from the database for one target, or why there are none.
 
     The database is reached and authenticated against once, up front. Failing that
-    is a target-level failure: the result carries ``error``, ``error_type`` (the
-    exception class name) and ``error_code`` (the server's error code, ``None``
-    where there is none), and no facts.
+    is a target-level failure: the result carries ``error`` (see
+    :func:`describe_database_error`), ``error_type`` (the exception class name) and
+    ``error_code`` (the server's error code, ``None`` where there is none), and no
+    facts.
 
     Once connected, each command is run independently so one failure does not lose
     the others — ``replSetGetStatus`` legitimately fails against a mongos or a
@@ -523,6 +529,8 @@ def collect_database_facts(target, userinfo, auth_source, connect_timeout_ms):
     :param userinfo: The credentials prefix.
     :param auth_source: The database to authenticate against.
     :param connect_timeout_ms: Connect and server-selection timeout.
+    :param credentials_file: Where ``userinfo`` was read from, named in the error
+        when the database rejects it.
     :return: A mapping of database facts and per-command errors, or of the
         target-level ``error``, ``error_type`` and ``error_code``.
     """
@@ -554,7 +562,9 @@ def collect_database_facts(target, userinfo, auth_source, connect_timeout_ms):
             except PyMongoError as err:
                 facts.setdefault("command_errors", {})[key] = str(err)
     except PyMongoError as err:
-        facts["error"] = str(err)
+        facts["error"] = describe_database_error(
+            err, target, userinfo, credentials_file, connect_timeout_ms
+        )
         # Structured beside the text, so the orchestrator can tell a rejected
         # password (``OperationFailure``, code 18) from an unreachable server
         # (``ServerSelectionTimeoutError``, no code) without parsing the message.
@@ -564,6 +574,47 @@ def collect_database_facts(target, userinfo, auth_source, connect_timeout_ms):
         if client is not None:
             client.close()
     return summarise_database_facts(facts)
+
+
+def describe_database_error(err, target, userinfo, credentials_file, connect_timeout_ms):
+    """Say why the database could not be queried, in terms an operator can act on.
+
+    pymongo's own text is written for whoever debugs the driver: a rejected password
+    comes with the server's whole reply appended, and a server-selection timeout with
+    the driver's topology description, which buries the one fact that matters - the
+    address that did not answer. Anything not recognised here keeps pymongo's text.
+
+    :param err: What the driver raised.
+    :param target: The target mapping carrying ``host`` and ``port``.
+    :param userinfo: The credentials prefix the payload connected with.
+    :param credentials_file: Where those credentials were read from, or ``None``.
+    :param connect_timeout_ms: Connect and server-selection timeout.
+    :return: The description.
+    """
+    host = target["host"]
+    port = target["port"]
+    if getattr(err, "code", None) == AUTHENTICATION_FAILED:
+        user = unquote_plus(userinfo.split(":", 1)[0]) if userinfo else ""
+        described = f"the credentials for user {user}"
+        if credentials_file:
+            described += f" (from {credentials_file})"
+        return described + " were rejected"
+    if type(err).__name__ == "ServerSelectionTimeoutError":
+        # pymongo appends ", Timeout: ..., Topology Description: ..." to the
+        # per-server errors, and " (configured timeouts: ...)" to each of those.
+        cause = str(err).split(", Timeout: ", 1)[0]
+        cut = cause.find(" (configured timeouts:")
+        if cut != -1:
+            cause = cause[:cut]
+        cause = cause.removeprefix(f"{host}:{port}: ")
+        if not cause or cause == "No servers found yet":
+            seconds = connect_timeout_ms / 1000
+            return f"no answer from {host}:{port} within {seconds:g}s"
+        return f"could not connect to {host}:{port}: {cause}"
+    details = getattr(err, "details", None)
+    if isinstance(details, dict) and details.get("errmsg"):
+        return str(details["errmsg"])
+    return str(err)
 
 
 def determine_vendor(build_info):
@@ -677,11 +728,13 @@ def probe(target, config, host_facts, processes=(), versions=None):
         return record
 
     try:
+        credentials_file = credentials_path(config)
         record["database"] = collect_database_facts(
             target,
-            read_userinfo(credentials_path(config)),
+            read_userinfo(credentials_file),
             config.get("auth_source") or DEFAULT_AUTH_SOURCE,
             config.get("connect_timeout_ms") or DEFAULT_CONNECT_TIMEOUT_MS,
+            credentials_file,
         )
         if record["database"].get("error"):
             record["status"] = STATUS_FAILED
