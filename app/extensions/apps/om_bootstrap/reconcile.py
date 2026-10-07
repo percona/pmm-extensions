@@ -117,10 +117,10 @@ LOG_READ_TIMEOUT_S = 5.0
 #: exits 123. That step launches the script through GNU ``xargs`` (see
 #: ``NOMAD_EXEC_ARTIFACT`` in ``app/tasks/db/seed.py``), and ``xargs`` exits 123
 #: whenever the command it ran exited with any status from 1 to 125 - so 123 is
-#: ``xargs``' code, not the step's, and stating it as the step's exit code sends
-#: the reader looking for a meaning it does not have. The other codes ``xargs``
-#: can exit with (124 for a 255, 125 for a signal, 126 and 127 when it could not
-#: run the command) say something real and are left as they are.
+#: ``xargs``' code, not the step's, and all the reason says is that the script
+#: failed, which the script's own output already says better. The other codes
+#: ``xargs`` can exit with (124 for a 255, 125 for a signal, 126 and 127 when it
+#: could not run the command) say something real and are left as they are.
 _XARGS_ANY_FAILURE = re.compile(
     rf"^Step '{re.escape(NomadStep.RUN_SCRIPT)}' failed \(exit code 123\)\.$"
 )
@@ -202,7 +202,9 @@ async def _failure_detail(
     The tasks service's reason first, then the end of the failed step's output,
     which is where a step body says what it refused or what broke - ``pre_check``
     names the check that failed, ``dnf`` prints the repository it could not reach.
-    The task history id stays in the text, last, so the full logs can still be
+    A reason that says only that the script failed (:data:`_XARGS_ANY_FAILURE`) is
+    left out when the script printed anything, since the output is the account of
+    it. The task history id stays in the text, last, so the full logs can still be
     found from it.
 
     :param tasks_api: The Tasks API client.
@@ -225,11 +227,16 @@ async def _failure_detail(
             exc_info=True,
         )
         logs = {}
-    if failure_reason is not None and _XARGS_ANY_FAILURE.match(failure_reason):
-        failure_reason = f"Step '{NomadStep.RUN_SCRIPT}' failed."
-    described = describe_task_failure(
-        failure_reason, logs, default_step=NomadStep.RUN_SCRIPT
+    script_failed = failure_reason is not None and bool(
+        _XARGS_ANY_FAILURE.match(failure_reason)
     )
+    described = describe_task_failure(
+        None if script_failed else failure_reason,
+        logs,
+        default_step=NomadStep.RUN_SCRIPT,
+    )
+    if script_failed and not described:
+        described = f"Step '{NomadStep.RUN_SCRIPT}' failed with no output."
     described = described or f"Ended {task_status} with no output"
     return f"{described} (task history {task_history_id})"
 

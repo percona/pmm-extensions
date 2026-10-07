@@ -182,8 +182,10 @@ class TestReconcileStep:
         [
             (
                 "stderr",
-                "pre_check: less than 5368709120 bytes free for the data directory\n",
-                "pre_check: less than 5368709120 bytes free for the data directory",
+                "pre_check: /var/lib/mongo has 1.0 GiB free, but the data "
+                "directory /var/lib/mongo needs at least 5 GiB\n",
+                "pre_check: /var/lib/mongo has 1.0 GiB free, but the data "
+                "directory /var/lib/mongo needs at least 5 GiB",
             ),
             (
                 "stderr",
@@ -196,10 +198,14 @@ class TestReconcileStep:
             ),
         ],
     )
-    async def test_a_failed_step_s_detail_carries_its_reason_and_output(
+    async def test_a_failed_script_s_detail_is_its_own_output(
         self, stream: str, msg: str, expected: str
     ) -> None:
-        """Say why the step failed, from its output, naming the task history.
+        """Say why the script failed in its own words, naming the task history.
+
+        Without the tasks service's "Step 'run-script' failed." in front: that names
+        the job's internal step and says only that the script failed, which its
+        output already says.
 
         :param stream: The stream the step wrote to.
         :param msg: What it wrote.
@@ -215,13 +221,11 @@ class TestReconcileStep:
         result = await reconcile.reconcile_step(api, step)
 
         assert result.status == StepStatus.FAILED
-        assert result.detail == (
-            f"Step 'run-script' failed. {expected} (task history {TASK_HISTORY_ID})"
-        )
+        assert result.detail == f"{expected} (task history {TASK_HISTORY_ID})"
 
     @pytest.mark.asyncio
-    async def test_xargs_exit_code_is_not_reported_as_the_step_s(self) -> None:
-        """Drop the 123 ``xargs`` reports for any failure; the step's own is gone."""
+    async def test_a_silent_script_s_failure_is_still_said(self) -> None:
+        """Say the script failed when it printed nothing, without ``xargs``' 123."""
         step = StepRecord(
             name="pre_check", status=StepStatus.RUNNING, task_history_id=TASK_HISTORY_ID
         )
@@ -230,7 +234,7 @@ class TestReconcileStep:
         result = await reconcile.reconcile_step(api, step)
 
         assert result.detail == (
-            f"Step 'run-script' failed. (task history {TASK_HISTORY_ID})"
+            f"Step 'run-script' failed with no output. (task history {TASK_HISTORY_ID})"
         )
 
     @pytest.mark.asyncio
