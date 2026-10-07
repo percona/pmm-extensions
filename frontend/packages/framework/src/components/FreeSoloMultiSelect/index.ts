@@ -17,8 +17,3 @@
 
 export { FreeSoloMultiSelect } from './FreeSoloMultiSelect';
 export type { FreeSoloMultiSelectProps } from './FreeSoloMultiSelect';
-export {
-  toDisplayValues,
-  normalizeMultiChange,
-  type MultiReferenceOption,
-} from './freeSoloMultiValue';

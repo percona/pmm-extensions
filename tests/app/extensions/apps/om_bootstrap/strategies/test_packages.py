@@ -25,12 +25,14 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+import yaml
 
 from app.extensions.apps.om_bootstrap.dispatch import build_step_script
 from app.extensions.apps.om_bootstrap.strategies import packages
 from app.extensions.apps.om_bootstrap.strategies.packages import (
     _mongosh_eval,
     _mongosh_eval_command,
+    _with_loopback,
     CONFIG_PATH,
     KEY_FILE_PATH,
     OWNERSHIP_MARKER_PATH,
@@ -61,7 +63,11 @@ RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
 OTHER_RUN_ID = UUID("22222222-2222-4222-8222-222222222222")
 
 
-def _spec(os_: OperatingSystem, run_id: UUID | None = RUN_ID) -> BootstrapSpec:
+def _spec(
+    os_: OperatingSystem,
+    run_id: UUID | None = RUN_ID,
+    member_configs: dict[str, MemberConfig] | None = None,
+) -> BootstrapSpec:
     return BootstrapSpec(
         install_method=InstallMethod.PACKAGES,
         os=os_,
@@ -72,6 +78,7 @@ def _spec(os_: OperatingSystem, run_id: UUID | None = RUN_ID) -> BootstrapSpec:
         log_path="/var/log/mongodb/mongod.log",
         port=27017,
         bind_ip="0.0.0.0",
+        member_configs=member_configs or {},
     )
 
 
@@ -277,7 +284,7 @@ class TestBuildStep:
             "configure_mongod", "node00", _spec(OperatingSystem.UBUNTU)
         )
 
-        assert "replSetName: rs-test" in " ".join(action.command)
+        assert 'replSetName: "rs-test"' in " ".join(action.command)
 
     def test_configure_mongod_creates_the_data_directory(self) -> None:
         """Create the data directory, without which mongod exits on first start."""
@@ -377,7 +384,7 @@ class TestBuildStep:
 
         command = " ".join(action.command)
         assert "fork: true" in command
-        assert f"pidFilePath: {PID_FILE_PATH}" in command
+        assert f'pidFilePath: "{PID_FILE_PATH}"' in command
 
     def test_configure_mongod_sets_a_logpath(self) -> None:
         """Set a logpath, without which mongod refuses to start with fork: true.
@@ -390,7 +397,7 @@ class TestBuildStep:
         )
 
         command = " ".join(action.command)
-        assert "path: /var/log/mongodb/mongod.log" in command
+        assert 'path: "/var/log/mongodb/mongod.log"' in command
 
     def test_configure_mongod_leaves_authorization_off(self) -> None:
         """Leave authorization off until the first user already exists.
@@ -776,9 +783,9 @@ class TestBuildFinalizeStep:
         )
 
         command = " ".join(action.command)
-        assert "replSetName: rs-test" in command
+        assert 'replSetName: "rs-test"' in command
         assert "fork: true" in command
-        assert "path: /var/log/mongodb/mongod.log" in command
+        assert 'path: "/var/log/mongodb/mongod.log"' in command
 
     def test_enable_auth_probes_readiness_after_restarting(self) -> None:
         """Follow the restart with an unauthenticated readiness probe.
@@ -1192,3 +1199,175 @@ class TestRollbackCommands:
         assert not config.exists()
         assert not data.exists()
         assert not marker.exists()
+
+
+class TestPerMemberBindIP:
+    """Assert mongod.conf's bindIp comes from the member when it names one.
+
+    The safe default for a replica-set member is its *own* address, and a
+    three-member set has three different ones. A single run-level ``bind_ip``
+    can only be ``0.0.0.0`` or wrong for two of the three, which is why
+    ``MemberConfig`` carries one at all.
+    """
+
+    @staticmethod
+    def _config_for(host: str, spec: BootstrapSpec, step: str) -> str:
+        action = PackagesInstallStrategy().build_step(step, host, spec)
+        return "\n".join(action.command)
+
+    def test_member_bind_ip_wins_over_the_run_level_one(self) -> None:
+        """Use the member's own address where it names one."""
+        spec = _spec(
+            OperatingSystem.UBUNTU,
+            member_configs={"node00": MemberConfig(bind_ip="10.0.0.1")},
+        )
+
+        assert 'bindIp: "127.0.0.1,10.0.0.1"' in self._config_for(
+            "node00", spec, "configure_mongod"
+        )
+
+    def test_a_host_the_run_does_not_name_keeps_the_run_level_one(self) -> None:
+        """Leave every other host on the run's value."""
+        spec = _spec(
+            OperatingSystem.UBUNTU,
+            member_configs={"node00": MemberConfig(bind_ip="10.0.0.1")},
+        )
+
+        assert 'bindIp: "0.0.0.0"' in self._config_for(
+            "node01", spec, "configure_mongod"
+        )
+
+    def test_a_member_config_without_a_bind_ip_keeps_the_run_level_one(self) -> None:
+        """Treat a member that sets only election settings as naming no address."""
+        spec = _spec(
+            OperatingSystem.UBUNTU,
+            member_configs={"node00": MemberConfig(priority=0, votes=False)},
+        )
+
+        assert 'bindIp: "0.0.0.0"' in self._config_for(
+            "node00", spec, "configure_mongod"
+        )
+
+    def test_enable_auth_rewrites_the_same_bind_ip(self) -> None:
+        """Keep the finalize step's rewrite on the member's address too.
+
+        ``enable_auth`` rewrites the whole of mongod.conf, so if it read the
+        run-level value it would silently undo the per-member one several steps
+        after it was applied.
+        """
+        spec = _spec(
+            OperatingSystem.UBUNTU,
+            member_configs={"node00": MemberConfig(bind_ip="10.0.0.1")},
+        )
+        action = PackagesInstallStrategy().build_finalize_step(
+            "enable_auth", "node00", spec
+        )
+
+        assert 'bindIp: "127.0.0.1,10.0.0.1"' in "\n".join(action.command)
+
+
+class TestMongodConfigQuoting:
+    """Assert every string in mongod.conf is a quoted YAML scalar.
+
+    The validators bound these values to no
+    whitespace and no control characters, which closes newline injection, but YAML
+    still types a bare scalar by its content: ``#...`` is a comment, ``null`` is
+    null, ``[a,b]`` a sequence, ``*x`` an alias. An operator naming an address or a
+    path containing any of those would get a config mongod misreads or refuses.
+    """
+
+    @staticmethod
+    def _config(**overrides: str) -> str:
+        spec = _spec(OperatingSystem.UBUNTU)
+        for key, value in overrides.items():
+            setattr(spec, key, value)
+        action = PackagesInstallStrategy().build_step(
+            "configure_mongod", "node00", spec
+        )
+        return "\n".join(action.command)
+
+    def test_the_default_config_quotes_every_string(self) -> None:
+        """Quote the ordinary values too, not only suspicious ones."""
+        config = self._config()
+
+        assert 'bindIp: "0.0.0.0"' in config
+        assert 'dbPath: "/var/lib/mongo"' in config
+        assert 'replSetName: "rs-test"' in config
+        assert 'path: "/var/log/mongodb/mongod.log"' in config
+
+    def test_a_hash_is_not_read_as_a_comment(self) -> None:
+        """Keep a value containing ``#`` whole instead of truncating the line."""
+        config = self._config(bind_ip="10.0.0.1#2")
+
+        assert 'bindIp: "127.0.0.1,10.0.0.1#2"' in config
+
+    def test_a_yaml_keyword_stays_a_string(self) -> None:
+        """Emit ``null`` as a string rather than YAML's null."""
+        config = self._config(replica_set_name="null")
+
+        assert 'replSetName: "null"' in config
+
+    def test_a_bracketed_value_is_not_read_as_a_sequence(self) -> None:
+        """Emit ``[::1],...`` as a string, which is also how an IPv6 literal arrives."""
+        config = self._config(bind_ip="[::1],127.0.0.1")
+
+        assert 'bindIp: "[::1],127.0.0.1"' in config
+
+    def test_an_asterisk_is_not_read_as_an_alias(self) -> None:
+        """Emit ``*``, mongod's own bind-all value, as a string."""
+        config = self._config(bind_ip="*")
+
+        assert 'bindIp: "*"' in config
+
+    def test_a_per_member_address_is_quoted_too(self) -> None:
+        """Quote the member's own address on the same path as the run's."""
+        spec = _spec(
+            OperatingSystem.UBUNTU,
+            member_configs={"node00": MemberConfig(bind_ip="10.0.0.1")},
+        )
+        action = PackagesInstallStrategy().build_step(
+            "configure_mongod", "node00", spec
+        )
+
+        assert 'bindIp: "127.0.0.1,10.0.0.1"' in "\n".join(action.command)
+
+    def test_the_config_is_still_valid_yaml(self) -> None:
+        """Parse it, so the quoting cannot be asserted into nonsense."""
+        spec = _spec(OperatingSystem.UBUNTU)
+        spec.bind_ip = "127.0.0.1,10.0.0.1#2"
+        action = PackagesInstallStrategy().build_step(
+            "configure_mongod", "node00", spec
+        )
+        config = "\n".join(action.command)
+        # The heredoc delimiter appears twice: once in `<<'MONGOD_CONF' && ...` and
+        # once closing the body, so the config starts after that preamble's newline.
+        body = config.split("MONGOD_CONF")[1].split("\n", 1)[1]
+        parsed = yaml.safe_load(body)
+
+        # Compared against the spec, not literals: the point is that what went in
+        # comes back out as the same string, whatever YAML would make of it bare.
+        assert parsed["net"]["bindIp"] == spec.bind_ip
+        assert parsed["net"]["port"] == spec.port
+        assert parsed["storage"]["dbPath"] == spec.data_path
+        assert parsed["replication"]["replSetName"] == spec.replica_set_name
+
+
+class TestBindIpReachesLoopback:
+    """Assert bindIp always reaches 127.0.0.1, where ``mongosh --port`` connects."""
+
+    @pytest.mark.parametrize(
+        ("bind_ip", "expected"),
+        [
+            ("pmm-client-node00", "127.0.0.1,pmm-client-node00"),
+            ("10.0.0.1,10.0.0.2", "127.0.0.1,10.0.0.1,10.0.0.2"),
+            ("127.0.0.1", "127.0.0.1"),
+            ("LOCALHOST,10.0.0.1", "LOCALHOST,10.0.0.1"),
+            ("0.0.0.0", "0.0.0.0"),
+            ("*", "*"),
+        ],
+    )
+    def test_loopback_is_added_only_where_missing(
+        self, bind_ip: str, expected: str
+    ) -> None:
+        """Leave the wildcards alone: beside 127.0.0.1, mongod breaks on either."""
+        assert _with_loopback(bind_ip) == expected
