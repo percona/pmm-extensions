@@ -28,6 +28,7 @@ from tests.scripts import load_script
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+changelog = load_script("changelog")
 sync_pr_labels = load_script("sync_pr_labels")
 
 _LABELER_PATH = _PROJECT_ROOT / ".github" / "labeler.yml"
@@ -176,6 +177,12 @@ def test_compute_blast_radius_ignores_changelog_and_generated_openapi_files():
     assert result.touched_apps == ("app:report",)
 
 
+@pytest.mark.parametrize("section", sorted(changelog.SECTION_MAP))
+def test_isolation_neutral_accepts_every_changelog_fragment_section(section):
+    """Treat a fragment of every section the changelog tool accepts as neutral."""
+    assert sync_pr_labels.is_isolation_neutral(f"changelog.d/SEP-1.{section}.md")
+
+
 @pytest.mark.parametrize(
     "filenames",
     [
@@ -210,7 +217,7 @@ def test_compute_blast_radius_ignores_changelog_and_generated_openapi_files():
     ],
 )
 def test_compute_blast_radius_rejects_mixed_app_and_cross_cutting_prs(filenames):
-    """Reject PRs that span apps or touch cross-cutting paths."""
+    """Reject PRs that span apps, touch cross-cutting paths, or touch no app slice."""
     files = [_file(name, additions=1) for name in filenames]
 
     result = sync_pr_labels.compute_blast_radius(files, _APP_GLOBS)
