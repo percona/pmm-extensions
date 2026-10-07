@@ -80,31 +80,6 @@ NOT_STARTED_RETRY_WAIT = 2
 RUN_TIMEOUT = 60.0
 
 
-@pytest.fixture
-def nomad_stub() -> Iterator[NomadLogStub]:
-    """Serve a running ``run-script`` step from a Nomad stub on its own thread.
-
-    :return: The started stub.
-    """
-    stub = NomadLogStub()
-    stub.start()
-    yield stub
-    stub.stop()
-
-
-@pytest_asyncio.fixture
-async def live_executor(nomad_stub: NomadLogStub) -> AsyncGenerator[NomadExecutor]:
-    """Enter a real Nomad executor pointed at the stub, as the lifecycle does.
-
-    :return: The entered executor.
-    """
-    executor = await NomadExecutor(
-        endpoint=nomad_stub.endpoint, verify_ssl=False
-    ).open()
-    yield executor
-    await executor.close()
-
-
 @pytest_asyncio.fixture
 async def running_history(
     session: AsyncSession, nomad_stub: NomadLogStub
