@@ -390,22 +390,12 @@ class PMMSettings(BaseLowercaseModel):
     """
 
     endpoint: StrCredentialHttpUrl | None = None
-    frontend: StrHttpUrl | None = hot_field(  # ty: ignore[invalid-assignment]
-        None, advanced=True
-    )
+    frontend: StrHttpUrl | None = hot_field(None, advanced=True)
     api_key: SecretStr | None = None
-    verify_ssl: bool = hot_field(  # ty: ignore[invalid-assignment]
-        default=True, advanced=True
-    )
-    execution_target: str | None = hot_field(  # ty: ignore[invalid-assignment]
-        None, advanced=True
-    )
-    annotations_enabled: bool = hot_field(  # ty: ignore[invalid-assignment]
-        default=False, advanced=True
-    )
-    annotations_timeout: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
-        5, advanced=True
-    )
+    verify_ssl: bool = hot_field(default=True, advanced=True)
+    execution_target: str | None = hot_field(None, advanced=True)
+    annotations_enabled: bool = hot_field(default=False, advanced=True)
+    annotations_timeout: PositiveInt = hot_field(5, advanced=True)
 
     @model_validator(mode="after")
     def _default_frontend_to_endpoint(self) -> Self:
@@ -504,9 +494,7 @@ class SettingsOverrideOptions(BaseCaseInsensitiveModel):
         seconds=30
     )
     REFRESHER_ENABLED: bool = True
-    ALLOWED_KEYS: set[SettingsOverrideKey] | None = (  # ty: ignore[invalid-assignment]
-        not_overridable_field(None)
-    )
+    ALLOWED_KEYS: set[SettingsOverrideKey] | None = not_overridable_field(None)
 
 
 _REMOVED_SETTINGS_OVERRIDE_KEYS = {
@@ -704,14 +692,14 @@ class Settings(BaseYamlSettings):
         default=None, validation_alias="EXTENSIONS_INTERNAL_TOKEN", exclude=True
     )
     ENCRYPTION_KEY: SecretStr
-    LOGGING: LogLevel = hot_field(LogLevel.WARNING)  # ty: ignore[invalid-assignment]
+    LOGGING: LogLevel = hot_field(LogLevel.WARNING)
     LOGGING_CONFIG: dict[str, Any] = {}
     SSL_CAFILE: RelativeFilePathField | None = None
     BASE_URL: URL | None = None
     BACKEND_CORS_ORIGINS: list[StrHttpUrl] | None = None
     ALLOWED_HOSTS: list[str] = []
     SECURITY_HEADERS: SecurityHeadersOptions | None = SecurityHeadersOptions()
-    PMM: PMMSettings = hot_field(PMMSettings())  # ty: ignore[invalid-assignment]
+    PMM: PMMSettings = hot_field(PMMSettings())
     SETTINGS_OVERRIDE: SettingsOverrideOptions = SettingsOverrideOptions()
     _CLIENT_REGISTRY: ClientRegistry = ClientRegistry()
     _EXTENSIONS_INTERNAL_TOKEN: SecretStr = SecretStr("")

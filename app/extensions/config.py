@@ -506,12 +506,8 @@ class DeliveryPlanInputs(BaseModel):
     :param secrets: Values for the secret names the baked plan declares.
     """
 
-    endpoint: CredentialHttpUrl | None = (  # ty: ignore[invalid-assignment]
-        not_overridable_field(None)
-    )
-    secrets: dict[str, SecretStr] = (  # ty: ignore[invalid-assignment]
-        not_overridable_field({})
-    )
+    endpoint: CredentialHttpUrl | None = not_overridable_field(None)
+    secrets: dict[str, SecretStr] = not_overridable_field({})
 
     @field_validator("secrets")
     @classmethod
@@ -672,22 +668,16 @@ class ExtensionsSettings(BaseYamlAppSettings):
     SETTINGS_PREFIXES: ClassVar[list[str]] = ["EXTENSIONS"]
     UVICORN_PORT: int = 8000
     ROOT_PATH: URIPathPrefix = ""
-    SESSION_REFRESH: CookieOptions = (  # ty: ignore[invalid-assignment]
-        nested_overridable_field(
-            CookieOptions(
-                COOKIE_NAME="refreshToken",
-                PATH="/api/oauth",
-            ),
-            advanced=True,
-        )
+    SESSION_REFRESH: CookieOptions = nested_overridable_field(
+        CookieOptions(
+            COOKIE_NAME="refreshToken",
+            PATH="/api/oauth",
+        ),
+        advanced=True,
     )
     ALERT_DEFINITIONS_DIR: RelativeDirectoryPathField | None = None
-    INVENTORY_ENDPOINT: CredentialHttpUrl = hot_field(  # ty: ignore[invalid-assignment]
-        ..., advanced=True
-    )
-    TASKS_ENDPOINT: CredentialHttpUrl = hot_field(  # ty: ignore[invalid-assignment]
-        ..., advanced=True
-    )
+    INVENTORY_ENDPOINT: CredentialHttpUrl = hot_field(..., advanced=True)
+    TASKS_ENDPOINT: CredentialHttpUrl = hot_field(..., advanced=True)
     APPS: UniqueList[App] = Field(
         default_factory=UniqueList,
         validation_alias=AliasChoices("APPS", "PLUGINS"),
@@ -696,29 +686,21 @@ class ExtensionsSettings(BaseYamlAppSettings):
     DATABASE: DatabaseOptions = DatabaseOptions(NAME="extensions.db")
     SYNCERS: UniqueList[SyncOptions] = UniqueList()
     SYNCER_EXTRA_KWARGS: SyncerExtraKwargs = SyncerExtraKwargs()
-    SYNC_REFRESH_TIME: int = hot_field(5)  # ty: ignore[invalid-assignment]
-    DIAGNOSTICS_DELIVERY: DeliveryPlan | None = (  # ty: ignore[invalid-assignment]
-        not_overridable_field(None, advanced=True)
+    SYNC_REFRESH_TIME: int = hot_field(5)
+    DIAGNOSTICS_DELIVERY: DeliveryPlan | None = not_overridable_field(
+        None, advanced=True
     )
-    DIAGNOSTICS_DELIVERY_INPUTS: (
-        DeliveryPlanInputs | None
-    ) = (  # ty: ignore[invalid-assignment]
-        hot_field(None, materializer=materialize_delivery_plan_inputs, advanced=True)
+    DIAGNOSTICS_DELIVERY_INPUTS: DeliveryPlanInputs | None = hot_field(
+        None, materializer=materialize_delivery_plan_inputs, advanced=True
     )
-    APP_DRAIN: AppDrainSettings = (  # ty: ignore[invalid-assignment]
-        nested_overridable_field(AppDrainSettings())
-    )
-    ARTIFACT_DOWNLOAD_TTL: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
-        600, advanced=True
-    )
+    APP_DRAIN: AppDrainSettings = nested_overridable_field(AppDrainSettings())
+    ARTIFACT_DOWNLOAD_TTL: PositiveInt = hot_field(600, advanced=True)
     # Plain fields rather than ``hot_field``: the readiness gate runs in a
     # pre-fork beat child, before the DB override refresher exists to serve one.
     API_READINESS_TIMEOUT: PositiveFloat = DEFAULT_API_READINESS_TIMEOUT
     API_READINESS_POLL_INTERVAL: PositiveFloat = DEFAULT_API_READINESS_POLL_INTERVAL
-    CONNECTIVITY_CHECK_DEFAULT: bool = hot_field(  # ty: ignore[invalid-assignment]
-        default=False
-    )
-    AMBIENT_SESSION_SSO_ENABLED: bool = hot_field(  # ty: ignore[invalid-assignment]
+    CONNECTIVITY_CHECK_DEFAULT: bool = hot_field(default=False)
+    AMBIENT_SESSION_SSO_ENABLED: bool = hot_field(
         default=False,
         description=(
             "Enable ambient Grafana-session SSO: sign an unauthenticated caller "
@@ -728,7 +710,7 @@ class ExtensionsSettings(BaseYamlAppSettings):
             "Grafana are same-site so the browser sends the session cookie to it."
         ),
     )
-    FOOTER_TEMPLATE: Template = hot_field(  # ty: ignore[invalid-assignment]
+    FOOTER_TEMPLATE: Template = hot_field(
         Template("$summary $version"),
         materializer=materialize_template,
         advanced=True,

@@ -39,10 +39,25 @@ logger = logging.getLogger(__name__)
 # bootstrap composes the same helper, keeping the two include lists in lockstep.
 settings.CELERY.include = build_celery_include()
 
-celery = Celery("extensions", **settings.CELERY.model_dump())
+
+class ExtensionsCelery(Celery):
+    """Declare the per-process event loop this project installs on the app.
+
+    The loop is set at import below and replaced in each forked worker by
+    :func:`init_child_event_loop`, since a child must not drive the loop it
+    inherited from the parent.
+
+    :ivar loop: The event loop the current process drives task coroutines on.
+    :vartype loop: asyncio.AbstractEventLoop
+    """
+
+    loop: asyncio.AbstractEventLoop
+
+
+celery = ExtensionsCelery("extensions", **settings.CELERY.model_dump())
 
 celery.loop = asyncio.new_event_loop()
-asyncio.set_event_loop(celery.loop)  # ty: ignore[unresolved-attribute]
+asyncio.set_event_loop(celery.loop)
 
 
 @setup_logging.connect
@@ -56,7 +71,7 @@ def init_child_event_loop(**kwargs: Any) -> None:
     """Initialize a new event loop for each worker process."""
     logger.debug("Initializing new event loop for worker process")
     celery.loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(celery.loop)  # ty: ignore[unresolved-attribute]
+    asyncio.set_event_loop(celery.loop)
 
 
 CORRELATION_ID_HEADER_KEY = "correlation_id"

@@ -24,15 +24,17 @@ __all__ = [
     "run_pydantic_type_validator",
 ]
 
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable
 from contextlib import suppress
 from functools import cache
-from types import UnionType
+from types import EllipsisType, UnionType
 from typing import (
     Any,
     get_args,
     get_origin,
+    Literal,
     NamedTuple,
+    overload,
     TypeAlias,
     TypeVar,
     Union,
@@ -40,6 +42,7 @@ from typing import (
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic.fields import Field, FieldInfo
+from pydantic_core import PydanticUndefined
 
 V = TypeVar("V")
 T = TypeVar("T", bound=BaseModel)
@@ -123,13 +126,68 @@ class CustomFieldMetadata(NamedTuple):
         return {meta.key: meta.value for meta in metadata}
 
 
+@overload
 def field_with_metadata(
-    *args: Any, metadata: dict[Any, Any] | None = None, **kwargs: Any
-) -> FieldInfo:
+    default: EllipsisType,
+    *,
+    metadata: dict[Any, Any] | None = None,
+    **kwargs: Any,
+) -> Any: ...
+@overload
+def field_with_metadata(
+    default: Any,
+    *,
+    validate_default: Literal[True],
+    metadata: dict[Any, Any] | None = None,
+    **kwargs: Any,
+) -> Any: ...
+@overload
+def field_with_metadata(
+    default: V,
+    *,
+    validate_default: Literal[False] = ...,
+    metadata: dict[Any, Any] | None = None,
+    **kwargs: Any,
+) -> V: ...
+@overload
+def field_with_metadata(
+    *,
+    default_factory: Callable[[], Any] | Callable[[dict[str, Any]], Any],
+    validate_default: Literal[True],
+    metadata: dict[Any, Any] | None = None,
+    **kwargs: Any,
+) -> Any: ...
+@overload
+def field_with_metadata(
+    *,
+    default_factory: Callable[[], V] | Callable[[dict[str, Any]], V],
+    validate_default: Literal[False] | None = ...,
+    metadata: dict[Any, Any] | None = None,
+    **kwargs: Any,
+) -> V: ...
+@overload
+def field_with_metadata(
+    *,
+    metadata: dict[Any, Any] | None = None,
+    **kwargs: Any,
+) -> Any: ...
+def field_with_metadata(
+    default: Any = PydanticUndefined,
+    *,
+    metadata: dict[Any, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
     """Create a Pydantic Field with custom metadata.
 
-    :param args: Positional arguments to pass to the Field constructor.
-    :type args: Any
+    The overloads mirror pydantic's own ``Field``: an explicit default (or a
+    factory's product) is returned as its own type, so a type checker compares it
+    with the field's annotation, while ``...``, ``validate_default=True`` and an
+    omitted default return ``Any``. At runtime the result is always a
+    :class:`~pydantic.fields.FieldInfo`.
+
+    :param default: The field's default value, forwarded to ``Field``. Omitted, the
+        field is required.
+    :type default: Any
     :param metadata: A dictionary containing key-value pairs to be added as custom
         metadata to the field. Defaults to `None`.
     :type metadata: dict[Any, Any] | None
@@ -138,7 +196,7 @@ def field_with_metadata(
     :return: A Pydantic Field with the specified metadata.
     :rtype: FieldInfo
     """
-    field = Field(*args, **kwargs)
+    field = Field(default, **kwargs)
     field.metadata.extend(CustomFieldMetadata.from_dict(metadata or {}))
     return field
 

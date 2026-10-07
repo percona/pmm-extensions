@@ -65,8 +65,18 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from string import Template
-from types import UnionType
-from typing import Annotated, Any, NamedTuple, TYPE_CHECKING, TypedDict, Union
+from types import EllipsisType, UnionType
+from typing import (
+    Annotated,
+    Any,
+    Literal,
+    NamedTuple,
+    overload,
+    Protocol,
+    TYPE_CHECKING,
+    TypedDict,
+    Union,
+)
 
 from pydantic import BaseModel, SecretBytes, SecretStr, TypeAdapter, WrapSerializer
 from pydantic.errors import PydanticSchemaGenerationError
@@ -84,6 +94,7 @@ from app.core.utils.pydantic import (
     annotation_pydantic_class,
     CustomFieldMetadata,
     field_with_metadata,
+    V,
 )
 
 if TYPE_CHECKING:
@@ -184,6 +195,42 @@ class MaterializerContext(NamedTuple):
 Materializer = Callable[[MaterializerContext], Any]
 
 
+class _ClassifiedFieldHelper(Protocol):
+    """Type a reload-classification helper with pydantic ``Field``'s overloads.
+
+    Python has no way to share ``@overload`` sets between functions, so the
+    helpers with identical signatures are checked against this one instead.
+    """
+
+    @overload
+    def __call__(
+        self, default: EllipsisType, *, advanced: bool = False, **kwargs: Any
+    ) -> Any: ...
+    @overload
+    def __call__(
+        self,
+        default: Any,
+        *,
+        validate_default: Literal[True],
+        advanced: bool = False,
+        **kwargs: Any,
+    ) -> Any: ...
+    @overload
+    def __call__(
+        self,
+        default: V,
+        *,
+        validate_default: Literal[False] = ...,
+        advanced: bool = False,
+        **kwargs: Any,
+    ) -> V: ...
+
+
+def _field_contract(helper: _ClassifiedFieldHelper) -> _ClassifiedFieldHelper:
+    """Return ``helper`` unchanged, retyped with the ``Field`` overloads."""
+    return helper
+
+
 class FieldMarkers(TypedDict, total=False):
     """Type the marker dict a single field carries or an overlay assigns to one.
 
@@ -205,13 +252,39 @@ class FieldMarkers(TypedDict, total=False):
     materializer: Materializer
 
 
+@overload
+def hot_field(
+    default: EllipsisType,
+    *,
+    materializer: Materializer | None = None,
+    advanced: bool = False,
+    **kwargs: Any,
+) -> Any: ...
+@overload
+def hot_field(
+    default: Any,
+    *,
+    validate_default: Literal[True],
+    materializer: Materializer | None = None,
+    advanced: bool = False,
+    **kwargs: Any,
+) -> Any: ...
+@overload
+def hot_field(
+    default: V,
+    *,
+    validate_default: Literal[False] = ...,
+    materializer: Materializer | None = None,
+    advanced: bool = False,
+    **kwargs: Any,
+) -> V: ...
 def hot_field(
     default: Any,
     *,
     materializer: Materializer | None = None,
     advanced: bool = False,
     **kwargs: Any,
-) -> FieldInfo:
+) -> Any:
     """Declare a settings field as HOT-reloadable from a DB override.
 
     Thin wrapper over :func:`app.core.utils.pydantic.field_with_metadata` that
@@ -226,6 +299,11 @@ def hot_field(
     rides the same channel under the ``"advanced"`` key, read back by
     :func:`is_advanced_field`; it is display-only metadata and does not affect
     override eligibility.
+
+    Like :func:`~app.core.utils.pydantic.field_with_metadata`, the overloads
+    follow pydantic's ``Field`` so a type checker compares the default with the
+    field's annotation. The same holds for :func:`nested_overridable_field` and
+    :func:`not_overridable_field`.
 
     :param default: The field's default value, passed positionally to ``Field``.
     :type default: Any
@@ -661,9 +739,10 @@ def materialize_override_value(
     return coerce_field_value(field_info, raw)
 
 
+@_field_contract
 def nested_overridable_field(
     default: Any, *, advanced: bool = False, **kwargs: Any
-) -> FieldInfo:
+) -> Any:
     """Declare a nested-model field whose children may be overridden by DB rows.
 
     The parent field itself rejects whole-object override
@@ -692,9 +771,10 @@ def nested_overridable_field(
     return field_with_metadata(default, metadata=metadata, **kwargs)
 
 
+@_field_contract
 def not_overridable_field(
     default: Any, *, advanced: bool = False, **kwargs: Any
-) -> FieldInfo:
+) -> Any:
     """Declare a settings field as explicitly NOT overridable from a DB row.
 
     Mirrors :func:`hot_field` but attaches

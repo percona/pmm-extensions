@@ -16,11 +16,14 @@
 """Test settings-override classification, resolution, and PATCH preservation."""
 
 import functools
+from datetime import timedelta
 from string import Template
-from typing import ClassVar
+from typing import Any, assert_type, ClassVar
 
 import pytest
+from annotated_types import Ge
 from pydantic import BaseModel, computed_field, Field, SecretBytes, SecretStr
+from pydantic.fields import FieldInfo
 
 from app.core.alerts.config import AlertSettings
 from app.core.alerts.models import BaseAlertProvider
@@ -31,6 +34,7 @@ from app.core.settings_override.registry import (
     computed_field_info,
     field_materializer,
     field_reload_classification,
+    FieldMarkerKey,
     hot_field,
     hot_field_names,
     is_advanced_field,
@@ -42,12 +46,14 @@ from app.core.settings_override.registry import (
     materialize_via_owning_model,
     MaterializerContext,
     MaterializerPurpose,
+    nested_overridable_field,
     nested_overridable_field_names,
+    not_overridable_field,
     ReloadClassification,
     unwrap_secrets_for_storage,
 )
 from app.core.settings_override.resolution import resolve_nested_field_metadata
-from app.core.utils.pydantic import field_with_metadata
+from app.core.utils.pydantic import CustomFieldMetadata, field_with_metadata
 from app.extensions.config import ExtensionsSettings
 from app.extensions.snippets.config import SnippetsSettings
 from app.inventory.config import InventorySettings
@@ -727,3 +733,128 @@ class TestSettingsInternalTokenKeys:
         """Assert ``BASE_DIR`` is listed: matching ``model_dump()`` adds every computed key."""
         keys = {meta.key for meta in iter_class_fields(Settings)}
         assert "BASE_DIR" in keys
+
+
+_HELPER_PARAMS = [
+    pytest.param(hot_field, ReloadClassification.HOT, id="hot_field"),
+    pytest.param(
+        nested_overridable_field,
+        ReloadClassification.NESTED_ONLY,
+        id="nested_overridable_field",
+    ),
+    pytest.param(
+        not_overridable_field,
+        ReloadClassification.NOT_OVERRIDABLE,
+        id="not_overridable_field",
+    ),
+]
+
+
+def _markers(field: Any) -> dict[Any, Any]:
+    """Return the custom metadata a helper attached to ``field``."""
+    assert isinstance(field, FieldInfo)
+    return CustomFieldMetadata.field_to_dict(field, strict=True)
+
+
+@pytest.mark.parametrize(("helper", "classification"), _HELPER_PARAMS)
+class TestFieldHelpers:
+    """Test the behavior every reload-classification helper shares."""
+
+    def test_attaches_only_its_reload_marker(self, helper, classification) -> None:
+        """Attach the helper's reload classification and nothing else."""
+        assert _markers(helper(1)) == {FieldMarkerKey.RELOAD: classification}
+
+    def test_advanced_adds_the_advanced_marker(self, helper, classification) -> None:
+        """Attach the ``advanced`` marker only when the flag is set."""
+        assert _markers(helper(1, advanced=True)) == {
+            FieldMarkerKey.RELOAD: classification,
+            FieldMarkerKey.ADVANCED: True,
+        }
+
+    def test_keeps_the_default(self, helper, classification) -> None:
+        """Keep the positional default as the field's default."""
+        field = helper("x")
+
+        assert isinstance(field, FieldInfo)
+        assert field.default == "x"
+        assert not field.is_required()
+
+    def test_forwards_field_kwargs(self, helper, classification) -> None:
+        """Forward the remaining keyword arguments to ``Field``."""
+        field = helper(1, ge=0, alias="other", validate_default=True)
+
+        assert isinstance(field, FieldInfo)
+        assert Ge(0) in field.metadata
+        assert field.alias == "other"
+        assert field.validate_default is True
+
+    def test_requires_a_default(self, helper, classification) -> None:
+        """Raise ``TypeError`` when the default is omitted."""
+        with pytest.raises(TypeError, match="default"):
+            helper()
+
+
+# The invalid-assignment suppressions below are assertions:
+# ``unused-ignore-comment`` is an error, so a helper that stops checking its
+# default against the annotation fails ``make typecheck``. Keep this file out
+# of every ``[[tool.ty.overrides]]`` include list.
+class TestHotFieldTyping:
+    """Test that hot_field follows pydantic Field's overloads."""
+
+    def test_explicit_default_returns_its_type(self) -> None:
+        """Type an explicit default as the default's own type."""
+        assert_type(hot_field(timedelta(minutes=5)), timedelta)
+        assert_type(
+            hot_field(timedelta(minutes=5), advanced=True, materializer=None),
+            timedelta,
+        )
+
+    def test_unchecked_forms_return_any(self) -> None:
+        """Return ``Any`` for ``...`` and for ``validate_default=True``."""
+        assert_type(hot_field(...), Any)
+        assert_type(hot_field("5m", validate_default=True), Any)
+
+    def test_mismatched_default_is_reported(self) -> None:
+        """Report a default whose type contradicts the annotation."""
+        mismatched: int = hot_field(timedelta())  # ty: ignore[invalid-assignment]
+        assert mismatched is not None
+
+
+class TestNestedOverridableFieldTyping:
+    """Test that nested_overridable_field follows pydantic Field's overloads."""
+
+    def test_explicit_default_returns_its_type(self) -> None:
+        """Type an explicit default as the default's own type."""
+        assert_type(nested_overridable_field(timedelta(), advanced=True), timedelta)
+
+    def test_unchecked_forms_return_any(self) -> None:
+        """Return ``Any`` for ``...`` and for ``validate_default=True``."""
+        assert_type(nested_overridable_field(...), Any)
+        assert_type(nested_overridable_field("5m", validate_default=True), Any)
+
+    def test_mismatched_default_is_reported(self) -> None:
+        """Report a default whose type contradicts the annotation."""
+        mismatched: int = nested_overridable_field(  # ty: ignore[invalid-assignment]
+            timedelta()
+        )
+        assert mismatched is not None
+
+
+class TestNotOverridableFieldTyping:
+    """Test that not_overridable_field follows pydantic Field's overloads."""
+
+    def test_explicit_default_returns_its_type(self) -> None:
+        """Type an explicit default as the default's own type."""
+        assert_type(not_overridable_field(timedelta(), advanced=True), timedelta)
+
+    def test_unchecked_forms_return_any(self) -> None:
+        """Return ``Any`` for ``...`` and for ``validate_default=True``."""
+        assert_type(not_overridable_field(...), Any)
+        assert_type(not_overridable_field("5m", validate_default=True), Any)
+
+    def test_mismatched_default_is_reported(self) -> None:
+        """Report a default whose type contradicts the annotation."""
+        mismatched: int = not_overridable_field(  # ty: ignore[invalid-assignment]
+            timedelta()
+        )
+        assert mismatched is not None
