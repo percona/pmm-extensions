@@ -17,9 +17,11 @@
 
 import base64
 import json
+import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 from uuid import UUID
@@ -488,7 +490,47 @@ class TestBuildStep:
             "verify", "node00", _spec(OperatingSystem.UBUNTU)
         )
 
-        assert action == _mongosh_eval("db.adminCommand('ping').ok", 27017)
+        ping = _mongosh_eval_command("db.adminCommand('ping').ok", 27017)
+        assert f"{ping} || rc=$?" in _body(action.command)
+        assert action.timeout_s == _mongosh_eval("", 27017).timeout_s
+
+    def test_pre_check_looks_for_mongod_outside_sudo_s_path(self) -> None:
+        """Look where a tarball mongod lands, which ``sudo``'s PATH leaves out."""
+        action = PackagesInstallStrategy().build_step(
+            "pre_check", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+
+        body = _body(action.command)
+        assert "command -v mongod" in body
+        assert " /usr/local/bin/mongod " in body
+        # Unquoted, so the host expands the glob.
+        assert " /opt/*/bin/mongod;" in body
+        assert "mongod is already installed at $m" in body
+
+    def test_pre_check_checks_the_spec_port_is_free(self) -> None:
+        """Check the port the new mongod will use, with ``ss`` and a fallback."""
+        spec = _spec(OperatingSystem.UBUNTU).model_copy(update={"port": 27018})
+        action = PackagesInstallStrategy().build_step("pre_check", "node00", spec)
+
+        body = _body(action.command)
+        assert "port=27018\n" in body
+        assert 'ss -Hltnp "sport = :$port"' in body
+        assert "/proc/net/tcp /proc/net/tcp6" in body
+        assert "pre_check: port $port is already in use ($held)" in body
+
+    @pytest.mark.parametrize("step_name", ["start_service", "verify"])
+    def test_a_step_starting_mongod_prints_why_it_did_not_come_up(
+        self, step_name: str
+    ) -> None:
+        """Print the journal and mongod's log errors, keeping the exit code."""
+        action = PackagesInstallStrategy().build_step(
+            step_name, "node00", _spec(OperatingSystem.UBUNTU)
+        )
+
+        body = _body(action.command)
+        assert "journalctl -u mongod --no-pager -n 20 >&2" in body
+        assert "/var/log/mongodb/mongod.log" in body
+        assert 'om_mongod_why; exit "$rc"' in body
 
 
 class TestPlanRunSteps:
@@ -939,16 +981,20 @@ def _recording_bin(tmp_path: Path, fakes: list[str]) -> Path:
     return bin_dir
 
 
-def _fake_bin(tmp_path: Path, *, with_mongod: bool) -> Path:
+def _fake_bin(tmp_path: Path, *, with_mongod: bool, ss_output: str = "") -> Path:
     """Build a ``PATH`` directory with the real tools pre_check needs and fake ones.
+
+    ``ss`` is always a fake, so the port check answers about the test's listeners
+    rather than whatever the machine running the tests happens to have on 27017.
 
     :param tmp_path: The test's scratch directory.
     :param with_mongod: Whether a ``mongod`` is on this ``PATH``.
+    :param ss_output: What the fake ``ss`` prints: nothing for a free port.
     :return: The directory.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for tool in ("df", "tail", "ls", "dirname"):
+    for tool in ("df", "tail", "ls", "dirname", "sed", "head"):
         real = shutil.which(tool)
         assert real is not None
         (bin_dir / tool).symlink_to(real)
@@ -957,6 +1003,9 @@ def _fake_bin(tmp_path: Path, *, with_mongod: bool) -> Path:
         path = bin_dir / fake
         path.write_text("#!/bin/sh\nexit 0\n")
         path.chmod(0o755)
+    ss = bin_dir / "ss"
+    ss.write_text(f"#!/bin/sh\nprintf '%s' {shlex.quote(ss_output)}\n")
+    ss.chmod(0o755)
     return bin_dir
 
 
@@ -967,21 +1016,26 @@ class TestPreCheckCommand:
     def paths(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> tuple[Path, Path]:
-        """Point the config path at a scratch path, with a 1-byte minimum."""
+        """Point the fixed paths at scratch paths, with a 1-byte minimum."""
         config = tmp_path / "mongod.conf"
         data = tmp_path / "data"
         monkeypatch.setattr(packages, "CONFIG_PATH", str(config))
         monkeypatch.setattr(packages, "MIN_DATA_DISK_BYTES", 1)
+        monkeypatch.setattr(
+            packages,
+            "EXTRA_MONGOD_DIRS",
+            (str(tmp_path / "usr-local-bin"), str(tmp_path / "opt" / "*" / "bin")),
+        )
         return config, data
 
     def _run(
-        self, tmp_path: Path, *, with_mongod: bool = False
+        self, tmp_path: Path, *, with_mongod: bool = False, ss_output: str = ""
     ) -> subprocess.CompletedProcess[str]:
         spec = _spec(OperatingSystem.UBUNTU).model_copy(
             update={"data_path": str(tmp_path / "data")}
         )
         action = PackagesInstallStrategy().build_step("pre_check", "node00", spec)
-        bin_dir = _fake_bin(tmp_path, with_mongod=with_mongod)
+        bin_dir = _fake_bin(tmp_path, with_mongod=with_mongod, ss_output=ss_output)
         return subprocess.run(
             [_SH, "-c", _body(action.command)],
             capture_output=True,
@@ -1016,6 +1070,88 @@ class TestPreCheckCommand:
 
         assert result.returncode != 0
         assert "mongod is already installed" in result.stderr
+
+    @pytest.mark.parametrize(
+        "where", [("usr-local-bin",), ("opt", "mongodb-linux-x86_64-8.0.4", "bin")]
+    )
+    def test_fails_when_mongod_is_outside_sudo_s_path(
+        self, tmp_path: Path, paths: tuple[Path, Path], where: tuple[str, ...]
+    ) -> None:
+        """Fail on a tarball mongod ``command -v`` cannot see, naming where it is.
+
+        :param where: The directory under ``tmp_path`` the mongod is in.
+        """
+        directory = tmp_path.joinpath(*where)
+        directory.mkdir(parents=True)
+        mongod = directory / "mongod"
+        mongod.write_text("#!/bin/sh\nexit 0\n")
+        mongod.chmod(0o755)
+
+        result = self._run(tmp_path)
+
+        assert result.returncode != 0
+        assert result.stderr == f"pre_check: mongod is already installed at {mongod}\n"
+
+    def test_fails_when_ss_reports_a_listener_naming_its_process(
+        self, tmp_path: Path, paths: tuple[Path, Path]
+    ) -> None:
+        """Fail when the port is taken, naming the process ``ss`` says holds it."""
+        result = self._run(
+            tmp_path,
+            ss_output="LISTEN 0 4096 0.0.0.0:27017 0.0.0.0:* "
+            'users:(("mongod",pid=812,fd=11))\n',
+        )
+
+        assert result.returncode != 0
+        assert result.stderr == (
+            "pre_check: port 27017 is already in use (pid 812, mongod)\n"
+        )
+
+    def test_fails_when_ss_reports_a_listener_it_cannot_attribute(
+        self, tmp_path: Path, paths: tuple[Path, Path]
+    ) -> None:
+        """Still fail when ``ss`` shows no process, which it does for non-root."""
+        result = self._run(
+            tmp_path, ss_output="LISTEN 0 4096 0.0.0.0:27017 0.0.0.0:*\n"
+        )
+
+        assert result.returncode != 0
+        assert "port 27017 is already in use (held by an unknown process)" in (
+            result.stderr
+        )
+
+    @pytest.mark.skipif(
+        not Path("/proc/net/tcp").exists(), reason="needs Linux's /proc/net/tcp"
+    )
+    def test_falls_back_to_proc_without_ss(
+        self, tmp_path: Path, paths: tuple[Path, Path]
+    ) -> None:
+        """Find a real listener through ``/proc/net/tcp`` on a host with no ``ss``."""
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            spec = _spec(OperatingSystem.UBUNTU).model_copy(
+                update={"data_path": str(tmp_path / "data"), "port": port}
+            )
+            action = PackagesInstallStrategy().build_step("pre_check", "node00", spec)
+            bin_dir = _fake_bin(tmp_path, with_mongod=False)
+            (bin_dir / "ss").unlink()
+            for tool in ("awk", "find", "cat"):
+                real = shutil.which(tool)
+                assert real is not None
+                (bin_dir / tool).symlink_to(real)
+
+            result = subprocess.run(
+                [_SH, "-c", _body(action.command)],
+                capture_output=True,
+                text=True,
+                env={"PATH": str(bin_dir)},
+                check=False,
+            )
+
+        assert result.returncode != 0
+        assert f"port {port} is already in use (pid {os.getpid()}, " in result.stderr
 
     def test_fails_when_the_config_file_exists(
         self, tmp_path: Path, paths: tuple[Path, Path]
@@ -1110,6 +1246,117 @@ class TestPreCheckCommand:
 
         assert result.returncode == 0, result.stderr
         assert log.read_text().splitlines() == [str(mount_point)]
+
+
+#: One error entry of mongod's JSON log, as the port-taken failure writes it.
+_LISTENER_ERROR = (
+    '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"E","c":"NETWORK",'
+    '"id":23024,"ctx":"initandlisten","msg":"Error setting up listener",'
+    '"attr":{"error":{"code":9001,"codeName":"SocketException",'
+    '"errmsg":"Address already in use"}}}'
+)
+
+
+class TestMongodDiagnostics:
+    """Run start_service and verify for real, with a mongod that will not come up."""
+
+    def _run(
+        self,
+        tmp_path: Path,
+        step_name: str,
+        *,
+        fails: bool,
+        log_lines: list[str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run one step with ``systemctl``/``mongosh``/``journalctl`` faked.
+
+        :param tmp_path: The test's scratch directory.
+        :param step_name: ``start_service`` or ``verify``.
+        :param fails: Whether ``systemctl restart`` and ``mongosh`` fail.
+        :param log_lines: mongod's log, or ``None`` for no log file at all.
+        :return: The finished process.
+        """
+        log = tmp_path / "mongod.log"
+        if log_lines is not None:
+            log.write_text("".join(f"{line}\n" for line in log_lines))
+        spec = _spec(OperatingSystem.UBUNTU).model_copy(update={"log_path": str(log)})
+        action = PackagesInstallStrategy().build_step(step_name, "node00", spec)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        for tool in ("tail", "grep"):
+            real = shutil.which(tool)
+            assert real is not None
+            (bin_dir / tool).symlink_to(real)
+        failing = (
+            '[ "$1" = enable ] && exit 0\n'
+            'echo "Job for mongod.service failed." >&2\nexit 1\n'
+        )
+        fakes = {
+            "systemctl": failing if fails else "exit 0\n",
+            "mongosh": "exit 1\n" if fails else "exit 0\n",
+            "journalctl": 'echo "mongod.service: Failed with result exit-code."\n',
+        }
+        for name, script in fakes.items():
+            path = bin_dir / name
+            path.write_text(f"#!/bin/sh\n{script}")
+            path.chmod(0o755)
+        return subprocess.run(
+            [_SH, "-c", _body(action.command)],
+            capture_output=True,
+            text=True,
+            env={"PATH": str(bin_dir)},
+            check=False,
+        )
+
+    @pytest.mark.parametrize("step_name", ["start_service", "verify"])
+    def test_ends_stderr_with_mongod_s_own_error(
+        self, tmp_path: Path, step_name: str
+    ) -> None:
+        """End with the log's error entry, the part a capped detail keeps."""
+        result = self._run(
+            tmp_path,
+            step_name,
+            fails=True,
+            log_lines=[
+                '{"s":"I","msg":"Build Info"}',
+                _LISTENER_ERROR,
+                '{"s":"I","msg":"Shutting down","attr":{"exitCode":48}}',
+            ],
+        )
+
+        assert result.returncode == 1
+        assert "mongod.service: Failed with result exit-code." in result.stderr
+        assert result.stderr.rstrip().endswith(_LISTENER_ERROR)
+
+    def test_prints_the_log_s_end_when_it_has_no_error_entry(
+        self, tmp_path: Path
+    ) -> None:
+        """Print the last lines of a log without error entries, rather than nothing."""
+        result = self._run(
+            tmp_path, "start_service", fails=True, log_lines=["plain text line"]
+        )
+
+        assert result.returncode == 1
+        assert result.stderr.rstrip().endswith("plain text line")
+
+    def test_survives_a_missing_log(self, tmp_path: Path) -> None:
+        """Still fail with the command's own code when there is no log to read."""
+        result = self._run(tmp_path, "start_service", fails=True)
+
+        assert result.returncode == 1
+        assert "Failed with result exit-code." in result.stderr
+
+    @pytest.mark.parametrize("step_name", ["start_service", "verify"])
+    def test_says_nothing_when_mongod_comes_up(
+        self, tmp_path: Path, step_name: str
+    ) -> None:
+        """Print no diagnostics for a step that succeeded."""
+        result = self._run(
+            tmp_path, step_name, fails=False, log_lines=[_LISTENER_ERROR]
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
 
 
 class TestRollbackCommands:

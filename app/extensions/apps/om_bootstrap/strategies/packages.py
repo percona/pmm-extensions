@@ -35,12 +35,12 @@ never an encryption block, so a run today gets neither.
 
 Rollback never touches a MongoDB this run did not install: ``pre_check``
 refuses a host that already has one (:data:`CONFIG_PATH`, a non-empty
-``spec.data_path``, or ``mongod`` on ``PATH``), ``install_package`` then writes
-this run's id to :data:`OWNERSHIP_MARKER_PATH` before installing anything, and
-every rollback step is a no-op on a host whose marker does not hold this run's
-id. The marker outlives a successful run, so a later run that fails
-``pre_check`` on the same host and rolls back leaves the earlier run's MongoDB
-intact.
+``spec.data_path``, or ``mongod`` on ``PATH`` or in :data:`EXTRA_MONGOD_DIRS`),
+``install_package`` then writes this run's id to :data:`OWNERSHIP_MARKER_PATH`
+before installing anything, and every rollback step is a no-op on a host whose
+marker does not hold this run's id. The marker outlives a successful run, so a
+later run that fails ``pre_check`` on the same host and rolls back leaves the
+earlier run's MongoDB intact.
 """
 
 import base64
@@ -77,6 +77,17 @@ OWNERSHIP_MARKER_PATH = "/etc/mongod.om-bootstrap"
 #: exactly — see :meth:`PackagesInstallStrategy._configure_mongod`. Fixed for
 #: the same reason as :data:`KEY_FILE_PATH`.
 PID_FILE_PATH = "/var/run/mongod.pid"
+
+#: Where ``pre_check`` looks for an existing ``mongod`` besides ``PATH``. Steps run
+#: under ``sudo``, whose ``secure_path`` (``/sbin:/bin:/usr/sbin:/usr/bin`` on both
+#: supported OSes) leaves out where a tarball install usually lands, so
+#: ``command -v`` alone passed a host with ``/usr/local/bin/mongod`` and the install
+#: went on to put a second ``mongod`` beside it. Shell glob patterns: ``*`` is
+#: expanded on the host, everything else is matched literally.
+EXTRA_MONGOD_DIRS = ("/usr/local/bin", "/opt/*/bin")
+
+#: How many lines of ``mongod``'s journal :func:`_mongod_diagnostics` prints.
+JOURNAL_TAIL_LINES = 20
 
 #: Minimum free space at ``spec.data_path`` ``pre_check`` requires, in bytes.
 #: 5 GiB — generous for phase-1's single-member/three-member replica sets, not a
@@ -175,6 +186,161 @@ def _with_loopback(bind_ip: str) -> str:
     if _REACHES_LOOPBACK.intersection(bind_ip.lower().split(",")):
         return bind_ip
     return f"{LOOPBACK_ADDRESS},{bind_ip}"
+
+
+def _glob_word(pattern: str) -> str:
+    """Quote a path pattern for the shell, leaving its ``*`` wildcards live.
+
+    :param pattern: A path that may contain ``*``.
+    :return: The pattern as one shell word: every literal part quoted, every ``*``
+        left for the shell to expand.
+    """
+    return "*".join(shlex.quote(part) if part else "" for part in pattern.split("*"))
+
+
+def _existing_mongod_check() -> str:
+    """Build the ``pre_check`` lines refusing a host that already has a ``mongod``.
+
+    ``command -v`` finds one on ``PATH``; :data:`EXTRA_MONGOD_DIRS` covers where a
+    tarball install lands outside ``sudo``'s ``secure_path``. The message names
+    where it was found, so the operator knows which install to look at. A pattern
+    that matches nothing stays a literal word, and the ``-x`` test rejects it.
+
+    :return: The shell lines.
+    """
+    candidates = " ".join(
+        _glob_word(posixpath.join(directory, "mongod"))
+        for directory in EXTRA_MONGOD_DIRS
+    )
+    return "\n".join(
+        [
+            f'for m in "$(command -v mongod 2>/dev/null || true)" {candidates}; do',
+            '  if [ -n "$m" ] && [ -x "$m" ]; then',
+            '    echo "pre_check: mongod is already installed at $m" >&2; exit 1',
+            "  fi",
+            "done",
+        ]
+    )
+
+
+#: Turns one line of ``ss -p`` output into ``pid N, NAME`` for the first process
+#: it lists, e.g. ``users:(("mongod",pid=812,fd=11))`` into ``pid 812, mongod``.
+_SS_HOLDER_SED = r's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/pid \2, \1/p'
+
+
+def _port_free_check(port: int) -> str:
+    """Build the ``pre_check`` lines refusing a port something already listens on.
+
+    Without this the install went all the way to ``start_service``, where the only
+    account of it was systemd's "see journalctl" - the real reason, ``Address
+    already in use``, stayed in mongod's own log on the node.
+
+    ``ss`` first, with ``-p`` so the message names the process holding the port
+    (``pre_check`` runs as root, so every process is visible). A host without
+    ``ss``, or whose ``ss`` refuses the arguments, falls back to the kernel's own
+    tables, ``/proc/net/tcp`` and ``tcp6``, where the port is the hex after the
+    local address's colon and state ``0A`` is ``LISTEN``; the holder is then the
+    process with a descriptor on that socket's inode, when ``find`` can see one.
+    Either way a listener on any address counts: one that overlaps ``bindIp`` at
+    all still fails mongod's start.
+
+    :param port: The port the new ``mongod`` will listen on.
+    :return: The shell lines.
+    """
+    return "\n".join(
+        [
+            f"port={port}",
+            "held=''",
+            "if command -v ss >/dev/null 2>&1 &&"
+            ' listeners=$(ss -Hltnp "sport = :$port" 2>/dev/null); then',
+            '  if [ -n "$listeners" ]; then',
+            f"    held=$(printf '%s\\n' \"$listeners\" | sed -n '{_SS_HOLDER_SED}'"
+            " | head -n 1)",
+            '    [ -n "$held" ] || held="held by an unknown process"',
+            "  fi",
+            "else",
+            "  hex=$(printf '%04X' \"$port\")",
+            "  for table in /proc/net/tcp /proc/net/tcp6; do",
+            '    [ -r "$table" ] || continue',
+            '    inode=$(awk -v p=":$hex"'
+            ' \'$2 ~ (p "$") && $4 == "0A" { print $10; exit }\' "$table")',
+            '    [ -n "$inode" ] || continue',
+            "    fd=$(find /proc/[0-9]*/fd -maxdepth 1"
+            ' -lname "socket:\\[$inode\\]" 2>/dev/null | head -n 1)',
+            "    pid=${fd#/proc/}; pid=${pid%%/*}",
+            '    if [ -n "$pid" ]; then',
+            '      held="pid $pid, $(cat "/proc/$pid/comm" 2>/dev/null)"',
+            "    else",
+            '      held="held by an unknown process"',
+            "    fi",
+            "    break",
+            "  done",
+            "fi",
+            'if [ -n "$held" ]; then',
+            '  echo "pre_check: port $port is already in use ($held)" >&2; exit 1',
+            "fi",
+        ]
+    )
+
+
+def _mongod_diagnostics(spec: BootstrapSpec) -> str:
+    """Build a shell function printing why ``mongod`` did not come up, to stderr.
+
+    A failed ``systemctl restart`` says only "see journalctl", and a failed
+    ``ping`` only that nothing answered; the reason (``Address already in use``, a
+    data directory it cannot lock) stays on the node unless the step prints it.
+    Only stderr leaves the node, and only its end survives into the step's detail
+    (:data:`~app.extensions.apps.shared.om.task_failure.MAX_ERROR_DETAIL`), so the
+    most specific part goes last: the unit's journal first, then the error and
+    fatal entries near the end of mongod's own log - severity ``E``/``F`` in its
+    JSON log lines. A log with none of those prints its last few lines instead, so
+    the step still says something.
+
+    No part can fail the step: it is already failing, and the exit code that says
+    so is the command's, not this function's.
+
+    :param spec: The host's bootstrap spec; its log path is read.
+    :return: The shell function definition, called ``om_mongod_why``.
+    """
+    log = shlex.quote(spec.log_path)
+    return "\n".join(
+        [
+            "om_mongod_why() {",
+            '  echo "mongod did not come up; its journal and log say:" >&2',
+            "  if command -v journalctl >/dev/null 2>&1; then",
+            f"    journalctl -u mongod --no-pager -n {JOURNAL_TAIL_LINES} >&2 || true",
+            "  fi",
+            f"  if [ -r {log} ]; then",
+            f'    errors=$(tail -n 200 {log} | grep -E \'"s":"[EF]"\' | tail -n 3)'
+            " || true",
+            '    if [ -n "$errors" ]; then',
+            "      printf '%s\\n' \"$errors\" >&2",
+            "    else",
+            f"      tail -n 5 {log} >&2 || true",
+            "    fi",
+            "  fi",
+            "}",
+        ]
+    )
+
+
+def _run_or_explain(command: str) -> str:
+    """Run ``command``, and if it fails, say why mongod is down before exiting.
+
+    The command's own exit code is kept, so a step's failure still means what it
+    did; only the diagnostics are added in front of it.
+
+    :param command: One shell command.
+    :return: The shell lines, which call ``om_mongod_why`` from
+        :func:`_mongod_diagnostics`.
+    """
+    return "\n".join(
+        [
+            "rc=0",
+            f"{command} || rc=$?",
+            'if [ "$rc" -ne 0 ]; then om_mongod_why; exit "$rc"; fi',
+        ]
+    )
 
 
 def _mongod_config(spec: BootstrapSpec, host: str, *, with_auth: bool) -> str:
@@ -451,8 +617,8 @@ class PackagesInstallStrategy:
 
         - **OS**: the OS's package manager is present.
         - **Path**: no MongoDB already lives on the host — no ``mongod`` on
-          ``PATH``, no :data:`CONFIG_PATH`, and ``spec.data_path`` absent or
-          empty. This is also what makes rollback safe: ``install_package``
+          ``PATH`` or in :data:`EXTRA_MONGOD_DIRS`, no :data:`CONFIG_PATH`, and
+          ``spec.data_path`` absent or empty. This is also what makes rollback safe: ``install_package``
           claims the host for its run with :data:`OWNERSHIP_MARKER_PATH` only
           after this passed, and rollback removes nothing unless that marker
           holds its own run's id.
@@ -464,11 +630,14 @@ class PackagesInstallStrategy:
           ``/mnt/mongo/data`` can be absent while ``/mnt/mongo`` is a distinct,
           already-mounted volume. The loop terminates because ``dirname`` of
           ``/`` is ``/``.
+        - **Port**: nothing listens on ``spec.port`` yet - see
+          :func:`_port_free_check`.
 
         Each failed check names itself on stderr, and a free-space figure ``df``
         could not produce fails the check rather than passing it.
 
-        :param spec: The host's bootstrap spec; its OS and data path are read.
+        :param spec: The host's bootstrap spec; its OS, data path and port are
+            read.
         :return: The step action.
         """
         pkg_manager = self._require_package_manager(spec.os)
@@ -477,8 +646,7 @@ class PackagesInstallStrategy:
             [
                 f"command -v {pkg_manager} >/dev/null 2>&1 || "
                 f'{{ echo "pre_check: {pkg_manager} not found" >&2; exit 1; }}',
-                "if command -v mongod >/dev/null 2>&1; then "
-                'echo "pre_check: mongod is already installed" >&2; exit 1; fi',
+                _existing_mongod_check(),
                 f"if [ -e {CONFIG_PATH} ]; then "
                 f'echo "pre_check: {CONFIG_PATH} already exists" >&2; exit 1; fi',
                 f'if [ -d {data_path} ] && [ -n "$(ls -A {data_path})" ]; then '
@@ -492,6 +660,7 @@ class PackagesInstallStrategy:
                 f'if [ "$avail" -lt {MIN_DATA_DISK_BYTES} ]; then '
                 f'echo "pre_check: less than {MIN_DATA_DISK_BYTES} bytes free '
                 'for the data directory" >&2; exit 1; fi',
+                _port_free_check(spec.port),
             ]
         )
         return _shell_step(body)
@@ -628,7 +797,7 @@ class PackagesInstallStrategy:
         )
         return _shell_step(command)
 
-    def _start_service(self, spec: BootstrapSpec) -> StepAction:  # noqa: ARG002
+    def _start_service(self, spec: BootstrapSpec) -> StepAction:
         """Enable the ``mongod`` systemd unit and (re)start it on the config just written.
 
         Explicitly ``restart``, not ``enable --now``: ``install_package`` may have
@@ -645,20 +814,34 @@ class PackagesInstallStrategy:
         does not, and ``restart`` is correct for both, since restarting a unit
         that ``install_package`` never started behaves exactly like starting it.
 
-        :param spec: The host's bootstrap spec. Unused.
+        A failed restart prints mongod's journal and log errors before exiting
+        with ``systemctl``'s own code - see :func:`_mongod_diagnostics`.
+
+        :param spec: The host's bootstrap spec; its log path is read.
         :return: The step action.
         """
         return _shell_step(
-            "systemctl enable mongod && systemctl restart mongod", timeout_s=60
+            f"{_mongod_diagnostics(spec)}\n"
+            "systemctl enable mongod\n"
+            f"{_run_or_explain('systemctl restart mongod')}\n",
+            timeout_s=60,
         )
 
     def _verify(self, spec: BootstrapSpec) -> StepAction:
         """Confirm ``mongod`` answers before declaring this host done.
 
-        :param spec: The host's bootstrap spec; only its port is read.
+        ``start_service`` can succeed with mongod dying right after (see
+        :meth:`_configure_mongod`), so this is often where a mongod that never
+        came up is first seen; a failed ``ping`` prints mongod's journal and log
+        errors before exiting with mongosh's own code.
+
+        :param spec: The host's bootstrap spec; its port and log path are read.
         :return: The step action.
         """
-        return _mongosh_eval("db.adminCommand('ping').ok", spec.port)
+        ping = _mongosh_eval_command("db.adminCommand('ping').ok", spec.port)
+        return _shell_step(
+            f"{_mongod_diagnostics(spec)}\n{_run_or_explain(ping)}\n", timeout_s=60
+        )
 
     def _require_package_manager(self, os_: OperatingSystem) -> str:
         """Map a supported OS to its package manager, or reject an unsupported one.
