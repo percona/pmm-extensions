@@ -30,7 +30,6 @@ import argparse
 import logging
 import shutil
 import sys
-from configparser import ConfigParser
 from pathlib import Path
 from typing import Any
 
@@ -443,34 +442,6 @@ class MySQLPreChecks:
         if self.connection:
             self.connection.close()
             self.logger.info("MySQL connection closed")
-
-    def read_my_cnf(self, config_file: str) -> dict:
-        """Read MySQL configuration from .my.cnf file.
-
-        Args:
-            config_file: Path to .my.cnf file. Defaults to ~/.my.cnf
-
-        Returns:
-            dict: Configuration parameters
-
-        """
-        if config_file is None:
-            config_file = Path.expanduser("~/.my.cnf")
-
-        config = {}
-        if Path.exists(config_file):
-            parser = ConfigParser()
-            parser.read(config_file)
-
-            # Read from [client] section
-            if parser.has_section("client"):
-                config.update(dict(parser.items("client")))
-
-            # Read from [mysql] section
-            if parser.has_section("mysql"):
-                config.update(dict(parser.items("mysql")))
-
-        return config
 
 
 def load_yaml_config(config_file: str) -> dict[str, Any]:

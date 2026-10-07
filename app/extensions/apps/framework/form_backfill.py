@@ -92,18 +92,6 @@ class AppBackfillStats:
     skipped_invalid: int = 0
     skipped_error: int = 0
 
-    @property
-    def processed(self) -> int:
-        """Return the total number of tasks considered for this app."""
-        return (
-            self.stamped
-            + self.repaired
-            + self.skipped_existing
-            + self.skipped_unreconstructable
-            + self.skipped_invalid
-            + self.skipped_error
-        )
-
 
 @dataclass
 class BackfillSummary:

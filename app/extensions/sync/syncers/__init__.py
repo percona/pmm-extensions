@@ -15,4 +15,7 @@
 
 from app.extensions.sync.syncers.mysql.syncer import MySQLSyncer
 from app.extensions.sync.syncers.pmm import PMMSyncer
-from app.extensions.sync.syncers.system_facts.syncer import SystemFactsSyncer
+from app.extensions.sync.syncers.system_facts.syncer import (
+    SystemFactsSyncer,
+    UnmeasuredHostFactsSyncer,
+)

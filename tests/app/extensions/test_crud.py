@@ -416,6 +416,124 @@ class TestSyncInstanceManagerHasRunSince:
 
 
 # ---------------------------------------------------------------------------
+# SyncItemManager.finished_entity_attempts (real session)
+# ---------------------------------------------------------------------------
+
+
+async def _record_attempt(
+    session,
+    syncer: str,
+    entity_id: int,
+    status: SyncStatusEnum,
+    *,
+    entity_type: SyncInventoryEntityTypeEnum = SyncInventoryEntityTypeEnum.NODE,
+    age: timedelta = _NO_AGE,
+) -> SyncItem:
+    """Persist one run of ``syncer`` holding a single item on ``entity_id``.
+
+    :param session: The real PMM Extensions session the rows are written through.
+    :param syncer: The ``get_name()`` form stored on the run.
+    :param entity_id: The entity the item attempted.
+    :param status: The item's status.
+    :param entity_type: The entity level of the item.
+    :param age: How long before now the item was created.
+    :return: The persisted item.
+    """
+    instance = SyncInstance(syncer=syncer, status=SyncStatusEnum.SUCCESS)
+    session.add(instance)
+    await session.commit()
+    await session.refresh(instance)
+    item = SyncItem(
+        entity_id=entity_id,
+        entity_type=entity_type,
+        status=status,
+        sync_instance_id=instance.id,
+        created_at=utc_now() - age,
+    )
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    return item
+
+
+class TestSyncItemManagerFinishedEntityAttempts:
+    """Test SyncItemManager.finished_entity_attempts against persisted runs."""
+
+    @pytest.mark.asyncio
+    async def test_returns_finished_attempts_oldest_first(self, session) -> None:
+        """Return the syncer's SUCCESS and FAILED items on the entities, by age."""
+        newer = await _record_attempt(session, _LEADER, 1, SyncStatusEnum.SUCCESS)
+        older = await _record_attempt(
+            session, _LEADER, 1, SyncStatusEnum.FAILED, age=timedelta(hours=1)
+        )
+
+        attempts = await SyncItemManager.finished_entity_attempts(
+            session, _LEADER, SyncInventoryEntityTypeEnum.NODE, [1]
+        )
+
+        assert [item.id for item in attempts] == [older.id, newer.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("syncer", "entity_id", "status", "entity_type"),
+        [
+            (
+                _OTHER_SYNCER,
+                1,
+                SyncStatusEnum.FAILED,
+                SyncInventoryEntityTypeEnum.NODE,
+            ),
+            (_LEADER, 2, SyncStatusEnum.FAILED, SyncInventoryEntityTypeEnum.NODE),
+            (_LEADER, 1, SyncStatusEnum.PENDING, SyncInventoryEntityTypeEnum.NODE),
+            (_LEADER, 1, SyncStatusEnum.RUNNING, SyncInventoryEntityTypeEnum.NODE),
+            (
+                _LEADER,
+                1,
+                SyncStatusEnum.FAILED,
+                SyncInventoryEntityTypeEnum.SERVICE,
+            ),
+        ],
+        ids=[
+            "another-syncer",
+            "another-entity",
+            "still-pending",
+            "still-running",
+            "another-entity-level",
+        ],
+    )
+    async def test_excludes_items_outside_the_filter(
+        self,
+        session,
+        syncer: str,
+        entity_id: int,
+        status: SyncStatusEnum,
+        entity_type: SyncInventoryEntityTypeEnum,
+    ) -> None:
+        """Leave out items of another syncer, entity or level, and unfinished ones."""
+        await _record_attempt(
+            session, syncer, entity_id, status, entity_type=entity_type
+        )
+
+        attempts = await SyncItemManager.finished_entity_attempts(
+            session, _LEADER, SyncInventoryEntityTypeEnum.NODE, [1]
+        )
+
+        assert attempts == []
+
+    @pytest.mark.asyncio
+    async def test_no_entities_issues_no_query(self, session, mocker) -> None:
+        """Answer an empty entity set without reaching the database."""
+        exec_ = mocker.spy(session, "exec")
+
+        attempts = await SyncItemManager.finished_entity_attempts(
+            session, _LEADER, SyncInventoryEntityTypeEnum.NODE, []
+        )
+
+        assert attempts == []
+        exec_.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # SyncItemManager.start_sync
 # ---------------------------------------------------------------------------
 

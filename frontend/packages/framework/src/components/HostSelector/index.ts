@@ -16,7 +16,6 @@
  */
 
 export { HostSelector } from './HostSelector';
-export type { HostSelectorProps } from './HostSelector';
 export { StandaloneHostSelector } from './StandaloneHostSelector';
 export { HostElevationWarning, snippetsLaunchedWithSudo } from './HostElevationWarning';
 export type {
@@ -25,6 +24,3 @@ export type {
   SnippetSudoRequirement,
 } from './HostElevationWarning';
 export type { StandaloneHostSelectorProps } from './StandaloneHostSelector';
-export { resolveExecutorHostForService } from './resolveExecutorHostForService';
-export type { ServiceHostResolveInput } from './resolveExecutorHostForService';
-export { isHostMismatch } from './isHostMismatch';
