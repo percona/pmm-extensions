@@ -612,27 +612,6 @@ async def test_get_children_entities(entity_type, mock_remote_api, created_servi
 
 
 @pytest.mark.asyncio
-async def test_get_sync_items(session: AsyncSession, mock_remote_api):
-    """Test retrieving multiple SyncItems for specified entities."""
-    sync_instance = await _create_sync_instance(session, StubTestSyncer)
-    syncer = _build_syncer(
-        StubTestSyncer,
-        session,
-        inventory_api=mock_remote_api,
-        sync_instance=sync_instance,
-    )
-
-    sync_items = await syncer.get_sync_items(
-        SyncInventoryEntityTypeEnum.INVENTORY, None
-    )
-
-    assert len(sync_items) == 1
-    assert sync_items[0].entity_type == SyncInventoryEntityTypeEnum.INVENTORY
-    assert sync_items[0].entity_id is None
-    assert sync_items[0].sync_instance_id == sync_instance.id
-
-
-@pytest.mark.asyncio
 async def test_manage_sync_item(session: AsyncSession, mock_remote_api):
     """Test managing the synchronization lifecycle of a SyncItem."""
     sync_instance = await _create_sync_instance(session, StubTestSyncer)

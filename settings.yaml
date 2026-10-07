@@ -30,7 +30,6 @@ default:
     PROVIDER:
       casdoor:
         endpoint: http://localhost:9999
-        front_endpoint: //:9999
         allowed_issuers:
           - http://localhost:9999
           - http://127.0.0.1:9999
@@ -426,11 +425,11 @@ default:
     # cadence differs from it. SYNCER takes the full BaseSyncer.get_name() form,
     # not the short EXTENSIONS.SYNCERS spelling. Rejected at validation if an entry
     # duplicates INVENTORY_SYNC_SYNCER, repeats another entry's syncer, or sits
-    # beside a sync-all default (an interval with no syncer pinned). While the pinned
-    # default above is seeded, an entry's first run waits for that syncer's first
-    # completed inventory sync, which then starts it if it has never run. An entry
-    # an operator-managed schedule already covers is not seeded, and that schedule
-    # does not wait. Example:
+    # beside a sync-all default (an interval with no syncer pinned). An entry runs
+    # on its own interval from bring-up. While the pinned default above is seeded,
+    # its runs also start an entry that has not run since that syncer's first
+    # completed inventory sync, so the entry reads that inventory. An entry an
+    # operator-managed schedule already covers is not seeded. Example:
     #   INVENTORY_SYNC_SCHEDULES:
     #     - SYNCER: app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer
     #       INTERVAL: 1 days
@@ -449,6 +448,7 @@ default:
       TIMEOUT: 10  # Request timeout in seconds
       MINIFY_PAYLOAD: True  # Minify payloads before dispatch
       LOG_SOCKET_READ_TIMEOUT: 10  # Socket read timeout for logs
+      LOG_STREAM_MAX_CONNECTIONS: 64  # Nomad connections live log follows may hold at once
     ANONYMIZER:
       DEFAULT_ENTITIES:
         - CREDIT_CARD
@@ -538,7 +538,6 @@ production_docker:
         client_id: redacted_match_casdoor_json
         client_secret: redacted_match_casdoor_json
         endpoint: http://127.0.0.1:8000
-        front_endpoint: //:9999
         organization_name: extensions
   CELERY:
     BEAT_DBURI: postgresql://postgres:xxx@extensions-db:5432

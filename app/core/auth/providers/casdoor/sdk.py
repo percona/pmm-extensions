@@ -16,9 +16,7 @@
 """Provide the CasdoorSDK for interacting with Casdoor services."""
 
 from base64 import b64encode
-from collections.abc import AsyncGenerator
 from functools import cached_property
-from math import ceil
 from typing import Any, Literal, Self
 
 from aiohttp import ClientConnectionError
@@ -41,7 +39,6 @@ from app.core.utils.fields import (
     NonEmptyStr,
     RelativeFilePathField,
     StrHttpUrl,
-    URL,
 )
 
 
@@ -83,7 +80,6 @@ class CasdoorSDK(CredentialHeaderMixin, RemoteAPI):
         "built-in".
     :param application_name: The name of the application in Casdoor. Defaults to
         "app-built-in"
-    :param front_endpoint: The front-end endpoint for the Casdoor integration.
     :param certificate_path: The file path to the Casdoor certificate. Defaults to None.
     :param allowed_issuers: The allowed token issuers (iss) for JWT validation.
         Defaults to an empty list.
@@ -99,7 +95,6 @@ class CasdoorSDK(CredentialHeaderMixin, RemoteAPI):
     client_secret: SecretStr
     organization_name: str = "built-in"
     application_name: str = "app-built-in"
-    front_endpoint: URL = URL()
     certificate_path: RelativeFilePathField | None = None
     allowed_issuers: set[StrHttpUrl] | Literal["*"] = set()
     error_detail_key: NonEmptyStr = "error_description"
@@ -155,29 +150,6 @@ class CasdoorSDK(CredentialHeaderMixin, RemoteAPI):
         if self.allowed_issuers != "*":
             self.allowed_issuers.add(str_endpoint)
         return self
-
-    def get_frontend_url(self, base_url: URL | None = None) -> URL:
-        """Get Casdoor's front-end URL from a base URL.
-
-        Construct the frontend URL for Casdoor integration by replacing any missing
-        parts (scheme, hostname, port, path) from the ``front_endpoint`` with
-        corresponding parts from the ``base_url``.
-
-        :param base_url: The base URL to be used when constructing the frontend
-            URL. If not provided, the Casdoor API endpoint (``endpoint``) is used
-            as the base.
-        :return: The constructed front-end URL.
-        """
-        if self.front_endpoint.scheme:
-            return self.front_endpoint
-        base_url = URL(self.endpoint) if base_url is None else base_url
-        url_data = {
-            "scheme": self.front_endpoint.scheme or base_url.scheme,
-            "hostname": self.front_endpoint.hostname or base_url.hostname,
-            "port": self.front_endpoint.port or base_url.port,
-            "path": self.front_endpoint.path or base_url.path,
-        }
-        return URL(str(self.front_endpoint.replace(**url_data)))
 
     async def request(
         self,
@@ -328,65 +300,6 @@ class CasdoorSDK(CredentialHeaderMixin, RemoteAPI):
         )
         return response["data"]
 
-    async def get_tokens(
-        self, owner: str, username: str | None = None, **params: Any
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        """Retrieve the tokens for a username.
-
-        Retrieves the tokens details from Casdoor from the provided username and yields
-        each token data.
-
-        :param owner: The owner of the tokens.
-        :param username: The username to retrieve tokens for, or None to retrieve all
-            tokens. Defaults to None.
-        :param params: Additional query parameters.
-        :yield: The tokens details retrieved from Casdoor.
-        """
-        page_size = 100
-        params |= {
-            "owner": owner,
-            "organization": self.organization_name,
-            "pageSize": page_size,
-            "p": 1,
-        }
-        tokens: dict[str, Any] | None = as_json_object(
-            await self.get(
-                "/api/get-tokens",
-                params=params,
-            )
-        )
-        max_page = ceil((tokens.get("data2") or 0) / page_size)
-        while params["p"] <= max_page:
-            if tokens is None:
-                tokens = as_json_object(
-                    await self.get("/api/get-tokens", params=params)
-                )
-            for token in tokens["data"]:
-                if username is None or token["user"] == username:
-                    yield token
-            params["p"] += 1
-            tokens = None
-
-    async def get_active_tokens(
-        self, owner: str, username: str | None = None
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        """Retrieve the active tokens for a username.
-
-        Retrieves the active tokens details from Casdoor from the provided username and
-        yields each token data.
-
-        :param owner: The owner of the tokens.
-        :param username: The username to retrieve tokens for, or None to retrieve all
-            tokens. Defaults to None.
-        :yield: The tokens details retrieved from Casdoor.
-        """
-        async for token in self.get_tokens(
-            owner, username, sortField="codeExpireIn", sortOrder="ascend"
-        ):
-            if token["codeExpireIn"] > 0:
-                break
-            yield token
-
     async def delete_token(self, token: dict[str, Any]) -> bool:
         """Delete a token from Casdoor.
 
@@ -426,22 +339,6 @@ class CasdoorSDK(CredentialHeaderMixin, RemoteAPI):
         user = as_json_object(
             await self.get(
                 "/api/get-user",
-                params={"id": f"{self.organization_name}/{username}"},
-            )
-        )
-        return user["data"]
-
-    async def get_user_application(self, username: str) -> dict[str, Any]:
-        """Retrieve a specific user's application information from Casdoor.
-
-        Fetches the details of a user's application by username.
-
-        :param username: The username of the user to retrieve.
-        :return: A dictionary containing the user's information.
-        """
-        user = as_json_object(
-            await self.get(
-                "/api/get-user-application",
                 params={"id": f"{self.organization_name}/{username}"},
             )
         )

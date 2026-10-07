@@ -79,7 +79,7 @@ def _clear_connectivity_cache():
 def mock_executor() -> MagicMock:
     """Return a mock executor with node1 available."""
     executor = MagicMock(spec=BaseExecutor)
-    executor.get_hosts = MagicMock(return_value={"node1": "10.0.0.1"})
+    executor.get_hosts = AsyncMock(return_value={"node1": "10.0.0.1"})
     return executor
 
 

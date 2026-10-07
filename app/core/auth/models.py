@@ -335,22 +335,6 @@ class BaseUser(BaseModel, ABC):
         :type access_token: str
         """
 
-    @staticmethod
-    @abstractmethod
-    async def invalidate_tokens_for_user(
-        username: str, exclude_tokens: Sequence[str] = ()
-    ) -> None:
-        """Invalidate all OAuth tokens for a user.
-
-        This method must be overridden in subclasses to provide specific logic for
-        invalidating OAuth tokens.
-
-        :param username: The username to invalidate OAuth tokens for.
-        :type username: str
-        :param exclude_tokens: A sequence of access tokens to exclude from invalidation.
-        :type exclude_tokens: Sequence[str]
-        """
-
     @classmethod
     @abstractmethod
     async def get_user(cls, username: NonEmptyStr) -> Self:
@@ -430,33 +414,3 @@ class BaseUser(BaseModel, ABC):
         :return: An instance of the user model.
         """
         return await cls.from_jwt(token)
-
-    @classmethod
-    @abstractmethod
-    async def from_code(cls, code: str) -> Self:
-        """Create a user instance from an authorization code.
-
-        This method must be overridden in subclasses to provide specific logic for
-        exchanging an authorization code for user information and constructing a user
-        instance.
-
-        :param code: The authorization code received from the OAuth2 provider.
-        :return: An instance of the user model.
-        """
-
-    @classmethod
-    @abstractmethod
-    async def from_password(cls, username: str, password: str) -> Self:
-        """Create a user instance from username and password.
-
-        This method must be overridden in subclasses to provide specific logic for
-        authenticating a user with a username and password and constructing a user
-        instance.
-
-        :param username: The username of the user.
-        :type username: str
-        :param password: The password of the user.
-        :type password: str
-        :return: An instance of the user model.
-        :rtype: Self
-        """

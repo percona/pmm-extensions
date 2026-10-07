@@ -1172,15 +1172,6 @@ class TestTaskHistoryManagerLatestStatusByTaskNames:
         assert result["latest-status-dedupe"].status == TaskHistoryStatusEnum.SUCCESS
 
     @pytest.mark.asyncio
-    async def test_latest_status_from_history_statuses_skips_nulls(self) -> None:
-        """Assert null statuses are skipped when scanning newest-to-oldest."""
-        result = TaskHistoryManager._latest_status_from_history_statuses(
-            [None, TaskHistoryStatusEnum.SUCCESS, TaskHistoryStatusEnum.FAILED]
-        )
-
-        assert result == TaskHistoryStatusEnum.SUCCESS
-
-    @pytest.mark.asyncio
     async def test_finished_at_is_max_across_rows(self, session: AsyncSession) -> None:
         """Assert finished_at is the max across rows while status is the newest.
 

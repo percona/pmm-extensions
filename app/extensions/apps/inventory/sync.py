@@ -38,7 +38,6 @@ from app.extensions.sync.exceptions import SyncInstanceAlreadyInProgressError
 from app.extensions.sync.models import BaseSyncer
 from app.tasks.models import (
     EXECUTE_TASK_BY_NAME_TASK,
-    INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FIRST_RUN_KEY,
     INVENTORY_SYNC_TASK_NAME,
 )
@@ -65,48 +64,40 @@ async def run_scheduled_inventory_sync(
     single-syncer path while a row with empty meta resolves to the sync-all
     path.
 
-    The tasks seeder orders a per-syncer schedule's first run after the pinned
-    default's first completed sync through two meta keys, forwarded here as
-    keyword arguments: a follower's run is skipped while ``after_syncer`` has
-    never completed a whole-inventory pass, and the default's run then starts
-    each follower that has never run. A skipped run returns a note saying so,
-    which the executor writes to that run's log, so a run that synced nothing
-    does not read as one that synced.
+    The tasks seeder names the per-syncer schedules on the pinned default's row,
+    forwarded here as ``follower_syncers``. Each follower runs on its own
+    schedule from bring-up and never waits on the default; after each run of the
+    default, :func:`start_followers` starts any follower that has not run since
+    the default's first completed pass, so its next useful run reads the
+    inventory that pass produced.
 
-    A started first run is checked again when it executes, because a beat fire
-    of the follower may have been queued behind the default and run first. It is
-    skipped once the follower has any run, and when an overlapping run of the
-    follower claims the syncer before it does.
+    A started run skips, rather than fails, when another run of its syncer is
+    already in progress, and returns a note saying so, which the executor writes
+    to that run's log, so a run that synced nothing does not read as one that
+    synced.
 
     :param syncer: Fully qualified syncer name (e.g.
         ``"app.extensions.sync.syncers.pmm.PMMSyncer"``), or ``None`` / empty for the
         sync-all path.
-    :param after_syncer: The pinned syncer this schedule waits on, or ``None`` to
-        run unconditionally.
-    :param follower_syncers: The per-syncer schedules to start once after this
-        run, each only if it has never run. Defaults to none.
-    :param first_run_only: Whether this run was started as ``syncer``'s first,
-        and so goes ahead only while ``syncer`` has no run of its own. Defaults
-        to ``False``.
+    :param after_syncer: Ignored. A request queued by an earlier build, whose
+        per-syncer schedules waited on the pinned default, still carries it, and
+        rejecting the keyword would fail that run.
+    :param follower_syncers: The per-syncer schedules to start after this run
+        when they have not run since this syncer's first completed pass. Defaults
+        to none.
+    :param first_run_only: Whether this run was started by the pinned default,
+        and so skips when another run of ``syncer`` is in progress. Defaults to
+        ``False``.
     :return: The note saying why the run was skipped, otherwise ``None``.
-    :raises ValueError: If a run that is not skipped names a ``syncer`` that
-        matches no configured syncer able to sync inventory.
+    :raises ValueError: If ``syncer`` matches no configured syncer able to sync
+        inventory.
     :raises sqlalchemy.exc.SQLAlchemyError: When the PMM Extensions database cannot be read
-        to decide the ordering.
+        to decide which followers to start.
     :raises app.extensions.sync.exceptions.SyncInstanceAlreadyInProgressError: If a run
-        that is not a started first run overlaps another run of its syncer.
+        that was not started by the pinned default overlaps another run of its
+        syncer.
     """
-    if after_syncer and not await _inventory_sync_completed(after_syncer):
-        return _report_skip(
-            f"Skipped {syncer}: it waits until {after_syncer} completes its first "
-            "inventory sync."
-        )
-    first_run_taken = (
-        f"Skipped the started first run of {syncer}: another of its runs has "
-        "already started."
-    )
-    if first_run_only and syncer and await _has_run(syncer):
-        return _report_skip(first_run_taken)
+    del after_syncer
     syncers = await get_syncers_standalone()
     selected = filter_syncers_by_name(
         syncers,
@@ -118,9 +109,12 @@ async def run_scheduled_inventory_sync(
     except SyncInstanceAlreadyInProgressError:
         if not first_run_only:
             raise
-        return _report_skip(first_run_taken)
+        return _report_skip(
+            f"Skipped the started run of {syncer}: another of its runs is already "
+            "in progress."
+        )
     if syncer and follower_syncers:
-        await start_follower_first_runs(syncer, follower_syncers, syncers)
+        await start_followers(syncer, follower_syncers, syncers)
     return None
 
 
@@ -134,59 +128,44 @@ def _report_skip(note: str) -> str:
     return note
 
 
-async def _inventory_sync_completed(syncer: str) -> bool:
-    """Return whether ``syncer`` has ever completed a whole-inventory pass.
-
-    :param syncer: The fully qualified syncer name.
-    :return: Whether such a pass is recorded.
-    :raises sqlalchemy.exc.SQLAlchemyError: When the PMM Extensions database cannot be read.
-    """
-    async with get_async_session_maker()() as session:
-        return await SyncItemManager.inventory_sync_completed(session, syncer)
-
-
-async def _has_run(syncer: str) -> bool:
-    """Return whether ``syncer`` has any recorded run, finished or not.
-
-    :param syncer: The fully qualified syncer name.
-    :return: Whether such a run is recorded.
-    :raises sqlalchemy.exc.SQLAlchemyError: When the PMM Extensions database cannot be read.
-    """
-    async with get_async_session_maker()() as session:
-        return await SyncInstanceManager.first(session, syncer=syncer) is not None
-
-
-async def start_follower_first_runs(
+async def start_followers(
     leader: str, followers: Sequence[str], syncers: list[BaseSyncer]
 ) -> None:
-    """Start once each follower of ``leader`` that has never run.
+    """Start each follower of ``leader`` that has not run since its first pass.
 
-    Nothing starts until ``leader`` has completed a whole-inventory pass, so a
-    follower's first run reads the inventory that pass produced. A follower with
-    any recorded run is left to its own schedule, and once every follower has one
-    the leader's pass is no longer looked up. The start carries a seeded
-    follower's task and meta plus the first-run flag, so it checks again when it
-    executes and is skipped if the follower has run by then, as it has when a
-    beat fire of the follower was already queued behind the leader. An enqueue
-    failure is logged rather than raised: the follower's next beat fire runs it
-    instead.
+    Nothing starts until ``leader`` has completed a whole-inventory pass. A
+    follower with a run that began after that pass has read its inventory and is
+    left to its own schedule; one whose runs all began earlier, on the inventory
+    of a fresh install, is started. The decision reads the recorded runs rather
+    than the outcome of the run that called it, so a first pass made through the
+    manual sync endpoint, or a start whose enqueue failed, is caught up by the
+    leader's next run.
 
-    :param leader: The fully qualified name of the syncer the followers wait on.
+    The start carries the follower's beat-row meta plus the started-run flag.
+    The identical-task guard matches meta by containment, so the follower's beat
+    fire is held back while the start is in flight, and a start that meets a run
+    of the follower already in progress is skipped. An enqueue failure is logged
+    rather than raised.
+
+    :param leader: The fully qualified name of the syncer the followers follow.
     :param followers: The fully qualified names of the followers to consider.
     :param syncers: The configured syncers, which a follower must resolve against.
     :raises sqlalchemy.exc.SQLAlchemyError: When the PMM Extensions database cannot be read.
     """
     async with get_async_session_maker()() as session:
-        never_run = [
+        first_pass_at = await SyncItemManager.first_inventory_sync_completed_at(
+            session, leader
+        )
+        if first_pass_at is None:
+            return
+        behind = [
             follower
             for follower in followers
-            if await SyncInstanceManager.first(session, syncer=follower) is None
+            if not await SyncInstanceManager.has_run_since(
+                session, follower, first_pass_at
+            )
         ]
-        if not never_run or not await SyncItemManager.inventory_sync_completed(
-            session, leader
-        ):
-            return
-    for follower in never_run:
+    for follower in behind:
         try:
             filter_syncers_by_name(
                 syncers, follower, lambda candidate: candidate.can_sync_inventory()
@@ -204,11 +183,7 @@ async def start_follower_first_runs(
                 kwargs={
                     "task_name": INVENTORY_SYNC_TASK_NAME,
                     "execution_data": {
-                        "meta": {
-                            "syncer": follower,
-                            INVENTORY_SYNC_AFTER_KEY: leader,
-                            INVENTORY_SYNC_FIRST_RUN_KEY: True,
-                        }
+                        "meta": {"syncer": follower, INVENTORY_SYNC_FIRST_RUN_KEY: True}
                     },
                 },
             )

@@ -98,6 +98,20 @@ class ExecutorHostNotFoundError(SyncError):
         super().__init__(message)
 
 
+class HostNotMeasuredError(SyncError):
+    """Raise when a first-measurement attempt wrote no host observation.
+
+    The attempt is recorded as failed, so it counts against the host's retry
+    budget even though the probe itself may have run to completion.
+
+    :param node_id: The node whose host observation was not written.
+    """
+
+    def __init__(self, node_id: int | None) -> None:
+        self.node_id = node_id
+        super().__init__(f"No host observation written for node {node_id}")
+
+
 class SyncInstanceAlreadyInProgressError(SyncError):
     """Raise when a synchronization instance is already in progress.
 

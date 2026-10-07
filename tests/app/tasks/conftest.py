@@ -54,6 +54,9 @@ MYSQL_SYNCER = "app.extensions.sync.syncers.mysql.syncer.MySQLSyncer"
 SYSTEM_FACTS_SYNCER = (
     "app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer"
 )
+UNMEASURED_HOST_FACTS_SYNCER = (
+    "app.extensions.sync.syncers.system_facts.syncer.UnmeasuredHostFactsSyncer"
+)
 
 #: The per-task hook-path fields the ``TaskWrite`` allow-list constrains.
 HOOK_PATH_FIELDS = ("alert_detail_builder", "run_result_recorder")
@@ -95,8 +98,8 @@ async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
 def mock_executor() -> AsyncMock:
     """Return a mock executor with spec of BaseExecutor."""
     executor = AsyncMock(spec=BaseExecutor)
-    executor.get_hosts = MagicMock(return_value={"node1": "10.0.0.1"})
-    executor.preflight_stream_logs = MagicMock(return_value=None)
+    executor.get_hosts = AsyncMock(return_value={"node1": "10.0.0.1"})
+    executor.preflight_stream_logs = AsyncMock(return_value=None)
     executor.get_events = MagicMock(return_value=[])
     return executor
 

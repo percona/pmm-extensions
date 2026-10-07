@@ -626,12 +626,6 @@ class TestGrafanaUnsupportedGrants:
             await GrafanaUser.get_oauth_token(code="some-code")
 
     @pytest.mark.asyncio
-    async def test_from_code(self):
-        """Verify from_code is unsupported."""
-        with pytest.raises(GrafanaException):
-            await GrafanaUser.from_code("some-code")
-
-    @pytest.mark.asyncio
     async def test_from_token_payload(self):
         """Verify from_token_payload is unsupported."""
         with pytest.raises(GrafanaException):
@@ -697,11 +691,6 @@ class TestGrafanaInvalidation:
     async def test_invalidate_oauth_token_is_noop(self):
         """Verify invalidate_oauth_token returns None without raising."""
         assert await GrafanaUser.invalidate_oauth_token("token") is None
-
-    @pytest.mark.asyncio
-    async def test_invalidate_tokens_for_user_is_noop(self):
-        """Verify invalidate_tokens_for_user returns None without raising."""
-        assert await GrafanaUser.invalidate_tokens_for_user("alice") is None
 
 
 class TestGrafanaSessionExchange:

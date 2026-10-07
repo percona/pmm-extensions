@@ -54,7 +54,6 @@ from app.core.health import (
     API_READINESS_TIMEOUT as DEFAULT_API_READINESS_TIMEOUT,
 )
 from app.core.models import BaseCaseInsensitiveModel, BaseLowercaseModel
-from app.core.settings_override.constants import EXTENSIONS_SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import (
     coerce_field_value,
@@ -882,9 +881,7 @@ class ExtensionsSettings(BaseYamlAppSettings):
         return self
 
 
-extensions_settings: ExtensionsSettings = OverridableSettingsProxy(
-    ExtensionsSettings, setting_class=EXTENSIONS_SETTINGS
-)
+extensions_settings: ExtensionsSettings = OverridableSettingsProxy(ExtensionsSettings)
 
 
 def prefixed_cookie_path(path: str | None) -> str | None:

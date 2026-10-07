@@ -26,6 +26,7 @@ from app.core.pagination import (
     DEFAULT_PAGINATION_OFFSET,
     fetch_all_dict_items,
     fetch_all_items,
+    IncompletePaginationError,
     MAX_PAGINATION_LIMIT,
     PaginatedDictPage,
     PaginatedResponse,
@@ -227,6 +228,65 @@ class TestFetchAllItems:
 
         with pytest.raises(ValidationError):
             await fetch_all_items(get_page, page_size=0)
+
+
+def _pages_of(*pages: tuple[list[int], int]) -> Any:
+    """Return a ``get_page`` answering successive calls with the given pages.
+
+    :param pages: Each page's items and reported total, in call order.
+    :return: An async page getter for :func:`fetch_all_items`.
+    """
+    remaining = list(pages)
+
+    async def get_page(pagination: Pagination) -> PaginatedResponse[int]:
+        items, total = remaining.pop(0)
+        return PaginatedResponse[int](
+            items=items, total=total, offset=pagination.offset, limit=PAGE_SIZE
+        )
+
+    return get_page
+
+
+class TestFetchAllItemsRequireComplete:
+    """Test the opt-in refusal of a walk that ends short of its reported total."""
+
+    @pytest.mark.asyncio
+    async def test_a_short_walk_raises(self) -> None:
+        """Refuse a walk whose next page came back empty before the total."""
+        get_page = _pages_of(([0, 1], 3), ([], 3))
+
+        with pytest.raises(IncompletePaginationError) as excinfo:
+            await fetch_all_items(get_page, page_size=PAGE_SIZE, require_complete=True)
+
+        assert (excinfo.value.collected, excinfo.value.total) == (2, 3)
+
+    @pytest.mark.asyncio
+    async def test_a_complete_walk_returns_every_item(self) -> None:
+        """Return the items when the walk collected the whole reported total."""
+        get_page = _pages_of(([0, 1], 3), ([2], 3))
+
+        assert await fetch_all_items(
+            get_page, page_size=PAGE_SIZE, require_complete=True
+        ) == [0, 1, 2]
+
+    @pytest.mark.asyncio
+    async def test_a_later_smaller_total_is_checked_against_the_greatest(
+        self,
+    ) -> None:
+        """Hold the walk to the greatest total any page reported, not the last one."""
+        get_page = _pages_of(([0, 1], 5), ([2], 3))
+
+        with pytest.raises(IncompletePaginationError) as excinfo:
+            await fetch_all_items(get_page, page_size=PAGE_SIZE, require_complete=True)
+
+        assert (excinfo.value.collected, excinfo.value.total) == (3, 5)
+
+    @pytest.mark.asyncio
+    async def test_a_short_walk_is_returned_by_default(self) -> None:
+        """Keep returning what was collected when the caller did not opt in."""
+        get_page = _pages_of(([0, 1], 3), ([], 3))
+
+        assert await fetch_all_items(get_page, page_size=PAGE_SIZE) == [0, 1]
 
 
 class TestMakePaginationDep:
