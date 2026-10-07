@@ -30,6 +30,7 @@ fail without writing when a payload has drifted.
 """
 
 import argparse
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -145,21 +146,22 @@ def main(argv: list[str] | None = None) -> int:
     :return: ``0`` when every payload is in sync (or was rewritten); ``1`` when
         ``--check`` finds drift or a region has no opted-in payload.
     """
-    sys.path.insert(0, str(REPO_ROOT))
-    from app.extensions.apps.backup_mongo.pbm_creds_common import (
-        CONFIG_APPLY_BEGIN,
-        CONFIG_APPLY_END,
-        config_apply_source,
-        PREAMBLE_BEGIN,
-        PREAMBLE_END,
-        preamble_source,
-        RESTORE_YES_BEGIN,
-        RESTORE_YES_END,
-        restore_yes_source,
-        TEXTFILE_BEGIN,
-        TEXTFILE_END,
-        textfile_source,
-    )
+    spec = importlib.util.spec_from_file_location("pbm_creds_common", CANONICAL_SOURCE)
+    canonical = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = canonical
+    spec.loader.exec_module(canonical)
+    CONFIG_APPLY_BEGIN = canonical.CONFIG_APPLY_BEGIN
+    CONFIG_APPLY_END = canonical.CONFIG_APPLY_END
+    config_apply_source = canonical.config_apply_source
+    PREAMBLE_BEGIN = canonical.PREAMBLE_BEGIN
+    PREAMBLE_END = canonical.PREAMBLE_END
+    preamble_source = canonical.preamble_source
+    RESTORE_YES_BEGIN = canonical.RESTORE_YES_BEGIN
+    RESTORE_YES_END = canonical.RESTORE_YES_END
+    restore_yes_source = canonical.restore_yes_source
+    TEXTFILE_BEGIN = canonical.TEXTFILE_BEGIN
+    TEXTFILE_END = canonical.TEXTFILE_END
+    textfile_source = canonical.textfile_source
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
