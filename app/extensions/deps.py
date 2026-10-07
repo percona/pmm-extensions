@@ -252,8 +252,8 @@ async def resolve_ambient_exchange_token(
         return None
 
 
+#: Seconds a failed actor listing is answered with an empty map without a retry.
 USERNAME_MAPPING_FAILURE_WINDOW = 30.0
-"""Seconds a failed actor listing is answered with an empty map without a retry."""
 
 
 _username_mapping_failure: TTLCache[bool] = TTLCache(
