@@ -425,9 +425,7 @@ def test_iter_nested_leaf_keys_enumerates_secret_leaf() -> None:
 
 def test_settings_response_redacts_secret_leaf_with_key_path() -> None:
     """A secret leaf response redacts the value and carries the canonical key_path."""
-    proxy = OverridableSettingsProxy(
-        _SecretLeafParent, setting_class=ExtensionsSettings.__name__
-    )
+    proxy = OverridableSettingsProxy(_SecretLeafParent)
     leaf_meta = resolve_nested_field_metadata(_SecretLeafParent, "GROUP__TOKEN")
     assert leaf_meta is not None
     response = _settings_response_from_field(
@@ -444,9 +442,7 @@ def test_settings_response_redacts_secret_leaf_with_key_path() -> None:
 
 def test_settings_response_serializes_missing_mapping_segment_as_null() -> None:
     """LIST projection maps a missing nested segment to JSON ``null``."""
-    proxy = OverridableSettingsProxy(
-        _SecretLeafParent, setting_class=ExtensionsSettings.__name__
-    )
+    proxy = OverridableSettingsProxy(_SecretLeafParent)
     proxy._set_snapshot({"GROUP": {"LABEL": "visible"}})
     leaf_meta = resolve_nested_field_metadata(_SecretLeafParent, "GROUP__TOKEN")
     assert leaf_meta is not None
@@ -463,9 +459,7 @@ def test_settings_response_serializes_missing_mapping_segment_as_null() -> None:
 
 def test_settings_response_serializes_present_none_secret_leaf_as_null() -> None:
     """LIST projection renders an unresolved secret leaf as JSON ``null``."""
-    proxy = OverridableSettingsProxy(
-        _SecretLeafParent, setting_class=ExtensionsSettings.__name__
-    )
+    proxy = OverridableSettingsProxy(_SecretLeafParent)
     proxy._set_snapshot(
         {"GROUP": _SecretLeafModel.model_construct(TOKEN=None, LABEL="public")}
     )
@@ -484,9 +478,7 @@ def test_settings_response_serializes_present_none_secret_leaf_as_null() -> None
 
 def test_settings_response_applicable_defaults_true() -> None:
     """Mark a field response applicable when no applicability predicate is given."""
-    proxy = OverridableSettingsProxy(
-        _FixtureSettings, setting_class=ExtensionsSettings.__name__
-    )
+    proxy = OverridableSettingsProxy(_FixtureSettings)
     meta = next(m for m in iter_class_fields(_FixtureSettings) if m.key == "HOT_BOOL")
     response = _settings_response_from_field(
         setting_class=ExtensionsSettings.__name__,
@@ -500,9 +492,7 @@ def test_settings_response_applicable_defaults_true() -> None:
 
 def test_settings_response_honors_applicability_predicate() -> None:
     """Mark the field response not applicable when the predicate returns ``False``."""
-    proxy = OverridableSettingsProxy(
-        _FixtureSettings, setting_class=ExtensionsSettings.__name__
-    )
+    proxy = OverridableSettingsProxy(_FixtureSettings)
     meta = next(m for m in iter_class_fields(_FixtureSettings) if m.key == "HOT_BOOL")
     response = _settings_response_from_field(
         setting_class=ExtensionsSettings.__name__,

@@ -608,6 +608,7 @@ class TestTasksSettingsNestedOverrides:
             "NOMAD__timeout",
             "NOMAD__minify_payload",
             "NOMAD__log_socket_read_timeout",
+            "NOMAD__log_stream_max_connections",
             "NOMAD__cert_expiry_warn_days",
             "NOMAD__auth_scheme",
         ]

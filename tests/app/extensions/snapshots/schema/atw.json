@@ -150,6 +150,11 @@
                       "equals": {
                         "category": "GROUP_REPLICATION"
                       }
+                    },
+                    {
+                      "equals": {
+                        "category": "REPLICA_SET_REPLICATION"
+                      }
                     }
                   ]
                 }
@@ -157,6 +162,35 @@
             ]
           },
           "message": "category must belong to \"Replication High / Availability\"."
+        },
+        {
+          "error_fields": [
+            "category"
+          ],
+          "fail_when": {
+            "all": [
+              {
+                "equals": {
+                  "parent_category": "BACKUP_RECOVERY"
+                }
+              },
+              {
+                "truthy": "category"
+              },
+              {
+                "not": {
+                  "any": [
+                    {
+                      "equals": {
+                        "category": "BACKUP_PBM"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "message": "category must belong to \"Backup and Recovery\"."
         }
       ],
       "fields": [
@@ -173,6 +207,10 @@
             {
               "label": "Replication High / Availability",
               "value": "REPLICATION_HA"
+            },
+            {
+              "label": "Backup and Recovery",
+              "value": "BACKUP_RECOVERY"
             }
           ],
           "label": "Subcategory 1",
@@ -229,6 +267,14 @@
             {
               "label": "Group Replication",
               "value": "GROUP_REPLICATION"
+            },
+            {
+              "label": "Replica Set Replication",
+              "value": "REPLICA_SET_REPLICATION"
+            },
+            {
+              "label": "Backup / PBM",
+              "value": "BACKUP_PBM"
             }
           ],
           "label": "Subcategory 2",

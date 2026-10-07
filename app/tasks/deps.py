@@ -75,12 +75,16 @@ def get_executor(backend: TaskBackendEnum = TaskBackendEnum.NOMAD) -> BaseExecut
     For NOMAD, returns an **un-entered** executor normalised from the override
     snapshot: when a ``NOMAD`` override is active the snapshot holds a config
     fingerprint, so it is reconstructed into a usable :class:`NomadExecutor`;
-    with no override the live YAML executor passes through unchanged. The
-    un-entered executor drives only the config-built sync ``self.backend``
-    sub-client, so it suffices for any request-less reader that does not touch
-    the live aiohttp session. Request-scoped callers that need the live session
-    must use the :data:`TaskExecutor` dependency, which reaches the entered
-    executor held by :class:`NomadLifecycle`.
+    with no override the live YAML executor passes through unchanged.
+
+    Un-entered is sufficient for *any* reader, including the ported Nomad calls
+    that do use aiohttp: those open a private executor of their own for the one
+    call rather than touching this one's session (see
+    ``NomadExecutor._calling_executor``). Request-scoped callers that want the
+    process's shared session - the log streaming and file reads that keep a
+    connection across many calls - should still use the :data:`TaskExecutor`
+    dependency, which reaches the entered executor held by
+    :class:`NomadLifecycle`.
 
     :param backend: The backend type to get an executor for.
     :type backend: TaskBackendEnum

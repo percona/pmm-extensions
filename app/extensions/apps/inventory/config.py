@@ -90,5 +90,5 @@ class InventoryAppSettings(BaseYamlSettings):
 
 
 inventory_app_settings: InventoryAppSettings = OverridableSettingsProxy(
-    InventoryAppSettings, setting_class=InventoryAppSettings.__name__
+    InventoryAppSettings
 )

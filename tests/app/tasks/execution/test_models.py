@@ -60,7 +60,7 @@ class ConcreteExecutor(BaseExecutor):
         """Return the job unchanged."""
         return job
 
-    def get_hosts(self) -> dict[str, str]:
+    async def get_hosts(self) -> dict[str, str]:
         """Return an empty host map."""
         return {}
 
@@ -828,9 +828,10 @@ class TestGetEvents:
 class TestPreflightStreamLogs:
     """Test BaseExecutor.preflight_stream_logs default behaviour."""
 
-    def test_default_is_noop(self, executor: ConcreteExecutor):
+    @pytest.mark.asyncio
+    async def test_default_is_noop(self, executor: ConcreteExecutor):
         """Assert the base preflight_stream_logs is a no-op returning None."""
-        assert executor.preflight_stream_logs(MagicMock(spec=TaskHistory)) is None
+        assert await executor.preflight_stream_logs(MagicMock(spec=TaskHistory)) is None
 
 
 class TestStopTaskRegression:
