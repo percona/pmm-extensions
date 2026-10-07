@@ -174,8 +174,9 @@ typed at the source, on `cb8370a7d` plus that change, with the pinned
 environment, so the change itself removes three reporting diagnostics. It also
 deletes 97 `# ty: ignore` comments and two `[[tool.ty.overrides]]` blocks, and
 those were silencing their diagnostics already. The rise from 3,287 happened
-across the merges in between, in a local environment. Per the caveat above,
-quote the `typecheck` job's figure for this tree in preference to these two.
+across the merges in between. The `typecheck` job confirms the figure on the
+pull request's merge tree `097516dd4` (that change merged with `88f9f74e6`):
+**4,464**, exit **0**, so the local and CI readings agree for this tree.
 
 The error count reaching zero is what SEP-1908 was for; the warning fleet is
 unchanged by design, because the nine rules at `warn` mix first-party defects
@@ -821,6 +822,15 @@ diagnostics sharing one always share a verdict; folding the line and column away
 costs the check no precision and lets it survive the reformatting the comments
 provoke, which would otherwise report every diagnostic below an edited line as
 newly suppressed.
+
+`check` cannot tell a suppression from a fix: a first-party diagnostic that
+stops reporting because the code was corrected drops out of the run exactly as
+one an ignore comment hides, so a change that types something at the source
+fails with `suppressed a first-party diagnostic` for each fingerprint it fixed.
+For such a change, read those lines against the diff instead: a dropped
+fingerprint is a fix when no ignore comment or `[[tool.ty.overrides]]` entry the
+change adds covers its path and rule. Typing the Celery app's `loop` produced two
+such lines for `app/celery.py`.
 
 `report` prints the same tables from a live run and names any line holding both
 an artifact and a first-party diagnostic of the same rule. It does not flag a
