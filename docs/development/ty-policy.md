@@ -168,9 +168,9 @@ From here the `typecheck` job re-measures the exit status on every PR, so the
 figure that needs maintaining by hand is the count, not the status.
 
 Re-measured after the settings field helpers and the Celery event loop were
-typed at the source, on `08d3b91f1` plus that change, with the pinned
-`ty 0.0.49` from the local `venv`: **4,458 — 0 error, 4,458 warning**,
-`make typecheck` exit **0**. The parent alone reads **4,461** in the same
+typed at the source, on `cb8370a7d` plus that change, with the pinned
+`ty 0.0.49` from the local `venv`: **4,464 — 0 error, 4,464 warning**,
+`make typecheck` exit **0**. The parent alone reads **4,467** in the same
 environment, so the change itself removes three reporting diagnostics. It also
 deletes 97 `# ty: ignore` comments and two `[[tool.ty.overrides]]` blocks, and
 those were silencing their diagnostics already. The rise from 3,287 happened

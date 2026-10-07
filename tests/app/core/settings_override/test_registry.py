@@ -751,7 +751,12 @@ _HELPER_PARAMS = [
 
 
 def _markers(field: Any) -> dict[Any, Any]:
-    """Return the custom metadata a helper attached to ``field``."""
+    """Return the custom metadata a helper attached to ``field``.
+
+    :param field: The value a field helper returned, expected to be a
+        ``FieldInfo``.
+    :return: The custom metadata, keyed by marker.
+    """
     assert isinstance(field, FieldInfo)
     return CustomFieldMetadata.field_to_dict(field, strict=True)
 

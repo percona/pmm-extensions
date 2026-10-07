@@ -189,7 +189,7 @@ def field_with_metadata(
         field is required.
     :type default: Any
     :param metadata: A dictionary containing key-value pairs to be added as custom
-        metadata to the field. Defaults to `None`.
+        metadata to the field. Defaults to ``None``.
     :type metadata: dict[Any, Any] | None
     :param kwargs: Keyword arguments to pass to the Field constructor.
     :type kwargs: Any

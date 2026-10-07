@@ -29,7 +29,10 @@ _ANSWER = 42
 
 @pytest.fixture
 def original_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """Restore the app's loop and the current loop after the test."""
+    """Restore the app's loop and the current loop after the test.
+
+    :return: The loop the app carried before the test ran.
+    """
     original = celery.loop
     yield original
     replaced = celery.loop
