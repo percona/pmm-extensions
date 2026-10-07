@@ -850,6 +850,9 @@ class TestSyncerExtrasValidatedAtLoad:
             ("TASK_EXECUTION_TIMEOUT", -1),
             ("TASKS_EXECUTION_WAIT_INTERVAL", 0),
             ("TASKS_EXECUTION_WAIT_INTERVAL", -1),
+            ("FIRST_MEASUREMENT_RETRIES", -1),
+            ("FIRST_MEASUREMENT_RETRY_INTERVAL", 0),
+            ("FIRST_MEASUREMENT_CONCURRENCY", 0),
         ],
     )
     def test_per_entry_threshold_below_the_floor_is_rejected(

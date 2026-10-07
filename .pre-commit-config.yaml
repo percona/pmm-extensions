@@ -67,6 +67,14 @@ repos:
         language: system
         files: ^(app/extensions/apps/mysql_backups/(xtrabackup[^/]*payload|payload_variants\.py)|scripts/gen_xtrabackup_payload_variants\.py)$
         pass_filenames: false
+      - id: gen-pbm-payloads
+        name: Check PBM payload generated regions
+        description: "Ensure the PBM payload generated regions match pbm_creds_common.py"
+        entry: python3 scripts/gen_pbm_payloads.py --check
+        language: python
+        additional_dependencies: ["PyYAML==6.0.3"]
+        files: ^(app/extensions/apps/backup_mongo/(restore/)?pbm_[^/]*payload|app/extensions/apps/backup_mongo/pbm_creds_common\.py|scripts/gen_pbm_payloads\.py)$
+        pass_filenames: false
       - id: oxfmt
         name: oxfmt (frontend formatter)
         description: "Format frontend code with oxfmt (Prettier-compatible)"

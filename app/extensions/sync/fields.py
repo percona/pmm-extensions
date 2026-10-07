@@ -65,6 +65,30 @@ backwards and the loop stops terminating at all. Expressed as an annotation cons
 for the reason :data:`StaleRunAfter` is.
 """
 
+FirstMeasurementRetries = Annotated[int, Ge(0)]
+"""Define the retries a never-measured host gets after its failed first attempt.
+
+Zero is allowed and means a host whose first attempt fails is left to the daily
+refresh; below zero no host would ever be attempted. Expressed as an annotation
+constraint for the reason :data:`StaleRunAfter` is.
+"""
+
+FirstMeasurementRetryInterval = Annotated[timedelta, Gt(timedelta(0))]
+"""Define the least time between two first-measurement attempts on one host.
+
+At zero or below every pass is due to retry a failing host, so the retry budget is
+spent within minutes instead of being spread over hours. Expressed as an annotation
+constraint for the reason :data:`StaleRunAfter` is.
+"""
+
+FirstMeasurementConcurrency = Annotated[int, Gt(0)]
+"""Define the most first-measurement probes in flight at once.
+
+At zero the pass's semaphore admits no probe, so every candidate waits forever and
+the run never ends. Expressed as an annotation constraint for the reason
+:data:`StaleRunAfter` is.
+"""
+
 
 class SyncerFieldConstraint(NamedTuple):
     """Pair a constrained syncer field with the spelling of its accepted values.
@@ -94,6 +118,18 @@ CONSTRAINED_SYNCER_FIELDS: Final[dict[str, SyncerFieldConstraint]] = {
     "tasks_execution_wait_interval": SyncerFieldConstraint(
         TypeAdapter(TasksExecutionWaitInterval),
         "a positive integer number of seconds",
+    ),
+    "first_measurement_retries": SyncerFieldConstraint(
+        TypeAdapter(FirstMeasurementRetries),
+        "an integer of 0 or more",
+    ),
+    "first_measurement_retry_interval": SyncerFieldConstraint(
+        TypeAdapter(FirstMeasurementRetryInterval),
+        "integer or float seconds (3600), an ISO-8601 duration (PT1H), or HH:MM:SS",
+    ),
+    "first_measurement_concurrency": SyncerFieldConstraint(
+        TypeAdapter(FirstMeasurementConcurrency),
+        "a positive integer",
     ),
 }
 """Map each constrained syncer field to the validator its configured value must pass.

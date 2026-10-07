@@ -174,6 +174,42 @@ class SyncItemManager(BaseSQLModelManager):
         return make_datetime_utc(completed.updated_at or completed.created_at)
 
     @classmethod
+    async def finished_entity_attempts(
+        cls,
+        session: AsyncSession,
+        syncer: str,
+        entity_type: SyncInventoryEntityTypeEnum,
+        # pagination-ok: no route reads it, and the retry policy needs every attempt
+        # on the given entities. Rows grow by one per daily run for a host that
+        # stays unmeasured, since sync rows are never pruned.
+        entity_ids: Collection[int | None],
+    ) -> list[SyncItem]:
+        """Return ``syncer``'s finished attempts on the given entities, oldest first.
+
+        An attempt is finished once its item reached ``SUCCESS`` or ``FAILED``; items
+        still pending or running are left out. The answer relies on sync rows being
+        retained.
+
+        :param session: The PMM Extensions database session.
+        :param syncer: The fully qualified syncer name, in ``get_name()`` form.
+        :param entity_type: The entity level the attempts were made at.
+        :param entity_ids: The entities whose attempts to return.
+        :return: The finished items, ordered by creation time.
+        """
+        if not entity_ids:
+            return []
+        return await cls.list(
+            session,
+            col(SyncItem.sync_instance_id).in_(
+                select(SyncInstance.id).where(col(SyncInstance.syncer) == syncer)
+            ),
+            col(SyncItem.entity_id).in_(entity_ids),
+            col(SyncItem.status).in_([SyncStatusEnum.SUCCESS, SyncStatusEnum.FAILED]),
+            entity_type=entity_type,
+            order_by=[col(SyncItem.created_at)],
+        )
+
+    @classmethod
     async def start_sync(cls, session: AsyncSession, instance: SyncItem) -> SyncItem:
         """Mark a SyncItem as running.
 

@@ -16,7 +16,7 @@
 """Define the Grafana user and token-payload models."""
 
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from typing import Any, cast, Final, NoReturn, NotRequired, Self
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -543,18 +543,6 @@ class GrafanaUser(BaseUser):
         """
         return
 
-    @staticmethod
-    async def invalidate_tokens_for_user(
-        username: str,  # noqa: ARG004
-        exclude_tokens: Sequence[str] = (),  # noqa: ARG004
-    ) -> None:
-        """Skip revocation: PMM Extensions mints stateless assertions with nothing to revoke.
-
-        :param username: The username whose tokens would be invalidated.
-        :param exclude_tokens: Access tokens that would be excluded.
-        """
-        return
-
     @classmethod
     async def get_user(cls, username: NonEmptyStr) -> Self:
         """Fetch a single user by login or email.
@@ -803,24 +791,3 @@ class GrafanaUser(BaseUser):
         if last_error is None:
             raise GrafanaException("No bearer token type is accepted on this surface.")
         raise last_error
-
-    @classmethod
-    async def from_code(cls, code: str) -> NoReturn:  # noqa: ARG003
-        """Reject -- Grafana has no authorization-code grant.
-
-        :param code: The authorization code that would be exchanged.
-        :return: Never returns; the method always raises.
-        :raises GrafanaException: Always -- unsupported for Grafana.
-        """
-        raise GrafanaException(detail="Grafana has no authorization-code grant.")
-
-    @classmethod
-    async def from_password(cls, username: str, password: str) -> Self:
-        """Build a user by authenticating a username and password.
-
-        :param username: The Grafana username.
-        :param password: The Grafana password.
-        :return: The authenticated ``GrafanaUser``.
-        """
-        oauth_token = await cls.get_oauth_token(username=username, password=password)
-        return await cls.from_jwt(oauth_token.access_token)

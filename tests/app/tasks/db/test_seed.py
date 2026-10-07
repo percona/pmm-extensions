@@ -15,8 +15,10 @@
 
 """Define tests for the Tasks database seed module."""
 
+import functools
 import json
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -58,6 +60,7 @@ from app.tasks.models import (
     SYNC_RUNNING_TASKS_TASK_NAME,
     TaskBackendEnum,
 )
+from tests.app.host_payloads import missing_interpreter_is_fatal
 from tests.app.tasks.conftest import MYSQL_SYNCER, PMM_SYNCER
 
 FIFTEEN_MINUTES = IntervalSchedule(every=15, period=Period.MINUTES)
@@ -98,6 +101,56 @@ NODE_SHAPES = {
     "user-no-sudo": (UNPRIVILEGED_UID, False),
     "user-sudo": (UNPRIVILEGED_UID, True),
 }
+
+
+#: The shells every seeded shell body is executed under, as the argv that invokes
+#: each. Named explicitly rather than taken from ``/bin/sh``, which is dash on
+#: one host and bash on another; ``busybox`` carries ``sh`` as an applet rather
+#: than as a binary of its own.
+SHELL_INVOCATIONS: dict[str, tuple[str, ...]] = {
+    "dash": ("dash",),
+    "busybox": ("busybox", "sh"),
+    "bash": ("bash",),
+}
+
+
+@functools.cache
+def _resolves_commands_through_path(argv: tuple[str, ...]) -> bool:
+    """Return whether the shell finds a command on ``PATH`` rather than in itself.
+
+    A standalone busybox build (Ubuntu's ``busybox-static``) runs its own
+    ``id`` and ``xargs`` applets ahead of ``PATH``, so the stubs these tests
+    place there never run; the distribution ``busybox`` package does not.
+    """
+    probe = subprocess.run(
+        [*argv, "-c", "command -v id"],
+        env={"PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        check=False,
+    )
+    return probe.stdout.startswith(b"/")
+
+
+@pytest.fixture(params=list(SHELL_INVOCATIONS))
+def shell(request: pytest.FixtureRequest) -> list[str]:
+    """Return the argv prefix that runs one named shell, when it is usable here.
+
+    The binary is resolved to an absolute path here because the call sites
+    replace ``PATH`` with a stub directory that does not carry it. A shell that
+    is absent, or that runs its own applets ahead of ``PATH``, skips its case
+    on a developer checkout and fails it in CI, which installs all three.
+    """
+    binary, *applet = SHELL_INVOCATIONS[request.param]
+    resolved = shutil.which(binary)
+    if resolved is None:
+        unusable = f"{binary} is not on PATH"
+    elif not _resolves_commands_through_path((resolved, *applet)):
+        unusable = f"{binary} runs its built-in applets ahead of PATH"
+    else:
+        return [resolved, *applet]
+    if missing_interpreter_is_fatal():
+        pytest.fail(f"CI must provide every shell the seed tests run under: {unusable}")
+    pytest.skip(unusable)
 
 
 class LaunchCheckVariant(TypedDict):
@@ -278,12 +331,12 @@ class TestLogCaptureHoldTemplateShape:
 
 
 class TestLogCaptureHoldShell:
-    """Cover the hold shell string by executing it under ``/bin/sh``."""
+    """Cover the hold shell string by executing it under each named shell."""
 
-    def _spawn(self, env: dict[str, str]) -> subprocess.Popen:
+    def _spawn(self, shell: list[str], env: dict[str, str]) -> subprocess.Popen:
         full_env = {"PATH": "/usr/bin:/bin", **env}
         return subprocess.Popen(
-            ["/bin/sh", "-c", LOG_CAPTURE_HOLD_SHELL],
+            [*shell, "-c", LOG_CAPTURE_HOLD_SHELL],
             env=full_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -297,14 +350,16 @@ class TestLogCaptureHoldShell:
         """
         assert "${" not in LOG_CAPTURE_HOLD_SHELL
 
-    def test_self_exits_at_the_meta_supplied_deadline(self) -> None:
+    def test_self_exits_at_the_meta_supplied_deadline(self, shell: list[str]) -> None:
         """Assert the hold terminates on its own once the deadline elapses."""
-        process = self._spawn({"NOMAD_META_log_capture_hold_seconds": "1"})
+        process = self._spawn(shell, {"NOMAD_META_log_capture_hold_seconds": "1"})
         assert process.wait(timeout=10) == 0
 
-    def test_holds_until_signalled_rather_than_exiting_immediately(self) -> None:
+    def test_holds_until_signalled_rather_than_exiting_immediately(
+        self, shell: list[str]
+    ) -> None:
         """Assert a long deadline keeps the step alive until it is signalled."""
-        process = self._spawn({"NOMAD_META_log_capture_hold_seconds": "30"})
+        process = self._spawn(shell, {"NOMAD_META_log_capture_hold_seconds": "30"})
         try:
             with pytest.raises(subprocess.TimeoutExpired):
                 process.wait(timeout=1)
@@ -312,27 +367,29 @@ class TestLogCaptureHoldShell:
             process.kill()
             process.wait(timeout=10)
 
-    def test_sigterm_releases_the_hold_promptly(self) -> None:
+    def test_sigterm_releases_the_hold_promptly(self, shell: list[str]) -> None:
         """Assert SIGTERM exits ``0`` well before the deadline would elapse.
 
         A POSIX shell runs traps only between foreground commands, so the
         backgrounded ``sleep`` plus ``wait`` is what makes the signal land at
         all rather than being deferred for the full hold.
         """
-        process = self._spawn({"NOMAD_META_log_capture_hold_seconds": "30"})
+        process = self._spawn(shell, {"NOMAD_META_log_capture_hold_seconds": "30"})
         time.sleep(0.3)
         started = time.monotonic()
         process.terminate()
         assert process.wait(timeout=10) == 0
         assert time.monotonic() - started < SIGNAL_RESPONSE_BUDGET_SECONDS
 
-    def test_falls_back_to_the_default_when_meta_is_absent(self) -> None:
+    def test_falls_back_to_the_default_when_meta_is_absent(
+        self, shell: list[str]
+    ) -> None:
         """Assert an unset meta key still holds rather than exiting at once.
 
         A job dispatched by hand carries no meta; without the fallback the
         allocation would be collectable immediately and the defect returns.
         """
-        process = self._spawn({})
+        process = self._spawn(shell, {})
         try:
             with pytest.raises(subprocess.TimeoutExpired):
                 process.wait(timeout=1)
@@ -340,9 +397,11 @@ class TestLogCaptureHoldShell:
             process.terminate()
             assert process.wait(timeout=10) == 0
 
-    def test_falls_back_to_the_default_when_meta_is_empty(self) -> None:
+    def test_falls_back_to_the_default_when_meta_is_empty(
+        self, shell: list[str]
+    ) -> None:
         """Assert an empty meta value takes the default rather than ``sleep ""``."""
-        process = self._spawn({"NOMAD_META_log_capture_hold_seconds": ""})
+        process = self._spawn(shell, {"NOMAD_META_log_capture_hold_seconds": ""})
         try:
             with pytest.raises(subprocess.TimeoutExpired):
                 process.wait(timeout=1)
@@ -352,60 +411,65 @@ class TestLogCaptureHoldShell:
 
 
 class TestStalenessPreambleShell:
-    """Test the POSIX ``sh`` preamble string by executing it under ``/bin/sh``."""
+    """Test the POSIX ``sh`` preamble string by executing it under each named shell."""
 
-    def _run(self, env: dict[str, str]) -> subprocess.CompletedProcess:
+    def _run(
+        self, shell: list[str], env: dict[str, str]
+    ) -> subprocess.CompletedProcess:
         full_env = {"PATH": "/usr/bin:/bin", **env}
         return subprocess.run(
-            ["/bin/sh", "-c", STALENESS_PREAMBLE_SHELL],
+            [*shell, "-c", STALENESS_PREAMBLE_SHELL],
             env=full_env,
             capture_output=True,
             check=False,
         )
 
-    def test_exit_75_when_elapsed_exceeds_threshold(self) -> None:
+    def test_exit_75_when_elapsed_exceeds_threshold(self, shell: list[str]) -> None:
         """Assert the preamble exits ``75`` when elapsed exceeds threshold."""
         result = self._run(
+            shell,
             {
                 "NOMAD_META_scheduled_at": str(
                     int(time.time()) - STALE_ELAPSED_SECONDS
                 ),
                 "NOMAD_META_staleness_threshold_seconds": "3600",
-            }
+            },
         )
         assert result.returncode == STALE_EXIT_CODE
         assert b"EXTENSIONS_STALE_SKIP" in result.stdout
 
-    def test_exit_0_when_fresh(self) -> None:
+    def test_exit_0_when_fresh(self, shell: list[str]) -> None:
         """Assert the preamble exits ``0`` for a fresh dispatch."""
         result = self._run(
+            shell,
             {
                 "NOMAD_META_scheduled_at": str(
                     int(time.time()) - FRESH_ELAPSED_SECONDS
                 ),
                 "NOMAD_META_staleness_threshold_seconds": "3600",
-            }
+            },
         )
         assert result.returncode == 0
         assert result.stdout == b""
 
-    def test_exit_0_when_scheduled_at_missing(self) -> None:
+    def test_exit_0_when_scheduled_at_missing(self, shell: list[str]) -> None:
         """Assert a missing ``scheduled_at`` meta key is a no-op."""
-        result = self._run({"NOMAD_META_staleness_threshold_seconds": "3600"})
+        result = self._run(shell, {"NOMAD_META_staleness_threshold_seconds": "3600"})
         assert result.returncode == 0
 
-    def test_exit_0_when_threshold_missing(self) -> None:
+    def test_exit_0_when_threshold_missing(self, shell: list[str]) -> None:
         """Assert a missing threshold meta key is a no-op."""
-        result = self._run({"NOMAD_META_scheduled_at": "1000"})
+        result = self._run(shell, {"NOMAD_META_scheduled_at": "1000"})
         assert result.returncode == 0
 
-    def test_exit_0_when_scheduled_at_in_future(self) -> None:
+    def test_exit_0_when_scheduled_at_in_future(self, shell: list[str]) -> None:
         """Assert a future ``scheduled_at`` (negative elapsed) is not stale."""
         result = self._run(
+            shell,
             {
                 "NOMAD_META_scheduled_at": str(int(time.time()) + 100),
                 "NOMAD_META_staleness_threshold_seconds": "3600",
-            }
+            },
         )
         assert result.returncode == 0
 
@@ -423,7 +487,7 @@ class TestStalenessPreambleShell:
             STALENESS_PREAMBLE_SHELL
         )
 
-    def test_stale_skip_line_format(self) -> None:
+    def test_stale_skip_line_format(self, shell: list[str]) -> None:
         """Assert the EXTENSIONS_STALE_SKIP line renders with concrete threshold value.
 
         Uses a past ``NOMAD_META_scheduled_at`` (1970) against a 5-second
@@ -431,7 +495,7 @@ class TestStalenessPreambleShell:
         with ``EXTENSIONS_STALE_SKIP: elapsed=`` and contains ``threshold=5s``.
         """
         result = subprocess.run(
-            ["/bin/sh", "-c", STALENESS_PREAMBLE_SHELL],
+            [*shell, "-c", STALENESS_PREAMBLE_SHELL],
             env={
                 "PATH": "/usr/bin:/bin",
                 "NOMAD_META_scheduled_at": "100",
@@ -451,7 +515,7 @@ class TestArtifactLauncher:
 
     Both launchers now read a file the ``check-launchable`` step writes, so the
     step is load-bearing for every artifact execution rather than only failing
-    ones. These tests execute the launcher strings under ``/bin/sh``.
+    ones. These tests execute the launcher strings under each named shell.
     """
 
     def _payload(self, task_dir: Path) -> None:
@@ -475,6 +539,7 @@ class TestArtifactLauncher:
         self,
         script: str,
         *,
+        shell: list[str],
         task_dir: Path,
         alloc_dir: Path,
         env: dict[str, str],
@@ -485,13 +550,15 @@ class TestArtifactLauncher:
             "${NOMAD_ALLOC_DIR}", str(alloc_dir)
         )
         return subprocess.run(
-            ["/bin/sh", "-c", resolved],
+            [*shell, "-c", resolved],
             env={"PATH": path, **env},
             capture_output=True,
             check=False,
         )
 
-    def test_passes_the_same_argv_as_a_direct_xargs_exec(self, tmp_path: Path) -> None:
+    def test_passes_the_same_argv_as_a_direct_xargs_exec(
+        self, tmp_path: Path, shell: list[str]
+    ) -> None:
         """Assert wrapping the launcher in ``sh -c`` did not reshape the argv.
 
         ``beta gamma`` must still reach the payload as two arguments. This is
@@ -506,6 +573,7 @@ class TestArtifactLauncher:
 
         rewritten = self._run(
             self._launcher(NOMAD_EXEC_ARTIFACT),
+            shell=shell,
             task_dir=task_dir,
             alloc_dir=alloc_dir,
             env={"NOMAD_META_interpreter": "sh"},
@@ -531,7 +599,7 @@ class TestArtifactLauncher:
         assert rewritten.stdout.decode().split() == ["alpha", "beta", "gamma"]
 
     def test_launches_from_the_effective_interpreter_when_written(
-        self, tmp_path: Path
+        self, tmp_path: Path, shell: list[str]
     ) -> None:
         """Assert a stripped interpreter, not the raw meta, reaches the payload.
 
@@ -548,6 +616,7 @@ class TestArtifactLauncher:
 
         result = self._run(
             self._launcher(NOMAD_EXEC_ARTIFACT),
+            shell=shell,
             task_dir=task_dir,
             alloc_dir=alloc_dir,
             env={"NOMAD_META_interpreter": "sudo sh"},
@@ -557,7 +626,7 @@ class TestArtifactLauncher:
         assert result.stdout.decode().split() == ["alpha", "beta", "gamma"]
 
     def test_falls_back_to_the_meta_when_the_handoff_is_missing(
-        self, tmp_path: Path
+        self, tmp_path: Path, shell: list[str]
     ) -> None:
         """Assert a missing handoff file leaves behaviour exactly as it was.
 
@@ -572,6 +641,7 @@ class TestArtifactLauncher:
 
         result = self._run(
             self._launcher(NOMAD_EXEC_ARTIFACT),
+            shell=shell,
             task_dir=task_dir,
             alloc_dir=alloc_dir,
             env={"NOMAD_META_interpreter": "sh"},
@@ -580,7 +650,9 @@ class TestArtifactLauncher:
         assert result.returncode == 0, result.stderr
         assert result.stdout.decode().split() == ["alpha", "beta", "gamma"]
 
-    def test_falls_back_when_the_handoff_is_empty(self, tmp_path: Path) -> None:
+    def test_falls_back_when_the_handoff_is_empty(
+        self, tmp_path: Path, shell: list[str]
+    ) -> None:
         """Assert an empty handoff file is treated as no handoff at all."""
         task_dir = tmp_path / "local"
         task_dir.mkdir()
@@ -591,6 +663,7 @@ class TestArtifactLauncher:
 
         result = self._run(
             self._launcher(NOMAD_EXEC_ARTIFACT),
+            shell=shell,
             task_dir=task_dir,
             alloc_dir=alloc_dir,
             env={"NOMAD_META_interpreter": "sh"},
@@ -604,7 +677,7 @@ class TestArtifactLauncher:
         [("python3", "no"), ("sudo python3", "yes")],
     )
     def test_python_launcher_reads_sudo_from_the_effective_interpreter(
-        self, tmp_path: Path, effective: str, sudo_expected: str
+        self, tmp_path: Path, shell: list[str], effective: str, sudo_expected: str
     ) -> None:
         """Assert the venv python is prefixed from the handoff, not the meta.
 
@@ -629,6 +702,7 @@ class TestArtifactLauncher:
 
         result = self._run(
             self._launcher(NOMAD_EXEC_PYTHON_ARTIFACT),
+            shell=shell,
             task_dir=task_dir,
             alloc_dir=alloc_dir,
             env={"NOMAD_META_interpreter": "sudo python3"},
@@ -685,7 +759,7 @@ class TestLaunchCheckTemplateShape:
 
     @pytest.mark.parametrize("template", NOMAD_TEMPLATES_WITH_LAUNCH_CHECK)
     def test_check_reads_the_template_own_launch_meta(
-        self, template, tmp_path: Path
+        self, template, tmp_path: Path, shell: list[str]
     ) -> None:
         """Assert each spec's check resolves the meta key that spec launches.
 
@@ -709,7 +783,7 @@ class TestLaunchCheckTemplateShape:
         def run(env: dict[str, str]) -> int:
             return subprocess.run(
                 [
-                    "/bin/sh",
+                    *shell,
                     "-c",
                     script.replace(EFFECTIVE_INTERPRETER_PATH, "/dev/null"),
                 ],
@@ -769,7 +843,7 @@ def _build_check(*, meta_key: str, allow_strip: bool, launches: str | None) -> s
 
 
 class TestLaunchCheckShell:
-    """Execute the launch-check preamble under ``/bin/sh`` on a stubbed node.
+    """Execute the launch-check preamble under each named shell on a stubbed node.
 
     ``id`` is stubbed on ``PATH`` rather than acquiring a real uid 0. The two
     were measured to agree on every row below, and a stub needs no user
@@ -796,6 +870,7 @@ class TestLaunchCheckShell:
         self,
         tmp_path: Path,
         *,
+        shell: list[str],
         node: str,
         meta: str,
         variant: str = "artifact",
@@ -811,7 +886,7 @@ class TestLaunchCheckShell:
             EFFECTIVE_INTERPRETER_PATH, str(handoff)
         )
         result = subprocess.run(
-            ["/bin/sh", "-c", script],
+            [*shell, "-c", script],
             env={
                 "PATH": str(bin_dir),
                 f"NOMAD_META_{meta_key}": meta,
@@ -877,13 +952,14 @@ class TestLaunchCheckShell:
     def test_resolves_the_launch_chain(
         self,
         tmp_path: Path,
+        shell: list[str],
         node: str,
         meta: str,
         expected_exit: int,
         expected_effective: str | None,
     ) -> None:
         """Assert each node/interpreter pair resolves to its planned outcome."""
-        result, handoff = self._run(tmp_path, node=node, meta=meta)
+        result, handoff = self._run(tmp_path, shell=shell, node=node, meta=meta)
 
         assert result.returncode == expected_exit, result.stdout + result.stderr
         if expected_effective is None:
@@ -908,6 +984,7 @@ class TestLaunchCheckShell:
     def test_abort_line_names_the_unresolvable_command_and_node(
         self,
         tmp_path: Path,
+        shell: list[str],
         node: str,
         meta: str,
         expected_command: str,
@@ -920,7 +997,7 @@ class TestLaunchCheckShell:
         report itself above an abort, since a success-shaped line heading the
         only diagnostic an unlaunchable execution produces is misleading.
         """
-        result, _ = self._run(tmp_path, node=node, meta=meta)
+        result, _ = self._run(tmp_path, shell=shell, node=node, meta=meta)
 
         assert result.returncode == LAUNCH_CHECK_EXIT_CODE
         assert (
@@ -928,9 +1005,11 @@ class TestLaunchCheckShell:
             == f"EXTENSIONS_UNLAUNCHABLE: command={expected_command} node=node-1"
         )
 
-    def test_strip_announces_itself(self, tmp_path: Path) -> None:
+    def test_strip_announces_itself(self, tmp_path: Path, shell: list[str]) -> None:
         """Assert a stripped ``sudo`` prefix is reported on the step's stdout."""
-        result, _ = self._run(tmp_path, node="root-no-sudo", meta="sudo bash")
+        result, _ = self._run(
+            tmp_path, shell=shell, node="root-no-sudo", meta="sudo bash"
+        )
 
         assert result.returncode == 0
         assert result.stdout.decode().strip() == "EXTENSIONS_SUDO_STRIPPED: node=node-1"
@@ -940,7 +1019,7 @@ class TestLaunchCheckShell:
         [("present", "{sudo} bash"), ("absent", "bash")],
     )
     def test_strip_asks_whether_the_named_sudo_resolves(
-        self, tmp_path: Path, named_sudo: str, expected_effective: str
+        self, tmp_path: Path, shell: list[str], named_sudo: str, expected_effective: str
     ) -> None:
         """Assert a path-named ``sudo`` is stripped only when it is really absent.
 
@@ -964,7 +1043,7 @@ class TestLaunchCheckShell:
         )
 
         result = subprocess.run(
-            ["/bin/sh", "-c", script],
+            [*shell, "-c", script],
             env={
                 "PATH": str(bin_dir),
                 "NOMAD_META_interpreter": f"{custom} bash",
@@ -988,20 +1067,24 @@ class TestLaunchCheckShell:
             "/tmp/a\\ b/bash",
         ],
     )
-    def test_declines_every_metacharacter_form(self, tmp_path: Path, meta: str) -> None:
+    def test_declines_every_metacharacter_form(
+        self, tmp_path: Path, shell: list[str], meta: str
+    ) -> None:
         """Assert each alternative of the metachar guard passes its meta through.
 
         The guard is a raw string of five ``case`` alternatives, and ``sh -n``
         cannot catch a mistyped one — only executing each form can, and the
         failure it would cause is a false abort on a working configuration.
         """
-        result, handoff = self._run(tmp_path, node="user-no-sudo", meta=meta)
+        result, handoff = self._run(
+            tmp_path, shell=shell, node="user-no-sudo", meta=meta
+        )
 
         assert result.returncode == 0, result.stderr
         assert handoff.read_text() == meta
 
     def test_declines_an_assignment_that_changes_where_the_command_resolves(
-        self, tmp_path: Path
+        self, tmp_path: Path, shell: list[str]
     ) -> None:
         """Assert a ``PATH=`` prefix is passed through rather than resolved.
 
@@ -1018,13 +1101,15 @@ class TestLaunchCheckShell:
         only_there.chmod(0o755)
         meta = f"PATH={toolchain} toolchain-bash"
 
-        result, handoff = self._run(tmp_path, node="user-no-sudo", meta=meta)
+        result, handoff = self._run(
+            tmp_path, shell=shell, node="user-no-sudo", meta=meta
+        )
 
         assert result.returncode == 0, result.stdout + result.stderr
         assert handoff.read_text() == meta
 
     def test_declines_a_relative_interpreter_path_that_resolves_here(
-        self, tmp_path: Path
+        self, tmp_path: Path, shell: list[str]
     ) -> None:
         """Assert a resolvable relative path is passed through, not resolved.
 
@@ -1044,7 +1129,7 @@ class TestLaunchCheckShell:
         )
 
         result = subprocess.run(
-            ["/bin/sh", "-c", script],
+            [*shell, "-c", script],
             env={
                 "PATH": str(bin_dir),
                 "NOMAD_META_interpreter": str(relative),
@@ -1059,7 +1144,7 @@ class TestLaunchCheckShell:
         assert handoff.read_text() == str(relative)
 
     def test_declines_a_relative_interpreter_path_that_does_not_resolve_here(
-        self, tmp_path: Path
+        self, tmp_path: Path, shell: list[str]
     ) -> None:
         """Assert an unresolvable relative path is passed through, not aborted.
 
@@ -1071,7 +1156,9 @@ class TestLaunchCheckShell:
         """
         relative = "rel/interp"
 
-        result, handoff = self._run(tmp_path, node="user-no-sudo", meta=relative)
+        result, handoff = self._run(
+            tmp_path, shell=shell, node="user-no-sudo", meta=relative
+        )
 
         assert result.returncode == 0, result.stdout + result.stderr
         assert handoff.read_text() == relative
@@ -1081,7 +1168,7 @@ class TestLaunchCheckShell:
         [("non-executable file", 0o644), ("directory", 0o755)],
     )
     def test_aborts_on_a_path_that_exists_but_cannot_be_executed(
-        self, tmp_path: Path, kind: str, mode: int
+        self, tmp_path: Path, shell: list[str], kind: str, mode: int
     ) -> None:
         """Assert an unexecutable absolute interpreter aborts rather than runs.
 
@@ -1100,7 +1187,9 @@ class TestLaunchCheckShell:
             target.write_text("#!/bin/sh\nexit 0\n")
         target.chmod(mode)
 
-        result, handoff = self._run(tmp_path, node="user-no-sudo", meta=str(target))
+        result, handoff = self._run(
+            tmp_path, shell=shell, node="user-no-sudo", meta=str(target)
+        )
 
         assert result.returncode == LAUNCH_CHECK_EXIT_CODE, result.stdout
         assert (
@@ -1126,6 +1215,7 @@ class TestLaunchCheckShell:
     def test_python_variant_resolves_the_venv_builder_not_the_meta(
         self,
         tmp_path: Path,
+        shell: list[str],
         node: str,
         meta: str,
         expected_exit: int,
@@ -1139,7 +1229,7 @@ class TestLaunchCheckShell:
         maps ``.py`` to something other than ``python3``.
         """
         result, handoff = self._run(
-            tmp_path, node=node, meta=meta, variant="python-artifact"
+            tmp_path, shell=shell, node=node, meta=meta, variant="python-artifact"
         )
 
         assert result.returncode == expected_exit, result.stdout + result.stderr
@@ -1148,7 +1238,9 @@ class TestLaunchCheckShell:
         else:
             assert handoff.read_text() == expected_effective
 
-    def test_declines_an_unrecognized_sudo_option_cluster(self, tmp_path: Path) -> None:
+    def test_declines_an_unrecognized_sudo_option_cluster(
+        self, tmp_path: Path, shell: list[str]
+    ) -> None:
         """Assert a bundled short-option cluster is passed through, not aborted.
 
         ``-nu postgres`` ends in a value-taking option the walker does not
@@ -1156,14 +1248,17 @@ class TestLaunchCheckShell:
         guess would fail an invocation that works today.
         """
         result, handoff = self._run(
-            tmp_path, node="user-sudo", meta="sudo -nu postgres nosuchinterp"
+            tmp_path,
+            shell=shell,
+            node="user-sudo",
+            meta="sudo -nu postgres nosuchinterp",
         )
 
         assert result.returncode == 0
         assert handoff.read_text() == "sudo -nu postgres nosuchinterp"
 
     def test_run_command_variant_neither_strips_nor_writes(
-        self, tmp_path: Path
+        self, tmp_path: Path, shell: list[str]
     ) -> None:
         """Assert the abort-only variant leaves no handoff file behind.
 
@@ -1171,14 +1266,18 @@ class TestLaunchCheckShell:
         would be written and never read.
         """
         result, handoff = self._run(
-            tmp_path, node="root-no-sudo", meta="sudo bash", variant="command"
+            tmp_path,
+            shell=shell,
+            node="root-no-sudo",
+            meta="sudo bash",
+            variant="command",
         )
 
         assert result.returncode == LAUNCH_CHECK_EXIT_CODE
         assert not handoff.exists()
 
     @pytest.mark.parametrize("variant", sorted(LAUNCH_CHECK_VARIANTS))
-    def test_shell_string_parses(self, variant: str) -> None:
+    def test_shell_string_parses(self, variant: str, shell: list[str]) -> None:
         """Assert the concatenated fragments form a syntactically valid script.
 
         The builder joins fragments, so a dropped ``;`` is otherwise caught only
@@ -1187,7 +1286,7 @@ class TestLaunchCheckShell:
         script = _build_check(**LAUNCH_CHECK_VARIANTS[variant])
 
         parsed = subprocess.run(
-            ["/bin/sh", "-n", "-c", script], capture_output=True, check=False
+            [*shell, "-n", "-c", script], capture_output=True, check=False
         )
 
         assert parsed.returncode == 0, parsed.stderr

@@ -472,17 +472,16 @@ export interface paths {
      * Get Executor Hosts
      * @description Return the executor hosts from the executor.
      *
-     *     Wrap the upstream executor call so connection failures or non-JSON
-     *     bodies surface as a 502 JSON response instead of leaking a default
-     *     500 + text/plain that masks the real failure on the dashboard banner.
+     *     A connection failure or an unparseable body arrives as
+     *     :class:`~app.tasks.execution.executors.nomad.exceptions.NomadRequestError`,
+     *     which the app-level ``BaseNomadException`` handler (``app.tasks.main``)
+     *     answers with a 502 JSON response rather than a 500 + text/plain that would
+     *     mask the real failure on the dashboard banner.
      *
      *     :param executor: The task executor backend used to fetch host metadata.
      *     :type executor: TaskExecutor
      *     :return: A mapping of executor node name to network address.
      *     :rtype: dict[str, str]
-     *     :raises HTTPBadGatewayException: If the executor backend raises a
-     *         ``requests.exceptions.RequestException`` (e.g. a non-JSON response
-     *         body or a connection failure outside the Nomad SDK's own wrapping).
      */
     get: operations['tasks_get_executor_hosts_hosts__get'];
     put?: never;
@@ -510,13 +509,12 @@ export interface paths {
      *     onboarded, or be onboarded and down, or be up with a broken driver, and those are
      *     three different things for whoever has to fix it.
      *
-     *     Wrapped the same way as ``/hosts/`` so an unreachable backend surfaces as a 502
-     *     rather than a 500 with a text/plain body.
+     *     An unreachable backend answers 502 rather than 500 with a text/plain body,
+     *     by the same route as ``/hosts/``: the app-level ``BaseNomadException``
+     *     handler owns it.
      *
      *     :param executor: The task executor backend used to fetch host metadata.
      *     :return: One entry per host the backend knows about.
-     *     :raises HTTPBadGatewayException: If the executor backend is unreachable or
-     *         answers with something the client cannot parse.
      */
     get: operations['tasks_get_executor_host_states_hosts_states__get'];
     put?: never;

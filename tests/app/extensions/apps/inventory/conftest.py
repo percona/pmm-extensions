@@ -16,21 +16,18 @@
 """Shared fixtures for the inventory plugin test suite.
 
 Hoisted from ``test_routes.py`` so the JSON API tests under
-``test_api_routes.py`` can reuse the same syncer stubs, the
-``SyncItemManager.sync_is_running`` patch, and the
+``test_api_routes.py`` can reuse the same syncer stubs and the
 ``run_*_sync`` patches without re-declaring them.
 """
 
 from collections.abc import Generator, Iterator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import BackgroundTasks
 from pytest_mock import MockerFixture
 
 from app.extensions.apps.inventory.deps import get_syncers
-from app.extensions.crud import SyncItemManager
 from app.extensions.inventory import CreatedNode, CreatedSchema, CreatedService
 from app.extensions.main import extensions_app
 
@@ -100,28 +97,11 @@ class _NonInventorySyncer:
 
 
 @pytest.fixture
-def mock_sync_item_manager(mocker: MockerFixture) -> AsyncMock:
-    """Mock the SyncItemManager sync_is_running method."""
-    return mocker.patch.object(
-        SyncItemManager, "sync_is_running", new=AsyncMock(return_value=False)
-    )
-
-
-@pytest.fixture
 def mock_syncers() -> Iterator[list]:
     """Override the SyncersDep with two stub syncers."""
     stubs = [StubPMMSyncer(), StubMySQLSyncer()]
     extensions_app.dependency_overrides[get_syncers] = lambda: stubs
     yield stubs
-    extensions_app.dependency_overrides = {}
-
-
-@pytest.fixture
-def mock_background_tasks() -> Iterator[MagicMock]:
-    """Mock the BackgroundTasks dependency."""
-    mock = MagicMock(spec=BackgroundTasks)
-    extensions_app.dependency_overrides[BackgroundTasks] = lambda: mock
-    yield mock
     extensions_app.dependency_overrides = {}
 
 
