@@ -230,8 +230,8 @@ the `frontend/` pnpm workspace. Run it locally from `frontend/`:
 pnpm knip
 ```
 
-Fix a finding by removing the dead code or dependency, never by excepting it. It
-deliberately does not check:
+Fix a finding by removing the dead code or dependency, never by adding an
+exception for it. The check deliberately skips:
 
 - the generated OpenAPI clients under `packages/*/src/generated/`;
 - exports used only inside their own module (`ignoreExportsUsedInFile`);
