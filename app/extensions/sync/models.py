@@ -66,7 +66,6 @@ from app.extensions.sync.constants import INVENTORY_PATH_SEGMENTS
 from app.extensions.sync.exceptions import (
     ExecutorHostNotFoundError,
     SyncFailError,
-    SyncItemAlreadyInProgressError,
 )
 from app.extensions.sync.fields import (
     StaleRunAfter,
@@ -463,37 +462,6 @@ class BaseSyncer(BaseCaseInsensitiveModel):
         verb = "Created" if created else "Retrieved"
         logger.debug("%s SyncItem: %s", verb, sync_item)
         return sync_item
-
-    async def get_sync_items(
-        self,
-        entity_type: SyncInventoryEntityTypeEnum,
-        *entity_ids: int | None,
-    ) -> list[SyncItem]:
-        """Retrieve multiple SyncItems for specified entities.
-
-        This method attempts to retrieve or create SyncItems for each provided entity
-        ID. If a SyncItem is already in progress for an entity, it logs the exception.
-
-        :param entity_type: The type of the entities.
-        :type entity_type: SyncInventoryEntityTypeEnum
-        :param entity_ids: The unique identifiers of the entities, or None for top-level
-            (inventory) synchronization.
-        :type entity_ids: int | None
-        :return: A list of SyncItems corresponding to the provided entity IDs.
-        :rtype: list[SyncItem]
-        """
-        sync_items = []
-        for entity_id in entity_ids:
-            try:
-                sync_items.append(await self.get_sync_item(entity_type, entity_id))
-            except SyncItemAlreadyInProgressError:
-                logger.exception(
-                    "Failed to create SyncItem (entity_id: %s, entity_type: %s): "
-                    "already in progress",
-                    entity_id,
-                    entity_type,
-                )
-        return sync_items
 
     @asynccontextmanager
     async def manage_sync_item(
