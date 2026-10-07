@@ -17,10 +17,3 @@
 
 export { FreeSoloSelect } from './FreeSoloSelect';
 export type { FreeSoloSelectProps } from './FreeSoloSelect';
-export {
-  toDisplayValue,
-  normalizeChange,
-  type ReferenceOption,
-  type FreeSoloDisplayValue,
-  type FreeSoloCommittedValue,
-} from './freeSoloValue';
