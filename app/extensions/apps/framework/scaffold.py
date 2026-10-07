@@ -611,7 +611,8 @@ def _atomic_write(path: Path, text: str) -> None:
     ``settings.yaml``) can observe a torn, partially-written file. Writing to a
     sibling temp file and :func:`os.replace`-ing it in is atomic on POSIX, so every
     reader sees either the whole old file or the whole new one — and a crash mid-run
-    leaves the original intact.
+    leaves the original intact. The target's mode is copied onto the temp file
+    (``mkstemp`` creates it ``0600``).
 
     :param path: The file to overwrite.
     :param text: The new contents.
@@ -620,6 +621,7 @@ def _atomic_write(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
+        shutil.copymode(path, tmp)
         Path(tmp).replace(path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
