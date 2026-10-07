@@ -74,6 +74,11 @@ CONFIG_PATH = "/etc/mongod.conf"
 #: deletes it.
 OWNERSHIP_MARKER_PATH = "/etc/mongod.om-bootstrap"
 
+#: The packages ``percona-server-mongodb`` pulls in, as an awk regex over package
+#: names. apt's unused list can hold anything orphaned on the host, so rollback
+#: purges only the PSMDB packages in it.
+_PSMDB_PACKAGES_ERE = "^percona-(server-mongodb-|mongodb-mongosh$|telemetry-agent$)"
+
 #: Matches the packaged ``mongod.service``'s own ``PIDFile=`` on both supported
 #: OSes. The unit is ``Type=forking``, so this has to agree with the systemd unit
 #: exactly — see :meth:`PackagesInstallStrategy._configure_mongod`. Fixed for
@@ -1208,17 +1213,33 @@ class PackagesInstallStrategy:
         ``install_package`` failed still rolls back, and the purge tolerates a
         package that never landed.
 
+        ``percona-server-mongodb`` is a metapackage: removing it with apt leaves
+        mongod, mongos, the tools and mongosh installed, so apt also purges those
+        it then reports unused. dnf removes every dependency only the install
+        needed itself, with ``clean_requirements_on_remove``, set here so the
+        host's ``dnf.conf`` cannot turn it off.
+
         :param spec: The host's bootstrap spec; only its OS is read.
         :param run_id: The run the rollback belongs to.
         :return: The step action.
         """
         pkg_manager = self._require_package_manager(spec.os)
-        remove = (
-            "apt-get remove -y --purge percona-server-mongodb"
-            if pkg_manager == "apt-get"
-            else "dnf remove -y percona-server-mongodb"
-        )
-        return _owned_step(f"{remove} || true", run_id, timeout_s=120)
+        if pkg_manager == "apt-get":
+            remove = "\n".join(
+                [
+                    "apt-get remove -y --purge percona-server-mongodb || true",
+                    "unused=$(apt-get -s autoremove 2>/dev/null"
+                    f" | awk -v re={shlex.quote(_PSMDB_PACKAGES_ERE)}"
+                    ' \'($1 == "Remv" || $1 == "Purg") && $2 ~ re { print $2 }\')',
+                    '[ -z "$unused" ] || apt-get remove -y --purge $unused || true',
+                ]
+            )
+        else:
+            remove = (
+                "dnf remove -y --setopt=clean_requirements_on_remove=True "
+                "percona-server-mongodb || true"
+            )
+        return _owned_step(remove, run_id, timeout_s=120)
 
     def _rollback_remove_data(self, spec: BootstrapSpec, run_id: str) -> StepAction:
         """Remove the data directory, then the ownership marker, as the last step.

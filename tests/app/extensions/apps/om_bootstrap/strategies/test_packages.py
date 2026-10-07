@@ -1015,28 +1015,42 @@ class TestBuildRollbackStep:
             "purge_package", "node00", _spec(OperatingSystem.ROCKY)
         )
 
-        assert "dnf remove -y percona-server-mongodb" in " ".join(action.command)
+        assert (
+            "dnf remove -y --setopt=clean_requirements_on_remove=True "
+            "percona-server-mongodb"
+        ) in " ".join(action.command)
 
 
-def _recording_bin(tmp_path: Path, fakes: list[str]) -> Path:
-    """Build a ``PATH`` directory with ``cat``/``rm`` and fakes that log their argv.
+def _recording_bin(
+    tmp_path: Path, fakes: list[str], outputs: dict[str, str] | None = None
+) -> Path:
+    """Build a ``PATH`` directory with ``cat``/``rm``/``awk`` and fakes that log their argv.
 
     Each fake appends its name and arguments to ``calls.log`` in ``tmp_path``.
 
     :param tmp_path: The test's scratch directory.
     :param fakes: The commands to fake.
+    :param outputs: What a fake prints, keyed by the exact call as ``calls.log``
+        records it; every other call prints nothing.
     :return: The directory.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for tool in ("cat", "rm"):
+    for tool in ("cat", "rm", "awk"):
         real = shutil.which(tool)
         assert real is not None
         (bin_dir / tool).symlink_to(real)
     log = tmp_path / "calls.log"
     for fake in fakes:
         path = bin_dir / fake
-        path.write_text(f'#!/bin/sh\necho "{fake} $*" >> {shlex.quote(str(log))}\n')
+        replies = "".join(
+            f'[ "{fake} $*" = {shlex.quote(call)} ] && printf "%s" {shlex.quote(out)}\n'
+            for call, out in (outputs or {}).items()
+            if call.split(" ", 1)[0] == fake
+        )
+        path.write_text(
+            f'#!/bin/sh\necho "{fake} $*" >> {shlex.quote(str(log))}\n{replies}exit 0\n'
+        )
         path.chmod(0o755)
     return bin_dir
 
@@ -1506,10 +1520,47 @@ class TestRollbackCommands:
         assert calls == [
             "systemctl disable --now mongod",
             "apt-get remove -y --purge percona-server-mongodb",
+            "apt-get -s autoremove",
         ]
         assert not config.exists()
         assert not data.exists()
         assert not marker.exists()
+
+    @pytest.mark.parametrize("verb", ["Remv", "Purg"])
+    def test_purges_the_psmdb_packages_apt_no_longer_needs(
+        self, tmp_path: Path, paths: tuple[Path, Path, Path], verb: str
+    ) -> None:
+        """Purge mongod and the rest of the metapackage's packages, nothing else.
+
+        An unused package outside the PSMDB family may predate the run, so it stays.
+        apt says ``Purg`` rather than ``Remv`` on a host that sets
+        ``APT::Get::Purge``.
+        """
+        _config, _data, marker = paths
+        marker.write_text(f"{RUN_ID}\n")
+        packages_unused = [
+            "percona-server-mongodb-mongos [8.0.4-2.noble]",
+            "percona-server-mongodb-server [8.0.4-2.noble]",
+            "percona-telemetry-agent [1.0.17-1.noble]",
+            "logrotate [3.21.0-2build1]",
+            "percona-backup-mongodb [2.9.0-1.noble]",
+            "percona-mongodb-mongosh [2.10.0.noble]",
+            "percona-server-mongodb-tools [8.0.4-2.noble]",
+        ]
+        autoremove = "".join(f"{verb} {line}\n" for line in packages_unused)
+        _recording_bin(
+            tmp_path, ["apt-get"], outputs={"apt-get -s autoremove": autoremove}
+        )
+
+        self._run(tmp_path, "purge_package")
+
+        assert (tmp_path / "calls.log").read_text().splitlines() == [
+            "apt-get remove -y --purge percona-server-mongodb",
+            "apt-get -s autoremove",
+            "apt-get remove -y --purge percona-server-mongodb-mongos"
+            " percona-server-mongodb-server percona-telemetry-agent"
+            " percona-mongodb-mongosh percona-server-mongodb-tools",
+        ]
 
 
 class TestPerMemberBindIP:
