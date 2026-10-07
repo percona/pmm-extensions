@@ -3135,7 +3135,7 @@
     },
     "/hosts/": {
       "get": {
-        "description": "Return the executor hosts from the executor.\n\nWrap the upstream executor call so connection failures or non-JSON\nbodies surface as a 502 JSON response instead of leaking a default\n500 + text/plain that masks the real failure on the dashboard banner.\n\n:param executor: The task executor backend used to fetch host metadata.\n:type executor: TaskExecutor\n:return: A mapping of executor node name to network address.\n:rtype: dict[str, str]\n:raises HTTPBadGatewayException: If the executor backend raises a\n    ``requests.exceptions.RequestException`` (e.g. a non-JSON response\n    body or a connection failure outside the Nomad SDK's own wrapping).",
+        "description": "Return the executor hosts from the executor.\n\nA connection failure or an unparseable body arrives as\n:class:`~app.tasks.execution.executors.nomad.exceptions.NomadRequestError`,\nwhich the app-level ``BaseNomadException`` handler (``app.tasks.main``)\nanswers with a 502 JSON response rather than a 500 + text/plain that would\nmask the real failure on the dashboard banner.\n\n:param executor: The task executor backend used to fetch host metadata.\n:type executor: TaskExecutor\n:return: A mapping of executor node name to network address.\n:rtype: dict[str, str]",
         "operationId": "tasks_get_executor_hosts_hosts__get",
         "parameters": [
           {
@@ -3187,7 +3187,7 @@
     },
     "/hosts/states/": {
       "get": {
-        "description": "Return every host the executor knows about, usable or not.\n\n``GET /hosts/`` answers \"where can I place a job\", which is what a dispatcher\nneeds and all it needs. This answers \"what is the state of the fleet\", which is a\ndifferent question: a host missing from the other list may never have been\nonboarded, or be onboarded and down, or be up with a broken driver, and those are\nthree different things for whoever has to fix it.\n\nWrapped the same way as ``/hosts/`` so an unreachable backend surfaces as a 502\nrather than a 500 with a text/plain body.\n\n:param executor: The task executor backend used to fetch host metadata.\n:return: One entry per host the backend knows about.\n:raises HTTPBadGatewayException: If the executor backend is unreachable or\n    answers with something the client cannot parse.",
+        "description": "Return every host the executor knows about, usable or not.\n\n``GET /hosts/`` answers \"where can I place a job\", which is what a dispatcher\nneeds and all it needs. This answers \"what is the state of the fleet\", which is a\ndifferent question: a host missing from the other list may never have been\nonboarded, or be onboarded and down, or be up with a broken driver, and those are\nthree different things for whoever has to fix it.\n\nAn unreachable backend answers 502 rather than 500 with a text/plain body,\nby the same route as ``/hosts/``: the app-level ``BaseNomadException``\nhandler owns it.\n\n:param executor: The task executor backend used to fetch host metadata.\n:return: One entry per host the backend knows about.",
         "operationId": "tasks_get_executor_host_states_hosts_states__get",
         "parameters": [
           {

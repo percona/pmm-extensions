@@ -50,7 +50,7 @@ async def connectivity_check(
     """
     task = await get_executable_task_by_name(session, "run-python")
     executor = get_executor_for_task(task)
-    registered_targets = executor.get_hosts()
+    registered_targets = await executor.get_hosts()
     if request.target not in registered_targets:
         raise HTTPBadRequestException(
             f"Target {request.target!r} is not available in "
