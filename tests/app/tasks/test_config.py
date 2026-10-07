@@ -30,14 +30,22 @@ from app.core.settings_override.registry import (
 )
 from app.extensions.sync.syncers.mysql.syncer import MySQLSyncer
 from app.extensions.sync.syncers.pmm import PMMSyncer
-from app.extensions.sync.syncers.system_facts.syncer import SystemFactsSyncer
+from app.extensions.sync.syncers.system_facts.syncer import (
+    SystemFactsSyncer,
+    UnmeasuredHostFactsSyncer,
+)
 from app.tasks.config import (
     MAX_SCHEDULED_SYNCER_LENGTH,
     PreExecutionCheckMode,
     tasks_settings,
     TasksSettings,
 )
-from tests.app.tasks.conftest import MYSQL_SYNCER, PMM_SYNCER, SYSTEM_FACTS_SYNCER
+from tests.app.tasks.conftest import (
+    MYSQL_SYNCER,
+    PMM_SYNCER,
+    SYSTEM_FACTS_SYNCER,
+    UNMEASURED_HOST_FACTS_SYNCER,
+)
 
 EXPECTED_UVICORN_PORT = 8002
 EXPECTED_LOG_RETENTION_DAYS = 90
@@ -299,3 +307,4 @@ class TestSyncerNameConstants:
         assert PMMSyncer.get_name() == PMM_SYNCER
         assert MySQLSyncer.get_name() == MYSQL_SYNCER
         assert SystemFactsSyncer.get_name() == SYSTEM_FACTS_SYNCER
+        assert UnmeasuredHostFactsSyncer.get_name() == UNMEASURED_HOST_FACTS_SYNCER
