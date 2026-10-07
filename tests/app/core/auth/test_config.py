@@ -427,7 +427,8 @@ class TestRetiredCasdoorFrontEndpoint:
                         }
                     },
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         monkeypatch.setenv("FASTAPI_ENV", profile)
 
