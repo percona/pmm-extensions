@@ -32,6 +32,7 @@ from app.extensions.apps.om_bootstrap.strategies import packages
 from app.extensions.apps.om_bootstrap.strategies.packages import (
     _mongosh_eval,
     _mongosh_eval_command,
+    _with_loopback,
     CONFIG_PATH,
     KEY_FILE_PATH,
     OWNERSHIP_MARKER_PATH,
@@ -1221,7 +1222,7 @@ class TestPerMemberBindIP:
             member_configs={"node00": MemberConfig(bind_ip="10.0.0.1")},
         )
 
-        assert 'bindIp: "10.0.0.1"' in self._config_for(
+        assert 'bindIp: "127.0.0.1,10.0.0.1"' in self._config_for(
             "node00", spec, "configure_mongod"
         )
 
@@ -1262,7 +1263,7 @@ class TestPerMemberBindIP:
             "enable_auth", "node00", spec
         )
 
-        assert 'bindIp: "10.0.0.1"' in "\n".join(action.command)
+        assert 'bindIp: "127.0.0.1,10.0.0.1"' in "\n".join(action.command)
 
 
 class TestMongodConfigQuoting:
@@ -1298,19 +1299,25 @@ class TestMongodConfigQuoting:
         """Keep a value containing ``#`` whole instead of truncating the line."""
         config = self._config(bind_ip="10.0.0.1#2")
 
-        assert 'bindIp: "10.0.0.1#2"' in config
+        assert 'bindIp: "127.0.0.1,10.0.0.1#2"' in config
 
     def test_a_yaml_keyword_stays_a_string(self) -> None:
         """Emit ``null`` as a string rather than YAML's null."""
-        config = self._config(bind_ip="null")
+        config = self._config(replica_set_name="null")
 
-        assert 'bindIp: "null"' in config
+        assert 'replSetName: "null"' in config
 
     def test_a_bracketed_value_is_not_read_as_a_sequence(self) -> None:
-        """Emit ``[::1]`` as a string, which is also how an IPv6 literal arrives."""
-        config = self._config(bind_ip="[::1]")
+        """Emit ``[::1],...`` as a string, which is also how an IPv6 literal arrives."""
+        config = self._config(bind_ip="[::1],127.0.0.1")
 
-        assert 'bindIp: "[::1]"' in config
+        assert 'bindIp: "[::1],127.0.0.1"' in config
+
+    def test_an_asterisk_is_not_read_as_an_alias(self) -> None:
+        """Emit ``*``, mongod's own bind-all value, as a string."""
+        config = self._config(bind_ip="*")
+
+        assert 'bindIp: "*"' in config
 
     def test_a_per_member_address_is_quoted_too(self) -> None:
         """Quote the member's own address on the same path as the run's."""
@@ -1322,12 +1329,12 @@ class TestMongodConfigQuoting:
             "configure_mongod", "node00", spec
         )
 
-        assert 'bindIp: "10.0.0.1"' in "\n".join(action.command)
+        assert 'bindIp: "127.0.0.1,10.0.0.1"' in "\n".join(action.command)
 
     def test_the_config_is_still_valid_yaml(self) -> None:
         """Parse it, so the quoting cannot be asserted into nonsense."""
         spec = _spec(OperatingSystem.UBUNTU)
-        spec.bind_ip = "10.0.0.1#2"
+        spec.bind_ip = "127.0.0.1,10.0.0.1#2"
         action = PackagesInstallStrategy().build_step(
             "configure_mongod", "node00", spec
         )
@@ -1343,3 +1350,24 @@ class TestMongodConfigQuoting:
         assert parsed["net"]["port"] == spec.port
         assert parsed["storage"]["dbPath"] == spec.data_path
         assert parsed["replication"]["replSetName"] == spec.replica_set_name
+
+
+class TestBindIpReachesLoopback:
+    """Assert bindIp always reaches 127.0.0.1, where ``mongosh --port`` connects."""
+
+    @pytest.mark.parametrize(
+        ("bind_ip", "expected"),
+        [
+            ("pmm-client-node00", "127.0.0.1,pmm-client-node00"),
+            ("10.0.0.1,10.0.0.2", "127.0.0.1,10.0.0.1,10.0.0.2"),
+            ("127.0.0.1", "127.0.0.1"),
+            ("LOCALHOST,10.0.0.1", "LOCALHOST,10.0.0.1"),
+            ("0.0.0.0", "0.0.0.0"),
+            ("*", "*"),
+        ],
+    )
+    def test_loopback_is_added_only_where_missing(
+        self, bind_ip: str, expected: str
+    ) -> None:
+        """Leave the wildcards alone: beside 127.0.0.1, mongod breaks on either."""
+        assert _with_loopback(bind_ip) == expected

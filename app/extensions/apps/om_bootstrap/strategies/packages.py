@@ -105,6 +105,15 @@ PMM_MONITORING_USER_ROLES = [
 #: the step past its own dispatch timeout.
 PRIMARY_SELECTION_TIMEOUT_MS = 30_000
 
+#: Where ``mongosh --port`` connects. Every local mongosh call here relies on it,
+#: so ``bindIp`` always has to reach it.
+LOOPBACK_ADDRESS = "127.0.0.1"
+
+#: ``bindIp`` entries that already reach :data:`LOOPBACK_ADDRESS`. The wildcards
+#: must never get it added: beside ``127.0.0.1``, mongod refuses to start with
+#: ``0.0.0.0`` (``Address already in use``) and listens on loopback alone with ``*``.
+_REACHES_LOOPBACK = frozenset({"0.0.0.0", "*", LOOPBACK_ADDRESS, "localhost"})  # noqa: S104
+
 
 def _psmdb_channel(mongodb_version: str) -> str:
     """Turn ``"8.0"`` (or ``"8.0.4"``) into the channel name ``"psmdb-80"``.
@@ -148,6 +157,18 @@ def _yaml_str(value: str) -> str:
     return json.dumps(value)
 
 
+def _with_loopback(bind_ip: str) -> str:
+    """Add :data:`LOOPBACK_ADDRESS` to a ``bindIp`` value that does not reach it.
+
+    :param bind_ip: A comma-separated ``bindIp`` value.
+    :return: ``bind_ip`` with :data:`LOOPBACK_ADDRESS` in front, unless it already
+        reaches it.
+    """
+    if _REACHES_LOOPBACK.intersection(bind_ip.lower().split(",")):
+        return bind_ip
+    return f"{LOOPBACK_ADDRESS},{bind_ip}"
+
+
 def _mongod_config(spec: BootstrapSpec, host: str, *, with_auth: bool) -> str:
     """Render ``mongod.conf``'s contents, with or without the security block.
 
@@ -174,7 +195,9 @@ def _mongod_config(spec: BootstrapSpec, host: str, *, with_auth: bool) -> str:
     # address, and a three-member set has three different ones -- a single run-level
     # value can only be 0.0.0.0 or wrong for two of the three.
     member = spec.member_configs.get(host)
-    bind_ip = (member.bind_ip if member and member.bind_ip else None) or spec.bind_ip
+    bind_ip = _with_loopback(
+        (member.bind_ip if member and member.bind_ip else None) or spec.bind_ip
+    )
     # Every string value is emitted as a quoted YAML scalar, raised in review. The
     # validators bound these to no whitespace or control characters,
     # which closes newline injection, but YAML still *types* a bare scalar by its

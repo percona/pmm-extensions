@@ -156,7 +156,8 @@ class TriggerRunRequest(BaseModel):
         story as ``data_path``.
     :param bind_ip: The interface(s) mongod listens on, on every host.
         Defaults to ``127.0.0.1``, keeping mongod's pre-auth window local to
-        the host unless the caller passes a wider address.
+        the host unless the caller passes a wider address. mongod also listens
+        on ``127.0.0.1`` unless the value already reaches it.
     :param member_configs: Per-host election settings for ``rs.initiate``,
         keyed by entries of ``hosts``. A host missing from this mapping —
         including every host, when this is left empty — gets

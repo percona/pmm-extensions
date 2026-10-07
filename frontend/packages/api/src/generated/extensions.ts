@@ -10746,7 +10746,8 @@ export interface components {
      *         ``votes`` off whenever this is nonzero.
      *     :param bind_ip: The interface(s) this member's ``mongod`` listens on,
      *         overriding the run-level ``bind_ip`` for this host alone. ``None`` keeps
-     *         the run's value. Exists because the safe default is a host's *own*
+     *         the run's value. mongod also listens on ``127.0.0.1`` unless the value
+     *         already reaches it. Exists because the safe default is a host's *own*
      *         address and a three-member set has three different ones, so a single
      *         run-level value can only be ``0.0.0.0`` or wrong for two of the three.
      *     :raises ValueError: If ``priority``/``delay_secs`` are out of range, or a
@@ -10938,7 +10939,8 @@ export interface components {
      *         story as ``data_path``.
      *     :param bind_ip: The interface(s) mongod listens on, on every host.
      *         Defaults to ``127.0.0.1``, keeping mongod's pre-auth window local to
-     *         the host unless the caller passes a wider address.
+     *         the host unless the caller passes a wider address. mongod also listens
+     *         on ``127.0.0.1`` unless the value already reaches it.
      *     :param member_configs: Per-host election settings for ``rs.initiate``,
      *         keyed by entries of ``hosts``. A host missing from this mapping —
      *         including every host, when this is left empty — gets

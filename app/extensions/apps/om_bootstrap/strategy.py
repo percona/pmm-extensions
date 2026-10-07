@@ -115,7 +115,8 @@ class MemberConfig(BaseModel):
         ``votes`` off whenever this is nonzero.
     :param bind_ip: The interface(s) this member's ``mongod`` listens on,
         overriding the run-level ``bind_ip`` for this host alone. ``None`` keeps
-        the run's value. Exists because the safe default is a host's *own*
+        the run's value. mongod also listens on ``127.0.0.1`` unless the value
+        already reaches it. Exists because the safe default is a host's *own*
         address and a three-member set has three different ones, so a single
         run-level value can only be ``0.0.0.0`` or wrong for two of the three.
     :raises ValueError: If ``priority``/``delay_secs`` are out of range, or a
