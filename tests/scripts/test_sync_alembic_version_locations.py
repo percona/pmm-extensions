@@ -110,7 +110,7 @@ def test_sync_preserves_crlf_line_endings(tmp_path):
 
 
 def test_sync_failed_write_leaves_original_and_no_temp_file(tmp_path, monkeypatch):
-    """Keep the original ini and leave no temp file when the write fails partway."""
+    """Keep the original ini and leave no temp file when the final swap fails."""
     apps_root = tmp_path / "apps"
     apps_root.mkdir()
     _migration_plugin(apps_root, "alpha")
