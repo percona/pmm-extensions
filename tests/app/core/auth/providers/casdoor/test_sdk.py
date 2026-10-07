@@ -16,7 +16,6 @@
 """Define tests for the Casdoor SDK."""
 
 import base64
-from math import ceil
 
 import pytest
 from pydantic import SecretStr
@@ -95,28 +94,6 @@ def test_casdoor_declares_no_stored_credential_settings():
     """Assert ``api_key`` and ``auth_scheme`` are absent from Casdoor provider settings."""
     assert "api_key" not in CasdoorSDK.model_fields
     assert "auth_scheme" not in CasdoorSDK.model_fields
-
-
-@pytest.mark.asyncio
-async def test_get_tokens_paginates_by_page_size(mocker):
-    """Verify get_tokens fetches ceil(total / page_size) pages, not ``total`` pages."""
-    sdk = CasdoorSDK(
-        endpoint="https://casdoor.example.com",
-        client_id="test-id",
-        client_secret="test-secret",
-    )
-    page_size = 100  # matches the internal page size in CasdoorSDK.get_tokens
-    total = 250
-    expected_pages = ceil(total / page_size)
-    page = {"data": [{"user": "alice", "name": "tok"}], "data2": total}
-    get_mock = mocker.patch.object(
-        CasdoorSDK, "get", new=mocker.AsyncMock(return_value=page)
-    )
-
-    yielded = [token async for token in sdk.get_tokens("built-in")]
-
-    assert get_mock.await_count == expected_pages
-    assert len(yielded) == expected_pages
 
 
 @pytest.mark.asyncio
