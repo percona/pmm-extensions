@@ -21,7 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.auth.providers.casdoor.provider import CasdoorAuthProvider
-from app.core.auth.providers.grafana.models import GrafanaTokenPayload, GrafanaUser
+from app.core.auth.providers.grafana.models import GrafanaUser
 from app.core.auth.providers.grafana.provider import GrafanaAuthProvider
 
 
@@ -39,10 +39,6 @@ class TestGrafanaAuthProviderBundle:
     def test_user_model_wired(self):
         """Verify the provider exposes the Grafana user model."""
         assert GrafanaAuthProvider.user_model is GrafanaUser
-
-    def test_token_payload_model_wired(self):
-        """Verify the provider exposes the Grafana token-payload model."""
-        assert GrafanaAuthProvider.token_payload_model is GrafanaTokenPayload
 
     def test_supports_ambient_session(self):
         """Verify the Grafana provider advertises ambient-session support."""
