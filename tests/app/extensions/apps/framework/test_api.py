@@ -2903,6 +2903,31 @@ class TestDeriveCrudRoutesCreateContext:
         assert response.json()["resolved_by"] == _CONTEXT_USER_ID
         tasks_api.put.assert_awaited_once()
 
+    def test_a_remembered_listing_failure_answers_like_a_live_one(
+        self, regular_user: CasdoorUser, provider_users: AsyncMock
+    ) -> None:
+        """Assert a request inside the failure window matches the failing one.
+
+        Both answer 200 with the raw id, and only the first waits on the provider.
+        """
+        provider_users.side_effect = TimeoutError()
+        tasks_api = _make_tasks_api(
+            detail_task=_task_dict_created_by("t1", _CONTEXT_USER_ID)
+        )
+        router = _crud_router(
+            context_provider=get_username_mapping,
+            response_builder=_build_context_response,
+        )
+        client = _authed_crud_client(router, tasks_api, regular_user)
+
+        live = client.get(f"{_CRUD_BASE_URL}/t1")
+        remembered = client.get(f"{_CRUD_BASE_URL}/t1")
+
+        assert live.status_code == remembered.status_code == status.HTTP_200_OK
+        assert live.json() == remembered.json()
+        assert remembered.json()["resolved_by"] == _CONTEXT_USER_ID
+        provider_users.assert_awaited_once()
+
 
 # ── derive_execute_route() helper ───────────────────────────────────────
 
