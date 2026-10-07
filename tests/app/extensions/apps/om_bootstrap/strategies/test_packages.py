@@ -1188,7 +1188,11 @@ class TestPreCheckCommand:
         result = self._run(tmp_path)
 
         assert result.returncode != 0
-        assert "bytes free" in result.stderr
+        assert re.search(
+            r"pre_check: the data directory \S+ needs at least 4294967296 GiB free, "
+            r"but \S+ has \d+\.\d GiB$",
+            result.stderr.strip(),
+        ), result.stderr
 
     def test_fails_when_free_space_cannot_be_measured(
         self, tmp_path: Path, paths: tuple[Path, Path]

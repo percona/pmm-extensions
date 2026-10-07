@@ -94,6 +94,9 @@ JOURNAL_TAIL_LINES = 20
 #: sized-for-production figure.
 MIN_DATA_DISK_BYTES = 5 * 1024 * 1024 * 1024
 
+#: Bytes in a GiB, the unit ``pre_check`` reports free space in.
+GIB = 1024 * 1024 * 1024
+
 #: Roles PMM's ``mongodb_exporter`` needs, granted to the user
 #: ``create_pmm_monitoring_user`` creates — ``clusterMonitor`` for replication/
 #: server-status metrics, ``read`` on ``local`` for oplog metrics. The same
@@ -657,9 +660,11 @@ class PackagesInstallStrategy:
                 "case \"$avail\" in ''|*[!0-9]*) "
                 'echo "pre_check: could not measure free space at $target" >&2; '
                 "exit 1;; esac",
+                f"tenths=$((avail * 10 / {GIB}))",
                 f'if [ "$avail" -lt {MIN_DATA_DISK_BYTES} ]; then '
-                f'echo "pre_check: less than {MIN_DATA_DISK_BYTES} bytes free '
-                'for the data directory" >&2; exit 1; fi',
+                f'echo "pre_check: the data directory "{data_path}" needs at least '
+                f"{MIN_DATA_DISK_BYTES // GIB} GiB free, but $target has "
+                '$((tenths / 10)).$((tenths % 10)) GiB" >&2; exit 1; fi',
                 _port_free_check(spec.port),
             ]
         )
