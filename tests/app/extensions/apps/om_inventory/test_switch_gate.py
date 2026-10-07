@@ -64,7 +64,7 @@ def _reset_proxy_snapshot() -> Iterator[None]:
     carries the same fixture.
     """
     yield
-    # ty-attr-ok: the proxy forwards to the wrapped class via __getattr__.
+    # ty-attr-ok: annotated as the settings class; the proxy owns ``_set_snapshot``.
     om_inventory_settings._set_snapshot({})
 
 
