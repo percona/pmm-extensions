@@ -38,7 +38,7 @@
 | app/core/db/crud.py                                                                                                                 |      293 |        8 |       76 |        7 |     96% |250, 343-\>345, 345-\>347, 347-\>349, 356-\>372, 442, 589-592, 1036-1039, 1285-1286 |
 | app/core/db/deps.py                                                                                                                 |        8 |        0 |        0 |        0 |    100% |           |
 | app/core/db/exception\_handlers.py                                                                                                  |       37 |        1 |       10 |        1 |     96% |        82 |
-| app/core/db/in\_memory\_list\_query.py                                                                                              |       73 |        0 |       14 |        0 |    100% |           |
+| app/core/db/in\_memory\_list\_query.py                                                                                              |       67 |        0 |       14 |        0 |    100% |           |
 | app/core/db/list\_query.py                                                                                                          |       87 |        0 |       24 |        0 |    100% |           |
 | app/core/db/models.py                                                                                                               |       14 |        0 |        0 |        0 |    100% |           |
 | app/core/db/sql\_types.py                                                                                                           |       37 |        0 |       12 |        0 |    100% |           |
@@ -51,7 +51,7 @@
 | app/core/middleware/security\_headers.py                                                                                            |      105 |        0 |       20 |        1 |     99% |221-\>exit |
 | app/core/models.py                                                                                                                  |       20 |        0 |        2 |        0 |    100% |           |
 | app/core/pagination/deps.py                                                                                                         |       17 |        0 |        2 |        0 |    100% |           |
-| app/core/pagination/models.py                                                                                                       |       78 |        1 |       20 |        1 |     98% |        77 |
+| app/core/pagination/models.py                                                                                                       |       87 |        1 |       22 |        1 |     98% |        90 |
 | app/core/pmm.py                                                                                                                     |       51 |        1 |       10 |        1 |     97% |        53 |
 | app/core/requests/connectivity.py                                                                                                   |       33 |        0 |        8 |        0 |    100% |           |
 | app/core/requests/registry.py                                                                                                       |       63 |        2 |       16 |        2 |     95% |  105, 116 |
@@ -74,7 +74,7 @@
 | app/core/settings\_override/secret\_storage.py                                                                                      |      154 |        4 |       50 |        5 |     96% |575, 577-\>579, 603, 757, 787 |
 | app/core/settings\_override/worker.py                                                                                               |       59 |        1 |       14 |        1 |     97% |       214 |
 | app/core/utils/async\_run.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
-| app/core/utils/cache.py                                                                                                             |       93 |        4 |       16 |        1 |     94% |56-58, 204 |
+| app/core/utils/cache.py                                                                                                             |       88 |        4 |       16 |        1 |     93% |55-57, 191 |
 | app/core/utils/cli\_args.py                                                                                                         |       12 |        0 |        0 |        0 |    100% |           |
 | app/core/utils/date\_time.py                                                                                                        |        8 |        0 |        2 |        0 |    100% |           |
 | app/core/utils/dict.py                                                                                                              |       29 |        4 |       12 |        0 |     85% |   165-168 |
@@ -163,7 +163,7 @@
 | app/extensions/apps/backup\_mongo/api\_routes.py                                                                                    |       30 |        0 |        2 |        0 |    100% |           |
 | app/extensions/apps/backup\_mongo/app.py                                                                                            |        8 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/backup\_mongo/deps.py                                                                                           |      118 |        8 |       18 |        2 |     88% |253-257, 264-266 |
-| app/extensions/apps/backup\_mongo/models.py                                                                                         |      240 |        0 |       42 |        0 |    100% |           |
+| app/extensions/apps/backup\_mongo/models.py                                                                                         |      232 |        0 |       42 |        0 |    100% |           |
 | app/extensions/apps/backup\_mongo/pbm\_creds\_common.py                                                                             |      159 |        3 |       32 |        1 |     98% |83-\>92, 147-149 |
 | app/extensions/apps/backup\_mongo/restore/api\_routes.py                                                                            |       34 |        0 |        2 |        0 |    100% |           |
 | app/extensions/apps/backup\_mongo/restore/app.py                                                                                    |        6 |        0 |        0 |        0 |    100% |           |
@@ -202,7 +202,7 @@
 | app/extensions/apps/framework/connectivity.py                                                                                       |       25 |        0 |        6 |        0 |    100% |           |
 | app/extensions/apps/framework/deps.py                                                                                               |       15 |        0 |        2 |        0 |    100% |           |
 | app/extensions/apps/framework/form\_audit.py                                                                                        |      146 |        1 |       28 |        1 |     99% |       410 |
-| app/extensions/apps/framework/form\_backfill.py                                                                                     |      192 |       37 |       30 |        4 |     80% |122, 127, 132, 137, 142, 147, 323-329, 355-361, 364-369, 389-395, 398, 482-\>489, 511-547, 602 |
+| app/extensions/apps/framework/form\_backfill.py                                                                                     |      189 |       37 |       30 |        4 |     79% |110, 115, 120, 125, 130, 135, 311-317, 343-349, 352-357, 377-383, 386, 470-\>477, 499-535, 590 |
 | app/extensions/apps/framework/form\_backfill\_guards.py                                                                             |       10 |        0 |        2 |        0 |    100% |           |
 | app/extensions/apps/framework/form\_backfill\_inventory.py                                                                          |      141 |       10 |       52 |       12 |     89% |71, 76-\>exit, 144, 147, 151, 164-\>142, 196, 199-\>212, 216, 249, 267, 280-281, 317-\>323 |
 | app/extensions/apps/framework/form\_backfill\_registry.py                                                                           |       62 |        0 |       20 |        0 |    100% |           |
@@ -318,10 +318,10 @@
 | app/extensions/bundle\_upload/plan.py                                                                                               |      314 |        2 |       92 |        2 |     99% |1114, 1263 |
 | app/extensions/bundle\_upload/resolver.py                                                                                           |       56 |        0 |       14 |        0 |    100% |           |
 | app/extensions/bundle\_upload/seam.py                                                                                               |       12 |        0 |        0 |        0 |    100% |           |
-| app/extensions/clients/pmm.py                                                                                                       |      289 |        2 |       74 |        3 |     99% |558, 560, 973-\>975 |
+| app/extensions/clients/pmm.py                                                                                                       |      286 |        2 |       74 |        3 |     99% |558, 560, 926-\>928 |
 | app/extensions/config.py                                                                                                            |      247 |        3 |       60 |        3 |     98% |182, 440, 751 |
 | app/extensions/connectivity.py                                                                                                      |       39 |        4 |        2 |        1 |     88% |84, 163-169 |
-| app/extensions/crud.py                                                                                                              |      164 |        0 |       30 |        0 |    100% |           |
+| app/extensions/crud.py                                                                                                              |      169 |        0 |       32 |        0 |    100% |           |
 | app/extensions/db/engine.py                                                                                                         |        7 |        0 |        0 |        0 |    100% |           |
 | app/extensions/db/seed.py                                                                                                           |       52 |        0 |       16 |        0 |    100% |           |
 | app/extensions/deps.py                                                                                                              |      285 |        1 |       50 |        1 |     99% |725-\>730, 746 |
@@ -356,7 +356,7 @@
 | app/extensions/migrations/versions/2026\_09\_18\_1512-cbc3026013de\_unmark\_secret\_setting\_overrides.py                           |       52 |        0 |        0 |        0 |    100% |           |
 | app/extensions/migrations/versions/2026\_09\_24\_1200-ee2b220c8c73\_rename\_sep\_settings\_override\_token.py                       |       24 |        1 |        2 |        1 |     92% |        72 |
 | app/extensions/migrations/versions/2026\_09\_24\_1300-93cf1ec26fcd\_rename\_app\_periodic\_task\_table.py                           |       35 |        2 |        8 |        1 |     93% |     79-82 |
-| app/extensions/models.py                                                                                                            |       75 |        1 |        2 |        1 |     97% |       254 |
+| app/extensions/models.py                                                                                                            |       80 |        1 |        2 |        1 |     98% |       256 |
 | app/extensions/periodic\_tasks.py                                                                                                   |      111 |        0 |       42 |        0 |    100% |           |
 | app/extensions/routes/artifacts.py                                                                                                  |       38 |        1 |       14 |        1 |     96% |        90 |
 | app/extensions/routes/download\_files.py                                                                                            |       68 |        0 |       14 |        2 |     98% |109-\>exit, 173-\>179 |
@@ -375,20 +375,20 @@
 | app/extensions/snippets/models/constants.py                                                                                         |        5 |        0 |        0 |        0 |    100% |           |
 | app/extensions/snippets/models/meta.py                                                                                              |      233 |        1 |       74 |        3 |     99% |593, 741-\>743, 743-\>745 |
 | app/extensions/snippets/models/responses.py                                                                                         |       28 |        0 |        0 |        0 |    100% |           |
-| app/extensions/snippets/models/snippet.py                                                                                           |      338 |        5 |       78 |        3 |     98% |241-\>264, 265-266, 671-673 |
+| app/extensions/snippets/models/snippet.py                                                                                           |      325 |        5 |       74 |        3 |     98% |210-\>233, 234-235, 640-642 |
 | app/extensions/snippets/schema.py                                                                                                   |       97 |        4 |       34 |        1 |     96% |158-160, 375 |
 | app/extensions/snippets/script\_source.py                                                                                           |       96 |        1 |       22 |        1 |     98% |       358 |
 | app/extensions/snippets/utils.py                                                                                                    |       32 |        0 |       10 |        0 |    100% |           |
 | app/extensions/sync/constants.py                                                                                                    |        4 |        0 |        0 |        0 |    100% |           |
-| app/extensions/sync/exceptions.py                                                                                                   |       32 |        0 |        0 |        0 |    100% |           |
-| app/extensions/sync/fields.py                                                                                                       |       15 |        0 |        0 |        0 |    100% |           |
+| app/extensions/sync/exceptions.py                                                                                                   |       36 |        0 |        0 |        0 |    100% |           |
+| app/extensions/sync/fields.py                                                                                                       |       21 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/health.py                                                                                                       |       53 |        0 |        8 |        0 |    100% |           |
-| app/extensions/sync/models.py                                                                                                       |      410 |       39 |      106 |       16 |     87% |122-131, 145-147, 166, 172-\>174, 175-\>177, 260-\>277, 400-\>394, 489-490, 878-\>exit, 896, 910, 1017, 1031, 1053-1054, 1090-\>exit, 1141, 1154, 1178-1180, 1213-\>exit, 1258, 1271, 1328-\>exit, 1373, 1511-1513, 1623-1625, 1630-1636, 1640 |
+| app/extensions/sync/models.py                                                                                                       |      402 |       39 |      104 |       17 |     87% |121-130, 144-146, 165, 171-\>173, 174-\>176, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1021-1022, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
 | app/extensions/sync/syncers/mysql/payload.py                                                                                        |      176 |       47 |       54 |        5 |     70% |158-\>166, 242-246, 251-256, 269-275, 279-302, 356-\>372, 375, 396-404, 423 |
 | app/extensions/sync/syncers/mysql/syncer.py                                                                                         |      241 |        2 |       94 |        5 |     98% |111, 604-\>605, 716, 819-\>823, 821-\>820 |
 | app/extensions/sync/syncers/pmm.py                                                                                                  |      135 |        1 |       36 |        4 |     97% |107, 140-\>141, 430-\>437, 480-\>485 |
 | app/extensions/sync/syncers/system\_facts/payload.py                                                                                |      243 |       19 |       82 |        9 |     91% |54-\>60, 152-153, 181, 227-229, 236, 238-\>234, 249-256, 310-312, 318-320, 344, 445-\>447, 447-\>449, 553, 564 |
-| app/extensions/sync/syncers/system\_facts/syncer.py                                                                                 |      118 |        3 |       28 |        3 |     96% |170, 245, 256-\>254, 351 |
+| app/extensions/sync/syncers/system\_facts/syncer.py                                                                                 |      212 |        7 |       56 |        5 |     96% |127, 192-193, 268, 279-\>277, 384, 697, 716 |
 | app/extensions/tasks.py                                                                                                             |       31 |        0 |       12 |        2 |     95% |72-\>87, 76-\>79 |
 | app/extensions/utils/forms.py                                                                                                       |       16 |        0 |        4 |        0 |    100% |           |
 | app/extensions/utils/jinja.py                                                                                                       |       61 |       10 |       10 |        1 |     79% |105, 124, 135-140, 171-172 |
@@ -449,7 +449,7 @@
 | app/tasks/connectivity/payload.py                                                                                                   |       70 |        1 |        8 |        1 |     97% |       170 |
 | app/tasks/connectivity/routes.py                                                                                                    |       16 |        0 |        2 |        0 |    100% |           |
 | app/tasks/connectivity/service.py                                                                                                   |      146 |        2 |       54 |        6 |     96% |173, 432-\>431, 452-\>451, 458-\>457, 473, 485-\>484 |
-| app/tasks/crud.py                                                                                                                   |      318 |        5 |       80 |        6 |     97% |200, 609-\>611, 612, 614, 739, 929 |
+| app/tasks/crud.py                                                                                                                   |      312 |        4 |       76 |        5 |     98% |200, 609-\>611, 612, 614, 919 |
 | app/tasks/db/engine.py                                                                                                              |        7 |        0 |        0 |        0 |    100% |           |
 | app/tasks/db/seed.py                                                                                                                |      151 |       11 |       40 |        7 |     88% |829-\>842, 843-\>859, 860-\>874, 1120-1141, 1152, 1164, 1197 |
 | app/tasks/deps.py                                                                                                                   |      110 |        3 |       30 |        0 |     98% |     64-66 |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34160** | **1873** | **8252** |  **688** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34231** | **1876** | **8274** |  **690** | **93%** |           |
 
 
 ## Setup coverage badge

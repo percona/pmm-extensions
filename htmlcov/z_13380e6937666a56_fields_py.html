@@ -55,8 +55,8 @@
             </div>
         </aside>
         <h2>
-            <span class="text">15 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">15<span class="text"> run</span></button>
+            <span class="text">21 statements &nbsp;</span>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">21<span class="text"> run</span></button>
             <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">0<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
             <button type="button" class="par run show_par button_toggle_par" value="par" data-shortcut="p" title="Toggle lines partially run">0<span class="text"> partial</span></button>
@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_13380e6937666a56_health_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-07 18:41 +0000
+            created at 2026-10-07 18:53 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -149,46 +149,82 @@
     <p class="run run2"><span class="n"><a id="t65" href="#t65">65</a></span><span class="t"><span class="str">for the reason :data:`StaleRunAfter` is.</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t66" href="#t66">66</a></span><span class="t"><span class="str">&quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t67" href="#t67">67</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t68" href="#t68">68</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t69" href="#t69">69</a></span><span class="t"><span class="key">class</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span><span class="nam">NamedTuple</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t70" href="#t70">70</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Pair a constrained syncer field with the spelling of its accepted values.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t71" href="#t71">71</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t72" href="#t72">72</a></span><span class="t"><span class="str">    :param adapter: Validator for the field&#x27;s annotated type, constraints included.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t73" href="#t73">73</a></span><span class="t"><span class="str">    :param accepted: Human-readable list of the forms the field accepts, quoted back</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t74" href="#t74">74</a></span><span class="t"><span class="str">        to the operator when their value is refused.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t75" href="#t75">75</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t76" href="#t76">76</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t77" href="#t77">77</a></span><span class="t">    <span class="nam">adapter</span><span class="op">:</span> <span class="nam">TypeAdapter</span><span class="op">[</span><span class="nam">Any</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t78" href="#t78">78</a></span><span class="t">    <span class="nam">accepted</span><span class="op">:</span> <span class="nam">str</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t79" href="#t79">79</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t80" href="#t80">80</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t81" href="#t81">81</a></span><span class="t"><span class="nam">CONSTRAINED_SYNCER_FIELDS</span><span class="op">:</span> <span class="nam">Final</span><span class="op">[</span><span class="nam">dict</span><span class="op">[</span><span class="nam">str</span><span class="op">,</span> <span class="nam">SyncerFieldConstraint</span><span class="op">]</span><span class="op">]</span> <span class="op">=</span> <span class="op">{</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t82" href="#t82">82</a></span><span class="t">    <span class="str">&quot;stale_run_after&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t83" href="#t83">83</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">StaleRunAfter</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t84" href="#t84">84</a></span><span class="t">        <span class="str">&quot;integer or float seconds (3600), an ISO-8601 duration (PT1H), or HH:MM:SS&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t85" href="#t85">85</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t86" href="#t86">86</a></span><span class="t">    <span class="str">&quot;missing_grace_generations&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t87" href="#t87">87</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">MissingGraceGenerations</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t88" href="#t88">88</a></span><span class="t">        <span class="str">&quot;an integer of 2 or more&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t89" href="#t89">89</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t90" href="#t90">90</a></span><span class="t">    <span class="str">&quot;task_execution_timeout&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t91" href="#t91">91</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">TaskExecutionTimeout</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t92" href="#t92">92</a></span><span class="t">        <span class="str">&quot;a positive integer number of seconds&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t93" href="#t93">93</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t94" href="#t94">94</a></span><span class="t">    <span class="str">&quot;tasks_execution_wait_interval&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t95" href="#t95">95</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">TasksExecutionWaitInterval</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t96" href="#t96">96</a></span><span class="t">        <span class="str">&quot;a positive integer number of seconds&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t97" href="#t97">97</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t98" href="#t98">98</a></span><span class="t"><span class="op">}</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t99" href="#t99">99</a></span><span class="t"><span class="str">&quot;&quot;&quot;Map each constrained syncer field to the validator its configured value must pass.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t100" href="#t100">100</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t101" href="#t101">101</a></span><span class="t"><span class="str">``SyncOptions`` and ``SyncerExtraKwargs`` both allow untyped extras, so a value</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t102" href="#t102">102</a></span><span class="t"><span class="str">configured for one of these fields is only checked against the field&#x27;s real type once</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t103" href="#t103">103</a></span><span class="t"><span class="str">a syncer is constructed &#8212; which, for the request-scoped ``get_syncers`` dependency,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t104" href="#t104">104</a></span><span class="t"><span class="str">means once per request. Checking it against this mapping at settings load turns a</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t105" href="#t105">105</a></span><span class="t"><span class="str">misconfiguration into a single startup failure instead. Keys are the field names as</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t106" href="#t106">106</a></span><span class="t"><span class="str">:class:`~app.core.models.BaseLowercaseModel` stores them, lowercased.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t107" href="#t107">107</a></span><span class="t"><span class="str">&quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t68" href="#t68">68</a></span><span class="t"><span class="nam">FirstMeasurementRetries</span> <span class="op">=</span> <span class="nam">Annotated</span><span class="op">[</span><span class="nam">int</span><span class="op">,</span> <span class="nam">Ge</span><span class="op">(</span><span class="num">0</span><span class="op">)</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t69" href="#t69">69</a></span><span class="t"><span class="str">&quot;&quot;&quot;Define the retries a never-measured host gets after its failed first attempt.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t70" href="#t70">70</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t71" href="#t71">71</a></span><span class="t"><span class="str">Zero is allowed and means a host whose first attempt fails is left to the daily</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t72" href="#t72">72</a></span><span class="t"><span class="str">refresh; below zero no host would ever be attempted. Expressed as an annotation</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t73" href="#t73">73</a></span><span class="t"><span class="str">constraint for the reason :data:`StaleRunAfter` is.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t74" href="#t74">74</a></span><span class="t"><span class="str">&quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t75" href="#t75">75</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t76" href="#t76">76</a></span><span class="t"><span class="nam">FirstMeasurementRetryInterval</span> <span class="op">=</span> <span class="nam">Annotated</span><span class="op">[</span><span class="nam">timedelta</span><span class="op">,</span> <span class="nam">Gt</span><span class="op">(</span><span class="nam">timedelta</span><span class="op">(</span><span class="num">0</span><span class="op">)</span><span class="op">)</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t77" href="#t77">77</a></span><span class="t"><span class="str">&quot;&quot;&quot;Define the least time between two first-measurement attempts on one host.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t78" href="#t78">78</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t79" href="#t79">79</a></span><span class="t"><span class="str">At zero or below every pass is due to retry a failing host, so the retry budget is</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t80" href="#t80">80</a></span><span class="t"><span class="str">spent within minutes instead of being spread over hours. Expressed as an annotation</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t81" href="#t81">81</a></span><span class="t"><span class="str">constraint for the reason :data:`StaleRunAfter` is.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t82" href="#t82">82</a></span><span class="t"><span class="str">&quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t83" href="#t83">83</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t84" href="#t84">84</a></span><span class="t"><span class="nam">FirstMeasurementConcurrency</span> <span class="op">=</span> <span class="nam">Annotated</span><span class="op">[</span><span class="nam">int</span><span class="op">,</span> <span class="nam">Gt</span><span class="op">(</span><span class="num">0</span><span class="op">)</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t85" href="#t85">85</a></span><span class="t"><span class="str">&quot;&quot;&quot;Define the most first-measurement probes in flight at once.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t86" href="#t86">86</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t87" href="#t87">87</a></span><span class="t"><span class="str">At zero the pass&#x27;s semaphore admits no probe, so every candidate waits forever and</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t88" href="#t88">88</a></span><span class="t"><span class="str">the run never ends. Expressed as an annotation constraint for the reason</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t89" href="#t89">89</a></span><span class="t"><span class="str">:data:`StaleRunAfter` is.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t90" href="#t90">90</a></span><span class="t"><span class="str">&quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t91" href="#t91">91</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t92" href="#t92">92</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t93" href="#t93">93</a></span><span class="t"><span class="key">class</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span><span class="nam">NamedTuple</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t94" href="#t94">94</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Pair a constrained syncer field with the spelling of its accepted values.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t95" href="#t95">95</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t96" href="#t96">96</a></span><span class="t"><span class="str">    :param adapter: Validator for the field&#x27;s annotated type, constraints included.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t97" href="#t97">97</a></span><span class="t"><span class="str">    :param accepted: Human-readable list of the forms the field accepts, quoted back</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t98" href="#t98">98</a></span><span class="t"><span class="str">        to the operator when their value is refused.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t99" href="#t99">99</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t100" href="#t100">100</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t101" href="#t101">101</a></span><span class="t">    <span class="nam">adapter</span><span class="op">:</span> <span class="nam">TypeAdapter</span><span class="op">[</span><span class="nam">Any</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t102" href="#t102">102</a></span><span class="t">    <span class="nam">accepted</span><span class="op">:</span> <span class="nam">str</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t103" href="#t103">103</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t104" href="#t104">104</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t105" href="#t105">105</a></span><span class="t"><span class="nam">CONSTRAINED_SYNCER_FIELDS</span><span class="op">:</span> <span class="nam">Final</span><span class="op">[</span><span class="nam">dict</span><span class="op">[</span><span class="nam">str</span><span class="op">,</span> <span class="nam">SyncerFieldConstraint</span><span class="op">]</span><span class="op">]</span> <span class="op">=</span> <span class="op">{</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t106" href="#t106">106</a></span><span class="t">    <span class="str">&quot;stale_run_after&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t107" href="#t107">107</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">StaleRunAfter</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t108" href="#t108">108</a></span><span class="t">        <span class="str">&quot;integer or float seconds (3600), an ISO-8601 duration (PT1H), or HH:MM:SS&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t109" href="#t109">109</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t110" href="#t110">110</a></span><span class="t">    <span class="str">&quot;missing_grace_generations&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t111" href="#t111">111</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">MissingGraceGenerations</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t112" href="#t112">112</a></span><span class="t">        <span class="str">&quot;an integer of 2 or more&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t113" href="#t113">113</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t114" href="#t114">114</a></span><span class="t">    <span class="str">&quot;task_execution_timeout&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t115" href="#t115">115</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">TaskExecutionTimeout</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t116" href="#t116">116</a></span><span class="t">        <span class="str">&quot;a positive integer number of seconds&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t117" href="#t117">117</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t118" href="#t118">118</a></span><span class="t">    <span class="str">&quot;tasks_execution_wait_interval&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t119" href="#t119">119</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">TasksExecutionWaitInterval</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t120" href="#t120">120</a></span><span class="t">        <span class="str">&quot;a positive integer number of seconds&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t121" href="#t121">121</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t122" href="#t122">122</a></span><span class="t">    <span class="str">&quot;first_measurement_retries&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t123" href="#t123">123</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">FirstMeasurementRetries</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t124" href="#t124">124</a></span><span class="t">        <span class="str">&quot;an integer of 0 or more&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t125" href="#t125">125</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t126" href="#t126">126</a></span><span class="t">    <span class="str">&quot;first_measurement_retry_interval&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t127" href="#t127">127</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">FirstMeasurementRetryInterval</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t128" href="#t128">128</a></span><span class="t">        <span class="str">&quot;integer or float seconds (3600), an ISO-8601 duration (PT1H), or HH:MM:SS&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t129" href="#t129">129</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t130" href="#t130">130</a></span><span class="t">    <span class="str">&quot;first_measurement_concurrency&quot;</span><span class="op">:</span> <span class="nam">SyncerFieldConstraint</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t131" href="#t131">131</a></span><span class="t">        <span class="nam">TypeAdapter</span><span class="op">(</span><span class="nam">FirstMeasurementConcurrency</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t132" href="#t132">132</a></span><span class="t">        <span class="str">&quot;a positive integer&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t133" href="#t133">133</a></span><span class="t">    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t134" href="#t134">134</a></span><span class="t"><span class="op">}</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t135" href="#t135">135</a></span><span class="t"><span class="str">&quot;&quot;&quot;Map each constrained syncer field to the validator its configured value must pass.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t136" href="#t136">136</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t137" href="#t137">137</a></span><span class="t"><span class="str">``SyncOptions`` and ``SyncerExtraKwargs`` both allow untyped extras, so a value</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t138" href="#t138">138</a></span><span class="t"><span class="str">configured for one of these fields is only checked against the field&#x27;s real type once</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t139" href="#t139">139</a></span><span class="t"><span class="str">a syncer is constructed &#8212; which, for the request-scoped ``get_syncers`` dependency,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t140" href="#t140">140</a></span><span class="t"><span class="str">means once per request. Checking it against this mapping at settings load turns a</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t141" href="#t141">141</a></span><span class="t"><span class="str">misconfiguration into a single startup failure instead. Keys are the field names as</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t142" href="#t142">142</a></span><span class="t"><span class="str">:class:`~app.core.models.BaseLowercaseModel` stores them, lowercased.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t143" href="#t143">143</a></span><span class="t"><span class="str">&quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -198,7 +234,7 @@
             <a class="nav" href="z_13380e6937666a56_health_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-07 18:41 +0000
+            created at 2026-10-07 18:53 +0000
         </p>
     </div>
 </footer>
