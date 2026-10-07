@@ -31,8 +31,6 @@ asserts it is refused, because the difference between "not hot" and "not yet hot
 invisible in the field list.
 """
 
-from collections.abc import Iterator
-
 import pytest
 from fastapi import FastAPI, status
 from httpx import AsyncClient
@@ -55,19 +53,6 @@ from tests.app.extensions.apps.om_inventory.conftest import BASE
 #: The YAML-configured values these tests assert against, taken from the class so a
 #: default change moves the assertions with it rather than silently passing.
 DEFAULTS = OmInventorySettings()
-
-
-@pytest.fixture(autouse=True)
-def _reset_proxy_snapshot() -> Iterator[None]:
-    """Drop any snapshot a test published, so the next test starts from YAML.
-
-    The proxy is a module singleton shared across the whole session; a test that
-    publishes an override would otherwise leak a 60-second schedule into every test
-    that reads the setting afterwards.
-    """
-    yield
-    # ty-attr-ok: the proxy forwards to the wrapped class via __getattr__.
-    om_inventory_settings._set_snapshot({})
 
 
 class TestWhyThisEndpointExists:
