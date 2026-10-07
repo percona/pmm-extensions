@@ -47,6 +47,7 @@ from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.main import tasks_app
 from app.tasks.models import (
     TaskExecutionRequest,
+    TaskHistory,
     TaskHistoryStatusEnum,
     TaskLog,
     TaskLogType,
@@ -101,7 +102,7 @@ async def _persist_history(
     engine: AsyncEngine,
     status_: TaskHistoryStatusEnum,
     tracking: dict[str, str] | None = None,
-) -> int:
+) -> TaskHistory:
     """Persist a task and one history of it through a session closed on return.
 
     The task anonymizes nothing and the history inherits that, so a stream reads
@@ -111,7 +112,7 @@ async def _persist_history(
     :param engine: The engine to persist through.
     :param status_: The history's status.
     :param tracking: The executor tracking to store, if any.
-    :return: The history's id.
+    :return: The saved history.
     """
     async with get_async_session_maker_from_engine(engine)() as session:
         task = await TaskManager.create(
@@ -141,7 +142,7 @@ async def _persist_history(
                 force_flush=True,
                 producer_offset_after=len(payload),
             )
-        return saved.id
+        return saved
 
 
 @pytest.fixture
@@ -238,6 +239,7 @@ async def _assert_pool_free_while_open(
         assert stream.status_code == status.HTTP_200_OK
         assert await stream.next_chunk() is not None
 
+        assert isinstance(engine.pool, AsyncAdaptedQueuePool)
         assert engine.pool.checkedout() == 0
         assert await _list_tasks_status() == status.HTTP_200_OK
 
@@ -247,11 +249,11 @@ async def test_running_log_stream_releases_connection_before_streaming(
     pooled_engine: AsyncEngine, held_stream: asyncio.Event
 ) -> None:
     """Return a running history's connection to the pool while its log streams."""
-    history_id = await _persist_history(pooled_engine, TaskHistoryStatusEnum.RUNNING)
+    history = await _persist_history(pooled_engine, TaskHistoryStatusEnum.RUNNING)
 
     try:
         await _assert_pool_free_while_open(
-            pooled_engine, f"/history/{history_id}/logs/"
+            pooled_engine, f"/history/{history.id}/logs/"
         )
     finally:
         held_stream.set()
@@ -262,11 +264,11 @@ async def test_file_stream_releases_connection_before_streaming(
     pooled_engine: AsyncEngine, held_stream: asyncio.Event
 ) -> None:
     """Return a finished history's connection to the pool while its file streams."""
-    history_id = await _persist_history(pooled_engine, TaskHistoryStatusEnum.SUCCESS)
+    history = await _persist_history(pooled_engine, TaskHistoryStatusEnum.SUCCESS)
 
     try:
         await _assert_pool_free_while_open(
-            pooled_engine, f"/history/{history_id}/file/", query_string=b"path=x"
+            pooled_engine, f"/history/{history.id}/file/", query_string=b"path=x"
         )
     finally:
         held_stream.set()
@@ -296,7 +298,7 @@ async def test_more_live_log_streams_than_pool_all_stream_and_short_calls_succee
     The history inherits its task's anonymization, so each stream reads the
     history's ``task`` after the route released the session it was loaded in.
     """
-    history_id = await _persist_history(
+    history = await _persist_history(
         pooled_engine,
         TaskHistoryStatusEnum.RUNNING,
         tracking={"job_id": nomad_stub.job_id, "evaluation_id": nomad_stub.eval_id},
@@ -305,7 +307,7 @@ async def test_more_live_log_streams_than_pool_all_stream_and_short_calls_succee
     async with AsyncExitStack() as stack:
         streams = [
             await stack.enter_async_context(
-                asgi_stream(tasks_app, f"/history/{history_id}/logs/")
+                asgi_stream(tasks_app, f"/history/{history.id}/logs/")
             )
             for _ in range(STREAMS_BEYOND_POOL)
         ]
@@ -345,10 +347,10 @@ async def test_finished_log_stream_still_reads_persisted_logs_with_real_session(
     The finished branch reads the database while it streams, so its session
     must stay open for the response.
     """
-    history_id = await _persist_history(pooled_engine, TaskHistoryStatusEnum.SUCCESS)
+    history = await _persist_history(pooled_engine, TaskHistoryStatusEnum.SUCCESS)
 
     async with asgi_stream(
-        tasks_app, f"/history/{history_id}/logs/", query_string=query_string
+        tasks_app, f"/history/{history.id}/logs/", query_string=query_string
     ) as stream:
         assert stream.status_code == status.HTTP_200_OK
         lines = await _read_lines(stream)
