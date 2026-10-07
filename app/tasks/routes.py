@@ -648,7 +648,8 @@ async def stream_task_history_file(
     :param executor: Executor serving the file.
     :param task_history: The finished task history whose output file to stream.
     :param path: The file's path, relative to the task's ``output_files_path``.
-    :return: A streaming response of the file's bytes.
+    :return: A streaming response of the file's bytes, or of a tar.gz archive
+        when the path is a directory.
     :raises HTTPConflictException: When the history is not finished.
     :raises HTTPBadRequestException: When the task has no ``output_files_path``.
     """

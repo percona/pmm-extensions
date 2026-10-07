@@ -2808,7 +2808,7 @@
     },
     "/history/{task_history_id}/file/": {
       "get": {
-        "description": "Stream a file from a task history.\n\nThe file is read from the executor alone, so the request's database session\nis closed before the stream starts rather than holding a pool connection\nfor its duration.\n\n:param session: Database session the task history was loaded through.\n:param executor: Executor serving the file.\n:param task_history: The finished task history whose output file to stream.\n:param path: The file's path, relative to the task's ``output_files_path``.\n:return: A streaming response of the file's bytes.\n:raises HTTPConflictException: When the history is not finished.\n:raises HTTPBadRequestException: When the task has no ``output_files_path``.",
+        "description": "Stream a file from a task history.\n\nThe file is read from the executor alone, so the request's database session\nis closed before the stream starts rather than holding a pool connection\nfor its duration.\n\n:param session: Database session the task history was loaded through.\n:param executor: Executor serving the file.\n:param task_history: The finished task history whose output file to stream.\n:param path: The file's path, relative to the task's ``output_files_path``.\n:return: A streaming response of the file's bytes, or of a tar.gz archive\n    when the path is a directory.\n:raises HTTPConflictException: When the history is not finished.\n:raises HTTPBadRequestException: When the task has no ``output_files_path``.",
         "operationId": "tasks_stream_task_history_file_history__task_history_id__file__get",
         "parameters": [
           {

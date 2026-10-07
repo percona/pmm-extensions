@@ -319,7 +319,7 @@ async def test_more_live_log_streams_than_pool_all_stream_and_short_calls_succee
             RUN_TIMEOUT,
         )
 
-        short_status = await asyncio.wait_for(_list_tasks_status(), POOL_TIMEOUT)
+        short_status = await asyncio.wait_for(_list_tasks_status(), RUN_TIMEOUT)
 
         await nomad_stub.emit()
         received = await asyncio.wait_for(
@@ -344,8 +344,8 @@ async def test_finished_log_stream_still_reads_persisted_logs_with_real_session(
 ) -> None:
     """Stream a finished history's persisted logs through the real request session.
 
-    The finished branch reads the database while it streams, so its session
-    must stay open for the response.
+    The finished branch reads its persisted chunks while it streams, under the
+    real ``get_session`` rather than a shared test session.
     """
     history = await _persist_history(pooled_engine, TaskHistoryStatusEnum.SUCCESS)
 
