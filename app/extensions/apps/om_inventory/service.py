@@ -59,7 +59,6 @@ from app.extensions.apps.om_inventory.crud import (
 )
 from app.extensions.apps.om_inventory.dispatch import (
     HostProbeResult,
-    MAX_ERROR_DETAIL,
     probe_all,
     record_key,
 )
@@ -85,6 +84,7 @@ from app.extensions.apps.om_inventory.models import (
     ScanFailure,
 )
 from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
+from app.extensions.apps.shared.om.task_failure import MAX_ERROR_DETAIL
 from app.extensions.config import extensions_settings
 from app.extensions.db import get_async_session_maker
 from app.inventory.config import inventory_settings

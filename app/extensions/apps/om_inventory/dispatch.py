@@ -47,6 +47,11 @@ from app.extensions.apps.om_inventory import payload as payload_pkg
 from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.mapping import MappedService
 from app.extensions.apps.om_inventory.models import ScanFailure
+from app.extensions.apps.shared.om.task_failure import (
+    describe_task_failure,
+    failed_step,
+    read_step_logs,
+)
 from app.tasks.models import TaskHistoryStatusEnum, TaskLogType
 
 logger = logging.getLogger(__name__)
@@ -68,23 +73,12 @@ LOST_STATUSES = frozenset(
         TaskHistoryStatusEnum.STOPPED.value,
     }
 )
-#: The step the tasks service names in a run's ``failure_reason``. The sentence is
-#: written by the Nomad executor's ``_failed_step_reason``, in this repository, and
-#: ``test_scan_failures.py`` feeds that function's own output through this pattern
-#: so a change to its wording fails a test here.
-_FAILED_STEP = re.compile(r"^Step '(?P<step>[^']+)' failed")
 #: The payload's only third-party import, installed into the executor's venv by the
 #: run-python job template's prestart step.
 REQUIREMENTS = "pymongo>=4.6,<5"
 #: Prefix for this app's Nomad job ids, so a OM run is identifiable in Nomad.
 JOB_ID_PREFIX = "om"
 PROBE_PAYLOAD_PATH = Path(payload_pkg.__file__).parent / "probe.py"
-#: Bound on the failure detail stored for a failed scan, whether the dispatch
-#: failed or the database refused the payload. The row only needs the part that
-#: says what happened, and dispatch stderr or a driver error the payload does not
-#: recognise can run to several kilobytes.
-MAX_ERROR_DETAIL = 500
-
 # Bounds with_capacity_retry both ways, whichever runs out first.
 #
 # The wall-clock budget is the one that has to be sized deliberately: what a retry
@@ -496,44 +490,6 @@ async def _release(tasks_api: RemoteAPI, task_history_id: int) -> str | None:
     return None
 
 
-async def _read_logs(
-    tasks_api: RemoteAPI, task_history_id: int
-) -> dict[str, dict[str, str]]:
-    """Stream a finished run's logs, every step, and return them by step and stream.
-
-    Every step rather than only the payload's: when ``prepare-env`` fails, the
-    payload never runs and its own streams are empty, so the failed step's output is
-    the only account there is of why.
-
-    :param tasks_api: The tasks API client.
-    :param task_history_id: The run to read.
-    :return: The concatenated output, keyed by step and then by ``stdout`` or
-        ``stderr``. A step or stream with no output is absent.
-    """
-    steps: dict[str, dict[str, str]] = defaultdict(lambda: defaultdict(str))
-    async for entry in tasks_api.stream(f"/history/{task_history_id}/logs/"):
-        if not entry:
-            continue
-        try:
-            log = json.loads(entry)
-        except ValueError:
-            continue
-        steps[log.get("step") or ""][log.get("type") or ""] += log.get("msg") or ""
-    return {step: dict(streams) for step, streams in steps.items()}
-
-
-def _excerpt(text: str) -> str:
-    """Return the end of a stream, bounded, which is where the error usually is.
-
-    The end rather than the start: a traceback ends with the exception, and ``pip``
-    prints its whole resolution before the line saying it gave up.
-
-    :param text: The stream.
-    :return: At most ``MAX_ERROR_DETAIL`` characters of its end, stripped.
-    """
-    return text.strip()[-MAX_ERROR_DETAIL:].strip()
-
-
 def classify_terminal_failure(status: str, failure_reason: str | None) -> ScanFailure:
     """Return what kind of failure a run that ended without output is.
 
@@ -543,8 +499,7 @@ def classify_terminal_failure(status: str, failure_reason: str | None) -> ScanFa
     """
     if status in LOST_STATUSES:
         return ScanFailure.SCAN_LOST
-    match = _FAILED_STEP.match(failure_reason or "")
-    step = match.group("step") if match else None
+    step = failed_step(failure_reason)
     if step == PREPARE_ENV_STEP:
         return ScanFailure.ENVIRONMENT_SETUP_FAILED
     if step == STDOUT_STEP:
@@ -567,12 +522,7 @@ def describe_terminal_failure(
     :param logs: The run's output, by step and stream.
     :return: The failure detail.
     """
-    match = _FAILED_STEP.match(failure_reason or "")
-    streams = logs.get(match.group("step") if match else STDOUT_STEP) or {}
-    output = _excerpt(streams.get(TaskLogType.STDERR, "")) or _excerpt(
-        streams.get(TaskLogType.STDOUT, "")
-    )
-    detail = " ".join(part for part in (failure_reason, output) if part)
+    detail = describe_task_failure(failure_reason, logs, default_step=STDOUT_STEP)
     return f"scan {status}: {detail or 'no output'}"
 
 
@@ -658,7 +608,7 @@ async def probe_host(
 
         history_id = result.task_history_id
         status, failure_reason = await _wait_for_terminal(tasks_api, history_id)
-        logs = await with_capacity_retry(lambda: _read_logs(tasks_api, history_id))
+        logs = await with_capacity_retry(lambda: read_step_logs(tasks_api, history_id))
         stdout = (logs.get(STDOUT_STEP) or {}).get(TaskLogType.STDOUT, "")
         result.records, result.host_record = parse_ndjson(stdout)
 
