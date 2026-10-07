@@ -68,6 +68,7 @@ from app.extensions.deps import (
     get_session,
     get_tasks_api,
     require_bearer_for_unsafe_methods,
+    reset_username_mapping_failure_window,
 )
 from app.extensions.inventory import (
     CreatedNode,
@@ -267,6 +268,16 @@ def _override_snapshot_cleared() -> None:
     snippets_settings._set_snapshot({})  # noqa: SLF001
     alert_settings._set_snapshot({})  # noqa: SLF001
     anonymizer_settings._set_snapshot({})  # noqa: SLF001
+
+
+@pytest.fixture(autouse=True)
+def _username_mapping_failure_window_cleared() -> None:
+    """Forget any provider failure ``get_username_mapping`` is remembering.
+
+    The window is process-wide, so one test with a failing provider would
+    otherwise answer every later test's lookup with an empty mapping.
+    """
+    reset_username_mapping_failure_window()
 
 
 @pytest.fixture(scope="session")

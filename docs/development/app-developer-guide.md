@@ -1095,15 +1095,19 @@ The default provider is an ordinary async callable:
 <!-- src: app/extensions/deps.py :: get_username_mapping -->
 ```python
 async def get_username_mapping() -> dict[str, str]:
-    """Create a mapping from user ID to username using the active auth provider."""
-    users = await User.get_users()
+    """Create a mapping from actor ID to username using the active auth provider."""
+    users = await User.get_actors()
     return {str(user.id): user.username for user in users}
 ```
 
 The body is trimmed to show the provider shape; the real source additionally wraps
 the fetch in error handling that logs and returns an empty mapping when the auth
-provider raises any `Exception`. Cancellation (`asyncio.CancelledError`) and other
-`BaseException` subclasses are not caught and still propagate to the caller.
+provider raises any `Exception`. A failed listing is remembered for
+`USERNAME_MAPPING_FAILURE_WINDOW` (30 s): calls inside that window return the empty
+mapping without contacting the provider, instead of retrying on every request. A
+successful listing is not stored there; the provider SDK owns that cache.
+Cancellation (`asyncio.CancelledError`) and other `BaseException` subclasses are not
+caught, still propagate to the caller, and do not start the window.
 
 **Cascade hooks** are the heaviest rung short of leaving the spine: when a single
 create must fan out into a group of related tasks, build a `CascadeCreatePlan`.
