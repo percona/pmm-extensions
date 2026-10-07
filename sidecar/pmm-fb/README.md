@@ -91,11 +91,13 @@ The restricted image is built on `main`, not on this branch, and the build emits
 a **single** artifact under a suffix-less tag — the `-sidecar` / `-embedded`
 variants no longer exist. `main`'s `image` target builds it with
 `EXTENSIONS_RESTRICT_APPS=1`, deriving the shipped app set from `sidecar/settings.yaml`'s
-`EXTENSIONS.APPS`, and publishes it as `percona/percona-sep:<commit-sha>`.
+`EXTENSIONS.APPS`. A feature build of it is published as
+`percona/pmm-extensions:fb-<YYYYMMDD>-<sha10>`, where the SHA is the `main`
+commit it was built from.
 
-`compose.yaml`'s `extensions-sidecar` service therefore pins a main-line commit SHA.
-Repin to a newer one by picking a tag published from `main` — the tag list on
-Docker Hub is ordered by publish date.
+`compose.yaml`'s `extensions-sidecar` service therefore pins a main-line feature
+build. Repin to a newer one by picking a later `fb-` tag. They sort by date in
+Docker Hub's tag list. Older pins used the bare commit SHA.
 
 Three properties of the pinned image are load-bearing, and all three are worth
 checking on the **artifact** rather than on the commit that built it:
@@ -104,15 +106,15 @@ checking on the **artifact** rather than on the commit that built it:
 TAG=<the tag you are pinning>
 
 # It must read secrets from a directory (SECRETS_DIR); expect a non-zero count.
-docker run --rm --entrypoint sh docker.io/percona/percona-sep:$TAG \
+docker run --rm --entrypoint sh docker.io/percona/pmm-extensions:$TAG \
   -c 'grep -c SECRETS_DIR /home/extensions/app/settings-env.sh'
 
 # It must carry the Grafana token mint; expect the helper and a 0700 state dir.
-docker run --rm --entrypoint sh docker.io/percona/percona-sep:$TAG \
+docker run --rm --entrypoint sh docker.io/percona/pmm-extensions:$TAG \
   -c 'ls /home/extensions/app/grafana_service_account.py; ls -ld /home/extensions/state'
 
 # It must carry a HEALTHCHECK; expect a Test naming healthcheck.sh.
-skopeo inspect --config --raw docker://docker.io/percona/percona-sep:$TAG \
+skopeo inspect --config --raw docker://docker.io/percona/pmm-extensions:$TAG \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["config"]["Healthcheck"])'
 ```
 

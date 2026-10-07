@@ -75,7 +75,7 @@ services:
       - extensions-pmm
 
   extensions-sidecar:
-    image: docker.io/percona/percona-sep:a4060c4dceea7656c21450454b89e9d46984050b
+    image: docker.io/percona/pmm-extensions:fb-20261007-330fd952f8
     platform: linux/amd64
     # service_healthy, not service_started: PMM Extensions builds its settings once, at
     # process start, so a side-car released before pmm-server has written the
