@@ -13,17 +13,17 @@
 | app/core/alerts/config.py                                                                                                           |       42 |        0 |        4 |        0 |    100% |           |
 | app/core/alerts/models.py                                                                                                           |       57 |        0 |       10 |        0 |    100% |           |
 | app/core/alerts/providers/pagerduty.py                                                                                              |       36 |        1 |        2 |        1 |     95% |110, 127-\>129 |
-| app/core/auth/base.py                                                                                                               |       14 |        2 |        0 |        0 |     86% |    63, 81 |
+| app/core/auth/base.py                                                                                                               |       14 |        2 |        0 |        0 |     86% |    58, 76 |
 | app/core/auth/config.py                                                                                                             |       79 |        2 |       22 |        2 |     96% |  118, 161 |
 | app/core/auth/exceptions.py                                                                                                         |       11 |        0 |        0 |        0 |    100% |           |
-| app/core/auth/models.py                                                                                                             |       97 |        0 |        2 |        0 |    100% |           |
-| app/core/auth/providers/casdoor/models.py                                                                                           |       95 |        6 |       18 |        1 |     90% |229-235, 265 |
-| app/core/auth/providers/casdoor/provider.py                                                                                         |       14 |        0 |        0 |        0 |    100% |           |
-| app/core/auth/providers/casdoor/sdk.py                                                                                              |      123 |       49 |       26 |        3 |     56% |62, 117-118, 155-\>157, 171-180, 200-201, 220-227, 253-275, 283, 302-310, 326-329, 365-\>364, 383-388, 396-397, 426-432, 442-448 |
-| app/core/auth/providers/grafana/models.py                                                                                           |      228 |        4 |       44 |        2 |     98% |459, 804, 825-826 |
-| app/core/auth/providers/grafana/provider.py                                                                                         |       25 |        0 |        4 |        0 |    100% |           |
+| app/core/auth/models.py                                                                                                             |       88 |        0 |        2 |        0 |    100% |           |
+| app/core/auth/providers/casdoor/models.py                                                                                           |       79 |        1 |       14 |        1 |     98% |       247 |
+| app/core/auth/providers/casdoor/provider.py                                                                                         |       13 |        0 |        0 |        0 |    100% |           |
+| app/core/auth/providers/casdoor/sdk.py                                                                                              |       93 |       38 |       12 |        2 |     54% |59, 112-113, 150-\>152, 172-173, 192-199, 225-247, 255, 274-282, 298-301, 309-310, 339-345 |
+| app/core/auth/providers/grafana/models.py                                                                                           |      218 |        2 |       44 |        2 |     98% |  459, 792 |
+| app/core/auth/providers/grafana/provider.py                                                                                         |       24 |        0 |        4 |        0 |    100% |           |
 | app/core/auth/providers/grafana/sdk.py                                                                                              |      141 |        0 |       22 |        0 |    100% |           |
-| app/core/auth/utils.py                                                                                                              |        6 |        1 |        0 |        0 |     83% |        35 |
+| app/core/auth/utils.py                                                                                                              |        4 |        0 |        0 |        0 |    100% |           |
 | app/core/celery/bootstrap.py                                                                                                        |      115 |        5 |       32 |        2 |     95% |198-200, 251, 378 |
 | app/core/celery/config.py                                                                                                           |       35 |        0 |        2 |        0 |    100% |           |
 | app/core/celery/crud.py                                                                                                             |       26 |        1 |        4 |        0 |     97% |        97 |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34229** | **1892** | **8270** |  **689** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34160** | **1873** | **8252** |  **688** | **93%** |           |
 
 
 ## Setup coverage badge
