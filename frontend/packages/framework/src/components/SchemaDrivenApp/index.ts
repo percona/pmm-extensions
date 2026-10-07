@@ -19,7 +19,6 @@ export { SchemaDrivenApp } from './SchemaDrivenApp';
 export { DeleteConfirmDialog } from './DeleteConfirmDialog';
 export type { DeleteConfirmDialogProps } from './DeleteConfirmDialog';
 export { AppCreatePage } from './AppCreatePage';
-export { AppTaskEditPage } from './AppTaskEditPage';
 export { AppDetailPage } from './AppDetailPage';
 export { getStoredForm, STORED_FORM_KEY } from './storedForm';
 export { AppListPage } from './AppListPage';

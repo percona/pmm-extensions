@@ -221,6 +221,26 @@ native libraries resolvable:
 export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib:${DYLD_FALLBACK_LIBRARY_PATH}"
 ```
 
+### Frontend dead-code check (knip)
+
+The Frontend workflow fails on unused files, exports, types and dependencies in
+the `frontend/` pnpm workspace. Run it locally from `frontend/`:
+
+```shell
+pnpm knip
+```
+
+Fix a finding by removing the dead code or dependency, never by excepting it. It
+deliberately does not check:
+
+- the generated OpenAPI clients under `packages/*/src/generated/`;
+- exports used only inside their own module (`ignoreExportsUsedInFile`);
+- the exports of each package's entry file, which knip treats as that
+  package's public API.
+
+An exception in `frontend/knip.config.ts` is allowed only for a false positive,
+meaning something knip cannot see being used. Its comment must name what uses it.
+
 ## Getting Help
 
 If you have any questions or need assistance, feel free to reach out:

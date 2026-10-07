@@ -42,6 +42,9 @@ jobs:
       - name: Typecheck (tsc --noEmit)
         run: pnpm typecheck
 
+      - name: Unused files, exports and dependencies (knip)
+        run: pnpm knip
+
   unit-test:
     name: Unit tests (Vitest)
     runs-on: ubuntu-latest
