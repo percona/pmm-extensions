@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_6f83b30fdb6a6182_config_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-07 17:34 +0000
+            created at 2026-10-07 18:24 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -442,7 +442,7 @@
     <p class="run"><span class="n"><a id="t358" href="#t358">358</a></span><span class="t">    <span class="key">if</span> <span class="nam">root_task</span><span class="op">.</span><span class="nam">backend</span> <span class="op">!=</span> <span class="nam">TaskBackendEnum</span><span class="op">.</span><span class="nam">NOMAD</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t359" href="#t359">359</a></span><span class="t">        <span class="key">return</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t360" href="#t360">360</a></span><span class="t">    <span class="nam">executor</span> <span class="op">=</span> <span class="nam">get_executor_for_task</span><span class="op">(</span><span class="nam">root_task</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t361" href="#t361">361</a></span><span class="t">    <span class="key">if</span> <span class="nam">task_history</span><span class="op">.</span><span class="nam">execution_request</span><span class="op">.</span><span class="nam">target</span> <span class="key">in</span> <span class="nam">executor</span><span class="op">.</span><span class="nam">get_hosts</span><span class="op">(</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t361" href="#t361">361</a></span><span class="t">    <span class="key">if</span> <span class="nam">task_history</span><span class="op">.</span><span class="nam">execution_request</span><span class="op">.</span><span class="nam">target</span> <span class="key">in</span> <span class="key">await</span> <span class="nam">executor</span><span class="op">.</span><span class="nam">get_hosts</span><span class="op">(</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t362" href="#t362">362</a></span><span class="t">        <span class="key">return</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t363" href="#t363">363</a></span><span class="t">    <span class="key">return</span> <span class="key">await</span> <span class="nam">_skip_dispatch_unhealthy_target</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t364" href="#t364">364</a></span><span class="t">        <span class="nam">task_history</span><span class="op">,</span> <span class="nam">task_name</span><span class="op">,</span> <span class="nam">periodic_task_name</span>&nbsp;</span><span class="r"></span></p>
@@ -1493,7 +1493,7 @@
             <a class="nav" href="z_6f83b30fdb6a6182_config_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-07 17:34 +0000
+            created at 2026-10-07 18:24 +0000
         </p>
     </div>
 </footer>
