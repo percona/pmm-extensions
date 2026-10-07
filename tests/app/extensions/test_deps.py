@@ -18,7 +18,7 @@
 import asyncio
 import inspect
 from typing import Annotated, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, call, MagicMock, patch
 from urllib.parse import unquote
 
 import pytest
@@ -592,7 +592,7 @@ class TestUsernameMappingFailureWindow:
         clock[0] += USERNAME_MAPPING_FAILURE_WINDOW
 
         assert await get_username_mapping() == {str(user.id): user.username}
-        assert get_actors.await_count == 2  # noqa: PLR2004
+        assert get_actors.await_args_list == [call(), call()]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("actor_count", [1, 0], ids=["actors", "empty"])
@@ -610,7 +610,7 @@ class TestUsernameMappingFailureWindow:
         assert await get_username_mapping() == expected
         assert await get_username_mapping() == expected
 
-        assert get_actors.await_count == 2  # noqa: PLR2004
+        assert get_actors.await_args_list == [call(), call()]
 
     @pytest.mark.asyncio
     async def test_cancellation_propagates_without_opening_a_window(
@@ -625,7 +625,7 @@ class TestUsernameMappingFailureWindow:
             await get_username_mapping()
         await get_username_mapping()
 
-        assert get_actors.await_count == 2  # noqa: PLR2004
+        assert get_actors.await_args_list == [call(), call()]
 
     @pytest.mark.asyncio
     async def test_an_overlapping_success_closes_the_window(
@@ -640,10 +640,11 @@ class TestUsernameMappingFailureWindow:
         release = asyncio.Event()
 
         async def first_slow_then_failing() -> list[CasdoorUser]:
-            if get_actors.await_count == 2:  # noqa: PLR2004
-                raise TimeoutError
-            if get_actors.await_count == 1:
-                await release.wait()
+            match get_actors.await_count:
+                case 1:
+                    await release.wait()
+                case 2:
+                    raise TimeoutError
             return [user]
 
         get_actors = self._patch_actors(mocker, side_effect=first_slow_then_failing)
@@ -655,7 +656,7 @@ class TestUsernameMappingFailureWindow:
         assert await pending == {str(user.id): user.username}
 
         assert await get_username_mapping() == {str(user.id): user.username}
-        assert get_actors.await_count == 3  # noqa: PLR2004
+        assert get_actors.await_args_list == [call(), call(), call()]
 
     @pytest.mark.asyncio
     async def test_a_remembered_failure_is_logged_once(
