@@ -180,7 +180,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         """
 
     @abstractmethod
-    def get_hosts(self) -> dict[str, str]:
+    async def get_hosts(self) -> dict[str, str]:
         """Get the list of valid executor hosts.
 
         :return: A dictionary with node names as key and the respective addresses
@@ -188,7 +188,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         :rtype: list[str]
         """
 
-    def get_host_states(self) -> list[ExecutorHostState]:
+    async def get_host_states(self) -> list[ExecutorHostState]:
         """Describe every host the backend knows about, usable or not.
 
         Deliberately concrete rather than abstract: a backend with nothing to add
@@ -207,7 +207,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
             ExecutorHostState(
                 name=name, address=address, reachable=True, driver_healthy=True
             )
-            for name, address in self.get_hosts().items()
+            for name, address in (await self.get_hosts()).items()
         ]
 
     @abstractmethod
@@ -235,7 +235,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         # an async generator, so overrides would not match this signature.
         yield  # pragma: no cover
 
-    def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
+    async def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
         """Validate executor state before :meth:`stream_logs` sends response headers.
 
         Streaming responses commit status and headers before the body iterator runs.
@@ -247,8 +247,13 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         (nothing to stream yet, answered with a retryable 409) can be handled as
         HTTP error responses.
 
-        The route calls it in a worker thread, so blocking I/O is fine here and
-        an override must not touch event-loop-bound state.
+        Asynchronous because an implementation's validation may itself be a
+        remote read: :meth:`NomadExecutor.preflight_stream_logs` resolves the
+        allocation, and the job lookup behind it is an aiohttp call. The route
+        awaits it on the event loop, so any read an implementation still makes
+        through a blocking client belongs in a worker thread
+        (``asyncio.to_thread``) - one viewer's preflight must not stall every
+        other request while Nomad answers.
 
         :param queue_item: The task history record that will be streamed.
         """

@@ -28,6 +28,7 @@ from tests.scripts import load_script
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+changelog = load_script("changelog")
 sync_pr_labels = load_script("sync_pr_labels")
 
 _LABELER_PATH = _PROJECT_ROOT / ".github" / "labeler.yml"
@@ -162,6 +163,26 @@ def test_compute_blast_radius_marks_a_single_app_pr_as_isolated():
     assert result.touched_apps == ("app:report",)
 
 
+def test_compute_blast_radius_ignores_changelog_and_generated_openapi_files():
+    """Keep ``app-isolated`` when a single-app PR also ships derived artifacts."""
+    files = [
+        _file("app/extensions/apps/report/a.py", additions=1),
+        _file("changelog.d/SEP-1.added.md", additions=1),
+        _file("frontend/packages/api/specs/extensions.json", additions=1),
+        _file("frontend/packages/api/src/generated/extensions.ts", additions=1),
+        _file("tests/app/extensions/snapshots/openapi/report.json", additions=1),
+    ]
+    result = sync_pr_labels.compute_blast_radius(files, _APP_GLOBS)
+    assert result.app_isolated is True
+    assert result.touched_apps == ("app:report",)
+
+
+@pytest.mark.parametrize("section", sorted(changelog.SECTION_MAP))
+def test_isolation_neutral_accepts_every_changelog_fragment_section(section):
+    """Treat a fragment of every section the changelog tool accepts as neutral."""
+    assert sync_pr_labels.is_isolation_neutral(f"changelog.d/SEP-1.{section}.md")
+
+
 @pytest.mark.parametrize(
     "filenames",
     [
@@ -174,10 +195,29 @@ def test_compute_blast_radius_marks_a_single_app_pr_as_isolated():
             id="app-slice-plus-cross-cutting",
         ),
         pytest.param([".github/labeler.yml"], id="cross-cutting-only"),
+        pytest.param(
+            [
+                "changelog.d/SEP-1.fixed.md",
+                "frontend/packages/api/specs/extensions.json",
+            ],
+            id="isolation-neutral-only",
+        ),
+        pytest.param(
+            [
+                "app/extensions/apps/report/a.py",
+                "app/extensions/apps/alerts/b.py",
+                "changelog.d/SEP-1.fixed.md",
+            ],
+            id="two-app-slices-plus-neutral",
+        ),
+        pytest.param(
+            ["app/extensions/apps/report/a.py", "changelog.d/README.md"],
+            id="app-slice-plus-changelog-readme",
+        ),
     ],
 )
 def test_compute_blast_radius_rejects_mixed_app_and_cross_cutting_prs(filenames):
-    """Reject PRs that span apps or touch cross-cutting paths."""
+    """Reject PRs that span apps, touch cross-cutting paths, or touch no app slice."""
     files = [_file(name, additions=1) for name in filenames]
 
     result = sync_pr_labels.compute_blast_radius(files, _APP_GLOBS)

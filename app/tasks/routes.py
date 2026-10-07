@@ -15,7 +15,6 @@
 
 """Define routes for the Tasks API."""
 
-import asyncio
 import json
 import logging
 import os
@@ -23,7 +22,6 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import timedelta
 from typing import Annotated, cast
 
-import requests.exceptions
 from fastapi import APIRouter, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
@@ -37,7 +35,6 @@ from app.core.auth.models import UserRole
 from app.core.celery.deps import CeleryBeatSessionDep
 from app.core.config import settings
 from app.core.exceptions import (
-    HTTPBadGatewayException,
     HTTPBadRequestException,
     HTTPConflictException,
     HTTPUnprocessableEntityException,
@@ -283,7 +280,7 @@ async def execute_task_name(
 
     root_task = await TaskManager.get_root_task(session, queue_item.task)
     executor = get_executor_for_task(root_task)
-    if queue_item.execution_request.target not in executor.get_hosts():
+    if queue_item.execution_request.target not in await executor.get_hosts():
         raise HTTPBadRequestException(
             f"Failed to dispatch task: Target {queue_item.execution_request.target!r}"
             f"is not available in {executor.__class__.__name__} for task {task_name!r}"
@@ -577,11 +574,12 @@ async def stream_task_history_logs(
     if task_history.status == TaskHistoryStatusEnum.RUNNING:
         try:
             if isinstance(executor, BaseRemoteAPI):
-                await executor.run_in_thread_held(
-                    executor.preflight_stream_logs, task_history
-                )
+                # Held for the call, so a client retirement waiting on
+                # close_when_idle cannot close the executor under it.
+                async with executor.hold():
+                    await executor.preflight_stream_logs(task_history)
             else:
-                await asyncio.to_thread(executor.preflight_stream_logs, task_history)
+                await executor.preflight_stream_logs(task_history)
         except TaskNotStartedInExecutorError as exc:
             raise HTTPConflictException(str(exc)) from None
         stream_logs_generator = (
@@ -827,24 +825,18 @@ async def get_task_stats(session: SessionDep, task: str) -> TaskStats:
 async def get_executor_hosts(executor: TaskExecutor) -> dict[str, str]:
     """Return the executor hosts from the executor.
 
-    Wrap the upstream executor call so connection failures or non-JSON
-    bodies surface as a 502 JSON response instead of leaking a default
-    500 + text/plain that masks the real failure on the dashboard banner.
+    A connection failure or an unparseable body arrives as
+    :class:`~app.tasks.execution.executors.nomad.exceptions.NomadRequestError`,
+    which the app-level ``BaseNomadException`` handler (``app.tasks.main``)
+    answers with a 502 JSON response rather than a 500 + text/plain that would
+    mask the real failure on the dashboard banner.
 
     :param executor: The task executor backend used to fetch host metadata.
     :type executor: TaskExecutor
     :return: A mapping of executor node name to network address.
     :rtype: dict[str, str]
-    :raises HTTPBadGatewayException: If the executor backend raises a
-        ``requests.exceptions.RequestException`` (e.g. a non-JSON response
-        body or a connection failure outside the Nomad SDK's own wrapping).
     """
-    try:
-        return executor.get_hosts()
-    except requests.exceptions.RequestException as exc:
-        raise HTTPBadGatewayException(
-            detail=f"Executor backend unreachable: {exc}"
-        ) from exc
+    return await executor.get_hosts()
 
 
 @router.get("/hosts/states/", dependencies=[IsAuthenticatedDep])
@@ -857,20 +849,14 @@ async def get_executor_host_states(executor: TaskExecutor) -> list[ExecutorHostS
     onboarded, or be onboarded and down, or be up with a broken driver, and those are
     three different things for whoever has to fix it.
 
-    Wrapped the same way as ``/hosts/`` so an unreachable backend surfaces as a 502
-    rather than a 500 with a text/plain body.
+    An unreachable backend answers 502 rather than 500 with a text/plain body,
+    by the same route as ``/hosts/``: the app-level ``BaseNomadException``
+    handler owns it.
 
     :param executor: The task executor backend used to fetch host metadata.
     :return: One entry per host the backend knows about.
-    :raises HTTPBadGatewayException: If the executor backend is unreachable or
-        answers with something the client cannot parse.
     """
-    try:
-        return executor.get_host_states()
-    except requests.exceptions.RequestException as exc:
-        raise HTTPBadGatewayException(
-            detail=f"Executor backend unreachable: {exc}"
-        ) from exc
+    return await executor.get_host_states()
 
 
 @router.post(

@@ -17,7 +17,8 @@
 """Compute and sync the pull-request labels ``actions/labeler`` cannot express.
 
 The action matches path globs only, so three labels need code: ``large-diff``
-(a changed-line count), ``app-isolated`` (every file inside one app slice), and
+(a changed-line count), ``app-isolated`` (every file inside one app slice, bar
+changelog fragments and generated OpenAPI artifacts), and
 ``qa not required`` (a Dependabot or doc-only PR). This script reads ``app:<name>``
 globs from the default-branch ``.github/labeler.yml``, fetches the PR file list via
 the GitHub REST API, and adds or removes those labels.
@@ -86,6 +87,13 @@ GENERATED_PREFIXES = (
     "frontend/packages/api/specs/",
 )
 GENERATED_EXACT = frozenset({"poetry.lock", "frontend/pnpm-lock.yaml"})
+ISOLATION_NEUTRAL_PREFIXES = (
+    *GENERATED_PREFIXES,
+    "tests/app/extensions/snapshots/openapi/",
+)
+CHANGELOG_FRAGMENT_RE = re.compile(
+    r"^changelog\.d/(?:SEP|PMM)-\d+\.(?:added|changed|breaking|config|fixed|security)\.md$",
+)
 
 QA_NOT_REQUIRED_LABEL = "qa not required"
 QA_NOT_REQUIRED_GLOBS = (".github/CODEOWNERS", "README.md", ".gitignore", "dist/**")
@@ -235,6 +243,22 @@ def is_generated(filename: str) -> bool:
     return filename.startswith(GENERATED_PREFIXES)
 
 
+def is_isolation_neutral(filename: str) -> bool:
+    """Return whether ``filename`` is ignored by the ``app-isolated`` predicate.
+
+    These paths are changelog fragments and artifacts regenerated from backend
+    source, so they cannot widen a change beyond the slices its source files
+    already touch.
+
+    :param filename: Path relative to the repository root.
+    :return: ``True`` for changelog fragments and generated OpenAPI artifacts.
+    """
+    return (
+        filename.startswith(ISOLATION_NEUTRAL_PREFIXES)
+        or CHANGELOG_FRAGMENT_RE.match(filename) is not None
+    )
+
+
 def parse_app_globs(labeler_text: str) -> dict[str, list[str]]:
     """Build a map of ``app:<name>`` label to its path globs.
 
@@ -308,13 +332,15 @@ def compute_blast_radius(
     touched_apps: set[str] = set()
     has_non_app_file = False
     for file in files:
+        if is_isolation_neutral(file.filename):
+            continue
         app = app_of(file.filename, app_globs)
         if app is None:
             has_non_app_file = True
         else:
             touched_apps.add(app)
 
-    app_isolated = bool(files) and not has_non_app_file and len(touched_apps) == 1
+    app_isolated = not has_non_app_file and len(touched_apps) == 1
     return BlastRadiusResult(
         changed_lines=changed_lines,
         large_diff=large_diff,
