@@ -216,7 +216,7 @@
 | app/extensions/apps/framework/registry.py                                                                                           |      206 |        3 |      108 |        3 |     98% |460, 462, 481 |
 | app/extensions/apps/framework/responses.py                                                                                          |       96 |        1 |       20 |        1 |     98% |        64 |
 | app/extensions/apps/framework/rules.py                                                                                              |      538 |        7 |      130 |        5 |     98% |323, 328, 333, 545, 861, 1348, 1368 |
-| app/extensions/apps/framework/scaffold.py                                                                                           |      444 |       29 |      152 |       20 |     91% |308, 319, 331, 450, 547, 550, 570-\>577, 573, 624-626, 660, 701, 705, 913, 1189-1192, 1218, 1220, 1234-1237, 1263, 1268-1271, 1292, 1332 |
+| app/extensions/apps/framework/scaffold.py                                                                                           |      445 |       29 |      152 |       20 |     91% |308, 319, 331, 450, 547, 550, 570-\>577, 573, 626-628, 662, 703, 707, 915, 1191-1194, 1220, 1222, 1236-1239, 1265, 1270-1273, 1294, 1334 |
 | app/extensions/apps/framework/schema.py                                                                                             |      486 |        3 |      148 |        6 |     99% |1380, 1584, 1588-\>1581, 1594-\>1581, 1597-\>1581, 2088 |
 | app/extensions/apps/framework/script\_helpers.py                                                                                    |       45 |        0 |        6 |        0 |    100% |           |
 | app/extensions/apps/framework/script\_source.py                                                                                     |       63 |        0 |       14 |        0 |    100% |           |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34246** | **1879** | **8278** |  **692** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34247** | **1879** | **8278** |  **692** | **93%** |           |
 
 
 ## Setup coverage badge
