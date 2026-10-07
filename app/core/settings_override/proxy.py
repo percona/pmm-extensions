@@ -32,29 +32,22 @@ _EMPTY_SNAPSHOT: Mapping[str, object] = {}
 class OverridableSettingsProxy(LazyProxy[T]):
     """Wrap a :class:`LazyProxy` so attribute reads consult a DB-backed override snapshot.
 
-    Attribute reads first consult an in-memory snapshot of overrides for the
-    associated settings class. Any miss falls back to the wrapped Pydantic
-    instance, preserving :class:`LazyProxy` semantics. The snapshot is
-    replaced atomically by the background refresher in
-    :mod:`app.core.settings_override.lifecycle`; concurrent readers always
-    observe a fully-formed snapshot, never a partial one.
+    Attribute reads first consult an in-memory snapshot of overrides. Any miss
+    falls back to the wrapped Pydantic instance, preserving :class:`LazyProxy`
+    semantics. The snapshot is replaced atomically by the background refresher
+    in :mod:`app.core.settings_override.lifecycle`; concurrent readers always
+    observe a fully-formed snapshot, never a partial one. The refresher learns
+    which settings class a proxy serves from the registry entry pairing them.
 
     :param factory: Zero-argument callable that produces the real settings
         instance on first access.
-    :param setting_class: The class identifier used to load this proxy's
-        snapshot from the override table.
     """
 
-    __slots__ = ("_setting_class", "_snapshot")
+    __slots__ = ("_snapshot",)
 
-    def __init__(
-        self,
-        factory: "Callable[[], T]",
-        setting_class: str,
-    ) -> None:
+    def __init__(self, factory: "Callable[[], T]") -> None:
         super().__init__(factory)
         object.__setattr__(self, "_snapshot", _EMPTY_SNAPSHOT)
-        object.__setattr__(self, "_setting_class", setting_class)
 
     def __getattr__(self, name: str) -> object:
         snapshot = object.__getattribute__(self, "_snapshot")

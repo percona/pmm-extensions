@@ -53,7 +53,6 @@ from app.tasks.execution.executors.nomad.steps import (
 from app.tasks.models import (
     EXECUTE_TASK_BY_NAME_TASK,
     INVENTORY_COLLECTION_TASK_NAME,
-    INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FOLLOWERS_KEY,
     INVENTORY_SYNC_TASK_NAME,
     SYNC_RUNNING_TASKS_TASK_NAME,
@@ -917,16 +916,17 @@ def _inventory_sync_schedule(
     since a schedule switched on for the first time should collect inventory now
     rather than one interval from now.
 
-    ``ordering`` carries the first-run relationship between the pinned default
-    and the per-syncer schedules. It is merged into the meta beside ``syncer``,
-    where the executor forwards it to the callable, so the ordering is decided at
-    run time and the due marker above stays unchanged.
+    ``ordering`` names, on the pinned default, the per-syncer schedules it
+    starts after its first completed pass. It is merged into the meta beside
+    ``syncer``, where the executor forwards it to the callable, so which
+    followers start is decided at run time and the due marker above stays
+    unchanged.
 
     :param name: The seeded row name this schedule owns.
     :param syncer: The syncer to pin, or ``None`` to run every configured one.
     :param interval: How often the schedule fires, or ``None`` to seed nothing.
-    :param ordering: Meta keys ordering this schedule's first run against the
-        pinned default, or ``None`` for none. Ignored when ``syncer`` is unset.
+    :param ordering: Meta keys naming the per-syncer schedules the pinned
+        default starts, or ``None`` for none. Ignored when ``syncer`` is unset.
     :return: The schedule to append to the seeded set, or ``None`` when
         ``interval`` is unset.
     """
@@ -1018,8 +1018,8 @@ async def _seeded_inventory_sync_schedule(
     :param name: The seeded row name this schedule owns.
     :param syncer: The syncer to pin, or ``None`` to run every configured one.
     :param interval: How often the schedule fires, or ``None`` to seed nothing.
-    :param ordering: Meta keys carrying the schedule's first-run relationship to
-        the pinned default, or ``None`` for none.
+    :param ordering: Meta keys naming the per-syncer schedules the pinned
+        default starts, or ``None`` for none.
     :return: The schedule to seed, or ``None``.
     """
     if (schedule := _inventory_sync_schedule(name, syncer, interval, ordering)) is None:
@@ -1067,12 +1067,13 @@ async def seed_system_periodic_tasks() -> None:
     rather than orphaning and re-creating it — which ``due_on_first_seed`` would
     turn into a sync on every boot.
 
-    When the pinned default is seeded, it and each per-syncer schedule it seeds
-    carry the first-run relationship in their meta: the default names its
-    followers, and each follower names the default, so a follower's first run
-    waits for the default's first completed sync. Nothing is written when the
-    default is not seeded, which leaves a standalone or operator-scheduled
-    install unchanged.
+    Each per-syncer schedule runs on its own interval from bring-up. When the
+    pinned default is seeded, its meta names those schedules as followers, and
+    its runs start a follower that has not run since its first completed sync.
+    Nothing is written when the default is not seeded, which leaves a standalone
+    or operator-scheduled install unchanged. A follower's meta carries no
+    reference to the default, so the rewrite on each boot drops the
+    ``after_syncer`` key an earlier build stored there.
 
     :raises SQLAlchemyError: When the celery-beat store cannot be written.
     """
@@ -1087,9 +1088,6 @@ async def seed_system_periodic_tasks() -> None:
     )
     if primary is not None:
         periodic_tasks.append(primary)
-    ordering = (
-        {INVENTORY_SYNC_AFTER_KEY: leader} if primary is not None and leader else None
-    )
     periodic_tasks.extend(
         [
             schedule
@@ -1099,7 +1097,6 @@ async def seed_system_periodic_tasks() -> None:
                     _inventory_sync_schedule_name(entry.syncer),
                     entry.syncer,
                     entry.interval,
-                    ordering,
                 )
             )
             is not None
