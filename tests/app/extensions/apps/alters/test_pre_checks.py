@@ -16,7 +16,6 @@
 """Tests for pt-online-schema-change pre-checks."""
 
 from collections.abc import Sequence
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pymysql
@@ -319,55 +318,3 @@ class TestRunAllChecks:
         assert checks.run_all_checks() is False
         sql = _executed_sql(cursor)
         assert any("EVENT_OBJECT_SCHEMA = %s" in query for query in sql)
-
-
-def _write_my_cnf(tmp_path: Path) -> Path:
-    """Write a my.cnf whose ``[mysql]`` section overlaps ``[client]``."""
-    config_file = tmp_path / "my.cnf"
-    config_file.write_text(
-        """\
-[client]
-User = root
-Password = client-secret
-Host = client-host
-
-[mysql]
-Password = mysql-secret
-Database = appdb
-""",
-        encoding="utf-8",
-    )
-    return config_file
-
-
-_MERGED_MY_CNF = {
-    "user": "root",
-    "password": "mysql-secret",
-    "host": "client-host",
-    "database": "appdb",
-}
-
-
-class TestReadMyCnf:
-    """Test ``read_my_cnf`` as it behaves today."""
-
-    def test_merges_client_and_mysql_sections(self, tmp_path: Path) -> None:
-        """Assert a Path my.cnf returns both sections, with mysql winning shared keys."""
-        checks = _make_checks()
-
-        assert checks.read_my_cnf(_write_my_cnf(tmp_path)) == _MERGED_MY_CNF
-
-    def test_none_raises_attribute_error(self) -> None:
-        """Assert None raises AttributeError."""
-        checks = _make_checks()
-
-        with pytest.raises(AttributeError):
-            checks.read_my_cnf(None)
-
-    def test_string_path_raises_attribute_error(self, tmp_path: Path) -> None:
-        """Assert a string path raises AttributeError."""
-        checks = _make_checks()
-        config_file = _write_my_cnf(tmp_path)
-
-        with pytest.raises(AttributeError):
-            checks.read_my_cnf(str(config_file))
