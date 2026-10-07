@@ -592,18 +592,22 @@ def _claimed_first(one: ProbeRun, other: ProbeRun) -> bool:
 
 
 def conflict_detail(blocking: ProbeRun, node_ids: list[str] | None) -> str:
-    """Say which hosts are held, and by which run.
+    """Say which hosts are held by a scan already in flight.
 
     Names them rather than saying "a sweep is already running", which was true of
     anything and useful for nothing once conflict became per-host.
+
+    Written for the operator who reads it in PMM's UI, so it uses that UI's words:
+    a "scan" on "nodes". The blocking run's id and this app's internal names
+    ("probe", "estate") mean nothing there, and PMM shows the message as it is.
 
     :param blocking: The run already holding them.
     :param node_ids: The hosts that were asked for.
     :return: The message.
     """
     if not blocking.scope:
-        held = "the whole estate"
+        held = "every node"
     else:
         overlap = sorted(set(blocking.scope) & set(node_ids or []))
-        held = ", ".join(overlap) or "these hosts"
-    return f"Probe run {blocking.id} is already refreshing {held}"
+        held = ", ".join(overlap) or "these nodes"
+    return f"A scan is already running on {held}"
