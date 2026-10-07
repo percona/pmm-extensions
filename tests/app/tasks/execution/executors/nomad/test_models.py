@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from base64 import b64encode
 from binascii import b2a_base64
@@ -2073,6 +2074,47 @@ class TestPreflightStreamLogs:
             allocation_read,
             allocation_read,
         ]
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_blocking_reads_stay_off_the_event_loop(self, mock_nomad_cls):
+        """Assert the python-nomad reads run in worker threads, not on the loop.
+
+        The route awaits this on the event loop for every live-log viewer, and the
+        allocation and evaluation listings still go through the blocking client,
+        so one slow Nomad answer would otherwise stall every other request.
+        """
+        executor, mock_backend = self._executor(
+            mock_nomad_cls, [[], []], evaluation_status=NomadEvalStatusEnum.PENDING
+        )
+        loop_thread = threading.get_ident()
+        threads: list[int] = []
+
+        def record(answers: list[Any]) -> Any:
+            """Answer each call with the next of ``answers``, noting its thread."""
+
+            def read(*_args: Any, **_kwargs: Any) -> Any:
+                threads.append(threading.get_ident())
+                return answers.pop(0)
+
+            return read
+
+        mock_backend.allocations.get_allocations.side_effect = record([[], []])
+        mock_backend.job.get_evaluations.side_effect = record(
+            [[{"ID": "eval-1", "Status": NomadEvalStatusEnum.PENDING}]]
+        )
+
+        with pytest.raises(TaskNotStartedInExecutorError):
+            await executor.preflight_stream_logs(_build_queue_item())
+
+        # Every read was recorded - two allocation listings and the evaluation
+        # listing - and none of them ran on the loop.
+        assert len(threads) == (
+            mock_backend.allocations.get_allocations.call_count
+            + mock_backend.job.get_evaluations.call_count
+        )
+        assert mock_backend.job.get_evaluations.called
+        assert loop_thread not in threads
 
     @pytest.mark.parametrize(
         "other_evaluations",
