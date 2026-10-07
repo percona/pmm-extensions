@@ -96,9 +96,7 @@ async def session_maker_fixture() -> AsyncGenerator[async_sessionmaker, None]:
 
 def _make_proxies() -> tuple[OverridableSettingsProxy, dict]:
     """Construct a PMM Extensions proxy and a registry mapping for refresh tests."""
-    proxy: OverridableSettingsProxy = OverridableSettingsProxy(
-        ExtensionsSettings, setting_class=ExtensionsSettings.__name__
-    )
+    proxy: OverridableSettingsProxy = OverridableSettingsProxy(ExtensionsSettings)
     registry = {
         EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings),
     }
@@ -170,9 +168,7 @@ async def test_refresh_all_falls_back_when_a_row_becomes_undecryptable(
     wrapped instance. Falling back to configuration beats serving a credential
     the deployment can no longer verify.
     """
-    proxy: OverridableSettingsProxy = OverridableSettingsProxy(
-        Settings, setting_class=Settings.__name__
-    )
+    proxy: OverridableSettingsProxy = OverridableSettingsProxy(Settings)
     registry = {SETTINGS: ProxyEntry(proxy, Settings)}
     api_key = "pmm-api-key-published"
     async with session_maker() as session:
@@ -281,11 +277,9 @@ async def test_refresh_all_rolls_back_session_between_proxies(
     its row from the DB.
     """
     extensions_proxy: OverridableSettingsProxy = OverridableSettingsProxy(
-        ExtensionsSettings, setting_class=ExtensionsSettings.__name__
+        ExtensionsSettings
     )
-    tasks_proxy: OverridableSettingsProxy = OverridableSettingsProxy(
-        TasksSettings, setting_class=TasksSettings.__name__
-    )
+    tasks_proxy: OverridableSettingsProxy = OverridableSettingsProxy(TasksSettings)
     registry = {
         EXTENSIONS_SETTINGS: ProxyEntry(extensions_proxy, ExtensionsSettings),
         TASKS_SETTINGS: ProxyEntry(tasks_proxy, TasksSettings),
@@ -1065,9 +1059,7 @@ class TestFireBootCallbacks:
         """
         extensions_proxy, registry = _make_proxies()
         registry[TASKS_SETTINGS] = ProxyEntry(
-            OverridableSettingsProxy(
-                TasksSettings, setting_class=TasksSettings.__name__
-            ),
+            OverridableSettingsProxy(TasksSettings),
             TasksSettings,
         )
         override_value = not ExtensionsSettings().CONNECTIVITY_CHECK_DEFAULT

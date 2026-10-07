@@ -21,7 +21,6 @@ from typing import Any, ClassVar
 from pydantic import Field, field_validator
 
 from app.core.config import BaseYamlSettings
-from app.core.settings_override.constants import ANONYMIZER_SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import hot_field, materialize_via_owning_model
 from app.core.utils import run_pydantic_type_validator
@@ -101,6 +100,4 @@ class AnonymizerSettings(BaseYamlSettings):
         return PIIEntity.encode_selection(self.DEFAULT_ENTITIES[owner])
 
 
-anonymizer_settings: AnonymizerSettings = OverridableSettingsProxy(
-    AnonymizerSettings, setting_class=ANONYMIZER_SETTINGS
-)
+anonymizer_settings: AnonymizerSettings = OverridableSettingsProxy(AnonymizerSettings)

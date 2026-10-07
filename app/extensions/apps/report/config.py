@@ -166,5 +166,5 @@ class HealthReportSettings(BaseYamlSettings, BaseTransformFieldsModel):
 
 
 health_report_settings: HealthReportSettings = OverridableSettingsProxy(
-    HealthReportSettings, setting_class=HealthReportSettings.__name__
+    HealthReportSettings
 )
