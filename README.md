@@ -324,7 +324,7 @@
 | app/extensions/crud.py                                                                                                              |      164 |        0 |       30 |        0 |    100% |           |
 | app/extensions/db/engine.py                                                                                                         |        7 |        0 |        0 |        0 |    100% |           |
 | app/extensions/db/seed.py                                                                                                           |       52 |        0 |       16 |        0 |    100% |           |
-| app/extensions/deps.py                                                                                                              |      269 |        1 |       50 |        1 |     99% |692-\>697, 713 |
+| app/extensions/deps.py                                                                                                              |      285 |        1 |       50 |        1 |     99% |725-\>730, 746 |
 | app/extensions/inventory.py                                                                                                         |      103 |        4 |       12 |        1 |     96% |92, 103, 292, 329 |
 | app/extensions/main.py                                                                                                              |      142 |        6 |       18 |        3 |     94% |184-186, 418-\>exit, 439-\>448, 573-577 |
 | app/extensions/migrations/\_discovery.py                                                                                            |       41 |        2 |       20 |        3 |     92% |65, 97, 133-\>130 |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34190** | **1892** | **8266** |  **689** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34206** | **1892** | **8266** |  **689** | **93%** |           |
 
 
 ## Setup coverage badge
