@@ -457,7 +457,7 @@ def _stub_nomad_api(
     :param nodes: Answer for ``GET /v1/nodes``.
     :param register: Answer for ``POST /v1/job/{id}``.
     :param dispatch: Answer for ``POST /v1/job/{id}/dispatch``.
-    :yield: The recorded ``(method, path, kwargs)`` of every call made.
+    :return: The recorded ``(method, path, kwargs)`` of every call made.
     """
     router, calls = _nomad_router(
         job=job, nodes=nodes, register=register, dispatch=dispatch
