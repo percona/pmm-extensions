@@ -176,7 +176,17 @@ class TestTriggerRun:
         persistence.
         """
         client = api_client(regular_user, session, _fake_tasks_api())
-        override = {"priority": 0, "votes": False, "hidden": True, "delay_secs": 300}
+        override = {
+            "priority": 0,
+            "votes": False,
+            "hidden": True,
+            "delay_secs": 300,
+            # A concrete address, not None: None would pass even if a supplied value
+            # were dropped by model_dump, persistence or the response reconstruction,
+            # and PMM reads the echo to tell an older side-car from one that applied
+            # the per-member address.
+            "bind_ip": "10.1.2.3",
+        }
         response = client.post(
             f"{BASE}/runs",
             json={
@@ -325,6 +335,18 @@ class TestTriggerRunValidation:
         """Reject a name that could break the mongod.conf it is written into."""
         response = api_client(regular_user, session).post(
             f"{BASE}/runs", json=self._payload(replica_set_name=name)
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+    @pytest.mark.parametrize("bind_ip", ["10.0.0.1\nnet: {}", "10.0.0.1 10.0.0.2", ""])
+    def test_rejects_a_malformed_member_bind_ip(
+        self, regular_user: CasdoorUser, session: AsyncSession, bind_ip: str
+    ) -> None:
+        """Reject a per-member bind address with whitespace or control characters."""
+        response = api_client(regular_user, session).post(
+            f"{BASE}/runs",
+            json=self._payload(member_configs={"node00": {"bind_ip": bind_ip}}),
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
