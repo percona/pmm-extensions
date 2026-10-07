@@ -264,7 +264,8 @@ def uncommitted_files(repo_root: Path) -> tuple[str, ...]:
     paths: list[str] = []
     for row in rows:
         state, path = row[:2], row[3:].rpartition(" -> ")[2].strip('"')
-        if "D" in state or not path.endswith(".py") or path.startswith(TEST_ROOT):
+        deleted = state[0] == "D" or state == " D"
+        if deleted or not path.endswith(".py") or path.startswith(TEST_ROOT):
             continue
         paths.append(path)
     return tuple(paths)

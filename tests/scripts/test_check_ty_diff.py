@@ -17,11 +17,15 @@
 
 import subprocess
 import sys
+from typing import TYPE_CHECKING
 
 import pytest
 
 from scripts.classify_ty_diagnostics import ReconciliationError
 from tests.scripts import load_script, PROJECT_ROOT
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 check_ty_diff = load_script("check_ty_diff")
 
@@ -432,6 +436,9 @@ def test_uncommitted_files_keeps_only_what_a_commit_would_bring_in(
     status = (
         " M app/core/db.py\n"
         " D app/core/old.py\n"
+        "D  app/core/gone.py\n"
+        "MD app/core/staged.py\n"
+        "AD app/core/added.py\n"
         " M tests/app/core/test_db.py\n"
         "?? app/core/new_module.py\n"
         "R  app/core/a.py -> app/core/b.py\n"
@@ -440,6 +447,8 @@ def test_uncommitted_files_keeps_only_what_a_commit_would_bring_in(
 
     assert check_ty_diff.uncommitted_files(tmp_path) == (
         "app/core/db.py",
+        "app/core/staged.py",
+        "app/core/added.py",
         "app/core/new_module.py",
         "app/core/b.py",
     )
@@ -447,7 +456,7 @@ def test_uncommitted_files_keeps_only_what_a_commit_would_bring_in(
 
 def test_uncommitted_files_asks_git_from_the_repository_root(monkeypatch, tmp_path):
     """Resolve the pathspec against the root, and list untracked files whatever the config."""
-    recorded: list[tuple[tuple[str, ...], object]] = []
+    recorded: list[tuple[tuple[str, ...], Path | None]] = []
 
     def spy_git(*args, cwd=None):
         recorded.append((args, cwd))
