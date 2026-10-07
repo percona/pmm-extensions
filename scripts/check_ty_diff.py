@@ -17,9 +17,9 @@
 """Fail on the ty diagnostics a branch introduces, relative to its merge-base.
 
 Every rule ``[tool.ty.rules]`` holds at ``warn`` is promoted to ``error``, and the
-changed non-test Python files are checked twice: once at ``HEAD`` and once in a
-detached worktree at the merge-base. The report is the multiset difference over
-:attr:`~scripts.classify_ty_diagnostics.Diagnostic.fingerprint`.
+changed non-test Python files are checked twice: once in the working tree and once
+in a detached worktree at the merge-base. The report is the multiset difference
+over :attr:`~scripts.classify_ty_diagnostics.Diagnostic.fingerprint`.
 
 Attribution is a baseline delta rather than a test of whether a diagnostic sits on
 an added line, because an annotation change lands its consequences at call sites
@@ -248,11 +248,10 @@ def changed_files(merge_base: str) -> ChangedFiles:
 
 
 def uncommitted_files(repo_root: Path) -> tuple[str, ...]:
-    """Return the non-test Python files with uncommitted changes.
+    """Return the Python files with uncommitted changes.
 
-    These are the files a commit would bring into the checked surface, so
-    deletions and anything under ``tests/`` are left out, as they are from the
-    committed change set.
+    These are the files a commit would add to the change set, so deletions are
+    left out, as they are from the committed one.
 
     :param repo_root: The repository root, which the pathspec is resolved against.
     :return: Repo-relative paths, in ``git status`` order.
@@ -265,7 +264,7 @@ def uncommitted_files(repo_root: Path) -> tuple[str, ...]:
     for row in rows:
         state, path = row[:2], row[3:].rpartition(" -> ")[2].strip('"')
         deleted = state[0] == "D" or state == " D"
-        if deleted or not path.endswith(".py") or path.startswith(TEST_ROOT):
+        if deleted or not path.endswith(".py"):
             continue
         paths.append(path)
     return tuple(paths)
@@ -274,9 +273,10 @@ def uncommitted_files(repo_root: Path) -> tuple[str, ...]:
 def unexamined_notice(changed: ChangedFiles, repo_root: Path) -> list[str]:
     """Describe the Python changes this run did not check.
 
-    The run compares commits and checks non-test files only, so uncommitted
-    edits and changes under ``tests/`` are outside it whatever the verdict on
-    the files it did check, and a zero exit says nothing about them.
+    The run checks the working-tree copies of the non-test files the commits
+    changed, so uncommitted edits to any other file, and every change under
+    ``tests/``, are outside it whatever the verdict on the files it did check,
+    and a zero exit says nothing about them.
 
     :param changed: The change set the committed diff produced.
     :param repo_root: The repository root.
@@ -284,15 +284,23 @@ def unexamined_notice(changed: ChangedFiles, repo_root: Path) -> list[str]:
     :raises subprocess.CalledProcessError: Propagated from git.
     """
     lines: list[str] = []
-    uncommitted = uncommitted_files(repo_root)
-    if uncommitted:
+    uncommitted = [
+        path for path in uncommitted_files(repo_root) if path not in changed.head
+    ]
+    outside = [path for path in uncommitted if not path.startswith(TEST_ROOT)]
+    tests = {
+        *changed.tests,
+        *(path for path in uncommitted if path.startswith(TEST_ROOT)),
+    }
+    if outside:
         lines.append(
-            f"{len(uncommitted)} uncommitted non-test Python file(s) were NOT examined: "
-            "this check compares commits. This is not a pass for them."
+            f"{len(outside)} uncommitted non-test Python file(s) were NOT examined: "
+            "this check reads only the files the commits changed. "
+            "This is not a pass for them."
         )
-    if changed.tests:
+    if tests:
         lines.append(
-            f"{len(changed.tests)} changed test file(s) were NOT examined: "
+            f"{len(tests)} changed test file(s) were NOT examined: "
             "tests/ is outside this check; `make typecheck` covers it."
         )
     return lines

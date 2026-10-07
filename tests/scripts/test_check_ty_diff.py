@@ -429,10 +429,47 @@ def test_a_passing_run_still_names_what_it_did_not_check(monkeypatch, tmp_path, 
     assert "1 changed test file(s) were NOT examined" in out
 
 
+def test_an_uncommitted_edit_to_a_checked_file_is_not_called_unexamined(
+    monkeypatch, tmp_path, capsys
+):
+    """Count a dirty file the head pass read from disk as examined."""
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
+    monkeypatch.setattr(
+        check_ty_diff,
+        "_git",
+        _git_with_status(
+            tmp_path, "M\tapp/inventory/crud.py\n", " M app/inventory/crud.py\n"
+        ),
+    )
+    monkeypatch.setattr(check_ty_diff, "_ty_stdout", _TySpy(_output(), _output()))
+    code = check_ty_diff.main(["--base-sha", BASE_SHA])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out == "No new ty diagnostics across 1 changed file(s).\n"
+
+
+def test_an_uncommitted_test_edit_is_named(monkeypatch, tmp_path, capsys):
+    """Name a dirty test file, counting it once when it is also committed."""
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
+    status = " M tests/app/core/test_db.py\n?? tests/app/core/test_new.py\n"
+    monkeypatch.setattr(
+        check_ty_diff,
+        "_git",
+        _git_with_status(tmp_path, "M\ttests/app/core/test_db.py\n", status),
+    )
+    code = check_ty_diff.main(["--base-sha", BASE_SHA])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "2 changed test file(s) were NOT examined" in out
+    assert "uncommitted non-test" not in out
+
+
 def test_uncommitted_files_keeps_only_what_a_commit_would_bring_in(
     monkeypatch, tmp_path
 ):
-    """Leave out deletions and tests, and read a rename at its new path."""
+    """Leave out deletions, keep tests, and read a rename at its new path."""
     status = (
         " M app/core/db.py\n"
         " D app/core/old.py\n"
@@ -449,6 +486,7 @@ def test_uncommitted_files_keeps_only_what_a_commit_would_bring_in(
         "app/core/db.py",
         "app/core/staged.py",
         "app/core/added.py",
+        "tests/app/core/test_db.py",
         "app/core/new_module.py",
         "app/core/b.py",
     )
