@@ -88,10 +88,11 @@ GENERATED_PREFIXES = (
 )
 GENERATED_EXACT = frozenset({"poetry.lock", "frontend/pnpm-lock.yaml"})
 ISOLATION_NEUTRAL_PREFIXES = (
-    "changelog.d/",
-    "frontend/packages/api/specs/",
-    "frontend/packages/api/src/generated/",
+    *GENERATED_PREFIXES,
     "tests/app/extensions/snapshots/openapi/",
+)
+CHANGELOG_FRAGMENT_RE = re.compile(
+    r"^changelog\.d/(?:SEP|PMM)-\d+\.(?:added|changed|breaking|config|fixed|security)\.md$",
 )
 
 QA_NOT_REQUIRED_LABEL = "qa not required"
@@ -252,7 +253,10 @@ def is_isolation_neutral(filename: str) -> bool:
     :param filename: Path relative to the repository root.
     :return: ``True`` for changelog fragments and generated OpenAPI artifacts.
     """
-    return filename.startswith(ISOLATION_NEUTRAL_PREFIXES)
+    return (
+        filename.startswith(ISOLATION_NEUTRAL_PREFIXES)
+        or CHANGELOG_FRAGMENT_RE.match(filename) is not None
+    )
 
 
 def parse_app_globs(labeler_text: str) -> dict[str, list[str]]:

@@ -203,6 +203,10 @@ def test_compute_blast_radius_ignores_changelog_and_generated_openapi_files():
             ],
             id="two-app-slices-plus-neutral",
         ),
+        pytest.param(
+            ["app/extensions/apps/report/a.py", "changelog.d/README.md"],
+            id="app-slice-plus-changelog-readme",
+        ),
     ],
 )
 def test_compute_blast_radius_rejects_mixed_app_and_cross_cutting_prs(filenames):
