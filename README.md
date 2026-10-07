@@ -74,7 +74,7 @@
 | app/core/settings\_override/secret\_storage.py                                                                                      |      154 |        4 |       50 |        5 |     96% |575, 577-\>579, 603, 757, 787 |
 | app/core/settings\_override/worker.py                                                                                               |       59 |        1 |       14 |        1 |     97% |       214 |
 | app/core/utils/async\_run.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
-| app/core/utils/cache.py                                                                                                             |       88 |        4 |       16 |        1 |     93% |55-57, 191 |
+| app/core/utils/cache.py                                                                                                             |       90 |        4 |       18 |        1 |     94% |55-57, 195 |
 | app/core/utils/cli\_args.py                                                                                                         |       12 |        0 |        0 |        0 |    100% |           |
 | app/core/utils/date\_time.py                                                                                                        |        8 |        0 |        2 |        0 |    100% |           |
 | app/core/utils/dict.py                                                                                                              |       29 |        4 |       12 |        0 |     85% |   165-168 |
@@ -536,7 +536,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       22 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34244** | **1879** | **8276** |  **692** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34246** | **1879** | **8278** |  **692** | **93%** |           |
 
 
 ## Setup coverage badge
