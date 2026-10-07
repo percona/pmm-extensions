@@ -199,8 +199,8 @@ function mysql_stdout() {
 
 #
 # Print what a config line leaves open for the next one: the closers of its
-# unclosed quotes, expansions and brackets, innermost last; a backslash if it
-# continues onto the next line; '<' after a here-document; or nothing
+# unclosed quotes, innermost last; '<' once it leaves anything else open, after
+# which no line is shown; or nothing
 #
 # Arguments:
 #   1: the line
@@ -209,17 +209,20 @@ function mysql_stdout() {
 function cnf_open_state() {
     local line=$1
     local state=$2
+    local rest="<"
+    local quotes_only="^[\"'\$]*\$"
+    local case_word='(^|[^A-Za-z0-9_])case([[:space:]]|$)'
     local char next top
     local escaped=-1
     local i
 
-    # A here-document body ends at a delimiter this does not track, so
-    # everything after one stays hidden.
-    if [[ $state == "<" ]]; then
-        printf '%s' "$state"
+    # Substitutions, expansions, arrays, continuations and here-documents end
+    # by rules too wide to track (a case pattern's ")" closes nothing, a
+    # continuation can split an opener), so nothing after one is trusted.
+    if [[ $state == "$rest" || $line =~ $case_word ]]; then
+        printf '%s' "$rest"
         return
     fi
-    [[ $state == $'\\' ]] && state=""
 
     for ((i = 0; i < ${#line}; i++)); do
         char=${line:i:1}
@@ -229,8 +232,8 @@ function cnf_open_state() {
             [[ $char == "'" ]] && state=${state%?}
         elif [[ $char == $'\\' ]]; then
             if ((i == ${#line} - 1)); then
-                [[ -z $state ]] && state=$'\\'
-                break
+                printf '%s' "$rest"
+                return
             fi
             escaped=$((++i))
         elif [[ $top == '$' ]]; then
@@ -258,14 +261,15 @@ function cnf_open_state() {
             state=${state%?}
         elif [[ $char == '<' && $next == '<' ]]; then
             if [[ ${line:i+2:1} != '<' ]]; then
-                printf '<'
+                printf '%s' "$rest"
                 return
             fi
             ((i += 2))
-        elif [[ $char == '#' ]] && { ((i == 0)) || { [[ ${line:i-1:1} == [[:space:]] ]] && ((escaped != i - 1)); }; }; then
+        elif [[ $char == '#' ]] && { ((i == 0)) || { [[ ${line:i-1:1} == [[:space:]\;\&\|\(\)\<\>] ]] && ((escaped != i - 1)); }; }; then
             break
         fi
     done
+    [[ $state =~ $quotes_only ]] || state=$rest
     printf '%s' "$state"
 }
 
@@ -293,14 +297,14 @@ function print_redacted_cnf() (
     local empty_value="^(''|\"\")?\$"
     local secret_key='PASS|PWD|SECRET|TOKEN|KEY|AUTH|CRED'
     local url_credentials='://[^/@[:space:]]*:[^/@[:space:]]*@'
-    local credential_text="(${secret_key})[A-Za-z0-9_]*[[:space:]]*=|${url_credentials}"
+    local credential_text="(${secret_key})[A-Za-z0-9_]*(\\[[^]]*])?[[:space:]]*\\+?=|${url_credentials}"
     local comment='^([[:space:]]*#+[[:space:]]*)(.*)$'
     local comment_lead export_lead key value token trailing shown
 
     shopt -s nocasematch
     while IFS= read -r line || [[ -n $line ]]; do
-        # A line inside an open quote or after a trailing backslash is part
-        # of the value above, however much it looks like its own assignment.
+        # A line after one left open is part of that value, however much it
+        # looks like its own assignment or comment.
         if [[ -n $state ]]; then
             printf '%s\n' "$hidden"
             state=$(cnf_open_state "$line" "$state")
