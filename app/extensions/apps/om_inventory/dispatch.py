@@ -680,14 +680,15 @@ async def probe_host(
         logger.warning("OM inventory: probe of %s timed out: %s", executor_host, err)
         never_started = err.status == TaskHistoryStatusEnum.PENDING.value
         verb = "start" if never_started else "finish"
-        result.error = (
-            f"the scan did not {verb} within {err.timeout}s "
-            f"(task history {err.task_history_id} is still {err.status})"
-        )
+        result.error = f"the scan did not {verb} within {err.timeout}s"
         result.error_code = (
             ScanFailure.NOT_STARTED if never_started else ScanFailure.TIMED_OUT
         )
         await _release_abandoned(tasks_api, result)
+        # Said after the release, not before: the run is stopped by then, and a
+        # release that failed has already said so in its place.
+        if result.error_code != ScanFailure.BLOCKED:
+            result.error += f" and was cancelled (task history {err.task_history_id})"
     except Exception as err:
         logger.exception("OM inventory: probe of %s failed", executor_host)
         if result.task_history_id is None:

@@ -212,8 +212,8 @@ class TestADispatchSaysWhatKindOfFailureItWas:
 
         assert result.error_code == ScanFailure.NOT_STARTED
         assert result.error == (
-            f"the scan did not start within 1s (task history {HISTORY_ID} is "
-            "still pending)"
+            f"the scan did not start within 1s and was cancelled (task history "
+            f"{HISTORY_ID})"
         )
 
     @pytest.mark.asyncio

@@ -127,8 +127,8 @@ class TestReleaseOnAbandonedDispatch:
 
         assert stop_calls(api) == [f"/history/{HISTORY_ID}/stop/"]
         assert result.error == (
-            f"the scan did not finish within 1s (task history {HISTORY_ID} is "
-            "still running)"
+            f"the scan did not finish within 1s and was cancelled (task history "
+            f"{HISTORY_ID})"
         )
         assert result.error_code == ScanFailure.TIMED_OUT
         # The sweep still reports the probe as failed — releasing the queue item is
@@ -153,6 +153,7 @@ class TestReleaseOnAbandonedDispatch:
             result.error or ""
         )
         assert "block this node's next scan" in (result.error or "")
+        assert "cancelled" not in (result.error or "")
         # The stuck run outranks the timeout: it is the part that will not clear.
         assert result.error_code == ScanFailure.BLOCKED
 
