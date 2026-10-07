@@ -162,6 +162,20 @@ def test_compute_blast_radius_marks_a_single_app_pr_as_isolated():
     assert result.touched_apps == ("app:report",)
 
 
+def test_compute_blast_radius_ignores_changelog_and_generated_openapi_files():
+    """Keep ``app-isolated`` when a single-app PR also ships derived artifacts."""
+    files = [
+        _file("app/extensions/apps/report/a.py", additions=1),
+        _file("changelog.d/SEP-1.added.md", additions=1),
+        _file("frontend/packages/api/specs/extensions.json", additions=1),
+        _file("frontend/packages/api/src/generated/extensions.ts", additions=1),
+        _file("tests/app/extensions/snapshots/openapi/report.json", additions=1),
+    ]
+    result = sync_pr_labels.compute_blast_radius(files, _APP_GLOBS)
+    assert result.app_isolated is True
+    assert result.touched_apps == ("app:report",)
+
+
 @pytest.mark.parametrize(
     "filenames",
     [
@@ -174,6 +188,21 @@ def test_compute_blast_radius_marks_a_single_app_pr_as_isolated():
             id="app-slice-plus-cross-cutting",
         ),
         pytest.param([".github/labeler.yml"], id="cross-cutting-only"),
+        pytest.param(
+            [
+                "changelog.d/SEP-1.fixed.md",
+                "frontend/packages/api/specs/extensions.json",
+            ],
+            id="isolation-neutral-only",
+        ),
+        pytest.param(
+            [
+                "app/extensions/apps/report/a.py",
+                "app/extensions/apps/alerts/b.py",
+                "changelog.d/SEP-1.fixed.md",
+            ],
+            id="two-app-slices-plus-neutral",
+        ),
     ],
 )
 def test_compute_blast_radius_rejects_mixed_app_and_cross_cutting_prs(filenames):
