@@ -134,3 +134,21 @@ class TestRunsListDateRangeFilter:
             str(newest.id),
             str(oldest.id),
         ]
+
+
+class TestRunsListProgress:
+    """Pin the progress counter the list carries."""
+
+    @pytest.mark.asyncio
+    async def test_a_running_sweep_says_how_many_hosts_have_come_back(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Carry hosts_finished beside the totals, for a run still going."""
+        run = await ProbeRunManager.save(session, ProbeRun())
+        run.hosts_total, run.hosts_probeable, run.hosts_finished = 5, 4, 3
+        await ProbeRunManager.save(session, run)
+
+        response = await api.get(f"{BASE}/runs")
+
+        counts = response.json()[0]["counts"]
+        assert (counts["hosts_probeable"], counts["hosts_finished"]) == (4, 3)

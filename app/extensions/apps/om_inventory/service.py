@@ -547,7 +547,86 @@ async def enumerate_estate(
     raise AssertionError("unreachable: the loop returns or raises")
 
 
-async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOutcome:
+class SweepProgress:
+    """Where a sweep reports how far it has got. This one reports nowhere."""
+
+    async def started(self, hosts_total: int, hosts_probeable: int) -> None:
+        """Note how many hosts the sweep covers, once it knows.
+
+        :param hosts_total: Hosts in scope.
+        :param hosts_probeable: ...of which can be dispatched to.
+        """
+
+    async def host_done(self, result: HostProbeResult) -> None:
+        """Note one host's scan as come back.
+
+        :param result: Its outcome.
+        """
+
+
+class RunProgress(SweepProgress):
+    """Write a running sweep's progress onto its run row as the sweep makes it.
+
+    Without it the row says nothing but ``running`` until the sweep ends, tens of
+    seconds later. The count is kept here and written whole, under a lock, rather than
+    incremented in the database: every host's result comes back on this event loop,
+    so this count is the true one and the writes cannot interleave. Best-effort: a
+    write that fails is logged and the sweep carries on, since progress is for a
+    reader and the outcome is the record.
+
+    :param run_id: The run being swept.
+    """
+
+    def __init__(self, run_id: UUID) -> None:
+        """Track one run.
+
+        :param run_id: The run being swept.
+        """
+        self._run_id = run_id
+        self._finished = 0
+        self._lock = asyncio.Lock()
+
+    async def started(self, hosts_total: int, hosts_probeable: int) -> None:
+        """Record how many hosts the sweep covers, once it knows.
+
+        :param hosts_total: Hosts in scope.
+        :param hosts_probeable: ...of which can be dispatched to.
+        """
+        await self._write(hosts_total=hosts_total, hosts_probeable=hosts_probeable)
+
+    async def host_done(self, result: HostProbeResult) -> None:  # noqa: ARG002
+        """Count one host's scan as come back.
+
+        :param result: Its outcome, which progress does not need.
+        """
+        async with self._lock:
+            self._finished += 1
+            await self._write(hosts_finished=self._finished)
+
+    async def _write(self, **values: int) -> None:
+        """Set ``values`` on the run row, logging rather than raising on failure.
+
+        :param values: Column names and the values to store.
+        """
+        try:
+            async with get_async_session_maker()() as session:
+                run = await ProbeRunManager.get(session, id=self._run_id)
+                for name, value in values.items():
+                    setattr(run, name, value)
+                await ProbeRunManager.save(session, run)
+        except Exception:  # noqa: BLE001 - progress must never fail the sweep
+            logger.warning(
+                "OM inventory: could not record progress of sweep %s",
+                self._run_id,
+                exc_info=True,
+            )
+
+
+async def sweep(
+    observed_at: str,
+    node_ids: list[str] | None = None,
+    progress: SweepProgress | None = None,
+) -> SweepOutcome:
     """Map, probe and collect, without touching the run row.
 
     Split out so :func:`run_probe` reads as the lifecycle it is — create, work,
@@ -562,8 +641,10 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
 
     :param observed_at: When the sweep began, ISO 8601, stamped on every fact.
     :param node_ids: The hosts to refresh, or ``None`` for the whole estate.
+    :param progress: Where to report how far the sweep has got, if anywhere.
     :return: What the sweep reached, collected and saw per service.
     """
+    progress = progress or SweepProgress()
     inventory_api, tasks_api = await _build_clients()
 
     # Both services authenticate; outside request context there is no user session to
@@ -582,6 +663,10 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
         hosts = build_hosts(nodes, services, executor_states)
         if node_ids:
             hosts, services, mapped = narrow_to_scope(hosts, services, mapped, node_ids)
+        await progress.started(
+            hosts_total=len(hosts),
+            hosts_probeable=sum(1 for host in hosts if host.has_executor),
+        )
         # Every host with an executor is dispatched to, service or no service:
         # a machine with a PMM client and no database is the one an install
         # decision is about, and it has no service to be reached through.
@@ -593,6 +678,7 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
                 for host in hosts
                 if host.has_executor and host.executor_host
             ],
+            on_host_done=progress.host_done,
         )
 
     outcome = SweepOutcome(total=len(mapped), hosts=hosts, dispatched=set(host_results))
@@ -900,6 +986,7 @@ async def finalise(
     finished.hosts_total = len(outcome.hosts)
     finished.hosts_probeable = sum(1 for host in outcome.hosts if host.has_executor)
     finished.hosts_answered = len(outcome.host_documents)
+    finished.hosts_finished = len(outcome.dispatched)
     finished.nodes = outcome.nodes
     return await ProbeRunManager.save(session, finished)
 
@@ -1107,7 +1194,7 @@ async def run_probe(
 
     observed_at = utc_now().isoformat()
     try:
-        outcome = await sweep(observed_at, node_ids)
+        outcome = await sweep(observed_at, node_ids, RunProgress(run_id))
         # The estate goes in before the run reaches a terminal status, so a reader
         # that sees a finished run always finds the rows that run produced. Covered
         # by the same try as the sweep itself: a raise here or in ``finalise`` has to

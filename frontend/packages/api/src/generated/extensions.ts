@@ -11094,6 +11094,8 @@ export interface components {
      *     :param hosts_total: Hosts in scope this sweep, service or no service.
      *     :param hosts_probeable: ...of which had a usable executor to dispatch to.
      *     :param hosts_answered: Hosts that returned a usable record.
+     *     :param hosts_finished: Hosts whose scan has come back, answered or not; counted up
+     *         while the sweep is still running.
      */
     om_inventory__ProbeCounts: {
       /**
@@ -11101,6 +11103,11 @@ export interface components {
        * @default 0
        */
       hosts_answered: number;
+      /**
+       * Hosts Finished
+       * @default 0
+       */
+      hosts_finished: number;
       /**
        * Hosts Probeable
        * @default 0
