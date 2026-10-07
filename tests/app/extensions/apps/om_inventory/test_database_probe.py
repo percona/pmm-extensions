@@ -204,39 +204,44 @@ def test_one_failing_command_on_a_reachable_server_is_not_an_error() -> None:
     assert list(facts["command_errors"]) == ["repl_set_status"]
 
 
-def build_record(database: dict[str, Any]) -> dict[str, Any]:
-    """Run the payload's per-target :func:`~payload.probe` with the database stubbed.
+def build_record(command: MagicMock) -> dict[str, Any]:
+    """Run the payload's per-target :func:`~payload.probe` against the stand-in driver.
 
-    :param database: What :func:`collect_database_facts` returns.
+    :param command: What ``client.admin.command`` does.
     :return: The record the payload would print.
     """
     with (
-        patch.object(payload, "collect_database_facts", return_value=database),
-        patch.object(payload, "read_userinfo", return_value=""),
+        patch.dict(sys.modules, fake_pymongo(command)),
+        patch.object(payload, "read_userinfo", return_value="root:wrong@"),
         patch.object(payload, "binary_version", return_value="6.0.14"),
     ):
-        return payload.probe(TARGET, {}, {})
+        return payload.probe(TARGET, {"credentials_path": "/root/.mongodb_uri"}, {})
 
 
 def test_a_database_error_fails_the_record_and_carries_its_type() -> None:
     """Mark the record failed, with the type and code beside the message."""
     record = build_record(
-        {
-            "error": "Authentication failed.",
-            "error_type": "OperationFailure",
-            "error_code": AUTH_FAILED,
-        }
+        MagicMock(side_effect=OperationFailure("Authentication failed.", AUTH_FAILED))
     )
 
     assert record["status"] == STATUS_FAILED
-    assert record["error"] == "Authentication failed."
+    assert record["error"] == (
+        "the credentials for user root (from /root/.mongodb_uri) were rejected"
+    )
     assert record["error_type"] == "OperationFailure"
     assert record["error_code"] == AUTH_FAILED
 
 
 def test_a_queried_database_leaves_the_record_ok() -> None:
     """Leave a record whose database answered unmarked."""
-    record = build_record({"db_version": "6.0.14"})
+    record = build_record(
+        MagicMock(
+            side_effect=lambda name: {"version": "6.0.14"}
+            if name == "buildInfo"
+            else {}
+        )
+    )
 
     assert record["status"] == STATUS_OK
     assert "error" not in record
+    assert record["database"]["db_version"] == "6.0.14"

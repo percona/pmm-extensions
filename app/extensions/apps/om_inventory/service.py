@@ -282,6 +282,46 @@ SERVICE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("uptime_seconds", ("process", "uptime_sec")),
 )
 
+#: The :data:`SERVICE_FIELDS` read off the host rather than out of the database: the
+#: installed binary and the process serving the port. A scan that cannot query the
+#: database still collects these, so a failed attempt refreshes them.
+PROCESS_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
+    field for field in SERVICE_FIELDS if field[1][0] in ("binary_version", "process")
+)
+
+
+def _lift(
+    record: dict[str, Any], fields: tuple[tuple[str, tuple[str, ...]], ...]
+) -> dict[str, Any]:
+    """Lift ``fields`` out of a probe record, leaving out the ones it has no value for.
+
+    :param record: One probe record.
+    :param fields: The ``(key, path)`` pairs to lift out of it.
+    :return: The lifted values, keyed as ``fields`` names them.
+    """
+    lifted: dict[str, Any] = {}
+    for key, path in fields:
+        value = _dig(record, path)
+        if value is None or value in ("", []):
+            continue
+        lifted[key] = value
+    return lifted
+
+
+def _process_facts(record: dict[str, Any]) -> dict[str, Any]:
+    """Lift :data:`PROCESS_FIELDS` out of a failed record, ``None`` for each one it lacks.
+
+    ``None`` rather than absent, so that
+    :func:`~app.extensions.apps.om_inventory.crud.upsert_service` drops what the last
+    good scan saw of a process that has since stopped, its ``argv`` and uptime among
+    them, instead of keeping it beside ``server_running: false``.
+
+    :param record: The failed probe record.
+    :return: Every :data:`PROCESS_FIELDS` key, with its value or ``None``.
+    """
+    lifted = _lift(record, PROCESS_FIELDS)
+    return {key: lifted.get(key) for key, _ in PROCESS_FIELDS}
+
 
 def build_document(
     record: dict[str, Any],
@@ -300,13 +340,7 @@ def build_document(
     :param collected_at: When the probe ran, ISO 8601.
     :return: The document, always carrying at least ``collected_at``.
     """
-    document: dict[str, Any] = {"collected_at": collected_at}
-    for key, path in fields:
-        value = _dig(record, path)
-        if value is None or value in ("", []):
-            continue
-        document[key] = value
-    return document
+    return {"collected_at": collected_at, **_lift(record, fields)}
 
 
 @dataclass
@@ -334,6 +368,8 @@ class SweepOutcome:
     :param service_errors: Why a service did not answer, keyed by PMM's service id.
         Only for services a run actually attempted: an entity nobody targeted must
         not have its timestamps touched at all.
+    :param service_process_facts: What a failed record still saw of a service's
+        binary and process, keyed by PMM's service id; see :func:`_process_facts`.
     :param seen: ``(service, node_id)`` for every service PMM knows that resolved to
         a host in scope, orphans included — all of them get a row.
     :param attempted: PMM's service ids for the subset this run actually probed. The
@@ -361,6 +397,7 @@ class SweepOutcome:
     service_documents: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
     service_roles: dict[str, str] = dc_field(default_factory=dict)
     service_errors: dict[str, str] = dc_field(default_factory=dict)
+    service_process_facts: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
     seen: list[tuple[InventoryService, str]] = dc_field(default_factory=list)
     attempted: set[str] = dc_field(default_factory=set)
     dispatched: set[str] = dc_field(default_factory=set)
@@ -721,8 +758,12 @@ def _record_entity(
     failure = _record_failure(record)
     if failure is not None:
         # A failed attempt like any other: no document, so the last good one stays,
-        # and no role, so the one it last answered with is not blanked out.
+        # and no role, so the one it last answered with is not blanked out. Only what
+        # it read off the host itself is refreshed.
         outcome.service_errors[entry.service.external_id] = failure
+        outcome.service_process_facts[entry.service.external_id] = _process_facts(
+            record
+        )
         return
 
     outcome.service_documents[entry.service.external_id] = build_document(
@@ -822,6 +863,7 @@ async def persist_estate(outcome: SweepOutcome, run_id: UUID) -> None:
                 role=outcome.service_roles.get(service_id),
                 observed=outcome.service_documents.get(service_id),
                 error=outcome.service_errors.get(service_id),
+                process_facts=outcome.service_process_facts.get(service_id),
                 run_id=run_id,
                 attempted=service_id in outcome.attempted,
             )

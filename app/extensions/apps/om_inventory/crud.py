@@ -243,6 +243,7 @@ async def upsert_service(
     role: str | None,
     observed: dict[str, Any] | None = None,
     error: str | None = None,
+    process_facts: dict[str, Any] | None = None,
     run_id: UUID | None = None,
     attempted: bool = True,
 ) -> OmService:
@@ -257,6 +258,11 @@ async def upsert_service(
     not blank out what the last good one saw, for the same reason it must not blank
     out ``observed``.
 
+    What a failed attempt did read off the host is not discarded with the rest: a
+    stopped mongod must stop reading as running even while its database facts stay
+    those of the last scan that could query it. ``collected_at`` stays the time of
+    that scan, the one the database facts are from.
+
     :param session: The database session.
     :param service_id: PMM's service id.
     :param node_id: The host it runs on; its ``om.om_host`` row must exist.
@@ -265,6 +271,10 @@ async def upsert_service(
     :param role: The observed role, or ``None`` when this attempt did not see one.
     :param observed: The collected document, or ``None`` when the attempt failed.
     :param error: The failure detail.
+    :param process_facts: What a failed attempt still saw of the binary and the
+        process, merged into the stored ``observed``. A ``None`` value removes that
+        key. Ignored while nothing is stored, since there are no database facts to
+        keep.
     :param run_id: The run this attempt belongs to.
     :param attempted: Whether this run actually probed the service.
     :return: The stored row.
@@ -285,6 +295,12 @@ async def upsert_service(
 
     if attempted:
         _apply_attempt(service, observed=observed, error=error, run_id=run_id)
+
+    if process_facts is not None and service.observed:
+        merged = {**service.observed, **process_facts}
+        service.observed = {
+            key: value for key, value in merged.items() if value is not None
+        }
     return service
 
 

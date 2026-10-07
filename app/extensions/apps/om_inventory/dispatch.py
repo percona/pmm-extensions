@@ -61,8 +61,8 @@ JOB_ID_PREFIX = "om"
 PROBE_PAYLOAD_PATH = Path(payload_pkg.__file__).parent / "probe.py"
 #: Bound on the failure detail stored for a failed scan, whether the dispatch
 #: failed or the database refused the payload. The row only needs the part that
-#: says what happened; pymongo's server-selection errors alone carry the whole
-#: topology description.
+#: says what happened, and dispatch stderr or a driver error the payload does not
+#: recognise can run to several kilobytes.
 MAX_ERROR_DETAIL = 500
 
 # Bounds with_capacity_retry both ways, whichever runs out first.

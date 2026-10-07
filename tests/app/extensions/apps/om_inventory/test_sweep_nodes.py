@@ -366,8 +366,50 @@ async def test_a_service_whose_database_could_not_be_queried_did_not_answer() ->
 
 
 @pytest.mark.asyncio
+async def test_a_failed_record_still_says_whether_the_mongod_is_running() -> None:
+    """Keep what a failed record read off the host, a stopped mongod above all.
+
+    A stopped mongod is a common reason its database cannot be queried, and the
+    record says so: no process, ``running: False``. Dropping that with the database
+    facts left the stored document reading ``server_running: true``.
+    """
+    record = {
+        **RECORD,
+        "process": {
+            "running": False,
+            "program": None,
+            "pid": None,
+            "uptime_sec": None,
+            "argv": None,
+            "config_path": None,
+        },
+        "database": None,
+        "status": "failed",
+        "error": "could not connect to node00:27017: [Errno 111] Connection refused",
+    }
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00", records={DEFAULT_EXTERNAL_ID: record}
+            )
+        },
+    )
+
+    assert outcome.service_documents == {}
+    assert outcome.service_process_facts[DEFAULT_EXTERNAL_ID] == {
+        "installed_version": "7.0.39-21",
+        "config_path": None,
+        "argv": None,
+        "server_process": None,
+        "server_running": False,
+        "uptime_seconds": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_a_failed_record_s_error_is_bounded() -> None:
-    """Cap the stored error, since pymongo's carries the whole topology."""
+    """Cap the stored error, since one the payload does not recognise can be long."""
     record = {**RECORD, "status": "failed", "error": "x" * 5000}
     outcome = await run_sweep(
         [mapped("svc-a", "node00", NodeResolution.NAME)],

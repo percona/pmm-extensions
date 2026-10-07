@@ -48,6 +48,7 @@ from app.extensions.apps.om_inventory.crud import (
     upsert_service,
 )
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
+from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import ExecutorState
 from app.extensions.apps.om_inventory.models import NodeResolution, OmHost, OmService
 from app.extensions.apps.om_inventory.service import persist_estate, SweepOutcome
@@ -580,3 +581,123 @@ class TestTheFailureReasonReachesTheRow:
         assert stored.last_error is None
         assert stored.failing_since is None
         assert stored.last_attempt_at is None
+
+
+#: A service document from a scan that could query the database, mongod running.
+RUNNING_SERVICE = {
+    "collected_at": "2026-08-17T09:00:00+00:00",
+    "version": "7.0.39-21",
+    "storage_engine": "wiredTiger",
+    "installed_version": "7.0.39-21",
+    "config_path": "/etc/mongod.conf",
+    "argv": "mongod --config /etc/mongod.conf",
+    "server_process": "mongod",
+    "server_running": True,
+    "uptime_seconds": 3600,
+}
+
+#: What a later scan that could not query the database read off the host, the
+#: mongod having stopped since.
+STOPPED_PROCESS = {
+    "installed_version": "7.0.39-21",
+    "config_path": None,
+    "argv": None,
+    "server_process": None,
+    "server_running": False,
+    "uptime_seconds": None,
+}
+
+
+class TestAFailedAttemptRefreshesTheProcessFacts:
+    """Assert a failed attempt keeps the database facts and refreshes the process ones.
+
+    Keeping the whole last good document on a failure left a stopped mongod reading
+    ``server_running: true`` beside a failing scan, with the ``argv`` and uptime of a
+    process that no longer existed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_stopped_mongod_stops_reading_as_running(
+        self, session: AsyncSession
+    ) -> None:
+        """Store the stopped process beside the database facts it last answered with.
+
+        :param session: The database session.
+        """
+        await add_host(session)
+        await upsert_service(
+            session,
+            service_id=SERVICE_ID,
+            node_id=NODE_ID,
+            name="db00",
+            port=27017,
+            role="primary",
+            observed=RUNNING_SERVICE,
+        )
+        await session.commit()
+        before = (await list_services(session))[0].last_success_at
+        host = InventoryHost(
+            node_id=NODE_ID,
+            name="db00",
+            address="10.0.0.1",
+            executor_host="db00",
+            resolution=NodeResolution.NAME,
+            executor_state=None,
+        )
+        service = InventoryService(
+            service_id=1,
+            external_id=SERVICE_ID,
+            name="db00",
+            port=27017,
+            node_name="db00",
+            node_address="10.0.0.1",
+        )
+        outcome = SweepOutcome(total=1, hosts=[host], seen=[(service, NODE_ID)])
+        outcome.attempted.add(SERVICE_ID)
+        outcome.service_errors[SERVICE_ID] = "could not query the database: refused"
+        outcome.service_process_facts[SERVICE_ID] = STOPPED_PROCESS
+
+        with patch(
+            "app.extensions.apps.om_inventory.service.get_async_session_maker",
+            return_value=lambda: nullcontext(session),
+        ):
+            await persist_estate(outcome, uuid4())
+
+        stored = (await list_services(session))[0]
+        assert stored.observed == {
+            "collected_at": RUNNING_SERVICE["collected_at"],
+            "version": "7.0.39-21",
+            "storage_engine": "wiredTiger",
+            "installed_version": "7.0.39-21",
+            "server_running": False,
+        }
+        assert stored.role == "primary"
+        assert stored.last_success_at == before
+        assert stored.consecutive_failures == 1
+        assert stored.last_error == "could not query the database: refused"
+
+    @pytest.mark.asyncio
+    async def test_a_service_that_never_answered_stores_no_process_facts(
+        self, session: AsyncSession
+    ) -> None:
+        """Store nothing for a service with no good document to refresh.
+
+        :param session: The database session.
+        """
+        await add_host(session)
+
+        await upsert_service(
+            session,
+            service_id=SERVICE_ID,
+            node_id=NODE_ID,
+            name="db00",
+            port=27017,
+            role=None,
+            error="could not query the database: refused",
+            process_facts=STOPPED_PROCESS,
+        )
+        await session.commit()
+
+        service = (await list_services(session))[0]
+        assert service.observed == {}
+        assert service.consecutive_failures == 1
