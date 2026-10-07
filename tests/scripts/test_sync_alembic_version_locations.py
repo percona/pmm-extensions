@@ -110,7 +110,7 @@ def test_sync_preserves_crlf_line_endings(tmp_path):
 
 
 def test_sync_failed_write_leaves_original_and_no_temp_file(tmp_path, monkeypatch):
-    """A write failing partway keeps the original ini and leaves no temp file."""
+    """Keep the original ini and leave no temp file when the write fails partway."""
     apps_root = tmp_path / "apps"
     apps_root.mkdir()
     _migration_plugin(apps_root, "alpha")
@@ -129,7 +129,7 @@ def test_sync_failed_write_leaves_original_and_no_temp_file(tmp_path, monkeypatc
 
 
 def test_sync_preserves_file_mode(tmp_path):
-    """The rewritten ``alembic.ini`` keeps its original file mode."""
+    """Keep the original file mode of a rewritten ``alembic.ini``."""
     apps_root = tmp_path / "apps"
     apps_root.mkdir()
     _migration_plugin(apps_root, "alpha")
