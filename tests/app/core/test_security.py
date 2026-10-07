@@ -23,8 +23,9 @@ from app.core.security import (
     crypto_serializer,
     crypto_timestamp_serializer,
     get_internal_token,
+    has_unsafe_method,
     is_bearer_authenticated,
-    require_internal_token,
+    SAFE_HTTP_METHODS,
 )
 from tests.app.conftest import make_request
 
@@ -51,35 +52,6 @@ def test_get_internal_token_returns_secret(mocker):
         settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr("internal-secret")
     )
     assert get_internal_token() == "internal-secret"
-
-
-def test_get_internal_token_returns_none_when_unset(mocker):
-    """``get_internal_token`` returns ``None`` when the token is unset."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", None)
-    assert get_internal_token() is None
-
-
-def test_get_internal_token_returns_none_when_empty(mocker):
-    """``get_internal_token`` treats an empty ``SecretStr`` as absent."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(""))
-    assert get_internal_token() is None
-
-
-def test_require_internal_token_returns_secret(mocker):
-    """``require_internal_token`` returns the configured token's secret value."""
-    mocker.patch.object(
-        settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr("internal-secret")
-    )
-    assert require_internal_token() == "internal-secret"
-
-
-def test_require_internal_token_raises_when_absent(mocker):
-    """``require_internal_token`` raises ``RuntimeError`` when the token is absent."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", None)
-    with pytest.raises(
-        RuntimeError, match="EXTENSIONS_INTERNAL_TOKEN must be configured"
-    ):
-        require_internal_token()
 
 
 class TestBearerHeaderEdgeCases:
@@ -155,3 +127,40 @@ class TestBearerHeaderEdgeCases:
         """``Bearer`` alone (no trailing space) is not a Bearer credential."""
         request = make_request(authorization="Bearer")
         assert is_bearer_authenticated(request) is False
+
+
+class TestHasUnsafeMethod:
+    """Cover the predicate separating state-changing method sets from reads."""
+
+    @pytest.mark.parametrize(
+        ("methods", "expected"),
+        [
+            ({"POST"}, True),
+            ({"PUT"}, True),
+            ({"PATCH"}, True),
+            ({"DELETE"}, True),
+            ({"GET", "POST"}, True),
+            (set(SAFE_HTTP_METHODS), False),
+            ({"GET"}, False),
+            (set(), False),
+            ({"get"}, False),
+            ({"post"}, True),
+        ],
+        ids=[
+            "post",
+            "put",
+            "patch",
+            "delete",
+            "mixed",
+            "all_safe",
+            "get",
+            "empty",
+            "lowercase_get",
+            "lowercase_post",
+        ],
+    )
+    def test_any_unsafe_method_makes_the_set_unsafe(
+        self, methods: set[str], *, expected: bool
+    ) -> None:
+        """Flag a set holding at least one method outside the safe ones."""
+        assert has_unsafe_method(methods) is expected

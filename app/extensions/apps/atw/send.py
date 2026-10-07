@@ -52,7 +52,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.requests import RemoteAPI
-from app.core.security import require_internal_token
+from app.core.security import get_internal_token
 from app.core.utils import json_serializer
 from app.core.utils.date_time import utc_now
 from app.extensions.apps.atw.config import atw_settings
@@ -726,7 +726,7 @@ async def _run_send_for_row(session: AsyncSession, row: AtwSendLog) -> None:
     path = bundle_dir() / f"{row.id}-{uuid4().hex}{_BUNDLE_SUFFIX}"
     try:
         client = await get_tasks_api()
-        with client.auth(require_internal_token()) as tasks_api:
+        with client.auth(get_internal_token()) as tasks_api:
             file_count, manifest = await _stage_bundle(
                 path, row, incident_name, tasks_api, plan.max_bundle_size_mb
             )

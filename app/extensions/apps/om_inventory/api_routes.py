@@ -113,11 +113,12 @@ def _redact_config(responses: list[SettingResponse]) -> list[SettingResponse]:
     """Redact fields too sensitive for this route's viewer-readable audience.
 
     ``GET /config`` is gated only by ``IsApiAuthenticated`` — any logged-in PMM Extensions
-    user — because that is what PMM's ``--sep-token`` principal needs to reach the
-    rest of this settings class. ``CREDENTIALS_PATH`` is the one field that same
-    audience must not see: it names a file a MongoDB driver reads as a URI, and the
-    settings class docstring already calls it too sensitive to make writable, let
-    alone world-readable to any signed-in viewer.
+    user — because that is what the principal behind the pmm-managed
+    ``--extensions-token`` flag needs to reach the rest of this settings class.
+    ``CREDENTIALS_PATH`` is the one field that same audience must not see: it names
+    a file a MongoDB driver reads as a URI, and the settings class docstring already
+    calls it too sensitive to make writable, let alone world-readable to any
+    signed-in viewer.
 
     The row still comes back, just with ``value`` forced to ``None``, rather than
     being dropped: the class default is already ``None``, so a redacted read and a
@@ -517,8 +518,8 @@ async def trigger_probe(
 
     :param session: The database session.
     :param request: The optional scope. Absent, or an empty list, means everything.
-    :raises HTTPServiceUnavailableException: When PMM's OpenManager switch has
-        ``ENABLED`` off.
+    :raises HTTPServiceUnavailableException: When PMM's Operations for MongoDB
+        switch has ``ENABLED`` off.
     :raises HTTPNotFoundException: When a requested node id is not in the estate.
     :raises HTTPConflictException: When a requested host is already being refreshed.
     :return: The queued sweep.
@@ -561,10 +562,11 @@ async def get_config(session: SessionDep) -> list[SettingResponse]:
 
     Served here rather than pointing the caller at ``/api/extensions/admin/settings``
     because that router is admin-gated and PMM's principal is not an admin: the
-    ``--sep-token`` bearer resolves to the synthetic ``extensions-service`` user, built
-    with ``is_admin=False`` deliberately, since it is a deployment-level shared
-    secret with no person behind it. An app-owned endpoint keeps a schedule change
-    scoped to this app instead of requiring PMM Extensions wide administrative access.
+    bearer of the pmm-managed ``--extensions-token`` flag resolves to the synthetic
+    ``extensions-service`` user, built with ``is_admin=False`` deliberately, since
+    it is a deployment-level shared secret with no person behind it. An app-owned
+    endpoint keeps a schedule change scoped to this app instead of requiring PMM
+    Extensions wide administrative access.
 
     Every field is listed, not only the overridden ones, and each row carries
     whether an override is in effect - so "why is it sweeping every 10 minutes"
@@ -611,11 +613,11 @@ async def patch_config(
     runs as a forked side-car process, which reaches the new value through its own
     settings refresher rather than through this request.
 
-    ``ENABLED`` is what PMM's OpenManager switch calls, via this same route with
-    its ``--sep-token`` credential (see ``require_minimum_role``'s service-principal
-    bypass): it flips independently of ``SCHEDULE``, so the configured cadence
-    survives OpenManager being turned off and back on rather than being
-    overwritten each time.
+    ``ENABLED`` is what PMM's Operations for MongoDB switch calls, via this same
+    route with the credential of the pmm-managed ``--extensions-token`` flag (see
+    ``require_minimum_role``'s service-principal bypass): it flips independently of
+    ``SCHEDULE``, so the configured cadence survives Operations for MongoDB being
+    turned off and back on rather than being overwritten each time.
 
     :param request: The incoming request; its ``app.state`` carries the rebind
         callbacks fired for the keys this changed.

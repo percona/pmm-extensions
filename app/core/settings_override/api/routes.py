@@ -65,6 +65,7 @@ from app.core.settings_override.registry import (
     chain_has_explicit_not_overridable,
     chain_is_locked,
     coerce_field_value,
+    computed_field_info,
     dump_field_value,
     field_materializer,
     FieldMetadata,
@@ -397,7 +398,7 @@ def _settings_response_from_field(
         else:
             serialized_value = dump_field_value(field_info, current_value)
     else:
-        field_info = settings_cls.model_fields[field_meta.key]
+        field_info = _top_level_field_info(settings_cls, field_meta.key)
         current_value = getattr(proxy, field_meta.key)
         key_path = [field_meta.key]
         serialized_value = dump_field_value(field_info, current_value)
@@ -423,6 +424,27 @@ def _settings_response_from_field(
         ),
         options=_enum_options(field_info),
     )
+
+
+def _top_level_field_info(settings_cls: type[BaseYamlSettings], key: str) -> FieldInfo:
+    """Return the field metadata for a top-level key, declared or computed.
+
+    :func:`iter_class_fields` enumerates computed fields alongside declared
+    ones, and ``model_fields`` holds only the latter, so a plain subscript
+    raises :class:`KeyError` for exactly the keys the listing added.
+
+    :param settings_cls: The Pydantic settings class declaring the key.
+    :param key: A top-level key :func:`iter_class_fields` yielded.
+    :return: The declared field metadata, or the stand-in
+        :func:`computed_field_info` synthesises for a computed field.
+    :raises KeyError: If ``key`` is neither a declared nor a computed field.
+    """
+    field_info = settings_cls.model_fields.get(key) or computed_field_info(
+        settings_cls, key
+    )
+    if field_info is None:
+        raise KeyError(key)
+    return field_info
 
 
 def _field_responses(
@@ -537,7 +559,9 @@ def _validate_patch_body(
                 to_apply=to_apply,
             )
             continue
-        field_info = settings_cls.model_fields.get(key)
+        field_info = settings_cls.model_fields.get(key) or computed_field_info(
+            settings_cls, key
+        )
         if field_info is None:
             errors.append(
                 {
@@ -748,7 +772,7 @@ def _merge_app_owned_into_lookup(
     :raises ValueError: If a setting class is wired more than once.
     """
     for entry in app_owned:
-        class_id = str(entry.setting_class)
+        class_id = entry.setting_class
         if class_id in class_lookup:
             raise ValueError(
                 f"Settings class {class_id!r} is wired as both"
@@ -776,7 +800,7 @@ async def _collect_app_owned_list_groups(
     """
     groups = []
     for entry in app_owned:
-        class_id = str(entry.setting_class)
+        class_id = entry.setting_class
         settings_list = await collect_class_setting_responses(
             session=session,
             setting_class=class_id,
@@ -819,8 +843,7 @@ async def _collect_settings_list_groups(
     :return: Groups in core, remote, then app-owned declaration order.
     """
     groups = []
-    for setting_class, settings_cls, proxy in classes:
-        class_id = str(setting_class)
+    for class_id, settings_cls, proxy in classes:
         settings_list = await collect_class_setting_responses(
             session=session,
             setting_class=class_id,
@@ -1427,7 +1450,7 @@ async def _stage_and_commit_overrides(
         keep.value = stored_value
         keep.is_active = True
         keep.updated_at = stamp
-        keep.updated_by = actor
+        keep.stamp(actor)
         session.add(keep)
     await session.commit()
     return provenance
@@ -1452,10 +1475,11 @@ async def apply_class_overrides(
     because an app that owns its settings class (:class:`AppOwnedClassEntry`)
     may also need to serve its *own* narrower ``/config`` endpoint: the shared
     settings router is admin-gated, and not every caller of an app's
-    configuration is a PMM Extensions admin (e.g. PMM's ``--sep-token`` principal). A
-    second implementation of "validate the batch, write it atomically,
-    republish the snapshot, rebind" is exactly the kind of duplicate that
-    drifts into two different validation rules.
+    configuration is a PMM Extensions admin (e.g. the principal behind the
+    pmm-managed ``--extensions-token`` flag). A second implementation of
+    "validate the batch, write it atomically, republish the snapshot, rebind"
+    is exactly the kind of duplicate that drifts into two different validation
+    rules.
 
     Phase A validates every key — existence on the class, HOT classification,
     type and constraint coercion — and rejects the whole batch on any failure,

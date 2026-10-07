@@ -36,8 +36,9 @@ const MOCK_USER = {
 };
 
 /**
- * Minimal AppSchema for archives — just enough for the form renderer to
- * mount and expose the swap_drop + where fields that validator 6 exercises.
+ * Minimal AppSchema for archives — just enough for the form renderer to mount
+ * and expose the swap_drop + where fields that validator 6 exercises, plus the
+ * destination one-of groups and the delete_data flag that gates them out.
  */
 const MOCK_ARCHIVES_SCHEMA = {
   name: 'archives',
@@ -61,6 +62,84 @@ const MOCK_ARCHIVES_SCHEMA = {
       ],
     },
     {
+      title: 'Destination',
+      forbidden: [{ when: { truthy: 'delete_data' } }],
+      fields: [
+        {
+          type: 'one_of',
+          name: 'destination',
+          label: 'Destination',
+          discriminator: 'destination.mode',
+          default: 'table',
+          branches: [
+            {
+              value: 'table',
+              label: 'Table',
+              fields: [
+                {
+                  type: 'string',
+                  name: 'destination.dest_table',
+                  label: 'Destination table',
+                  required: true,
+                },
+              ],
+            },
+            {
+              value: 'file',
+              label: 'File',
+              fields: [
+                {
+                  type: 'string',
+                  name: 'destination.dest_file',
+                  label: 'Destination file',
+                  required: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      title: 'Destination Host',
+      forbidden: [{ when: { truthy: 'delete_data' } }],
+      fields: [
+        {
+          type: 'one_of',
+          name: 'host',
+          label: 'Destination Host',
+          discriminator: 'host.mode',
+          default: 'service',
+          branches: [
+            {
+              value: 'service',
+              label: 'Service',
+              fields: [{ type: 'string', name: 'host.dest_service', label: 'Destination service' }],
+            },
+            {
+              value: 'manual',
+              label: 'Manual',
+              fields: [{ type: 'string', name: 'host.dest_host', label: 'Destination host' }],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      title: 'Advanced',
+      advanced: false,
+      collapsible: true,
+      collapsed_by_default: true,
+      fields: [
+        {
+          type: 'bool',
+          name: 'delete_data',
+          label: 'Delete Without Archiving',
+          destructive: 'The matched source rows are deleted without being archived anywhere.',
+        },
+      ],
+    },
+    {
       title: 'Options',
       fields: [
         {
@@ -68,15 +147,15 @@ const MOCK_ARCHIVES_SCHEMA = {
           name: 'where',
           label: 'WHERE clause',
           required: false,
-          requires: [{ when: { not_equals: { swap_drop: '1' } } }],
-          forbidden: [{ when: { equals: { swap_drop: '1' } } }],
+          requires: [{ when: { not_equals: { swap_drop: 1 } } }],
+          forbidden: [{ when: { equals: { swap_drop: 1 } } }],
         },
         {
           type: 'string',
           name: 'swp_table_suffix',
           label: 'Swap table suffix',
           required: false,
-          requires: [{ when: { equals: { swap_drop: '2' } } }],
+          requires: [{ when: { equals: { swap_drop: 2 } } }],
         },
       ],
     },
@@ -169,6 +248,26 @@ class ArchivesPage {
   whereField(): Locator {
     return this.page.getByLabel(/where clause/i);
   }
+
+  /**
+   * Expands the collapsed Advanced section holding the delete flag.
+   *
+   * Clicks unconditionally so a missing or renamed shell fails here rather
+   * than leaving the section shut and blaming the flag's own control.
+   */
+  async revealAdvanced(): Promise<void> {
+    await this.page.getByRole('heading', { name: 'Advanced' }).getByRole('button').click();
+  }
+
+  /** Returns the locator for the delete-without-archiving switch. */
+  deleteDataSwitch(): Locator {
+    return this.page.getByLabel(/delete without archiving/i);
+  }
+
+  /** Returns the locator for a one-of group's segmented control by group name. */
+  oneOfGroup(name: string): Locator {
+    return this.page.getByTestId(`one-of-${name}`);
+  }
 }
 
 // ── Smoke tests ───────────────────────────────────────────────────────────────
@@ -215,5 +314,47 @@ test.describe(`${APP_DISPLAY_NAME} app smoke`, () => {
     // Switch to SWAP_ARCHIVE_DROP (2) — where becomes required again
     await archivesPage.selectSwapDrop('Swap Archive Drop');
     await expect(archivesPage.whereField()).toBeVisible({ timeout: 5_000 });
+  });
+
+  test('deleting without archiving hides both destination groups', async ({ page }) => {
+    const archivesPage = new ArchivesPage(page);
+    await archivesPage.goto();
+    await archivesPage.openCreateForm();
+
+    // Both groups start visible, and the active branch's field blocks submission
+    // until filled — the state that made the flag unusable.
+    await expect(archivesPage.oneOfGroup('destination')).toBeVisible({ timeout: 10_000 });
+    await expect(archivesPage.oneOfGroup('host')).toBeVisible();
+    await page.getByLabel(/destination table/i).fill('archive_tbl');
+
+    await archivesPage.revealAdvanced();
+    await archivesPage.deleteDataSwitch().click();
+
+    await expect(archivesPage.oneOfGroup('destination')).not.toBeVisible({ timeout: 5_000 });
+    await expect(archivesPage.oneOfGroup('host')).not.toBeVisible();
+  });
+
+  test('turning deletion back off restores both destination groups', async ({ page }) => {
+    const archivesPage = new ArchivesPage(page);
+    await archivesPage.goto();
+    await archivesPage.openCreateForm();
+
+    await archivesPage.revealAdvanced();
+    await archivesPage.deleteDataSwitch().click();
+    await expect(archivesPage.oneOfGroup('destination')).not.toBeVisible({ timeout: 10_000 });
+
+    await archivesPage.deleteDataSwitch().click();
+
+    await expect(archivesPage.oneOfGroup('destination')).toBeVisible({ timeout: 5_000 });
+    await expect(archivesPage.oneOfGroup('host')).toBeVisible();
+    // Both groups come back on their schema default branch, and the leaves come
+    // back empty so a stale value cannot ship.
+    await expect(
+      archivesPage.oneOfGroup('destination').getByTestId('one-of-option-table'),
+    ).toHaveAttribute('aria-pressed', 'true');
+    await expect(
+      archivesPage.oneOfGroup('host').getByTestId('one-of-option-service'),
+    ).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByLabel(/destination table/i)).toHaveValue('');
   });
 });

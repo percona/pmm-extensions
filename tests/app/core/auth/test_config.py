@@ -139,7 +139,7 @@ class TestAuthSettingsResolution:
         provider = settings.active_provider
         assert isinstance(provider, StubAuthProvider)
         assert provider.token == "abc"
-        assert "PROVIDER_CLASS" not in provider.model_fields
+        assert "PROVIDER_CLASS" not in type(provider).model_fields
 
     def test_custom_provider_without_class_path_errors(self):
         """Verify a CUSTOM entry missing ``PROVIDER_CLASS`` errors at load."""

@@ -26,6 +26,11 @@ from sqlmodel import SQLModel
 from sqlmodel.pool import StaticPool
 
 from app.core.db.utils import get_async_session_maker_from_engine
+from app.core.settings_override.constants import (
+    EXTENSIONS_SETTINGS,
+    SETTINGS,
+    TASKS_SETTINGS,
+)
 from app.core.settings_override.lifecycle import (
     CallbackRegistry,
     fire_on_boot,
@@ -33,7 +38,6 @@ from app.core.settings_override.lifecycle import (
     ProxyRegistry,
     SnapshotChange,
 )
-from app.core.settings_override.models import SettingClassEnum
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.worker import SEED_TIMEOUT_FRACTION, WorkerRefresher
 from app.core.utils import json_serializer
@@ -80,22 +84,18 @@ async def _noop_callback(_: SnapshotChange) -> None:
 def _make_registry() -> ProxyRegistry:
     """Compose a two-entry proxy registry over freshly-built proxies."""
     return {
-        SettingClassEnum.EXTENSIONS_SETTINGS: ProxyEntry(
-            OverridableSettingsProxy(
-                ExtensionsSettings, setting_class=ExtensionsSettings.__name__
-            ),
+        EXTENSIONS_SETTINGS: ProxyEntry(
+            OverridableSettingsProxy(ExtensionsSettings),
             ExtensionsSettings,
         ),
-        SettingClassEnum.TASKS_SETTINGS: ProxyEntry(
-            OverridableSettingsProxy(
-                TasksSettings, setting_class=TasksSettings.__name__
-            ),
+        TASKS_SETTINGS: ProxyEntry(
+            OverridableSettingsProxy(TasksSettings),
             TasksSettings,
         ),
     }
 
 
-CALLBACKS: CallbackRegistry = {(SettingClassEnum.SETTINGS, "PMM"): _noop_callback}
+CALLBACKS: CallbackRegistry = {(SETTINGS, "PMM"): _noop_callback}
 
 
 class _CountingRegistry:
@@ -303,12 +303,8 @@ class TestWorkerRefresherStart:
         A freshly-forked child that finds an override already in the database
         must rebind at once; a later boundary refresh still fires on a real diff.
         """
-        proxy = OverridableSettingsProxy(
-            ExtensionsSettings, setting_class=ExtensionsSettings.__name__
-        )
-        registry = {
-            SettingClassEnum.EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings)
-        }
+        proxy = OverridableSettingsProxy(ExtensionsSettings)
+        registry = {EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings)}
         fired: list[SnapshotChange] = []
         clock = _FakeClock()
         override_value = not ExtensionsSettings().CONNECTIVITY_CHECK_DEFAULT
@@ -344,12 +340,8 @@ class TestWorkerRefresherStart:
         session_maker: async_sessionmaker,
     ) -> None:
         """Keep the child's inline seed silent for a boot-reproducing callback."""
-        proxy = OverridableSettingsProxy(
-            ExtensionsSettings, setting_class=ExtensionsSettings.__name__
-        )
-        registry = {
-            SettingClassEnum.EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings)
-        }
+        proxy = OverridableSettingsProxy(ExtensionsSettings)
+        registry = {EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings)}
         fired: list[SnapshotChange] = []
         override_value = not ExtensionsSettings().CONNECTIVITY_CHECK_DEFAULT
         callbacks = {CONNECTIVITY_CALLBACK_KEY: recording_callback(fired)}
@@ -653,11 +645,9 @@ class TestWorkerRefresherMaybeRefresh:
         session_maker: async_sessionmaker,
     ) -> None:
         """Fire rebind callbacks when a watched override changes at the boundary."""
-        proxy = OverridableSettingsProxy(
-            ExtensionsSettings, setting_class=ExtensionsSettings.__name__
-        )
+        proxy = OverridableSettingsProxy(ExtensionsSettings)
         registry = {
-            SettingClassEnum.EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings),
+            EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings),
         }
         fired: list[bool] = []
         clock = _FakeClock()

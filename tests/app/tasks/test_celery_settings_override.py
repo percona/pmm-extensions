@@ -34,15 +34,17 @@ from sqlmodel.pool import StaticPool
 
 from app.core.config import settings
 from app.core.db.utils import get_async_session_maker_from_engine
+from app.core.settings_override.constants import ANONYMIZER_SETTINGS, TASKS_SETTINGS
 from app.core.settings_override.lifecycle import ProxyEntry, refresh_all
 from app.core.settings_override.manager import SettingsOverrideManager
-from app.core.settings_override.models import SettingClassEnum, SettingOverride
+from app.core.settings_override.models import SettingOverride
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.worker import SEED_TIMEOUT_FRACTION
 from app.core.utils import json_serializer
 from app.tasks import celery as celery_module
 from app.tasks.anonymizer.config import anonymizer_settings, AnonymizerSettings
 from app.tasks.celery import (
+    build_tasks_override_proxies,
     refresh_tasks_overrides_if_due,
     start_settings_override_refresher,
     stop_settings_override_refresher,
@@ -59,6 +61,7 @@ from app.tasks.models import (
 )
 from tests.app.core.settings_override.conftest import (
     ANONYMIZER_SETTINGS_TOKEN,
+    assert_registry_keyed_by_class_name,
     BOUNDED_SEED,
     HangingSession,
     recording_bounded_seed,
@@ -167,6 +170,7 @@ async def _seed_running_history(maker, *, sync_started_at) -> int:
             sync_in_progress_started_at=sync_started_at,
         )
         saved = await TaskHistoryManager.save(session, history)
+        assert saved.id is not None
         return saved.id
 
 
@@ -180,25 +184,23 @@ async def _get_sync_started_at(maker, row_id: int):
 def _anonymizer_proxies() -> dict:
     """Return the Anonymizer-side proxy registry mirroring the worker wiring."""
     return {
-        SettingClassEnum.ANONYMIZER_SETTINGS: ProxyEntry(
-            anonymizer_settings, AnonymizerSettings
-        ),
+        ANONYMIZER_SETTINGS: ProxyEntry(anonymizer_settings, AnonymizerSettings),
     }
 
 
 def _tasks_proxies() -> dict:
     """Return the Tasks-side proxy registry mirroring the worker wiring."""
     return {
-        SettingClassEnum.TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
+        TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
     }
 
 
-class TestSettingClassEnumMembership:
-    """Test the ANONYMIZER_SETTINGS enum member this wiring introduces."""
+class TestBuildTasksOverrideProxies:
+    """Cover the Tasks worker proxy-set builder."""
 
-    def test_anonymizer_member_value_is_class_name(self):
-        """Encode the Pydantic class name as the ANONYMIZER_SETTINGS member value."""
-        assert SettingClassEnum.ANONYMIZER_SETTINGS.value == AnonymizerSettings.__name__
+    def test_builder_keys_every_entry_by_class_name(self) -> None:
+        """Key each Tasks worker entry by the class ``__name__``."""
+        assert_registry_keyed_by_class_name(build_tasks_override_proxies())
 
 
 class TestAnonymizerDefaultEntitiesOverride:

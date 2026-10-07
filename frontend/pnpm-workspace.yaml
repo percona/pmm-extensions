@@ -12,20 +12,24 @@ minimumReleaseAgeExclude:
   - js-yaml
   - nanoid
   - react-router
+  - source-map-js
+  - tinypool
 allowBuilds:
   esbuild: true
   msw: true
 overrides:
   esbuild: 0.28.1
-  brace-expansion@5.0.6: 5.0.9
-  brace-expansion@2.1.0: 5.0.9
+  brace-expansion@5.0.6: 5.0.12
+  brace-expansion@<2.1.7: 2.1.7
   form-data: 4.0.6
   js-yaml@>=4.0.0 <4.3.2: 4.3.2
-  undici@^7.0.0: 7.29.0
+  undici@^7.0.0: 7.29.1
   ws@8.20.1: 8.21.0
+  tinypool@<2.1.2: 2.1.2
   '@babel/core': 7.29.6
   immutable@<5.1.8: ^5.1.8
   react: 19.2.7
+  source-map-js@<1.2.2: 1.2.2
   react-dom: 19.2.7
   postcss@<8.5.23: 8.5.23
   browserslist@<4.28.7: 4.28.7

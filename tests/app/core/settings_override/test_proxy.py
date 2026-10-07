@@ -17,6 +17,7 @@
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import BaseModel
@@ -36,7 +37,7 @@ def _factory() -> _Sample:
 @pytest.fixture
 def proxy() -> OverridableSettingsProxy[_Sample]:
     """Return a fresh proxy wrapping ``_Sample``."""
-    return OverridableSettingsProxy(_factory, setting_class="ExtensionsSettings")
+    return OverridableSettingsProxy(_factory)
 
 
 def test_empty_snapshot_delegates_to_factory(
@@ -87,11 +88,6 @@ def test_class_property_reflects_wrapped_class(
 ) -> None:
     """``__class__`` reports the wrapped class (preserves ``LazyProxy``)."""
     assert isinstance(proxy, _Sample)
-
-
-def test_setting_class_stored(proxy: OverridableSettingsProxy[_Sample]) -> None:
-    """Store the class ``__name__`` identifier passed at construction."""
-    assert proxy._setting_class == "ExtensionsSettings"
 
 
 def test_concurrent_swap_is_atomic(
@@ -169,7 +165,48 @@ def test_per_class_isolation_with_unknown_field() -> None:
     This test exercises that guarantee with a snapshot that contains an
     unrelated rogue key and an access for a distinct never-defined key.
     """
-    proxy = OverridableSettingsProxy(_factory, setting_class="ExtensionsSettings")
+    proxy = OverridableSettingsProxy(_factory)
     proxy._set_snapshot({"unknown_field": "should-not-leak"})
     with pytest.raises(AttributeError):
         _ = proxy.also_absent
+
+
+class TestConstructorContract:
+    """Pin the constructor to the factory alone."""
+
+    def test_rejects_setting_class_keyword(self) -> None:
+        """Reject the removed ``setting_class`` keyword instead of ignoring it."""
+        with pytest.raises(TypeError):
+            OverridableSettingsProxy(
+                _factory,
+                setting_class="ExtensionsSettings",  # ty: ignore[unknown-argument]
+            )
+
+    def test_rejects_extra_positional_argument(self) -> None:
+        """Reject a positional identifier instead of ignoring it."""
+        with pytest.raises(TypeError):
+            OverridableSettingsProxy(
+                _factory,
+                "ExtensionsSettings",  # ty: ignore[too-many-positional-arguments]
+            )
+
+    def test_construction_does_not_resolve_factory(self) -> None:
+        """Defer the factory call until the first attribute read."""
+        factory = MagicMock(return_value=_Sample())
+        proxy = OverridableSettingsProxy(factory)
+        factory.assert_not_called()
+        assert proxy.name == "default-name"
+        factory.assert_called_once()
+
+    def test_declares_only_snapshot_slot(self) -> None:
+        """Declare the snapshot as the proxy's only own slot."""
+        # Read from the class: the ``LazyProxy.__class__`` property on an
+        # instance reports the wrapped type instead.
+        assert OverridableSettingsProxy.__slots__ == ("_snapshot",)
+
+    def test_removed_identifier_is_not_served_by_proxy(
+        self, proxy: OverridableSettingsProxy[_Sample]
+    ) -> None:
+        """Raise ``AttributeError`` for the removed identifier attribute."""
+        with pytest.raises(AttributeError):
+            _ = proxy._setting_class

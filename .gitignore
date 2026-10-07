@@ -414,3 +414,8 @@ frontend/packages/e2e/test-results/*
 .claude/
 .codex/
 graphify-out/
+
+# Scaffolded packages left behind when a make-startapp test is killed before
+# its cleanup runs; the names carry a uuid so nothing ever collides with them
+app/extensions/apps/_scaffold_ci_*/
+tests/app/extensions/apps/_scaffold_ci_*/

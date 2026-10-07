@@ -672,10 +672,14 @@ export interface paths {
      *
      *     No way the search itself can fail reaches the caller as an error: a
      *     deployment that declares no case-search section, stored inputs that no
-     *     longer fit the plan, a refused credential, an unreachable receiver and a
-     *     search that outran its bound all report the same unavailability, which the
-     *     caller renders as the plain text field rather than as a search that found
-     *     nothing.
+     *     longer fit the plan, a refused credential, an unreachable receiver, a term
+     *     pattern match that outran its budget and a search that outran its bound all
+     *     report the same unavailability, which the caller renders as the plain text
+     *     field rather than as a search that found nothing.
+     *
+     *     The term match runs on the event-loop thread, where this bound cannot
+     *     interrupt it, so the bound is handed to the match as well: time
+     *     spent opening the transport comes out of the match's allowance.
      *
      *     Restricted to administrators, unlike the app's other reads. The router
      *     resolves a minimum role for unsafe methods only, so a safe method carries
@@ -2362,10 +2366,11 @@ export interface paths {
      *
      *     Served here rather than pointing the caller at ``/api/extensions/admin/settings``
      *     because that router is admin-gated and PMM's principal is not an admin: the
-     *     ``--sep-token`` bearer resolves to the synthetic ``extensions-service`` user, built
-     *     with ``is_admin=False`` deliberately, since it is a deployment-level shared
-     *     secret with no person behind it. An app-owned endpoint keeps a schedule change
-     *     scoped to this app instead of requiring PMM Extensions wide administrative access.
+     *     bearer of the pmm-managed ``--extensions-token`` flag resolves to the synthetic
+     *     ``extensions-service`` user, built with ``is_admin=False`` deliberately, since
+     *     it is a deployment-level shared secret with no person behind it. An app-owned
+     *     endpoint keeps a schedule change scoped to this app instead of requiring PMM
+     *     Extensions wide administrative access.
      *
      *     Every field is listed, not only the overridden ones, and each row carries
      *     whether an override is in effect - so "why is it sweeping every 10 minutes"
@@ -2401,11 +2406,11 @@ export interface paths {
      *     runs as a forked side-car process, which reaches the new value through its own
      *     settings refresher rather than through this request.
      *
-     *     ``ENABLED`` is what PMM's OpenManager switch calls, via this same route with
-     *     its ``--sep-token`` credential (see ``require_minimum_role``'s service-principal
-     *     bypass): it flips independently of ``SCHEDULE``, so the configured cadence
-     *     survives OpenManager being turned off and back on rather than being
-     *     overwritten each time.
+     *     ``ENABLED`` is what PMM's Operations for MongoDB switch calls, via this same
+     *     route with the credential of the pmm-managed ``--extensions-token`` flag (see
+     *     ``require_minimum_role``'s service-principal bypass): it flips independently of
+     *     ``SCHEDULE``, so the configured cadence survives Operations for MongoDB being
+     *     turned off and back on rather than being overwritten each time.
      *
      *     :param request: The incoming request; its ``app.state`` carries the rebind
      *         callbacks fired for the keys this changed.
@@ -2581,8 +2586,8 @@ export interface paths {
      *
      *     :param session: The database session.
      *     :param request: The optional scope. Absent, or an empty list, means everything.
-     *     :raises HTTPServiceUnavailableException: When PMM's OpenManager switch has
-     *         ``ENABLED`` off.
+     *     :raises HTTPServiceUnavailableException: When PMM's Operations for MongoDB
+     *         switch has ``ENABLED`` off.
      *     :raises HTTPNotFoundException: When a requested node id is not in the estate.
      *     :raises HTTPConflictException: When a requested host is already being refreshed.
      *     :return: The queued sweep.
@@ -3642,7 +3647,7 @@ export interface paths {
      *     ``EXTENSIONS__FOOTER_TEMPLATE`` override is reflected without a restart.
      *     Access is gated by the router-level ``IsApiAuthenticated`` dependency.
      *
-     *     :return: The rendered footer text.
+     *     :return: The rendered footer text and the running version.
      */
     get: operations['extensions_get_app_info_api_extensions_app_info__get'];
     put?: never;
@@ -4229,10 +4234,14 @@ export interface components {
      *
      *     :param footer_text: The rendered sidebar footer text (application summary
      *         and version by default).
+     *     :param version: The running PMM Extensions version, sourced from
+     *         ``app.__version__``. Independent of ``FOOTER_TEMPLATE``.
      */
     AppInfo: {
       /** Footer Text */
       footer_text: string;
+      /** Version */
+      version: string;
     };
     /**
      * AppInfoResponse
@@ -4781,6 +4790,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param services: A list of services associated with the node.
      */
     Node: {
@@ -4806,6 +4818,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       source: components['schemas']['SourceEnum'];
@@ -4913,6 +4927,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param tables: A list of tables within the schema.
      */
     Schema: {
@@ -4934,6 +4951,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       /** Service Id */
@@ -5289,7 +5308,6 @@ export interface components {
      *
      *     :cvar PMM: Represents the PMM data source.
      *     :vartype PMM: str
-     * @constant
      * @enum {string}
      */
     SourceEnum: 'pmm';
@@ -5778,7 +5796,6 @@ export interface components {
       /**
        * Status
        * @constant
-       * @enum {string}
        */
       status: 'success';
     };
@@ -6042,6 +6059,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      */
     app__inventory__models__ServiceResponse: {
       /** Cluster */
@@ -6072,6 +6092,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       node: components['schemas']['Node'];
       /** Node Id */
       node_id: number;
@@ -7711,11 +7733,15 @@ export interface components {
      *         entity's screens. Stored in mid-sentence form so a consumer composing a
      *         label capitalises the first character itself. Defaults to this entity's
      *         own ``display_name`` — not the parent app's, and never inferred from
-     *         ``item_display_name_plural``.
+     *         ``item_display_name_plural``. Optional at construction (``None``
+     *         default); the before-validator always fills a string, and the OpenAPI
+     *         schema keeps the field required and non-nullable.
      *     :param item_display_name_plural: What **several** records of this entity are
-     *         called (for example ``nodes``). An independent declaration under the
-     *         same mid-sentence convention; nothing derives it from
-     *         ``item_display_name``. Defaults to this entity's own ``display_name``.
+     *         called (for example ``nodes``). Same mid-sentence convention. When the
+     *         singular is declared, defaults by pluralising it; when both are
+     *         omitted, defaults to this entity's own ``display_name``. Declare
+     *         explicitly for irregulars or forms the heuristic misses. Optional at
+     *         construction under the same wire-required contract as the singular.
      *     :param description: Optional helper text for this entity. Defaults to
      *         ``None``.
      *     :param forms: Form sections for create (and edit when the UI supports it).
@@ -7764,13 +7790,17 @@ export interface components {
      *         lowercase unless it opens with a proper noun — so a consumer composing a
      *         label capitalises the first character itself. Defaults to
      *         ``display_name``, and is never inferred from
-     *         ``item_display_name_plural``. Unlike the optional UI hints on this
-     *         model, both record names are required and non-nullable so the generated
-     *         client types them as ``string`` and no consumer needs a fallback.
+     *         ``item_display_name_plural``. Optional at construction (``None``
+     *         default); the before-validator always fills a string. Unlike the
+     *         optional UI hints on this model, both record names stay required and
+     *         non-nullable on the wire so the generated client types them as
+     *         ``string`` and no consumer needs a fallback.
      *     :param item_display_name_plural: What **several** of those records are
-     *         called (for example ``backups``). An independent declaration under the
-     *         same mid-sentence convention; nothing derives it from
-     *         ``item_display_name``. Defaults to ``display_name``.
+     *         called (for example ``backups``). Same mid-sentence convention. When
+     *         the singular is declared, defaults by pluralising it; when both are
+     *         omitted, defaults to ``display_name``. Declare explicitly for
+     *         irregulars or forms the heuristic misses. Optional at construction
+     *         under the same wire-required contract as the singular.
      *     :param description: Optional helper text describing the plugin's
      *         purpose. Defaults to ``None``.
      *     :param task_type: Optional task-type identifier used when creating tasks
@@ -10992,7 +11022,9 @@ export interface components {
       /** Node Id */
       node_id: string;
       /** Observed */
-      observed?: Record<string, never>;
+      observed?: {
+        [key: string]: unknown;
+      };
       /** Services */
       services?: components['schemas']['om_inventory__ServiceResponse'][];
     };
@@ -11265,7 +11297,9 @@ export interface components {
       /** Node Id */
       node_id: string;
       /** Observed */
-      observed?: Record<string, never>;
+      observed?: {
+        [key: string]: unknown;
+      };
       /** Port */
       port?: number | null;
       /** Role */

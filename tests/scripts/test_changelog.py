@@ -37,8 +37,8 @@ Intro text.
 
 - SEP-100: Old feature
 
-[Unreleased]: https://github.com/percona/SEP/compare/v0.11.0...HEAD
-[v0.11.0]: https://github.com/percona/SEP/compare/v0.10.0...v0.11.0
+[Unreleased]: https://github.com/percona/pmm-extensions/compare/v0.11.0...HEAD
+[v0.11.0]: https://github.com/percona/pmm-extensions/compare/v0.10.0...v0.11.0
 """
 
 
@@ -460,10 +460,12 @@ def test_assemble_updates_compare_links(repo):
     )
     content = (repo / "CHANGELOG.md").read_text(encoding="utf-8")
     assert (
-        "[Unreleased]: https://github.com/percona/SEP/compare/v0.12.0...HEAD" in content
+        "[Unreleased]: https://github.com/percona/pmm-extensions/compare/v0.12.0...HEAD"
+        in content
     )
     assert (
-        "[v0.12.0]: https://github.com/percona/SEP/compare/v0.11.0...v0.12.0" in content
+        "[v0.12.0]: https://github.com/percona/pmm-extensions/compare/v0.11.0...v0.12.0"
+        in content
     )
     # old unreleased link should be gone
     assert "compare/v0.11.0...HEAD" not in content
@@ -621,9 +623,9 @@ Intro text.
 
 - SEP-100: Old feature
 
-[Unreleased]: https://github.com/percona/SEP/compare/v0.12.0...HEAD
-[v0.12.0]: https://github.com/percona/SEP/compare/v0.11.0...v0.12.0
-[v0.11.0]: https://github.com/percona/SEP/compare/v0.10.0...v0.11.0
+[Unreleased]: https://github.com/percona/pmm-extensions/compare/v0.12.0...HEAD
+[v0.12.0]: https://github.com/percona/pmm-extensions/compare/v0.11.0...v0.12.0
+[v0.11.0]: https://github.com/percona/pmm-extensions/compare/v0.10.0...v0.11.0
 """
     (repo / "CHANGELOG.md").write_text(existing, encoding="utf-8")
     fragment = repo / "changelog.d" / "SEP-503.added.md"
@@ -692,7 +694,7 @@ Intro text.
 
 - SEP-1093: Restore chained task dispatch
 
-[v0.12.1]: https://github.com/percona/SEP/compare/v0.12.0...v0.12.1
+[v0.12.1]: https://github.com/percona/pmm-extensions/compare/v0.12.0...v0.12.1
 """
 
 
@@ -729,13 +731,13 @@ def test_update_compare_links_synthesizes_when_unreleased_footer_missing(
     assert exit_code == 0
     text = repo.joinpath("CHANGELOG.md").read_text(encoding="utf-8")
     unreleased_line = (
-        "[Unreleased]: https://github.com/percona/SEP/compare/v0.13.0...HEAD"
+        "[Unreleased]: https://github.com/percona/pmm-extensions/compare/v0.13.0...HEAD"
     )
     new_link_line = (
-        "[v0.13.0]: https://github.com/percona/SEP/compare/v0.12.1...v0.13.0"
+        "[v0.13.0]: https://github.com/percona/pmm-extensions/compare/v0.12.1...v0.13.0"
     )
     old_link_line = (
-        "[v0.12.1]: https://github.com/percona/SEP/compare/v0.12.0...v0.12.1"
+        "[v0.12.1]: https://github.com/percona/pmm-extensions/compare/v0.12.0...v0.12.1"
     )
     assert unreleased_line in text
     assert new_link_line in text
@@ -764,7 +766,7 @@ Intro text.
 
 - SEP-1093: Old fix
 
-[v0.12.1]: https://github.com/percona/SEP/compare/v0.12.0...v0.12.1
+[v0.12.1]: https://github.com/percona/pmm-extensions/compare/v0.12.0...v0.12.1
 """
 
 RELEASE_CHANGELOG_FIXTURE = """\
@@ -791,8 +793,8 @@ Intro text.
 
 - SEP-1093: Old fix
 
-[v0.13.0]: https://github.com/percona/SEP/compare/v0.12.1...v0.13.0
-[v0.12.1]: https://github.com/percona/SEP/compare/v0.12.0...v0.12.1
+[v0.13.0]: https://github.com/percona/pmm-extensions/compare/v0.12.1...v0.13.0
+[v0.12.1]: https://github.com/percona/pmm-extensions/compare/v0.12.0...v0.12.1
 """
 
 # Fake merge-base SHA used by resolve-backmerge tests to monkeypatch
@@ -873,13 +875,16 @@ def test_resolve_backmerge_merges_changelog_and_prunes_fragments(
     assert "## [Unreleased]" in merged
     assert "<!-- comment -->" in merged
     assert (
-        "[Unreleased]: https://github.com/percona/SEP/compare/v0.13.0...HEAD" in merged
+        "[Unreleased]: https://github.com/percona/pmm-extensions/compare/v0.13.0...HEAD"
+        in merged
     )
     assert (
-        "[v0.13.0]: https://github.com/percona/SEP/compare/v0.12.1...v0.13.0" in merged
+        "[v0.13.0]: https://github.com/percona/pmm-extensions/compare/v0.12.1...v0.13.0"
+        in merged
     )
     assert (
-        "[v0.12.1]: https://github.com/percona/SEP/compare/v0.12.0...v0.12.1" in merged
+        "[v0.12.1]: https://github.com/percona/pmm-extensions/compare/v0.12.0...v0.12.1"
+        in merged
     )
 
     assert not repo.joinpath("changelog.d", "SEP-200.added.md").exists()

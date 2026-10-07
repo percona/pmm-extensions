@@ -33,6 +33,11 @@ from app.core.config import BaseYamlSettings, Settings, settings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.encryption import encrypt
 from app.core.settings_override.cache import build_snapshot
+from app.core.settings_override.constants import (
+    EXTENSIONS_SETTINGS,
+    SETTINGS,
+    TASKS_SETTINGS,
+)
 from app.core.settings_override.lifecycle import (
     bounded_refresh,
     bounded_seed,
@@ -40,6 +45,7 @@ from app.core.settings_override.lifecycle import (
     fire_on_boot,
     previous_or_base,
     ProxyEntry,
+    ProxyRegistry,
     refresh_all,
     resolve_refresher_options,
     settings_override_refresher,
@@ -47,7 +53,7 @@ from app.core.settings_override.lifecycle import (
     start_refresh_task,
 )
 from app.core.settings_override.manager import SettingsOverrideManager
-from app.core.settings_override.models import SettingClassEnum, SettingOverride
+from app.core.settings_override.models import SettingOverride
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.utils import json_serializer
 from app.extensions.config import ExtensionsSettings
@@ -90,11 +96,9 @@ async def session_maker_fixture() -> AsyncGenerator[async_sessionmaker, None]:
 
 def _make_proxies() -> tuple[OverridableSettingsProxy, dict]:
     """Construct a PMM Extensions proxy and a registry mapping for refresh tests."""
-    proxy: OverridableSettingsProxy = OverridableSettingsProxy(
-        ExtensionsSettings, setting_class=ExtensionsSettings.__name__
-    )
+    proxy: OverridableSettingsProxy = OverridableSettingsProxy(ExtensionsSettings)
     registry = {
-        SettingClassEnum.EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings),
+        EXTENSIONS_SETTINGS: ProxyEntry(proxy, ExtensionsSettings),
     }
     return proxy, registry
 
@@ -164,10 +168,8 @@ async def test_refresh_all_falls_back_when_a_row_becomes_undecryptable(
     wrapped instance. Falling back to configuration beats serving a credential
     the deployment can no longer verify.
     """
-    proxy: OverridableSettingsProxy = OverridableSettingsProxy(
-        Settings, setting_class=Settings.__name__
-    )
-    registry = {SettingClassEnum.SETTINGS: ProxyEntry(proxy, Settings)}
+    proxy: OverridableSettingsProxy = OverridableSettingsProxy(Settings)
+    registry = {SETTINGS: ProxyEntry(proxy, Settings)}
     api_key = "pmm-api-key-published"
     async with session_maker() as session:
         await SettingsOverrideManager.create(
@@ -187,6 +189,7 @@ async def test_refresh_all_falls_back_when_a_row_becomes_undecryptable(
     async with session_maker() as session:
         stored = await SettingsOverrideManager.first(session, key="PMM__api_key")
         stored.value = foreign
+        stored.updated_by = "tester"
         await SettingsOverrideManager.save(session, stored)
 
     await refresh_all(lambda: session_maker, registry)
@@ -274,16 +277,12 @@ async def test_refresh_all_rolls_back_session_between_proxies(
     its row from the DB.
     """
     extensions_proxy: OverridableSettingsProxy = OverridableSettingsProxy(
-        ExtensionsSettings, setting_class=ExtensionsSettings.__name__
+        ExtensionsSettings
     )
-    tasks_proxy: OverridableSettingsProxy = OverridableSettingsProxy(
-        TasksSettings, setting_class=TasksSettings.__name__
-    )
+    tasks_proxy: OverridableSettingsProxy = OverridableSettingsProxy(TasksSettings)
     registry = {
-        SettingClassEnum.EXTENSIONS_SETTINGS: ProxyEntry(
-            extensions_proxy, ExtensionsSettings
-        ),
-        SettingClassEnum.TASKS_SETTINGS: ProxyEntry(tasks_proxy, TasksSettings),
+        EXTENSIONS_SETTINGS: ProxyEntry(extensions_proxy, ExtensionsSettings),
+        TASKS_SETTINGS: ProxyEntry(tasks_proxy, TasksSettings),
     }
     tasks_override = 7200
     async with session_maker() as session:
@@ -519,16 +518,14 @@ async def test_bounded_refresh_logs_exception_raised_while_unwinding(
     )
 
 
-_NOMAD_CALLBACK_KEY = (SettingClassEnum.TASKS_SETTINGS, "NOMAD")
+_NOMAD_CALLBACK_KEY = (TASKS_SETTINGS, "NOMAD")
 _NOMAD_LEAF_TIMEOUT = 30
 
 
-def _make_tasks_proxy_registry() -> tuple[
-    TasksSettings, dict[SettingClassEnum, ProxyEntry]
-]:
+def _make_tasks_proxy_registry() -> tuple[TasksSettings, ProxyRegistry]:
     """Construct the global Tasks proxy and a single-entry registry."""
     registry = {
-        SettingClassEnum.TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
+        TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
     }
     return tasks_settings, registry
 
@@ -659,7 +656,7 @@ async def test_fire_change_callbacks_delivers_snapshot_change_on_delete() -> Non
 
     await fire_change_callbacks(
         {CONNECTIVITY_CALLBACK_KEY: _callback},
-        SettingClassEnum.EXTENSIONS_SETTINGS,
+        EXTENSIONS_SETTINGS,
         previous,
         current,
     )
@@ -694,9 +691,9 @@ async def test_fire_change_callbacks_hands_every_callback_the_whole_change() -> 
     await fire_change_callbacks(
         {
             CONNECTIVITY_CALLBACK_KEY: _recorder("connectivity"),
-            (SettingClassEnum.EXTENSIONS_SETTINGS, "APP_DRAIN"): _recorder("drain"),
+            (EXTENSIONS_SETTINGS, "APP_DRAIN"): _recorder("drain"),
         },
-        SettingClassEnum.EXTENSIONS_SETTINGS,
+        EXTENSIONS_SETTINGS,
         previous,
         current,
     )
@@ -954,11 +951,7 @@ class TestFireBootCallbacks:
             lambda: session_maker,
             registry,
             seed_timeout=None,
-            callbacks={
-                (SettingClassEnum.SETTINGS, "LOGGING"): fire_on_boot(
-                    recording_callback(fired)
-                )
-            },
+            callbacks={(SETTINGS, "LOGGING"): fire_on_boot(recording_callback(fired))},
         )
 
         assert fired == []
@@ -1065,10 +1058,8 @@ class TestFireBootCallbacks:
         step that never runs for an expired seed.
         """
         extensions_proxy, registry = _make_proxies()
-        registry[SettingClassEnum.TASKS_SETTINGS] = ProxyEntry(
-            OverridableSettingsProxy(
-                TasksSettings, setting_class=TasksSettings.__name__
-            ),
+        registry[TASKS_SETTINGS] = ProxyEntry(
+            OverridableSettingsProxy(TasksSettings),
             TasksSettings,
         )
         override_value = not ExtensionsSettings().CONNECTIVITY_CHECK_DEFAULT
@@ -1152,7 +1143,7 @@ class TestFireBootCallbacks:
             interval=timedelta(seconds=3600),
             callbacks={
                 CONNECTIVITY_CALLBACK_KEY: fire_on_boot(recording_callback(marked)),
-                (SettingClassEnum.EXTENSIONS_SETTINGS, "INVENTORY_ENDPOINT"): (
+                (EXTENSIONS_SETTINGS, "INVENTORY_ENDPOINT"): (
                     recording_callback(unmarked)
                 ),
             },

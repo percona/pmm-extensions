@@ -28,7 +28,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.api import deps as api_deps
 from app.core.celery.deps import get_session as get_celery_beat_session
 from app.core.config import settings
-from app.core.settings_override.models import SettingClassEnum
+from app.core.settings_override.constants import TASKS_SETTINGS
 from app.tasks.crud import TaskHistoryManager, TaskManager
 from app.tasks.deps import get_request_executor, get_session
 from app.tasks.execution.models import BaseExecutor
@@ -133,7 +133,7 @@ def test_the_service_principal_is_still_refused_by_a_route_admin_check(
     mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(SERVICE_TOKEN))
 
     response = bearer_client.patch(
-        f"/admin/settings/{SettingClassEnum.TASKS_SETTINGS.value}",
+        f"/admin/settings/{TASKS_SETTINGS}",
         json={"overrides": {}},
         headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
     )

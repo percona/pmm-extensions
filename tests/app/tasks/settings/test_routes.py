@@ -27,8 +27,8 @@ from starlette.testclient import TestClient
 from app.api.deps import get_current_user, require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.encryption import marked_ciphertext
+from app.core.settings_override.constants import ANONYMIZER_SETTINGS, TASKS_SETTINGS
 from app.core.settings_override.manager import SettingsOverrideManager
-from app.core.settings_override.models import SettingClassEnum
 from app.core.settings_override.registry import (
     ReloadClassification,
     SECRET_STR_MASK,
@@ -38,8 +38,10 @@ from app.tasks.deps import get_request_executor, get_session
 from app.tasks.execution.executors.nomad import NomadExecutor
 from app.tasks.execution.nomad_lifecycle import normalize_nomad_config_value
 from app.tasks.main import tasks_app
+from app.tasks.settings.routes import TASKS_ADMIN_SETTINGS_CLASSES
 from tests.app.core.settings_override.conftest import (
     ANONYMIZER_SETTINGS_TOKEN,
+    assert_entries_keyed_by_class_name,
     TASKS_SETTINGS_TOKEN,
 )
 from tests.app.encryption_fixtures import is_stored_ciphertext, stored_plaintext
@@ -101,6 +103,58 @@ def unauthenticated_client_fixture(
     tasks_app.dependency_overrides = {}
 
 
+class TestTasksSettingsClassEntries:
+    """Key the Tasks settings router by class identifier, never the storage token."""
+
+    def test_entries_are_keyed_by_class_name(self) -> None:
+        """Name each entry, and bind its proxy, by the class ``__name__``."""
+        assert_entries_keyed_by_class_name(TASKS_ADMIN_SETTINGS_CLASSES)
+
+
+@pytest.mark.asyncio
+class TestTasksSettingsStorageTokenPath:
+    """Reject the storage token in the path; the router speaks the class ``__name__``."""
+
+    @pytest.mark.parametrize(
+        ("identifier", "token", "key"),
+        [
+            (TASKS_SETTINGS, TASKS_SETTINGS_TOKEN, "STALENESS_THRESHOLD_SECONDS"),
+            (ANONYMIZER_SETTINGS, ANONYMIZER_SETTINGS_TOKEN, "DEFAULT_ENTITIES"),
+        ],
+        ids=[TASKS_SETTINGS, ANONYMIZER_SETTINGS],
+    )
+    async def test_get_by_token_returns_404(
+        self, admin_test_client: TestClient, identifier: str, token: str, key: str
+    ) -> None:
+        """Return 404 for the token spelling while the identifier resolves."""
+        assert (
+            admin_test_client.get(f"/admin/settings/{identifier}/{key}").status_code
+            == status.HTTP_200_OK
+        )
+        response = admin_test_client.get(f"/admin/settings/{token}/{key}")
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    @pytest.mark.parametrize(
+        ("token", "payload"),
+        [
+            (TASKS_SETTINGS_TOKEN, {"STALENESS_THRESHOLD_SECONDS": 600}),
+            (ANONYMIZER_SETTINGS_TOKEN, {"DEFAULT_ENTITIES": ["EMAIL_ADDRESS"]}),
+        ],
+        ids=[TASKS_SETTINGS, ANONYMIZER_SETTINGS],
+    )
+    async def test_patch_by_token_returns_404_and_writes_nothing(
+        self,
+        admin_test_client: TestClient,
+        session: AsyncSession,
+        token: str,
+        payload: dict[str, object],
+    ) -> None:
+        """Refuse a PATCH on the token spelling without persisting an override row."""
+        response = admin_test_client.patch(f"/admin/settings/{token}", json=payload)
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert await SettingsOverrideManager.list(session, setting_class=token) == []
+
+
 @pytest.mark.asyncio
 class TestTasksSettingsApi:
     """Cover the Tasks sub-app settings router end-to-end."""
@@ -114,8 +168,8 @@ class TestTasksSettingsApi:
         groups = response.json()["groups"]
         classes = {group["setting_class"] for group in groups}
         assert classes == {
-            SettingClassEnum.TASKS_SETTINGS.value,
-            SettingClassEnum.ANONYMIZER_SETTINGS.value,
+            TASKS_SETTINGS,
+            ANONYMIZER_SETTINGS,
         }
 
     async def test_get_single_setting(self, admin_test_client: TestClient) -> None:
@@ -136,9 +190,7 @@ class TestTasksSettingsApi:
             "/admin/settings/AnonymizerSettings/DEFAULT_ENTITIES"
         )
         assert response.status_code == status.HTTP_200_OK
-        assert response.json()["setting_class"] == (
-            SettingClassEnum.ANONYMIZER_SETTINGS.value
-        )
+        assert response.json()["setting_class"] == (ANONYMIZER_SETTINGS)
 
     async def test_patch_anonymizer_default_entities(
         self,
@@ -221,7 +273,7 @@ class TestTasksSettingsApi:
         row = next(
             s
             for g in response.json()["groups"]
-            if g["setting_class"] == SettingClassEnum.TASKS_SETTINGS.value
+            if g["setting_class"] == TASKS_SETTINGS
             for s in g["settings"]
             if s["key"] == "PRE_EXECUTION_CONNECTIVITY_CHECK"
         )
@@ -556,6 +608,7 @@ class TestTasksSettingsNestedOverrides:
             "NOMAD__timeout",
             "NOMAD__minify_payload",
             "NOMAD__log_socket_read_timeout",
+            "NOMAD__log_stream_max_connections",
             "NOMAD__cert_expiry_warn_days",
             "NOMAD__auth_scheme",
         ]
@@ -813,7 +866,7 @@ class TestTasksSettingsCredentialUrlAtRest:
     The Tasks service has its own settings router, so PMM Extensions side coverage proves
     nothing about this wiring. ``NomadExecutor.endpoint`` is also the inherited
     non-``Optional`` case whose ``Annotated`` Pydantic hoists onto ``FieldInfo``
-    and which the route coerces to a :class:`pydantic_core.Url` — the two
+    and which the route coerces to a :class:`~pydantic.HttpUrl` — the two
     properties that make a classifier reading ``.annotation``, or a leaf branch
     guarded on ``isinstance(value, str)``, silently skip it.
     """
@@ -976,7 +1029,7 @@ class TestTasksSettingsInlineRebind:
         spy = AsyncMock()
         original = getattr(tasks_app.state, "override_callbacks", None)
         tasks_app.state.override_callbacks = {
-            (SettingClassEnum.TASKS_SETTINGS, "NOMAD"): spy,
+            (TASKS_SETTINGS, "NOMAD"): spy,
         }
         tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
         yield spy

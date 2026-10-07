@@ -74,8 +74,8 @@ For development purposes, you can also [start Celery with PMM Extensions](#start
 
 1. Clone the repository and enter the cloned folder:
 ```shell
-git clone https://github.com/percona/SEP.git
-cd SEP
+git clone https://github.com/percona/pmm-extensions.git
+cd pmm-extensions
 ```
 
 2. Create and activate a virtualenv with the required packages:
@@ -121,7 +121,7 @@ Secret files are read from the directory named by `SECRETS_DIR`, which is unset 
 default; when unset, no secret files are read. See the
 [secrets section](#secrets) for how to name them.
 
-The [settings.yaml](https://github.com/percona/SEP/blob/main/settings.yaml) has base settings that you can (but don't need to) change.
+The [settings.yaml](https://github.com/percona/pmm-extensions/blob/main/settings.yaml) has base settings that you can (but don't need to) change.
 
 Some settings are app-specific and you might not need them for running another app.
 These are some, but not all, the possible settings you can have, per app:
@@ -151,6 +151,7 @@ These are some, but not all, the possible settings you can have, per app:
 | TASKS__NOMAD__TIMEOUT      | tasks     | no       | 10                                                  | 10                                               |
 | TASKS__NOMAD__MINIFY_PAYLOAD | tasks   | no       | True                                                | True                                             |
 | TASKS__NOMAD__LOG_SOCKET_READ_TIMEOUT | tasks | no | 10                                        | 10                                               |
+| TASKS__NOMAD__LOG_STREAM_MAX_CONNECTIONS | tasks | no | 64                                     | 64                                               |
 | TASKS__SYNC_LOCK_TTL       | tasks     | no       | 300                                                 | 300                                              |
 | TASKS__ANONYMIZER__DEFAULT_ENTITIES | tasks | no | seven high-confidence entities (see below) | `[]` (anonymization disabled) |
 | TASKS__EXECUTE_MODE        | tasks     | no       | background                                          | N/A                                              |
@@ -287,6 +288,7 @@ Additional Nomad configuration options are available:
 
 - `TASKS__NOMAD__MINIFY_PAYLOAD`: Whether to minify payloads before dispatch
 - `TASKS__NOMAD__LOG_SOCKET_READ_TIMEOUT`: Socket read timeout for logs (in seconds)
+- `TASKS__NOMAD__LOG_STREAM_MAX_CONNECTIONS`: Most Nomad connections the live log viewer's follows may hold at once, across every viewer and running task. Each viewer of a running task opens one per logged step and log type. A changed value applies to streams opened after it lands; open streams keep their connections until they end. Nomad's `limits.http_max_conns_per_client` (100 by default) counts these together with the tasks service's other Nomad connections from the same address, so keep it at 64 or lower unless that limit has been raised.
 
 > [!CAUTION]
 > *Do not store secrets in settings.yaml, as the file is shared in the git repository.
@@ -484,7 +486,7 @@ TASKS:
 EXTENSIONS:
   DATABASE:
     ENGINE: postgresql
-    USER: sep_user
+    USER: extensions_user
     PASSWORD: your_secure_password
     HOST: localhost
     PORT: 5432
@@ -651,7 +653,7 @@ If you started PMM with the Docker command in [Prerequisites](#prerequisites), i
 
 1. Enter the project folder:
 ```shell
-cd SEP
+cd pmm-extensions
 ```
 
 2. Activate your virtualenv:
@@ -688,7 +690,7 @@ LOGGING=debug python3 -m app.main --start-celery
 
 ## Contributing
 
-See our [CONTRIBUTING](https://github.com/percona/SEP/blob/main/CONTRIBUTING.md) guide.
+See our [CONTRIBUTING](https://github.com/percona/pmm-extensions/blob/main/CONTRIBUTING.md) guide.
 
 ## Deployment
 

@@ -410,6 +410,31 @@ class TestBuildStep:
         assert "authorization" not in command
         assert "keyFile" not in command
 
+    def test_start_service_restarts_rather_than_enable_now(self) -> None:
+        """Force a restart, since install_package may have started mongod already.
+
+        ``enable --now`` is a no-op against a unit that is already active, so it
+        would leave that process running on the package's default config, which
+        carries no ``replication`` block, and never pick up
+        ``configure_mongod``'s rewrite of ``mongod.conf``. Only an explicit
+        ``restart`` guarantees the config just written actually takes effect.
+        """
+        action = PackagesInstallStrategy().build_step(
+            "start_service", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+
+        command = " ".join(action.command)
+        assert "systemctl restart mongod" in command
+        assert "--now" not in command
+
+    def test_start_service_still_enables_mongod_at_boot(self) -> None:
+        """Keep mongod enabled at boot, restart alone would not persist that."""
+        action = PackagesInstallStrategy().build_step(
+            "start_service", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+
+        assert "systemctl enable mongod" in " ".join(action.command)
+
     def test_distribute_keyfile_requires_params(self) -> None:
         """Reject a missing keyFile as a programming error, not a blank file."""
         with pytest.raises(ValueError, match="key_file_content"):
@@ -472,7 +497,7 @@ class TestPlanRunSteps:
 
 
 class TestBuildRunStep:
-    """Assert build_run_step targets the seed host and rejects unknown names."""
+    """Assert build_run_step builds each run step and rejects unknown names."""
 
     def test_unknown_run_step_name_raises(self) -> None:
         """Reject a per-host step name as a run step, like the reverse."""
@@ -579,13 +604,93 @@ class TestBuildRunStep:
         script = build_step_script(action)
 
         assert "--eval" not in script
-        assert 'mongosh --quiet --port 27017 --file "$js"' in script
+        assert '--file "$js"' in script
         assert "umask 077" in script
         assert "sh -c" not in script
         heredoc = script.split("<<'OM_BOOTSTRAP_JS'\n")[1].split("\nOM_BOOTSTRAP_JS\n")[
             0
         ]
         assert "generated-secret" in heredoc
+
+    def test_create_pmm_monitoring_user_connects_to_the_replica_set(self) -> None:
+        """Route the write to the primary, not to the member the step runs on.
+
+        The regression this pins. createUser is a write, so it needs the
+        primary, and this step runs on hosts[0] - the seed. rs.initiate only
+        proposes the config; the election that follows is open to every member,
+        so a run whose seed loses it rolls back a healthy replica set.
+
+        Naming every member with replicaSet= makes the driver find the primary
+        wherever it is.
+        """
+        action = PackagesInstallStrategy().build_run_step(
+            "create_pmm_monitoring_user",
+            ["node00", "node01", "node02"],
+            _spec(OperatingSystem.UBUNTU),
+            params={"username": "pmm_monitor", "password": "generated-secret"},
+        )
+        script = build_step_script(action)
+
+        assert "--port 27017 --file" not in script
+        for host in ("node00:27017", "node01:27017", "node02:27017"):
+            assert host in script
+        assert "replicaSet=rs-test" in script
+
+    def test_create_pmm_monitoring_user_waits_for_an_election(self) -> None:
+        """Wait for a primary to exist rather than requiring one already elected.
+
+        The same defect has a timing half: rs.initiate returns as soon as the
+        config is accepted, and the first election lands some seconds later. A
+        dispatch that arrives in that window has no primary to write to at all,
+        whichever member it reaches.
+        """
+        action = PackagesInstallStrategy().build_run_step(
+            "create_pmm_monitoring_user",
+            ["node00", "node01", "node02"],
+            _spec(OperatingSystem.UBUNTU),
+            params={"username": "pmm_monitor", "password": "generated-secret"},
+        )
+
+        assert (
+            f"serverSelectionTimeoutMS={packages.PRIMARY_SELECTION_TIMEOUT_MS}"
+            in build_step_script(action)
+        )
+        # The driver may spend that whole budget waiting, so the step's own
+        # deadline has to outlast it or the wait is decorative.
+        assert action.timeout_s * 1000 > packages.PRIMARY_SELECTION_TIMEOUT_MS
+
+    def test_rs_initiate_still_runs_against_the_local_member(self) -> None:
+        """Keep rs.initiate on the seed itself - it is what creates the set.
+
+        Only create_pmm_monitoring_user needs the primary. rs.initiate has no
+        primary to find yet, and must run on the member being initiated, so the
+        replica-set URI must not spread to it.
+        """
+        action = PackagesInstallStrategy().build_run_step(
+            "rs_initiate", ["node00", "node01", "node02"], _spec(OperatingSystem.UBUNTU)
+        )
+
+        command = " ".join(action.command)
+        assert "--port 27017" in command
+        assert "replicaSet=" not in command
+
+    def test_create_pmm_monitoring_user_still_hides_the_password(self) -> None:
+        """Keep the secret out of argv now that the target is a URI.
+
+        The URI names no credentials, but it is on the same command line the
+        password must stay off, so this is worth pinning next to the change.
+        """
+        action = PackagesInstallStrategy().build_run_step(
+            "create_pmm_monitoring_user",
+            ["node00", "node01", "node02"],
+            _spec(OperatingSystem.UBUNTU),
+            params={"username": "pmm_monitor", "password": "generated-secret"},
+        )
+        script = build_step_script(action)
+
+        mongosh_line = next(line for line in script.splitlines() if "mongosh" in line)
+        assert "generated-secret" not in mongosh_line
+        assert "--eval" not in script
 
     def test_create_pmm_monitoring_user_disables_the_atlas_cli_check(self) -> None:
         """Disable mongosh's Atlas CLI probe, which closes the localhost exception.

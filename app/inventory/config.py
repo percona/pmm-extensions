@@ -20,7 +20,6 @@ from typing import ClassVar
 from app.core.config import BaseYamlAppSettings
 from app.core.db.config import DatabaseOptions
 from app.core.middleware.security_headers import SecurityHeadersOptions
-from app.core.settings_override.models import SettingClassEnum
 from app.core.settings_override.proxy import OverridableSettingsProxy
 
 
@@ -49,6 +48,4 @@ class InventorySettings(BaseYamlAppSettings):
     )
 
 
-inventory_settings: InventorySettings = OverridableSettingsProxy(
-    InventorySettings, setting_class=SettingClassEnum.INVENTORY_SETTINGS
-)
+inventory_settings: InventorySettings = OverridableSettingsProxy(InventorySettings)

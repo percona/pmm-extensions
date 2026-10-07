@@ -107,15 +107,15 @@ class TestTopLevelGate:
     def test_unregistered_class_honours_allowlist_by_name(
         self, restrict: Callable[..., None]
     ) -> None:
-        """Assert a class outside the enum still matches ``ALLOWED_KEYS`` by ``__name__``.
+        """Assert a class with no core identifier still matches ``ALLOWED_KEYS`` by ``__name__``.
 
-        Once app-owned members leave ``SettingClassEnum``, mapping ``__name__``
-        through the enum would withhold every key, including ones the allowlist
-        already names. The gate must key on the class name as a string.
+        App-owned classes have no core identifier, so a gate that mapped
+        ``__name__`` through a closed core set would withhold every key,
+        including ones the allowlist already names.
         """
 
         class ProbeSettings(Settings):
-            """Stand in for an app-owned class that has left the enum."""
+            """Stand in for an app-owned class with no core identifier."""
 
         restrict("ProbeSettings.LOGGING")
         assert is_hot_reloadable(ProbeSettings, "LOGGING") is True

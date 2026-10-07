@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from aiohttp import ClientResponseError
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 
 from app.core.exceptions import HTTPConflictException, HTTPNotFoundException
 from app.core.requests import as_json_object
@@ -255,7 +255,7 @@ async def _fetch_latest_pbm_status(
             log_data = json.loads(log_entry)
             if log_data.get("type") == TaskLogType.STDOUT and log_data.get("msg"):
                 tail = (tail + log_data["msg"])[-PBM_LATEST_STATUS_TAIL_BYTES:]
-    except (ClientResponseError, ValueError, KeyError):
+    except (ClientResponseError, HTTPException, ValueError, KeyError):
         logger.exception(
             "Failed to fetch latest_status for backup_mongo task %s",
             pbm_status_id,

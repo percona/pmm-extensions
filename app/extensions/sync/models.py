@@ -68,7 +68,11 @@ from app.extensions.sync.exceptions import (
     SyncFailError,
     SyncItemAlreadyInProgressError,
 )
-from app.extensions.sync.fields import StaleRunAfter
+from app.extensions.sync.fields import (
+    StaleRunAfter,
+    TaskExecutionTimeout,
+    TasksExecutionWaitInterval,
+)
 from app.extensions.sync.health import SyncHealthReporter
 from app.tasks.models import TaskHistoryStatusEnum, TaskLogType
 
@@ -101,7 +105,7 @@ def claim_identity(
     :param by_id: The primary-key-keyed index holding every candidate.
     """
     incumbent = by_id.get(identities.get(identity))
-    if incumbent is None or incumbent.retired_at is not None:
+    if incumbent is None or incumbent.is_retired:
         identities[identity] = entity.id
 
 
@@ -370,13 +374,13 @@ class BaseSyncer(BaseCaseInsensitiveModel):
         """Prepare synchronization for a given entity and its children.
 
         This method sets up SyncItems for the specified entity and recursively prepares
-        synchronization for any child entities if applicable.
+        synchronization for any child entities if applicable. A retired child is
+        skipped together with its subtree, whatever the syncer's ``can_sync_*``
+        predicates say about it.
 
         :param entity_type: The type of the entity to synchronize.
-        :type entity_type: SyncInventoryEntityTypeEnum
         :param created_entity: The entity instance to synchronize, or None for top-level
             (inventory) synchronization.
-        :type created_entity: CreatedEntity | None
         """
         entity_id = None if created_entity is None else created_entity.id
         logger.debug("Preparing sync for %s with ID %s", entity_type.name, entity_id)
@@ -386,8 +390,13 @@ class BaseSyncer(BaseCaseInsensitiveModel):
         )
         next_entity_type = entity_type + 1
         if self.can_sync_entity_type(next_entity_type):
+            can_sync = self.can_sync_mapping.get(next_entity_type)
             for child in await self.get_children_entities(entity_type, created_entity):
-                can_sync = self.can_sync_mapping.get(next_entity_type)
+                # Retired-inclusive reads exist for the match sites, where a
+                # tombstone can be recognised as reappearing. This walk has nothing
+                # to sync for one, so an item opened here would only ever hang.
+                if child.is_retired:
+                    continue
                 if can_sync is not None and can_sync(child):
                     await self.prepare_sync(next_entity_type, child)
         logger.debug(
@@ -846,7 +855,7 @@ class BaseSyncer(BaseCaseInsensitiveModel):
             ``manage_sync_item`` block propagate it and abort the whole run rather
             than failing the one item.
         """
-        if created_entity.retired_at is None:
+        if not created_entity.is_retired:
             return
         logger.info(
             "Reviving %s %s: reported again by its source",
@@ -1456,33 +1465,27 @@ class TaskRunResult(NamedTuple):
 class BaseTaskSyncer(BaseSyncer):
     """Provide a base class for task-based synchronizers in the PMM Extensions application.
 
-    This class extends `BaseSyncer` by adding task management capabilities through the
+    This class extends ``BaseSyncer`` by adding task management capabilities through the
     Tasks API, allowing synchronization processes to execute tasks and handle their
     outputs.
 
     :param tasks_api: The remote API interface for managing synchronization tasks.
-    :type tasks_api: RemoteAPI
-    :param task_execution_timeout: The maximum time (in seconds) to wait for a task to
-        complete. Defaults to 300 (5 minutes).
-    :type task_execution_timeout: int
-    :param tasks_execution_wait_interval: The interval (in seconds) between task status
-        checks. Defaults to 5.
-    :type tasks_execution_wait_interval: int
+    :param task_execution_timeout: The positive maximum time (in seconds) to wait for a
+        task to complete. Defaults to ``300`` (5 minutes).
+    :param tasks_execution_wait_interval: The positive interval (in seconds) between
+        task status checks. Defaults to ``5``.
     :param force_executor_host: The host to force for task execution, if any.
-    :type force_executor_host: str | None
     :param strict_executor_matching: Raise ``ExecutorHostNotFoundError`` instead of
         falling back to an arbitrary host when no executor matches the node.
         Defaults to ``False``.
-    :type strict_executor_matching: bool
     :param default_executor_host: The Nomad client host to use when no matching host
         is found for a service (e.g. RDS instances). If set, takes precedence over
         the first available host in the fallback path.
-    :type default_executor_host: str | None
     """
 
     tasks_api: RemoteAPI
-    task_execution_timeout: int = 300
-    tasks_execution_wait_interval: int = 5
+    task_execution_timeout: TaskExecutionTimeout = 300
+    tasks_execution_wait_interval: TasksExecutionWaitInterval = 5
     force_executor_host: str | None = None
     strict_executor_matching: bool = False
 

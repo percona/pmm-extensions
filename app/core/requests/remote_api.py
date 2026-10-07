@@ -16,10 +16,14 @@
 """Manage remote API interactions."""
 
 __all__ = [
+    "POOL_WAIT_WARN_SECONDS",
     "UPSTREAM_NON_JSON_HEADER",
     "BaseRemoteAPI",
+    "CredentialHeaderMixin",
     "JSONBody",
+    "PendingCloses",
     "RemoteAPI",
+    "StoredCredentialHeaderMixin",
     "as_json_array",
     "as_json_object",
     "exception_for_status",
@@ -28,20 +32,33 @@ __all__ = [
 
 import asyncio
 import logging
+import time
 from collections.abc import (
     AsyncGenerator,
     AsyncIterable,
     AsyncIterator,
+    Awaitable,
+    Callable,
     Generator,
     Iterable,
     Mapping,
+    Sequence,
 )
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
 from functools import cached_property, lru_cache
 from ssl import create_default_context, SSLContext
-from types import TracebackType
-from typing import Annotated, Any, BinaryIO, ClassVar, NoReturn, Self
+from types import SimpleNamespace, TracebackType
+from typing import (
+    Annotated,
+    Any,
+    BinaryIO,
+    ClassVar,
+    NoReturn,
+    ParamSpec,
+    Self,
+    TypeVar,
+)
 from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunsplit
 
 from aiohttp import (
@@ -53,6 +70,10 @@ from aiohttp import (
     encode_basic_auth,
     FormData,
     TCPConnector,
+    TraceConfig,
+    TraceConnectionQueuedEndParams,
+    TraceConnectionQueuedStartParams,
+    TraceRequestStartParams,
 )
 from aiohttp.abc import AbstractCookieJar
 from fastapi import HTTPException, status
@@ -79,6 +100,8 @@ from app.core.requests.connectivity import (
 )
 from app.core.utils import json_serializer
 from app.core.utils.fields import (
+    AuthCredentialSecretStr,
+    AuthSchemeStr,
     CREDENTIAL_URL_MASK,
     CREDENTIAL_URL_STR_JSON_SERIALIZER,
     CredentialHttpUrl,
@@ -117,6 +140,13 @@ _TRUNCATION_MARKER = "... (truncated)"
 # body (e.g. an nginx HTML 502), letting callers tell a proxy/gateway failure
 # apart from an app-level JSON error at the same status code.
 UPSTREAM_NON_JSON_HEADER = "X-Upstream-Non-JSON"
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+#: Seconds a request may wait for a pooled connection before the wait is logged
+#: as a WARNING: a wait that long means the pool is saturated, not merely busy.
+POOL_WAIT_WARN_SECONDS = 1.0
 
 #: The body of a single multipart file part: raw bytes held in memory, an open
 #: binary handle, or an async iterator of chunks. aiohttp streams the latter two,
@@ -366,31 +396,198 @@ async def _iter_lines_from_chunks(
         yield bytes(buffer)
 
 
+def _pool_wait_trace_config(logger: logging.Logger, target: str) -> TraceConfig:
+    """Build the tracing hooks that log a long wait for a pooled connection.
+
+    aiohttp fires the queued signals only when a request found its pool full,
+    so a request that got a connection at once logs nothing. A request that
+    loses the race for a freed slot queues again, firing the pair once per
+    attempt, so the wait is measured from the first attempt and logged once.
+    The hooks hold plain values rather than the client: a session referencing
+    its own client would form a cycle, and an unclosed one would then outlive
+    its scope.
+
+    :param logger: The client's logger.
+    :param target: The redacted base URL the session talks to.
+    :return: The trace config to build a session with.
+    """
+    trace_config = TraceConfig()
+
+    async def on_request_start(
+        _session: ClientSession,
+        context: SimpleNamespace,
+        params: TraceRequestStartParams,
+    ) -> None:
+        context.request = f"{params.method} {params.url.path}"
+
+    async def on_queued_start(
+        _session: ClientSession,
+        context: SimpleNamespace,
+        _params: TraceConnectionQueuedStartParams,
+    ) -> None:
+        vars(context).setdefault("queued_at", time.monotonic())
+
+    async def on_queued_end(
+        _session: ClientSession,
+        context: SimpleNamespace,
+        _params: TraceConnectionQueuedEndParams,
+    ) -> None:
+        waited = time.monotonic() - context.queued_at
+        if waited > POOL_WAIT_WARN_SECONDS and not vars(context).get("warned"):
+            context.warned = True
+            logger.warning(
+                "Waited %.2fs for a pooled connection to %s (%s)",
+                waited,
+                target,
+                context.request,
+            )
+
+    trace_config.on_request_start.append(on_request_start)
+    trace_config.on_connection_queued_start.append(on_queued_start)
+    trace_config.on_connection_queued_end.append(on_queued_end)
+    return trace_config
+
+
+async def _close_logging_failures(
+    clients: Sequence["BaseRemoteAPI"],
+    close: Callable[["BaseRemoteAPI"], Awaitable[None]] | None = None,
+    *,
+    action: str = "closing",
+) -> None:
+    """Close each client; log failures without raising.
+
+    :param clients: Clients to close.
+    :param close: Per-client close factory; defaults to each client's
+        :meth:`~BaseRemoteAPI.close`.
+    :param action: Verb interpolated into the warning (``closing``,
+        ``force-closing``).
+    """
+    if not clients:
+        return
+    closer = close or (lambda client: client.close())
+    results = await asyncio.gather(
+        *(closer(client) for client in clients),
+        return_exceptions=True,
+    )
+    for client, result in zip(clients, results, strict=False):
+        if isinstance(result, Exception):
+            client.logger.warning(
+                "Error %s client %s: %s",
+                action,
+                client.redacted_base_url,
+                result,
+            )
+
+
+class PendingCloses:
+    """Track clients whose :meth:`BaseRemoteAPI.close_when_idle` deferred a close.
+
+    Each owning component keeps its own instance so a shutdown sweep only
+    reaches clients that owner itself retired. A client that drains normally
+    before shutdown is removed here and is not force-closed again.
+
+    Clients are keyed by identity: :class:`BaseRemoteAPI` compares by field
+    values, so a value-keyed set would collapse two retired instances that
+    shared an endpoint.
+
+    :meth:`seal` (and :meth:`force_close`) permanently refuse new deferrals so a
+    rebind that races shutdown cannot register a client after the sweep has
+    already run. :meth:`add` returns ``False`` when sealed; the caller must
+    close immediately. Callers that open a *replacement* client during
+    shutdown also check :attr:`sealed` and discard the replacement instead of
+    publishing it (the active slot is owned by teardown once sealing starts).
+    """
+
+    def __init__(self) -> None:
+        self._clients: dict[int, BaseRemoteAPI] = {}
+        self._sealed = False
+
+    @property
+    def sealed(self) -> bool:
+        """Return whether shutdown has sealed this collection against new deferrals."""
+        return self._sealed
+
+    def seal(self) -> None:
+        """Reject further deferrals; late retirements must close immediately."""
+        self._sealed = True
+
+    def add(self, client: "BaseRemoteAPI") -> bool:
+        """Remember ``client`` until it drains or :meth:`force_close` runs.
+
+        :param client: The client whose close was deferred.
+        :return: ``True`` when registered for deferred close, ``False`` when
+            this collection is already sealed and the caller must close
+            ``client`` now (use :meth:`track` if that immediate close must
+            stay discoverable on failure).
+        """
+        if self._sealed:
+            return False
+        self._clients[id(client)] = client
+        return True
+
+    def track(self, client: "BaseRemoteAPI") -> None:
+        """Remember ``client`` until a successful close removes it.
+
+        Unlike :meth:`add`, this registers even when sealed so an immediate
+        close that fails or is cancelled stays discoverable for a later
+        :meth:`force_close`. Callers that discard a late replacement use this
+        before awaiting :meth:`~BaseRemoteAPI.close`.
+
+        :param client: The client to keep tracked until a close succeeds.
+        """
+        self._clients[id(client)] = client
+
+    def discard(self, client: "BaseRemoteAPI") -> None:
+        """Drop ``client`` after a normal deferred close.
+
+        :param client: The client that closed (or was force-closed).
+        """
+        self._clients.pop(id(client), None)
+
+    async def force_close(self) -> None:
+        """Seal, then close every still-deferred client.
+
+        Sealing happens before any ``await`` so a concurrent rebind that tries
+        to register after this returns cannot reintroduce a leak.
+        Only the hold-triggered close flag is cleared before ``close`` so a
+        concurrent :meth:`BaseRemoteAPI.hold` finally will not start another
+        close from ``_close_when_idle``. The client stays registered here until
+        a *successful* session close removes it, so a failed or cancelled close
+        remains discoverable for a later sweep. If that hold already began
+        tearing down the session, :meth:`BaseRemoteAPI.close` joins the
+        in-progress operation so this sweep still waits for the socket to
+        finish closing. Safe to call when empty.
+        """
+        self._sealed = True
+        clients = list(self._clients.values())
+        if not clients:
+            return
+        for client in clients:
+            client.clear_hold_triggered_close()
+        await _close_logging_failures(clients, action="force-closing")
+
+
 class BaseRemoteAPI(BaseCaseInsensitiveModel):
-    """Base class for interacting with external APIs.
+    """Interact with an external HTTP API.
 
     Provides foundational functionality for making HTTP requests, handling SSL
     configurations, and managing request paths and headers.
 
     :param endpoint: The base URL for the external API endpoint.
-    :type endpoint: CredentialHttpUrl
     :param verify_ssl: Whether to verify SSL certificates. Defaults to True.
-    :type verify_ssl: bool
     :param ssl_cafile: Path to the SSL certificate authority file. Defaults to None.
-    :type ssl_cafile: RelativeFilePathField | None
     :param ssl_keyfile: Path to the SSL key file. Defaults to None.
-    :type ssl_keyfile: RelativeFilePathField | None
     :param ssl_certfile: Path to the SSL certificate file. Defaults to None.
-    :type ssl_certfile: RelativeFilePathField | None
-    :param logger_name: Name to use for the logger. Defaults to `__name__`.
-    :type logger_name: str
+    :param logger_name: Name to use for the logger. Defaults to ``__name__``.
     :cvar CONNECTIVITY_CHECK_PATH: Lightweight route hit by
         :meth:`RemoteAPI.check_connectivity` for a reachability probe. Never
         enters the client-registry key or model serialization. Override per
         client, or pass an explicit ``path`` to ``check_connectivity``.
+    :cvar STREAM_CONNECTION_LIMIT: Default for :attr:`stream_connection_limit`.
     """
 
     CONNECTIVITY_CHECK_PATH: ClassVar[str] = "/"
+    STREAM_CONNECTION_LIMIT: ClassVar[int] = 64
     endpoint: CredentialHttpUrl = Field(..., frozen=True)
     verify_ssl: bool = Field(default=True, frozen=True)
     ssl_cafile: RelativeFilePathField | None = Field(None, frozen=True)
@@ -398,8 +595,16 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ssl_certfile: RelativeFilePathField | None = Field(None, frozen=True)
     logger_name: str = __name__
     _session: ClientSession | None = None
+    _stream_session: ClientSession | None = None
     _in_flight: int = 0
     _close_when_idle: bool = False
+    _held_workers: set[asyncio.Future[Any]] = PrivateAttr(default_factory=set)
+    _pending_closes: PendingCloses | None = None
+    # Set while :meth:`__aexit__` runs so a concurrent :meth:`close` (e.g.
+    # shutdown ``force_close``) awaits the same session teardown instead of
+    # racing a second one. Cleared on failure so a later close can retry;
+    # left completed on success so late joiners still observe the finish.
+    _close_done: asyncio.Future[None] | None = None
     _extra_headers: ContextVar[dict[str, str] | None] = PrivateAttr(
         default_factory=lambda: ContextVar("api_extra_headers", default=None)
     )
@@ -464,6 +669,74 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         """
         return None
 
+    @property
+    def stream_connection_limit(self) -> int:
+        """Return the most connections long-lived responses may hold at once.
+
+        Long-lived responses draw on a pool of their own with no per-host cap,
+        so however many are open they cannot take this client's short-call
+        connections, and only this total bounds them. A server that caps
+        connections per client address still counts both pools together.
+        Override to make the cap configurable.
+
+        :return: The total connection cap of the long-lived pool.
+        """
+        return self.STREAM_CONNECTION_LIMIT
+
+    def _new_session(
+        self,
+        *,
+        limit: int,
+        limit_per_host: int,
+        cookie_jar: AbstractCookieJar | None,
+    ) -> ClientSession:
+        """Build an aiohttp session over a pool of its own.
+
+        :param limit: The pool's total connection cap.
+        :param limit_per_host: The pool's per-host cap, ``0`` for none.
+        :param cookie_jar: The jar to use, or ``None`` for aiohttp's default.
+        :return: The new session.
+        """
+        connector = TCPConnector(
+            ssl=self.ssl_context,
+            enable_cleanup_closed=True,
+            limit=limit,
+            limit_per_host=limit_per_host,
+            ttl_dns_cache=300,
+            keepalive_timeout=15,
+        )
+        return ClientSession(
+            base_url=self.session_base_url,
+            headers=self.headers or None,
+            json_serialize=json_serializer,
+            connector=connector,
+            timeout=ClientTimeout(total=300, connect=5, sock_connect=5, sock_read=120),
+            cookie_jar=cookie_jar,
+            trace_configs=[
+                _pool_wait_trace_config(self.logger, self.redacted_base_url)
+            ],
+        )
+
+    def _long_lived_session(self) -> ClientSession:
+        """Return the session long-lived responses use, building it on first use.
+
+        Clients that never stream never pay for the second pool. It shares the
+        short-call session's cookie jar, so a cookie an earlier call received
+        still reaches a stream.
+
+        :return: The long-lived session.
+        :raises RuntimeError: If the client has not been opened.
+        """
+        if self._session is None:
+            raise RuntimeError(f"{type(self).__name__} is not open")
+        if self._stream_session is None or self._stream_session.closed:
+            self._stream_session = self._new_session(
+                limit=self.stream_connection_limit,
+                limit_per_host=0,
+                cookie_jar=self._session.cookie_jar,
+            )
+        return self._stream_session
+
     async def __aenter__(self) -> Self:
         """Enter the asynchronous context manager.
 
@@ -473,23 +746,13 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         :rtype: BaseRemoteAPI
         """
         if getattr(self, "_session", None) is None:
+            # A prior close may have left ``_close_done`` completed; clear it
+            # so a later close on this reopened session is not treated as a
+            # join on the finished teardown.
+            self._close_done = None
             self.logger.debug("Opening ClientSession for %s", self.redacted_base_url)
-            connector = TCPConnector(
-                ssl=self.ssl_context,
-                enable_cleanup_closed=True,
-                limit=25,
-                limit_per_host=10,
-                ttl_dns_cache=300,
-                keepalive_timeout=15,
-            )
-            timeout = ClientTimeout(total=300, connect=5, sock_connect=5, sock_read=120)
-            self._session = ClientSession(
-                base_url=self.session_base_url,
-                headers=self.headers or None,
-                json_serialize=json_serializer,
-                connector=connector,
-                timeout=timeout,
-                cookie_jar=self._cookie_jar(),
+            self._session = self._new_session(
+                limit=25, limit_per_host=10, cookie_jar=self._cookie_jar()
             )
         return self
 
@@ -501,23 +764,80 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ) -> None:
         """Exit the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized.
+        Closes the aiohttp ``ClientSession`` if it was initialized, and the
+        long-lived session with it. Concurrent callers join the in-progress
+        teardown via a shielded ``_close_done`` wait so cancelling one waiter
+        cannot cancel the shared close state.
+        If the owning close is cancelled, a joiner that is not itself
+        cancelling takes over teardown so the session does not stay open.
+        Deferred-close bookkeeping is cleared only after a *successful*
+        session close, so a failed or cancelled teardown stays discoverable
+        on :class:`PendingCloses` and a later :meth:`close` can retry.
 
         :param exc_type: The exception type, if any.
-        :type exc_type: type[BaseException] | None
         :param exc_val: The exception value, if any.
-        :type exc_val: BaseException | None
         :param exc_tb: The traceback, if any.
-        :type exc_tb: TracebackType | None
         """
-        if self._session and not self._session.closed:
-            self.logger.debug("Closing ClientSession for %s", self.redacted_base_url)
-            await self._session.close()
+        if self._close_done is not None:
+            # Shield so cancelling this waiter does not cancel the shared
+            # future other close() / force_close joiners still need.
+            already_closed = self._close_done.done()
+            shared = self._close_done
+            try:
+                await asyncio.shield(shared)
+            except asyncio.CancelledError:
+                # The owning close may have published CancelledError into
+                # ``shared`` without this task being cancelled. Take over
+                # teardown so the session does not stay open; only re-raise
+                # when we ourselves are being cancelled.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling() == 0:
+                    return await self.__aexit__(exc_type, exc_val, exc_tb)
+                raise
+            if already_closed:
+                self.logger.debug(
+                    "ClientSession already closed for %s", self.redacted_base_url
+                )
+            return None
+
+        done = asyncio.get_running_loop().create_future()
+        self._close_done = done
+        try:
+            await self._close_sessions()
+        except BaseException as exc:
+            self._close_done = None
+            if not done.done():
+                done.set_exception(exc)
+                # Mark retrieved when nobody joined, so asyncio does not warn
+                # about an orphaned future exception on this failure path.
+                done.exception()
+            raise
         else:
-            self.logger.debug(
-                "ClientSession already closed for %s", self.redacted_base_url
-            )
-        self._session = None
+            self.clear_deferred_close()
+            if not done.done():
+                done.set_result(None)
+
+    async def _close_sessions(self) -> None:
+        """Close the short-call session, then the long-lived one.
+
+        The long-lived session closes even when closing the short-call one
+        fails, so a failed teardown never leaves its streams' sockets open.
+        """
+        try:
+            if self._session and not self._session.closed:
+                self.logger.debug(
+                    "Closing ClientSession for %s", self.redacted_base_url
+                )
+                await self._session.close()
+            else:
+                self.logger.debug(
+                    "ClientSession already closed for %s", self.redacted_base_url
+                )
+            self._session = None
+        finally:
+            if self._stream_session and not self._stream_session.closed:
+                await self._stream_session.close()
+            self._stream_session = None
 
     async def open(self) -> Self:
         """Open the asynchronous context manager.
@@ -532,9 +852,70 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     async def close(self) -> None:
         """Close the asynchronous context manager.
 
-        Closes the aiohttp `ClientSession` if it was initialized.
+        Closes the aiohttp ``ClientSession`` if it was initialized, and the
+        long-lived session with it. If a close is already in progress (a
+        draining :meth:`hold`, or another caller), waits for that teardown to
+        finish instead of starting a second one. A failed close leaves the
+        client retryable for a later call.
         """
         await self.__aexit__(None, None, None)
+
+    def clear_deferred_close(self) -> None:
+        """Drop deferred-close bookkeeping without closing the session.
+
+        Called after a *successful* session close (from :meth:`__aexit__`) so
+        the owner no longer tracks this client for a shutdown sweep.
+        :meth:`PendingCloses.force_close` does *not* call this before awaiting
+        :meth:`close`; it only clears the hold-triggered flag via
+        :meth:`clear_hold_triggered_close` so a failed close stays discoverable.
+        """
+        pending = self._pending_closes
+        if pending is not None:
+            pending.discard(self)
+            self._pending_closes = None
+        self._close_when_idle = False
+
+    def clear_hold_triggered_close(self) -> None:
+        """Clear the hold-triggered close flag without leaving :class:`PendingCloses`.
+
+        :meth:`PendingCloses.force_close` calls this before awaiting
+        :meth:`close` so a concurrent :meth:`hold` finally no longer sees
+        ``_close_when_idle`` and starts a redundant close; :meth:`close` is
+        still joinable via ``_close_done`` if teardown already began. The
+        client stays registered on the owner's pending set until a successful
+        session close removes it.
+        """
+        self._close_when_idle = False
+
+    def remember_pending_close(self, pending: PendingCloses) -> bool:
+        """Register on ``pending`` so a shutdown sweep can still force-close us.
+
+        Callers must register *before* publishing a replacement or awaiting
+        :meth:`close_when_idle`, so a concurrent seal/sweep cannot miss a
+        client that has left the live slot but not yet deferred. Prefer doing
+        that under the same lock (or on the same no-await stretch) as the
+        eviction or swap. Idempotent when already registered on ``pending``.
+
+        :param pending: The calling owner's deferred-close collection.
+        :return: ``True`` when registered for deferred close, ``False`` when
+            ``pending`` is already sealed and the caller must close this
+            client now.
+        """
+        if not pending.add(self):
+            return False
+        self._pending_closes = pending
+        return True
+
+    def track_pending_close(self, pending: PendingCloses) -> None:
+        """Register on ``pending`` even when sealed, for an immediate close.
+
+        Used when discarding a late replacement: the close runs now, but the
+        owner must still find us if that close fails or is cancelled.
+
+        :param pending: The owner's deferred-close collection, sealed or not.
+        """
+        pending.track(self)
+        self._pending_closes = pending
 
     @asynccontextmanager
     async def hold(self) -> AsyncGenerator[Self, None]:
@@ -544,7 +925,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         including the ones it issues after an earlier response finished, so the
         accounting unit is the hold rather than the individual HTTP call. The
         releaser that drops the count to zero performs a close that
-        :meth:`close_when_idle` deferred.
+        :meth:`close_when_idle` deferred. That close stays discoverable on the
+        owner's :class:`PendingCloses` until the session teardown finishes, so
+        a concurrent shutdown sweep can await the same operation.
 
         The release runs during cancellation too, when the consuming task is
         cancelled by a client disconnecting mid-response, so the deferred close
@@ -559,19 +942,66 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         finally:
             self._in_flight -= 1
             if not self._in_flight and self._close_when_idle:
-                self._close_when_idle = False
                 await asyncio.shield(self.close())
 
-    async def close_when_idle(self) -> None:
+    async def run_in_thread_held(
+        self, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        """Run a blocking call in a worker thread, holding this client until it returns.
+
+        Cancelling the caller does not stop the worker thread, which goes on
+        using this client. The hold therefore lives in a task of its own that
+        ends only when the thread does, so a retirement waiting on
+        :meth:`close_when_idle` cannot close the client under it, however often
+        the caller is cancelled.
+
+        :param func: The blocking callable.
+        :param args: Positional arguments for ``func``.
+        :param kwargs: Keyword arguments for ``func``.
+        :return: What ``func`` returns.
+        """
+
+        async def held() -> R:
+            async with self.hold():
+                return await asyncio.to_thread(func, *args, **kwargs)
+
+        worker = asyncio.ensure_future(held())
+        self._held_workers.add(worker)
+        worker.add_done_callback(self._forget_held_worker)
+        return await asyncio.shield(worker)
+
+    def _forget_held_worker(self, worker: asyncio.Future[Any]) -> None:
+        """Drop a finished worker, retrieving its outcome so none goes unreported.
+
+        :param worker: The finished worker.
+        """
+        self._held_workers.discard(worker)
+        if not worker.cancelled():
+            worker.exception()
+
+    async def close_when_idle(self, pending: PendingCloses | None = None) -> None:
         """Close the session now when idle, or once the last consumer releases.
 
         Unlike :meth:`close`, which closes unconditionally, this waits on the
         consumers registered by :meth:`hold`, and imposes no deadline on them.
         Callers that retire a client on a settings rebind use this so an
         in-flight stream or download is not cut off mid-response.
+
+        When the close is deferred and ``pending`` is given, this client is
+        registered there so the owner's shutdown path can still force-close it
+        if the holder never unwinds. If ``pending`` is already sealed (shutdown
+        has begun), the close runs immediately instead of being deferred past
+        the sweep.
+
+        :param pending: The calling owner's deferred-close collection, or
+            ``None`` when the caller does not track retirements for shutdown.
         """
         if self._in_flight:
             self._close_when_idle = True
+            if pending is not None and not self.remember_pending_close(pending):
+                self._close_when_idle = False
+                await self.close()
+                return
             return
         await self.close()
 
@@ -896,20 +1326,21 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         self,
         method: str,
         path: str,
+        *,
+        long_lived: bool = False,
         **kwargs: Any,
     ) -> AsyncGenerator[ClientResponse, None]:
-        """Define internal method to perform an HTTP request.
-
-        Yields the aiohttp `ClientResponse` object for further processing.
+        """Perform an HTTP request and hand back its open response.
 
         :param method: The HTTP method to use for the request.
-        :type method: str
         :param path: The API endpoint path to request.
-        :type path: str
+        :param long_lived: Whether the response stays open for long, like a
+            stream or a follow. Such a request draws on the long-lived pool
+            rather than the short-call one.
         :param kwargs: Additional keyword arguments to pass to the request.
-        :type kwargs: Any
-        :yield: The aiohttp `ClientResponse` object.
-        :rtype: AsyncGenerator[ClientResponse, None]
+        :return: The aiohttp ``ClientResponse``, open for the block.
+        :raises RuntimeError: If the client has no open session (never opened,
+            or already closed, including by a shutdown force-close).
         """
         prepared_path = self.prepare_path(path)
         if extra_headers := self._extra_headers.get():
@@ -934,9 +1365,17 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 extra_sensitive_body_fields=self._extra_sensitive_body_fields.get(),
             ),
         )
+        if self._session is None:
+            # Force-close (and a never-opened client) leave ``_session`` as
+            # ``None``; raise clearly instead of ``AttributeError`` on
+            # ``None.request``.
+            raise RuntimeError(
+                f"RemoteAPI client for {self.redacted_base_url} is closed"
+            )
+        session = self._long_lived_session() if long_lived else self._session
         async with (
             self.hold(),
-            self._session.request(method, prepared_path, **kwargs) as response,
+            session.request(method, prepared_path, **kwargs) as response,
         ):
             yield response
 
@@ -964,16 +1403,15 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
 
         Use this for binary, gzip, or any non-line-oriented payload. For NDJSON
         log streams, prefer :meth:`stream`, which buffers chunks across newline
-        boundaries so each yield is a single line.
+        boundaries so each yield is a single line. The response stays open for
+        as long as the caller iterates, so it draws on the long-lived pool
+        (:attr:`stream_connection_limit`) rather than the short-call one.
 
         :param path: The API endpoint path to request.
-        :type path: str
         :param method: The HTTP method to use for the request. Defaults to "GET".
-        :type method: str
         :param kwargs: Additional keyword arguments to pass to the request.
-        :type kwargs: Any
-        :yield: Raw byte chunks from the response body in arrival order.
-        :rtype: AsyncGenerator[bytes, None]
+        :return: Raw byte chunks from the response body in arrival order.
+        :raises RuntimeError: If the client has not been opened.
         :raises HTTPGoneException: If the upstream API returns HTTP 410 (e.g. task data
             gone from the Nomad executor). Callers may use ``isinstance(..., HTTPGoneException)``
             or ``exc.status_code == 410`` without inspecting the status from a generic
@@ -986,7 +1424,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         """
         self.logger.debug("Stream started path=%s method=%s", path, method)
         try:
-            async with self._request(method, path, **kwargs) as response:
+            async with self._request(
+                method, path, long_lived=True, **kwargs
+            ) as response:
                 if response.status >= status.HTTP_400_BAD_REQUEST:
                     detail_key = getattr(self, "error_detail_key", "detail")
                     code_key = getattr(self, "error_code_key", None)
@@ -1097,6 +1537,100 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 keyfile=keyfile,
             )
         return context
+
+
+class CredentialHeaderMixin(BaseRemoteAPI):
+    """Emit a persistent ``Authorization`` header for :class:`BaseRemoteAPI` subclasses.
+
+    Apply leftmost in the MRO (e.g. ``CredentialHeaderMixin, RemoteAPI``) so
+    :attr:`headers` wins over the base. Formats ``Authorization`` from
+    :attr:`_authorization_scheme` and :attr:`_credential_value` without each
+    client reimplementing the string.
+
+    This base declares no settings fields: subclasses with a derived credential
+    and a fixed scheme (e.g. Casdoor Basic) override the two properties only.
+    Clients that store a secret and a configurable scheme use
+    :class:`StoredCredentialHeaderMixin` instead.
+
+    Clients that deliberately carry no session-lifetime credential — GrafanaSDK,
+    bare :class:`RemoteAPI` instances — simply do not apply this mixin.
+    """
+
+    @property
+    def _authorization_scheme(self) -> str:
+        """Return the scheme spliced ahead of the credential in ``Authorization``.
+
+        Defaults to ``Bearer`` so a future client that supplies a credential but
+        forgets to set a scheme still builds a valid header rather than failing
+        on every request. Subclasses with a fixed scheme (e.g. Casdoor Basic)
+        override this. Stored-credential clients inherit
+        :class:`StoredCredentialHeaderMixin`, which reads ``auth_scheme``.
+
+        :return: The authentication scheme token.
+        """
+        return "Bearer"
+
+    @property
+    def _credential_value(self) -> str | None:
+        """Return the plain credential for the ``Authorization`` header, or ``None``.
+
+        Subclasses with a derived credential override this. Stored-credential
+        clients inherit :class:`StoredCredentialHeaderMixin`, which reads
+        ``api_key`` (empty secret counts as unset).
+
+        :return: The plain credential when one should be sent, else ``None``.
+        """
+        return None
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """Return request headers, adding ``Authorization`` when a credential is set.
+
+        :return: The inherited headers, plus ``Authorization`` when
+            :attr:`_credential_value` is non-``None``.
+        """
+        base_headers = super().headers
+        credential = self._credential_value
+        if credential is None:
+            return base_headers
+        return {
+            **base_headers,
+            "Authorization": f"{self._authorization_scheme} {credential}",
+        }
+
+
+class StoredCredentialHeaderMixin(CredentialHeaderMixin):
+    """Back the ``Authorization`` header with a stored ``api_key`` and ``auth_scheme``.
+
+    Use for clients whose credential is session-lifetime config (PMM, Nomad).
+    Do not use for clients that derive the credential or hard-code the scheme
+    (Casdoor): those fields would become operator settings that either do nothing
+    or can break authentication.
+    """
+
+    api_key: AuthCredentialSecretStr | None = None
+    auth_scheme: AuthSchemeStr = "Bearer"
+
+    @property
+    def _authorization_scheme(self) -> str:
+        """Return the configured ``auth_scheme``.
+
+        :return: The authentication scheme token.
+        """
+        return self.auth_scheme
+
+    @property
+    def _credential_value(self) -> str | None:
+        """Return the plain ``api_key``, or ``None`` when unset.
+
+        An empty secret counts as unset: :class:`~pydantic.SecretStr` defines
+        ``__len__``, so a blank value is falsy and would otherwise emit a header
+        with no credential.
+
+        :return: The plain API key when a non-empty one is configured, else
+            ``None``.
+        """
+        return self.api_key.get_secret_value() if self.api_key else None
 
 
 class RemoteAPI(BaseRemoteAPI):

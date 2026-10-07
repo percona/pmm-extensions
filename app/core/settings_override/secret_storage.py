@@ -82,7 +82,7 @@ from enum import Enum
 from types import UnionType
 from typing import Any, Union
 
-from pydantic import BaseModel, SecretBytes, SecretStr
+from pydantic import AnyUrl, BaseModel, SecretBytes, SecretStr
 from pydantic_core import Url
 
 from app.core.encryption import (
@@ -646,16 +646,19 @@ def _credential_url_text(value: Any) -> str | None:
 
     The write path hands the walker the *validated* value, which for a
     :data:`~app.core.utils.fields.CredentialHttpUrl` field is a
-    :class:`pydantic_core.Url` rather than a string; the migration and read
+    :class:`~pydantic.HttpUrl` rather than a string; the migration and read
     paths hand it the JSON column's text. Both reach this leaf, so the branch
-    normalizes rather than testing for ``str`` — a ``str``-only guard would
+    normalizes pydantic's single-host URL objects (an :class:`~pydantic.AnyUrl`
+    subclass such as :class:`~pydantic.HttpUrl`, or a bare
+    :class:`pydantic_core.Url`) rather than testing for
+    ``str`` — a ``str``-only guard would
     silently skip every field typed ``CredentialHttpUrl`` on the one path that
     writes them.
 
     :param value: The stored value at a credential-URL position.
     :return: The URL as text, or ``None`` when the leaf is neither.
     """
-    if isinstance(value, str | Url):
+    if isinstance(value, str | AnyUrl | Url):
         return str(value)
     return None
 

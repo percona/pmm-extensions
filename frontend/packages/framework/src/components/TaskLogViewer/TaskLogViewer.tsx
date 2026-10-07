@@ -48,8 +48,6 @@ import { StreamErrorBlock } from './StreamErrorBlock';
 
 type TopTab = 'stdout' | 'stderr' | 'events';
 
-export const DEFAULT_LOG_TAIL_LINES = 1000;
-
 export const LOG_TAIL_LINE_OPTIONS = [
   { label: '100', value: '100' },
   { label: '1000', value: '1000' },
@@ -104,11 +102,9 @@ export interface TaskLogViewerProps {
 
 /**
  * The terminal statuses a `finish` frame is supposed to carry. The frame is
- * parsed without validation, and the backend does send `finish` with a
- * non-terminal status (e.g. `running`) when it reconciles a run whose
- * allocation is placed but no step has started, so a live log is only treated
- * as complete when its status is one of these. Keyed on the union so a new
- * member cannot be added without deciding it here.
+ * parsed without validation, so a live log is only treated as complete when
+ * its status is one of these. Keyed on the union so a new member cannot be
+ * added without deciding it here.
  */
 const TERMINAL_FINISH_STATUS: Record<FinishStatus, true> = {
   success: true,
@@ -196,7 +192,7 @@ export function TaskLogViewer({ taskHistoryId, taskStatus, height = 480 }: TaskL
   const reloadLiveLog = liveLogState === 'ended' && !running;
   const tailLines = logTailChoiceToParam(logTailChoice);
   const effectiveTailLines = running || keepLiveLog ? undefined : tailLines;
-  const { textByStep, stepOrder, streamStatus, finishStatus, error } = useTaskLogs(
+  const { textByStep, stepOrder, streamStatus, finishStatus, error, resumed } = useTaskLogs(
     taskHistoryId,
     effectiveTailLines,
     reloadLiveLog ? 1 : 0,
@@ -211,21 +207,29 @@ export function TaskLogViewer({ taskHistoryId, taskStatus, height = 480 }: TaskL
       setLiveLog(running ? { historyId: taskHistoryId, state: 'open' } : null);
       return;
     }
-    // Only the stream opened while running is tracked, and it settles once:
-    // the reload that follows an `ended` stream must not be taken for it.
+    // Only the stream opened while running is tracked, plus any other stream
+    // that resumed: its offsets may be live ones the persisted log does not
+    // share (no status is polled, or the run started after the viewer opened),
+    // so it is reloaded too. Each settles once: the reload that follows an
+    // `ended` stream must not be taken for it.
     if (streamStatus === 'finished' || streamStatus === 'error') {
+      if (liveLogState === undefined && resumed && streamStatus === 'finished') {
+        setLiveLog({ historyId: taskHistoryId, state: 'ended' });
+        return;
+      }
       if (liveLogState !== 'open') {
         return;
       }
       const complete =
         streamStatus === 'finished' &&
+        !resumed &&
         finishStatus !== undefined &&
         Object.prototype.hasOwnProperty.call(TERMINAL_FINISH_STATUS, finishStatus);
       setLiveLog({ historyId: taskHistoryId, state: complete ? 'complete' : 'ended' });
     } else if (running && liveLogState === undefined) {
       setLiveLog({ historyId: taskHistoryId, state: 'open' });
     }
-  }, [running, streamStatus, finishStatus, taskHistoryId, liveLogState]);
+  }, [running, streamStatus, finishStatus, resumed, taskHistoryId, liveLogState]);
   const { eventsByStep, stepOrder: eventStepOrder } = useExecutionEvents(taskHistoryId, running);
 
   const [topTab, setTopTab] = useState<TopTab>('stdout');

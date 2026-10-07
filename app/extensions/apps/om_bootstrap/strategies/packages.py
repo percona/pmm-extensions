@@ -93,6 +93,18 @@ PMM_MONITORING_USER_ROLES = [
     {"role": "read", "db": "local"},
 ]
 
+#: How long ``create_pmm_monitoring_user``'s driver waits for a primary to exist
+#: before giving up, in milliseconds.
+#:
+#: This is a wait for an *election*, not for a network round trip. ``rs.initiate``
+#: returns as soon as the config is accepted, and the first election follows it by
+#: whatever ``electionTimeoutMillis`` and the members' own timers work out to -
+#: measured at 11s on a three-member set on a real deployment, against a 10s
+#: default election timeout. 30s leaves room for a member that is slow to answer
+#: its first heartbeat without waiting so long that a genuinely broken set holds
+#: the step past its own dispatch timeout.
+PRIMARY_SELECTION_TIMEOUT_MS = 30_000
+
 
 def _psmdb_channel(mongodb_version: str) -> str:
     """Turn ``"8.0"`` (or ``"8.0.4"``) into the channel name ``"psmdb-80"``.
@@ -189,11 +201,16 @@ def _mongosh_eval(js: str, port: int) -> StepAction:
     Every caller here runs before authorization is ever enabled (see
     :meth:`PackagesInstallStrategy._configure_mongod`'s own docstring) —
     deliberately, so this never has to route around MongoDB's localhost
-    exception at all: ``rs_initiate`` and ``create_pmm_monitoring_user`` both
-    just work, unauthenticated, on any member regardless of topology or
-    timing. ``enable_auth`` (:meth:`PackagesInstallStrategy._enable_auth`) is
-    what turns authorization on afterward, once the user this creates already
-    exists.
+    exception at all: ``rs_initiate`` and ``verify``, this function's two
+    callers, both just work unauthenticated on the member they run on.
+    ``enable_auth`` (:meth:`PackagesInstallStrategy._enable_auth`) is what turns
+    authorization on afterward, once ``create_pmm_monitoring_user`` has created
+    the first user.
+
+    ``create_pmm_monitoring_user`` is deliberately not one of those callers: its
+    write has to reach the elected primary, which the member it runs on need not
+    be, so it goes through :func:`_mongosh_file` with a replica-set URI
+    instead.
 
     :param js: The JavaScript to evaluate.
     :param port: The port mongod listens on.
@@ -202,7 +219,30 @@ def _mongosh_eval(js: str, port: int) -> StepAction:
     return _shell_step(_mongosh_eval_command(js, port), timeout_s=60)
 
 
-def _mongosh_file(js: str, port: int) -> StepAction:
+def _replica_set_uri(hosts: list[str], spec: BootstrapSpec) -> str:
+    """Build a connection string that resolves to whichever member is primary.
+
+    Every member is listed as a seed and ``replicaSet`` names the set, so the
+    driver discovers the topology and sends a write to the primary rather than
+    to whichever member it happened to connect to. ``serverSelectionTimeoutMS``
+    makes it *wait* for that primary to exist, which is the other half of the
+    same problem - see :meth:`PackagesInstallStrategy._create_pmm_monitoring_user`.
+
+    Unauthenticated on purpose, like every other mongosh call here: these steps
+    all run before ``enable_auth``.
+
+    :param hosts: Every member of the set.
+    :param spec: The run's bootstrap spec; its port and replica set name are read.
+    :return: A ``mongodb://`` URI naming every member.
+    """
+    seeds = ",".join(f"{host}:{spec.port}" for host in hosts)
+    return (
+        f"mongodb://{seeds}/?replicaSet={spec.replica_set_name}"
+        f"&serverSelectionTimeoutMS={PRIMARY_SELECTION_TIMEOUT_MS}"
+    )
+
+
+def _mongosh_file(js: str, port: int, uri: str | None = None) -> StepAction:
     """Build a ``StepAction`` running ``js`` from a private temp file.
 
     For JS that embeds a secret: ``--eval`` would put it in mongosh's argv,
@@ -213,9 +253,15 @@ def _mongosh_file(js: str, port: int) -> StepAction:
     output, which never contains a raw newline.
 
     :param js: The JavaScript to run.
-    :param port: The port mongod listens on.
+    :param port: The port mongod listens on. Ignored when ``uri`` is given,
+        which carries its own ports.
+    :param uri: Connect through this connection string instead of to the local
+        member on ``port``. For a step that must reach the primary rather than
+        the host it runs on; :func:`_replica_set_uri` builds one. It names no
+        credentials, so it is no more secret than the argv it replaces.
     :return: The step action.
     """
+    target = shlex.quote(uri) if uri else f"--port {port}"
     body = (
         "umask 077\n"
         "js=$(mktemp)\n"
@@ -224,7 +270,7 @@ def _mongosh_file(js: str, port: int) -> StepAction:
         f"{js}\n"
         "OM_BOOTSTRAP_JS\n"
         "MONGOSH_DISABLE_ATLAS_LOCAL_DEV_CLUSTER_CHECK=1 "
-        f'mongosh --quiet --port {port} --file "$js"\n'
+        f'mongosh --quiet {target} --file "$js"\n'
     )
     return _shell_step(body, timeout_s=60)
 
@@ -479,7 +525,7 @@ class PackagesInstallStrategy:
         assuming the package's own post-install already did — confirmed
         against a real failure that it does not: mongod exits immediately on
         first start with ``NonExistentPath: Data directory /var/lib/mongo not
-        found``, and ``start_service`` (``systemctl enable --now``) reports
+        found``, and ``start_service`` (``systemctl restart``) reports
         success regardless, since ``Type=forking`` only waits for the initial
         fork, not for mongod's own startup logic to run. ``verify``, a step
         later, is what actually surfaces the failure — by then the run has
@@ -541,13 +587,27 @@ class PackagesInstallStrategy:
         return _shell_step(command)
 
     def _start_service(self, spec: BootstrapSpec) -> StepAction:  # noqa: ARG002
-        """Enable and start the ``mongod`` systemd unit.
+        """Enable the ``mongod`` systemd unit and (re)start it on the config just written.
+
+        Explicitly ``restart``, not ``enable --now``: ``install_package`` may have
+        left ``mongod`` already running, and ``enable --now`` only starts a unit
+        that is not already active. Against one the package started it is a
+        no-op, so the process stays live on whatever config it booted with, which
+        is the package's own default and carries no ``replication`` block. It
+        therefore never picks up :meth:`_configure_mongod`'s rewrite of
+        :data:`CONFIG_PATH` a step earlier, and ``verify`` right after only pings
+        the server, so that does not catch it either.
+
+        Whether the package pre-starts the service is not something this step
+        needs to distinguish: Ubuntu's ``.deb`` postinst does, Rocky's ``%post``
+        does not, and ``restart`` is correct for both, since restarting a unit
+        that ``install_package`` never started behaves exactly like starting it.
 
         :param spec: The host's bootstrap spec. Unused.
         :return: The step action.
         """
-        return StepAction(
-            command=["systemctl", "enable", "--now", "mongod"], timeout_s=60
+        return _shell_step(
+            "systemctl enable mongod && systemctl restart mongod", timeout_s=60
         )
 
     def _verify(self, spec: BootstrapSpec) -> StepAction:
@@ -607,7 +667,7 @@ class PackagesInstallStrategy:
         if step_name == "rs_initiate":
             return self._rs_initiate(hosts, spec)
         if step_name == "create_pmm_monitoring_user":
-            return self._create_pmm_monitoring_user(spec, params)
+            return self._create_pmm_monitoring_user(hosts, spec, params)
         raise ValueError(
             f"{step_name!r} is not a PackagesInstallStrategy run step; "
             f"expected one of {self.plan_run_steps(spec)}"
@@ -654,16 +714,35 @@ class PackagesInstallStrategy:
         return _mongosh_eval(js, spec.port)
 
     def _create_pmm_monitoring_user(
-        self, spec: BootstrapSpec, params: dict[str, str] | None
+        self, hosts: list[str], spec: BootstrapSpec, params: dict[str, str] | None
     ) -> StepAction:
         """Create the MongoDB user PMM's ``mongodb_exporter`` authenticates as.
 
-        Created once, on the seed member — MongoDB replicates ``admin.system.users``
+        Created once for the whole set — MongoDB replicates ``admin.system.users``
         to every other member automatically, so this never needs to run per host.
         ``params`` rather than a generated value here for the same reason
         ``distribute_keyfile`` takes one: PMM's encrypted Postgres is this
         secret's durable home, not this strategy. Run through
         :func:`_mongosh_file`, so the password never appears in any argv.
+
+        Connects through :func:`_replica_set_uri` rather than to the member this
+        action runs on, and that is the whole point of the indirection.
+        ``createUser`` is a write, so it needs the primary — and the member this
+        runs on is ``hosts[0]``, the seed, which is *not* reliably the primary.
+        ``rs.initiate`` only proposes the config; the election that follows is
+        open to every member, and any of them can win it.
+
+        Confirmed against a real multi-member run, not a theoretical race: a
+        different member won the election, every dispatch of this step died
+        with ``MongoServerError: not primary``, and retrying could not help
+        because each attempt went to the same secondary - so the run exhausted
+        its retries and rolled back a set that was otherwise fine. An identical
+        run whose seed happened to win succeeded, which is what made this look
+        intermittent rather than wrong.
+
+        The URI fixes the ordering too: the driver waits up to
+        :data:`PRIMARY_SELECTION_TIMEOUT_MS` for a primary to exist, so this no
+        longer depends on an election having finished before it is dispatched.
 
         Tolerates the user already existing, for the same reason
         :meth:`_rs_initiate` tolerates ``AlreadyInitialized``: a dispatch that
@@ -672,7 +751,11 @@ class PackagesInstallStrategy:
         ``UserAlreadyExists`` (51003) and, retries exhausted, rolls the whole
         run back over a user that was actually created successfully.
 
-        :param spec: The run's bootstrap spec; only its port is read.
+        :param hosts: Every member of the set, used to build the connection
+            string. Not an execution target: index 0 is still where this action
+            runs, it just no longer has to be the primary.
+        :param spec: The run's bootstrap spec; its port and replica set name are
+            read.
         :param params: Must contain ``"username"`` and ``"password"``.
         :return: The step action.
         :raises ValueError: If ``params`` is missing ``"username"`` or
@@ -692,7 +775,7 @@ class PackagesInstallStrategy:
             f"}})"
         )
         js = f"if (!db.getSiblingDB('admin').getUser({username})) {{ {create} }}"
-        return _mongosh_file(js, spec.port)
+        return _mongosh_file(js, spec.port, uri=_replica_set_uri(hosts, spec))
 
     def plan_finalize_steps(self, spec: BootstrapSpec) -> list[str]:  # noqa: ARG002
         """Return this strategy's fixed per-host finalize step names.

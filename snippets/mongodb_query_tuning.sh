@@ -301,7 +301,7 @@ CMDS_FILE="${DEST}/commands.sh"
 } > "${CMDS_FILE}"
 chmod +x "${CMDS_FILE}"
 
-[ "${SEPDEBUG:-}" ] && echo "Written commands to: ${CMDS_FILE}"
+[ "${EXTENSIONS_DEBUG:-}" ] && echo "Written commands to: ${CMDS_FILE}"
 
 # Execute diagnostics and save output if requested
 if [ $EXECUTE -eq 1 ]; then
@@ -331,6 +331,6 @@ if [ $EXECUTE -eq 1 ]; then
     fi
 fi
 
-[ "${SEPDEBUG:-}" ] && echo "Compressing results to: ${DEST}.tar.gz"
+[ "${EXTENSIONS_DEBUG:-}" ] && echo "Compressing results to: ${DEST}.tar.gz"
 compress_data
 echo "Output archive: ${DEST}.tar.gz"

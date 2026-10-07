@@ -27,7 +27,16 @@ from pydantic import (
     NonNegativeInt,
     PositiveInt,
 )
-from sqlalchemy import Column, Index, JSON, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    column,
+    Index,
+    JSON,
+    or_,
+    Text,
+    text,
+)
 from sqlalchemy import Enum as EnumField
 from sqlmodel import Field as SQLField
 from sqlmodel import Relationship, SQLModel
@@ -74,6 +83,9 @@ class SyncHealthBase(SQLModel):
     :param sync_failing_since: When the current run of failures began — the
         first failure after the last success — or None while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     """
 
     last_synced_at: UTCDatetime | None = SQLField(
@@ -84,6 +96,9 @@ class SyncHealthBase(SQLModel):
         default=None, sa_type=DateTimeWithTimezone
     )
     consecutive_failures: NonNegativeInt = SQLField(default=0, nullable=False)
+    newest_attempt_at: UTCDatetime | None = SQLField(
+        default=None, sa_type=DateTimeWithTimezone
+    )
 
 
 class RetirableSQLModel(RetiredAtBase, BaseSQLModel):
@@ -200,11 +215,11 @@ class SyncHealthWrite(SQLModel):
     :param error: The failure's message, never empty. Required on FAILURE,
         absent on SUCCESS.
     :param attempted_at: When the syncer began this attempt. Stamped as
-        ``last_synced_at`` on success, and compared against the row's current
-        ``last_synced_at`` so a late-arriving report from an older attempt
-        cannot overwrite a newer one. Refused when it sits further ahead of this
-        service's clock than the tolerated skew, since nothing later could then
-        supersede it.
+        ``last_synced_at`` on success and as ``newest_attempt_at`` when newer,
+        and used to order reports so a late-arriving one from an older attempt
+        cannot overwrite a newer one. Refused when it sits further ahead of
+        this service's clock than the tolerated skew, since nothing later could
+        then supersede it.
     """
 
     outcome: SyncOutcomeEnum
@@ -272,6 +287,9 @@ class Node(NodeBase, SyncHealthBase, RetirableSQLModel, table=True):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param services: A list of services associated with the node.
     """
 
@@ -327,6 +345,9 @@ class NodeResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, NodeBase):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param services: A list of services associated with the node.
     """
 
@@ -423,6 +444,9 @@ class Service(RetirableSQLModel, SyncHealthBase, ServiceBase, table=True):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param schemas: A list of schemas associated with the service.
     """
 
@@ -477,6 +501,9 @@ class ServiceResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, ServiceBase):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     """
 
     schemas: list["Schema"]
@@ -543,6 +570,9 @@ class Schema(RetirableSQLModel, SyncHealthBase, SchemaBase, table=True):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param tables: A list of tables within the schema.
     """
 
@@ -602,6 +632,9 @@ class SchemaCompactResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, SchemaB
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     """
 
 
@@ -624,6 +657,9 @@ class SchemaResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, SchemaBase):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param tables: A list of tables within the schema.
     """
 
@@ -688,6 +724,9 @@ class Table(RetirableSQLModel, SyncHealthBase, TableBase, table=True):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     :param database: The schema to which the table is associated.
     """
 
@@ -745,6 +784,9 @@ class TableResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, TableBase):
     :param sync_failing_since: When the current run of failures began, or None
         while not failing.
     :param consecutive_failures: Failed attempts since the last success.
+    :param newest_attempt_at: When the newest accepted attempt began, whatever
+        its outcome, or ``None`` if none has been reported, or the upgrade
+        time for a row that was failing when the column was added.
     """
 
 
@@ -1012,11 +1054,11 @@ class HostSystemObservationBase(SQLModel):
     os_version: str | None = None
     installed_packages: list[ArbitraryMapping] | None = SQLField(
         default=None,
-        sa_column=Column(JSON),
+        sa_column=Column(JSON(none_as_null=True)),
     )
     config: ArbitraryMapping | None = SQLField(
         default=None,
-        sa_column=Column(JSON),
+        sa_column=Column(JSON(none_as_null=True)),
     )
     can_elevate: bool | None = None
     observed_at: UTCDatetime = SQLField(sa_type=DateTimeWithTimezone)
@@ -1047,6 +1089,39 @@ HOST_OBSERVATION_FIELD_NAMES = frozenset(HostSystemObservationBase.model_fields)
     "observed_at",
 }
 
+#: Name of the CHECK enforcing the host observation's minimum content, shared with
+#: the revision that creates it so a downgrade can drop it by name.
+HOST_OBSERVATION_MIN_CONTENT_CONSTRAINT = "ck_hostsystemobservation_at_least_one_fact"
+
+
+def host_observation_min_content_check() -> CheckConstraint:
+    """Build the table-level guard mirroring the at-least-one-fact validator.
+
+    The columns come from :data:`HOST_OBSERVATION_FIELD_NAMES`, so this
+    declaration and the Pydantic validator stay in lockstep as fields are added.
+    A migrated database does not: the revision that creates the CHECK spells its
+    columns out, so a new fact column reaches an existing deployment only
+    through a revision of its own. Sorting makes the rendered expression
+    deterministic across interpreter runs, which a frozenset's iteration order
+    is not.
+
+    A plain ``IS NOT NULL`` disjunction covers the JSON-typed facts only because
+    they are declared ``JSON(none_as_null=True)``. SQLAlchemy's default persists
+    an unset JSON value as the JSON text ``null``, which is not SQL NULL and so
+    would satisfy this CHECK on a row carrying no fact at all.
+
+    :return: A CHECK requiring at least one observed fact to be non-NULL.
+    """
+    return CheckConstraint(
+        or_(
+            *(
+                column(name).is_not(None)
+                for name in sorted(HOST_OBSERVATION_FIELD_NAMES)
+            )
+        ),
+        name=HOST_OBSERVATION_MIN_CONTENT_CONSTRAINT,
+    )
+
 
 class HostSystemObservation(BaseSQLModel, HostSystemObservationBase, table=True):
     """Store host-level system facts for a node (one snapshot per node).
@@ -1065,6 +1140,8 @@ class HostSystemObservation(BaseSQLModel, HostSystemObservationBase, table=True)
         node, if observed.
     :param observed_at: When this observation was collected.
     """
+
+    __table_args__ = (host_observation_min_content_check(),)
 
 
 class HostSystemObservationWrite(HostSystemObservationBase):
@@ -1203,6 +1280,10 @@ class InventoryCollectWrite(BaseModel):
     :param retired_before: The cutoff a tombstone must predate to be eligible.
         The caller pins one value for a whole run so successive batches cannot
         drift into collecting a tombstone that was too young a moment earlier.
+    :param link_pin_retired_before: The cutoff a linked tombstone must predate
+        for its link to stop pinning it. Required rather than defaulted: either
+        extreme a default could pick silently keeps every link's successor
+        forever or releases it at once.
     :param keep: The ids the caller knows are still referenced, per entity type.
         Ancestors of a kept entity are retained without being listed.
     :param limit: The most entities to collect per type in this call.
@@ -1213,6 +1294,7 @@ class InventoryCollectWrite(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     retired_before: UTCDatetime
+    link_pin_retired_before: UTCDatetime
     keep: dict[RetirableEntityName, list[int]] = {}
     limit: PositiveInt = 500
     dry_run: bool = True

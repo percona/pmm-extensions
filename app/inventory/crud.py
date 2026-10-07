@@ -15,7 +15,7 @@
 
 """Define database operations for the Inventory API."""
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar, Final, TYPE_CHECKING
@@ -132,25 +132,46 @@ def _not_superseded(
     )
 
 
-def _no_newer_failure(
+def _no_newer_attempt(
     model: type[SyncHealthBase], attempted_at: datetime
 ) -> ColumnElement[bool]:
-    """Match only rows whose open failure run did not start after this attempt.
+    """Test whether a row's newest recorded attempt is not newer than this one.
 
-    A failure never moves ``last_synced_at``, so :func:`_not_superseded` cannot
+    Guards a success's ``WHERE`` and a failure's message ``SET`` alike. A
+    failure never moves ``last_synced_at``, so :func:`_not_superseded` cannot
     see one: an older success arriving late would otherwise clear a run a newer
-    attempt had just opened, reporting a clean row whose latest attempt failed.
-    ``sync_failing_since`` names the *earliest* failure of the run, so a success
-    landing between two failures of one run is still admitted — closing that
-    would take a column recording the newest attempt seen.
+    attempt had failed in. ``sync_failing_since`` names only the run's *first*
+    failure, so it would still admit a success attempted between two failures
+    of one run. A tie passes, leaving arrival order to break it.
 
     :param model: The table being written.
     :param attempted_at: When the reporting syncer began its attempt.
     :return: The guard predicate.
     """
     return or_(
-        col(model.sync_failing_since).is_(None),
-        col(model.sync_failing_since) <= attempted_at,
+        col(model.newest_attempt_at).is_(None),
+        col(model.newest_attempt_at) <= attempted_at,
+    )
+
+
+def _newest_attempt(
+    model: type[SyncHealthBase], attempted_at: datetime
+) -> ColumnElement[datetime]:
+    """Build the later of the stored newest attempt and this one.
+
+    Spelled as ``CASE`` rather than ``greatest``: SQLite has no ``greatest``,
+    and its two-argument ``max`` returns NULL when either side is NULL.
+
+    :param model: The table being written.
+    :param attempted_at: When the reporting syncer began its attempt.
+    :return: The expression to assign to ``newest_attempt_at``.
+    """
+    return case(
+        (
+            col(model.newest_attempt_at) > attempted_at,
+            col(model.newest_attempt_at),
+        ),
+        else_=attempted_at,
     )
 
 
@@ -174,7 +195,7 @@ def _record_sync_success(
         update(model)
         .where(
             _not_superseded(model, synced_at),
-            _no_newer_failure(model, synced_at),
+            _no_newer_attempt(model, synced_at),
             *whereclause,
         )
         .values(
@@ -182,6 +203,7 @@ def _record_sync_success(
             last_sync_error=None,
             sync_failing_since=None,
             consecutive_failures=0,
+            newest_attempt_at=_newest_attempt(model, synced_at),
         )
         .execution_options(**_UNSYNCHRONIZED)
     )
@@ -200,12 +222,13 @@ def _record_sync_failure(
     the last success even when two failures of one run arrive out of order —
     coalescing alone would leave it on whichever landed first. The counter is
     incremented in SQL so concurrent runs cannot lose an increment to a
-    read-modify-write. ``last_sync_error`` is still assigned unconditionally,
-    so an out-of-order pair leaves the older message there; naming the newest
-    failure would take a column recording the newest attempt seen, which the
-    entity does not carry. ``last_synced_at`` is deliberately absent: a failure
-    never moves it — which is also why the guard compares against it rather
-    than being skipped here.
+    read-modify-write. ``last_sync_error`` is replaced only when this attempt
+    is not older than ``newest_attempt_at``, so an out-of-order pair keeps the
+    newer message; the ``SET`` expressions all read the row as it stood before
+    the statement, so that comparison sees the stored value rather than the
+    one this statement writes. ``last_synced_at`` is deliberately absent: a
+    failure never moves it — which is also why the guard compares against it
+    rather than being skipped here.
 
     :param model: The table to record the failure in.
     :param whereclause: Clauses narrowing the rows to write.
@@ -217,7 +240,10 @@ def _record_sync_failure(
         update(model)
         .where(_not_superseded(model, failed_at), *whereclause)
         .values(
-            last_sync_error=error,
+            last_sync_error=case(
+                (_no_newer_attempt(model, failed_at), error),
+                else_=col(model.last_sync_error),
+            ),
             consecutive_failures=col(model.consecutive_failures) + 1,
             sync_failing_since=case(
                 (
@@ -226,6 +252,7 @@ def _record_sync_failure(
                 ),
                 else_=failed_at,
             ),
+            newest_attempt_at=_newest_attempt(model, failed_at),
         )
         .execution_options(**_UNSYNCHRONIZED)
     )
@@ -301,7 +328,7 @@ class SyncHealthManagerMixin(BaseSQLModelManager):
         instance: RetirableSQLModel,
         outcome: SyncHealthWrite,
     ) -> None:
-        """Apply one sync outcome to an entity's four sync-health columns.
+        """Apply one sync outcome to an entity's sync-health columns.
 
         The statement is hand-built rather than routed through ``update``, for
         the reason :meth:`RetirableManagerMixin.retire`'s is: the transitions
@@ -356,11 +383,13 @@ class RetirableManagerMixin(BaseSQLModelManager):
     on the hydration query alone, returning a short page whose ``total`` does not
     match it.
 
+    :cvar Model: The retirable model class this manager handles.
     :cvar include_retired: Whether reads through this manager see tombstones.
     :cvar retirement_subtree: The descendant models retirement cascades into,
         nearest first, each paired with the foreign key naming its own parent.
     """
 
+    Model: type[RetirableSQLModel]
     include_retired: ClassVar[bool] = False
     retirement_subtree: ClassVar[tuple[tuple[type[RetirableSQLModel], str], ...]] = ()
 
@@ -472,10 +501,11 @@ class RetirableManagerMixin(BaseSQLModelManager):
     def _identity_link_pin(cls) -> ColumnElement[bool] | None:
         """Return the predicate matching a row a standing identity link pins.
 
-        None for an entity type that carries no external identity of its own, so
-        collection pays nothing for a clause that could never match.
+        ``None`` for an entity type that carries no external identity of its own,
+        so collection pays nothing for a clause that could never match. The pin
+        is bounded rather than permanent; :meth:`collectible_ids` owns the bound.
 
-        :return: The predicate, or None when this entity type cannot be linked.
+        :return: The predicate, or ``None`` when this entity type cannot be linked.
         """
         return None
 
@@ -516,26 +546,34 @@ class RetirableManagerMixin(BaseSQLModelManager):
         session: AsyncSession,
         *,
         retired_before: datetime,
+        link_pin_retired_before: datetime,
         keep_by_model: Mapping[type[RetirableSQLModel], Collection[int]],
         limit: int,
     ) -> list[int]:
         """Return the ids of this table's tombstones eligible for deletion.
 
         A tombstone is eligible when it aged past ``retired_before``, no caller
-        declared it referenced, and nothing in its subtree is retained. Only
-        reachable through the retired-inclusive subclasses: the default managers'
-        ``retired_at IS NULL`` guard makes the underlying read match nothing.
+        declared it referenced, nothing in its subtree is retained, and no
+        standing identity link still pins it. Only reachable through the
+        retired-inclusive subclasses: the default managers' ``retired_at IS
+        NULL`` guard makes the underlying read match nothing.
+
+        The pin is bounded by the row's own ``retired_at``, which every
+        confirmation restamps, even on an already-retired successor, and nothing
+        moves while the link stands, so it already says how long the link has
+        stood. The bound only narrows the exemption: a released row must still
+        satisfy every other condition.
 
         :param session: The asynchronous database session to use.
         :param retired_before: The cutoff a tombstone must predate.
+        :param link_pin_retired_before: The cutoff a linked tombstone must predate
+            for its link to stop pinning it.
         :param keep_by_model: The ids a caller declared still referenced, per table.
         :param limit: The most ids to return.
         :return: The eligible ids, lowest first.
         """
-        whereclause = [
-            col(cls.Model.retired_at).is_not(None),
-            col(cls.Model.retired_at) < retired_before,
-        ]
+        retired_at = col(cls.Model.retired_at)
+        whereclause = [retired_at.is_not(None), retired_at < retired_before]
         if keep_ids := keep_by_model.get(cls.Model, ()):
             whereclause.append(col(cls.Model.id).not_in(keep_ids))
         if (
@@ -548,7 +586,7 @@ class RetirableManagerMixin(BaseSQLModelManager):
         ) is not None:
             whereclause.append(~pinned)
         if (linked := cls._identity_link_pin()) is not None:
-            whereclause.append(~linked)
+            whereclause.append(or_(~linked, retired_at < link_pin_retired_before))
         query = cls._filter_query(select(col(cls.Model.id)), *whereclause)
         result = await cls._exec(
             session, query.order_by(col(cls.Model.id)).limit(limit)
@@ -989,11 +1027,12 @@ class AliasableManagerMixin(RetirableManagerMixin):
 
         A confirmed link's successor is a tombstone nothing references any more,
         so collection would otherwise age it out and make the reversal
-        permanently impossible with no signal.
+        impossible with no signal. The pin only defers that, for as long as
+        :meth:`collectible_ids` bounds it.
 
         Narrowed from the base's optional return: an aliasable entity always has
         a pin, which is what lets a subclass widen this one by ``or_``-ing onto
-        ``super()`` without re-testing for None.
+        ``super()`` without re-testing for ``None``.
 
         :return: The ``EXISTS`` predicate.
         """
@@ -1349,6 +1388,12 @@ class AliasableManagerMixin(RetirableManagerMixin):
         index carrying ``retirement_key``: the successor is retired first, which
         vacates the identifier, and only then does the predecessor take it.
 
+        The successor's ``retired_at`` is restamped with the confirmation time
+        even when it was already retired, because that stamp is what bounds
+        this link's pin in :meth:`collectible_ids`, and the ``retired_at IS
+        NULL`` guard in :meth:`_retirement_statements` would otherwise leave an
+        older one in place.
+
         A rejection does not block this. A pairing rejected by mistake stays
         confirmable by explicit id, which is what keeps a mistaken rejection
         correctable rather than permanent.
@@ -1391,6 +1436,9 @@ class AliasableManagerMixin(RetirableManagerMixin):
         confirmed_at = utc_now()
         statements = [
             *cls._retirement_statements(successor.id, confirmed_at),
+            update(cls.Model)
+            .where(col(cls.Model.id) == successor.id)
+            .values(retired_at=confirmed_at),
             *cls._revival_statements(predecessor.id),
             update(cls.Model)
             .where(col(cls.Model.id) == predecessor.id)
@@ -1762,7 +1810,10 @@ class ServiceManager(
         before nodes, so the very rows
         :meth:`_structural_pairing_clauses` keeps surfacing as candidates would
         age out from under the standing node link — taking the reversal's
-        subtree with them.
+        subtree with them. The shared bound applies to each service's own
+        ``retired_at``: a service the node link retired carries the node's
+        confirmation time, while one already retired before the link keeps its
+        older stamp, so its pin ends first.
 
         :return: The ``EXISTS`` predicate.
         """
@@ -1937,6 +1988,86 @@ COLLECTION_ORDER: tuple[
     (RetirableEntityName.SERVICE, RetiredInclusiveServiceManager),
     (RetirableEntityName.NODE, RetiredInclusiveNodeManager),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionBatch:
+    """Report which tombstones one collection call selected.
+
+    :param deleted: The ids selected for collection per entity type, every type
+        present in :data:`COLLECTION_ORDER` order. A real call passed them to
+        the delete, which may remove fewer rows than listed; a dry run only
+        selected them.
+    :param remaining: Whether a type filled the limit, so the caller should run
+        another batch. It may find nothing left.
+    """
+
+    deleted: dict[RetirableEntityName, list[int]]
+    remaining: bool
+
+
+async def collect_retirable_entities(
+    session: AsyncSession,
+    *,
+    retired_before: datetime,
+    link_pin_retired_before: datetime,
+    keep: Mapping[RetirableEntityName, Collection[int]],
+    limit: int,
+    dry_run: bool,
+    on_collected: Callable[[RetirableEntityName, int], None],
+) -> CollectionBatch:
+    """Delete the tombstones the retained set does not cover, deepest first.
+
+    A type that fills ``limit`` ends the walk. Deleting an ancestor cascades to
+    descendants the cap had excluded, and those ids would then be missing from
+    ``deleted`` — leaving the caller unable to clear their bookkeeping and
+    making the reported set a false record of what was removed. Stopping keeps
+    ``deleted`` exhaustive; the ancestors are collected on the next batch, which
+    ``remaining`` asks for.
+
+    :param session: The asynchronous database session to use.
+    :param retired_before: The cutoff a tombstone must predate.
+    :param link_pin_retired_before: The cutoff a linked tombstone must predate
+        for its link to stop pinning it.
+    :param keep: The ids the caller knows are still referenced, per entity type.
+    :param limit: The most entities to collect per type.
+    :param dry_run: Whether to report the eligible ids without deleting them.
+    :param on_collected: The callback given each type and the rows its delete
+        removed. It runs as each delete commits, so a later failure cannot
+        lose the report of one that already landed. An exception it raises
+        ends the walk and propagates, with that delete already committed.
+    :return: The selected ids per type, and whether to run another batch.
+    :raises ValueError: If ``limit`` is not positive, since every batch would
+        then report ``remaining`` and a batching caller would never finish.
+    :raises sqlalchemy.exc.SQLAlchemyError: When a type's delete fails, with
+        the deeper types' deletes already committed.
+    :raises Exception: Whatever ``on_collected`` raises, with that type's
+        delete already committed.
+    """
+    if limit < 1:
+        raise ValueError(f"limit must be positive, got {limit}")
+    keep_by_model = {
+        manager.Model: keep.get(name, ()) for name, manager in COLLECTION_ORDER
+    }
+    deleted: dict[RetirableEntityName, list[int]] = {
+        name: [] for name, _ in COLLECTION_ORDER
+    }
+    remaining = False
+    for name, manager in COLLECTION_ORDER:
+        entity_ids = await manager.collectible_ids(
+            session,
+            retired_before=retired_before,
+            link_pin_retired_before=link_pin_retired_before,
+            keep_by_model=keep_by_model,
+            limit=limit,
+        )
+        deleted[name] = entity_ids
+        if entity_ids and not dry_run:
+            on_collected(name, await manager.collect(session, entity_ids))
+        if len(entity_ids) >= limit:
+            remaining = True
+            break
+    return CollectionBatch(deleted=deleted, remaining=remaining)
 
 
 class HostSystemObservationManager(BaseSQLModelChildManager):

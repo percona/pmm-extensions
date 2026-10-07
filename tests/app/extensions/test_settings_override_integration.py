@@ -34,9 +34,10 @@ from app.core.celery.crud import BasePeriodicTaskManager
 from app.core.celery.models import IntervalSchedule
 from app.core.config import settings as core_settings
 from app.core.db.utils import get_async_session_maker_from_engine
+from app.core.settings_override.constants import EXTENSIONS_SETTINGS, SNIPPETS_SETTINGS
 from app.core.settings_override.lifecycle import ProxyEntry, refresh_all
 from app.core.settings_override.manager import SettingsOverrideManager
-from app.core.settings_override.models import SettingClassEnum, SettingOverride
+from app.core.settings_override.models import SettingOverride
 from app.core.utils import json_serializer
 from app.core.utils.fields import LogLevel
 from app.extensions.apps.alerts.config import alerts_settings, AlertsSettings
@@ -79,12 +80,8 @@ async def _override_session_maker() -> AsyncGenerator[async_sessionmaker, None]:
 def _extensions_proxies() -> dict:
     """Return the PMM Extensions side proxy registry mirroring the lifespan wiring."""
     return {
-        SettingClassEnum.EXTENSIONS_SETTINGS: ProxyEntry(
-            extensions_settings, ExtensionsSettings
-        ),
-        SettingClassEnum.SNIPPETS_SETTINGS: ProxyEntry(
-            snippets_settings, SnippetsSettings
-        ),
+        EXTENSIONS_SETTINGS: ProxyEntry(extensions_settings, ExtensionsSettings),
+        SNIPPETS_SETTINGS: ProxyEntry(snippets_settings, SnippetsSettings),
         AlertsSettings.__name__: ProxyEntry(alerts_settings, AlertsSettings),
     }
 
@@ -386,7 +383,7 @@ async def test_sync_interval_override_reseeds_beat_schedule_live(
     )
     callbacks = {
         (
-            SettingClassEnum.SNIPPETS_SETTINGS,
+            SNIPPETS_SETTINGS,
             "SYNC_INTERVAL",
         ): _reseed_system_periodic_tasks,
     }
@@ -504,7 +501,7 @@ async def test_invalid_sync_interval_override_keeps_default_and_skips_reseed(
         )
 
     reseed_spy = AsyncMock()
-    callbacks = {(SettingClassEnum.SNIPPETS_SETTINGS, "SYNC_INTERVAL"): reseed_spy}
+    callbacks = {(SNIPPETS_SETTINGS, "SYNC_INTERVAL"): reseed_spy}
 
     await refresh_all(lambda: override_session_maker, _extensions_proxies(), callbacks)
 
@@ -547,7 +544,7 @@ async def test_reseed_callback_failure_does_not_break_refresh_cycle(
         )
 
     failing = AsyncMock(side_effect=RuntimeError("beat DB unreachable"))
-    callbacks = {(SettingClassEnum.SNIPPETS_SETTINGS, "SYNC_INTERVAL"): failing}
+    callbacks = {(SNIPPETS_SETTINGS, "SYNC_INTERVAL"): failing}
 
     # Must not raise despite the callback blowing up.
     await refresh_all(lambda: override_session_maker, _extensions_proxies(), callbacks)
@@ -621,7 +618,7 @@ async def test_reseed_bumps_periodic_task_changed_last_update(
     )
     callbacks = {
         (
-            SettingClassEnum.SNIPPETS_SETTINGS,
+            SNIPPETS_SETTINGS,
             "SYNC_INTERVAL",
         ): _reseed_system_periodic_tasks,
     }
@@ -676,7 +673,7 @@ async def test_reseed_does_not_churn_unrelated_task(
     )
     callbacks = {
         (
-            SettingClassEnum.SNIPPETS_SETTINGS,
+            SNIPPETS_SETTINGS,
             "SYNC_INTERVAL",
         ): _reseed_system_periodic_tasks,
     }
@@ -730,7 +727,7 @@ async def test_removing_sync_interval_override_reverts_beat_to_yaml_default(
     )
     callbacks = {
         (
-            SettingClassEnum.SNIPPETS_SETTINGS,
+            SNIPPETS_SETTINGS,
             "SYNC_INTERVAL",
         ): _reseed_system_periodic_tasks,
     }

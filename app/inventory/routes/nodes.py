@@ -13,7 +13,13 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the routes for the Nodes resource."""
+"""Define the routes for the Nodes resource.
+
+Every route here is built by ``ServicePrincipalWriteRoute``, so a write route
+admits only the service principal without declaring anything. A write a human
+may call declares ``ExemptFromServicePrincipalDep`` instead of
+``IsAuthenticatedDep``.
+"""
 
 import logging
 
@@ -21,7 +27,12 @@ from fastapi import APIRouter, status
 from sqlalchemy.orm import load_only
 from sqlmodel import col
 
-from app.api.deps import CurrentUserID, IsAuthenticatedDep, IsServicePrincipalDep
+from app.api.deps import (
+    CurrentUserID,
+    ExemptFromServicePrincipalDep,
+    IsAuthenticatedDep,
+    ServicePrincipalWriteRoute,
+)
 from app.core.pagination import PaginatedResponse
 from app.core.pagination.deps import PaginationDep
 from app.core.utils.fields import NonEmptyStr
@@ -34,6 +45,7 @@ from app.inventory.crud import (
 )
 from app.inventory.deps import (
     HostSystemObservationDep,
+    InScopeNodeDep,
     NodeDep,
     NodeListQueryDep,
     NodeScopeDep,
@@ -64,7 +76,9 @@ from app.inventory.models import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/nodes", tags=["nodes"])
+router = APIRouter(
+    prefix="/nodes", tags=["nodes"], route_class=ServicePrincipalWriteRoute
+)
 
 
 @router.get("/", dependencies=[IsAuthenticatedDep])
@@ -215,16 +229,14 @@ async def retrieve_node(
     )
 
 
-@router.post(
-    "/", dependencies=[IsServicePrincipalDep], status_code=status.HTTP_201_CREATED
-)
+@router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_node(session: SessionDep, node: NodeWrite) -> Node:
     """Create Node."""
     logger.debug("Creating node %s", node)
     return await NodeManager.create(session, node)
 
 
-@router.put("/{node_id}", dependencies=[IsServicePrincipalDep])
+@router.put("/{node_id}")
 async def update_node(
     session: SessionDep,
     existing_node: NodeDep,
@@ -243,7 +255,6 @@ async def update_node(
 
 @router.delete(
     "/{node_id}",
-    dependencies=[IsServicePrincipalDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def retire_node(session: SessionDep, node: RetirableNodeDep) -> None:
@@ -258,7 +269,6 @@ async def retire_node(session: SessionDep, node: RetirableNodeDep) -> None:
 
 @router.post(
     "/{node_id}/revive",
-    dependencies=[IsServicePrincipalDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def revive_node(session: SessionDep, node: RetirableNodeDep) -> None:
@@ -275,7 +285,6 @@ async def revive_node(session: SessionDep, node: RetirableNodeDep) -> None:
 
 @router.post(
     "/{node_id}/sync-health",
-    dependencies=[IsServicePrincipalDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def record_node_sync_health(
@@ -308,7 +317,7 @@ async def retrieve_host_system_observation(
     return observation
 
 
-@router.put("/{node_id}/system-observation", dependencies=[IsAuthenticatedDep])
+@router.put("/{node_id}/system-observation")
 async def upsert_host_system_observation(
     session: SessionDep,
     node: NodeDep,
@@ -333,13 +342,24 @@ async def upsert_host_system_observation(
 @router.get("/{node_id}/services/", dependencies=[IsAuthenticatedDep])
 async def list_services_by_node(
     session: SessionDep,
-    node: NodeDep,
+    node: InScopeNodeDep,
     pagination: PaginationDep,
     list_query: ServiceListQueryDep,
     manager: ServiceScopeDep,
     service_type: ServiceTypeEnum | None = None,
 ) -> PaginatedResponse[ServiceResponse]:
-    """List Services by Node."""
+    """List Services by Node.
+
+    :param session: The async database session.
+    :param node: The node addressed by the path, resolved within the request's
+        retirement scope.
+    :param pagination: Validated offset/limit query parameters.
+    :param list_query: The resolved sort/search produced at the request
+        boundary.
+    :param manager: The service manager the request's retirement scope selected.
+    :param service_type: Restrict the listing to services of this type.
+    :return: A paginated response of the node's services.
+    """
     logger.debug(
         "Listing services for node '%s' and type '%s'",
         node.id,
@@ -357,7 +377,6 @@ async def list_services_by_node(
 
 @router.post(
     "/{node_id}/services/",
-    dependencies=[IsServicePrincipalDep],
     status_code=status.HTTP_201_CREATED,
 )
 async def create_service_for_node(
@@ -372,7 +391,7 @@ async def create_service_for_node(
 
 @router.post(
     "/{node_id}/identity-link",
-    dependencies=[IsAuthenticatedDep],
+    dependencies=[ExemptFromServicePrincipalDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def decide_node_identity_link(
@@ -386,10 +405,9 @@ async def decide_node_identity_link(
     The path names the **predecessor** — the survivor of a confirmation, and the
     row the operator is acting on in all three decisions.
 
-    Carries ``IsAuthenticatedDep`` and deliberately not ``IsServicePrincipalDep``:
-    an identity link is an operator judgement, not a row the syncer owns. The
-    app-wide unsafe-method gate already makes the route admin-only for a human
-    while admitting the principal by identity.
+    Open to an admin as well as the service principal, unlike the other node
+    writes: an identity link is an operator judgement, not a row the syncer
+    owns.
 
     :param session: The async database session.
     :param node: The predecessor addressed by the path, retired or not.

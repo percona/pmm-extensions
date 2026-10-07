@@ -17,6 +17,7 @@
 
 import gzip
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -122,6 +123,13 @@ class TestGzipCompress:
         compressed = gzip_compress(data, encoding="ascii")
         decompressed = gzip.decompress(compressed).decode("ascii")
         assert decompressed == data
+
+    def test_compress_is_independent_of_wall_clock(self):
+        """Assert the output is byte-identical across a change in wall-clock time."""
+        with patch("gzip.time.time", side_effect=[1_000_000.0, 1_000_001.0]):
+            first = gzip_compress("SELECT 1;")
+            second = gzip_compress("SELECT 1;")
+        assert first == second
 
     def test_compress_unicode_content(self):
         """Assert unicode content is compressed and decompressed correctly."""

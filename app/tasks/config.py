@@ -34,7 +34,6 @@ from app.core.config import BaseYamlAppSettings
 from app.core.db.config import DatabaseOptions
 from app.core.middleware.security_headers import SecurityHeadersOptions
 from app.core.models import BaseLowercaseModel
-from app.core.settings_override.models import SettingClassEnum
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import (
     hot_field,
@@ -162,9 +161,11 @@ class TasksSettings(BaseYamlAppSettings):
         dispatch's scheduled time and its Nomad-side execution start before
         the allocation self-aborts as stale. Must be positive. Defaults to 3600.
     :param PENDING_ALLOCATION_TIMEOUT_SECONDS: The maximum seconds a RUNNING
-        TaskHistory row may wait behind a Nomad allocation that has never
-        produced TaskStates before sync escalates it to LOST. Measured from
-        ``started_at``. Must be positive. Defaults to 3600.
+        TaskHistory row may wait for Nomad to place its work (no allocation yet,
+        evaluation still pending or blocked, e.g. the executor host is at
+        capacity) or behind an allocation that has never produced TaskStates
+        before sync escalates it to LOST. Measured from ``started_at``. Must be
+        positive. Defaults to ``3600``.
     :param LOG_RETENTION_DAYS: The age in days beyond which finished task-execution
         logs (``taskhistory_log`` rows) are purged. Runtime-overridable; must be a
         positive integer no greater than 365. Defaults to 90.
@@ -312,6 +313,4 @@ class TasksSettings(BaseYamlAppSettings):
         return self
 
 
-tasks_settings: TasksSettings = OverridableSettingsProxy(
-    TasksSettings, setting_class=SettingClassEnum.TASKS_SETTINGS
-)
+tasks_settings: TasksSettings = OverridableSettingsProxy(TasksSettings)

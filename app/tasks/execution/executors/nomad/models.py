@@ -20,11 +20,12 @@ import io
 import json
 import logging
 import tarfile
+import threading
 import time
 from base64 import b64decode
 from binascii import b2a_base64
 from collections import defaultdict
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Collection
 from datetime import datetime, UTC
 from enum import StrEnum
 from functools import cached_property
@@ -41,15 +42,17 @@ from aiohttp import (
 from fastapi import status
 from nomad import Nomad
 from nomad.api.exceptions import BaseNomadException, URLNotFoundNomadException
+from pydantic import PrivateAttr
 from sqlalchemy_celery_beat.models import Period
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.celery.models import IntervalSchedule
 from app.core.exceptions import HTTPBadRequestException
-from app.core.requests import BaseRemoteAPI
+from app.core.requests import BaseRemoteAPI, StoredCredentialHeaderMixin
 from app.core.settings_override.registry import (
     hot_field,
     InheritedMarkers,
+    not_overridable_field,
     ReloadClassification,
     REMOTE_API_TLS_MARKERS,
 )
@@ -70,6 +73,7 @@ from app.core.utils.pydantic import field_with_metadata
 from app.tasks.anonymizer import anonymize_text
 from app.tasks.anonymizer.entities import PIIEntity
 from app.tasks.crud import TaskHistoryLogStateManager, TaskHistoryManager
+from app.tasks.execution.exceptions import TaskNotStartedInExecutorError
 from app.tasks.execution.executors.nomad.exceptions import (
     AllocationNotFoundError,
     JobNotFoundError,
@@ -122,6 +126,14 @@ NODE_STATUS_READY = "ready"
 # Internal states returned by :meth:`NomadExecutor._consume_nomad_log_stream` (not Nomad task states).
 _NOMAD_LOG_STREAM_SOCK_TIMEOUT = "nomad-log-stream-sock-timeout"
 _NOMAD_LOG_STREAM_CLIENT_ERROR = "nomad-log-stream-client-error"
+_NOMAD_FRAME_DECODER = json.JSONDecoder()
+#: The decoder error for a string the end of the buffer cut off, wherever it began.
+_UNTERMINATED_STRING_ERROR = "Unterminated string starting at"
+#: The decoder error for a ``\uXXXX`` escape that is incomplete or malformed.
+_UNICODE_ESCAPE_ERROR = "Invalid \\uXXXX escape"
+#: The most characters of a ``\uXXXX`` escape that can follow the error's
+#: position: the ``u`` and its four hex digits.
+_UNICODE_ESCAPE_TAIL = 5
 
 _ANONYMIZED_STEPS: frozenset[NomadStep] = NomadStep.anonymized()
 
@@ -151,6 +163,77 @@ def _should_anonymize(step: str, anonymize_entities: set[PIIEntity] | None) -> b
     :return: ``True`` when the step is anonymized and entities were requested.
     """
     return step in _ANONYMIZED_STEPS and bool(anonymize_entities)
+
+
+def _is_truncated_frame(error: json.JSONDecodeError, text: str) -> bool:
+    """Return whether a decode failure is only the buffer ending mid-frame.
+
+    A frame cut short fails at the very end of the text, inside a string that
+    runs to the end of it, or on a ``uXXXX`` unicode escape the end of the text
+    cuts off, which the decoder reports at the escape rather than at the end.
+    Any other failure means the bytes can never become a valid frame, however
+    many more arrive. A malformed escape near the end is carried over too, and
+    fails as one once the next chunk extends the text past it.
+
+    :param error: The error raised while decoding a frame off ``text``.
+    :param text: The decoded buffer the frame was read from.
+    :return: ``True`` when more bytes could still complete the frame.
+    """
+    return (
+        error.pos == len(text)
+        or error.msg == _UNTERMINATED_STRING_ERROR
+        or (
+            error.msg == _UNICODE_ESCAPE_ERROR
+            and len(text) - error.pos <= _UNICODE_ESCAPE_TAIL
+        )
+    )
+
+
+def _split_nomad_frames(buffer: bytes) -> tuple[list[dict[str, Any]], bytes]:
+    """Split the complete JSON frames off the front of a log-follow buffer.
+
+    Nomad writes one JSON object per frame, but a proxy between it and this
+    client may forward several frames in one HTTP chunk, a heartbeat glued to
+    the next data frame included, or one frame across several chunks. Frames are
+    therefore read off the accumulated bytes one by one until only an
+    incomplete frame, or nothing, is left.
+
+    A chunk can also end inside a multi-byte character; those trailing bytes
+    are carried over undecoded until the next chunk completes them. A frame
+    that no further bytes could make valid raises instead of being carried
+    over, so malformed input is surfaced rather than buffered forever.
+
+    :param buffer: The bytes received and not yet parsed, oldest first.
+    :return: The complete frames in arrival order, and the unparsed tail to
+        prepend to the next chunk.
+    :raises UnicodeDecodeError: If the bytes are not UTF-8 at all, as opposed
+        to merely ending mid-character.
+    :raises json.JSONDecodeError: If a frame is malformed, as opposed to merely
+        cut off by the end of the buffer.
+    """
+    try:
+        text = buffer.decode()
+        undecoded = b""
+    except UnicodeDecodeError as error:
+        if error.reason != "unexpected end of data":
+            raise
+        text = buffer[: error.start].decode()
+        undecoded = buffer[error.start :]
+    frames: list[dict[str, Any]] = []
+    index = 0
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index == len(text):
+            break
+        try:
+            frame, index = _NOMAD_FRAME_DECODER.raw_decode(text, index)
+        except json.JSONDecodeError as error:
+            if _is_truncated_frame(error, text):
+                break
+            raise
+        frames.append(frame)
+    return frames, text[index:].encode() + undecoded
 
 
 def _decode_and_anonymize(raw: bytes, anonymize_entities: set[PIIEntity] | None) -> str:
@@ -247,6 +330,19 @@ def _alloc_task_states(alloc: dict[str, Any]) -> dict[str, Any]:
         )
         return {}
     return task_states or {}
+
+
+def _evaluations_by_id(evaluations: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Key a job's evaluations by id, dropping any Nomad returned without one.
+
+    :param evaluations: The job's evaluations as Nomad returned them.
+    :return: The evaluations keyed by their ``ID``.
+    """
+    return {
+        evaluation["ID"]: evaluation
+        for evaluation in evaluations
+        if evaluation.get("ID")
+    }
 
 
 def _alloc_step_state(alloc: dict[str, Any], step: str) -> dict[str, Any]:
@@ -619,7 +715,30 @@ class NomadAllocStatusEnum(StrEnum):
     UNKNOWN = "unknown"
 
 
-class NomadExecutor(BaseExecutor, BaseRemoteAPI):
+class NomadEvalStatusEnum(StrEnum):
+    """Reproduce Nomad's possible evaluation statuses.
+
+    :cvar BLOCKED: Enum value for evaluations waiting for cluster capacity.
+    :cvar PENDING: Enum value for evaluations waiting for a scheduler.
+    """
+
+    BLOCKED = "blocked"
+    PENDING = "pending"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
+# Evaluation statuses under which Nomad may still place the job's work. A
+# client without capacity completes the dispatch evaluation and parks the work
+# in a ``blocked`` one, so a job with no allocation is queued, not dead, while
+# any of its evaluations is in this set.
+_LIVE_EVAL_STATUSES = frozenset(
+    {NomadEvalStatusEnum.PENDING, NomadEvalStatusEnum.BLOCKED}
+)
+
+
+class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     """Represent a Nomad task executor.
 
     :param wait_interval: The interval in seconds between status checks.
@@ -637,12 +756,31 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
         Jobs. Defaults to True.
     :param log_socket_read_timeout: Socket read timeout in seconds for log streaming.
         Defaults to 10.
+    :param log_stream_max_connections: Most Nomad connections live log follows
+        may hold at once. Every viewer of a running task opens one follow per
+        logged step and log type, all to the one Nomad host, so they draw on a
+        pool of their own instead of the short calls' per-host cap. Nomad's
+        ``limits.http_max_conns_per_client`` counts them together with every
+        other connection from this address, so leave room under it for the
+        short-call pool and the python-nomad client. A rebind applies the new
+        value to follows opened after it; open follows keep the retired
+        executor's pool until they end. Defaults to ``64``.
     :param cert_expiry_warn_days: Number of days before ``not_valid_after`` when
         Nomad TLS cert expiry alerts should fire. Used by the periodic
         ``check_nomad_cert_expiry`` task. Defaults to 7.
     :param check_cert_expiry_interval: Beat schedule for ``check_nomad_cert_expiry``
         (e.g. once per day). Set to ``None`` to skip registering the periodic task
         in ``app.tasks.db.seed`` (Celery beat will not run the check).
+    :param finishing_sync_interval_seconds: Tick, in seconds, of the periodic
+        ``sync_finishing_tasks`` probe that syncs a run as soon as its producing
+        steps end instead of waiting for the regular sweep, and the deadline of
+        each tick's Nomad listing. A finished run's status lands within about two
+        ticks plus one ``terminal_log_drain_interval``, since a hold-ready drain
+        ends on its first quiet re-fetch, so keep it well under the
+        latency a run's status is expected to meet. Read when ``app.tasks.db.seed``
+        builds the schedule, so it is not overridable at runtime. Set to ``None``
+        to skip registering the probe, leaving finished runs to the sweep.
+        Defaults to ``1``.
     :param api_key: Credential sent as ``Authorization: <auth_scheme> <api_key>``
         on both the synchronous and the asynchronous request path. It takes
         precedence over any userinfo embedded in ``endpoint``, which is stripped
@@ -700,6 +838,9 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
     log_socket_read_timeout: int = hot_field(  # ty: ignore[invalid-assignment]
         10, advanced=True
     )
+    log_stream_max_connections: int = hot_field(  # ty: ignore[invalid-assignment]
+        BaseRemoteAPI.STREAM_CONNECTION_LIMIT, ge=1, advanced=True
+    )
     cert_expiry_warn_days: int = hot_field(  # ty: ignore[invalid-assignment]
         7, ge=1, advanced=True
     )
@@ -723,44 +864,24 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
             default_factory=lambda: IntervalSchedule(every=1, period=Period.DAYS),
         )
     )
+    finishing_sync_interval_seconds: int | None = (  # ty: ignore[invalid-assignment]
+        not_overridable_field(1, ge=1, advanced=True)
+    )
     api_key: AuthCredentialSecretStr | None = None
     auth_scheme: AuthSchemeStr = hot_field(  # ty: ignore[invalid-assignment]
         "Bearer", advanced=True
     )
 
     _sync_session: requests.Session | None = None
+    _backend_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     @property
-    def _configured_api_key(self) -> str | None:
-        """Return the configured API key's plain value, or ``None`` when unset.
+    def stream_connection_limit(self) -> int:
+        """Return the configured cap on concurrently open live log follows.
 
-        An empty secret counts as unset: :class:`~pydantic.SecretStr` defines
-        ``__len__``, so a blank value is falsy and would otherwise emit a bearer
-        header with no credential. Every site that branches on the credential
-        reads it here, so the two request paths cannot disagree about what
-        counts as configured.
-
-        :return: The plain API key when a non-empty one is configured, else
-            ``None``.
+        :return: :attr:`log_stream_max_connections`.
         """
-        return self.api_key.get_secret_value() if self.api_key else None
-
-    @property
-    def headers(self) -> dict[str, str]:
-        """Return the headers to be used in Nomad requests.
-
-        Carries the configured API key as an ``Authorization`` header; without
-        one the inherited empty header set stands.
-
-        :return: A dictionary containing the headers for Nomad API requests.
-        """
-        api_key = self._configured_api_key
-        if api_key is None:
-            return super().headers
-        return {
-            **super().headers,
-            "Authorization": f"{self.auth_scheme} {api_key}",
-        }
+        return self.log_stream_max_connections
 
     def _compute_base_url(self) -> str:
         """Compute the base URL, dropping userinfo once an API key is configured.
@@ -776,7 +897,7 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
         :return: The base URL of the Nomad endpoint.
         """
         url = super()._compute_base_url()
-        if self._configured_api_key is None:
+        if self._credential_value is None:
             return url
         return strip_credential_url_userinfo(url)
 
@@ -784,31 +905,42 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
     def backend(self) -> Nomad:
         """Get the Nomad backend client.
 
+        Built under a lock: the live log path's allocation lookups reach for it
+        from worker threads, so two can arrive together, and each build opens a
+        ``requests.Session`` that only the last one would close. The client is
+        cached before the lock is released, because ``cached_property`` alone
+        stores it only after this method returns, which leaves a window for a
+        second build on interpreters whose ``cached_property`` takes no lock.
+
         :return: An instance of the Nomad client configured with the executor's
             settings.
-        :rtype: Nomad
         """
-        cert = ()
-        if self.ssl_certfile:
-            if self.ssl_keyfile:
-                cert = (self.ssl_certfile, self.ssl_keyfile)
-            else:
-                cert = (self.ssl_certfile,)
-        address = str(self.endpoint).rstrip("/")
-        session = requests.Session()
-        if self._configured_api_key is not None:
-            address = strip_credential_url_userinfo(address)
-            session.headers.update(self.headers)
-        self._sync_session = session
-        return Nomad(
-            address=address,
-            secure=self.secure,
-            timeout=self.timeout,
-            verify=(self.secure and self.verify_ssl and self.ssl_cafile)
-            or self.verify_ssl,
-            cert=cert,
-            session=session,
-        )
+        with self._backend_lock:
+            if (built := self.__dict__.get("backend")) is not None:
+                return built
+            cert = ()
+            if self.ssl_certfile:
+                if self.ssl_keyfile:
+                    cert = (self.ssl_certfile, self.ssl_keyfile)
+                else:
+                    cert = (self.ssl_certfile,)
+            address = str(self.endpoint).rstrip("/")
+            session = requests.Session()
+            if self._credential_value is not None:
+                address = strip_credential_url_userinfo(address)
+                session.headers.update(self.headers)
+            self._sync_session = session
+            client = Nomad(
+                address=address,
+                secure=self.secure,
+                timeout=self.timeout,
+                verify=(self.secure and self.verify_ssl and self.ssl_cafile)
+                or self.verify_ssl,
+                cert=cert,
+                session=session,
+            )
+            self.__dict__["backend"] = client
+            return client
 
     async def __aexit__(
         self,
@@ -818,7 +950,7 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
     ) -> None:
         """Exit the asynchronous context manager, releasing both HTTP clients.
 
-        The inherited exit closes the aiohttp session; this one also closes the
+        The inherited exit closes the aiohttp sessions; this one also closes the
         ``requests.Session`` handed to python-nomad, which the executor owns
         rather than the library. Retirement runs through
         :meth:`~app.core.requests.remote_api.BaseRemoteAPI.close_when_idle`, so
@@ -834,10 +966,11 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
         :param exc_tb: The traceback, if any.
         """
         await super().__aexit__(exc_type, exc_val, exc_tb)
-        self.__dict__.pop("backend", None)
-        if self._sync_session is not None:
-            self._sync_session.close()
-            self._sync_session = None
+        with self._backend_lock:
+            self.__dict__.pop("backend", None)
+            if self._sync_session is not None:
+                self._sync_session.close()
+                self._sync_session = None
 
     @staticmethod
     def timestamp_to_datetime(timestamp: int) -> datetime:
@@ -1218,6 +1351,69 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
             )
         return alloc
 
+    async def capture_hold_ready_job_ids(
+        self, job_ids: Collection[str]
+    ) -> frozenset[str]:
+        """Return which of ``job_ids`` have a capture-hold-ready newest allocation.
+
+        One list call covers every given job, so detecting finished runs costs a
+        single request whatever the number of RUNNING histories. The listing is
+        filtered to those jobs on the Nomad side, so its size follows the runs PMM
+        Extensions is waiting on rather than the whole cluster. The hold keeps its
+        allocation ``running`` while it waits to be released, unless a producing
+        step failed: Nomad then reports the allocation ``failed`` even though the
+        hold still runs. Listing both statuses covers every run still waiting on
+        its hold; one whose hold has already exited, as a ``failed`` allocation
+        retained until Nomad collects it can be, is left to the regular sync.
+
+        Readiness is judged on each job's newest allocation, the one a sync
+        resolves. A rescheduled job keeps its failed predecessor, which still
+        looks hold-ready, beside a ``pending`` or ``running`` replacement, so
+        those statuses are listed too and the newer replacement decides.
+
+        The call goes through the executor's own HTTP client, which must be open.
+        It carries no deadline of its own: the caller bounds it, and cancelling
+        it stops the request however slowly Nomad is answering.
+
+        :param job_ids: The ``JobID`` values to check. Nothing is requested when
+            it is empty.
+        :return: The ``JobID`` of every given job whose newest listed allocation
+            satisfies :func:`_detect_capture_hold_ready` and whose hold step is
+            still running.
+        :raises aiohttp.ClientError: If Nomad cannot be reached or answers with an
+            error status.
+        :raises ValueError: If Nomad answers with a body that is not JSON.
+        """
+        if not job_ids:
+            return frozenset()
+        statuses = " or ".join(
+            f'ClientStatus == "{alloc_status}"'
+            for alloc_status in (
+                NomadAllocStatusEnum.PENDING,
+                NomadAllocStatusEnum.RUNNING,
+                NomadAllocStatusEnum.FAILED,
+            )
+        )
+        jobs = " or ".join(f"JobID == {json.dumps(job_id)}" for job_id in job_ids)
+        async with self._request(
+            "GET",
+            "/v1/allocations",
+            params={"filter": f"({statuses}) and ({jobs})", "task_states": "true"},
+        ) as response:
+            response.raise_for_status()
+            allocations = await response.json()
+        newest: dict[str, dict[str, Any]] = {}
+        for alloc in allocations:
+            current = newest.get(alloc["JobID"])
+            if current is None or alloc["CreateIndex"] > current["CreateIndex"]:
+                newest[alloc["JobID"]] = alloc
+        return frozenset(
+            job_id
+            for job_id, alloc in newest.items()
+            if _detect_capture_hold_ready(alloc)
+            and _capture_hold_step_state(alloc) == NOMAD_RUNNING_TASK_STATE
+        )
+
     async def dispatch_task(
         self,
         session: AsyncSession,
@@ -1517,43 +1713,37 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
     ) -> tuple[dict[str, Any], str] | None:
         """Resolve the current allocation for a running task history.
 
-        Walks any ``FollowupEvalID`` chain to land on the latest allocation. If
-        the allocation is gone, mutates ``queue_item.status`` to FAILED or LOST
-        and returns ``None`` so the caller knows to bail out without further
-        work.
+        Walks any ``FollowupEvalID`` chain to land on the latest allocation. When
+        the tracked lookup finds none, the job's evaluations decide. An
+        allocation placed by the run's own evaluation chain — the tracked eval or
+        a ``BlockedEval`` it spawned once capacity freed — is adopted as the
+        run's. Otherwise, while any evaluation is still live (see
+        ``_LIVE_EVAL_STATUSES``) the work is queued and the row stays RUNNING
+        until ``PENDING_ALLOCATION_TIMEOUT_SECONDS`` elapses from ``started_at``,
+        after which the row goes LOST. With every evaluation terminal the row
+        goes FAILED. On both paths a job dispatched for this run alone is
+        withdrawn first, best-effort, so a Nomad error cannot leave the row
+        RUNNING; a job shared by every run of its task and target stays
+        registered, since withdrawing it would stop the other runs' work. A job
+        Nomad no longer has goes LOST with nothing to withdraw.
+
+        Every terminal outcome mutates ``queue_item`` and returns ``None`` so the
+        caller knows to bail out without further work.
 
         :param queue_item: The running task history record.
-        :type queue_item: TaskHistory
         :return: ``(alloc, job_id)`` when an allocation is found, or ``None``
             when the caller should return early.
-        :rtype: tuple[dict[str, Any], str] | None
+        :raises BaseNomadException: If Nomad fails a request other than the
+            not-found lookups this method resolves.
         """
         try:
-            alloc = self.get_allocation_for_task_history(queue_item)
-            job_id = alloc["JobID"]
-            while followup_eval_id := alloc.get("FollowupEvalID"):
-                alloc = self.get_last_allocation(job_id, followup_eval_id)
-                queue_item.execution_request.tracking["task_states"] = {}
+            return self._follow_reschedules(
+                queue_item, self.get_allocation_for_task_history(queue_item), {}
+            )
         except AllocationNotFoundError:
             logger.debug("Allocation not found for task history %s", queue_item.id)
-        else:
-            return alloc, job_id
         try:
             job = self.get_job_for_task_history(queue_item)
-            if all(
-                evaluation.get("Status") != NomadAllocStatusEnum.PENDING
-                for evaluation in self.backend.job.get_evaluations(job["ID"])
-            ):
-                logger.warning(
-                    "No allocations or pending evaluations found for task history %s",
-                    queue_item.id,
-                )
-                queue_item.status = TaskHistoryStatusEnum.FAILED
-                queue_item.set_failure_reason(
-                    "The executor job produced no allocation and has no pending "
-                    "evaluation."
-                )
-                queue_item.started_at = None
         except JobNotFoundError:
             logger.warning(
                 "Lost job and allocation from task history %s", queue_item.id
@@ -1562,7 +1752,206 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
             queue_item.set_failure_reason(
                 _terminal_status_reason(TaskHistoryStatusEnum.LOST, {})
             )
+            return None
+        evaluations = self.backend.job.get_evaluations(job["ID"])
+        if (
+            resolved := self._find_chain_allocation(queue_item, job["ID"], evaluations)
+        ) is not None:
+            return resolved
+        if any(
+            evaluation.get("Status") in _LIVE_EVAL_STATUSES
+            for evaluation in evaluations
+        ):
+            if self._should_escalate_pending_allocation(queue_item):
+                logger.warning(
+                    "Job %s of task history %s has produced no allocation past the "
+                    "pending-allocation timeout; marking LOST",
+                    job["ID"],
+                    queue_item.id,
+                )
+                self._withdraw_unplaced_job(job, queue_item, TaskHistoryStatusEnum.LOST)
+                queue_item.finished_at = utc_now()
+                queue_item.status = TaskHistoryStatusEnum.LOST
+                queue_item.set_failure_reason(
+                    _terminal_status_reason(TaskHistoryStatusEnum.LOST, {})
+                )
+            return None
+        logger.warning(
+            "No allocations or pending evaluations found for task history %s",
+            queue_item.id,
+        )
+        self._withdraw_unplaced_job(job, queue_item, TaskHistoryStatusEnum.FAILED)
+        queue_item.status = TaskHistoryStatusEnum.FAILED
+        queue_item.set_failure_reason(
+            "The executor job produced no allocation and has no pending evaluation."
+        )
+        queue_item.started_at = None
         return None
+
+    def _follow_reschedules(
+        self,
+        queue_item: TaskHistory,
+        alloc: dict[str, Any],
+        evaluations_by_id: dict[str, dict[str, Any]],
+    ) -> tuple[dict[str, Any], str]:
+        """Walk an allocation's ``FollowupEvalID`` chain to its latest successor.
+
+        A follow-up evaluation that found no capacity places its replacement
+        through the ``BlockedEval`` it spawned, so each hop is looked up along
+        that evaluation's placement chain as ``evaluations_by_id`` records it.
+
+        :param queue_item: The running task history record; its tracked task
+            states are reset on every hop, since they belonged to the
+            superseded allocation.
+        :param alloc: The allocation to start from.
+        :param evaluations_by_id: The job's evaluations keyed by id. Empty when
+            the caller has not read them, in which case each hop is looked up by
+            its follow-up evaluation alone.
+        :return: ``(alloc, job_id)`` for the latest allocation in the chain.
+        :raises AllocationNotFoundError: If a successor has not been placed yet.
+        :raises BaseNomadException: If Nomad fails the allocation lookup.
+        """
+        job_id = alloc["JobID"]
+        while followup_eval_id := alloc.get("FollowupEvalID"):
+            alloc = self._last_chain_allocation(
+                job_id, followup_eval_id, evaluations_by_id
+            )
+            queue_item.execution_request.tracking["task_states"] = {}
+        return alloc, job_id
+
+    def _last_chain_allocation(
+        self,
+        job_id: str,
+        eval_id: str,
+        evaluations_by_id: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Return the allocation placed along an evaluation's placement chain.
+
+        Nomad places work queued for capacity under the ``blocked`` evaluation's
+        id, not the evaluation that queued it, so ``eval_id``'s ``BlockedEval``
+        links are followed (stopping at a missing link or a cycle) and looked up
+        deepest first. ``eval_id`` itself is looked up last, so its own
+        placement is still found when it never blocked.
+
+        :param job_id: The Nomad job id.
+        :param eval_id: The evaluation the chain starts from.
+        :param evaluations_by_id: The job's evaluations keyed by id.
+        :return: The first allocation found.
+        :raises AllocationNotFoundError: If no evaluation in the chain has
+            placed an allocation.
+        :raises BaseNomadException: If Nomad fails the allocation lookup.
+        """
+        chain = [eval_id]
+        while (
+            blocked_eval_id := evaluations_by_id.get(chain[-1], {}).get("BlockedEval")
+        ) and blocked_eval_id not in chain:
+            chain.append(blocked_eval_id)
+        for blocked_eval_id in reversed(chain[1:]):
+            try:
+                return self.get_last_allocation(job_id, blocked_eval_id)
+            except AllocationNotFoundError:
+                logger.debug("No allocation placed by evaluation %s", blocked_eval_id)
+        return self.get_last_allocation(job_id, eval_id)
+
+    def _find_chain_allocation(
+        self,
+        queue_item: TaskHistory,
+        job_id: str,
+        evaluations: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str] | None:
+        """Find an allocation placed by the run's own evaluation chain.
+
+        Looks the tracked evaluation up along its placement chain, then follows
+        any reschedules from what it finds. The tracked evaluation is looked up
+        again here, after ``evaluations`` was read: Nomad's scheduler submits an
+        evaluation's placements before it marks the evaluation complete, so this
+        re-read also sees a placement that landed after the first lookup.
+
+        Matching on the chain rather than on the job alone keeps a job reused
+        across runs from adopting another run's allocation.
+
+        :param queue_item: The running task history record.
+        :param job_id: The Nomad job id.
+        :param evaluations: The job's evaluations as Nomad returned them.
+        :return: ``(alloc, job_id)`` for the allocation found, or ``None`` when
+            no evaluation in the chain has placed one or a reschedule's
+            successor is not yet placed.
+        :raises BaseNomadException: If Nomad fails the allocation lookup.
+        """
+        tracked_eval_id = (queue_item.execution_request.tracking or {}).get(
+            "evaluation_id"
+        )
+        if not tracked_eval_id:
+            return None
+        evaluations_by_id = _evaluations_by_id(evaluations)
+        try:
+            return self._follow_reschedules(
+                queue_item,
+                self._last_chain_allocation(job_id, tracked_eval_id, evaluations_by_id),
+                evaluations_by_id,
+            )
+        except AllocationNotFoundError:
+            logger.debug(
+                "No allocation placed by the evaluation chain of task history %s",
+                queue_item.id,
+            )
+            return None
+
+    def _withdraw_unplaced_job(
+        self,
+        job: dict[str, Any],
+        queue_item: TaskHistory,
+        outcome: TaskHistoryStatusEnum,
+    ) -> None:
+        """Withdraw a run's own job when the run ends without an allocation.
+
+        Only a job Nomad dispatched for this run alone is withdrawn. A
+        non-parameterized task registers one job per task and target, which
+        every such run shares, so withdrawing it would stop the other runs' work
+        too; it stays registered.
+
+        :param job: The Nomad job dict backing the run.
+        :param queue_item: The task history record being terminalized.
+        :param outcome: The terminal status the row is about to take.
+        """
+        if not job.get("Dispatched"):
+            logger.info(
+                "Job %s of task history %s is shared across runs; leaving it "
+                "registered while marking %s",
+                job["ID"],
+                queue_item.id,
+                outcome.name,
+            )
+            return
+        self._withdraw_job(job["ID"], queue_item, outcome)
+
+    def _withdraw_job(
+        self,
+        job_id: str,
+        queue_item: TaskHistory,
+        outcome: TaskHistoryStatusEnum,
+    ) -> None:
+        """Ask Nomad to deregister the job of a run ending before any task started.
+
+        The call is best-effort. Withdrawing stops Nomad from still placing work
+        the row is about to report terminal. A Nomad error is logged and
+        swallowed: holding the row RUNNING instead would block every re-dispatch
+        of the same task, target and payload with a 409.
+
+        :param job_id: The Nomad job to deregister.
+        :param queue_item: The task history record being terminalized.
+        :param outcome: The terminal status the row is about to take.
+        """
+        try:
+            self.backend.job.deregister_job(job_id)
+        except BaseNomadException:
+            logger.warning(
+                "Could not deregister job %s for task history %s; marking %s anyway",
+                job_id,
+                queue_item.id,
+                outcome.name,
+                exc_info=True,
+            )
 
     def _stamp_finished_at(
         self, queue_item: TaskHistory, alloc: dict[str, Any]
@@ -1777,16 +2166,7 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
                 alloc["ID"],
                 queue_item.id,
             )
-            try:
-                self.backend.job.deregister_job(job["ID"])
-            except BaseNomadException:
-                logger.warning(
-                    "Could not deregister job %s while escalating task history "
-                    "%s past the pending-allocation timeout; marking LOST anyway",
-                    job["ID"],
-                    queue_item.id,
-                    exc_info=True,
-                )
+            self._withdraw_job(job["ID"], queue_item, TaskHistoryStatusEnum.LOST)
             queue_item.finished_at = utc_now()
             queue_item.status = TaskHistoryStatusEnum.LOST
             queue_item.set_failure_reason(
@@ -1794,7 +2174,7 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
             )
 
     def _should_escalate_pending_allocation(self, queue_item: TaskHistory) -> bool:
-        """Return whether a TaskStates-less allocation has outlived the age bound.
+        """Return whether a run with no started task has outlived the age bound.
 
         Ages from ``queue_item.started_at`` so the bound does not reset across a
         FollowupEvalID reschedule chain. A missing ``started_at`` never
@@ -1873,7 +2253,11 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
         )
         if force_flush:
             drain_failures = await self._drain_terminal_logs(
-                writer_session, queue_item, alloc, alloc_epoch
+                writer_session,
+                queue_item,
+                alloc,
+                alloc_epoch,
+                capture_hold_ready=capture_hold_ready,
             )
             await self._force_flush_remaining_streams(writer_session, queue_item.id)
             await self._record_capture_outcomes(
@@ -2033,6 +2417,8 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
         queue_item: TaskHistory,
         alloc: dict[str, Any],
         alloc_epoch: int,
+        *,
+        capture_hold_ready: bool = False,
     ) -> set[tuple[str, TaskLogType]]:
         """Fetch Nomad logs after terminal detection until every stream is quiet.
 
@@ -2055,6 +2441,16 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
         only one stream polls the full window (correctness over latency; the
         window is ``hot``-tunable).
 
+        When ``capture_hold_ready`` is set, every producing step is already dead
+        behind a live hold, so no stream can start writing later and the
+        allocation's logs stay readable. The first re-fetch, a full interval
+        after the pre-drain fetch, that returns no new bytes on any stream then
+        means every stream is read to EOF, and the drain ends there instead of
+        waiting out the budget for streams that will never advance. The quiet
+        re-fetch must be one in which every stream's read succeeded, since a
+        failed read returns no bytes either. A re-fetch that still returns bytes
+        keeps it polling, so a tail ``logmon`` flushes late is still read.
+
         Anonymization withholds each stream's trailing partial line until a
         newline completes it, so a stream holding a partial looks quiet. The
         early-exit is suppressed while any stream is still withholding, and a
@@ -2067,6 +2463,9 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
         :param alloc: The current Nomad allocation dict.
         :param alloc_epoch: The allocation's ``CreateIndex``, threaded into each
             write so a superseded allocation's bytes are discarded.
+        :param capture_hold_ready: Whether the allocation's producing steps have
+            all stopped behind a live hold step, which lets one quiet re-fetch
+            end the drain.
         :return: The ``(step, stream)`` pairs whose re-fetch failed at any point
             during the drain, so the caller can record their capture as
             incomplete rather than trust the pre-drain fetch alone.
@@ -2085,12 +2484,13 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
             candidates.update(
                 (step, log_type) for step in task_logs for log_type in TaskLogType
             )
-            fetch_failures.update(
+            failed_now = {
                 (step, log_type)
                 for step in task_logs
                 for log_type in TaskLogType
                 if task_logs[step].get(f"{log_type}_fetch_failed")
-            )
+            }
+            fetch_failures.update(failed_now)
             produced = {
                 (step, log_type)
                 for step in task_logs
@@ -2112,7 +2512,9 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
                     task_logs,
                     force_flush=True,
                 )
-            elif advanced == candidates and not withholding:
+            elif not withholding and (
+                advanced == candidates or (capture_hold_ready and not failed_now)
+            ):
                 break
 
         # Terminal flush: emit any trailing line that never received a newline.
@@ -2516,8 +2918,8 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
                 )
                 break
         if pending:
-            decoded_msg = _decode_and_anonymize(
-                pending.drain(), anonymize_entities or None
+            decoded_msg = await asyncio.to_thread(
+                _decode_and_anonymize, pending.drain(), anonymize_entities or None
             )
             await queue.put(
                 TaskLog(
@@ -2529,7 +2931,7 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
             )
         await queue.put(TaskLog(step=step, type=log_type, msg=None))
 
-    def _decode_live_frame(
+    async def _decode_live_frame(
         self,
         pending: WithheldLineBuffer,
         raw_msg: str,
@@ -2549,6 +2951,10 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
         ``log_anonymization_max_withheld_bytes``, the whole buffer is flushed
         instead and ``pending`` is cleared so the live viewer keeps advancing.
         Non-anonymized steps decode and emit each frame unchanged.
+
+        Anonymization runs in a worker thread, so a slow analysis (the first
+        one loads the language model) holds back only this stream rather than
+        every stream the event loop is serving.
 
         :param pending: The withheld-remainder buffer, mutated in place.
         :param raw_msg: This frame's base64-encoded ``Data`` field.
@@ -2581,7 +2987,9 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
                 self.log_anonymization_max_withheld_bytes,
                 "the live viewer can advance",
             )
-        decoded_msg = _decode_and_anonymize(release.complete, anonymize_entities)
+        decoded_msg = await asyncio.to_thread(
+            _decode_and_anonymize, release.complete, anonymize_entities
+        )
         return decoded_msg, offset - len(pending)
 
     async def _consume_nomad_log_stream(
@@ -2599,7 +3007,9 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
 
         Opens ``/v1/client/fs/logs/{alloc_id}``, handles 404 while the task has not
         started, streams framed JSON log lines into ``queue``, and returns when the
-        stream ends or the allocation task state should be rechecked.
+        stream ends or the allocation task state should be rechecked. A due
+        recheck waits until every frame of the chunk is queued and no partial
+        frame is buffered, so output arriving with the heartbeat is not lost.
 
         On socket read timeout or :exc:`~aiohttp.ClientError`, returns internal state
         constants ``_NOMAD_LOG_STREAM_SOCK_TIMEOUT`` or ``_NOMAD_LOG_STREAM_CLIENT_ERROR``
@@ -2607,19 +3017,12 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
 
         :param alloc: Nomad allocation dictionary (must include ``ID``, ``JobID``,
             ``EvalID``, and ``TaskStates``).
-        :type alloc: dict[str, Any]
         :param step: Task step name for the ``task`` query parameter.
-        :type step: str
         :param log_type: ``stdout`` or ``stderr``.
-        :type log_type: TaskLogType
         :param queue: Queue to push :class:`~app.tasks.models.TaskLog` records into.
-        :type queue: asyncio.Queue
         :param params: Mutable request query parameters (``offset`` is updated).
-        :type params: dict[str, Any]
         :param client_timeout: aiohttp client timeout (e.g. socket read timeout).
-        :type client_timeout: ClientTimeout
         :param anonymize_entities: Optional PII entities to redact for specific steps.
-        :type anonymize_entities: set[PIIEntity] | None
         :param pending: Caller-owned buffer holding the trailing partial line
             withheld from anonymization; mutated in place and carried across
             reconnects so a token split at a frame boundary is redacted whole.
@@ -2627,7 +3030,6 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
             loop, or a ``_NOMAD_LOG_STREAM_*`` sentinel; the allocation dict (possibly
             refreshed); and monotonic time when response body reads began, or
             ``None`` if that phase was not reached.
-        :rtype: tuple[str, dict[str, Any], float | None]
         """
         alloc_id = alloc["ID"]
         stream_start = None
@@ -2636,6 +3038,7 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
             async with self._request(
                 "GET",
                 f"/v1/client/fs/logs/{alloc_id}",
+                long_lived=True,
                 params=params,
                 timeout=client_timeout,
             ) as response:
@@ -2671,56 +3074,67 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
                 raw_data = b""
                 first_chunk_seen = False
                 async for chunk, _ in response.content.iter_chunks():
-                    raw_data += chunk
-                    if b"}" not in chunk:
-                        continue
-                    data = json.loads(raw_data)
-                    raw_data = b""
-                    params["offset"] = offset = data.get("Offset", params["offset"])
-                    if data and (msg := data.get("Data")):
-                        empty_data_count = 0
-                        if not first_chunk_seen:
-                            first_chunk_seen = True
-                            elapsed = (
-                                time.monotonic() - stream_start
-                                if stream_start is not None
-                                else 0
-                            )
+                    frames, raw_data = _split_nomad_frames(raw_data + chunk)
+                    for data in frames:
+                        params["offset"] = offset = data.get("Offset", params["offset"])
+                        if data and (msg := data.get("Data")):
                             logger.debug(
-                                "First log chunk received alloc_id=%s step=%s "
-                                "log_type=%s offset=%s elapsed=%.2fs",
+                                "Nomad log frame alloc_id=%s step=%s log_type=%s "
+                                "offset=%s b64_chars=%s monotonic=%.3f",
                                 alloc_id,
                                 step,
                                 log_type,
                                 offset,
-                                elapsed,
+                                len(msg),
+                                time.monotonic(),
                             )
-                        decoded_msg, emit_offset = self._decode_live_frame(
-                            pending,
-                            msg,
-                            step,
-                            offset,
-                            anonymize_entities,
-                            alloc_id=alloc_id,
-                            log_type=log_type,
-                        )
-                        if decoded_msg is None:
-                            continue
-                        await queue.put(
-                            TaskLog(
-                                step=step,
-                                type=log_type,
-                                msg=decoded_msg,
-                                offset=emit_offset,
+                            empty_data_count = 0
+                            if not first_chunk_seen:
+                                first_chunk_seen = True
+                                elapsed = (
+                                    time.monotonic() - stream_start
+                                    if stream_start is not None
+                                    else 0
+                                )
+                                logger.debug(
+                                    "First log chunk received alloc_id=%s step=%s "
+                                    "log_type=%s offset=%s elapsed=%.2fs",
+                                    alloc_id,
+                                    step,
+                                    log_type,
+                                    offset,
+                                    elapsed,
+                                )
+                            decoded_msg, emit_offset = await self._decode_live_frame(
+                                pending,
+                                msg,
+                                step,
+                                offset,
+                                anonymize_entities,
+                                alloc_id=alloc_id,
+                                log_type=log_type,
                             )
-                        )
-                    elif empty_data_count >= self.log_socket_read_timeout:
+                            if decoded_msg is None:
+                                continue
+                            await queue.put(
+                                TaskLog(
+                                    step=step,
+                                    type=log_type,
+                                    msg=decoded_msg,
+                                    offset=emit_offset,
+                                )
+                            )
+                        else:
+                            empty_data_count += 1
+                    if empty_data_count > self.log_socket_read_timeout and not raw_data:
                         logger.debug(
                             "No data received for %s seconds, rechecking job status...",
                             self.log_socket_read_timeout,
                         )
-                        alloc = self.get_last_allocation(
-                            alloc["JobID"], alloc["EvalID"]
+                        alloc = await self.run_in_thread_held(
+                            self.get_last_allocation,
+                            alloc["JobID"],
+                            alloc["EvalID"],
                         )
                         return (
                             # An empty state ends the caller's loop, so a step
@@ -2729,8 +3143,6 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
                             alloc,
                             stream_start,
                         )
-                    else:
-                        empty_data_count += 1
                 return ("running", alloc, stream_start)
         except TimeoutError:
             return (_NOMAD_LOG_STREAM_SOCK_TIMEOUT, alloc, stream_start)
@@ -2738,9 +3150,55 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
             return (_NOMAD_LOG_STREAM_CLIENT_ERROR, alloc, stream_start)
 
     def preflight_stream_logs(self, queue_item: TaskHistory) -> None:
-        """Resolve allocation for live log streaming before HTTP response headers are sent."""
+        """Resolve allocation for live log streaming before HTTP response headers are sent.
+
+        A miss is re-read along the tracked evaluation's placement chain once
+        the job's evaluations have been read: Nomad can place the allocation
+        and complete its evaluation between the two reads, and work that waited
+        for capacity is placed under the ``blocked`` evaluation the tracked one
+        spawned. Only a miss on that chain while some evaluation of the job is
+        still live is reported as not started, since the job is shared by every
+        run of its task and target; a miss with no live evaluation means
+        nothing is coming.
+
+        :param queue_item: The running task history whose logs are about to stream.
+        :raises TaskNotStartedInExecutorError: When Nomad is still placing the
+            allocation or holding it for capacity, or has placed it but reports
+            no task state yet.
+        :raises JobNotFoundError: When the job itself is gone.
+        :raises AllocationNotFoundError: When the job has no allocation and no live
+            evaluation that would produce one.
+        :raises KeyError: When the history's tracking carries no job or
+            evaluation id.
+        :raises BaseNomadException: When a Nomad read fails for another reason,
+            including the job vanishing between its lookup and its evaluations.
+        """
         job_id, eval_id = self.job_eval_ids_for_stream_logs(queue_item)
-        self.get_last_allocation(job_id, eval_id)
+        try:
+            alloc = self.get_last_allocation(job_id, eval_id)
+        except AllocationNotFoundError:
+            self.get_job(job_id)
+            evaluations = self.backend.job.get_evaluations(job_id)
+            try:
+                alloc = self._last_chain_allocation(
+                    job_id, eval_id, _evaluations_by_id(evaluations)
+                )
+            except AllocationNotFoundError:
+                if any(
+                    evaluation.get("Status") in _LIVE_EVAL_STATUSES
+                    for evaluation in evaluations
+                ):
+                    raise TaskNotStartedInExecutorError(
+                        f"Nomad has not placed an allocation for job {job_id} yet"
+                    ) from None
+                raise
+        if not _alloc_task_states(alloc) and alloc.get("ClientStatus") in {
+            NomadAllocStatusEnum.PENDING,
+            NomadAllocStatusEnum.RUNNING,
+        }:
+            raise TaskNotStartedInExecutorError(
+                f"Allocation {alloc['ID']} has not started a task yet"
+            )
 
     def job_eval_ids_for_stream_logs(self, queue_item: TaskHistory) -> tuple[str, str]:
         """Return job_id and evaluation_id from task history tracking for log streaming.
@@ -2750,6 +3208,28 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
         """
         tracking = queue_item.execution_request.tracking or {}
         return (tracking["job_id"], tracking["evaluation_id"])
+
+    def _stream_allocation(self, job_id: str, eval_id: str) -> dict[str, Any]:
+        """Return the allocation a run's live log streams from.
+
+        Work that waited for capacity is placed under the ``blocked`` evaluation
+        the tracked one spawned, and the history keeps the tracked id until a
+        sync adopts the new one, so a miss is retried along the placement chain.
+
+        :param job_id: The Nomad job id.
+        :param eval_id: The evaluation id the history tracks.
+        :return: The allocation the evaluation chain placed.
+        :raises AllocationNotFoundError: If no evaluation in the chain has placed
+            an allocation.
+        :raises BaseNomadException: If Nomad fails a read.
+        """
+        try:
+            return self.get_last_allocation(job_id, eval_id)
+        except AllocationNotFoundError:
+            evaluations = self.backend.job.get_evaluations(job_id)
+        return self._last_chain_allocation(
+            job_id, eval_id, _evaluations_by_id(evaluations)
+        )
 
     async def stream_logs(
         self,
@@ -2772,7 +3252,7 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
             log messages.
         """
         job_id, eval_id = self.job_eval_ids_for_stream_logs(queue_item)
-        alloc = self.get_last_allocation(job_id, eval_id)
+        alloc = await self.run_in_thread_held(self._stream_allocation, job_id, eval_id)
         active_streams = set()
         queue = asyncio.Queue()
         push_logs_tasks = []
@@ -2875,9 +3355,10 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
                 if anonymize and queue_item.anonymized_entities:
                     try:
                         text = content.decode()
-                        yield anonymize_text(
-                            text, queue_item.anonymized_entities
-                        ).encode()
+                        redacted = await asyncio.to_thread(
+                            anonymize_text, text, queue_item.anonymized_entities
+                        )
+                        yield redacted.encode()
                         continue
                     except UnicodeDecodeError:
                         logger.debug(
@@ -2951,9 +3432,10 @@ class NomadExecutor(BaseExecutor, BaseRemoteAPI):
                 if anonymize and queue_item.anonymized_entities:
                     try:
                         text = chunk.decode()
-                        chunk = anonymize_text(
-                            text, queue_item.anonymized_entities
-                        ).encode()
+                        redacted = await asyncio.to_thread(
+                            anonymize_text, text, queue_item.anonymized_entities
+                        )
+                        chunk = redacted.encode()
                     except UnicodeDecodeError:
                         logger.debug(
                             "Could not decode file content for anonymization, sending raw bytes",

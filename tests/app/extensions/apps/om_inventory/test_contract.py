@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Smoke-test the API-first surface of the OpenManager Inventory app.
+"""Smoke-test the API-first surface of the Operations Inventory app.
 
 A ``BaseApp`` exposes a declared ``api_router`` rather than the derived task
 contract, so this mounts that router behind the production auth guard and asserts it

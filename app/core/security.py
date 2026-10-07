@@ -15,6 +15,8 @@
 
 """Security utilities module."""
 
+from collections.abc import Collection
+
 from fastapi import Request
 from itsdangerous import URLSafeSerializer, URLSafeTimedSerializer
 
@@ -26,6 +28,18 @@ crypto_timestamp_serializer = URLSafeTimedSerializer(
 )
 
 SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def has_unsafe_method(methods: Collection[str]) -> bool:
+    """Return whether any of ``methods`` falls outside :data:`SAFE_HTTP_METHODS`.
+
+    Compare case-insensitively: ``APIRoute`` accepts lowercase methods and only
+    uppercases them after its subclasses have inspected them.
+
+    :param methods: The HTTP methods a route answers.
+    :return: ``True`` when at least one method may change state.
+    """
+    return not SAFE_HTTP_METHODS.issuperset(method.upper() for method in methods)
 
 
 def is_bearer_authenticated(request: Request) -> bool:
@@ -41,30 +55,13 @@ def is_bearer_authenticated(request: Request) -> bool:
     return request.headers.get("authorization", "").lower().startswith("bearer ")
 
 
-def get_internal_token() -> str | None:
-    """Return the configured or derived internal service token, or ``None``.
+def get_internal_token() -> str:
+    """Return the configured or derived internal service token.
 
-    ``SecretStr("")`` is truthy, so the empty-string check is required to treat
-    an empty token as absent.
-
-    :return: The internal token's secret value, or ``None`` when unset or empty.
-    """
-    token = settings.EXTENSIONS_INTERNAL_TOKEN
-    if token is None:
-        return None
-    return token.get_secret_value() or None
-
-
-def require_internal_token() -> str:
-    """Return the internal service token, raising when it is unset.
-
-    ``Settings.derive_internal_token`` guarantees a value process-wide, so a
-    ``None`` here means a deliberately misconfigured or patched environment.
+    ``Settings.derive_internal_token`` populates ``EXTENSIONS_INTERNAL_TOKEN`` on every
+    constructed instance, from an explicit value or derived from ``SECRET_KEY``,
+    so the token is always present here.
 
     :return: The internal token's secret value.
-    :raises RuntimeError: If no internal token is configured or derived.
     """
-    token = get_internal_token()
-    if token is None:
-        raise RuntimeError("EXTENSIONS_INTERNAL_TOKEN must be configured.")
-    return token
+    return settings.EXTENSIONS_INTERNAL_TOKEN.get_secret_value()

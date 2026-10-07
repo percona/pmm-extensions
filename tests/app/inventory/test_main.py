@@ -15,8 +15,20 @@
 
 """Define tests for the app.inventory.main module."""
 
-from app.inventory.main import inventory_lifespan
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi import FastAPI
+
+from app.inventory.main import (
+    inventory_app,
+    inventory_lifespan,
+    inventory_overrides_lifespan,
+)
 from app.inventory.main import lifespan as inventory_module_lifespan
+from tests.app.core.settings_override.conftest import (
+    assert_registry_keyed_by_class_name,
+)
 
 
 def test_inventory_app_lifespan_is_always_set():
@@ -28,3 +40,42 @@ def test_inventory_app_lifespan_is_always_set():
     now wraps ``default_lifespan`` with the settings-override refresher.
     """
     assert inventory_module_lifespan is inventory_lifespan
+
+
+class TestInventoryOverridesLifespanRegistry:
+    """Pin the registry the Inventory override refresher is started with."""
+
+    @pytest.mark.asyncio
+    async def test_registry_is_keyed_by_class_name(self) -> None:
+        """Key each entry by the class ``__name__``, never the storage token."""
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=None)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        refresher = MagicMock(return_value=cm)
+        with patch("app.inventory.main.settings_override_refresher", refresher):
+            async with inventory_overrides_lifespan(FastAPI()):
+                pass
+
+        assert_registry_keyed_by_class_name(refresher.call_args.args[1])
+
+
+class TestNestedListOpenAPI:
+    """Test the OpenAPI contract of the routes listing a parent's children."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/nodes/{node_id}/services/",
+            "/services/{service_id}/schemas/",
+            "/schemas/{schema_id}/tables/",
+        ],
+    )
+    def test_include_retired_is_declared_once(self, path: str) -> None:
+        """Declare ``include_retired`` once though parent and children both read it.
+
+        The parent lookup and the children manager each depend on the query
+        parameter, so a duplicate entry would break the generated API client.
+        """
+        parameters = inventory_app.openapi()["paths"][path]["get"]["parameters"]
+        names = [parameter["name"] for parameter in parameters]
+        assert names.count("include_retired") == 1

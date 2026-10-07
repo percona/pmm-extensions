@@ -16,26 +16,37 @@
 """Define tests for the app.api.deps module."""
 
 import logging
+from collections.abc import Callable
 from datetime import timedelta
 from types import SimpleNamespace
-from typing import Final
+from typing import Annotated, Any, Final
 
 import pytest
+from fastapi import APIRouter, Depends, FastAPI, status
+from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from pytest_mock import MockerFixture
 
 from app.api.deps import (
     authenticate_bearer_token,
+    ExemptFromServicePrincipalDep,
     get_current_admin,
     get_current_service_principal,
     get_current_user,
+    get_service_principal_exempt_caller,
+    IsAuthenticatedDep,
     require_minimum_role_for_unsafe_methods,
+    requires_service_principal,
     SERVICE_PRINCIPAL_ID,
+    ServicePrincipalWriteRoute,
 )
 from app.core.auth.exceptions import HTTPForbiddenException, HTTPUnauthorizedException
 from app.core.auth.models import UserRole
 from app.core.auth.providers.grafana.models import GrafanaUser
 from app.core.auth.utils import get_user_model
 from app.core.config import settings
+from app.core.exceptions import HTTPNotFoundException
 from app.core.log import ContextFilter
 from app.extensions.apps.alerts.api_routes import (
     alerts_api_pagerduty_delete,
@@ -128,16 +139,6 @@ async def test_authenticate_bearer_token_internal_token_mismatch_falls_through(
     """Verify a token that does not match the secret falls through to the provider."""
     mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr("supersecret"))
     user = await authenticate_bearer_token("not-the-secret")
-    assert user.username == valid_username
-
-
-@pytest.mark.asyncio
-async def test_authenticate_bearer_token_internal_token_unset_falls_through(
-    casdoor_mock, valid_username, mocker
-):
-    """Verify an unset ``EXTENSIONS_INTERNAL_TOKEN`` leaves every token to the provider."""
-    mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", None)
-    user = await authenticate_bearer_token("supersecret")
     assert user.username == valid_username
 
 
@@ -912,3 +913,423 @@ class TestRequireMinimumRoleForUnsafeMethods:
         assert principal.is_admin is False
         with pytest.raises(HTTPForbiddenException):
             await get_current_admin(principal)
+
+
+UNSAFE_METHODS: Final = ["POST", "PUT", "PATCH", "DELETE"]
+
+
+def _dependency_calls(route: APIRoute) -> list[Callable[..., Any]]:
+    """Return the callables of the route's top-level dependencies, in order.
+
+    A list rather than a set, so a restriction appended twice shows up twice.
+
+    :param route: The route whose resolved dependency chain to inspect.
+    :return: One entry per dependency declared on the route or inherited.
+    """
+    return [
+        dependency.call
+        for dependency in route.dependant.dependencies
+        if dependency.call is not None
+    ]
+
+
+def _only_route(routes: list[Any]) -> APIRoute:
+    """Return the single ``APIRoute`` in ``routes``.
+
+    :param routes: A route table holding exactly one API route.
+    :return: That route.
+    """
+    (route,) = [route for route in routes if isinstance(route, APIRoute)]
+    return route
+
+
+async def _missing_row() -> None:
+    """Raise the 404 a path dependency answers for an unknown identifier."""
+    raise HTTPNotFoundException
+
+
+class TestServicePrincipalWriteRoute:
+    """Cover the route class that makes unsafe routes service-principal-only."""
+
+    @pytest.fixture
+    def router(self) -> APIRouter:
+        """Return an empty router built on the route class under test."""
+        return APIRouter(route_class=ServicePrincipalWriteRoute)
+
+    @pytest.mark.parametrize("method", UNSAFE_METHODS)
+    def test_an_unannotated_unsafe_route_requires_the_principal(
+        self, router: APIRouter, method: str
+    ) -> None:
+        """Restrict a write route that declares nothing about its access."""
+
+        @router.api_route("/", methods=[method])
+        async def write() -> None: ...
+
+        assert get_current_service_principal in _dependency_calls(
+            _only_route(router.routes)
+        )
+
+    @pytest.mark.parametrize("method", ["GET", "HEAD", "OPTIONS"])
+    def test_a_safe_route_is_left_alone(self, router: APIRouter, method: str) -> None:
+        """Leave a read route's authentication to whatever it declares itself."""
+
+        @router.api_route("/", methods=[method], dependencies=[IsAuthenticatedDep])
+        async def read() -> None: ...
+
+        calls = _dependency_calls(_only_route(router.routes))
+
+        assert calls == [get_current_user]
+
+    def test_a_route_mixing_safe_and_unsafe_methods_is_restricted_whole(
+        self, router: APIRouter
+    ) -> None:
+        """Restrict a GET-and-POST route on both, the dependency being per route."""
+
+        @router.api_route("/", methods=["GET", "POST"])
+        async def read_or_write() -> None: ...
+
+        assert get_current_service_principal in _dependency_calls(
+            _only_route(router.routes)
+        )
+
+    def test_an_exempt_route_is_left_alone(self, router: APIRouter) -> None:
+        """Leave a write route declaring the exemption unrestricted."""
+
+        @router.post("/", dependencies=[ExemptFromServicePrincipalDep])
+        async def write() -> None: ...
+
+        calls = _dependency_calls(_only_route(router.routes))
+
+        assert calls == [get_service_principal_exempt_caller]
+
+    def test_an_exemption_inherited_from_the_router_applies(self) -> None:
+        """Exempt a write when the exemption arrives through the router's dependencies.
+
+        FastAPI hands a route its router's dependencies ahead of its own, so the
+        route class sees both the same way.
+        """
+        router = APIRouter(
+            route_class=ServicePrincipalWriteRoute,
+            dependencies=[ExemptFromServicePrincipalDep],
+        )
+
+        @router.post("/")
+        async def write() -> None: ...
+
+        calls = _dependency_calls(_only_route(router.routes))
+
+        assert calls == [get_service_principal_exempt_caller]
+
+    def test_the_route_keeps_its_own_dependencies(self, router: APIRouter) -> None:
+        """Add the restriction ahead of the route's dependencies, not instead.
+
+        FastAPI resolves decorator dependencies in order, so one that looks up
+        the path's row could otherwise answer 404 before the refusal.
+        """
+
+        @router.post("/", dependencies=[IsAuthenticatedDep])
+        async def write() -> None: ...
+
+        calls = _dependency_calls(_only_route(router.routes))
+
+        assert calls == [get_current_service_principal, get_current_user]
+
+    def test_including_the_router_restricts_the_route_once(
+        self, router: APIRouter
+    ) -> None:
+        """Add the restriction once, though inclusion rebuilds the route.
+
+        ``include_router`` constructs a second route of the same class from the
+        first one's dependencies, which already carry the restriction.
+        """
+
+        @router.post("/")
+        async def write() -> None: ...
+
+        app = FastAPI()
+        app.include_router(router)
+
+        assert _dependency_calls(_only_route(app.routes)) == [
+            get_current_service_principal
+        ]
+
+    def test_including_the_router_keeps_the_restriction_first(
+        self, router: APIRouter
+    ) -> None:
+        """Keep the restriction ahead of the dependencies inclusion prepends."""
+
+        @router.post("/")
+        async def write() -> None: ...
+
+        app = FastAPI()
+        app.include_router(router, dependencies=[IsAuthenticatedDep])
+
+        assert _dependency_calls(_only_route(app.routes)) == [
+            get_current_service_principal,
+            get_current_user,
+        ]
+
+    def test_including_the_router_keeps_an_exemption(self, router: APIRouter) -> None:
+        """Keep an exempt route unrestricted once inclusion rebuilds it."""
+
+        @router.post("/", dependencies=[ExemptFromServicePrincipalDep])
+        async def write() -> None: ...
+
+        app = FastAPI()
+        app.include_router(router)
+
+        assert _dependency_calls(_only_route(app.routes)) == [
+            get_service_principal_exempt_caller
+        ]
+
+    def test_a_plain_router_is_unaffected(self) -> None:
+        """Restrict nothing on a router that does not opt into the route class."""
+        router = APIRouter()
+
+        @router.post("/", dependencies=[IsAuthenticatedDep])
+        async def write() -> None: ...
+
+        calls = _dependency_calls(_only_route(router.routes))
+
+        assert calls == [get_current_user]
+
+
+class TestRequiresServicePrincipal:
+    """Cover the predicate deciding which routes the route class restricts."""
+
+    @pytest.mark.parametrize(
+        ("methods", "expected"),
+        [
+            ({"POST"}, True),
+            ({"DELETE"}, True),
+            ({"GET", "POST"}, True),
+            ({"GET"}, False),
+            ({"GET", "HEAD", "OPTIONS"}, False),
+            (set(), False),
+            ({"get"}, False),
+        ],
+        ids=[
+            "post",
+            "delete",
+            "mixed",
+            "get",
+            "all_safe",
+            "no_methods",
+            "lowercase_get",
+        ],
+    )
+    def test_the_method_set_decides_a_route_without_the_exemption(
+        self, methods: set[str], *, expected: bool
+    ) -> None:
+        """Restrict exactly the routes answering at least one unsafe method."""
+        assert requires_service_principal(methods, [IsAuthenticatedDep]) is expected
+
+    def test_the_exemption_opens_a_write(self) -> None:
+        """Leave a write declaring the exemption unrestricted."""
+        assert (
+            requires_service_principal({"POST"}, [ExemptFromServicePrincipalDep])
+            is False
+        )
+
+    def test_an_authentication_dependency_is_no_exemption(self) -> None:
+        """Keep a write that only authenticates on the restrictive default.
+
+        The exemption shares ``IsAuthenticatedDep``'s effect but not its
+        identity, so declaring authentication cannot open a write by accident.
+        """
+        assert requires_service_principal({"POST"}, [IsAuthenticatedDep]) is True
+
+
+class TestServicePrincipalWriteRouteRequests:
+    """Verify the route class's verdict on real requests, with no app gate above it.
+
+    Nothing else gates the throwaway app, so every status is the restriction's
+    own rather than the minimum-role gate's.
+    """
+
+    @pytest.fixture
+    def client(self, casdoor_mock, mocker: MockerFixture) -> TestClient:
+        """Return a client over each restricted shape, an exempt write and a read."""
+        mocker.patch.object(
+            settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(SERVICE_TOKEN)
+        )
+        router = APIRouter(route_class=ServicePrincipalWriteRoute)
+
+        @router.post("/restricted")
+        async def restricted() -> dict[str, str]:
+            return {"ok": "restricted"}
+
+        @router.post("/restricted/{row_id}")
+        async def restricted_row(
+            row: Annotated[None, Depends(_missing_row)],
+        ) -> None: ...
+
+        @router.post(
+            "/restricted/{row_id}/looked-up", dependencies=[Depends(_missing_row)]
+        )
+        async def restricted_looked_up_row() -> None: ...
+
+        @router.post("/exempt", dependencies=[ExemptFromServicePrincipalDep])
+        async def exempt() -> dict[str, str]:
+            return {"ok": "exempt"}
+
+        @router.patch("/patched")
+        async def patched() -> dict[str, str]:
+            return {"ok": "patched"}
+
+        @router.api_route("/mixed", methods=["GET", "POST"])
+        async def mixed() -> dict[str, str]:
+            return {"ok": "mixed"}
+
+        @router.get("/read")
+        async def read() -> dict[str, str]:
+            return {"ok": "read"}
+
+        app = FastAPI()
+        app.include_router(router)
+        return TestClient(app, raise_server_exceptions=False)
+
+    @pytest.fixture
+    def as_role(
+        self, casdoor_mock, casdoor_user_data
+    ) -> Callable[[UserRole], dict[str, str]]:
+        """Return a factory pinning the human caller's rank, yielding its headers."""
+
+        def pin(role: UserRole) -> dict[str, str]:
+            casdoor_mock.get_user.return_value = {**casdoor_user_data, "role": role}
+            return {"Authorization": "Bearer valid_token"}
+
+        return pin
+
+    def test_the_principal_is_admitted(self, client: TestClient) -> None:
+        """Serve the principal the handler's own answer."""
+        response = client.post(
+            "/restricted", headers={"Authorization": f"Bearer {SERVICE_TOKEN}"}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"ok": "restricted"}
+
+    @pytest.mark.parametrize(
+        "role",
+        [UserRole.VIEWER, UserRole.EDITOR, UserRole.ADMIN, UserRole.SUPER_ADMIN],
+    )
+    def test_every_human_rank_is_refused(
+        self,
+        client: TestClient,
+        as_role: Callable[[UserRole], dict[str, str]],
+        role: UserRole,
+    ) -> None:
+        """Refuse a human of any rank, the criterion being identity."""
+        response = client.post("/restricted", headers=as_role(role))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [("PATCH", "/patched"), ("POST", "/mixed"), ("GET", "/mixed")],
+        ids=["patch", "mixed_post", "mixed_get"],
+    )
+    def test_a_human_is_refused_on_every_restricted_shape(
+        self,
+        client: TestClient,
+        as_role: Callable[[UserRole], dict[str, str]],
+        method: str,
+        path: str,
+    ) -> None:
+        """Refuse a human on a PATCH, and on both methods of a mixed route.
+
+        The restriction is a dependency of the whole route, so a route that
+        also writes restricts its reads too.
+        """
+        response = client.request(method, path, headers=as_role(UserRole.ADMIN))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [("PATCH", "/patched"), ("POST", "/mixed"), ("GET", "/mixed")],
+        ids=["patch", "mixed_post", "mixed_get"],
+    )
+    def test_the_principal_is_served_on_every_restricted_shape(
+        self, client: TestClient, method: str, path: str
+    ) -> None:
+        """Serve the principal on a PATCH, and on both methods of a mixed route."""
+        response = client.request(
+            method, path, headers={"Authorization": f"Bearer {SERVICE_TOKEN}"}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+
+    def test_an_anonymous_caller_is_unauthorized(self, client: TestClient) -> None:
+        """Answer a missing credential 401, not the 403 kept for a wrong one."""
+        response = client.post("/restricted")
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_an_empty_internal_token_admits_nobody(
+        self, client: TestClient, mocker: MockerFixture
+    ) -> None:
+        """Refuse the would-be principal's token while the setting carries none."""
+        mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(""))
+
+        response = client.post(
+            "/restricted", headers={"Authorization": f"Bearer {SERVICE_TOKEN}"}
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/restricted/99999", "/restricted/99999/looked-up"],
+        ids=["parameter_lookup", "decorator_lookup"],
+    )
+    def test_the_refusal_precedes_the_path_lookup(
+        self,
+        client: TestClient,
+        as_role: Callable[[UserRole], dict[str, str]],
+        path: str,
+    ) -> None:
+        """Answer a human 403 on an unknown row, not the lookup's 404.
+
+        A 404 reaching a refused caller would tell it which identifiers exist.
+        """
+        response = client.post(path, headers=as_role(UserRole.ADMIN))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/restricted/99999", "/restricted/99999/looked-up"],
+        ids=["parameter_lookup", "decorator_lookup"],
+    )
+    def test_the_principal_reaches_the_path_lookup(
+        self, client: TestClient, path: str
+    ) -> None:
+        """Answer the principal the lookup's 404, the refusal being the only gate."""
+        response = client.post(
+            path, headers={"Authorization": f"Bearer {SERVICE_TOKEN}"}
+        )
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_an_exempt_route_admits_a_human(
+        self, client: TestClient, as_role: Callable[[UserRole], dict[str, str]]
+    ) -> None:
+        """Serve a human on an exempt write, its own authentication still applying."""
+        response = client.post("/exempt", headers=as_role(UserRole.VIEWER))
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"ok": "exempt"}
+
+    def test_an_exempt_route_still_authenticates(self, client: TestClient) -> None:
+        """Refuse an anonymous caller on an exempt write it declares authenticated."""
+        response = client.post("/exempt")
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_a_read_needs_no_credential(self, client: TestClient) -> None:
+        """Serve a read-only route declaring nothing, which the restriction skips."""
+        response = client.get("/read")
+
+        assert response.status_code == status.HTTP_200_OK

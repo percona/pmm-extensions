@@ -18,7 +18,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from unittest.mock import patch
 
 import pytest
@@ -48,6 +48,8 @@ from app.core.requests.remote_api import (
     as_json_object,
     BaseRemoteAPI,
     is_non_json_success,
+    PendingCloses,
+    POOL_WAIT_WARN_SECONDS,
     UPSTREAM_NON_JSON_HEADER,
 )
 from app.core.requests.remote_api import (
@@ -70,6 +72,7 @@ _CREDENTIAL_ENDPOINT = "http://svcuser:svcpass@remote.internal:9000/api/inventor
 _CREDENTIAL_SECRET = "svcpass"
 _REDACTED_BASE_URL = "http://svcuser:****@remote.internal:9000"
 _LIVE_BASE_URL = "http://svcuser:svcpass@remote.internal:9000"
+_STREAM_START_BOUND = 2.0
 
 
 @pytest.fixture
@@ -360,7 +363,14 @@ class TestNonJsonResponseLogging:
 
         assert exc_info.value.headers == {UPSTREAM_NON_JSON_HEADER: "1"}
         assert _logged_non_json_body(caplog.records) == expected
-        messages = [record.getMessage() for record in caplog.records]
+        # Scope these guards to the non-JSON response record: the capture window
+        # also includes session open/close debug lines on the same logger.
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if "response content" in record.msg
+        ]
+        assert messages
         assert any(repr(expected) in message for message in messages)
         assert all("StreamReader" not in message for message in messages)
         assert all("\n" not in message for message in messages)
@@ -747,6 +757,318 @@ class TestDrainOnRebind:
         async with remote_api.hold():
             await remote_api.close()
             assert remote_api._session is None
+
+    async def test_deferred_close_registers_then_discards_on_drain(self, remote_api):
+        """Track a deferred close on the owner's pending set until the hold ends."""
+        pending = PendingCloses()
+        await remote_api.open()
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            assert id(remote_api) in pending._clients
+
+        assert id(remote_api) not in pending._clients
+        assert remote_api._session is None
+
+    async def test_force_close_closes_a_still_held_client(self, remote_api):
+        """Force-close a deferred client whose holder has not released yet."""
+        pending = PendingCloses()
+        await remote_api.open()
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            await pending.force_close()
+            assert remote_api._session is None
+            assert pending._clients == {}
+            assert remote_api._close_when_idle is False
+
+        await pending.force_close()
+
+    async def test_request_after_force_close_raises_client_closed(
+        self, remote_api
+    ) -> None:
+        """Raise a clear error when a holder calls again after force-close."""
+        pending = PendingCloses()
+        await remote_api.open()
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            await pending.force_close()
+            with pytest.raises(RuntimeError, match="is closed"):
+                async with remote_api._request("GET", "/after-close/"):
+                    pass
+
+    async def test_force_close_while_stream_awaits_response(self) -> None:
+        """Force-close while ``stream_chunks`` is still awaiting the upstream response.
+
+        Unlike the bare-``hold()`` cases, this keeps a real request in flight so
+        shutdown's sweep is exercised against an open socket, not only the
+        accounting flag the ticket asked to verify.
+        """
+        pending = PendingCloses()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handler(_request: web.Request) -> web.Response:
+            entered.set()
+            await release.wait()
+            return web.Response(body=b"chunk")
+
+        server = web.Application()
+        server.router.add_route("*", "/{tail:.*}", handler)
+        runner = web.AppRunner(server)
+        await runner.setup()
+        task: asyncio.Task[list[bytes]] | None = None
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            _, port = runner.addresses[0][:2]
+            api = RemoteAPI(endpoint=f"http://127.0.0.1:{port}/")
+            await api.open()
+
+            async def consume() -> list[bytes]:
+                return [chunk async for chunk in api.stream_chunks("/slow/")]
+
+            task = asyncio.create_task(consume())
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            await api.close_when_idle(pending=pending)
+            assert id(api) in pending._clients
+            assert api._session is not None
+
+            await pending.force_close()
+            assert api._session is None
+            assert pending._clients == {}
+            assert api._close_when_idle is False
+        finally:
+            release.set()
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                with suppress(Exception, asyncio.CancelledError):
+                    await task
+            await runner.cleanup()
+
+    async def test_force_close_clears_flag_so_hold_does_not_close_again(
+        self, remote_api, mocker
+    ):
+        """Avoid a second close when force_close races a draining hold."""
+        pending = PendingCloses()
+        await remote_api.open()
+        closes = 0
+        original = BaseRemoteAPI.close
+
+        async def counting_close(self: BaseRemoteAPI) -> None:
+            nonlocal closes
+            closes += 1
+            await original(self)
+
+        mocker.patch.object(BaseRemoteAPI, "close", counting_close)
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            await pending.force_close()
+
+        assert closes == 1
+
+    async def test_force_close_awaits_in_progress_drain_close(self, remote_api, mocker):
+        """Join a draining hold's session.close instead of missing it mid-teardown."""
+        pending = PendingCloses()
+        await remote_api.open()
+        session = remote_api._session
+        assert session is not None
+        entered_close = asyncio.Event()
+        finish_close = asyncio.Event()
+        real_close = session.close
+
+        async def paused_session_close() -> None:
+            entered_close.set()
+            await finish_close.wait()
+            await real_close()
+
+        mocker.patch.object(session, "close", paused_session_close)
+        released = asyncio.Event()
+
+        async def consumer() -> None:
+            async with remote_api.hold():
+                await remote_api.close_when_idle(pending=pending)
+                released.set()
+                await asyncio.Event().wait()
+
+        consumer_task = asyncio.create_task(consumer())
+        await asyncio.wait_for(released.wait(), timeout=5)
+        consumer_task.cancel()
+        # hold finally starts shielded close(); pause inside ClientSession.close.
+        await asyncio.wait_for(entered_close.wait(), timeout=5)
+        assert id(remote_api) in pending._clients
+
+        force_task = asyncio.create_task(pending.force_close())
+        await asyncio.sleep(0)
+        assert not force_task.done()
+
+        finish_close.set()
+        await force_task
+        with pytest.raises(asyncio.CancelledError):
+            await consumer_task
+        assert remote_api._session is None
+        assert pending._clients == {}
+
+    async def test_failed_session_close_stays_retryable(self, remote_api, mocker):
+        """Keep a raised ``ClientSession.close`` from looking done or leaving pending."""
+        pending = PendingCloses()
+        await remote_api.open()
+        session = remote_api._session
+        assert session is not None
+        real_close = session.close
+        fail_once = True
+
+        async def flaky_close() -> None:
+            nonlocal fail_once
+            if fail_once:
+                fail_once = False
+                raise RuntimeError("close boom")
+            await real_close()
+
+        mocker.patch.object(session, "close", flaky_close)
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            with pytest.raises(RuntimeError, match="close boom"):
+                await remote_api.close()
+            assert remote_api._session is session
+            assert id(remote_api) in pending._clients
+            assert remote_api._close_done is None
+
+            await remote_api.close()
+            assert remote_api._session is None
+            assert id(remote_api) not in pending._clients
+
+    async def test_force_close_keeps_failed_client_for_retry(self, remote_api, mocker):
+        """Leave a failed sweep's client registered for a later retry."""
+        pending = PendingCloses()
+        await remote_api.open()
+        session = remote_api._session
+        assert session is not None
+        real_close = session.close
+        fail_once = True
+
+        async def flaky_close() -> None:
+            nonlocal fail_once
+            if fail_once:
+                fail_once = False
+                raise RuntimeError("close boom")
+            await real_close()
+
+        mocker.patch.object(session, "close", flaky_close)
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            await pending.force_close()
+
+            assert remote_api._session is session
+            assert id(remote_api) in pending._clients
+            assert remote_api._close_when_idle is False
+            assert remote_api._close_done is None
+
+            await pending.force_close()
+            assert remote_api._session is None
+            assert pending._clients == {}
+
+    async def test_cancelling_close_waiter_does_not_cancel_shared_future(
+        self, remote_api, mocker
+    ):
+        """Shield the shared _close_done so one cancelled joiner cannot abort it."""
+        await remote_api.open()
+        session = remote_api._session
+        assert session is not None
+        entered_close = asyncio.Event()
+        finish_close = asyncio.Event()
+        real_close = session.close
+
+        async def paused_session_close() -> None:
+            entered_close.set()
+            await finish_close.wait()
+            await real_close()
+
+        mocker.patch.object(session, "close", paused_session_close)
+
+        closer = asyncio.create_task(remote_api.close())
+        await asyncio.wait_for(entered_close.wait(), timeout=5)
+        shared = remote_api._close_done
+        assert shared is not None
+
+        waiter = asyncio.create_task(remote_api.close())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        assert not shared.cancelled()
+        finish_close.set()
+        await closer
+        assert remote_api._session is None
+
+    async def test_joiner_takes_over_when_owner_close_is_cancelled(
+        self, remote_api, mocker
+    ):
+        """Take over teardown when the owning close is cancelled mid-session.close."""
+        await remote_api.open()
+        session = remote_api._session
+        assert session is not None
+        entered_close = asyncio.Event()
+        finish_close = asyncio.Event()
+        real_close = session.close
+
+        async def paused_session_close() -> None:
+            entered_close.set()
+            await finish_close.wait()
+            await real_close()
+
+        mocker.patch.object(session, "close", paused_session_close)
+
+        owner = asyncio.create_task(remote_api.close())
+        await asyncio.wait_for(entered_close.wait(), timeout=5)
+        joiner = asyncio.create_task(remote_api.close())
+        await asyncio.sleep(0)
+
+        owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+
+        assert not joiner.cancelled()
+        finish_close.set()
+        await joiner
+        assert remote_api._session is None
+        assert not joiner.cancelled()
+
+    async def test_idle_close_does_not_register_on_pending(self, remote_api):
+        """Skip pending registration when the close runs immediately."""
+        pending = PendingCloses()
+        await remote_api.open()
+
+        await remote_api.close_when_idle(pending=pending)
+
+        assert pending._clients == {}
+        assert remote_api._session is None
+
+    async def test_sealed_pending_closes_immediately_mid_hold(self, remote_api):
+        """Close now when the owner's pending set is already sealed by shutdown."""
+        pending = PendingCloses()
+        pending.seal()
+        await remote_api.open()
+
+        async with remote_api.hold():
+            await remote_api.close_when_idle(pending=pending)
+            assert remote_api._session is None
+            assert pending._clients == {}
+
+    async def test_add_after_force_close_is_rejected(self, remote_api):
+        """Refuse a post-sweep registration so a late rebind cannot leak."""
+        pending = PendingCloses()
+        await remote_api.open()
+        await pending.force_close()
+
+        assert pending.add(remote_api) is False
+        await remote_api.close()
 
 
 async def _achunks(chunks: list[bytes]) -> AsyncGenerator[bytes, None]:
@@ -1395,3 +1717,184 @@ class TestSessionLifecycleLogging:
 
         assert _CREDENTIAL_SECRET not in session_url
         assert CREDENTIAL_URL_MASK not in session_url
+
+
+class _OneStreamSlotRemoteAPI(RemoteAPI):
+    """Cap the long-lived pool at a single connection."""
+
+    STREAM_CONNECTION_LIMIT = 1
+
+
+@asynccontextmanager
+async def _held_stream_server(release: asyncio.Event) -> AsyncGenerator[str]:
+    """Serve a stream that stays open until ``release``, and a quick JSON route.
+
+    ``/held`` writes one chunk immediately, then holds the response open until
+    the test sets ``release``, the way a live log follow holds its connection.
+
+    :param release: Set by the test to let every held stream finish.
+    :yield: The base URL the server listens on.
+    """
+
+    async def held(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        await response.write(b"first")
+        await release.wait()
+        await response.write(b"last")
+        return response
+
+    async def quick(_request: web.Request) -> web.Response:
+        return web.json_response({"ok": True})
+
+    server = web.Application()
+    server.router.add_get("/held", held)
+    server.router.add_get("/quick", quick)
+    runner = web.AppRunner(server, shutdown_timeout=1)
+    await runner.setup()
+    try:
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        _, port = runner.addresses[0][:2]
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        release.set()
+        await runner.cleanup()
+
+
+class _HeldReader:
+    """Read ``/held`` in a background task, recording each chunk on arrival.
+
+    :param api: The opened client to stream through.
+    """
+
+    def __init__(self, api: RemoteAPI) -> None:
+        self.chunks: list[bytes] = []
+        self.started = asyncio.Event()
+        self.task = asyncio.create_task(self._read(api))
+
+    async def _read(self, api: RemoteAPI) -> None:
+        """Consume the stream, flagging :attr:`started` on the first chunk.
+
+        :param api: The opened client to stream through.
+        """
+        async for chunk in api.stream_chunks("/held"):
+            self.chunks.append(chunk)
+            self.started.set()
+
+
+class TestLongLivedStreamPool:
+    """Cover the separate connection pool long-lived streaming responses use."""
+
+    pytestmark = pytest.mark.asyncio
+
+    async def test_more_open_streams_than_the_short_call_cap_all_start(self) -> None:
+        """Start every stream when more are open than the per-host short-call cap.
+
+        Eleven held streams to one host exceed the ten connections per host the
+        short-call pool allows, so the eleventh starts only if streams draw on
+        a pool of their own.
+        """
+        release = asyncio.Event()
+        async with (
+            _held_stream_server(release) as endpoint,
+            RemoteAPI(endpoint=endpoint) as api,
+        ):
+            readers = [_HeldReader(api) for _ in range(11)]
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(reader.started.wait() for reader in readers)),
+                    _STREAM_START_BOUND,
+                )
+            finally:
+                release.set()
+                await asyncio.gather(*(reader.task for reader in readers))
+
+        assert all(reader.chunks == [b"first", b"last"] for reader in readers)
+
+    async def test_a_short_call_is_served_while_the_stream_pool_is_full(self) -> None:
+        """Serve a plain request at once while every stream slot is taken."""
+        release = asyncio.Event()
+        async with (
+            _held_stream_server(release) as endpoint,
+            _OneStreamSlotRemoteAPI(endpoint=endpoint) as api,
+        ):
+            reader = _HeldReader(api)
+            try:
+                await asyncio.wait_for(reader.started.wait(), _STREAM_START_BOUND)
+                answer = await asyncio.wait_for(api.get("/quick"), _STREAM_START_BOUND)
+            finally:
+                release.set()
+                await reader.task
+
+        assert answer == {"ok": True}
+
+    async def test_a_stream_queued_for_a_slot_logs_the_wait(self, caplog) -> None:
+        """Warn when a stream waited past the threshold for a pooled connection."""
+        release = asyncio.Event()
+        async with (
+            _held_stream_server(release) as endpoint,
+            _OneStreamSlotRemoteAPI(endpoint=endpoint) as api,
+        ):
+            with caplog.at_level(logging.WARNING, logger=api.logger.name):
+                holder = _HeldReader(api)
+                await asyncio.wait_for(holder.started.wait(), _STREAM_START_BOUND)
+                queued = _HeldReader(api)
+                await asyncio.sleep(POOL_WAIT_WARN_SECONDS + 0.3)
+                started_while_held = queued.started.is_set()
+                release.set()
+                await asyncio.gather(holder.task, queued.task)
+
+        assert not started_while_held
+        assert b"".join(queued.chunks) == b"firstlast"
+        waits = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "for a pooled connection" in record.getMessage()
+        ]
+        assert len(waits) == 1
+        assert "(GET /held)" in waits[0]
+
+    async def test_a_request_that_never_queues_logs_no_wait(self, caplog) -> None:
+        """Stay silent for a request that found a free connection."""
+        release = asyncio.Event()
+        async with (
+            _held_stream_server(release) as endpoint,
+            RemoteAPI(endpoint=endpoint) as api,
+        ):
+            with caplog.at_level(logging.WARNING, logger=api.logger.name):
+                answer = await api.get("/quick")
+
+        assert answer == {"ok": True}
+        assert "for a pooled connection" not in caplog.text
+
+    async def test_a_client_that_never_streams_opens_no_stream_pool(self) -> None:
+        """Leave the long-lived pool unbuilt until a stream needs it."""
+        release = asyncio.Event()
+        async with (
+            _held_stream_server(release) as endpoint,
+            RemoteAPI(endpoint=endpoint) as api,
+        ):
+            answer = await api.get("/quick")
+            stream_session = api._stream_session
+
+        assert answer == {"ok": True}
+        assert stream_session is None
+
+    async def test_exit_closes_the_stream_pool_it_built_once(self) -> None:
+        """Reuse one long-lived session and close it with the short-call one."""
+        release = asyncio.Event()
+        release.set()
+        async with _held_stream_server(release) as endpoint:
+            api = RemoteAPI(endpoint=endpoint)
+            async with api:
+                await _HeldReader(api).task
+                stream_session = api._stream_session
+                await _HeldReader(api).task
+                reused = api._stream_session is stream_session
+
+        assert stream_session is not None
+        assert reused
+        assert stream_session.closed
+        assert api._stream_session is None

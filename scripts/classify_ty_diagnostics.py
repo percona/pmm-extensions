@@ -228,8 +228,8 @@ GROUPS: tuple[Group, ...] = (
         "settings-subclass-attributes",
         "unresolved-attribute",
         r"^Object of type `\w*Settings` has no attribute "
-        r"`(_set_snapshot|get_snapshot|_resolve|_setting_class)`$",
-        "the attribute is one of the four helpers the settings-override proxy "
+        r"`(_set_snapshot|get_snapshot|_resolve)`$",
+        "the attribute is one of the three helpers the settings-override proxy "
         "installs on a `*Settings` subclass; naming them is what keeps an "
         "ordinary misspelled attribute on the same receiver first-party",
     ),

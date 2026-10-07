@@ -167,19 +167,13 @@ export interface paths {
      * Collect Retired Entities
      * @description Delete the tombstones the caller's retained set does not cover.
      *
-     *     Entities are walked deepest-first — table, schema, service, node — so an
-     *     interrupted run can only leave deleted descendants under a surviving
-     *     ancestor rather than an orphan.
-     *
-     *     A type that fills its ``limit`` ends the walk. Deleting an ancestor cascades
-     *     to descendants the cap had excluded, and those ids would then be missing from
-     *     ``deleted`` — leaving the caller unable to clear their bookkeeping and making
-     *     the reported set a false record of what was removed. Stopping keeps
-     *     ``deleted`` exhaustive; the ancestors are collected on the next batch, which
-     *     ``remaining`` asks for.
+     *     Entities are walked deepest-first, so an interrupted run never leaves a
+     *     live row beneath a deleted ancestor. A type that fills its ``limit`` ends
+     *     the walk, so ``deleted`` is exhaustive and ``remaining`` asks for the next
+     *     batch.
      *
      *     :param session: The asynchronous database session.
-     *     :param body: The cutoff, the retained ids, and the batch controls.
+     *     :param body: The cutoffs, the retained ids, and the batch controls.
      *     :return: The collected ids per entity type, and whether more are waiting.
      */
     post: operations['collection_collect_retired_entities_collection_collect_post'];
@@ -375,10 +369,9 @@ export interface paths {
      *     The path names the **predecessor** — the survivor of a confirmation, and the
      *     row the operator is acting on in all three decisions.
      *
-     *     Carries ``IsAuthenticatedDep`` and deliberately not ``IsServicePrincipalDep``:
-     *     an identity link is an operator judgement, not a row the syncer owns. The
-     *     app-wide unsafe-method gate already makes the route admin-only for a human
-     *     while admitting the principal by identity.
+     *     Open to an admin as well as the service principal, unlike the other node
+     *     writes: an identity link is an operator judgement, not a row the syncer
+     *     owns.
      *
      *     :param session: The async database session.
      *     :param node: The predecessor addressed by the path, retired or not.
@@ -434,6 +427,16 @@ export interface paths {
     /**
      * List Services By Node
      * @description List Services by Node.
+     *
+     *     :param session: The async database session.
+     *     :param node: The node addressed by the path, resolved within the request's
+     *         retirement scope.
+     *     :param pagination: Validated offset/limit query parameters.
+     *     :param list_query: The resolved sort/search produced at the request
+     *         boundary.
+     *     :param manager: The service manager the request's retirement scope selected.
+     *     :param service_type: Restrict the listing to services of this type.
+     *     :return: A paginated response of the node's services.
      */
     get: operations['nodes_list_services_by_node_nodes__node_id__services__get'];
     put?: never;
@@ -629,6 +632,15 @@ export interface paths {
     /**
      * List Tables By Schema
      * @description List Tables by Schema.
+     *
+     *     :param session: The async database session.
+     *     :param schema: The schema addressed by the path, resolved within the
+     *         request's retirement scope.
+     *     :param pagination: Validated offset/limit query parameters.
+     *     :param list_query: The resolved sort/search produced at the request
+     *         boundary.
+     *     :param manager: The table manager the request's retirement scope selected.
+     *     :return: A paginated response of the schema's tables.
      */
     get: operations['schemas_list_tables_by_schema_schemas__schema_id__tables__get'];
     put?: never;
@@ -771,8 +783,9 @@ export interface paths {
      *
      *     The path names the **predecessor** — the survivor of a confirmation.
      *
-     *     Carries ``IsAuthenticatedDep`` and deliberately not ``IsServicePrincipalDep``:
-     *     an identity link is an operator judgement, not a row the syncer owns.
+     *     Open to an admin as well as the service principal, unlike the other
+     *     service writes: an identity link is an operator judgement, not a row the
+     *     syncer owns.
      *
      *     :param session: The async database session.
      *     :param service: The predecessor addressed by the path, retired or not.
@@ -833,7 +846,8 @@ export interface paths {
      *     is set, otherwise return ``SchemaCompactResponse`` (without tables).
      *
      *     :param session: The async database session.
-     *     :param service: The resolved service dependency.
+     *     :param service: The service addressed by the path, resolved within the
+     *         request's retirement scope.
      *     :param pagination: Validated offset/limit query parameters.
      *     :param list_query: The resolved sort/search produced at the request
      *         boundary.
@@ -1253,6 +1267,10 @@ export interface components {
      *     :param retired_before: The cutoff a tombstone must predate to be eligible.
      *         The caller pins one value for a whole run so successive batches cannot
      *         drift into collecting a tombstone that was too young a moment earlier.
+     *     :param link_pin_retired_before: The cutoff a linked tombstone must predate
+     *         for its link to stop pinning it. Required rather than defaulted: either
+     *         extreme a default could pick silently keeps every link's successor
+     *         forever or releases it at once.
      *     :param keep: The ids the caller knows are still referenced, per entity type.
      *         Ancestors of a kept entity are retained without being listed.
      *     :param limit: The most entities to collect per type in this call.
@@ -1278,6 +1296,11 @@ export interface components {
        * @default 500
        */
       limit: number;
+      /**
+       * Link Pin Retired Before
+       * Format: date-time
+       */
+      link_pin_retired_before: string;
       /**
        * Retired Before
        * Format: date-time
@@ -1322,6 +1345,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param services: A list of services associated with the node.
      */
     Node: {
@@ -1347,6 +1373,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       source: components['schemas']['SourceEnum'];
@@ -1401,6 +1429,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param services: A list of services associated with the node.
      */
     NodeResponse: {
@@ -1426,6 +1457,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       /** Services */
@@ -1625,6 +1658,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param tables: A list of tables within the schema.
      */
     Schema: {
@@ -1646,6 +1682,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       /** Service Id */
@@ -1675,6 +1713,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      */
     SchemaCompactResponse: {
       /**
@@ -1695,6 +1736,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       /** Service Id */
@@ -1736,6 +1779,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       service: components['schemas']['Service'];
@@ -1768,6 +1813,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param tables: A list of tables within the schema.
      */
     SchemaResponse: {
@@ -1789,6 +1837,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       /** Service Id */
@@ -1848,6 +1898,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param schemas: A list of schemas associated with the service.
      */
     Service: {
@@ -1879,6 +1932,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Node Id */
       node_id: number;
       /** Port */
@@ -1943,6 +1998,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       node: components['schemas']['Node'];
       /** Node Id */
       node_id: number;
@@ -2003,6 +2060,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      */
     ServiceResponse: {
       /** Cluster */
@@ -2033,6 +2093,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       node: components['schemas']['Node'];
       /** Node Id */
       node_id: number;
@@ -2343,7 +2405,6 @@ export interface components {
      *
      *     :cvar PMM: Represents the PMM data source.
      *     :vartype PMM: str
-     * @constant
      * @enum {string}
      */
     SourceEnum: 'pmm';
@@ -2355,11 +2416,11 @@ export interface components {
      *     :param error: The failure's message, never empty. Required on FAILURE,
      *         absent on SUCCESS.
      *     :param attempted_at: When the syncer began this attempt. Stamped as
-     *         ``last_synced_at`` on success, and compared against the row's current
-     *         ``last_synced_at`` so a late-arriving report from an older attempt
-     *         cannot overwrite a newer one. Refused when it sits further ahead of this
-     *         service's clock than the tolerated skew, since nothing later could then
-     *         supersede it.
+     *         ``last_synced_at`` on success and as ``newest_attempt_at`` when newer,
+     *         and used to order reports so a late-arriving one from an older attempt
+     *         cannot overwrite a newer one. Refused when it sits further ahead of
+     *         this service's clock than the tolerated skew, since nothing later could
+     *         then supersede it.
      */
     SyncHealthWrite: {
       /**
@@ -2404,6 +2465,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      *     :param database: The schema to which the table is associated.
      */
     Table: {
@@ -2431,6 +2495,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       /** Schema Id */
@@ -2480,6 +2546,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       /** Schema Id */
@@ -2510,6 +2578,9 @@ export interface components {
      *     :param sync_failing_since: When the current run of failures began, or None
      *         while not failing.
      *     :param consecutive_failures: Failed attempts since the last success.
+     *     :param newest_attempt_at: When the newest accepted attempt began, whatever
+     *         its outcome, or ``None`` if none has been reported, or the upgrade
+     *         time for a row that was failing when the column was added.
      */
     TableResponse: {
       /**
@@ -2536,6 +2607,8 @@ export interface components {
       last_synced_at?: string | null;
       /** Name */
       name: string;
+      /** Newest Attempt At */
+      newest_attempt_at?: string | null;
       /** Retired At */
       retired_at?: string | null;
       /** Schema Id */
@@ -3071,13 +3144,13 @@ export interface operations {
     parameters: {
       query?: {
         service_type?: components['schemas']['ServiceTypeEnum'] | null;
+        include_retired?: boolean;
         offset?: number;
         limit?: number;
         /** @description Sort key; prefix with '-' for descending order. */
         sort?: 'created_at' | '-created_at' | 'name' | '-name';
         /** @description Case-insensitive search across the searchable columns. */
         search?: string | null;
-        include_retired?: boolean;
       };
       header?: never;
       path: {
@@ -3440,13 +3513,13 @@ export interface operations {
   schemas_list_tables_by_schema_schemas__schema_id__tables__get: {
     parameters: {
       query?: {
+        include_retired?: boolean;
         offset?: number;
         limit?: number;
         /** @description Sort key; prefix with '-' for descending order. */
         sort?: 'created_at' | '-created_at' | 'name' | '-name' | 'schema_id' | '-schema_id';
         /** @description Case-insensitive search across the searchable columns. */
         search?: string | null;
-        include_retired?: boolean;
       };
       header?: never;
       path: {
@@ -3779,13 +3852,13 @@ export interface operations {
     parameters: {
       query?: {
         include_tables?: string | null;
+        include_retired?: boolean;
         offset?: number;
         limit?: number;
         /** @description Sort key; prefix with '-' for descending order. */
         sort?: 'created_at' | '-created_at' | 'name' | '-name' | 'service_id' | '-service_id';
         /** @description Case-insensitive search across the searchable columns. */
         search?: string | null;
-        include_retired?: boolean;
       };
       header?: never;
       path: {

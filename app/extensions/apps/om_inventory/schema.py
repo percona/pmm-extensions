@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the ``AppSchema`` for OpenManager Inventory.
+"""Define the ``AppSchema`` for Operations Inventory.
 
 The app ships no UI of its own — its consumer is PMM's OM service — so this is
 the minimum the registry needs plus a run list, which is what someone diagnosing a
@@ -29,9 +29,8 @@ from app.extensions.apps.framework.schema import (
 
 om_inventory_schema = AppSchema(
     name="om_inventory",
-    display_name="OpenManager Inventory",
+    display_name="Operations Inventory",
     item_display_name="sweep",
-    item_display_name_plural="sweeps",
     description=(
         "Probes MongoDB nodes over Nomad for the facts no metric carries — the "
         "installed binary version, the command line, the config file — and serves "

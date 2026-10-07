@@ -290,8 +290,8 @@ Common properties:
 |--------|-------------------------|
 | `GAS/automation/nomad.yaml`, `roles/nomad/**` | Agent version, TLS, driver plugins, systemd/user mode |
 | `GAS/automation/roles/sep/templates/prod-settings.yaml.j2` | PMM Extensions → Nomad endpoint or cert paths |
-| `SEP/app/tasks/db/seed.py` | Job templates or drivers |
-| `SEP/app/tasks/execution/executors/nomad/models.py` | Node selection / health filters |
-| `SEP/tests/app/host_payloads.py` (`MINIMUM_HOST_PYTHON`) and the `python-version` of the Python 3.9 step in `SEP/.github/workflows/python.yaml` and `coverage-main.yml` | The executor-host Python floor in §4.4, which `tests/app/test_host_payloads.py` checks the shipped payloads against: each file loads under that Python, uses no newer standard-library API, and evaluates no `X \| Y` type union at runtime |
+| `pmm-extensions/app/tasks/db/seed.py` | Job templates or drivers |
+| `pmm-extensions/app/tasks/execution/executors/nomad/models.py` | Node selection / health filters |
+| `pmm-extensions/tests/app/host_payloads.py` (`MINIMUM_HOST_PYTHON`) and the `python-version` of the Python 3.9 step in `pmm-extensions/.github/workflows/python.yaml` and `coverage-main.yml` | The executor-host Python floor in §4.4, which `tests/app/test_host_payloads.py` checks the shipped payloads against: each file loads under that Python, uses no newer standard-library API, and evaluates no `X \| Y` type union at runtime |
 
 **Automation repository:** Percona **GAS** repository, `automation/` directory (sibling to PMM Extensions in Percona’s source layout). Paths in §3 are relative to that tree.

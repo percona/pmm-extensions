@@ -17,7 +17,8 @@
 
 A tombstoned inventory entity may be deleted when all three of these hold:
 
-1. **Age.** It has been retired for at least ``COLLECTION_RETENTION``.
+1. **Age.** It has been retired for at least ``COLLECTION_RETENTION`` — and,
+   while a standing identity link pins it, for ``IDENTITY_LINK_PIN_RETENTION``.
 2. **No live referent.** No artifact that can still *resolve or re-emit* its id
    survives. For a service that means: no ``MysqlBackupRun`` row, no ``Task.data``
    meta (soft-deleted tasks included), no in-flight ``TaskHistory``, and no
@@ -252,10 +253,11 @@ def _parse_batch(
 async def run_inventory_collection(api_key: str) -> None:
     """Collect tombstoned inventory entities no live reference resolves.
 
-    Each batch calls the Inventory API twice with the same ``retired_before`` and
-    retained set: a dry run naming the ids, then — once their ledger rows are
-    gone — the real delete. The cutoff is computed once for the whole run so
-    successive batches cannot drift.
+    Each batch calls the Inventory API twice with the same cutoffs and retained
+    set: a dry run naming the ids, then — once their ledger rows are gone — the
+    real delete. Both cutoffs are computed once for the whole run so successive
+    batches cannot drift. They cross to the Inventory API as values because it
+    cannot read this app's settings.
 
     :param api_key: The internal token authenticating the Inventory API calls.
     :raises HTTPException: Whatever :meth:`RemoteAPI.post` raises for a non-2xx
@@ -267,7 +269,9 @@ async def run_inventory_collection(api_key: str) -> None:
     :raises Exception: Whatever computing the retained set raises, unchanged —
         deleting against a partial retained set is the failure this prevents.
     """
-    retired_before = utc_now() - inventory_app_settings.COLLECTION_RETENTION
+    now = utc_now()
+    retired_before = now - inventory_app_settings.COLLECTION_RETENTION
+    link_pin_retired_before = now - inventory_app_settings.IDENTITY_LINK_PIN_RETENTION
     keep = {
         name.value: sorted(entity_ids)
         for name, entity_ids in (await collect_referenced_entities()).items()
@@ -275,6 +279,7 @@ async def run_inventory_collection(api_key: str) -> None:
     client = await get_inventory_api_standalone()
     body = {
         "retired_before": retired_before.isoformat(),
+        "link_pin_retired_before": link_pin_retired_before.isoformat(),
         "keep": keep,
         "limit": inventory_app_settings.COLLECTION_BATCH_SIZE,
         "dry_run": False,
@@ -305,7 +310,6 @@ async def run_inventory_collection(api_key: str) -> None:
 async def run_scheduled_inventory_collection() -> None:
     """Run inventory collection using the configured internal token.
 
-    :raises ValueError: If ``EXTENSIONS_INTERNAL_TOKEN`` is not configured.
     :raises HTTPException: Whatever the Inventory API's non-2xx answers raise.
     :raises ValidationError: If the Inventory API answers a collect call with
         something other than the documented object.
@@ -314,14 +318,8 @@ async def run_scheduled_inventory_collection() -> None:
         the task's failure alert fires; aborting deletes nothing, except in the
         window between clearing a batch's ledger rows and its delete.
     """
-    if (api_key := get_internal_token()) is None:
-        raise ValueError(
-            "EXTENSIONS_INTERNAL_TOKEN must be configured for scheduled inventory "
-            "collection. Set it in .env to a long random secret "
-            "(e.g. `openssl rand -hex 32`)."
-        )
     try:
-        await run_inventory_collection(api_key)
+        await run_inventory_collection(get_internal_token())
     except Exception:
         logger.exception("Scheduled inventory collection failed")
         raise

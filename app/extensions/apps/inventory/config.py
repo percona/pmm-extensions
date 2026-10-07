@@ -50,6 +50,15 @@ class InventoryAppSettings(BaseYamlSettings):
         eligible for deletion. The positive lower bound is load-bearing: a
         non-positive retention would put the cutoff at or after the present and
         collect every tombstone in a single pass.
+    :param IDENTITY_LINK_PIN_RETENTION: How long a standing identity link keeps
+        its successor's tombstone out of collection, measured from the
+        successor's own ``retired_at``. Past it the successor is collected like
+        any other aged tombstone and the link can no longer be reversed. The
+        positive lower bound is load-bearing for the reason
+        ``COLLECTION_RETENTION``'s is: a non-positive bound would release every
+        pinned tombstone in a single pass. A value shorter than
+        ``COLLECTION_RETENTION`` is accepted but leaves the pin protecting
+        nothing, since a tombstone that young is not yet eligible anyway.
     :param COLLECTION_BATCH_SIZE: The most entities of each type one call to the
         Inventory API may collect.
     :param COLLECTION_MAX_BATCHES: The most batches one scheduled run issues.
@@ -67,6 +76,11 @@ class InventoryAppSettings(BaseYamlSettings):
     ] = (  # ty: ignore[invalid-assignment]
         hot_field(timedelta(days=30))
     )
+    IDENTITY_LINK_PIN_RETENTION: Annotated[
+        timedelta, Gt(timedelta(0))
+    ] = (  # ty: ignore[invalid-assignment]
+        hot_field(timedelta(days=180))
+    )
     COLLECTION_BATCH_SIZE: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
         500, advanced=True
     )
@@ -76,5 +90,5 @@ class InventoryAppSettings(BaseYamlSettings):
 
 
 inventory_app_settings: InventoryAppSettings = OverridableSettingsProxy(
-    InventoryAppSettings, setting_class=InventoryAppSettings.__name__
+    InventoryAppSettings
 )

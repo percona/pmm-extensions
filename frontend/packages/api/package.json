@@ -12,7 +12,7 @@
     "codegen": "tsx scripts/codegen.ts"
   },
   "dependencies": {
-    "axios": "^1.15.2",
+    "axios": "^1.20.0",
     "openapi-fetch": "^0.17.0"
   },
   "devDependencies": {

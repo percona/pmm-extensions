@@ -17,12 +17,13 @@
 
 import logging
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Sequence
 from hashlib import sha256
 from typing import Annotated, Any, Final, TypeVar
 from uuid import UUID
 
-from fastapi import Cookie, Depends, Request
+from fastapi import Cookie, Depends, params, Request
+from fastapi.routing import APIRoute
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import ValidationError
 
@@ -35,7 +36,11 @@ from app.core.auth.models import BaseUser, UserRole
 from app.core.auth.utils import get_user_model
 from app.core.config import settings
 from app.core.log import set_log_context
-from app.core.security import is_bearer_authenticated, SAFE_HTTP_METHODS
+from app.core.security import (
+    has_unsafe_method,
+    is_bearer_authenticated,
+    SAFE_HTTP_METHODS,
+)
 from app.extensions.config import extensions_settings
 
 logger = logging.getLogger(__name__)
@@ -81,7 +86,7 @@ def _build_service_principal(secret: str) -> BaseUser:
 async def authenticate_bearer_token(token: str) -> BaseUser:
     """Return the authenticated user from an OAuth2 token.
 
-    When ``settings.EXTENSIONS_INTERNAL_TOKEN`` is configured and the incoming Bearer
+    When ``settings.EXTENSIONS_INTERNAL_TOKEN`` is non-empty and the incoming Bearer
     token matches it (constant-time comparison), return a synthetic non-admin
     "service principal" user instead of contacting the OAuth provider. This
     allows PMM Extensions internal service-to-service calls (e.g. scheduled inventory
@@ -101,11 +106,10 @@ async def authenticate_bearer_token(token: str) -> BaseUser:
     :raises BaseAuthProviderException: If the auth provider errors while
         validating the credential.
     """
-    if (token_setting := settings.EXTENSIONS_INTERNAL_TOKEN) is not None:
-        secret = token_setting.get_secret_value()
-        if secret and secrets.compare_digest(token, secret):
-            set_log_context(user=SERVICE_PRINCIPAL.username)
-            return _build_service_principal(secret)
+    secret = settings.EXTENSIONS_INTERNAL_TOKEN.get_secret_value()
+    if secret and secrets.compare_digest(token, secret):
+        set_log_context(user=SERVICE_PRINCIPAL.username)
+        return _build_service_principal(secret)
     try:
         user = await User.from_bearer(token)
     except ValidationError:
@@ -198,6 +202,92 @@ async def get_current_service_principal(current_user: CurrentUser) -> BaseUser:
 IsServicePrincipalDep = Depends(get_current_service_principal)
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+async def get_service_principal_exempt_caller(current_user: CurrentUser) -> BaseUser:
+    """Return the authenticated caller of a write open to more than the principal.
+
+    Declared through :data:`ExemptFromServicePrincipalDep` on a route that
+    :class:`ServicePrincipalWriteRoute` would otherwise restrict. Its presence
+    among the route's dependencies is the exemption, so it can never be applied
+    in the wrong order or drift apart from the route it opens.
+
+    :param current_user: The current logged-in user.
+    :return: The authenticated caller, whatever its identity.
+    """
+    return current_user
+
+
+ExemptFromServicePrincipalDep = Depends(get_service_principal_exempt_caller)
+
+
+def requires_service_principal(
+    methods: Collection[str], dependencies: Collection[params.Depends]
+) -> bool:
+    """Return whether a route built by :class:`ServicePrincipalWriteRoute` is restricted.
+
+    :param methods: The HTTP methods the route answers.
+    :param dependencies: The route's own and inherited dependencies.
+    :return: ``True`` when any method is unsafe and the route does not declare
+        :data:`ExemptFromServicePrincipalDep`.
+    """
+    return (
+        has_unsafe_method(methods) and ExemptFromServicePrincipalDep not in dependencies
+    )
+
+
+class ServicePrincipalWriteRoute(APIRoute):
+    """Build a route admitting only the service principal when any method is unsafe.
+
+    Set as a router's ``route_class`` so a write route added to it is
+    syncer-only by default, and one a human may call has to say so by declaring
+    :data:`ExemptFromServicePrincipalDep`. The restriction is added as a normal
+    route dependency rather than checked in a router-level dependency's body, so
+    it keeps advertising the Bearer requirement in the schema, is resolved from
+    FastAPI's per-request cache, and runs ahead of every other dependency and the
+    path lookups — a refused caller gets 403 before any 404 could tell it which
+    identifiers exist.
+
+    ``include_router`` rebuilds a route with the class it was declared with, not
+    the including router's, so a router nested into one built on this class has
+    to set it as its ``route_class`` too, or its writes skip the default.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        endpoint: Callable[..., Any],
+        *,
+        methods: set[str] | list[str] | None = None,
+        dependencies: Sequence[params.Depends] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Add the service-principal restriction to a write route not declared exempt.
+
+        :param path: The route path.
+        :param endpoint: The route handler.
+        :param methods: The HTTP methods the route answers; FastAPI's ``GET``
+            default when omitted.
+        :param dependencies: The route's own and inherited dependencies.
+        :param kwargs: Every other ``APIRoute`` argument, passed through.
+        """
+        route_dependencies = list(dependencies or ())
+        if requires_service_principal(methods or {"GET"}, route_dependencies):
+            # include_router rebuilds each route from its predecessor's dependencies,
+            # which already carry the restriction behind whatever the inclusion
+            # prepends, so move it to the front rather than add it again.
+            route_dependencies = [
+                IsServicePrincipalDep,
+                *(dep for dep in route_dependencies if dep != IsServicePrincipalDep),
+            ]
+        super().__init__(
+            path,
+            endpoint,
+            methods=methods,
+            dependencies=route_dependencies,
+            **kwargs,
+        )
+
 
 #: The rank an unsafe route requires when nothing registers a lower one, so a
 #: route added without a thought about authorization ships admin-only.

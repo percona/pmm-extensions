@@ -80,7 +80,6 @@ SNIPPETS_PLUGIN_SCHEMA = AppSchema(
     name="snippets",
     display_name="Snippet Manager",
     item_display_name="script",
-    item_display_name_plural="scripts",
     description=(
         "Discover and execute pre-approved support snippets against "
         "registered executor hosts."
@@ -423,7 +422,6 @@ def build_snippet_schema(snippet: BaseSnippet) -> AppSchema:
         name="snippets",
         display_name=snippet.title,
         item_display_name="run",
-        item_display_name_plural="runs",
         description=snippet.description or None,
         forms=forms,
         list_view=SNIPPETS_PLUGIN_SCHEMA.list_view,

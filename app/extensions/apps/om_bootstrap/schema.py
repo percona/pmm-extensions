@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the ``AppSchema`` for OpenManager Bootstrap.
+"""Define the ``AppSchema`` for Operations Bootstrap.
 
 The app ships no UI of its own — its consumer is PMM's ``om`` service — so this
 is the minimum the registry needs plus a run list, which is what someone
@@ -30,9 +30,8 @@ from app.extensions.apps.framework.schema import (
 
 om_bootstrap_schema = AppSchema(
     name="om_bootstrap",
-    display_name="OpenManager Bootstrap",
+    display_name="Operations Bootstrap",
     item_display_name="bootstrap run",
-    item_display_name_plural="bootstrap runs",
     description=(
         "Provisions MongoDB replica sets on inventory hosts over Nomad -- "
         "pre-flight checks, install, configuration, and rs.initiate -- and "

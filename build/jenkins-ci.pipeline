@@ -65,7 +65,7 @@ pipeline {
 					userRemoteConfigs: [
 						[
 							credentialsId: '9024f3ea-4c7e-46a6-acf5-4b2c768f0930',
-							url: 'https://github.com/percona/SEP.git'
+							url: 'https://github.com/percona/pmm-extensions.git'
 						]
 					]
 				)
@@ -74,7 +74,7 @@ pipeline {
 
 		stage('Perform audit') {
 			steps {
-				build job: 'SEP/Audit', parameters: [
+				build job: 'PMM-Extensions/Audit', parameters: [
 					[$class: 'StringParameterValue', name: 'releaseTag', value: "${RELEASE_VER}"],
 					[$class: 'StringParameterValue', name: 'pyVersion', value: "${PYTHON_VERSION}"]
 				], propagate: true, wait: true
@@ -83,7 +83,7 @@ pipeline {
 
 		stage('Build image') {
 			steps {
-				build job: 'SEP/Build', parameters: [
+				build job: 'PMM-Extensions/Build', parameters: [
 					[$class: 'StringParameterValue', name: 'releaseTag', value: "${RELEASE_VER}"],
 					[$class: 'StringParameterValue', name: 'pyVersion', value: "${PYTHON_VERSION}"],
 					[$class: 'BooleanParameterValue', name: 'pushImage', value: Boolean.valueOf("${params.pushImage}")],
@@ -94,7 +94,7 @@ pipeline {
 
 		/*stage('Deploy') {
 			steps {
-				build job: 'SEP/Deploy', parameters: [
+				build job: 'PMM-Extensions/Deploy', parameters: [
 					string(name: 'releaseTag', value: "${RELEASE_VER}"),
 					string(name: 'pyVersion', value: "${PYTHON_VERSION}")
 				], propagate: true, wait: true

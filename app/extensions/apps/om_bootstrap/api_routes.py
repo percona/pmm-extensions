@@ -59,7 +59,7 @@ from app.core.exceptions import (
     HTTPNotFoundException,
 )
 from app.core.requests import RemoteAPI
-from app.core.security import require_internal_token
+from app.core.security import get_internal_token
 from app.core.utils.date_time import utc_now
 from app.core.utils.fields import UTCDatetime
 from app.extensions.apps.framework.api import schema_endpoint
@@ -423,7 +423,7 @@ async def _dispatch_and_record(
         reaching a caller.
     """
     try:
-        with tasks_api.auth(require_internal_token()):
+        with tasks_api.auth(get_internal_token()):
             task_history_id = await dispatch_step(
                 tasks_api, request, str(run.id), target_host, step.name, action
             )
@@ -596,7 +596,7 @@ async def get_bootstrap_run(
     :raises HTTPNotFoundException: When there is no such run.
     :return: The run, with current step status.
     """
-    with tasks_client.auth(require_internal_token()):
+    with tasks_client.auth(get_internal_token()):
         changed = await reconcile_run(tasks_client, run)
     if changed:
         run = await BootstrapRunManager.save(session, run)
@@ -1036,7 +1036,7 @@ async def cancel_run(  # raises-family-ok: the ordering test injects a fault the
 
     states = parse_host_states(run)
     run_steps = parse_run_steps(run)
-    with tasks_client.auth(require_internal_token()):
+    with tasks_client.auth(get_internal_token()):
         await _stop_running_steps(tasks_client, states, run_steps)
 
     return _run_response(run)

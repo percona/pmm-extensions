@@ -30,13 +30,13 @@ from app.api.deps import RequireMinimumRoleForUnsafeMethods
 from app.core.config import create_app, default_lifespan, settings
 from app.core.exceptions import HTTPBadGatewayException, HTTPGoneException
 from app.core.health import build_health_router
+from app.core.settings_override.constants import ANONYMIZER_SETTINGS, TASKS_SETTINGS
 from app.core.settings_override.lifecycle import (
     CallbackRegistry,
     ProxyEntry,
     settings_override_refresher,
     SnapshotChange,
 )
-from app.core.settings_override.models import SettingClassEnum
 from app.tasks.anonymizer.config import anonymizer_settings, AnonymizerSettings
 from app.tasks.config import tasks_settings, TasksSettings
 from app.tasks.connectivity.routes import router as connectivity_router
@@ -75,7 +75,7 @@ async def _reconcile_nomad(_: SnapshotChange) -> None:
 #: Rebind callbacks for watched Tasks overrides, fired by both the background
 #: refresher and the settings-API handlers; published on ``tasks_app.state`` below.
 _OVERRIDE_REBIND_CALLBACKS: CallbackRegistry = {
-    (SettingClassEnum.TASKS_SETTINGS, "NOMAD"): _reconcile_nomad,
+    (TASKS_SETTINGS, "NOMAD"): _reconcile_nomad,
 }
 
 
@@ -114,10 +114,8 @@ async def tasks_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # is tasks-track-DB-owned, so no cross-refresher clobber. Without it
             # the API process serves stale defaults until an in-process PATCH.
             {
-                SettingClassEnum.TASKS_SETTINGS: ProxyEntry(
-                    tasks_settings, TasksSettings
-                ),
-                SettingClassEnum.ANONYMIZER_SETTINGS: ProxyEntry(
+                TASKS_SETTINGS: ProxyEntry(tasks_settings, TasksSettings),
+                ANONYMIZER_SETTINGS: ProxyEntry(
                     anonymizer_settings, AnonymizerSettings
                 ),
             },
