@@ -43,11 +43,14 @@ from app.extensions.apps.om_bootstrap.strategies.packages import (
 )
 from app.extensions.apps.om_bootstrap.strategy import (
     BootstrapSpec,
+    HostBootstrapState,
     InstallMethod,
     InstallStrategy,
     MemberConfig,
     OperatingSystem,
     StepAction,
+    StepRecord,
+    StepStatus,
 )
 
 
@@ -893,6 +896,63 @@ class TestPlanRollbackSteps:
             "purge_package",
             "remove_data",
         ]
+
+
+class TestRetryPolicy:
+    """Assert which steps a retry could help."""
+
+    def test_pre_check_is_not_retried(self) -> None:
+        """Spend no retry on a check that fails the same way twice."""
+        assert PackagesInstallStrategy().is_retryable("pre_check") is False
+
+    @pytest.mark.parametrize("step_name", ["configure_repository", "install_package"])
+    def test_a_step_that_changes_the_host_is_retried(self, step_name: str) -> None:
+        """Keep the retry for steps a transient failure can break.
+
+        :param step_name: A step that downloads or installs.
+        """
+        assert PackagesInstallStrategy().is_retryable(step_name) is True
+
+
+class TestHasAnythingToRollBack:
+    """Assert rollback is skipped only on a host install_package never reached."""
+
+    @staticmethod
+    def _state(install_package: StepRecord) -> HostBootstrapState:
+        return HostBootstrapState(
+            host="node00",
+            steps=[
+                StepRecord(name="pre_check", status=StepStatus.SUCCEEDED),
+                StepRecord(name="configure_repository", status=StepStatus.FAILED),
+                install_package,
+            ],
+        )
+
+    def test_nothing_before_install_package_needs_undoing(self) -> None:
+        """Report nothing to undo while install_package was never dispatched."""
+        state = self._state(StepRecord(name="install_package"))
+
+        assert PackagesInstallStrategy().has_anything_to_roll_back(state) is False
+
+    @pytest.mark.parametrize(
+        "install_package",
+        [
+            StepRecord(
+                name="install_package", status=StepStatus.FAILED, attempt_count=1
+            ),
+            StepRecord(name="install_package", status=StepStatus.RUNNING),
+        ],
+    )
+    def test_a_dispatched_install_package_may_have_left_something(
+        self, install_package: StepRecord
+    ) -> None:
+        """Roll back once install_package was dispatched, whatever it did.
+
+        :param install_package: The step, dispatched at least once.
+        """
+        state = self._state(install_package)
+
+        assert PackagesInstallStrategy().has_anything_to_roll_back(state) is True
 
 
 class TestBuildRollbackStep:

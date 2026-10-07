@@ -50,9 +50,11 @@ import shlex
 
 from app.extensions.apps.om_bootstrap.strategy import (
     BootstrapSpec,
+    HostBootstrapState,
     MemberConfig,
     OperatingSystem,
     StepAction,
+    StepStatus,
 )
 
 #: Where every step here reads or writes the shared keyFile — planted by the
@@ -1138,6 +1140,36 @@ class PackagesInstallStrategy:
             ) from None
         run_id = _require_run_id(spec, step_name)
         return builder(spec, run_id)
+
+    def is_retryable(self, step_name: str) -> bool:
+        """Retry every step but ``pre_check``, which only inspects the host.
+
+        A taken port, a mongod already installed or a small disk is still there a
+        few seconds later, so a second ``pre_check`` fails exactly like the first.
+
+        :param step_name: Any step name this strategy plans.
+        :return: Whether a failure of it is worth one retry.
+        """
+        return step_name != "pre_check"
+
+    def has_anything_to_roll_back(self, state: HostBootstrapState) -> bool:
+        """Report whether ``install_package`` was ever dispatched on this host.
+
+        It plants :data:`OWNERSHIP_MARKER_PATH` before the package manager runs, and
+        every rollback step is a no-op on a host whose marker does not hold this
+        run's id, so a host it never reached has nothing for rollback to do. The
+        steps before it change nothing rollback would undo: ``pre_check`` only
+        reads, and ``configure_repository`` is deliberately left in place (see
+        :meth:`plan_rollback_steps`).
+
+        :param state: The host's progress so far.
+        :return: Whether its rollback steps have anything to undo.
+        """
+        return any(
+            step.name == "install_package"
+            and (step.attempt_count > 0 or step.status != StepStatus.PENDING)
+            for step in state.steps
+        )
 
     def _rollback_stop_service(self, spec: BootstrapSpec, run_id: str) -> StepAction:  # noqa: ARG002
         """Stop and disable ``mongod``, tolerant of it never having started.

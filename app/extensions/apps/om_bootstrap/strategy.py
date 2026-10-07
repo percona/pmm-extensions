@@ -250,6 +250,10 @@ class StepRecord(BaseModel):
         ``om_bootstrap`` only ever records the fact that a dispatch happened;
         deciding whether *another* one should is the stepper's call, not this
         field's.
+    :param retryable: Whether dispatching this step again after it failed could
+        change the outcome, as :meth:`InstallStrategy.is_retryable` answered when
+        the run was planned. PMM's stepper treats a non-retryable step's first
+        failure as final instead of spending its one retry on it.
     """
 
     name: str
@@ -259,6 +263,7 @@ class StepRecord(BaseModel):
     detail: str | None = None
     task_history_id: int | None = None
     attempt_count: int = 0
+    retryable: bool = True
 
 
 class HostBootstrapState(BaseModel):
@@ -482,4 +487,26 @@ class InstallStrategy(Protocol):
         :param host: The node name being rolled back.
         :param spec: The host's bootstrap spec.
         :return: What the execution layer needs to run this step.
+        """
+
+    def is_retryable(self, step_name: str) -> bool:
+        """Say whether dispatching ``step_name`` again after it failed could help.
+
+        ``False`` for a step that only inspects the host: it fails the same way on
+        a retry, which only delays the rollback and the reason reaching anyone.
+
+        :param step_name: One of the names any of this strategy's ``plan_*``
+            methods returned.
+        :return: Whether a failure of it is worth one retry.
+        """
+
+    def has_anything_to_roll_back(self, state: HostBootstrapState) -> bool:
+        """Say whether this run may have changed anything on ``state``'s host.
+
+        ``False`` lets a host's rollback steps be recorded as skipped instead of
+        dispatched, so a run that failed before touching a host does not report
+        having torn down an install that never happened.
+
+        :param state: The host's progress so far.
+        :return: Whether its rollback steps have anything to undo.
         """
