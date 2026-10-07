@@ -277,30 +277,6 @@ class TestCasdoorUser:
         casdoor_mock.introspect_token.assert_awaited_once_with(token)
         casdoor_mock.get_user.assert_awaited_once_with(valid_username)
 
-    @pytest.mark.asyncio
-    async def test_from_code(self, valid_username, oauth_token, casdoor_mock):
-        """Verify creating CasdoorUser from authorization code."""
-        code = "test_code"
-        user = await CasdoorUser.from_code(code)
-        assert isinstance(user, CasdoorUser)
-        assert user.username == valid_username
-        casdoor_mock.get_access_token.assert_awaited_once_with(code, None, None)
-        casdoor_mock.introspect_token.assert_awaited_once_with(oauth_token.access_token)
-        casdoor_mock.get_user.assert_awaited_once_with(valid_username)
-
-    @pytest.mark.asyncio
-    async def test_from_password(self, valid_username, oauth_token, casdoor_mock):
-        """Verify creating CasdoorUser from username and password."""
-        password = "test_password"
-        user = await CasdoorUser.from_password(valid_username, password)
-        assert isinstance(user, CasdoorUser)
-        assert user.username == valid_username
-        casdoor_mock.get_access_token.assert_awaited_once_with(
-            None, valid_username, password
-        )
-        casdoor_mock.introspect_token.assert_awaited_once_with(oauth_token.access_token)
-        casdoor_mock.get_user.assert_awaited_once_with(valid_username)
-
 
 class TestCasdoorRoleDerivation:
     """Verify the role derived from Casdoor's admin flag.

@@ -40,7 +40,6 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, TypeVar
 
 from app.core.db.list_query import UnknownSortKeyError
-from app.core.exceptions import HTTPUnprocessableEntityException
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -209,28 +208,6 @@ class InMemoryListQueryApplier:
         """
         self.spec.resolve_sort(sort)
         return InMemoryListQuery.from_sort(sort, search)
-
-    def build_query(self, sort: str, search: str | None) -> InMemoryListQuery:
-        """Resolve a request's sort and search, mapping a rejection to HTTP 422.
-
-        The translating form, so the 422 body has one home. A hand-written route that
-        dispatches across several appliers — one signature cannot carry a per-entity
-        allowlist — reuses the same mapping without going through
-        :func:`~app.core.db.deps.make_in_memory_list_query_dep`.
-
-        :param sort: The requested public sort key (possibly ``-`` prefixed).
-        :param search: The raw search term, or ``None`` when search is disabled or
-            unset.
-        :return: The resolved in-memory list query.
-        :raises HTTPUnprocessableEntityException: When ``sort`` is not in the
-            allowlist.
-        """
-        try:
-            return self.resolve_query(sort, search)
-        except UnknownSortKeyError as exc:
-            raise HTTPUnprocessableEntityException(
-                detail=f"Invalid sort key: {exc.key!r}"
-            ) from exc
 
     def default_query(self) -> InMemoryListQuery:
         """Return the query a request that selected nothing resolves to.

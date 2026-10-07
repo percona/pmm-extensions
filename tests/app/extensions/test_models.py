@@ -15,6 +15,9 @@
 
 """Define tests for the app.extensions.models module."""
 
+from datetime import datetime, timedelta, timezone, UTC
+from uuid import uuid4
+
 import pytest
 from pydantic import ValidationError
 
@@ -23,6 +26,9 @@ from app.extensions.models import (
     AppState,
     AppStateBase,
     AppStateWrite,
+    SyncInventoryEntityTypeEnum,
+    SyncItem,
+    SyncStatusEnum,
 )
 
 
@@ -58,3 +64,52 @@ class TestAppStateModel:
         """The write payload rejects a value outside ``AppLifecycleEnum``."""
         with pytest.raises(ValidationError):
             AppStateWrite(lifecycle_state="BOGUS")
+
+
+def _finished_item(created_at: datetime, updated_at: datetime | None) -> SyncItem:
+    """Build a failed node item with the given timestamps."""
+    return SyncItem(
+        entity_id=1,
+        entity_type=SyncInventoryEntityTypeEnum.NODE,
+        status=SyncStatusEnum.FAILED,
+        sync_instance_id=uuid4(),
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+
+class TestSyncItemFinishedAt:
+    """Test when a finished sync item is taken to have reached its final status."""
+
+    def test_reads_the_last_write_time(self):
+        """Prefer the update time over the creation time."""
+        created = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+        updated = created + timedelta(minutes=5)
+
+        assert _finished_item(created, updated).finished_at == updated
+
+    def test_falls_back_to_the_creation_time(self):
+        """Use the creation time for an item that was never updated."""
+        created = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+        assert _finished_item(created, None).finished_at == created
+
+    def test_returns_utc(self):
+        """Normalize an offset timestamp to UTC."""
+        offset = timezone(timedelta(hours=2))
+        updated = datetime(2026, 10, 1, 14, 0, tzinfo=offset)
+
+        finished = _finished_item(updated, updated).finished_at
+
+        assert finished.tzinfo is UTC
+        assert finished == datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+    def test_is_neither_a_column_nor_serialized(self):
+        """Keep the derived time out of the table and the model's dump."""
+        item = _finished_item(datetime(2026, 10, 1, tzinfo=UTC), None)
+
+        columns = SyncItem.__table__.columns
+
+        assert {"created_at", "updated_at"} <= set(columns.keys())
+        assert "finished_at" not in columns
+        assert item.model_dump().keys() == SyncItem.model_fields.keys()

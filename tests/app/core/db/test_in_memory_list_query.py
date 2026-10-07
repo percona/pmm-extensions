@@ -38,7 +38,6 @@ from app.core.db.list_query import (
     ListQuerySpec,
     UnknownSortKeyError,
 )
-from app.core.exceptions import HTTPUnprocessableEntityException
 from app.core.pagination import Pagination
 from tests.app.list_query_data import (
     list_query_rows,
@@ -155,23 +154,6 @@ class TestResolveQuery:
         """Leave the rejection as ``UnknownSortKeyError`` for the caller to map."""
         with pytest.raises(UnknownSortKeyError):
             APPLIER.resolve_query("bogus", None)
-
-
-class TestBuildQuery:
-    """Cover the public builder a hand-written route can call without a FastAPI dep."""
-
-    def test_resolves_sort_and_search(self) -> None:
-        """Carry a vetted sort key and search term onto the resolved query."""
-        query = APPLIER.build_query("-filename", "needle")
-        assert query == InMemoryListQuery(
-            sort_key="filename", descending=True, search="needle"
-        )
-
-    def test_unknown_sort_key_raises_422(self) -> None:
-        """Reject an out-of-allowlist sort key with HTTP 422."""
-        with pytest.raises(HTTPUnprocessableEntityException) as excinfo:
-            APPLIER.build_query("bogus", None)
-        assert "bogus" in str(excinfo.value.detail)
 
 
 class TestApplySort:

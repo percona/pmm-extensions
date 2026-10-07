@@ -19,7 +19,6 @@ __all__ = ["TTLCache", "ttl_cache"]
 
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
 from functools import wraps
 from threading import RLock
 from time import monotonic
@@ -58,18 +57,6 @@ def _make_key(
             key += (_KW_MARKER, *((k, type(v)) for k, v in items))
 
     return key
-
-
-@dataclass(slots=True)
-class _CacheShortStats:
-    """Define structure to store hits and misses statistics in a cached function.
-
-    :param hits: Number of cache hits.
-    :param misses: Number of cache misses.
-    """
-
-    hits: int = 0
-    misses: int = 0
 
 
 class CacheInfo(NamedTuple):

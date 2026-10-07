@@ -164,14 +164,6 @@ class StorageType(StrEnum):
     AZURE = "azure"
 
 
-class S3Provider(StrEnum):
-    """Represents native s3 or plugins what use s3 protocol."""
-
-    AWS = "aws"
-    MINIO = "minio"
-    GCP = "gcp"
-
-
 class CompressionAlgorithm(StrEnum):
     """Represents algorithm of choice whem compressing wirteTiger datafiles."""
 
@@ -190,14 +182,6 @@ class LogLevel(StrEnum):
     INFO = "info"
     WARN = "warn"
     ERROR = "error"
-
-
-class LogOutput(StrEnum):
-    """Determines output of log."""
-
-    STDOUT = "stdout"
-    FILE = "file"
-    SYSLOG = "syslog"
 
 
 def parse_backup_priority(priority_str: str) -> dict[str, float]:

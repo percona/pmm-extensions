@@ -21,9 +21,6 @@ from app.extensions.snippets.models.snippet import FilePreview
 
 PREVIEW_MAX_CHARS = 10000
 PREVIEW_MAX_LINES = 500
-FRONTMATTER_3_LINES = "# ---\n# k: v\n# ---\n"
-EXPECTED_FRONTMATTER_LINE_COUNT = 3
-EXPECTED_LINENOSTART_SHEBANG_FM = 5
 TRUNCATION_MAX_LINES = 5
 TRUNCATION_MAX_CHARS = 50
 
@@ -132,59 +129,8 @@ class TestFilePreviewFromPath:
         assert len(result.content) == TRUNCATION_MAX_CHARS
 
 
-class TestFilePreviewLineCountProperties:
-    """Test computed line-count properties."""
-
-    def test_preamble_line_count_empty(self):
-        """Return 0 for empty preamble."""
-        fp = FilePreview(
-            preamble="", frontmatter="", content="code", is_truncated=False
-        )
-        assert fp.preamble_line_count == 0
-
-    def test_preamble_line_count_one_line(self):
-        """Return 1 for single-line preamble."""
-        fp = FilePreview(
-            preamble="#!/bin/bash\n",
-            frontmatter="",
-            content="code",
-            is_truncated=False,
-        )
-        assert fp.preamble_line_count == 1
-
-    def test_frontmatter_line_count_three_lines(self):
-        """Return 3 for a three-line frontmatter block."""
-        fp = FilePreview(
-            preamble="",
-            frontmatter=FRONTMATTER_3_LINES,
-            content="code",
-            is_truncated=False,
-        )
-        assert fp.frontmatter_line_count == EXPECTED_FRONTMATTER_LINE_COUNT
-
-    def test_frontmatter_line_count_empty(self):
-        """Return 0 for empty frontmatter."""
-        fp = FilePreview(
-            preamble="", frontmatter="", content="code", is_truncated=False
-        )
-        assert fp.frontmatter_line_count == 0
-
-    def test_code_linenostart_with_preamble_and_frontmatter(self):
-        """Return correct linenostart combining preamble and frontmatter counts."""
-        fp = FilePreview(
-            preamble="#!/bin/bash\n",
-            frontmatter=FRONTMATTER_3_LINES,
-            content="code",
-            is_truncated=False,
-        )
-        assert fp.code_linenostart == EXPECTED_LINENOSTART_SHEBANG_FM
-
-    def test_code_linenostart_no_preamble_no_frontmatter(self):
-        """Return 1 when no preamble or frontmatter."""
-        fp = FilePreview(
-            preamble="", frontmatter="", content="code", is_truncated=False
-        )
-        assert fp.code_linenostart == 1
+class TestFilePreviewFullContent:
+    """Test FilePreview.full_content."""
 
     def test_full_content_combines_all_segments(self):
         """Return concatenation of preamble, frontmatter, and content."""

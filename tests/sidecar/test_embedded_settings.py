@@ -42,7 +42,10 @@ from app.extensions.config import ExtensionsSettings, SyncOptions
 from app.extensions.routes.artifacts import collect_base_dirs
 from app.extensions.snippets.constants import ARTIFACT_TYPE_SNIPPET
 from app.extensions.sync.syncers.pmm import PMMSyncer
-from app.extensions.sync.syncers.system_facts.syncer import SystemFactsSyncer
+from app.extensions.sync.syncers.system_facts.syncer import (
+    SystemFactsSyncer,
+    UnmeasuredHostFactsSyncer,
+)
 from app.inventory.config import InventorySettings
 from app.inventory.settings.routes import INVENTORY_ADMIN_SETTINGS_CLASSES
 from app.tasks.config import TasksSettings
@@ -540,7 +543,12 @@ def test_profile_declares_the_system_facts_syncer(
         for entry in embedded_profile_data["default"]["EXTENSIONS"]["SYNCERS"]
     ]
 
-    assert declared == ["PMMSyncer", "MySQLSyncer", "SystemFactsSyncer"]
+    assert declared == [
+        "PMMSyncer",
+        "MySQLSyncer",
+        "SystemFactsSyncer",
+        "UnmeasuredHostFactsSyncer",
+    ]
 
 
 @pytest.mark.usefixtures("embedded_profile_cwd")
@@ -553,9 +561,34 @@ def test_profile_schedules_the_system_facts_syncer_daily():
     """
     settings = TasksSettings()
 
-    (entry,) = settings.INVENTORY_SYNC_SCHEDULES
-    assert entry.syncer == SystemFactsSyncer.get_name()
+    (entry,) = [
+        entry
+        for entry in settings.INVENTORY_SYNC_SCHEDULES
+        if entry.syncer == SystemFactsSyncer.get_name()
+    ]
     assert (entry.interval.every, entry.interval.period) == (1, Period.DAYS)
+
+
+@pytest.mark.usefixtures("embedded_profile_cwd")
+def test_profile_measures_a_new_host_within_one_inventory_sync_interval():
+    """Assert the first-measurement pass runs as often as the PMM inventory sync.
+
+    A host PMM adds reaches the inventory within one inventory-sync interval, so a
+    pass on the same interval starts its first probe within one more. A longer
+    pass interval would let a new host wait past the bound the pass exists for.
+    """
+    settings = TasksSettings()
+
+    (entry,) = [
+        entry
+        for entry in settings.INVENTORY_SYNC_SCHEDULES
+        if entry.syncer == UnmeasuredHostFactsSyncer.get_name()
+    ]
+    assert settings.INVENTORY_SYNC_INTERVAL is not None
+    assert (entry.interval.every, entry.interval.period) == (
+        settings.INVENTORY_SYNC_INTERVAL.every,
+        settings.INVENTORY_SYNC_INTERVAL.period,
+    )
 
 
 def test_the_short_syncer_name_resolves_to_the_collector():
@@ -568,6 +601,13 @@ def test_the_short_syncer_name_resolves_to_the_collector():
     resolved = SyncOptions.model_validate({"syncer": "SystemFactsSyncer"})
 
     assert import_var(resolved.syncer) is SystemFactsSyncer
+
+
+def test_the_short_name_resolves_to_the_first_measurement_pass():
+    """Assert the profile's short name for the pass resolves through the package."""
+    resolved = SyncOptions.model_validate({"syncer": "UnmeasuredHostFactsSyncer"})
+
+    assert import_var(resolved.syncer) is UnmeasuredHostFactsSyncer
 
 
 @pytest.mark.usefixtures("embedded_profile_cwd")

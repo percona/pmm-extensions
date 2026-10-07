@@ -24,7 +24,7 @@ route is verified at the framework level, not just in unit tests.
 import asyncio
 from collections.abc import Iterator
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aioresponses import aioresponses, CallbackResult
@@ -59,7 +59,7 @@ def _nomad_executor(endpoint: str) -> NomadExecutor:
 def holder_client(regular_user: CasdoorUser) -> Iterator[TestClient]:
     """Yield a Tasks client whose lifecycle holder serves a stub executor."""
     stub = MagicMock()
-    stub.get_hosts = MagicMock(return_value={"node1": "10.0.0.1"})
+    stub.get_hosts = AsyncMock(return_value={"node1": "10.0.0.1"})
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
     tasks_app.state.nomad_lifecycle = SimpleNamespace(current=stub)
     yield TestClient(tasks_app)
@@ -86,7 +86,7 @@ def test_combined_app_resolves_holder_on_mounted_tasks_state(
     app's state, which the combined lifespan would otherwise receive).
     """
     stub = MagicMock()
-    stub.get_hosts = MagicMock(return_value={"node1": "10.0.0.1"})
+    stub.get_hosts = AsyncMock(return_value={"node1": "10.0.0.1"})
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
     tasks_app.state.nomad_lifecycle = SimpleNamespace(current=stub)
     try:

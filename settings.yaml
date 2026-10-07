@@ -30,7 +30,6 @@ default:
     PROVIDER:
       casdoor:
         endpoint: http://localhost:9999
-        front_endpoint: //:9999
         allowed_issuers:
           - http://localhost:9999
           - http://127.0.0.1:9999
@@ -539,7 +538,6 @@ production_docker:
         client_id: redacted_match_casdoor_json
         client_secret: redacted_match_casdoor_json
         endpoint: http://127.0.0.1:8000
-        front_endpoint: //:9999
         organization_name: extensions
   CELERY:
     BEAT_DBURI: postgresql://postgres:xxx@extensions-db:5432
