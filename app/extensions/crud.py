@@ -28,7 +28,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.db.crud import BaseSQLModelManager
 from app.core.db.utils import advisory_lock_key, try_pg_advisory_xact_lock
 from app.core.exceptions import HTTPConflictException
-from app.core.utils.date_time import utc_now
+from app.core.utils.date_time import make_datetime_utc, utc_now
 from app.extensions.models import (
     AppLifecycleEnum,
     AppRunningTask,
@@ -136,8 +136,10 @@ class SyncItemManager(BaseSQLModelManager):
         return sync_in_progress is not None
 
     @classmethod
-    async def inventory_sync_completed(cls, session: AsyncSession, syncer: str) -> bool:
-        """Return whether ``syncer`` has ever finished a whole-inventory pass.
+    async def first_inventory_sync_completed_at(
+        cls, session: AsyncSession, syncer: str
+    ) -> datetime | None:
+        """Return when ``syncer`` first finished a whole-inventory pass, if it has.
 
         A pass counts once its ``INVENTORY`` item reached ``SUCCESS``. That item
         fails only when an exception escapes the pass, so a run with per-entity
@@ -147,17 +149,29 @@ class SyncItemManager(BaseSQLModelManager):
 
         :param session: The PMM Extensions database session.
         :param syncer: The fully qualified syncer name, in ``get_name()`` form.
-        :return: Whether such a pass exists.
+        :return: When the earliest such pass finished, in UTC, or ``None`` when
+            none has.
         """
-        completed = await cls.first(
-            session,
-            col(SyncItem.sync_instance_id).in_(
-                select(SyncInstance.id).where(col(SyncInstance.syncer) == syncer)
-            ),
-            entity_type=SyncInventoryEntityTypeEnum.INVENTORY,
-            status=SyncStatusEnum.SUCCESS,
-        )
-        return completed is not None
+        finished_at = func.coalesce(col(SyncItem.updated_at), col(SyncItem.created_at))
+        completed = (
+            await session.exec(
+                select(SyncItem)
+                .where(
+                    col(SyncItem.sync_instance_id).in_(
+                        select(SyncInstance.id).where(
+                            col(SyncInstance.syncer) == syncer
+                        )
+                    ),
+                    col(SyncItem.entity_type) == SyncInventoryEntityTypeEnum.INVENTORY,
+                    col(SyncItem.status) == SyncStatusEnum.SUCCESS,
+                )
+                .order_by(finished_at)
+                .limit(1)
+            )
+        ).first()
+        if completed is None:
+            return None
+        return make_datetime_utc(completed.updated_at or completed.created_at)
 
     @classmethod
     async def start_sync(cls, session: AsyncSession, instance: SyncItem) -> SyncItem:
@@ -237,6 +251,25 @@ class SyncInstanceManager(BaseSQLModelManager):
     """
 
     Model = SyncInstance
+
+    @classmethod
+    async def has_run_since(
+        cls, session: AsyncSession, syncer: str, since: datetime
+    ) -> bool:
+        """Return whether ``syncer`` has a run that began at or after ``since``.
+
+        A run is recorded as it begins, whatever its later outcome, so a run still
+        in progress counts as well as a finished or failed one.
+
+        :param session: The PMM Extensions database session.
+        :param syncer: The fully qualified syncer name, in ``get_name()`` form.
+        :param since: The earliest start that counts.
+        :return: Whether such a run is recorded.
+        """
+        run = await cls.first(
+            session, col(SyncInstance.created_at) >= since, syncer=syncer
+        )
+        return run is not None
 
     @classmethod
     async def create(
