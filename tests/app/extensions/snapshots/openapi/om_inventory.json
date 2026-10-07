@@ -4361,6 +4361,17 @@
             ],
             "title": "Last Error"
           },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
           "last_success_at": {
             "anyOf": [
               {
@@ -4867,6 +4878,17 @@
               }
             ],
             "title": "Last Error"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
           },
           "last_success_at": {
             "anyOf": [
