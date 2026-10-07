@@ -373,7 +373,7 @@ async def test_backfill_app_records_mixed_outcomes_without_aborting():
     assert stats.skipped_invalid == 1
     assert stats.skipped_error == 1
     assert stats.stamped == 1
-    assert stats.processed == len(outcomes)
+    assert stats.repaired == 0
     session.commit.assert_awaited_once()
 
 
@@ -406,7 +406,10 @@ async def test_backfill_app_counts_and_commits_a_repaired_stamp():
 
     assert stats.repaired == 1
     assert stats.stamped == 0
-    assert stats.processed == 1
+    assert stats.skipped_existing == 0
+    assert stats.skipped_unreconstructable == 0
+    assert stats.skipped_invalid == 0
+    assert stats.skipped_error == 0
     session.commit.assert_awaited_once()
 
 

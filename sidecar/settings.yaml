@@ -291,6 +291,12 @@ default:
       # entry only makes the syncer constructible; its cadence is the separate
       # INVENTORY_SYNC_SCHEDULES entry below, and both halves are required.
       - SYNCER: SystemFactsSyncer
+      # Measures each never-measured host between the daily SystemFactsSyncer runs.
+      # Its cadence is likewise the INVENTORY_SYNC_SCHEDULES entry below.
+      - SYNCER: UnmeasuredHostFactsSyncer
+        FIRST_MEASUREMENT_RETRIES: 3  # Retries a failing host gets after its first attempt before it is left to the daily run
+        FIRST_MEASUREMENT_RETRY_INTERVAL: 3600  # Seconds between two attempts on one host
+        FIRST_MEASUREMENT_CONCURRENCY: 8  # First-measurement probes in flight at once
     INVENTORY:
       # PMM re-emits its whole inventory on every sync, so a tombstone here is a
       # genuine removal rather than a gap in a partial feed. Collect daily; the
@@ -328,8 +334,15 @@ default:
     # once more after its first completed sync, so host facts cover the nodes that
     # sync brought in. An operator-managed schedule that already covers this
     # syncer replaces this entry.
+    #
+    # The UnmeasuredHostFactsSyncer entry gives a newly added host its first
+    # measurement attempt within one PMM inventory-sync interval. It probes only hosts with
+    # no observation yet; its retry policy is its SYNCERS entry above.
+    # Keep its interval equal to INVENTORY_SYNC_INTERVAL.
     INVENTORY_SYNC_SCHEDULES:
       - SYNCER: app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer
         INTERVAL: 1 days
+      - SYNCER: app.extensions.sync.syncers.system_facts.syncer.UnmeasuredHostFactsSyncer
+        INTERVAL: 15 minutes
     SSL_CERTFILE: null
     SSL_KEYFILE: null

@@ -15,6 +15,7 @@
 
 """Define models for the PMM Extensions app."""
 
+from datetime import datetime
 from enum import auto, IntEnum, StrEnum
 from typing import Self
 
@@ -28,6 +29,7 @@ from sqlmodel import Field as SQLField
 from sqlmodel import Relationship, SQLModel
 
 from app.core.db.models import BaseSQLModel, BaseUUIDSQLModel
+from app.core.utils.date_time import make_datetime_utc
 from app.core.utils.fields import NonEmptyStr
 
 
@@ -255,6 +257,14 @@ class SyncItem(BaseUUIDSQLModel, SyncItemBase, table=True):
                 f"entity_id cannot be None for type {self.entity_type}",
             )
         return self
+
+    @property
+    def finished_at(self) -> datetime:
+        """Return when a finished item reached its final status, in UTC.
+
+        :return: Its last write time, or its creation time if it was never updated.
+        """
+        return make_datetime_utc(self.updated_at or self.created_at)
 
 
 class SyncItemWrite(SyncItemBase):
