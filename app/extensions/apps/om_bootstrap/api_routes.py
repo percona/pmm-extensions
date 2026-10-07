@@ -128,11 +128,6 @@ HostName = Annotated[
 #: the injection vector itself.
 _ABSOLUTE_PATH_PATTERN = r"^(?:/[^/\s\x00]+){2,}$"
 
-#: Re-exported from :mod:`strategy`, which owns it now that ``MemberConfig``
-#: validates its own per-member ``bind_ip`` against the same rule. One definition,
-#: because two would drift and the weaker one would be the hole.
-_NO_CONTROL_CHARS_PATTERN = NO_CONTROL_CHARS_PATTERN
-
 
 class TriggerRunRequest(BaseModel):
     """Request one bootstrap run over a set of hosts, all sharing one spec.
@@ -158,9 +153,10 @@ class TriggerRunRequest(BaseModel):
         Defaults to ``127.0.0.1``, keeping mongod's pre-auth window local to
         the host unless the caller passes a wider address. mongod also listens
         on ``127.0.0.1`` unless the value already reaches it.
-    :param member_configs: Per-host election settings for ``rs.initiate``,
-        keyed by entries of ``hosts``. A host missing from this mapping —
-        including every host, when this is left empty — gets
+    :param member_configs: Per-host replica-set member settings (election
+        settings and bind address), keyed by entries of ``hosts``. A host
+        missing from this mapping — including every host, when this is left
+        empty — gets
         :class:`~app.extensions.apps.om_bootstrap.strategy.MemberConfig`'s own
         defaults.
     """
@@ -175,7 +171,7 @@ class TriggerRunRequest(BaseModel):
         default="/var/log/mongodb/mongod.log", pattern=_ABSOLUTE_PATH_PATTERN
     )
     port: int = Field(default=27017, gt=0, le=65535)
-    bind_ip: str = Field(default="127.0.0.1", pattern=_NO_CONTROL_CHARS_PATTERN)
+    bind_ip: str = Field(default="127.0.0.1", pattern=NO_CONTROL_CHARS_PATTERN)
     member_configs: dict[str, MemberConfig] = {}
 
 
@@ -224,8 +220,8 @@ class RunResponse(BaseModel):
     :param log_path: Where mongod writes its log file on every host in this run.
     :param port: The port mongod listens on, on every host in this run.
     :param bind_ip: The interface(s) mongod listens on, on every host in this run.
-    :param member_configs: Per-host election settings this run was created
-        with — see :class:`TriggerRunRequest`'s own docstring.
+    :param member_configs: Per-host replica-set member settings this run was
+        created with — see :class:`TriggerRunRequest`'s own docstring.
     :param started_at: When the run began.
     :param finished_at: When it reached a terminal status, if it has.
     :param hosts: Every host's current step-by-step progress — the full,

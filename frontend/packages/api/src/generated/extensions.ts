@@ -10731,7 +10731,7 @@ export interface components {
     om_bootstrap__InstallMethod: 'packages' | 'docker' | 'podman';
     /**
      * MemberConfig
-     * @description Hold one host's replica-set election settings, for ``rs.initiate``.
+     * @description Hold one host's replica-set member settings: its election settings and its bind address.
      *
      *     Defaults to MongoDB's own for a member (priority 1, votes on, not hidden,
      *     no delay), so a host a run never names here gets exactly those.
@@ -10800,8 +10800,8 @@ export interface components {
      *     :param log_path: Where mongod writes its log file on every host in this run.
      *     :param port: The port mongod listens on, on every host in this run.
      *     :param bind_ip: The interface(s) mongod listens on, on every host in this run.
-     *     :param member_configs: Per-host election settings this run was created
-     *         with — see :class:`TriggerRunRequest`'s own docstring.
+     *     :param member_configs: Per-host replica-set member settings this run was
+     *         created with — see :class:`TriggerRunRequest`'s own docstring.
      *     :param started_at: When the run began.
      *     :param finished_at: When it reached a terminal status, if it has.
      *     :param hosts: Every host's current step-by-step progress — the full,
@@ -10941,9 +10941,10 @@ export interface components {
      *         Defaults to ``127.0.0.1``, keeping mongod's pre-auth window local to
      *         the host unless the caller passes a wider address. mongod also listens
      *         on ``127.0.0.1`` unless the value already reaches it.
-     *     :param member_configs: Per-host election settings for ``rs.initiate``,
-     *         keyed by entries of ``hosts``. A host missing from this mapping —
-     *         including every host, when this is left empty — gets
+     *     :param member_configs: Per-host replica-set member settings (election
+     *         settings and bind address), keyed by entries of ``hosts``. A host
+     *         missing from this mapping — including every host, when this is left
+     *         empty — gets
      *         :class:`~app.extensions.apps.om_bootstrap.strategy.MemberConfig`'s own
      *         defaults.
      */

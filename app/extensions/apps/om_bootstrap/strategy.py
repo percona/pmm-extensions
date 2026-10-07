@@ -92,15 +92,15 @@ class OperatingSystem(StrEnum):
 
 
 #: No whitespace or other control characters. ``replica_set_name``, the run-level
-#: ``bind_ip`` and :attr:`MemberConfig.bind_ip` all land in ``mongod.conf`` via a
-#: quoted heredoc (``_mongod_config``, strategies/packages.py) — inert against the
-#: *shell*, since the heredoc delimiter is quoted, but a newline in any of them would
-#: still inject an arbitrary extra line into the YAML mongod parses.
+#: ``bind_ip`` and :attr:`MemberConfig.bind_ip` all land in ``mongod.conf``
+#: (``_mongod_config``, strategies/packages.py), which already writes them as
+#: escaped, quoted YAML scalars. This is a second layer: such a value is refused at
+#: create time with a 422 rather than written to the file escaped.
 NO_CONTROL_CHARS_PATTERN = r"^[^\s\x00-\x1f]+$"
 
 
 class MemberConfig(BaseModel):
-    """Hold one host's replica-set election settings, for ``rs.initiate``.
+    """Hold one host's replica-set member settings: its election settings and its bind address.
 
     Defaults to MongoDB's own for a member (priority 1, votes on, not hidden,
     no delay), so a host a run never names here gets exactly those.
@@ -130,9 +130,6 @@ class MemberConfig(BaseModel):
     votes: bool = True
     hidden: bool = False
     delay_secs: int = Field(default=0, ge=0)
-    # Same pattern as the run-level bind_ip: this reaches mongod.conf through a
-    # quoted heredoc, so a control character would corrupt the file rather than
-    # being rejected by mongod.
     bind_ip: str | None = Field(default=None, pattern=NO_CONTROL_CHARS_PATTERN)
 
     @model_validator(mode="after")
@@ -184,8 +181,8 @@ class BootstrapSpec(BaseModel):
         every ``mongosh`` dispatch need this alongside ``mongod.conf`` itself,
         since none of them assume the package's own unconfigured default.
     :param bind_ip: The interface(s) mongod listens on, e.g. ``0.0.0.0``.
-    :param member_configs: Per-host election settings for ``rs.initiate``,
-        keyed by the same host names ``hosts`` (the run's target list) uses.
+    :param member_configs: Per-host replica-set member settings (election
+        settings and bind address), keyed by the same host names ``hosts`` (the run's target list) uses.
         A host missing from this mapping — including every host, for a run
         that never sets it at all — gets :class:`MemberConfig`'s own
         defaults.

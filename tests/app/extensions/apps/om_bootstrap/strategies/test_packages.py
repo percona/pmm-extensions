@@ -1205,7 +1205,7 @@ class TestPerMemberBindIP:
     """Assert mongod.conf's bindIp comes from the member when it names one.
 
     The safe default for a replica-set member is its *own* address, and a
-    three-member set has three different ones -- a single run-level ``bind_ip``
+    three-member set has three different ones. A single run-level ``bind_ip``
     can only be ``0.0.0.0`` or wrong for two of the three, which is why
     ``MemberConfig`` carries one at all.
     """
@@ -1269,7 +1269,7 @@ class TestPerMemberBindIP:
 class TestMongodConfigQuoting:
     """Assert every string in mongod.conf is a quoted YAML scalar.
 
-    Raised in review. The validators bound these values to no
+    The validators bound these values to no
     whitespace and no control characters, which closes newline injection, but YAML
     still types a bare scalar by its content: ``#...`` is a comment, ``null`` is
     null, ``[a,b]`` a sequence, ``*x`` an alias. An operator naming an address or a

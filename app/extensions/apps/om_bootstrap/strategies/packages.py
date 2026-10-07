@@ -112,7 +112,7 @@ LOOPBACK_ADDRESS = "127.0.0.1"
 #: ``bindIp`` entries that already reach :data:`LOOPBACK_ADDRESS`. The wildcards
 #: must never get it added: beside ``127.0.0.1``, mongod refuses to start with
 #: ``0.0.0.0`` (``Address already in use``) and listens on loopback alone with ``*``.
-_REACHES_LOOPBACK = frozenset({"0.0.0.0", "*", LOOPBACK_ADDRESS, "localhost"})  # noqa: S104
+_REACHES_LOOPBACK = frozenset({"0.0.0.0", "*", LOOPBACK_ADDRESS, "localhost"})  # noqa: S104 # nosec B104
 
 
 def _psmdb_channel(mongodb_version: str) -> str:
@@ -149,6 +149,14 @@ def _shell_step(body: str, *, timeout_s: int = 30) -> StepAction:
 
 def _yaml_str(value: str) -> str:
     """Render ``value`` as a quoted YAML scalar.
+
+    YAML types a bare scalar by its content: ``#...`` is a comment, ``null`` is
+    null, ``[a,b]`` a sequence, ``*x`` an alias, ``0x10`` an integer. An operator
+    naming a path or an address containing any of those would get a config mongod
+    misreads or refuses, with nothing saying why. ``json.dumps`` gives a
+    double-quoted scalar with the escaping YAML expects, since JSON string syntax is
+    a subset of YAML's, and it escapes control characters, so no value can add a
+    line to the file.
 
     :param value: The string to emit.
     :return: ``value`` double-quoted and escaped, so YAML reads it as a string
@@ -191,21 +199,8 @@ def _mongod_config(spec: BootstrapSpec, host: str, *, with_auth: bool) -> str:
         if with_auth
         else ""
     )
-    # Per-member first, the run's value otherwise. The safe default is a host's own
-    # address, and a three-member set has three different ones -- a single run-level
-    # value can only be 0.0.0.0 or wrong for two of the three.
     member = spec.member_configs.get(host)
-    bind_ip = _with_loopback(
-        (member.bind_ip if member and member.bind_ip else None) or spec.bind_ip
-    )
-    # Every string value is emitted as a quoted YAML scalar, raised in review. The
-    # validators bound these to no whitespace or control characters,
-    # which closes newline injection, but YAML still *types* a bare scalar by its
-    # content: `#...` is a comment, `null` is null, `[a,b]` a sequence, `*x` an alias,
-    # `0x10` an integer. An operator naming a path or an address containing any of
-    # those would get a config mongod misreads or refuses, with nothing saying why.
-    # json.dumps gives a double-quoted scalar with the escaping YAML expects, since
-    # JSON string syntax is a subset of YAML's.
+    bind_ip = _with_loopback((member.bind_ip if member else None) or spec.bind_ip)
     return (
         f"net:\n  bindIp: {_yaml_str(bind_ip)}\n  port: {spec.port}\n"
         f"storage:\n  dbPath: {_yaml_str(spec.data_path)}\n"
@@ -400,8 +395,6 @@ class PackagesInstallStrategy:
             "pre_check": self._pre_check,
             "configure_repository": self._configure_repository,
             "install_package": self._install_package,
-            # The only two steps that need the host: mongod.conf's bindIp can be
-            # this member's own address rather than the run's.
             "configure_mongod": lambda s: self._configure_mongod(s, host),
             "start_service": self._start_service,
             "verify": self._verify,
