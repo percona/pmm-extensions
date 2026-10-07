@@ -4,6 +4,7 @@ SHELL=env bash
 
 PYTHON?=python3
 RELEASE_VER?=HEAD
+export RELEASE_VER
 # Pin Poetry and pre-install the required plugin via pip. Without the plugin
 # pre-installed, `poetry install` runs an auto-resolve to add it, which racks
 # the bootstrap-fresh transitive deps (e.g. virtualenv) against the project's
@@ -77,7 +78,9 @@ build: venv app/
 pack:
 ifndef BUNDLE
 	@echo Exporting bundle
-	@git archive --output=bundle.tgz --format=tar.gz "${RELEASE_VER}" app snippets
+	@differing=$$( { git diff --name-only "$$RELEASE_VER" -- app snippets; git ls-files --others --exclude-standard -- app snippets; } | sort -u | wc -l); \
+	[ "$$differing" -eq 0 ] || echo "WARNING: $$differing file(s) under app/ or snippets/ differ between the working tree and $$RELEASE_VER. The bundle is a git archive of $$RELEASE_VER and holds that revision's files, not the working tree's." >&2
+	@git archive --output=bundle.tgz --format=tar.gz "$$RELEASE_VER" app snippets
 else
 	@echo Copying custom bundle "${BUNDLE}"
 	@cp -a "${BUNDLE}" bundle.tgz
@@ -91,8 +94,8 @@ builder:
 # apps survive is sidecar/settings.yaml's EXTENSIONS.APPS.
 # docker format, not oci: OCI silently discards the HEALTHCHECK instruction
 image: pack
-	@podman image exists "extensions:${RELEASE_VER}" && podman image rm "extensions:${RELEASE_VER}" || true
-	@buildah build -f sidecar/Containerfile.sidecar --compress --force-rm --squash --no-cache --format docker --memory 100M --isolation rootless --build-arg EXTENSIONS_RESTRICT_APPS=1 --tag "extensions:${RELEASE_VER}"
+	@podman image exists "extensions:$$RELEASE_VER" && podman image rm "extensions:$$RELEASE_VER" || true
+	@buildah build -f sidecar/Containerfile.sidecar --compress --force-rm --squash --no-cache --format docker --memory 100M --isolation rootless --build-arg EXTENSIONS_RESTRICT_APPS=1 --tag "extensions:$$RELEASE_VER"
 
 format: venv
 	@"${VENV_BIN}"/ruff format .
