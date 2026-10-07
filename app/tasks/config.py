@@ -190,12 +190,12 @@ class TasksSettings(BaseYamlAppSettings):
     :param INVENTORY_SYNC_SCHEDULES: Per-syncer schedules seeded beside the
         scalar default, for a syncer whose useful cadence differs from it. Each
         entry names a syncer in ``BaseSyncer.get_name()`` form and its own
-        interval. When the pinned ``INVENTORY_SYNC_SYNCER`` default is seeded,
-        each entry's seeded schedule is deferred until that syncer's first
-        completed inventory sync, which then starts the entry once if it has
-        never run; an entry an operator-managed schedule already covers is not
-        seeded, so that schedule is not deferred. Read at startup. Defaults to
-        no extra schedules.
+        interval, and runs on it from bring-up. When the pinned
+        ``INVENTORY_SYNC_SYNCER`` default is seeded, its runs also start each
+        seeded entry that has not run since that syncer's first completed
+        inventory sync, so the entry's next run reads that inventory; an entry an
+        operator-managed schedule already covers is not seeded. Read at
+        startup. Defaults to no extra schedules.
     :param LOG_STREAM_CAP_BYTES: The maximum captured-log bytes retained per
         ``(task_history_id, source, stream)``. As a stream grows past the cap
         the writer drops the oldest chunks, keeping a bounded recent tail so a
