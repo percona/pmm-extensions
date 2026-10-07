@@ -104,7 +104,7 @@ def _app_owned_entry(setting_class: str) -> AppOwnedClassEntry:
     return AppOwnedClassEntry(
         setting_class=setting_class,
         settings_cls=_AppOwnedSettings,
-        proxy=OverridableSettingsProxy(_AppOwnedSettings, setting_class=setting_class),
+        proxy=OverridableSettingsProxy(_AppOwnedSettings),
         app_key="test-app",
     )
 

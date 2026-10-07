@@ -881,7 +881,8 @@ def _run_make_with_fake_curl(
     curl_args = tmp_path / "curl-args.txt"
     fake_curl = tmp_path / "curl"
     fake_curl.write_text(
-        '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$CURL_ARGS_FILE"\n'
+        "#!/usr/bin/env bash\ncat >/dev/null\n"
+        'printf "%s\\n" "$@" > "$CURL_ARGS_FILE"\n'
         f"exit {curl_exit}\n",
         encoding="utf-8",
     )

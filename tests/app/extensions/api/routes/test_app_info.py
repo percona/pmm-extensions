@@ -58,7 +58,7 @@ class TestAppInfoEndpoint:
         expected = extensions_settings.FOOTER_TEMPLATE.safe_substitute(
             version=__version__, summary=__summary__
         )
-        assert response.json() == {"footer_text": expected}
+        assert response.json() == {"footer_text": expected, "version": __version__}
 
     def test_reflects_live_override(
         self, test_client: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -71,7 +71,24 @@ class TestAppInfoEndpoint:
         )
         response = test_client.get("/api/extensions/app-info/")
         assert response.status_code == status.HTTP_200_OK
-        assert response.json() == {"footer_text": f"Custom footer {__version__}"}
+        assert response.json() == {
+            "footer_text": f"Custom footer {__version__}",
+            "version": __version__,
+        }
+
+    def test_version_independent_of_footer_template(
+        self, test_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Return the version even when the template omits the placeholder."""
+        monkeypatch.setattr(
+            extensions_settings, "FOOTER_TEMPLATE", Template("No version here")
+        )
+        response = test_client.get("/api/extensions/app-info/")
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {
+            "footer_text": "No version here",
+            "version": __version__,
+        }
 
 
 class TestAppInfoAuth:

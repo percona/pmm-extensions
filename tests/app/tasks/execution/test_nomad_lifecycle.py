@@ -36,6 +36,7 @@ from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.nomad_lifecycle import (
     NomadLifecycle,
     normalize_nomad_config_value,
+    WorkerNomadClient,
 )
 from app.tasks.models import TaskBackendEnum
 from tests.app.core.requests.pending_close_helpers import patch_paused_close_when_idle
@@ -47,6 +48,7 @@ _NOMAD_WITH_CREDS = {
 }
 _NOMAD_WITH_KEY = {**_NOMAD_A, "api_key": "glsa_realtoken"}
 _NOMAD_WITH_ROTATED_KEY = {**_NOMAD_A, "api_key": "glsa_rotated"}
+_STREAM_LIMIT = 3
 
 
 def _override_nomad(config: dict[str, object]) -> None:
@@ -401,6 +403,35 @@ async def test_reconcile_defers_the_old_close_while_a_consumer_holds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconcile_keeps_a_held_stream_pool_open_until_released() -> None:
+    """Close the retired executor's long-lived pool only once its holder releases."""
+    _override_nomad(_NOMAD_A)
+    async with NomadLifecycle(FastAPI()) as holder:
+        old = holder.current
+
+        async with old.hold():
+            stream_session = old._long_lived_session()
+            _override_nomad(_NOMAD_B)
+            await holder.reconcile()
+
+            assert not stream_session.closed
+
+        assert stream_session.closed
+        assert old._stream_session is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_applies_a_changed_stream_connection_limit() -> None:
+    """Size the new executor's long-lived pool from the overridden limit."""
+    _override_nomad(_NOMAD_A)
+    async with NomadLifecycle(FastAPI()) as holder:
+        _override_nomad({**_NOMAD_A, "log_stream_max_connections": _STREAM_LIMIT})
+        await holder.reconcile()
+
+        assert holder.current._long_lived_session().connector.limit == _STREAM_LIMIT
+
+
+@pytest.mark.asyncio
 async def test_get_request_executor_yields_a_celery_executor_unheld() -> None:
     """Yield a ``CeleryExecutor`` unheld, since it owns no session."""
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
@@ -469,3 +500,67 @@ async def test_reconcile_rebinds_when_only_the_endpoint_password_rotates() -> No
         assert holder.current._endpoint_credential_header == encode_basic_auth(
             "nomad-user", "rotated-secret"
         )
+
+
+@pytest.mark.asyncio
+async def test_worker_client_reuses_one_executor_across_calls() -> None:
+    """Hand back the same open executor while the config is unchanged."""
+    _override_nomad(_NOMAD_A)
+    client = WorkerNomadClient()
+    first = await client.get()
+    try:
+        assert await client.get() is first
+        assert first.session is not None
+        assert not first.session.closed
+        assert first is not tasks_settings.NOMAD
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_client_rebuilds_on_config_change() -> None:
+    """Close the old executor and open one for the new config once it changes."""
+    _override_nomad(_NOMAD_A)
+    client = WorkerNomadClient()
+    old = await client.get()
+    _override_nomad(_NOMAD_B)
+    try:
+        new = await client.get()
+        assert new is not old
+        assert str(new.endpoint).startswith("https://nomad-b.example.org")
+        assert old.session is None
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_client_reopens_a_closed_session() -> None:
+    """Open a fresh executor when the held one's session was closed under it."""
+    _override_nomad(_NOMAD_A)
+    client = WorkerNomadClient()
+    old = await client.get()
+    assert old.session is not None
+    await old.session.close()
+    try:
+        new = await client.get()
+        assert new is not old
+        assert new.session is not None
+        assert not new.session.closed
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_client_close_releases_and_forgets() -> None:
+    """Close the held executor's session and report the holder as closed."""
+    _override_nomad(_NOMAD_A)
+    client = WorkerNomadClient()
+    assert not client.is_open
+    executor = await client.get()
+    assert client.is_open
+
+    await client.close()
+    await client.close()
+
+    assert not client.is_open
+    assert executor.session is None

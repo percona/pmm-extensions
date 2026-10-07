@@ -3,7 +3,7 @@
   "detail_view": {
     "sections": []
   },
-  "display_name": "OpenManager Bootstrap",
+  "display_name": "Operations Bootstrap",
   "forms": [],
   "item_display_name": "bootstrap run",
   "item_display_name_plural": "bootstrap runs",

@@ -5,7 +5,8 @@
 # description: "This script checks replication lag between primary and secondaries using replica set status."
 # allow_extra_args: false
 # sudo: optional
-# diagnostic_categories: []
+# diagnostic_categories:
+#  - REPLICA_SET_REPLICATION
 # service_type: mongodb
 # alerts:
 #   - MongoDBReplicationLag
