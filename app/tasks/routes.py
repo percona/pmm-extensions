@@ -15,6 +15,7 @@
 
 """Define routes for the Tasks API."""
 
+import asyncio
 import json
 import logging
 import os
@@ -43,6 +44,7 @@ from app.core.exceptions import (
 )
 from app.core.pagination import PaginatedResponse
 from app.core.pagination.deps import PaginationDep
+from app.core.requests import BaseRemoteAPI
 from app.core.utils import utc_now
 from app.core.utils.fields import NonEmptyStr
 from app.tasks.celery import (
@@ -80,6 +82,7 @@ from app.tasks.deps import (
     TaskListQueryDep,
     validate_chain_task_names,
 )
+from app.tasks.execution.exceptions import TaskNotStartedInExecutorError
 from app.tasks.execution.utils import parse_payload
 from app.tasks.logs.log_reader import has_legacy_logs, iter_task_history_logs
 from app.tasks.models import (
@@ -551,12 +554,36 @@ async def stream_task_history_logs(
 
     ``tail`` limits output to the last N lines per stream for finished histories
     only. It is ignored while the task is ``RUNNING`` (live executor stream).
+
+    A 409 means the run is not producing output yet (still pending, or running
+    but not started by the executor), so the client should retry; a 410 means
+    the live data is gone for good.
+
+    :param session: Database session for reading persisted logs.
+    :param executor: Executor serving the live stream of a running history.
+    :param task_history: The task history whose logs to stream.
+    :param offsets: Per-step, per-stream offsets to resume from.
+    :param step: Limits a finished history's logs to this step.
+    :param tail: Limits a finished history's output to its last N lines per stream.
+    :return: A streaming response of newline-delimited JSON log lines.
+    :raises HTTPConflictException: When the history is pending, or running but
+        not started by the executor yet.
+    :raises TaskDataNotFoundInExecutorError: When the executor's job or
+        allocation for a running history is gone, answered with 410.
     """
     logger.debug("Requesting logs for task history %s", task_history.id)
     if task_history.status == TaskHistoryStatusEnum.PENDING:
         raise HTTPConflictException("Task history is pending.")
     if task_history.status == TaskHistoryStatusEnum.RUNNING:
-        executor.preflight_stream_logs(task_history)
+        try:
+            if isinstance(executor, BaseRemoteAPI):
+                await executor.run_in_thread_held(
+                    executor.preflight_stream_logs, task_history
+                )
+            else:
+                await asyncio.to_thread(executor.preflight_stream_logs, task_history)
+        except TaskNotStartedInExecutorError as exc:
+            raise HTTPConflictException(str(exc)) from None
         stream_logs_generator = (
             f"{log_line.model_dump_json()}\n" if log_line else ""
             async for log_line in executor.stream_logs(task_history, offsets)

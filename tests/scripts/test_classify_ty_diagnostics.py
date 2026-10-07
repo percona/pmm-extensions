@@ -170,10 +170,10 @@ def test_classify_confines_absent_modules_to_the_scaffolded_paths():
 def test_classify_names_the_proxy_installed_settings_helpers():
     """Treat a misspelled attribute on a ``*Settings`` receiver as first-party.
 
-    The receiver alone cannot carry the verdict: the proxy installs four helpers
+    The receiver alone cannot carry the verdict: the proxy installs three helpers
     and every other absent attribute on the same object is an ordinary typo.
     """
-    helper, typo = classify_ty_diagnostics.parse_diagnostics(
+    helper, typo, retired = classify_ty_diagnostics.parse_diagnostics(
         _output(
             "tests/app/extensions/routes/test_stream_logs.py:325:5: "
             "warning[unresolved-attribute] Object of type `ExtensionsSettings` has no "
@@ -181,11 +181,15 @@ def test_classify_names_the_proxy_installed_settings_helpers():
             "tests/app/extensions/routes/test_stream_logs.py:326:5: "
             "warning[unresolved-attribute] Object of type `ExtensionsSettings` has no "
             "attribute `PMM_typo`",
+            "tests/app/extensions/routes/test_stream_logs.py:327:5: "
+            "warning[unresolved-attribute] Object of type `ExtensionsSettings` has no "
+            "attribute `_setting_class`",
         )
     )
 
     assert classify_ty_diagnostics.classify(helper.fingerprint) is not None
     assert classify_ty_diagnostics.classify(typo.fingerprint) is None
+    assert classify_ty_diagnostics.classify(retired.fingerprint) is None
 
 
 def test_classify_names_the_runtime_installed_celery_attribute():

@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define reads and writes for the OpenManager Inventory tables.
+"""Define reads and writes for the Operations Inventory tables.
 
 The entity upserts here are where the freshness lifecycle ``ObservedEntity``
 describes actually lives, and they are written attribute by attribute on purpose.

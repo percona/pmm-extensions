@@ -70,8 +70,8 @@ Write the **member name** — the left column below — not the display label. T
 listing matches on the member name; a display label, or a name the taxonomy does
 not define, places the script in no cell at all and is discarded silently.
 
-The taxonomy is `ATWCategory` in `app/extensions/apps/atw/categories.py`, twelve
-members under three parents:
+The taxonomy is `ATWCategory` in `app/extensions/apps/atw/categories.py`, fourteen
+members under four parents:
 
 | Member name | Display label | Parent |
 |---|---|---|
@@ -87,6 +87,8 @@ members under three parents:
 | `MULTI_SOURCE_REPLICATION` | Multi-Source replication | Replication High / Availability |
 | `GALERA` | Galera | Replication High / Availability |
 | `GROUP_REPLICATION` | Group Replication | Replication High / Availability |
+| `REPLICA_SET_REPLICATION` | Replica Set Replication | Replication High / Availability |
+| `BACKUP_PBM` | Backup / PBM | Backup and Recovery |
 
 A script may name several categories; it then appears under each of them.
 

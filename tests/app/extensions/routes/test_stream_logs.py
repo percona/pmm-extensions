@@ -16,15 +16,23 @@
 """Define tests for the app.extensions.routes.stream_logs module."""
 
 import asyncio
-from contextlib import contextmanager
+import json
+import time
+from contextlib import AsyncExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from aiohttp import web
 from aioresponses import aioresponses, CallbackResult
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from starlette.status import HTTP_200_OK, HTTP_503_SERVICE_UNAVAILABLE
+from starlette.status import (
+    HTTP_200_OK,
+    HTTP_409_CONFLICT,
+    HTTP_410_GONE,
+    HTTP_503_SERVICE_UNAVAILABLE,
+)
 
 from app.core.config import settings
 from app.core.requests import RemoteAPI
@@ -37,12 +45,21 @@ from app.extensions.deps import (
     get_tasks_client,
 )
 from app.extensions.main import extensions_app, extensions_overrides_lifespan
-from app.tasks.models import TaskHistoryStatusEnum
-from tests.app.asgi_stream import asgi_stream
+from app.tasks.models import TaskHistoryResponse, TaskHistoryStatusEnum
+from tests.app.asgi_stream import asgi_stream, ASGIStream
 from tests.app.extensions.routes.conftest import (
     resolve_registry_tasks_client,
     TASKS_ENDPOINT,
 )
+
+#: Concurrent log viewers in the proxy fan-out test, more than the per-host cap.
+_PROXY_VIEWERS = 12
+_PROXY_LINE_COUNT = 8
+_PROXY_FRAME_INTERVAL = 0.4
+#: Each line must reach every viewer this soon after the Tasks API wrote it.
+_PROXY_LIVE_LATENCY_BOUND = 2.0
+_PROXY_SHORT_CALL_BOUND = 1.0
+_PROXY_RUN_TIMEOUT = 30.0
 
 
 async def mock_stream_logs_generator(log_lines):
@@ -189,6 +206,185 @@ def test_logs_event_stream_finishes_on_empty_log_stream(
     assert "log line" not in streamed_content
     assert "event: finish" in streamed_content
     assert TaskHistoryStatusEnum.SUCCESS.value in streamed_content
+
+
+def _sse_frames(streamed_content: str) -> list[tuple[str | None, str]]:
+    """Split an SSE body into ``(event, data)`` pairs, ``event`` ``None`` when unnamed.
+
+    :param streamed_content: The decoded ``text/event-stream`` response body.
+    :return: One pair per frame, in emission order.
+    """
+    frames: list[tuple[str | None, str]] = []
+    for block in streamed_content.split("\n\n"):
+        if not block:
+            continue
+        fields = dict(line.split(": ", 1) for line in block.splitlines())
+        frames.append((fields.get("event"), fields["data"]))
+    return frames
+
+
+@pytest.mark.parametrize(
+    "reconciled_status",
+    [TaskHistoryStatusEnum.RUNNING, TaskHistoryStatusEnum.PENDING],
+)
+def test_logs_event_stream_ending_before_a_terminal_status_emits_retryable_409(
+    test_client, mock_tasks_client, task_history_response, reconciled_status
+):
+    """Assert a stream ending while the run is still live asks the client to retry.
+
+    A ``finish`` frame tells the viewer the log is complete, so it is reserved
+    for a terminal status; a run the executor has not started yet ends its
+    stream early and gets a 409 error frame instead.
+    """
+    mock_tasks_client.stream.side_effect = lambda *_args, **_kwargs: (
+        mock_stream_logs_generator([])
+    )
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": reconciled_status
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert response.status_code == HTTP_200_OK
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (
+            "extensions-error",
+            json.dumps(
+                {
+                    "code": HTTP_409_CONFLICT,
+                    "detail": f"Task history is {reconciled_status}.",
+                }
+            ),
+        )
+    ]
+
+
+def test_logs_event_stream_lost_run_still_finishes(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert a LOST run ends with ``finish`` even though it never finished.
+
+    LOST is terminal without an observed outcome, so the stream must still
+    close it rather than ask the client to retry a run that will not resume.
+    """
+    mock_tasks_client.stream.side_effect = lambda *_args, **_kwargs: (
+        mock_stream_logs_generator([])
+    )
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": TaskHistoryStatusEnum.LOST
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        ("finish", json.dumps({"status": TaskHistoryStatusEnum.LOST}))
+    ]
+
+
+def test_logs_event_stream_upstream_not_started_409_stays_retryable_while_live(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert the Tasks API's not-started 409 reaches the client as a 409 frame."""
+    mock_tasks_client.stream.side_effect = HTTPException(
+        status_code=HTTP_409_CONFLICT,
+        detail="Allocation a has not started a task yet",
+    )
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": TaskHistoryStatusEnum.RUNNING
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (
+            "extensions-error",
+            json.dumps(
+                {
+                    "code": HTTP_409_CONFLICT,
+                    "detail": f"Task history is {TaskHistoryStatusEnum.RUNNING}.",
+                }
+            ),
+        )
+    ]
+
+
+def test_logs_event_stream_upstream_409_for_a_run_that_died_finishes_it(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert a not-started 409 is reconciled before the client is told to retry.
+
+    A run whose allocation never started and whose job is gone answers 409
+    until a sync settles it; reconciling here ends the viewer's stream with
+    that terminal status instead of spending its retry budget.
+    """
+    mock_tasks_client.stream.side_effect = [
+        HTTPException(
+            status_code=HTTP_409_CONFLICT,
+            detail="Allocation a has not started a task yet",
+        ),
+        mock_stream_logs_generator([]),
+    ]
+    mock_tasks_client.post.return_value = task_history_response.model_dump() | {
+        "status": TaskHistoryStatusEnum.LOST
+    }
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        ("finish", json.dumps({"status": TaskHistoryStatusEnum.LOST}))
+    ]
+    mock_tasks_client.post.assert_called_once_with(
+        f"/history/{task_history_response.id}/sync/"
+    )
+
+
+def test_logs_event_stream_upstream_409_for_a_run_that_finished_reads_its_logs(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert a run that finished between the 409 and the sync streams its log.
+
+    A short run can complete in that window; finishing without re-reading
+    would end the viewer's live log empty, and the viewer keeps a cleanly
+    finished live log as complete.
+    """
+    mock_tasks_client.stream.side_effect = [
+        HTTPException(
+            status_code=HTTP_409_CONFLICT,
+            detail="Allocation a has not started a task yet",
+        ),
+        mock_stream_logs_generator([b'{"msg": "persisted line"}']),
+    ]
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (None, '{"msg": "persisted line"}'),
+        ("finish", json.dumps({"status": TaskHistoryStatusEnum.SUCCESS})),
+    ]
+    logs_path = f"/history/{task_history_response.id}/logs/"
+    assert [call.args[0] for call in mock_tasks_client.stream.call_args_list] == [
+        logs_path,
+        logs_path,
+    ]
+
+
+def test_logs_event_stream_upstream_410_is_not_reconciled(
+    test_client, mock_tasks_client, task_history_response
+):
+    """Assert an expired run's 410 is forwarded as-is, without a sync."""
+    mock_tasks_client.stream.side_effect = HTTPException(
+        status_code=HTTP_410_GONE, detail="gone"
+    )
+
+    response = test_client.get(f"/stream-logs/{task_history_response.id}")
+
+    assert _sse_frames(response.content.decode("utf-8")) == [
+        (
+            "extensions-error",
+            json.dumps({"code": HTTP_410_GONE, "detail": "gone"}),
+        )
+    ]
+    mock_tasks_client.post.assert_not_called()
 
 
 def test_logs_event_stream_forwards_tail_query_param(
@@ -564,3 +760,153 @@ class TestRequestsArrivingAfterARebind:
             extensions_settings._set_snapshot({})
 
         assert response.status_code == HTTP_200_OK
+
+
+class _TasksLogStub:
+    """Serve a running history's NDJSON log stream the way the Tasks API does.
+
+    Each log request gets every line written so far, then each new line as it
+    is written, and ends once :meth:`emit` has finished.
+
+    :param history: The history the stub answers for.
+    """
+
+    def __init__(self, history: TaskHistoryResponse) -> None:
+        self.history = history
+        self.emitted: dict[str, float] = {}
+        self._lines: list[bytes] = []
+        self._done = False
+        self._changed = asyncio.Condition()
+
+    def application(self) -> web.Application:
+        """Build the stub's routes.
+
+        :return: The application to serve.
+        """
+        history_path = f"/history/{self.history.id}"
+        application = web.Application()
+        application.router.add_get(f"{history_path}/logs/", self._logs)
+        application.router.add_get(history_path, self._history)
+        application.router.add_post(f"{history_path}/sync/", self._history)
+        return application
+
+    async def emit(self) -> None:
+        """Write one line every ``_PROXY_FRAME_INTERVAL``, then end the stream."""
+        for index in range(_PROXY_LINE_COUNT):
+            text = f"line-{index}"
+            async with self._changed:
+                self._lines.append(json.dumps({"msg": text}).encode() + b"\n")
+                self.emitted[text] = time.monotonic()
+                self._changed.notify_all()
+            await asyncio.sleep(_PROXY_FRAME_INTERVAL)
+        async with self._changed:
+            self._done = True
+            self._changed.notify_all()
+
+    async def _history(self, _request: web.Request) -> web.Response:
+        """Answer with the history document.
+
+        :return: The JSON response.
+        """
+        return web.json_response(self.history.model_dump(mode="json"))
+
+    async def _logs(self, request: web.Request) -> web.StreamResponse:
+        """Stream the log lines from the first one until emission ends.
+
+        :param request: The log request.
+        :return: The streamed response.
+        """
+        response = web.StreamResponse(headers={"Content-Type": "application/json"})
+        await response.prepare(request)
+        sent = 0
+        while True:
+            async with self._changed:
+                await self._changed.wait_for(
+                    lambda sent=sent: len(self._lines) > sent or self._done
+                )
+                pending = self._lines[sent:]
+                done = self._done
+            sent += len(pending)
+            if pending:
+                await response.write(b"".join(pending))
+            if done and not pending:
+                return response
+
+
+async def _record_sse_arrivals(stream: ASGIStream, arrivals: dict[str, float]) -> None:
+    """Record when each proxied log line first reached this subscriber.
+
+    :param stream: The subscriber's in-flight SSE response.
+    :param arrivals: Filled with ``line -> monotonic receipt time``.
+    """
+    buffer = b""
+    while (chunk := await stream.next_chunk()) is not None:
+        received = time.monotonic()
+        buffer += chunk
+        *events, buffer = buffer.split(b"\n\n")
+        for event in map(bytes.strip, events):
+            if event.startswith(b"data: "):
+                payload = json.loads(event.removeprefix(b"data: "))
+                arrivals.setdefault(payload["msg"], received)
+
+
+@pytest.mark.usefixtures("real_client_route_overrides")
+class TestManyConcurrentLogStreams:
+    """Cover more concurrent log viewers than one host's short-call pool holds."""
+
+    pytestmark = pytest.mark.asyncio
+
+    async def test_every_viewer_gets_each_line_live_and_short_calls_proceed(
+        self, task_history_response
+    ) -> None:
+        """Deliver each line to all twelve viewers live, and serve a plain call meanwhile.
+
+        Twelve open streams to the Tasks API exceed the ten connections per host
+        the short-call pool allows.
+        """
+        stub = _TasksLogStub(task_history_response)
+        runner = web.AppRunner(stub.application(), shutdown_timeout=1)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        _, port = runner.addresses[0][:2]
+        client = await RemoteAPI(endpoint=f"http://127.0.0.1:{port}").open()
+        extensions_app.state.tasks_api = client
+        arrivals = [{} for _ in range(_PROXY_VIEWERS)]
+        try:
+            async with AsyncExitStack() as stack:
+                streams = [
+                    await stack.enter_async_context(
+                        asgi_stream(
+                            extensions_app, f"/stream-logs/{task_history_response.id}"
+                        )
+                    )
+                    for _ in range(_PROXY_VIEWERS)
+                ]
+                readers = [
+                    asyncio.create_task(_record_sse_arrivals(stream, received))
+                    for stream, received in zip(streams, arrivals, strict=True)
+                ]
+                emitting = asyncio.create_task(stub.emit())
+                started = time.monotonic()
+                await client.get(f"/history/{task_history_response.id}")
+                short_call = time.monotonic() - started
+                await emitting
+                await asyncio.wait_for(asyncio.gather(*readers), _PROXY_RUN_TIMEOUT)
+        finally:
+            del extensions_app.state.tasks_api
+            await client.close()
+            await runner.cleanup()
+
+        assert [stream.status_code for stream in streams] == [
+            HTTP_200_OK
+        ] * _PROXY_VIEWERS
+        assert short_call < _PROXY_SHORT_CALL_BOUND
+        for received in arrivals:
+            assert received.keys() == stub.emitted.keys()
+        worst = max(
+            received[line] - emitted_at
+            for received in arrivals
+            for line, emitted_at in stub.emitted.items()
+        )
+        assert worst <= _PROXY_LIVE_LATENCY_BOUND

@@ -66,6 +66,7 @@ dependencies = [
     "python-multipart (>=0.0.31,<0.0.32)",
     "weasyprint (>=70.0,<71.0)",
     "cryptography (>=50.0.0,<51.0.0)",
+    "regex (>=2026.5.9,<2027.0.0)",
 ]
 
 [tool.poetry]
@@ -247,8 +248,8 @@ missing-override-decorator = "ignore"   # PEP 698 `@override` is not a conventio
 # and the residual baseline: docs/development/ty-policy.md.
 
 [[tool.ty.overrides]]
-# `Settings` subclasses reach the proxy-installed `_set_snapshot` / `get_snapshot`
-# / `_setting_class` helpers, which the generated model class does not declare.
+# `Settings` subclasses reach the proxy-installed `_set_snapshot` / `get_snapshot` /
+# `_resolve` helpers, which the generated model class does not declare.
 include = [
     "tests/app/conftest.py",
     "tests/app/core/alerts/test_config.py",

@@ -50,6 +50,7 @@ from app.tasks.connectivity.models import ConnectivityServiceType
 from app.tasks.connectivity.service import _cached_check_connectivity
 from app.tasks.crud import TaskHistoryLogManager, TaskHistoryManager, TaskManager
 from app.tasks.deps import get_request_executor, get_session
+from app.tasks.execution.exceptions import TaskNotStartedInExecutorError
 from app.tasks.execution.executors.nomad.exceptions import AllocationNotFoundError
 from app.tasks.execution.executors.nomad.steps import (
     NomadStep,
@@ -63,7 +64,6 @@ from app.tasks.execution_request_secrets import (
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.main import tasks_app
 from app.tasks.models import (
-    DispatchLock,
     ExecutionEvent,
     ExecutorHostState,
     LogCaptureStatusEnum,
@@ -1187,6 +1187,35 @@ async def test_stream_logs_running_preflight_allocation_gone_returns_410(
     assert response.status_code == status.HTTP_410_GONE
     detail = response.json()["detail"]
     assert detail["resource_type"] == "allocation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "not_started_reason",
+    [
+        "Nomad has not placed an allocation for job j yet",
+        "Allocation a has not started a task yet",
+    ],
+)
+async def test_stream_logs_running_not_started_returns_409(
+    test_client, session, mock_executor, created_task_with_history, not_started_reason
+):
+    """Assert a RUNNING history the executor has not started yet answers 409.
+
+    The conflict is decided before streaming starts, so a client can retry it,
+    and it stays apart from the 410 an expired run answers.
+    """
+    created_task_with_history.status = TaskHistoryStatusEnum.RUNNING
+    await TaskHistoryManager.save(session, created_task_with_history)
+    mock_executor.preflight_stream_logs.side_effect = TaskNotStartedInExecutorError(
+        not_started_reason
+    )
+
+    response = test_client.get(f"/history/{created_task_with_history.id}/logs/")
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert response.json()["detail"] == not_started_reason
+    mock_executor.stream_logs.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2639,12 +2668,17 @@ async def test_execute_task_name_refreshes_execution_request_before_annotation(
         "app.tasks.celery.DispatchLockManager.delete_where",
         new_callable=AsyncMock,
     )
+    # The lock row is added and committed on its own session now, rather than
+    # through ``DispatchLockManager.create``, so the session maker is what has to
+    # be stubbed: this test runs against SQLite, which has no dispatchlock table.
+    lock_session = AsyncMock()
+    lock_session_cm = AsyncMock()
+    lock_session_cm.__aenter__ = AsyncMock(return_value=lock_session)
+    lock_session_cm.__aexit__ = AsyncMock(return_value=False)
     mocker.patch(
-        "app.tasks.celery.DispatchLockManager.create",
-        new_callable=AsyncMock,
-        return_value=MagicMock(spec=DispatchLock),
+        "app.tasks.celery.get_async_session_maker",
+        return_value=MagicMock(return_value=lock_session_cm),
     )
-    mocker.patch("app.tasks.celery.DispatchLockManager.delete", new_callable=AsyncMock)
     mocker.patch(
         "app.tasks.celery._raise_if_identical_task_conflict", new_callable=AsyncMock
     )

@@ -60,7 +60,7 @@ default:
       - OmInventorySettings.MAX_CONCURRENT_PROBES
       - OmInventorySettings.RUN_RETENTION
       - OmInventorySettings.STALE_RUN_AFTER
-      # PMM's OpenManager switch reaches ENABLED through the app's own
+      # PMM's Operations for MongoDB switch reaches ENABLED through the app's own
       # PATCH /config, which this allowlist gates like any other caller: left
       # out, the sweep can never be turned on.
       - OmInventorySettings.ENABLED
@@ -329,10 +329,11 @@ default:
     # Daily rather than PMM's 15 minutes: a node's uid and sudo availability change
     # at provisioning time, not during operation, and each run costs a per-node venv
     # build plus a four-driver pip install. The full get_name() form is required
-    # here; the SYNCERS entry above takes the short auto-prefixed one. Its first run
-    # waits for the PMM default's first completed sync, which then starts it if it
-    # has never run. An operator-managed schedule that already covers this syncer
-    # replaces this entry and does not wait.
+    # here; the SYNCERS entry above takes the short auto-prefixed one. It runs daily
+    # from bring-up, whether or not PMM is reachable, and the PMM default starts it
+    # once more after its first completed sync, so host facts cover the nodes that
+    # sync brought in. An operator-managed schedule that already covers this
+    # syncer replaces this entry.
     #
     # The UnmeasuredHostFactsSyncer entry gives a newly added host its first
     # measurement attempt within one PMM inventory-sync interval. It probes only hosts with
