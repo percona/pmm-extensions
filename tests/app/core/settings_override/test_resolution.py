@@ -394,9 +394,7 @@ class _OptionalIntermediateParent(BaseModel):
 
 def test_resolve_nested_value_unknown_leaf_raises_keyerror() -> None:
     """Reject a key that cannot resolve to a nested field."""
-    proxy = OverridableSettingsProxy(
-        _OptionalIntermediateParent, setting_class=ExtensionsSettings.__name__
-    )
+    proxy = OverridableSettingsProxy(_OptionalIntermediateParent)
 
     with pytest.raises(KeyError, match="NESTED__BOGUS"):
         resolve_nested_value(
@@ -415,9 +413,7 @@ def test_resolve_nested_value_continues_through_mapping(
     inner_key: str, leaf_key: str
 ) -> None:
     """Traverse a mapping intermediate and read its child using canonical names."""
-    proxy = OverridableSettingsProxy(
-        _OptionalIntermediateParent, setting_class=ExtensionsSettings.__name__
-    )
+    proxy = OverridableSettingsProxy(_OptionalIntermediateParent)
     expected_value = 42
     proxy._set_snapshot({"NESTED": {inner_key: {leaf_key: expected_value}}})
 
@@ -433,9 +429,7 @@ def test_resolve_nested_value_continues_through_mapping(
 
 def test_resolve_nested_value_missing_mapping_segment_returns_sentinel() -> None:
     """Return :data:`NESTED_VALUE_MISSING` for a dict snapshot missing a segment."""
-    proxy = OverridableSettingsProxy(
-        _SecretLeafParent, setting_class=ExtensionsSettings.__name__
-    )
+    proxy = OverridableSettingsProxy(_SecretLeafParent)
     proxy._set_snapshot({"GROUP": {"LABEL": "visible"}})
     _, value = resolve_nested_value(
         settings_cls=_SecretLeafParent, proxy=proxy, key="GROUP__TOKEN"
@@ -445,9 +439,7 @@ def test_resolve_nested_value_missing_mapping_segment_returns_sentinel() -> None
 
 def test_resolve_nested_value_optional_none_intermediate_returns_none() -> None:
     """Collapse the leaf to ``None`` for a present-``None`` optional intermediate."""
-    proxy = OverridableSettingsProxy(
-        _OptionalIntermediateParent, setting_class=ExtensionsSettings.__name__
-    )
+    proxy = OverridableSettingsProxy(_OptionalIntermediateParent)
     _, value = resolve_nested_value(
         settings_cls=_OptionalIntermediateParent,
         proxy=proxy,
@@ -459,9 +451,7 @@ def test_resolve_nested_value_optional_none_intermediate_returns_none() -> None:
 
 def test_resolve_nested_value_present_none_secret_leaf_returns_none() -> None:
     """Distinguish a present-``None`` secret leaf from a missing segment."""
-    proxy = OverridableSettingsProxy(
-        _SecretLeafParent, setting_class=ExtensionsSettings.__name__
-    )
+    proxy = OverridableSettingsProxy(_SecretLeafParent)
     proxy._set_snapshot(
         {"GROUP": _SecretLeafModel.model_construct(TOKEN=None, LABEL="public")}
     )

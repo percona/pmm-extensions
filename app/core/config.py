@@ -78,7 +78,6 @@ from app.core.middleware.security_headers import (
 )
 from app.core.models import BaseCaseInsensitiveModel, BaseLowercaseModel
 from app.core.requests import BaseRemoteAPI, ClientRegistry, RemoteAPI
-from app.core.settings_override.constants import SETTINGS
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import hot_field, not_overridable_field
 from app.core.utils import deep_dict_update
@@ -934,7 +933,7 @@ def _create_settings() -> Settings:
     return s
 
 
-settings: Settings = OverridableSettingsProxy(_create_settings, setting_class=SETTINGS)
+settings: Settings = OverridableSettingsProxy(_create_settings)
 logger = logging.getLogger(__name__)
 
 
