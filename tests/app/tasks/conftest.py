@@ -38,12 +38,14 @@ from app.core.utils import json_serializer
 from app.core.utils.fields import DatabaseDialect
 from app.tasks.crud import TaskHistoryManager, TaskManager
 from app.tasks.deps import get_request_executor, get_session
+from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.models import BaseExecutor
 from app.tasks.main import tasks_app
 from app.tasks.models import TaskHistory, TaskWrite
 from tests.app.conftest import postgres_worker_schema
 from tests.app.db_schema import apply_schema
 from tests.app.factories import build_task_history, TaskFactory
+from tests.app.tasks.nomad_log_stub import NomadLogStub
 
 #: Syncer names in ``BaseSyncer.get_name()`` form, as the inventory-sync settings and
 #: the schedules seeded from them spell a syncer. Shared so the tasks suite has one
@@ -92,6 +94,31 @@ async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
             yield session
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+def nomad_stub() -> Iterator[NomadLogStub]:
+    """Serve a running ``run-script`` step from a Nomad stub on its own thread.
+
+    :return: The started stub.
+    """
+    stub = NomadLogStub()
+    stub.start()
+    yield stub
+    stub.stop()
+
+
+@pytest_asyncio.fixture
+async def live_executor(nomad_stub: NomadLogStub) -> AsyncGenerator[NomadExecutor]:
+    """Enter a real Nomad executor pointed at the stub, as the lifecycle does.
+
+    :return: The entered executor.
+    """
+    executor = await NomadExecutor(
+        endpoint=nomad_stub.endpoint, verify_ssl=False
+    ).open()
+    yield executor
+    await executor.close()
 
 
 @pytest.fixture

@@ -33,9 +33,12 @@ that contributes no revisions has to survive.
 from __future__ import annotations
 
 import argparse
+import os
 import posixpath
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -308,9 +311,31 @@ def sync_alembic_ini(
         return True
     if check:
         return False
-    with ini_path.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(updated)
+    _atomic_write(ini_path, updated)
     return True
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Replace ``path``'s contents with ``text`` via a same-directory temp swap.
+
+    Truncating the target before writing lets a concurrent ``alembic`` run read a
+    torn file. Writing a sibling temp file and :func:`os.replace`-ing it in means
+    readers see either the whole old file or the whole new one, and a failed
+    write leaves the original intact. The target's mode is copied onto the temp
+    file (``mkstemp`` creates it ``0600``).
+
+    :param path: The file to overwrite.
+    :param text: The new contents.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        shutil.copymode(path, tmp)
+        Path(tmp).replace(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
