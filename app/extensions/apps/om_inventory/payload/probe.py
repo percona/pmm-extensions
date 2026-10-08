@@ -543,13 +543,10 @@ def collect_database_facts(
     try:
         client = MongoClient(uri)
         admin = client.admin
-        # Connect and authenticate once, before the commands, so failing to reach
-        # the database at all is the target's error rather than four command
-        # errors. ``MongoClient`` is lazy: without this, a refused connection or a
-        # rejected password surfaced only inside the per-command handler below,
-        # the record kept ``status: ok``, and a mongod nobody could query was
-        # stored as freshly and successfully probed. It also waits out one
-        # connect timeout for an unreachable target instead of one per command.
+        # Ping first: ``MongoClient`` is lazy, so an unreachable server or a
+        # rejected password would otherwise surface only as per-command errors and
+        # leave the record ``ok``. It also costs one connect timeout instead of one
+        # per command.
         admin.command("ping")
         for key, command in (
             ("build_info", "buildInfo"),
@@ -607,7 +604,9 @@ def describe_database_error(err, target, userinfo, credentials_file, connect_tim
         if cut != -1:
             cause = cause[:cut]
         cause = cause.removeprefix(f"{host}:{port}: ")
-        if not cause or cause == "No servers found yet":
+        # A filtered port gives either, depending on whether the connect or the
+        # server-selection timeout fires first; both are set to the same value.
+        if cause in ("", "No servers found yet", "timed out"):
             seconds = connect_timeout_ms / 1000
             return f"no answer from {host}:{port} within {seconds:g}s"
         return f"could not connect to {host}:{port}: {cause}"
@@ -643,6 +642,10 @@ def determine_vendor(build_info):
     return "MongoDB Community"
 
 
+#: The keys of the collected facts that say why they are missing, not what they are.
+ERROR_KEYS = ("error", "error_type", "error_code", "command_errors")
+
+
 def summarise_database_facts(facts):
     """Copy the few fields worth having to the top level of the record.
 
@@ -670,13 +673,11 @@ def summarise_database_facts(facts):
         "set_name": hello.get("setName") or repl.get("set"),
         "state": repl.get("myState"),
     }
-    for key in ("error", "error_type", "error_code", "command_errors"):
+    for key in ERROR_KEYS:
         if key in facts:
             summary[key] = facts[key]
     summary["raw"] = {
-        key: value
-        for key, value in facts.items()
-        if key not in ("error", "error_type", "error_code", "command_errors")
+        key: value for key, value in facts.items() if key not in ERROR_KEYS
     }
     return summary
 
@@ -746,6 +747,7 @@ def probe(target, config, host_facts, processes=(), versions=None):
         record["status"] = STATUS_FAILED
         record["error"] = f"{error_type}: {err}"
         record["error_type"] = error_type
+        record["error_code"] = None
         record["database"] = None
     return record
 

@@ -33,6 +33,7 @@ from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
 from app.extensions.apps.om_inventory.models import NodeResolution
+from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
 from app.extensions.apps.om_inventory.service import (
     enumerate_estate,
     STARTUP_RETRIES,
@@ -336,7 +337,7 @@ async def test_a_service_whose_database_could_not_be_queried_did_not_answer() ->
         **RECORD,
         "process": {**RECORD["process"], "running": True},
         "database": None,
-        "status": "failed",
+        "status": STATUS_FAILED,
         "error": "Authentication failed.",
         "error_type": "OperationFailure",
         "error_code": 18,
@@ -384,7 +385,7 @@ async def test_a_failed_record_still_says_whether_the_mongod_is_running() -> Non
             "config_path": None,
         },
         "database": None,
-        "status": "failed",
+        "status": STATUS_FAILED,
         "error": "could not connect to node00:27017: [Errno 111] Connection refused",
     }
     outcome = await run_sweep(
@@ -410,7 +411,7 @@ async def test_a_failed_record_still_says_whether_the_mongod_is_running() -> Non
 @pytest.mark.asyncio
 async def test_a_failed_record_s_error_is_bounded() -> None:
     """Cap the stored error, since one the payload does not recognise can be long."""
-    record = {**RECORD, "status": "failed", "error": "x" * 5000}
+    record = {**RECORD, "status": STATUS_FAILED, "error": "x" * 5000}
     outcome = await run_sweep(
         [mapped("svc-a", "node00", NodeResolution.NAME)],
         {
@@ -420,7 +421,9 @@ async def test_a_failed_record_s_error_is_bounded() -> None:
         },
     )
 
-    assert len(outcome.service_errors[DEFAULT_EXTERNAL_ID]) == ERROR_DETAIL_CAP
+    assert outcome.service_errors[DEFAULT_EXTERNAL_ID] == (
+        "could not query the database: " + "x" * ERROR_DETAIL_CAP
+    )
 
 
 @pytest.mark.asyncio

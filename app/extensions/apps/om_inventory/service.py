@@ -204,10 +204,8 @@ def _record_failure(record: dict[str, Any] | None) -> str | None:
 
     The payload prints a record for every target, including one it could not query -
     a refused connection or a rejected password - and marks that record
-    ``status: failed``. Such a record is not an answer: storing it as one moved
-    ``last_success_at`` and cleared ``failing_since`` for a database nobody could
-    read, and replaced the last good document with one stripped of every database
-    fact.
+    ``status: failed``. A failed record is not an answer: the caller stores it as a
+    failed attempt and keeps the last good document.
 
     :param record: The probe record, or ``None`` when there was none.
     :return: The failure detail, or ``None`` for a usable record or no record.
@@ -215,7 +213,16 @@ def _record_failure(record: dict[str, Any] | None) -> str | None:
     if not record or record.get("status") != STATUS_FAILED:
         return None
     error = str(record.get("error") or "no detail was reported")
-    return f"could not query the database: {error}"[:MAX_ERROR_DETAIL]
+    return f"could not query the database: {error[:MAX_ERROR_DETAIL]}"
+
+
+def _answered(record: dict[str, Any] | None) -> bool:
+    """Return whether a service's probe record is a usable answer.
+
+    :param record: The probe record, or ``None`` when there was none.
+    :return: ``True`` for a record that is not a failed attempt.
+    """
+    return bool(record) and _record_failure(record) is None
 
 
 #: Probe-record fields that describe the **host** rather than any service on it.
@@ -266,15 +273,11 @@ HOST_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("data_dir_free_bytes", ("install_readiness", "data_dir_free_bytes")),
 )
 
-#: Probe-record fields that belong to one **service**.
-SERVICE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("probe_status", ("status",)),
+#: The :data:`SERVICE_FIELDS` read off the host rather than out of the database: the
+#: installed binary and the process serving the port. A scan that cannot query the
+#: database still collects these, so a failed attempt refreshes them.
+PROCESS_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("installed_version", ("binary_version",)),
-    ("version", ("database", "db_version")),
-    ("git_version", ("database", "git_version")),
-    ("vendor", ("database", "vendor")),
-    ("storage_engine", ("database", "storage_engine")),
-    ("replication_set", ("database", "set_name")),
     ("config_path", ("process", "config_path")),
     ("argv", ("process", "argv")),
     ("server_process", ("process", "program")),
@@ -282,11 +285,15 @@ SERVICE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("uptime_seconds", ("process", "uptime_sec")),
 )
 
-#: The :data:`SERVICE_FIELDS` read off the host rather than out of the database: the
-#: installed binary and the process serving the port. A scan that cannot query the
-#: database still collects these, so a failed attempt refreshes them.
-PROCESS_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
-    field for field in SERVICE_FIELDS if field[1][0] in ("binary_version", "process")
+#: Probe-record fields that belong to one **service**.
+SERVICE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("probe_status", ("status",)),
+    ("version", ("database", "db_version")),
+    ("git_version", ("database", "git_version")),
+    ("vendor", ("database", "vendor")),
+    ("storage_engine", ("database", "storage_engine")),
+    ("replication_set", ("database", "set_name")),
+    *PROCESS_FIELDS,
 )
 
 
@@ -550,7 +557,7 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
             outcome.orphaned += 1
         else:
             outcome.resolved += 1
-            if record and _record_failure(record) is None:
+            if _answered(record):
                 outcome.answered += 1
 
         _record_entity(
@@ -605,7 +612,7 @@ def _build_receipt(
                 # inventory holds none.
                 "service_id": entry.service.external_id,
                 "service_name": entry.service.name,
-                "answered": bool(record) and _record_failure(record) is None,
+                "answered": _answered(record),
                 "error": outcome.service_errors.get(entry.service.external_id or ""),
             }
         )
