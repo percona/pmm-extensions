@@ -148,7 +148,8 @@ MONGO_ENDPOINT="$HOST:$PORT"
 # into mongosh, a script runs as a REPL that ignores a failed db.auth().
 MONGO_AUTH_FAILED=3
 MONGO_AUTH_JS="var __creds = (typeof require === 'function' ? require('fs').readFileSync(0, 'utf8') : cat('/dev/stdin')).split('\n'), __ok = false;
-try { var __dec = function (h) { return decodeURIComponent(h.replace(/(..)/g, '%\$1')); }; __ok = db.getSiblingDB(__dec(__creds[0])).auth(__dec(__creds[1]), __dec(__creds[2])); } catch (e) { __ok = false; }
+try { __creds = __creds.slice(0, 3).map(function (h) { return decodeURIComponent(h.replace(/(..)/g, '%\$1')); }); } catch (e) { quit($MONGO_AUTH_FAILED); }
+try { __ok = db.getSiblingDB(__creds[0]).auth(__creds[1], __creds[2]); } catch (e) { if (e.code !== 18) { throw e; } }
 if (!__ok) { quit($MONGO_AUTH_FAILED); }"
 
 # Hex-encode each value on its own line: a MongoDB user name may contain a line

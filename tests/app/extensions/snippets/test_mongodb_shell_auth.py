@@ -26,6 +26,7 @@ stdin carried anything and ``STUB_RC`` otherwise, so a test can stage a failed
 authentication or an unreachable server without a real MongoDB.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -33,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import yaml
 
 from app.extensions.snippets.config import snippets_settings
 from app.extensions.snippets.models.snippet import (
@@ -267,7 +269,12 @@ class MongoHarness:
         return ()
 
     def run(
-        self, filename: str, *args: str, stub_rc: int = 0, stub_rc_auth: int = 0
+        self,
+        filename: str,
+        *args: str,
+        stub_rc: int = 0,
+        stub_rc_auth: int = 0,
+        locale: str = "C",
     ) -> subprocess.CompletedProcess[str]:
         """Run a shipped snippet with the stubs first on ``PATH``.
 
@@ -275,6 +282,7 @@ class MongoHarness:
         :param args: Its options.
         :param stub_rc: What a client call without stdin exits with.
         :param stub_rc_auth: What a client call that received stdin exits with.
+        :param locale: The ``LC_ALL`` the script runs under.
         :return: The completed process.
         """
         return subprocess.run(
@@ -287,7 +295,7 @@ class MongoHarness:
                 "PATH": f"{self.bin_dir}{os.pathsep}{os.environ['PATH']}",
                 "STUB_RC": str(stub_rc),
                 "STUB_RC_AUTH": str(stub_rc_auth),
-                "LC_ALL": "C",
+                "LC_ALL": locale,
             },
             cwd=self.root,
             timeout=60,
@@ -521,7 +529,9 @@ class TestCollectors:
             "admin",
         )
         assert "--authenticationMechanism" not in argv
-        assert calls[0].config == f'password: "{PASSWORD}"\n'
+        assert calls[0].config is not None
+        assert calls[0].config.isascii()
+        assert yaml.safe_load(calls[0].config) == {"password": PASSWORD}
         assert calls[0].stdin == ""
 
     def test_mongostat_line_break_password_uses_scram_sha1(self, harness):
@@ -542,7 +552,36 @@ class TestCollectors:
         argv = calls[0].argv
         mechanism_at = argv.index("--authenticationMechanism")
         assert argv[mechanism_at + 1] == "SCRAM-SHA-1"
-        assert calls[0].config == 'password: "q\\"b\\\\s\\x09t\\x0an\\x0d"\n'
+        assert yaml.safe_load(calls[0].config) == {"password": 'q"b\\s\tt\nn\r'}
+
+    @pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
+    @pytest.mark.parametrize(
+        "password",
+        [
+            f"a{chr(0x2028)}b{chr(0x2029)}c",
+            "c1\u0085\u009fend",
+            'mixed "q" \\ \x01\x7f é€😀 : # end',
+        ],
+        ids=["line-separators", "c1-controls", "mixed"],
+    )
+    def test_mongostat_config_round_trips_password(self, harness, locale, password):
+        """Write a ``--config`` whose YAML decodes back to the exact password."""
+        filename = "mongodb_blocked_writes_check.sh"
+
+        harness.run(
+            filename,
+            *harness.base_args(filename),
+            "--user",
+            USER,
+            "--password",
+            password,
+            locale=locale,
+        )
+
+        calls = harness.calls("mongostat")
+        assert len(calls) == 1
+        assert calls[0].config is not None
+        assert yaml.safe_load(calls[0].config) == {"password": password}
 
     def test_blocked_writes_shell_args_have_no_user(self, harness):
         """Keep ``-u`` off the shell, which would prompt and eat the credentials."""
@@ -585,3 +624,128 @@ class TestCollectors:
 
         assert result.returncode == 0
         assert harness.calls() == []
+
+
+# Evaluate a snippet's own assignments up to the auth prefix, then print it.
+EXTRACT_AUTH_JS = (
+    'eval "$(sed -n "/^MONGO_AUTH_FAILED=/,/^if (!__ok)/p" "$1")"; '
+    'printf "%s" "$MONGO_AUTH_JS"'
+)
+
+# Run the prefix against a mocked shell: ``quit`` throws a marker, ``db.auth``
+# behaves as AUTH_MODE says, and stdin is served by ``require('fs')`` (mongosh)
+# or ``cat()`` (legacy mongo).
+NODE_AUTH_RUNNER = """
+const vm = require('vm');
+const env = process.env;
+const seen = {};
+const modes = {
+    ok: () => ({ ok: 1 }),
+    rejected: () => { throw Object.assign(new Error('Authentication failed.'), { code: 18 }); },
+    legacy_false: () => 0,
+    network: () => { throw Object.assign(new Error('connection reset'), { name: 'MongoNetworkError' }); },
+};
+const context = {
+    quit: (code) => { throw { quit: code }; },
+    db: {
+        getSiblingDB: (name) => ({
+            auth: (user, pwd) => { Object.assign(seen, { name, user, pwd }); return modes[env.AUTH_MODE](); },
+        }),
+    },
+};
+if (env.SHELL_KIND === 'mongosh') {
+    context.require = () => ({ readFileSync: () => env.CREDS });
+} else {
+    context.cat = () => env.CREDS;
+}
+const out = { quit: null, threw: null, seen };
+try {
+    vm.runInNewContext(env.AUTH_JS, context);
+} catch (e) {
+    if (e && 'quit' in e) { out.quit = e.quit; } else { out.threw = e.name; }
+}
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def _encode_credentials(*values: str) -> str:
+    """Return the stdin payload the snippets write: one hex-encoded value per line.
+
+    :param values: The authentication database, user and password.
+    :return: The newline-terminated hex lines.
+    """
+    return "".join(f"{value.encode().hex()}\n" for value in values)
+
+
+def _run_auth_prefix(
+    auth_mode: str, shell_kind: str, credentials: tuple[str, str, str]
+) -> dict[str, object]:
+    """Run the shipped auth prefix under Node against a mocked MongoDB shell.
+
+    :param auth_mode: How the mocked ``db.auth`` answers.
+    :param shell_kind: ``mongosh`` or ``mongo``, selecting how stdin is read.
+    :param credentials: The authentication database, user and password.
+    :return: Whether the prefix quit, and with what code, or what it threw, plus
+        the values ``db.auth`` received.
+    """
+    extracted = subprocess.run(
+        [
+            "bash",
+            "-c",
+            EXTRACT_AUTH_JS,
+            "_",
+            str(snippets_settings.SNIPPETS_DIR / REFERENCE_SNIPPET),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = subprocess.run(
+        ["node", "-e", NODE_AUTH_RUNNER],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "AUTH_JS": extracted.stdout,
+            "AUTH_MODE": auth_mode,
+            "SHELL_KIND": shell_kind,
+            "CREDS": _encode_credentials(*credentials),
+        },
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="requires node")
+class TestAuthPrefix:
+    """Run the JavaScript auth prefix itself, which the stub clients never execute."""
+
+    @pytest.mark.parametrize("shell_kind", ["mongosh", "mongo"])
+    def test_decodes_credentials_exactly(self, shell_kind):
+        """Hand ``db.auth`` the exact values, line breaks included."""
+        credentials = ("ad\nmin", "line\nbreak", "p\r\nw é😀\n")
+
+        out = _run_auth_prefix("ok", shell_kind, credentials)
+
+        assert out["quit"] is None
+        assert out["threw"] is None
+        assert out["seen"] == dict(
+            zip(("name", "user", "pwd"), credentials, strict=True)
+        )
+
+    @pytest.mark.parametrize(
+        ("auth_mode", "shell_kind"),
+        [("rejected", "mongosh"), ("legacy_false", "mongo")],
+    )
+    def test_rejection_quits_with_auth_failed(self, auth_mode, shell_kind):
+        """Exit with the authentication sentinel when the server rejects the pair."""
+        out = _run_auth_prefix(auth_mode, shell_kind, DECODED_CREDENTIALS)
+
+        assert out["quit"] == MONGO_AUTH_FAILED
+
+    def test_connection_error_propagates(self):
+        """Let a non-authentication error escape, so it is not reported as bad credentials."""
+        out = _run_auth_prefix("network", "mongosh", DECODED_CREDENTIALS)
+
+        assert out["quit"] is None
+        assert out["threw"] == "MongoNetworkError"

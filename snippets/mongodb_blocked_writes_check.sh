@@ -196,18 +196,37 @@ fi
 
 # Print a mongostat --config file holding the password as a YAML double-quoted
 # scalar, so the password reaches mongostat whole without touching argv or disk.
+# Every code point is decoded from the UTF-8 bytes and written as an escape, so
+# the file is plain ASCII whatever the locale.
 mongostat_config() {
-    local escaped="" char code i
-    for ((i = 0; i < ${#PASSWORD}; i++)); do
-        char="${PASSWORD:i:1}"
-        case "$char" in
-            \\ | \") escaped+="\\$char" ;;
-            [[:cntrl:]])
-                printf -v code '%02x' "'$char"
-                escaped+="\\x$code"
-                ;;
-            *) escaped+="$char" ;;
-        esac
+    local -a bytes
+    local escaped="" escape code extra i j
+    read -r -a bytes < <(printf '%s' "$PASSWORD" | od -An -tu1 -v | tr '\n' ' ')
+    for ((i = 0; i < ${#bytes[@]}; i++)); do
+        code=${bytes[i]}
+        extra=0
+        if ((code >= 0xf0)); then
+            code=$((code & 0x07))
+            extra=3
+        elif ((code >= 0xe0)); then
+            code=$((code & 0x0f))
+            extra=2
+        elif ((code >= 0xc0)); then
+            code=$((code & 0x1f))
+            extra=1
+        fi
+        for ((j = 0; j < extra && i + 1 < ${#bytes[@]}; j++)); do
+            i=$((i + 1))
+            code=$(((code << 6) | (bytes[i] & 0x3f)))
+        done
+        if ((code < 0x100)); then
+            printf -v escape '\\x%02x' "$code"
+        elif ((code < 0x10000)); then
+            printf -v escape '\\u%04x' "$code"
+        else
+            printf -v escape '\\U%08x' "$code"
+        fi
+        escaped+=$escape
     done
     printf 'password: "%s"\n' "$escaped"
 }
@@ -216,7 +235,8 @@ mongostat_config() {
 # into mongosh, a script runs as a REPL that ignores a failed db.auth().
 MONGO_AUTH_FAILED=3
 MONGO_AUTH_JS="var __creds = (typeof require === 'function' ? require('fs').readFileSync(0, 'utf8') : cat('/dev/stdin')).split('\n'), __ok = false;
-try { var __dec = function (h) { return decodeURIComponent(h.replace(/(..)/g, '%\$1')); }; __ok = db.getSiblingDB(__dec(__creds[0])).auth(__dec(__creds[1]), __dec(__creds[2])); } catch (e) { __ok = false; }
+try { __creds = __creds.slice(0, 3).map(function (h) { return decodeURIComponent(h.replace(/(..)/g, '%\$1')); }); } catch (e) { quit($MONGO_AUTH_FAILED); }
+try { __ok = db.getSiblingDB(__creds[0]).auth(__creds[1], __creds[2]); } catch (e) { if (e.code !== 18) { throw e; } }
 if (!__ok) { quit($MONGO_AUTH_FAILED); }"
 
 # Hex-encode each value on its own line: a MongoDB user name may contain a line
