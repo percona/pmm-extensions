@@ -24,18 +24,16 @@ You need Docker (or Podman) with Compose.
 ```bash
 git clone -b pmm https://github.com/percona/pmm-extensions.git
 cd pmm-extensions/sidecar/pmm-fb
-```
-
-Then choose one:
-
-```bash
-# PMM + PMM Extensions only. Fastest, good for the UI and sign-in.
-docker compose up -d
-
-# Adds the MySQL server with sample data. You need it to test backups.
 ./bootstrap.sh
 docker compose --profile mysql up -d --build
 ```
+
+This starts PMM, PMM Extensions, and a MySQL server preloaded with sample data
+to back up. The first run builds the MySQL image, which takes a few minutes.
+
+Only checking the UI or sign-in? `docker compose up -d` (no `bootstrap.sh`)
+starts just PMM and PMM Extensions. It's faster, but there's no MySQL server,
+so you can't run backups.
 
 Open <https://127.0.0.1:8443>, accept the self-signed certificate, sign in as
 `admin` / `admin` and click **Management** in the sidebar. You don't need a
@@ -43,7 +41,7 @@ second login.
 
 **First start is slow.** PMM takes a couple of minutes, and
 `extensions-sidecar` stays in `Created` until PMM is healthy. That's expected.
-With the MySQL profile, the sample-data import takes a few more minutes. Wait
+The sample-data import then takes a few more minutes. Wait
 for this line before you run a backup:
 
 ```bash
@@ -78,6 +76,10 @@ docker compose --profile mysql down -v   # stop and delete all data
 
 ## If something goes wrong
 
+- **No MySQL server to pick under Database Host.** You probably started
+  without the MySQL server. Run `./bootstrap.sh` and
+  `docker compose --profile mysql up -d --build`. If you did start it, give
+  the inventory sync up to 15 minutes.
 - **Backup fails at "connect".** Check that **Execution Host** is
   `extensions-mysql` and not `pmm-server`. The backup runs on the execution
   host.
