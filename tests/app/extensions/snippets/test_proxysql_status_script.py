@@ -336,12 +336,13 @@ class ProxysqlHarness:
             notice_file.write_text(f"{self.notice}\n", encoding="utf-8")
 
     def run(
-        self, *args: str, env: dict[str, str] | None = None
+        self, *args: str, env: dict[str, str] | None = None, timeout: float = 60
     ) -> subprocess.CompletedProcess[str]:
         """Run the shipped script with the staged config and stub.
 
         :param args: Options passed after ``--defaults-file``.
         :param env: Variables added to the run's environment.
+        :param timeout: Seconds before the run is killed and the test fails.
         :return: The completed process.
         """
         self._write_rules()
@@ -351,7 +352,7 @@ class ProxysqlHarness:
             text=True,
             env={**self._env(), **(env or {})},
             cwd=self.root,
-            timeout=60,
+            timeout=timeout,
             check=False,
         )
 
@@ -876,6 +877,16 @@ def _ignored(key: str, cnf: Path) -> str:
     return f"Ignoring {key} in {cnf}: its value is not a plain string."
 
 
+def _unread(key: str, cnf: Path) -> str:
+    """Return the warning the script prints for a credential set in a form it does not read.
+
+    :param key: The setting's name.
+    :param cnf: The config file.
+    :return: The warning line.
+    """
+    return f"Ignoring {key} in {cnf}: its line is not a plain KEY=value setting."
+
+
 def _warnings(result: subprocess.CompletedProcess[str]) -> list[str]:
     """Return the ignored-credential warnings a run printed.
 
@@ -1040,6 +1051,26 @@ class TestCredentialShapes:
         assert result.returncode == 0, result.stderr
         assert harness.credentials == {**DEFAULT_CLIENT, "user": "admin"}
 
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param("NOTE='PROXYSQL_PASSWORD=x y'", id="single-quoted"),
+            pytest.param('NOTE="see PROXYSQL_PASSWORD=x"', id="double-quoted"),
+            pytest.param("NOTE=a # PROXYSQL_PASSWORD=x", id="comment"),
+            pytest.param("NOTE=a\\ PROXYSQL_PASSWORD=x", id="escaped-space"),
+            pytest.param("echo PROXYSQL_PASSWORD=x", id="command-argument"),
+        ],
+    )
+    def test_mentioned_credential_is_not_a_setting(self, harness, line):
+        """Keep the password when a later line only mentions its setting."""
+        harness.write_cnf(f"PROXYSQL_PASSWORD=kept\n{line}\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == []
+        assert harness.credentials == {**DEFAULT_CLIENT, "password": "kept"}
+
 
 class TestDefaultsWhenAbsent:
     """Fall back to the documented defaults for settings the file does not give."""
@@ -1056,10 +1087,6 @@ class TestDefaultsWhenAbsent:
             pytest.param(
                 "proxysql_password=pw\nPROXYSQL_PORT = 7032\nexport PROXYSQL_HOSTNAME\n",
                 id="not-an-assignment",
-            ),
-            pytest.param(
-                "declare -x PROXYSQL_PASSWORD=pw\nreadonly PROXYSQL_PORT=7032\n",
-                id="other-builtins",
             ),
             pytest.param(
                 "PROXYSQL_USERNAME=''\nPROXYSQL_PASSWORD=\"\"\n"
@@ -1240,6 +1267,69 @@ class TestNonLiteralCredential:
             "port": "7032",
         }
 
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param("A=1 PROXYSQL_PASSWORD=leaked", id="after-an-assignment"),
+            pytest.param("export A=1 PROXYSQL_PASSWORD=leaked", id="export-list"),
+            pytest.param("A='x y' PROXYSQL_PASSWORD=leaked", id="after-a-quoted-word"),
+            pytest.param("PROXYSQL_PASSWORD+=leaked", id="append"),
+            pytest.param("declare -x PROXYSQL_PASSWORD=leaked", id="declare"),
+            pytest.param("readonly PROXYSQL_PASSWORD=leaked", id="readonly"),
+            pytest.param(
+                "NOTE=a\\\nexport PROXYSQL_PASSWORD=leaked", id="continued-line"
+            ),
+        ],
+    )
+    def test_warns_on_unread_assignment(self, harness, line):
+        """Warn about, and reset, a credential the shell would set but the plain form misses."""
+        harness.write_cnf(f"{SHIPPED_CNF}{line}\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == [_unread("PROXYSQL_PASSWORD", harness.admin_cnf)]
+        assert harness.credentials == {**SHIPPED_CLIENT, "password": ""}
+        assert "leaked" not in "\n".join(_warnings(result))
+
+    def test_warns_about_each_credential_on_a_line(self, harness):
+        """Name both credentials of a two-assignment line, each with its own reason."""
+        harness.write_cnf(f"{SHIPPED_CNF}PROXYSQL_PORT=7032 PROXYSQL_PASSWORD=leaked\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == [
+            _ignored("PROXYSQL_PORT", harness.admin_cnf),
+            _unread("PROXYSQL_PASSWORD", harness.admin_cnf),
+        ]
+        assert harness.credentials == {
+            **SHIPPED_CLIENT,
+            "password": "",
+            "port": DEFAULT_CLIENT["port"],
+        }
+
+    def test_multiline_warning_omits_the_value(self, harness):
+        """Leave the spanned value's text out of the warning."""
+        harness.write_cnf(f"{SHIPPED_CNF}PROXYSQL_PASSWORD='first\nlast'\n")
+
+        result = harness.run("--main")
+
+        (warning,) = _warnings(result)
+        assert "first" not in warning
+        assert "last" not in warning
+
+    def test_warning_stays_out_of_the_report_file(self, harness):
+        """Print the warning to the run's output, not into the report file."""
+        harness.write_cnf(f"{SHIPPED_CNF}PROXYSQL_PASSWORD=$X\n")
+
+        result = harness.run("--main", "--output", "file")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == [_ignored("PROXYSQL_PASSWORD", harness.admin_cnf)]
+        (report,) = harness.root.glob("proxysql_status_*.log")
+        assert "Ignoring " not in report.read_text(encoding="utf-8")
+
 
 class TestUnreadableDefaultsFile:
     """Stop before any query when the config file cannot be read as a file."""
@@ -1272,3 +1362,28 @@ class TestUnreadableDefaultsFile:
         harness.admin_cnf.mkdir()
 
         self._assert_refused(harness, harness.run())
+
+    def test_symlink_to_directory(self, harness):
+        """Refuse a link that resolves to a directory."""
+        target = harness.root / "cnf-dir"
+        target.mkdir()
+        harness.admin_cnf.unlink()
+        harness.admin_cnf.symlink_to(target)
+
+        self._assert_refused(harness, harness.run())
+
+
+class TestLargeDefaultsFile:
+    """Read a big config file well within the run's time limit."""
+
+    def test_reads_credentials_after_many_lines(self, harness):
+        """Find the credentials below thousands of lines that need a quote scan."""
+        filler = "# don't edit\nexport NOTE='it''s' \"a \\\"b\\\"\" c\\ d\n" * 10_000
+        harness.write_cnf(filler + ADMIN_CNF)
+
+        # A fork per line, as an earlier parser did, overruns this budget.
+        result = harness.run("--main", timeout=20)
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == []
+        assert harness.credentials == ADMIN_CLIENT
