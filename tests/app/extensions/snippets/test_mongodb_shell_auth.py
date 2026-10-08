@@ -534,7 +534,21 @@ class TestCollectors:
         assert yaml.safe_load(calls[0].config) == {"password": PASSWORD}
         assert calls[0].stdin == ""
 
-    def test_mongostat_line_break_password_uses_scram_sha1(self, harness):
+    @pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
+    @pytest.mark.parametrize(
+        "password",
+        [
+            'q"b\\s\tt\nn\r',
+            "tab\there",
+            "soh\x01del\x7f",
+            "c1\u0085end",
+            f"a{chr(0x2028)}b",
+        ],
+        ids=["line-breaks", "tab", "c0-and-del", "c1", "line-separator"],
+    )
+    def test_mongostat_control_character_password_uses_scram_sha1(
+        self, harness, locale, password
+    ):
         """Escape the password for YAML and pick the only mechanism that can hold it."""
         filename = "mongodb_blocked_writes_check.sh"
 
@@ -544,7 +558,8 @@ class TestCollectors:
             "--user",
             USER,
             "--password",
-            'q"b\\s\tt\nn\r',
+            password,
+            locale=locale,
         )
 
         calls = harness.calls("mongostat")
@@ -552,7 +567,28 @@ class TestCollectors:
         argv = calls[0].argv
         mechanism_at = argv.index("--authenticationMechanism")
         assert argv[mechanism_at + 1] == "SCRAM-SHA-1"
-        assert yaml.safe_load(calls[0].config) == {"password": 'q"b\\s\tt\nn\r'}
+        assert yaml.safe_load(calls[0].config) == {"password": password}
+
+    @pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
+    def test_mongostat_printable_unicode_password_keeps_default_mechanism(
+        self, harness, locale
+    ):
+        """Leave a password SASLprep accepts on the default mechanism."""
+        filename = "mongodb_blocked_writes_check.sh"
+
+        harness.run(
+            filename,
+            *harness.base_args(filename),
+            "--user",
+            USER,
+            "--password",
+            f"é€😀{chr(0xA0)}—",
+            locale=locale,
+        )
+
+        calls = harness.calls("mongostat")
+        assert len(calls) == 1
+        assert "--authenticationMechanism" not in calls[0].argv
 
     @pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
     @pytest.mark.parametrize(

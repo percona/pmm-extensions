@@ -185,11 +185,22 @@ fi
 MONGO_ARGS=(--port "$PORT")
 MONGO_ENDPOINT="localhost:$PORT"
 MONGOSTAT_ARGS=(--port "$PORT")
+
+# Match C0 controls and DEL, C1 controls (U+0080-U+009F) and the line and
+# paragraph separators (U+2028, U+2029) byte by byte, whatever the locale.
+password_has_control_character() {
+    local LC_ALL=C
+    [[ $PASSWORD == *[[:cntrl:]]* ||
+        $PASSWORD == *$'\xc2'[$'\x80'-$'\x9f']* ||
+        $PASSWORD == *$'\xe2\x80'[$'\xa8\xa9']* ]]
+}
+
 if [ -n "$USER" ]; then
     MONGOSTAT_ARGS+=(-u "$USER" --authenticationDatabase "$AUTH_DB")
-    # The tools' driver SASLpreps the password under the default mechanism and
-    # rejects a line break, which only a SCRAM-SHA-1 credential can hold.
-    if [[ $PASSWORD == *[$'\n\r']* ]]; then
+    # The tools' driver SASLpreps the password under the default mechanism even
+    # before negotiating one, and SASLprep rejects every control character; only
+    # a SCRAM-SHA-1 credential can hold one.
+    if password_has_control_character; then
         MONGOSTAT_ARGS+=(--authenticationMechanism SCRAM-SHA-1)
     fi
 fi
@@ -201,7 +212,7 @@ fi
 mongostat_config() {
     local -a bytes
     local escaped="" escape code extra i j
-    read -r -a bytes < <(printf '%s' "$PASSWORD" | od -An -tu1 -v | tr '\n' ' ')
+    read -r -a bytes < <(printf '%s' "$PASSWORD" | od -An -tu1 -v | tr '\n' ' ') || true
     for ((i = 0; i < ${#bytes[@]}; i++)); do
         code=${bytes[i]}
         extra=0
