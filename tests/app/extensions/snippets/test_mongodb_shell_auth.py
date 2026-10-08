@@ -146,9 +146,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ShellCall:
-    """One logged invocation of a stub client.
+    """Hold one logged invocation of a stub client.
 
     :param program: The stub's name, ``mongosh`` or ``mongostat``.
     :param argv: The arguments it was called with.
@@ -352,6 +352,7 @@ class TestCredentialTransport:
         harness.run(filename, *harness.base_args(filename), *CREDENTIALS)
 
         calls = harness.calls()
+        assert calls
         assert len(calls) > 1
         assert all(call.stdin == CREDENTIALS_STDIN for call in calls)
         assert all("--eval" in call.argv for call in calls)
@@ -483,7 +484,7 @@ class TestCollectors:
         assert all("-u" not in call.argv for call in calls)
 
     def test_query_tuning_archives_after_failed_explain(self, harness):
-        """Still write the archive when a shell call fails under ``set -e``."""
+        """Write the archive even when a shell call fails under ``set -e``."""
         filename = "mongodb_query_tuning.sh"
 
         result = harness.run(
