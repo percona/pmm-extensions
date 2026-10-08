@@ -7158,8 +7158,8 @@ class TestStreamDirectoryAsTarGz:
 
         directory_mode = 0o755
         file_mode = 0o644
-        assert members["mydir/"].mode & 0o777 == directory_mode
-        assert members["mydir/nested/"].mode & 0o777 == directory_mode
+        assert members["mydir"].mode & 0o777 == directory_mode
+        assert members["mydir/nested"].mode & 0o777 == directory_mode
         assert members["mydir/nested/file.txt"].mode & 0o777 == file_mode
 
 
