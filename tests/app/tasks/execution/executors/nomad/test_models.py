@@ -16,9 +16,11 @@
 """Define tests for the app.tasks.execution.executors.nomad.models module."""
 
 import asyncio
+import io
 import json
 import logging
 import re
+import tarfile
 import threading
 import time
 from base64 import b64encode
@@ -7113,6 +7115,52 @@ class TestStreamFile:
 
         assert tar_gz.call_args.kwargs is not None
         assert tar_gz.call_args.kwargs["anonymize"] is False
+
+
+class TestStreamDirectoryAsTarGz:
+    """Test NomadExecutor._stream_directory_as_tar_gz."""
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_directory_entries_have_executable_mode(self, mock_nomad_cls):
+        """Assert root and nested directories extract with mode 0o755."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        queue_item = _build_queue_item()
+        file_content = b"hello world"
+
+        async def fake_entries(*_args, **_kwargs):
+            yield "/output/mydir/nested", "mydir/nested/", True, 0
+            yield (
+                "/output/mydir/nested/file.txt",
+                "mydir/nested/file.txt",
+                False,
+                len(file_content),
+            )
+
+        with (
+            patch.object(executor, "_iter_directory_entries", side_effect=fake_entries),
+            patch.object(
+                executor, "_read_file_bytes", AsyncMock(return_value=file_content)
+            ),
+        ):
+            archive_bytes = b"".join(
+                [
+                    chunk
+                    async for chunk in executor._stream_directory_as_tar_gz(
+                        queue_item, "alloc-1", "/output/mydir"
+                    )
+                ]
+            )
+
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz") as tar:
+            members = {member.name: member for member in tar}
+
+        directory_mode = 0o755
+        file_mode = 0o644
+        assert members["mydir/"].mode & 0o777 == directory_mode
+        assert members["mydir/nested/"].mode & 0o777 == directory_mode
+        assert members["mydir/nested/file.txt"].mode & 0o777 == file_mode
 
 
 class TestReadFileBytes:
