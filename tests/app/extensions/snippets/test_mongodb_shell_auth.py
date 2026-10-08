@@ -450,6 +450,18 @@ class TestUnauthenticatedInvocation:
             assert "__creds" not in script
             assert call.stdin == ""
 
+    @pytest.mark.parametrize("filename", ALL_MONGO_SHELL_SNIPPETS)
+    def test_no_credentials_script_stays_on_eval(self, harness, filename):
+        """Pass the script on ``--eval`` and nothing on stdin, so no REPL runs."""
+        harness.run(filename, *harness.base_args(filename))
+
+        calls = harness.calls()
+        assert calls
+        for call in calls:
+            assert call.argv[-2] == "--eval"
+            assert "__creds" not in call.argv[-1]
+            assert call.stdin == ""
+
 
 class TestCollectors:
     """Pin the collector-specific behaviour around the shared client call."""
