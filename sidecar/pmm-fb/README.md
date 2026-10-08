@@ -19,7 +19,9 @@ MySQL server preloaded with sample data, so you have something to back up.
 
 ## Quick start
 
-You need Docker (or Podman) with Compose.
+You need Docker or Podman with Compose. With Podman, replace each `docker compose`
+command below with `podman compose`; rootless Podman may also require the workaround
+in [DEVELOPING.md § Caveats](DEVELOPING.md#caveats).
 
 ```bash
 git clone -b pmm https://github.com/percona/pmm-extensions.git
