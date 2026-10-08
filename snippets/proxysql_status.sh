@@ -295,8 +295,10 @@ function print_redacted_cnf() (
     local bare=$'[^[:space:]\'"\\\\$`;&|<>()]*'
     local plain_value="^(${single_quoted}|${double_quoted}|${bare})([[:space:]]+#.*)?[[:space:]]*\$"
     local empty_value="^(''|\"\")?\$"
-    local secret_key='PASS|PWD|SECRET|TOKEN|KEY|AUTH|CRED'
-    local url_credentials='://[^/@[:space:]]*:[^/@[:space:]]*@'
+    local secret_key='PASS|PW|SECRET|TOKEN|KEY|AUTH|CRED'
+    # A password may hold "/" or a space, and a DSN such as
+    # "user:pass@tcp(host)" has no scheme, so any "user:...@" counts.
+    local url_credentials='[^[:space:]@:/]+:[^@]*@'
     local credential_text="(${secret_key})[A-Za-z0-9_]*(\\[[^]]*])?[[:space:]]*\\+?=|${url_credentials}"
     local comment='^([[:space:]]*#+[[:space:]]*)(.*)$'
     local comment_lead export_lead key value token trailing shown
@@ -335,7 +337,7 @@ function print_redacted_cnf() (
             trailing=${BASH_REMATCH[2]}
             # A credential's trailing comment is dropped, since it may note
             # the old value.
-            if [[ $key =~ $secret_key || $token =~ $url_credentials ]]; then
+            if [[ $key =~ $secret_key || $token =~ $credential_text ]]; then
                 [[ $token =~ $empty_value ]] || token="[REDACTED]"
                 shown="${comment_lead}${export_lead}${key}=${token}"
             elif [[ ! $trailing =~ $credential_text ]]; then
