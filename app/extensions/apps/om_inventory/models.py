@@ -489,7 +489,7 @@ class ProbeRunFailingNode(BaseModel):
     """
 
     node_id: str
-    name: str | None = None
+    name: str
 
 
 class ProbeRunResponse(BaseModel):

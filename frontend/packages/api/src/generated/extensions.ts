@@ -11235,7 +11235,7 @@ export interface components {
      */
     om_inventory__ProbeRunFailingNode: {
       /** Name */
-      name?: string | null;
+      name: string;
       /** Node Id */
       node_id: string;
     };

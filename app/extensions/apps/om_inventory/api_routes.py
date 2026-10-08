@@ -225,12 +225,12 @@ def _failing_nodes(nodes: list[dict] | None) -> list[ProbeRunFailingNode]:
     :return: The failing nodes.
     """
     failing = [
-        ProbeRunFailingNode(node_id=node["node_id"], name=node.get("host_name"))
+        ProbeRunFailingNode(node_id=node["node_id"], name=node["host_name"])
         for node in nodes or []
         if node.get("error")
         or any(service.get("error") for service in node.get("services") or [])
     ]
-    return sorted(failing, key=lambda node: (node.name or "", node.node_id))
+    return sorted(failing, key=lambda node: (node.name, node.node_id))
 
 
 def _run_response(run: ProbeRun) -> ProbeRunResponse:

@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Test ``GET /runs`` date-range filtering.
+"""Test ``GET /runs`` date-range filtering, and the failing nodes each run names.
 
 The window is applied before ``limit``: a week of twenty-one runs is twenty-one
 runs, not the twenty newest overall with the older-than-a-week ones dropped. That
@@ -22,6 +22,7 @@ page.
 """
 
 from datetime import datetime, timedelta, UTC
+from typing import Any
 
 import pytest
 from fastapi import status
@@ -29,7 +30,13 @@ from httpx import AsyncClient
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.extensions.apps.om_inventory.crud import ProbeRunManager
-from app.extensions.apps.om_inventory.models import ProbeRun, ProbeRunStatus
+from app.extensions.apps.om_inventory.models import (
+    NodeResolution,
+    ProbeNode,
+    ProbeNodeService,
+    ProbeRun,
+    ProbeRunStatus,
+)
 from tests.app.extensions.apps.om_inventory.conftest import BASE
 
 #: Three stamps, a day apart, so a window can include the middle one and exclude
@@ -137,29 +144,39 @@ class TestRunsListDateRangeFilter:
 
 
 def receipt_node(
-    node_id: str, name: str, error: str | None = None, service_error: str | None = None
-) -> dict:
-    """One host as a run's receipt records it.
+    node_id: str,
+    name: str,
+    *,
+    error: str | None = None,
+    service_error: str | None = None,
+    has_agent: bool = True,
+) -> dict[str, Any]:
+    """Build one host's receipt entry, dumped to JSON as a run row stores it.
 
     :param node_id: PMM's node id.
     :param name: The node's name.
     :param error: The host's own failure, if any.
     :param service_error: A failure on its one service, if any.
+    :param has_agent: Whether an automation agent serves the host. Without one
+        nothing is dispatched, so neither the host nor its service answers.
     :return: The receipt entry.
     """
-    return {
-        "node_id": node_id,
-        "host_name": name,
-        "answered": error is None,
-        "error": error,
-        "services": [
-            {
-                "service_id": f"{node_id}-svc",
-                "answered": service_error is None,
-                "error": service_error,
-            }
+    return ProbeNode(
+        node_id=node_id,
+        host_name=name,
+        executor_host=name if has_agent else None,
+        resolution=NodeResolution.NAME if has_agent else NodeResolution.ORPHANED,
+        answered=has_agent and error is None,
+        error=error,
+        services=[
+            ProbeNodeService(
+                service_id=f"{node_id}-svc",
+                service_name=f"{name}-mongodb",
+                answered=has_agent and service_error is None,
+                error=service_error,
+            )
         ],
-    }
+    ).model_dump(mode="json")
 
 
 class TestRunsListFailingNodes:
@@ -184,6 +201,25 @@ class TestRunsListFailingNodes:
         assert response.json()[0]["failing_nodes"] == [
             {"node_id": "n-2", "name": "node02"},
             {"node_id": "n-3", "name": "node03"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_node_with_no_automation_agent_is_not_named(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Leave out a node nothing was dispatched to, beside one that did fail."""
+        run = await record_run(session, T0)
+        run.nodes = [
+            receipt_node("n-1", "node01", has_agent=False),
+            receipt_node("n-2", "node02", error="the scan did not finish within 180s"),
+        ]
+        await ProbeRunManager.save(session, run)
+
+        response = await api.get(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()[0]["failing_nodes"] == [
+            {"node_id": "n-2", "name": "node02"}
         ]
 
     @pytest.mark.asyncio

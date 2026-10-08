@@ -14132,15 +14132,8 @@
         "description": "Name one node a sweep failed to scan.\n\n:param node_id: PMM's node id.\n:param name: The node's name, which is what the Nodes page is addressed by.",
         "properties": {
           "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Name"
+            "title": "Name",
+            "type": "string"
           },
           "node_id": {
             "title": "Node Id",
@@ -14148,7 +14141,8 @@
           }
         },
         "required": [
-          "node_id"
+          "node_id",
+          "name"
         ],
         "title": "ProbeRunFailingNode",
         "type": "object"
