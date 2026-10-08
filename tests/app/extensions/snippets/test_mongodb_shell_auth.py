@@ -677,6 +677,27 @@ def _encode_credentials(*values: str) -> str:
     return "".join(f"{value.encode().hex()}\n" for value in values)
 
 
+def _extract_auth_prefix(filename: str) -> str:
+    """Return the JavaScript auth prefix a snippet builds into ``MONGO_AUTH_JS``.
+
+    :param filename: The snippet's file name inside the snippets directory.
+    :return: The prefix text, as the snippet's own assignments produce it.
+    """
+    extracted = subprocess.run(
+        [
+            "bash",
+            "-c",
+            EXTRACT_AUTH_JS,
+            "_",
+            str(snippets_settings.SNIPPETS_DIR / filename),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return extracted.stdout
+
+
 def _run_auth_prefix(
     auth_mode: str, shell_kind: str, credentials: tuple[str, str, str]
 ) -> dict[str, object]:
@@ -688,25 +709,13 @@ def _run_auth_prefix(
     :return: Whether the prefix quit, and with what code, or what it threw, plus
         the values ``db.auth`` received.
     """
-    extracted = subprocess.run(
-        [
-            "bash",
-            "-c",
-            EXTRACT_AUTH_JS,
-            "_",
-            str(snippets_settings.SNIPPETS_DIR / REFERENCE_SNIPPET),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
     result = subprocess.run(
         ["node", "-e", NODE_AUTH_RUNNER],
         capture_output=True,
         text=True,
         env={
             **os.environ,
-            "AUTH_JS": extracted.stdout,
+            "AUTH_JS": _extract_auth_prefix(REFERENCE_SNIPPET),
             "AUTH_MODE": auth_mode,
             "SHELL_KIND": shell_kind,
             "CREDS": _encode_credentials(*credentials),
@@ -749,3 +758,15 @@ class TestAuthPrefix:
 
         assert out["quit"] is None
         assert out["threw"] == "MongoNetworkError"
+
+
+class TestAuthPrefixCopies:
+    """Tie every snippet's copied auth prefix to the one executed above."""
+
+    @pytest.mark.parametrize("filename", ALL_MONGO_SHELL_SNIPPETS)
+    def test_prefix_matches_reference(self, filename):
+        """Carry the same non-empty auth prefix as the reference snippet."""
+        prefix = _extract_auth_prefix(filename)
+
+        assert prefix
+        assert prefix == _extract_auth_prefix(REFERENCE_SNIPPET)
