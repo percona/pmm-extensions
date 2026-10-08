@@ -71,6 +71,7 @@ from app.tasks.execution.executors.nomad.models import (
     _alloc_step_state,
     _alloc_task_states,
     _ANONYMIZED_STEPS,
+    _ARCHIVE_DIRECTORY_MODE,
     _CAPTURE_HOLD_RELEASE_INTERVAL_SECONDS,
     _CAPTURE_HOLD_RELEASE_MAX_ATTEMPTS,
     _capture_hold_step_state,
@@ -7128,6 +7129,7 @@ class TestStreamDirectoryAsTarGz:
         executor = _build_executor()
         queue_item = _build_queue_item()
         file_content = b"hello world"
+        default_file_mode = tarfile.TarInfo().mode & 0o777
 
         async def fake_entries(*_args, **_kwargs):
             yield "/output/mydir/nested", "mydir/nested/", True, 0
@@ -7156,11 +7158,81 @@ class TestStreamDirectoryAsTarGz:
         with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz") as tar:
             members = {member.name: member for member in tar}
 
-        directory_mode = 0o755
-        file_mode = 0o644
-        assert members["mydir"].mode & 0o777 == directory_mode
-        assert members["mydir/nested"].mode & 0o777 == directory_mode
-        assert members["mydir/nested/file.txt"].mode & 0o777 == file_mode
+        assert members["mydir"].mode & 0o777 == _ARCHIVE_DIRECTORY_MODE
+        assert members["mydir/nested"].mode & 0o777 == _ARCHIVE_DIRECTORY_MODE
+        assert members["mydir/nested/file.txt"].mode & 0o777 == default_file_mode
+        assert members["mydir"].mtime > 0
+        assert members["mydir/nested"].mtime > 0
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_root_only_directory_archive(self, mock_nomad_cls):
+        """Assert an empty directory archive still carries a traversable root."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        queue_item = _build_queue_item()
+
+        async def fake_entries(*_args, **_kwargs):
+            for _entry in ():
+                yield _entry
+
+        with patch.object(
+            executor, "_iter_directory_entries", side_effect=fake_entries
+        ):
+            archive_bytes = b"".join(
+                [
+                    chunk
+                    async for chunk in executor._stream_directory_as_tar_gz(
+                        queue_item, "alloc-1", "/output/mydir"
+                    )
+                ]
+            )
+
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz") as tar:
+            members = {member.name: member for member in tar}
+
+        assert list(members) == ["mydir"]
+        assert members["mydir"].isdir()
+        assert members["mydir"].mode & 0o777 == _ARCHIVE_DIRECTORY_MODE
+        assert members["mydir"].mtime > 0
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_skips_entry_when_read_file_bytes_raises(self, mock_nomad_cls):
+        """Assert a failed file read is skipped and later entries are still archived."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        queue_item = _build_queue_item()
+        good_content = b"kept"
+
+        async def fake_entries(*_args, **_kwargs):
+            yield "/output/mydir/bad.txt", "mydir/bad.txt", False, 3
+            yield "/output/mydir/good.txt", "mydir/good.txt", False, len(good_content)
+
+        async def fake_read(_queue_item, _alloc_id, path, *_args, **_kwargs):
+            if path.endswith("bad.txt"):
+                raise OSError("read failed")
+            return good_content
+
+        with (
+            patch.object(executor, "_iter_directory_entries", side_effect=fake_entries),
+            patch.object(executor, "_read_file_bytes", side_effect=fake_read),
+        ):
+            archive_bytes = b"".join(
+                [
+                    chunk
+                    async for chunk in executor._stream_directory_as_tar_gz(
+                        queue_item, "alloc-1", "/output/mydir"
+                    )
+                ]
+            )
+
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz") as tar:
+            members = {member.name: member for member in tar}
+
+        assert "mydir/bad.txt" not in members
+        assert "mydir/good.txt" in members
+        assert members["mydir"].mode & 0o777 == _ARCHIVE_DIRECTORY_MODE
 
 
 class TestReadFileBytes:
