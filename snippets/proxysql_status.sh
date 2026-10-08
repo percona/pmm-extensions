@@ -197,6 +197,177 @@ function mysql_stdout() {
     return $retvalue
 }
 
+#
+# Print a config value as the literal string a shell assignment gives it
+#
+# Return 1, printing nothing, for a value that only shell evaluation could
+# complete or that goes on past the end of its line.
+#
+# Arguments:
+#   1: the text after the "="
+#
+function cnf_unquote() {
+    local raw=$1
+    local value=""
+    local rest=""
+    local char
+    local closed=0
+    local i
+
+    case ${raw:0:1} in
+        "'")
+            [[ $raw =~ ^\'([^\']*)\'(.*)$ ]] || return 1
+            value=${BASH_REMATCH[1]}
+            rest=${BASH_REMATCH[2]}
+            ;;
+        '"')
+            for ((i = 1; i < ${#raw}; i++)); do
+                char=${raw:i:1}
+                if [[ $char == $'\\' ]]; then
+                    char=${raw:i+1:1}
+                    [[ $char == [\"\\\$\`] ]] || value+=$'\\'
+                    value+=$char
+                    ((i++))
+                elif [[ $char == '"' ]]; then
+                    closed=1
+                    rest=${raw:i+1}
+                    break
+                elif [[ $char == [\$\`] ]]; then
+                    return 1
+                else
+                    value+=$char
+                fi
+            done
+            ((closed)) || return 1
+            ;;
+        *)
+            [[ ${raw:0:1} == '~' ]] && return 1
+            for ((i = 0; i < ${#raw}; i++)); do
+                char=${raw:i:1}
+                if [[ $char == [[:space:]] ]]; then
+                    rest=${raw:i}
+                    break
+                elif [[ $char == $'\\' ]]; then
+                    ((i == ${#raw} - 1)) && return 1
+                    value+=${raw:i+1:1}
+                    ((i++))
+                elif [[ $char == [\$\`\'\"\;\&\|\<\>\(\)] ]]; then
+                    return 1
+                else
+                    value+=$char
+                fi
+            done
+            ;;
+    esac
+    [[ $rest =~ ^([[:space:]]+#.*|[[:space:]]*)$ ]] || return 1
+    printf '%s' "$value"
+}
+
+#
+# Print what a config line leaves open for the lines after it: the quote it
+# opened, a backslash when it ends in a line continuation, or nothing
+#
+# Arguments:
+#   1: the line
+#   2: what the line before it left open, if anything
+#
+function cnf_open_quote() {
+    local line=$1
+    local open=${2:-}
+    local word_start=1
+    local char
+    local i
+
+    if [[ $open == $'\\' ]]; then
+        open=""
+        word_start=0
+    fi
+    for ((i = 0; i < ${#line}; i++)); do
+        char=${line:i:1}
+        case $open in
+            "'")
+                [[ $char == "'" ]] && open=""
+                ;;
+            '"')
+                if [[ $char == $'\\' ]]; then
+                    ((i++))
+                elif [[ $char == '"' ]]; then
+                    open=""
+                fi
+                ;;
+            *)
+                if [[ $char == $'\\' ]]; then
+                    ((i == ${#line} - 1)) && open=$char
+                    ((i++))
+                elif [[ $char == [\'\"] ]]; then
+                    open=$char
+                elif [[ $char == '#' ]] && ((word_start)); then
+                    break
+                fi
+                if [[ $char == [[:space:]\;\&\|\(\)] ]]; then
+                    word_start=1
+                else
+                    word_start=0
+                fi
+                ;;
+        esac
+    done
+    printf '%s' "$open"
+}
+
+#
+# Set the ProxySQL admin credentials from a proxysql-admin.cnf style file
+#
+# The file is read as KEY=value text and never run: --defaults-file can name
+# any readable file, and running it would execute whatever it holds with the
+# snippet's privileges. A setting the file lacks takes its default, never a
+# same-named environment variable, so the file alone decides.
+#
+# Globals:
+#   USER
+#   PASSWORD
+#   HOST
+#   PORT
+# Arguments:
+#   1: the config file
+#
+function load_credentials() {
+    local cnf=$1
+    local assignment='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
+    local line key value status
+    local open=""
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%$'\r'}
+        # A line that continues a value from an earlier one belongs to that
+        # value, however much it looks like a setting of its own.
+        if [[ -n $open ]]; then
+            open=$(cnf_open_quote "$line" "$open")
+            continue
+        fi
+        open=$(cnf_open_quote "$line")
+        [[ $line =~ $assignment ]] || continue
+        key=${BASH_REMATCH[2]}
+        value=$(cnf_unquote "${BASH_REMATCH[3]}")
+        status=$?
+
+        # A rejected value still overrides an earlier one, as the last
+        # assignment does under the shell, and so falls back to the default.
+        case $key in
+            PROXYSQL_USERNAME) USER=$value ;;
+            PROXYSQL_PASSWORD) PASSWORD=$value ;;
+            PROXYSQL_HOSTNAME) HOST=$value ;;
+            PROXYSQL_PORT) PORT=$value ;;
+            *) continue ;;
+        esac
+        # Never the value: it may be the password.
+        ((status == 0)) || echo "Ignoring ${key} in ${cnf}: its value is not a plain string."
+    done < "$cnf"
+
+    HOST=${HOST:-127.0.0.1}
+    PORT=${PORT:-6032}
+}
+
 function parse_args() {
     local go_out=""
 
@@ -274,18 +445,12 @@ function parse_args() {
         esac
     done
 
-    if [[ ! -r $DEFAULTS_FILE ]]; then
+    if [[ ! -r $DEFAULTS_FILE || -d $DEFAULTS_FILE ]]; then
         echo "Cannot find or read the config file (check --defaults-file): $DEFAULTS_FILE."
         exit 1
     fi
 
-    # Load credentials from config file
-    # shellcheck disable=SC1090
-    source "$DEFAULTS_FILE"
-    USER=${PROXYSQL_USERNAME:-}
-    PASSWORD=${PROXYSQL_PASSWORD:-}
-    HOST=${PROXYSQL_HOSTNAME:-127.0.0.1}
-    PORT=${PROXYSQL_PORT:-6032}
+    load_credentials "$DEFAULTS_FILE"
 
     # Validate output mode
     if [[ $OUTPUT_MODE != "stdout" && $OUTPUT_MODE != "file" ]]; then
