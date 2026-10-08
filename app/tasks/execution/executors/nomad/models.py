@@ -3636,6 +3636,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 with tarfile.open(mode="w|gz", fileobj=writer) as tar:
                     root_info = tarfile.TarInfo(name=f"{root_name}/")
                     root_info.type = tarfile.DIRTYPE
+                    root_info.mode = 0o755
                     tar.addfile(root_info)
                     async for (
                         abs_path,
@@ -3648,6 +3649,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                             tarinfo.mtime = int(utc_now().timestamp())
                             if is_dir:
                                 tarinfo.type = tarfile.DIRTYPE
+                                tarinfo.mode = 0o755
                                 tar.addfile(tarinfo)
                                 continue
                             file_bytes = await self._read_file_bytes(
