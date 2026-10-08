@@ -615,8 +615,7 @@ def encrypt_dir(path: str, logger: "logging.Logger | None" = None, **cfg: Any) -
     :raises BackupError: If encryption fails or verification fails.
     """
     if logger:
-        logger.info("Encrypting backup...")
-        logger.info("Running on: %s", path)
+        logger.info("Encrypting %s", path)
 
     dir_encrypt = DirectoryEncryptor(cfg_path=DIR_ENCRYPT_CFG_PATH, **cfg)
     if not dir_encrypt.encrypt_dir(encr_dir=Path(path)):
@@ -1993,11 +1992,11 @@ class Xtrabackup(Backup):
         # Encrypt backup w/o upload as a separate option.
         # No hardlinking or rsync upload to avoid the mess.
         if self.enc_gpg and self.post_run_encrypt:
-            self.logger.info('Post-run backup encryption is enabled.')
+            self.logger.info('Post-run encryption enabled.')
             if self.enc_aes:
-                self.logger.info('Backup used PXB built-in encryption.')
+                self.logger.info('PXB built-in encryption.')
             else:
-                encrypt_dir(self.last_backup_dir, self.logger)
+                encrypt_dir(self.last_backup_dir, self.logger, **self.dir_encrypt_config)
         # Try to save some disk space
         elif self.hardlink and self.max_copies > 1:
             self._save_disk_space()
@@ -2689,9 +2688,8 @@ class Xtrabackup(Backup):
         weekly - a full backup runs once a week on Monday.
         1..7 - also weekly cycle but a full backup runs once a week on the specified day Monday-Sunday.
         """
-        # Built, not spelled out: the 9-member literal measures 16,385 bytes after
-        # minify + gzip, one byte over the 16 KiB Nomad dispatch limit. This form
-        # measures 16,375. Re-check with scripts/check_nomad_payload_size.py.
+        # Built, not spelled out: the 9-member literal blows the 16 KiB Nomad
+        # minify + gzip budget. Re-check with scripts/check_nomad_payload_size.py.
         cycles = ['daily', 'weekly'] + list('1234567')
         if cycle not in cycles:
             msg = 'Invalid XTRABACKUP_INCREMENTAL_CYCLE setting: %s. Should be one of : %s.' % (cycle, cycles)
