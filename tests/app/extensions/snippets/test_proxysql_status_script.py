@@ -925,6 +925,16 @@ class TestCredentialShapes:
             ),
             pytest.param("PROXYSQL_PASSWORD=p*w?[x]", "p*w?[x]", id="glob-characters"),
             pytest.param("PROXYSQL_PASSWORD=pässwörd", "pässwörd", id="non-ascii"),
+            pytest.param("PROXYSQL_PASSWORD=pa~:w", "pa~:w", id="tilde-mid-word"),
+            pytest.param(
+                r"PROXYSQL_PASSWORD=pa\:~", "pa:~", id="tilde-after-escaped-colon"
+            ),
+            pytest.param(
+                r"PROXYSQL_PASSWORD=pa:\~", "pa:~", id="escaped-tilde-after-colon"
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD='pa:~'", "pa:~", id="tilde-after-quoted-colon"
+            ),
         ],
     )
     def test_reads_value_shape(self, harness, line, password):
@@ -1168,6 +1178,8 @@ class TestNonLiteralCredential:
             pytest.param("PROXYSQL_PASSWORD=\"a\"'b'", id="concatenated-quotes"),
             pytest.param("PROXYSQL_PASSWORD=a b", id="second-word"),
             pytest.param("PROXYSQL_PASSWORD=~admin", id="tilde"),
+            pytest.param("PROXYSQL_PASSWORD=pa:~", id="tilde-after-colon"),
+            pytest.param("PROXYSQL_PASSWORD=pa::~/x", id="tilde-after-colons"),
             pytest.param("PROXYSQL_HOSTNAME=$HOSTNAME", id="hostname"),
             pytest.param("PROXYSQL_PORT=$((6000 + 32))", id="arithmetic"),
             pytest.param("PROXYSQL_USERNAME=adm'in'", id="quote-mid-word"),

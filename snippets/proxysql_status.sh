@@ -212,6 +212,7 @@ function cnf_unquote() {
     local rest=""
     local char
     local closed=0
+    local prev
     local i
 
     case ${raw:0:1} in
@@ -241,7 +242,9 @@ function cnf_unquote() {
             ((closed)) || return 1
             ;;
         *)
-            [[ ${raw:0:1} == '~' ]] && return 1
+            # The shell expands a tilde that starts an assignment value or
+            # follows an unquoted colon in it.
+            prev=":"
             for ((i = 0; i < ${#raw}; i++)); do
                 char=${raw:i:1}
                 if [[ $char == [[:space:]] ]]; then
@@ -250,11 +253,13 @@ function cnf_unquote() {
                 elif [[ $char == $'\\' ]]; then
                     ((i == ${#raw} - 1)) && return 1
                     value+=${raw:i+1:1}
+                    prev=""
                     ((i++))
-                elif [[ $char == [\$\`\'\"\;\&\|\<\>\(\)] ]]; then
+                elif [[ $char == [\$\`\'\"\;\&\|\<\>\(\)] || ($char == '~' && $prev == ':') ]]; then
                     return 1
                 else
                     value+=$char
+                    prev=$char
                 fi
             done
             ;;
