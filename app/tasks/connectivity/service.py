@@ -207,7 +207,7 @@ async def check_connectivity(
             break
         await asyncio.sleep(POLL_INTERVAL)
         async with async_session() as writer_session:
-            queue_item = await executor.sync_task_history(
+            queue_item, _pending_event = await executor.sync_task_history(
                 queue_item, writer_session=writer_session
             )
         await TaskHistoryManager.save(
