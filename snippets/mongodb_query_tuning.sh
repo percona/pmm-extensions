@@ -20,12 +20,12 @@
 #  - name: user
 #    type: str
 #    label: MongoDB user
-#    description: Username for MongoDB authentication. Leave empty if auth is disabled.
+#    description: Username for MongoDB authentication. Provide together with the password, or leave both empty if auth is disabled.
 #    default: ""
 #  - name: password
 #    type: str
 #    label: MongoDB password
-#    description: Password for MongoDB authentication. Leave empty if auth is disabled.
+#    description: Password for MongoDB authentication. Provide together with the user, or leave both empty if auth is disabled.
 #    default: ""
 #  - name: auth-database
 #    type: str
@@ -62,6 +62,10 @@
 
 # Usage: ./mongodb_query_tuning.sh --database=DB --collection=COLL [--query=METHOD] [--execute] [OPTIONS]
 # Example: ./mongodb_query_tuning.sh --database=mydb --collection=orders --query='find({status:"pending"})' --execute
+#
+# The credentials reach the MongoDB shell over stdin and never appear on its
+# command line. A --password given to this script is still visible in this
+# script's own argv. The generated commands.sh carries no credentials.
 
 set -euo pipefail
 
@@ -97,8 +101,8 @@ Command line options:
 
    --host             MongoDB hostname or IP (default: 127.0.0.1)
    --port             MongoDB port (default: 27017)
-   --user             MongoDB username
-   --password         MongoDB password
+   --user             MongoDB username (provide together with --password)
+   --password         MongoDB password (provide together with --user)
    --auth-database    Authentication database (default: admin)
    -D, --database     Database containing the collection (required)
    -C, --collection   Collection to analyze (required)
@@ -183,6 +187,13 @@ while [[ -n $* ]]; do
     esac
 done
 
+# A password with no username (or vice versa) cannot authenticate; reject the
+# partial combination instead of silently connecting unauthenticated.
+if { [ -n "$USER" ] && [ -z "$PASSWORD" ]; } || { [ -z "$USER" ] && [ -n "$PASSWORD" ]; }; then
+    echo "Error: --user and --password must be provided together, or both omitted." >&2
+    usage 1
+fi
+
 if [[ -z $DATABASE ]]; then
     echo "Error: --database is required." >&2
     usage 1
@@ -222,6 +233,7 @@ elif command -v mongo > /dev/null 2>&1; then
 fi
 
 MONGO_ARGS=(--host "$HOST" --port "$PORT")
+MONGO_ENDPOINT="$HOST:$PORT"
 
 js_escape() {
     local value="$1"
@@ -233,23 +245,44 @@ js_escape() {
     printf '%s' "$value"
 }
 
+# The script stays on --eval and only the credentials travel over stdin: piped
+# into mongosh, a script runs as a REPL that ignores a failed db.auth().
+MONGO_AUTH_FAILED=3
+MONGO_AUTH_JS="var __creds = typeof require === 'function' ? require('fs').readFileSync(0, 'utf8') : cat('/dev/stdin');
+var __s1 = __creds.indexOf('\n'), __s2 = __creds.indexOf('\n', __s1 + 1), __ok = false;
+try { __ok = db.getSiblingDB(__creds.substring(0, __s1)).auth(__creds.substring(__s1 + 1, __s2), __creds.substring(__s2 + 1).replace(/\n\$/, '')); } catch (e) { __ok = false; }
+if (!__ok) { quit($MONGO_AUTH_FAILED); }"
+
+mongo_shell() {
+    local script="$1"
+    if [ -z "$USER" ]; then
+        "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet --eval "$script"
+        return
+    fi
+    printf '%s\n%s\n%s\n' "$AUTH_DB" "$USER" "$PASSWORD" |
+        "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet --eval "$MONGO_AUTH_JS
+$script"
+}
+
+check_mongo_auth() {
+    [ -n "$USER" ] || return 0
+    local rc=0
+    mongo_shell "quit(0)" > /dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq "$MONGO_AUTH_FAILED" ]; then
+        echo "Error: MongoDB authentication failed for user '$USER' on authentication database '$AUTH_DB' at $MONGO_ENDPOINT." >&2
+        echo "Check the user, password and authentication database." >&2
+        exit 1
+    fi
+}
+
 mongo_eval() {
     local script="$1"
     local outfile="$2"
-    local auth_prefix=""
     if [ -z "$MONGO_BIN" ]; then
         echo "Neither mongosh nor mongo is installed; skipping: $outfile" > "$outfile"
         return
     fi
-    if [ -n "$USER" ] && [ -n "$PASSWORD" ]; then
-        local escaped_auth_db escaped_user escaped_password
-        escaped_auth_db="$(js_escape "$AUTH_DB")"
-        escaped_user="$(js_escape "$USER")"
-        escaped_password="$(js_escape "$PASSWORD")"
-        auth_prefix="db = db.getSiblingDB('${escaped_auth_db}'); if (!db.auth('${escaped_user}', '${escaped_password}')) { quit(1); }"
-    fi
-    printf '%s\n%s\n' "$auth_prefix" "$script" |
-        "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet > "$outfile" 2>&1
+    mongo_shell "$script" > "$outfile" 2>&1 || true
 }
 
 ESC_DB="$(js_escape "$DATABASE")"
@@ -310,6 +343,8 @@ if [ $EXECUTE -eq 1 ]; then
         compress_data
         exit 2
     fi
+
+    check_mongo_auth
 
     echo "Collecting database stats..."
     mongo_eval "$JS_DBSTATS" "${DEST}/dbStats.out"

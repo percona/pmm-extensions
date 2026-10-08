@@ -22,11 +22,11 @@
 #  - name: user
 #    type: str
 #    label: MongoDB user
-#    description: Username for MongoDB authentication. Leave empty if auth is disabled.
+#    description: Username for MongoDB authentication. Provide together with the password, or leave both empty if auth is disabled.
 #  - name: password
 #    type: str
 #    label: MongoDB password
-#    description: Password for MongoDB authentication. Leave empty if auth is disabled.
+#    description: Password for MongoDB authentication. Provide together with the user, or leave both empty if auth is disabled.
 #  - name: auth-database
 #    type: str
 #    label: Authentication database
@@ -71,6 +71,10 @@
 #
 # Stop early by creating the marker file in the destination directory:
 #   touch /tmp/mongodb-diagnostics/exit-percona-monitor
+#
+# The password reaches mongosh, mongo and mongostat over stdin and never appears
+# on their command lines; mongostat takes the user name as -u. A --password given
+# to this script is still visible in this script's own argv.
 
 set -euo pipefail
 
@@ -93,8 +97,8 @@ Command line options:
 
    --dest               Destination directory (default: /tmp/mongodb-diagnostics)
    --port               MongoDB port (default: 27017)
-   --user               MongoDB user
-   --password           MongoDB password
+   --user               MongoDB user (provide together with --password)
+   --password           MongoDB password (provide together with --user)
    --auth-database      Authentication database (default: admin)
    --iterations         Number of sample cycles (default: 3)
    --sleep              Seconds to sleep between cycles (default: 30)
@@ -160,6 +164,13 @@ while [[ -n $* ]]; do
     esac
 done
 
+# A password with no username (or vice versa) cannot authenticate; reject the
+# partial combination instead of silently connecting unauthenticated.
+if { [ -n "$USER" ] && [ -z "$PASSWORD" ]; } || { [ -z "$USER" ] && [ -n "$PASSWORD" ]; }; then
+    echo "Error: --user and --password must be provided together, or both omitted." >&2
+    usage 1
+fi
+
 mkdir -p "$DEST"
 
 # Pick the MongoDB shell binary, preferring mongosh.
@@ -171,37 +182,50 @@ elif command -v mongo > /dev/null 2>&1; then
 fi
 
 MONGO_ARGS=(--port "$PORT")
+MONGO_ENDPOINT="localhost:$PORT"
+MONGOSTAT_ARGS=(--port "$PORT")
 if [ -n "$USER" ]; then
-    MONGO_ARGS+=(-u "$USER" --authenticationDatabase "$AUTH_DB")
+    MONGOSTAT_ARGS+=(-u "$USER" --authenticationDatabase "$AUTH_DB")
 fi
 
-js_escape() {
-    local value="$1"
-    value=${value//\\/\\\\}
-    value=${value//\'/\\\'}
-    value=${value//$'\n'/\\n}
-    value=${value//$'\r'/\\r}
-    value=${value//$'\t'/\\t}
-    printf '%s' "$value"
+# The script stays on --eval and only the credentials travel over stdin: piped
+# into mongosh, a script runs as a REPL that ignores a failed db.auth().
+MONGO_AUTH_FAILED=3
+MONGO_AUTH_JS="var __creds = typeof require === 'function' ? require('fs').readFileSync(0, 'utf8') : cat('/dev/stdin');
+var __s1 = __creds.indexOf('\n'), __s2 = __creds.indexOf('\n', __s1 + 1), __ok = false;
+try { __ok = db.getSiblingDB(__creds.substring(0, __s1)).auth(__creds.substring(__s1 + 1, __s2), __creds.substring(__s2 + 1).replace(/\n\$/, '')); } catch (e) { __ok = false; }
+if (!__ok) { quit($MONGO_AUTH_FAILED); }"
+
+mongo_shell() {
+    local script="$1"
+    if [ -z "$USER" ]; then
+        "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet --eval "$script"
+        return
+    fi
+    printf '%s\n%s\n%s\n' "$AUTH_DB" "$USER" "$PASSWORD" |
+        "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet --eval "$MONGO_AUTH_JS
+$script"
+}
+
+check_mongo_auth() {
+    [ -n "$USER" ] || return 0
+    local rc=0
+    mongo_shell "quit(0)" > /dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq "$MONGO_AUTH_FAILED" ]; then
+        echo "Error: MongoDB authentication failed for user '$USER' on authentication database '$AUTH_DB' at $MONGO_ENDPOINT." >&2
+        echo "Check the user, password and authentication database." >&2
+        exit 1
+    fi
 }
 
 mongo_eval() {
     local script="$1"
     local outfile="$2"
-    local auth_prefix=""
     if [ -z "$MONGO_BIN" ]; then
         echo "Neither mongosh nor mongo is installed; skipping: $outfile" > "$outfile"
         return
     fi
-    if [ -n "$USER" ] && [ -n "$PASSWORD" ]; then
-        local escaped_auth_db escaped_user escaped_password
-        escaped_auth_db="$(js_escape "$AUTH_DB")"
-        escaped_user="$(js_escape "$USER")"
-        escaped_password="$(js_escape "$PASSWORD")"
-        auth_prefix="db = db.getSiblingDB('$escaped_auth_db'); if (!db.auth('$escaped_user', '$escaped_password')) { quit(1); }"
-    fi
-    printf '%s\n%s\n' "$auth_prefix" "$script" |
-        "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet > "$outfile" 2>&1 || true
+    mongo_shell "$script" > "$outfile" 2>&1 || true
 }
 
 run_if_available() {
@@ -214,6 +238,8 @@ run_if_available() {
         echo "$cmd is not installed; skipping" > "$outfile"
     fi
 }
+
+check_mongo_auth
 
 echo "Destination: $DEST"
 echo "MongoDB shell: ${MONGO_BIN:-<none>}"
@@ -277,12 +303,14 @@ for ((i = 1; i <= ITERATIONS; i++)); do
     run_if_available sar "$DEST/${d}-sar_tcp" -n TCP,ETCP 1 10 &
 
     if command -v mongostat > /dev/null 2>&1; then
-
-        MONGOSTAT_ARGS=("${MONGO_ARGS[@]}")
-        if [ -n "$PASSWORD" ]; then
-            MONGOSTAT_ARGS+=(-p "$PASSWORD")
-        fi
-        (mongostat "${MONGOSTAT_ARGS[@]}" --rowcount=1 > "$DEST/${d}-mongostat" 2>&1 || true) &
+        (
+            if [ -n "$USER" ]; then
+                printf '%s\n' "$PASSWORD" |
+                    mongostat "${MONGOSTAT_ARGS[@]}" --rowcount=1 > "$DEST/${d}-mongostat" 2>&1
+            else
+                mongostat "${MONGOSTAT_ARGS[@]}" --rowcount=1 > "$DEST/${d}-mongostat" 2>&1
+            fi
+        ) || true &
     else
         echo "mongostat not installed" > "$DEST/${d}-mongostat" &
     fi
