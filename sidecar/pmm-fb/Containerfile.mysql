@@ -3,7 +3,7 @@
 ARG PMM_FB_TAG
 # The feature-build client exists only for amd64. An arm64 engine passes the
 # released multi-arch client instead (bootstrap.sh writes it into .env); empty
-# selects the feature-build client at PMM_FB_TAG. See README.md § Caveats.
+# selects the feature-build client at PMM_FB_TAG. See DEVELOPING.md § Caveats.
 ARG PMM_CLIENT_IMAGE
 FROM ${PMM_CLIENT_IMAGE:-docker.io/perconalab/pmm-client-fb:${PMM_FB_TAG}} AS pmmclient
 
@@ -51,7 +51,7 @@ RUN [ -z "${NOMAD_VERSION}" ] \
     || { echo "tools/nomad is '$(/usr/local/percona/pmm/tools/nomad version | head -1)', not v${NOMAD_VERSION}: this client cannot pair with the feature-build server" >&2; exit 1; }
 
 # On a released client the assertion above is vacuous, so NOMAD_VERSION_FB_TAG
-# must name this build's PMM_FB_TAG instead. See README.md "Caveats".
+# must name this build's PMM_FB_TAG instead. See DEVELOPING.md "Caveats".
 ARG PMM_FB_TAG
 ARG PMM_CLIENT_IMAGE
 ARG NOMAD_VERSION_FB_TAG

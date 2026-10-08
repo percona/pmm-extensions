@@ -9,7 +9,7 @@
 #
 # extensions-sidecar is the app-restricted consolidated side-car, built and published
 # from main under a suffix-less tag — the build emits a single artifact. See
-# pmm-fb/README.md "Which image to pin".
+# pmm-fb/DEVELOPING.md "Which image to pin".
 #
 # ./bootstrap.sh is only for the `mysql` profile — it generates the .env holding
 # that profile's three test-fixture passwords, and the pair below needs none of
@@ -28,14 +28,14 @@
 # keeps its pin for an unrelated reason — see the anchor comment below.
 #
 # No per-deployment credentials are committed: bootstrap.sh generates those
-# into the gitignored .env; see README.md. The one credential spelled out below
+# into the gitignored .env; see DEVELOPING.md. The one credential spelled out below
 # is PMM's stock admin:admin, which the feature build ships.
 #
 # pmm-server and extensions-sidecar pin linux/amd64: nothing publishes an arm64 variant
 # of the feature builds, the released percona/pmm-server, or the side-car image,
 # and the pins state that instead of leaving an arm64 engine to discover it as a
 # pull failure. extensions-mysql is built, so its platform follows the engine — see the
-# service's own comment and README.md § Caveats.
+# service's own comment and DEVELOPING.md § Caveats.
 
 name: pmm-extensions-fb
 
@@ -116,7 +116,7 @@ services:
     # arm64 engine bootstrap.sh writes linux/arm64 plus the released multi-arch
     # pmm-client into .env and the executor runs natively; every other engine
     # keeps the amd64 feature-build client. The executor is the one service
-    # that cannot be emulated under QEMU — README.md § Caveats.
+    # that cannot be emulated under QEMU — DEVELOPING.md § Caveats.
     platform: ${EXTENSIONS_MYSQL_PLATFORM:-linux/amd64}
     build:
       # The parent, so the build can copy sidecar/clone3_probe.py, which
@@ -125,7 +125,7 @@ services:
       dockerfile: pmm-fb/Containerfile.mysql
       args:
         # A repin edits PMM_FB_TAG here and on pmm-server, and NOMAD_VERSION
-        # with whatever `tools/nomad version` that build ships; README.md
+        # with whatever `tools/nomad version` that build ships; DEVELOPING.md
         # "Caveats" covers which build-time guard applies to each client.
         PMM_FB_TAG: ${PMM_FB_TAG:-PR-4500-622e3f3}
         NOMAD_VERSION: ${NOMAD_VERSION:-2.0.5}

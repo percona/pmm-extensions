@@ -1,5 +1,5 @@
 # Holds NOMAD_VERSION to the feature-build client's tools/nomad, which only an
-# amd64 host can read without emulation (sidecar/pmm-fb/README.md "Caveats").
+# amd64 host can read without emulation (sidecar/pmm-fb/DEVELOPING.md "Caveats").
 
 name: PMM FB Nomad pin
 
@@ -80,7 +80,7 @@ jobs:
               # Only a collected tag may skip; every other pull failure goes red.
               case "${pull}" in
                   *"manifest unknown"*|*MANIFEST_UNKNOWN*|*"manifest for "*"not found"*)
-                      # Skip only pins inherited unchanged (sidecar/pmm-fb/README.md "Caveats").
+                      # Skip only pins inherited unchanged (sidecar/pmm-fb/DEVELOPING.md "Caveats").
                       if [ -n "${BASE_TAG}" ] && [ "${TAG}" = "${BASE_TAG}" ] \
                           && [ "${NOMAD}" = "${BASE_NOMAD}" ]; then
                           echo "::warning::${IMG} is no longer published, so NOMAD_VERSION=${NOMAD} is unverified here: ${pull}"

@@ -6,7 +6,7 @@ the `datacharmer/test_db` employees dataset — the target a MySQL Backups run
 executes *on*, not just against. The seed is baked into the image, so first
 boot needs no download; it lands as ~125 MB of real data (300,024 employees,
 2.8 M salary rows). For how long the import takes and how to tell it has
-finished, see [README.md](README.md#bring-up) — this file does not restate
+finished, see [DEVELOPING.md](DEVELOPING.md#bring-up) — this file does not restate
 that timing.
 
 **Why one container.** PMM Extensions does no scheduling: it pins a Nomad job to the node
@@ -116,7 +116,7 @@ Nomad builds nobody has tested. The one sanctioned exception is an arm64
 engine, where `bootstrap.sh` points the build at the released multi-arch
 `percona/pmm-client:3.9.1`: its aarch64 Nomad is the version `NOMAD_VERSION`
 pins — while its `pmm-agent` is the released one, so client-side changes in the
-feature build are not exercised there (README § Caveats).
+feature build are not exercised there (DEVELOPING.md § Caveats).
 
 A repin moves **three** values, not two. `compose.yaml` spells `PMM_FB_TAG`'s
 pinned default out on two lines; `NOMAD_VERSION` takes whatever `tools/nomad
