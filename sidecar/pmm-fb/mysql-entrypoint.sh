@@ -124,7 +124,7 @@ cg2_controllers_complete() {
 # same pair Nomad's own detect() makes (client/lib/cgroupslib/mount.go). Where
 # it is load-bearing the node registers, fingerprints healthy, and fails every
 # dispatch with `fork/exec …: function not implemented`; refuse to become that
-# node. The two sources of ENOSYS and the fix for each are in README.md
+# node. The two sources of ENOSYS and the fix for each are in DEVELOPING.md
 # § Caveats, and the messages below name them.
 require_clone3() {
     [[ ${EXTENSIONS_FB_SKIP_CLONE3_CHECK:-0} == "1" ]] && return 0

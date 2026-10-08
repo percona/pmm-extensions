@@ -8,7 +8,7 @@
 # built: natively from the released multi-arch pmm-client by default, or as the
 # amd64 feature-build client under emulation when EXTENSIONS_MYSQL_PLATFORM=linux/amd64
 # is set — which is probed for clone3 first, because that emulation cannot run
-# tasks (README.md § Caveats).
+# tasks (DEVELOPING.md § Caveats).
 
 set -o nounset
 set -o pipefail
@@ -18,7 +18,7 @@ if [[ ${DEBUG:-0} == "1" ]]; then
 fi
 
 # The released multi-arch client used on arm64; NOMAD_VERSION_FB_TAG, not its
-# tools/nomad, ties NOMAD_VERSION to the feature build (README.md "Caveats").
+# tools/nomad, ties NOMAD_VERSION to the feature build (DEVELOPING.md "Caveats").
 ARM64_CLIENT_IMAGE=docker.io/percona/pmm-client:3.9.1
 
 error() { printf '✗ %s\n' "$*" >&2; }
@@ -126,7 +126,7 @@ else
 # The three passwords are secrets; rotating them after first boot needs the
 # extensions-mysql-data volume dropped, because the datadir keeps the originals.
 # EXTENSIONS_MYSQL_PLATFORM and EXTENSIONS_MYSQL_PMM_CLIENT_IMAGE, present on an arm64
-# engine, are not secrets: bootstrap.sh manages them (README.md § Caveats).
+# engine, are not secrets: bootstrap.sh manages them (DEVELOPING.md § Caveats).
 EXTENSIONS_MYSQL_ROOT_PASSWORD=$(openssl rand -hex 16)
 EXTENSIONS_MYSQL_BACKUP_PASSWORD=$(openssl rand -hex 16)
 EXTENSIONS_MYSQL_PMM_PASSWORD=$(openssl rand -hex 16)
