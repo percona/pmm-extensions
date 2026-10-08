@@ -618,14 +618,15 @@ def encrypt_dir(path: str, logger: "logging.Logger | None" = None, **cfg: Any) -
     :raises BackupError: If encryption fails or verification fails.
     """
     if logger:
-        logger.info("Encrypting %s", path)
+        logger.info("Encrypting backup...")
+        logger.info("Running on: %s", path)
 
     dir_encrypt = DirectoryEncryptor(cfg_path=DIR_ENCRYPT_CFG_PATH, **cfg)
     if not dir_encrypt.encrypt_dir(encr_dir=Path(path)):
         raise BackupError("Encryption failed.")
 
     if not is_encrypted_dir(path, logger=logger):
-        raise BackupError("Something wrong, there are still unencrypted files!")
+        raise BackupError("Unencrypted files remain!")
 
     if logger:
         logger.info("OK Encryption complete and verified.")
@@ -2144,9 +2145,9 @@ class Xtrabackup(Backup):
         # Encrypt backup w/o upload as a separate option.
         # No hardlinking or rsync upload to avoid the mess.
         if self.enc_gpg and self.post_run_encrypt:
-            self.logger.info('Post-run encryption enabled.')
+            self.logger.info('Post-run backup encryption is enabled.')
             if self.enc_aes:
-                self.logger.info('PXB built-in encryption.')
+                self.logger.info('Backup used PXB built-in encryption.')
             else:
                 encrypt_dir(self.last_backup_dir, self.logger, **self.dir_encrypt_config)
         # Try to save some disk space
@@ -2843,11 +2844,12 @@ class Xtrabackup(Backup):
         weekly - a full backup runs once a week on Monday.
         1..7 - also weekly cycle but a full backup runs once a week on the specified day Monday-Sunday.
         """
-        # Built, not spelled out: the 9-member literal blows the 16 KiB Nomad
-        # minify + gzip budget. Re-check with scripts/check_nomad_payload_size.py.
+        # Built, not spelled out: the 9-member literal measures 16,370 bytes after
+        # minify + gzip (14 bytes headroom). This form measures 16,359 (25 bytes
+        # headroom). Re-check with scripts/check_nomad_payload_size.py --report.
         cycles = ['daily', 'weekly'] + list('1234567')
         if cycle not in cycles:
-            msg = 'Invalid XTRABACKUP_INCREMENTAL_CYCLE setting: %s. Should be one of : %s.' % (cycle, cycles)
+            msg = 'Invalid XTRABACKUP_INCREMENTAL_CYCLE: %s (want %s)' % (cycle, cycles)
             self._clean_after_error()
             raise BackupError(msg)
 
