@@ -118,25 +118,39 @@ class _RunProbe:
     def __init__(self) -> None:
         self.aes_dirs: list[str] = []
         self.gpg_dirs: list[str] = []
+        self.gpg_cfgs: list[dict[str, object]] = []
         self.saved_disk_space = 0
 
 
-def _run_backup(tmp_path, *, enc_aes: bool, enc_gpg: bool, post_run_encrypt: bool):
+def _run_backup(
+    tmp_path,
+    *,
+    enc_aes: bool,
+    enc_gpg: bool,
+    post_run_encrypt: bool,
+    dir_encrypt_config: dict[str, object] | None = None,
+):
     """Run the real ``run`` past its post-backup encryption block.
 
     Every pass is replaced by a recorder, so the assertions are about which
-    branches the real method took rather than about its shape.
+    branches the real method took rather than about its shape. The
+    ``encrypt_dir`` stand-in accepts ``**cfg`` so a dropped
+    ``dir_encrypt_config`` cannot hide behind a two-argument stub.
     """
     probe = _RunProbe()
     last_backup_dir = tmp_path / "backups" / "host1"
     last_backup_dir.mkdir(parents=True)
+
+    def _record_gpg(dir_path: str, _logger: object, **cfg: object) -> None:
+        probe.gpg_dirs.append(dir_path)
+        probe.gpg_cfgs.append(cfg)
 
     inst, _, _ = payload_instance(
         ("run",),
         extra_namespace={
             "time": types.SimpleNamespace(time=lambda: 0.0),
             "is_encrypted_dir": lambda *_a, **_k: True,
-            "encrypt_dir": lambda dir_path, _logger: probe.gpg_dirs.append(dir_path),
+            "encrypt_dir": _record_gpg,
             "format_seconds_to_hhmmss": lambda _s: "00:00:00",
             "get_dir_size": lambda *_a, **_k: "1 MB",
             "_write_run_result": lambda *_a, **_k: None,
@@ -163,6 +177,7 @@ def _run_backup(tmp_path, *, enc_aes: bool, enc_gpg: bool, post_run_encrypt: boo
     inst.upload_type = []
     inst.backup_dir = str(tmp_path / "xtrabackup_tmpdir")
     inst.last_backup_dir = str(last_backup_dir)
+    inst.dir_encrypt_config = {} if dir_encrypt_config is None else dir_encrypt_config
     inst.encrypt_files_aes256 = probe.aes_dirs.append
     inst._decrypt_metadata_file = lambda *_a, **_k: None
     inst._run_backup_cmd = lambda: None
@@ -244,6 +259,39 @@ class TestRunPostBackupPasses:
         )
         assert probe.gpg_dirs == []
         assert probe.saved_disk_space == 1
+
+    def test_post_run_gpg_passes_the_configured_recipient(self, tmp_path) -> None:
+        """Assert post-run GPG forwards ``DIR_ENCRYPT_CONFIG`` to ``encrypt_dir``.
+
+        Without the kwargs, ``DirectoryEncryptor`` falls back to the host
+        ``dir_encrypt.yml`` and the form recipient never applies.
+        """
+        recipient = {"encryption recipient": "ops@example.com"}
+        probe = _run_backup(
+            tmp_path,
+            enc_aes=False,
+            enc_gpg=True,
+            post_run_encrypt=True,
+            dir_encrypt_config=recipient,
+        )
+        assert len(probe.gpg_dirs) == 1
+        assert probe.gpg_cfgs == [recipient]
+
+    def test_post_run_gpg_with_empty_config_adds_no_kwargs(self, tmp_path) -> None:
+        """Assert an empty ``DIR_ENCRYPT_CONFIG`` still reaches ``encrypt_dir``.
+
+        Spreading ``{}`` adds nothing, so the encryptor keeps today's host-file
+        then default fallback.
+        """
+        probe = _run_backup(
+            tmp_path,
+            enc_aes=False,
+            enc_gpg=True,
+            post_run_encrypt=True,
+            dir_encrypt_config={},
+        )
+        assert len(probe.gpg_dirs) == 1
+        assert probe.gpg_cfgs == [{}]
 
 
 def _upload_instance(
