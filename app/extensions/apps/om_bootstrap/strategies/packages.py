@@ -268,19 +268,17 @@ def _wait_for_mongod_command(port: int) -> str:
 def _mongosh_eval(js: str, port: int) -> StepAction:
     """Build a ``StepAction`` running one ``mongosh --quiet --eval`` command.
 
-    Every caller here runs before authorization is ever enabled (see
-    :meth:`PackagesInstallStrategy._configure_mongod`'s own docstring) —
-    deliberately, so this never has to route around MongoDB's localhost
-    exception at all: ``rs_initiate`` and ``verify``, this function's two
-    callers, both just work unauthenticated on the member they run on.
-    ``enable_auth`` (:meth:`PackagesInstallStrategy._enable_auth`) is what turns
-    authorization on afterward, once ``create_pmm_monitoring_user`` has created
-    the first user.
+    Its only caller, ``rs_initiate``, runs before authorization is ever enabled
+    (see :meth:`PackagesInstallStrategy._configure_mongod`'s own docstring), so
+    it works unauthenticated on the member it runs on and this never has to
+    route around MongoDB's localhost exception. ``enable_auth``
+    (:meth:`PackagesInstallStrategy._enable_auth`) is what turns authorization
+    on afterward, once ``create_pmm_monitoring_user`` has created the first
+    user.
 
-    ``create_pmm_monitoring_user`` is deliberately not one of those callers: its
-    write has to reach the elected primary, which the member it runs on need not
-    be, so it goes through :func:`_mongosh_file` with a replica-set URI
-    instead.
+    ``create_pmm_monitoring_user`` deliberately does not use it: its write has
+    to reach the elected primary, which the member it runs on need not be, so
+    it goes through :func:`_mongosh_file` with a replica-set URI instead.
 
     :param js: The JavaScript to evaluate.
     :param port: The port mongod listens on.
