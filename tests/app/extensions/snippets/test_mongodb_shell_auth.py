@@ -87,7 +87,7 @@ CONNECTION_PARAMETERS = ("host", "port", "user", "password", "auth-database")
 USER = "u"
 PASSWORD = "P@ss w0rd"
 CREDENTIALS = ("--user", USER, "--password", PASSWORD)
-CREDENTIALS_STDIN = f"admin\n{USER}\n{PASSWORD}\n"
+DECODED_CREDENTIALS = ("admin", USER, PASSWORD)
 
 UNAUTHENTICATED_OPTIONS = (
     "--host",
@@ -116,12 +116,19 @@ NOOP_TOOLS = (
     "pt-summary",
     "ps",
     "sleep",
+    "free",
+    "df",
 )
 
 STUB_CLIENT = """\
 #!/usr/bin/env bash
 call_dir=$(mktemp -d "{calls}/$(date +%s%N)-$(basename "$0").XXXXXX")
 printf '%s\\0' "$@" > "$call_dir/argv"
+for arg in "$@"; do
+    if [[ $arg == --config=* ]]; then
+        cat "${{arg#--config=}}" > "$call_dir/config"
+    fi
+done
 cat > "$call_dir/stdin"
 if [[ -s "$call_dir/stdin" ]]; then
     exit "${{STUB_RC_AUTH:-0}}"
@@ -153,11 +160,23 @@ class ShellCall:
     :param program: The stub's name, ``mongosh`` or ``mongostat``.
     :param argv: The arguments it was called with.
     :param stdin: Everything it read on stdin.
+    :param config: The contents of the file passed as ``--config=``, if any.
     """
 
     program: str
     argv: tuple[str, ...]
     stdin: str
+    config: str | None
+
+    @property
+    def credentials(self) -> tuple[str, ...]:
+        """Return the stdin lines decoded from hex, one value per line.
+
+        :return: The authentication database, user and password, in order.
+        """
+        return tuple(
+            bytes.fromhex(line).decode("utf-8") for line in self.stdin.split("\n")[:-1]
+        )
 
 
 @dataclass
@@ -216,6 +235,11 @@ class MongoHarness:
                     (call_dir / "argv").read_text(encoding="utf-8").split("\0")[:-1]
                 ),
                 stdin=(call_dir / "stdin").read_text(encoding="utf-8"),
+                config=(
+                    (call_dir / "config").read_text(encoding="utf-8")
+                    if (call_dir / "config").exists()
+                    else None
+                ),
             )
             for call_dir in sorted(self.calls_dir.glob(f"*-{program}.*"))
         ]
@@ -338,13 +362,15 @@ class TestCredentialTransport:
 
     @pytest.mark.parametrize("filename", ALL_MONGO_SHELL_SNIPPETS)
     def test_password_never_on_shell_argv(self, harness, filename):
-        """Keep the password off every client argv and put it on stdin."""
+        """Keep the password off every client argv, in plain text or encoded."""
         harness.run(filename, *harness.base_args(filename), *CREDENTIALS)
 
         calls = harness.calls("mongosh") + harness.calls("mongostat")
         assert calls
         assert all(PASSWORD not in arg for call in calls for arg in call.argv)
-        assert all(PASSWORD in call.stdin for call in calls)
+        assert all(
+            PASSWORD.encode().hex() not in arg for call in calls for arg in call.argv
+        )
 
     @pytest.mark.parametrize("filename", ALL_MONGO_SHELL_SNIPPETS)
     def test_every_shell_call_carries_credentials(self, harness, filename):
@@ -354,7 +380,7 @@ class TestCredentialTransport:
         calls = harness.calls()
         assert calls
         assert len(calls) > 1
-        assert all(call.stdin == CREDENTIALS_STDIN for call in calls)
+        assert all(call.credentials == DECODED_CREDENTIALS for call in calls)
         assert all("--eval" in call.argv for call in calls)
 
     @pytest.mark.parametrize(
@@ -365,22 +391,33 @@ class TestCredentialTransport:
             "mongodb_query_tuning.sh",
         ],
     )
-    def test_special_characters_reach_stdin_verbatim(self, harness, filename):
-        """Pass quotes, backslashes, spaces and newlines through untouched."""
-        password = "a'b\\c d\"e\n2"
-
+    @pytest.mark.parametrize(
+        ("user", "password"),
+        [
+            ("wei rd", "a'b\\c d\"e\n2"),
+            ("line\nbreak", "plain"),
+            ("cr\ruser", "trailing newline\n"),
+            ("ünï€😀", "p\tä\r\x01ss"),
+        ],
+        ids=["quotes", "user-lf", "user-cr", "unicode-control"],
+    )
+    def test_special_characters_reach_stdin_verbatim(
+        self, harness, filename, user, password
+    ):
+        """Encode every value so line breaks and control characters survive intact."""
         harness.run(
             filename,
             *harness.base_args(filename),
             "--user",
-            "wei rd",
+            user,
             "--password",
             password,
         )
 
         calls = harness.calls()
         assert calls
-        assert all(call.stdin == f"admin\nwei rd\n{password}\n" for call in calls)
+        assert all(call.credentials == ("admin", user, password) for call in calls)
+        assert all(call.stdin.count("\n") == len(DECODED_CREDENTIALS) for call in calls)
 
 
 class TestAuthenticationFailure:
@@ -466,8 +503,8 @@ class TestUnauthenticatedInvocation:
 class TestCollectors:
     """Pin the collector-specific behaviour around the shared client call."""
 
-    def test_mongostat_password_on_stdin(self, harness):
-        """Give ``mongostat`` the user on argv and the password on stdin."""
+    def test_mongostat_password_in_config_file(self, harness):
+        """Give ``mongostat`` the user on argv and the password in a ``--config`` file."""
         filename = "mongodb_blocked_writes_check.sh"
 
         harness.run(filename, *harness.base_args(filename), *CREDENTIALS)
@@ -483,7 +520,29 @@ class TestCollectors:
             "--authenticationDatabase",
             "admin",
         )
-        assert calls[0].stdin == f"{PASSWORD}\n"
+        assert "--authenticationMechanism" not in argv
+        assert calls[0].config == f'password: "{PASSWORD}"\n'
+        assert calls[0].stdin == ""
+
+    def test_mongostat_line_break_password_uses_scram_sha1(self, harness):
+        """Escape the password for YAML and pick the only mechanism that can hold it."""
+        filename = "mongodb_blocked_writes_check.sh"
+
+        harness.run(
+            filename,
+            *harness.base_args(filename),
+            "--user",
+            USER,
+            "--password",
+            'q"b\\s\tt\nn\r',
+        )
+
+        calls = harness.calls("mongostat")
+        assert len(calls) == 1
+        argv = calls[0].argv
+        mechanism_at = argv.index("--authenticationMechanism")
+        assert argv[mechanism_at + 1] == "SCRAM-SHA-1"
+        assert calls[0].config == 'password: "q\\"b\\\\s\\x09t\\x0an\\x0d"\n'
 
     def test_blocked_writes_shell_args_have_no_user(self, harness):
         """Keep ``-u`` off the shell, which would prompt and eat the credentials."""

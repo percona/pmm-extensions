@@ -72,9 +72,10 @@
 # Stop early by creating the marker file in the destination directory:
 #   touch /tmp/mongodb-diagnostics/exit-percona-monitor
 #
-# The password reaches mongosh, mongo and mongostat over stdin and never appears
-# on their command lines; mongostat takes the user name as -u. A --password given
-# to this script is still visible in this script's own argv.
+# The password never appears on the command line of mongosh, mongo or mongostat:
+# the shells read it from stdin and mongostat from a --config file descriptor,
+# with the user name as -u. A --password given to this script is still visible
+# in this script's own argv.
 
 set -euo pipefail
 
@@ -186,15 +187,47 @@ MONGO_ENDPOINT="localhost:$PORT"
 MONGOSTAT_ARGS=(--port "$PORT")
 if [ -n "$USER" ]; then
     MONGOSTAT_ARGS+=(-u "$USER" --authenticationDatabase "$AUTH_DB")
+    # The tools' driver SASLpreps the password under the default mechanism and
+    # rejects a line break, which only a SCRAM-SHA-1 credential can hold.
+    if [[ $PASSWORD == *[$'\n\r']* ]]; then
+        MONGOSTAT_ARGS+=(--authenticationMechanism SCRAM-SHA-1)
+    fi
 fi
+
+# Print a mongostat --config file holding the password as a YAML double-quoted
+# scalar, so the password reaches mongostat whole without touching argv or disk.
+mongostat_config() {
+    local escaped="" char code i
+    for ((i = 0; i < ${#PASSWORD}; i++)); do
+        char="${PASSWORD:i:1}"
+        case "$char" in
+            \\ | \") escaped+="\\$char" ;;
+            [[:cntrl:]])
+                printf -v code '%02x' "'$char"
+                escaped+="\\x$code"
+                ;;
+            *) escaped+="$char" ;;
+        esac
+    done
+    printf 'password: "%s"\n' "$escaped"
+}
 
 # The script stays on --eval and only the credentials travel over stdin: piped
 # into mongosh, a script runs as a REPL that ignores a failed db.auth().
 MONGO_AUTH_FAILED=3
-MONGO_AUTH_JS="var __creds = typeof require === 'function' ? require('fs').readFileSync(0, 'utf8') : cat('/dev/stdin');
-var __s1 = __creds.indexOf('\n'), __s2 = __creds.indexOf('\n', __s1 + 1), __ok = false;
-try { __ok = db.getSiblingDB(__creds.substring(0, __s1)).auth(__creds.substring(__s1 + 1, __s2), __creds.substring(__s2 + 1).replace(/\n\$/, '')); } catch (e) { __ok = false; }
+MONGO_AUTH_JS="var __creds = (typeof require === 'function' ? require('fs').readFileSync(0, 'utf8') : cat('/dev/stdin')).split('\n'), __ok = false;
+try { var __dec = function (h) { return decodeURIComponent(h.replace(/(..)/g, '%\$1')); }; __ok = db.getSiblingDB(__dec(__creds[0])).auth(__dec(__creds[1]), __dec(__creds[2])); } catch (e) { __ok = false; }
 if (!__ok) { quit($MONGO_AUTH_FAILED); }"
+
+# Hex-encode each value on its own line: a MongoDB user name may contain a line
+# break, which would otherwise split the three-line framing.
+mongo_credentials() {
+    local value
+    for value in "$AUTH_DB" "$USER" "$PASSWORD"; do
+        printf '%s' "$value" | od -An -tx1 -v | tr -d ' \n'
+        printf '\n'
+    done
+}
 
 mongo_shell() {
     local script="$1"
@@ -202,7 +235,7 @@ mongo_shell() {
         "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet --eval "$script"
         return
     fi
-    printf '%s\n%s\n%s\n' "$AUTH_DB" "$USER" "$PASSWORD" |
+    mongo_credentials |
         "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet --eval "$MONGO_AUTH_JS
 $script"
 }
@@ -305,8 +338,8 @@ for ((i = 1; i <= ITERATIONS; i++)); do
     if command -v mongostat > /dev/null 2>&1; then
         (
             if [ -n "$USER" ]; then
-                printf '%s\n' "$PASSWORD" |
-                    mongostat "${MONGOSTAT_ARGS[@]}" --rowcount=1 > "$DEST/${d}-mongostat" 2>&1
+                mongostat "${MONGOSTAT_ARGS[@]}" --config=<(mongostat_config) --rowcount=1 \
+                    > "$DEST/${d}-mongostat" 2>&1
             else
                 mongostat "${MONGOSTAT_ARGS[@]}" --rowcount=1 > "$DEST/${d}-mongostat" 2>&1
             fi
