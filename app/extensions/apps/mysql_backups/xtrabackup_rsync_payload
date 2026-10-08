@@ -2034,8 +2034,11 @@ class Xtrabackup(Backup):
 
         # Backup other files
         if self.host == 'localhost' and not self.incremental:
-            self.backup_mycnf(self.last_backup_dir)
-            self.backup_certs(self.last_backup_dir)
+            try:
+                self.backup_mycnf(self.last_backup_dir)
+                self.backup_certs(self.last_backup_dir)
+            except BackupError as e:
+                self.logger.warning('%s', e)
 
         # Purge changed page tracking
         if self._is_track_changed_pages():
@@ -2756,9 +2759,10 @@ class Xtrabackup(Backup):
         weekly - a full backup runs once a week on Monday.
         1..7 - also weekly cycle but a full backup runs once a week on the specified day Monday-Sunday.
         """
-        # Built, not spelled out: the 9-member literal measures 16,370 bytes after
-        # minify + gzip (14 bytes headroom). This form measures 16,359 (25 bytes
-        # headroom). Re-check with scripts/check_nomad_payload_size.py --report.
+        # Built, not spelled out: the 9-member literal measures 16,387 bytes after
+        # minify + gzip (3 over the 16 KiB Nomad limit). This form measures 16,377
+        # (7 bytes headroom). Re-check with scripts/check_nomad_payload_size.py
+        # --report.
         cycles = ['daily', 'weekly'] + list('1234567')
         if cycle not in cycles:
             msg = 'Invalid XTRABACKUP_INCREMENTAL_CYCLE: %s (want %s)' % (cycle, cycles)
