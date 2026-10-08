@@ -2,7 +2,7 @@
 #
 # pmm-server is the PMM feature build carrying the PMM Extensions frontend and the
 # PMM_ENABLE_EXTENSIONS PostgreSQL exposure (Percona-Lab/pmm-submodules#4500 =
-# percona/pmm main at 7a20dfff5, where PR #5992 merged, on top of the
+# percona/pmm main at 016153c7a, which carries PR #5992, on top of the
 # exposure from PRs #5653 + #5700): its entrypoint provisions the
 # network-reachable low-privilege `pmm_extensions` role and `pmm_extensions`
 # database.
@@ -46,7 +46,7 @@ x-extensions-mysql-address: &extensions_mysql_address 172.28.9.40
 services:
   pmm-server:
     # Default repeated on extensions-mysql's PMM_FB_TAG build arg — a repin edits both
-    image: docker.io/perconalab/pmm-server-fb:${PMM_FB_TAG:-PR-4500-622e3f3}
+    image: docker.io/perconalab/pmm-server-fb:${PMM_FB_TAG:-PR-4500-b9ffef6}
     platform: linux/amd64
     # The image ships start_period 25s with 3 retries at 4s, so it is marked
     # unhealthy around 37s while a cold start needs appreciably longer to first
@@ -127,11 +127,11 @@ services:
         # A repin edits PMM_FB_TAG here and on pmm-server, and NOMAD_VERSION
         # with whatever `tools/nomad version` that build ships; DEVELOPING.md
         # "Caveats" covers which build-time guard applies to each client.
-        PMM_FB_TAG: ${PMM_FB_TAG:-PR-4500-622e3f3}
-        NOMAD_VERSION: ${NOMAD_VERSION:-2.0.5}
+        PMM_FB_TAG: ${PMM_FB_TAG:-PR-4500-b9ffef6}
+        NOMAD_VERSION: ${NOMAD_VERSION:-2.0.7}
         # The feature build NOMAD_VERSION above was read from. Always equal to
         # PMM_FB_TAG in committed state; the pin checker enforces that.
-        NOMAD_VERSION_FB_TAG: ${NOMAD_VERSION_FB_TAG:-PR-4500-622e3f3}
+        NOMAD_VERSION_FB_TAG: ${NOMAD_VERSION_FB_TAG:-PR-4500-b9ffef6}
         # Empty selects the amd64 feature-build client at PMM_FB_TAG
         PMM_CLIENT_IMAGE: ${EXTENSIONS_MYSQL_PMM_CLIENT_IMAGE:-}
     # service_started, not service_healthy: this node consumes none of the PMM Extensions
