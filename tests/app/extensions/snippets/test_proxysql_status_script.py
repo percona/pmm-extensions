@@ -992,6 +992,41 @@ class TestAdminCnfRedaction:
                 "PROXYSQL_PASSWORD=[REDACTED]",
                 id="special-characters",
             ),
+            pytest.param(
+                f"PROXYSQL_PW='{SECRET}'\n",
+                "PROXYSQL_PW=[REDACTED]",
+                id="pw-key",
+            ),
+            pytest.param(
+                f"MYSQL_OPTS='--password={SECRET}'\n",
+                "MYSQL_OPTS=[REDACTED]",
+                id="option-in-quoted-value",
+            ),
+            pytest.param(
+                f"MYSQL_OPTS=--password={SECRET} # client flags\n",
+                "MYSQL_OPTS=[REDACTED]",
+                id="option-in-bare-value",
+            ),
+            pytest.param(
+                f"CLUSTER_HOSTNAME=db#PROXYSQL_PASSWORD={SECRET}\n",
+                "CLUSTER_HOSTNAME=[REDACTED]",
+                id="assignment-after-mid-word-hash",
+            ),
+            pytest.param(
+                f"BACKUP_URL='mysql://backup:a/{SECRET}@db/'\n",
+                "BACKUP_URL=[REDACTED]",
+                id="url-password-with-slash",
+            ),
+            pytest.param(
+                f"BACKUP_URL='mysql://backup:a {SECRET}@db/'\n",
+                "BACKUP_URL=[REDACTED]",
+                id="url-password-with-space",
+            ),
+            pytest.param(
+                f"DATA_SOURCE_NAME='admin:{SECRET}@tcp(127.0.0.1:6032)/'\n",
+                "DATA_SOURCE_NAME=[REDACTED]",
+                id="dsn-without-scheme",
+            ),
         ],
     )
     def test_masks_every_value_shape(self, harness, line, expected):
@@ -1109,6 +1144,16 @@ class TestAdminCnfRedaction:
                 f"PROXYSQL_USERNAME=admin # PROXYSQL_PASSWORD[0]='{SECRET}'",
                 HIDDEN_LINE,
                 id="trailing-comment-subscript",
+            ),
+            pytest.param(
+                f"# old dsn admin:{SECRET}@tcp(db:6032)/",
+                HIDDEN_LINE,
+                id="prose-with-dsn-credentials",
+            ),
+            pytest.param(
+                f"# PROXYSQL_PW={SECRET}",
+                "# PROXYSQL_PW=[REDACTED]",
+                id="commented-out-pw-key",
             ),
         ],
     )
