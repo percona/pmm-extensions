@@ -73,10 +73,18 @@ CONFIG_PATH = "/etc/mongod.conf"
 OWNERSHIP_MARKER_PATH = "/etc/mongod.om-bootstrap"
 
 #: Matches the packaged ``mongod.service``'s own ``PIDFile=`` on both supported
-#: OSes. The unit is ``Type=forking``, so this has to agree with the systemd unit
-#: exactly — see :meth:`PackagesInstallStrategy._configure_mongod`. Fixed for
-#: the same reason as :data:`KEY_FILE_PATH`.
+#: OSes. PSMDB 7.0's unit is ``Type=forking``, so this has to agree with it
+#: exactly — see :meth:`PackagesInstallStrategy._configure_mongod`. 8.0's unit has
+#: no ``PIDFile=`` and runs mongod in the foreground, so it is inert there. Fixed
+#: for the same reason as :data:`KEY_FILE_PATH`.
 PID_FILE_PATH = "/var/run/mongod.pid"
+
+#: How long a step waits for a (re)started mongod to answer, in seconds.
+#: ``systemctl restart`` returning does not mean it does: PSMDB 8.0's unit sets
+#: ``MONGODB_CONFIG_OVERRIDE_NOFORK=1`` and has no ``Type=``, so it is ``simple``
+#: and returns as soon as the process starts, about two seconds before mongod
+#: listens.
+MONGOD_READY_WAIT_S = 60
 
 #: Minimum free space at ``spec.data_path`` ``pre_check`` requires, in bytes.
 #: 5 GiB — generous for phase-1's single-member/three-member replica sets, not a
@@ -235,6 +243,25 @@ def _mongosh_eval_command(js: str, port: int) -> str:
     return (
         "MONGOSH_DISABLE_ATLAS_LOCAL_DEV_CLUSTER_CHECK=1 "
         f"mongosh --quiet --port {port} --eval {shlex.quote(js)}"
+    )
+
+
+def _wait_for_mongod_command(port: int) -> str:
+    """Build a shell fragment that pings mongod until it answers, or the wait is up.
+
+    The pings in the loop are silent; one more after it decides the fragment's exit
+    code, so a mongod that never answers fails with mongosh's own error rather than
+    a bare timeout. The wait is measured in seconds, not attempts, because each
+    mongosh start takes about as long as the sleep between them.
+
+    :param port: The port mongod listens on.
+    :return: The fragment, braced so it can be chained with ``&&`` as one command.
+    """
+    ping = _mongosh_eval_command("db.adminCommand('ping').ok", port)
+    return (
+        f"{{ deadline=$(( $(date +%s) + {MONGOD_READY_WAIT_S} )); "
+        f'while [ "$(date +%s)" -lt "$deadline" ] && ! {ping} >/dev/null 2>&1; '
+        f"do sleep 1; done; {ping}; }}"
     )
 
 
@@ -568,7 +595,8 @@ class PackagesInstallStrategy:
         first start with ``NonExistentPath: Data directory /var/lib/mongo not
         found``, and ``start_service`` (``systemctl restart``) reports
         success regardless, since ``Type=forking`` only waits for the initial
-        fork, not for mongod's own startup logic to run. ``verify``, a step
+        fork, not for mongod's own startup logic to run, and 8.0's unit does not
+        wait even for that (see :data:`MONGOD_READY_WAIT_S`). ``verify``, a step
         later, is what actually surfaces the failure — by then the run has
         already reported ``start_service`` as done.
 
@@ -582,13 +610,16 @@ class PackagesInstallStrategy:
         everything else on the box.
 
         Sets ``processManagement.fork``/``pidFilePath`` for the same reason:
-        the packaged ``mongod.service`` is ``Type=forking``, so systemd waits for
-        mongod itself to daemonize and write :data:`PID_FILE_PATH`. Without
+        PSMDB 7.0's packaged ``mongod.service`` is ``Type=forking``, so systemd
+        waits for mongod itself to daemonize and write :data:`PID_FILE_PATH`. Without
         ``fork: true`` mongod runs in the foreground indefinitely — confirmed
         against a real run where mongod started and stayed healthy, but systemd's
         default 90s ``TimeoutStartSec`` elapsed waiting for a fork that was never
         coming and killed it, so ``verify`` found nothing listening on 27017 a
         step later, again after ``start_service`` had already reported success.
+        8.0's unit sets ``MONGODB_CONFIG_OVERRIDE_NOFORK=1``, which overrides
+        ``fork`` back to false, and runs mongod in the foreground, so both
+        settings are inert there.
 
         ``systemLog.path`` is required alongside ``fork: true`` — mongod refuses
         to start at all otherwise (``BadValue: --fork has to be used with
@@ -606,7 +637,7 @@ class PackagesInstallStrategy:
         exits immediately (``Can't initialize rotatable log file :: caused by
         :: Failed to open <path>``) if the directory the configured log path
         names does not already exist, and ``start_service`` again reports
-        success regardless, for the same ``Type=forking`` reason. The
+        success regardless, for the same reason. The
         package's own post-install cannot be assumed to have created it: it
         defaults to a directory (``/var/log/mongo`` on both Ubuntu and Rocky)
         that only matches ``spec.log_path`` by coincidence, and the wizard's
@@ -655,10 +686,15 @@ class PackagesInstallStrategy:
     def _verify(self, spec: BootstrapSpec) -> StepAction:
         """Confirm ``mongod`` answers before declaring this host done.
 
+        Waits for it rather than pinging once: on PSMDB 8.0 ``start_service``
+        returns before mongod listens (see :data:`MONGOD_READY_WAIT_S`).
+
         :param spec: The host's bootstrap spec; only its port is read.
         :return: The step action.
         """
-        return _mongosh_eval("db.adminCommand('ping').ok", spec.port)
+        return _shell_step(
+            _wait_for_mongod_command(spec.port), timeout_s=MONGOD_READY_WAIT_S + 30
+        )
 
     def _require_package_manager(self, os_: OperatingSystem) -> str:
         """Map a supported OS to its package manager, or reject an unsupported one.
@@ -869,27 +905,26 @@ class PackagesInstallStrategy:
         leave a window (however short) where ``mongod`` isn't running at all if
         something between the two commands failed.
 
-        Joins the write, the restart, and a readiness probe with ``&&``, not a
-        bare newline: ``mongod.service`` is ``Type=forking`` (see
-        :meth:`_configure_mongod`'s own docstring), so ``systemctl restart``
-        reports success once mongod forks, not once it actually accepted the
-        new config — a config write that failed (read-only filesystem, full
-        disk) would otherwise still restart mongod on the *old*, auth-less
-        config, and the step would report SUCCEEDED with authorization still
-        off. The probe reuses the same unauthenticated ``ping`` ``verify``
-        uses: MongoDB answers it without credentials even with
-        ``security.authorization: enabled``, so this proves mongod actually
-        came back up on the new config rather than forking and then exiting.
+        Joins the write, the restart, and a readiness wait with ``&&``, not a
+        bare newline: ``systemctl restart`` reports success before mongod has
+        accepted the new config (see :data:`MONGOD_READY_WAIT_S`) — a config
+        write that failed (read-only filesystem, full disk) would otherwise
+        still restart mongod on the *old*, auth-less config, and the step would
+        report SUCCEEDED with authorization still off. The wait pings with the
+        same unauthenticated ``ping`` ``verify`` uses: MongoDB answers it
+        without credentials even with ``security.authorization: enabled``, so
+        this proves mongod actually came back up on the new config rather than
+        starting and then exiting. A wait rather than one ping, because on PSMDB
+        8.0 the restart returns before mongod listens.
 
         :param spec: The host's bootstrap spec.
         :param host: The host being configured, which decides its ``bindIp``.
         :return: The step action.
         """
         config = _mongod_config(spec, host, with_auth=True)
-        readiness = _mongosh_eval_command("db.adminCommand('ping').ok", spec.port)
         command = (
             f"cat > {CONFIG_PATH} <<'MONGOD_CONF' && systemctl restart mongod "
-            f"&& {readiness}\n{config}MONGOD_CONF\n"
+            f"&& {_wait_for_mongod_command(spec.port)}\n{config}MONGOD_CONF\n"
         )
         return _shell_step(command, timeout_s=120)
 
