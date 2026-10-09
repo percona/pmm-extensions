@@ -330,15 +330,10 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
             for side-effect writes such as append-only log persistence. When
             ``None``, the executor falls back to whatever session management it
             has available.
-        :param await_annotations: When True, defer the terminal PMM annotation
-            to the caller instead of scheduling it as a fire-and-forget
-            background task. The second return value is the event label the
-            caller must ``await_annotation`` after persisting the row (Celery
-            ``sync_queue_item``). Required from Celery contexts that drive the
-            event loop via discrete ``celery.loop.run_until_complete(...)``
-            calls; the FastAPI default (``False``) keeps user-facing request
-            paths (manual sync route, connectivity polling, stop-task)
-            non-blocking by scheduling the annotation here.
+        :param await_annotations: When True, do not schedule or await the
+            terminal PMM annotation here; return its event label for the
+            caller to handle after persisting the row. When False (default),
+            schedule it as a fire-and-forget background task.
         :return: The updated task history and, when ``await_annotations`` is
             True and a RUNNING-to-terminal transition occurred, the PMM event
             label to await after save; otherwise ``None``.

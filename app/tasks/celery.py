@@ -1095,6 +1095,13 @@ async def sync_finishing_items() -> None:
 async def sync_queue_item(queue_id: int) -> TaskHistory:
     """Sync a task history item.
 
+    Pass ``await_annotations=True`` into ``sync_task_history`` and await any
+    returned terminal event after save. Celery drives the loop with discrete
+    ``celery.loop.run_until_complete(...)`` calls, so a fire-and-forget
+    annotation would be abandoned when the coroutine returns; awaiting after
+    save keeps the UI status prompt while still completing the annotation
+    before chain dispatch.
+
     :param queue_id: The unique identifier of the queue item to sync.
     :type queue_id: int
     :return: The TaskHistory object post sync.
