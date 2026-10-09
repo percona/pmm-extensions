@@ -50,12 +50,10 @@ class AnonymizerSettings(BaseYamlSettings):
     """
 
     SETTINGS_PREFIXES: ClassVar[list[str]] = ["TASKS", "ANONYMIZER"]
-    DEFAULT_ENTITIES: defaultdict[str, set[PIIEntity]] = (  # ty: ignore[invalid-assignment]
-        hot_field(
-            defaultdict(set),
-            materializer=materialize_via_owning_model,
-            validate_default=True,
-        )
+    DEFAULT_ENTITIES: defaultdict[str, set[PIIEntity]] = hot_field(
+        defaultdict(set),
+        materializer=materialize_via_owning_model,
+        validate_default=True,
     )
     NLP_MODELS: dict[str, str] = Field({"en": "en_core_web_sm"}, min_length=1)
 

@@ -194,9 +194,7 @@ def record_task_start(task_id: str, task: Any, **_: Any) -> None:
     app_key = getattr(task, _OWNER_APP_KEY_ATTR, None)
     if app_key is None:
         return
-    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-        _record_start(app_key, task_id)
-    )
+    celery.loop.run_until_complete(_record_start(app_key, task_id))
 
 
 @task_postrun.connect
@@ -205,17 +203,13 @@ def record_task_end(task_id: str, task: Any, **_: Any) -> None:
     app_key = getattr(task, _OWNER_APP_KEY_ATTR, None)
     if app_key is None:
         return
-    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-        _record_end(app_key, task_id)
-    )
+    celery.loop.run_until_complete(_record_end(app_key, task_id))
 
 
 @celery.task
 def reconcile_disabling_apps() -> None:
     """Prune orphaned running-task rows and finalize drained apps (safety net)."""
-    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-        _reconcile_disabling_apps()
-    )
+    celery.loop.run_until_complete(_reconcile_disabling_apps())
 
 
 async def _reconcile_disabling_apps() -> None:

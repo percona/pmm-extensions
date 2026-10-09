@@ -420,29 +420,23 @@ class SnippetsSettings(BaseYamlSettings):
     # stores it as ``{"_url": ...}`` rather than a plain string, which then
     # coerces back into a broken ``URL``. Persist the raw string and
     # re-materialize through the owning model on load instead.
-    SNIPPETS_BASE_URL: URL | None = hot_field(  # ty: ignore[invalid-assignment]
+    SNIPPETS_BASE_URL: URL | None = hot_field(
         None, materializer=materialize_via_owning_model
     )
     META: SnippetsMetaOptions = SnippetsMetaOptions()
-    SYNC_FILTER: set[SnippetFilter] | None = (  # ty: ignore[invalid-assignment]
-        hot_field(None)
-    )
+    SYNC_FILTER: set[SnippetFilter] | None = hot_field(None)
     INTERPRETERS: OrderedDict[SnippetFilter, SnippetInterpreterConfig] = (
         DEFAULT_INTERPRETERS
     )
     USE_MAGIC: bool = False
-    SYNC_INTERVAL: IntervalSchedule = hot_field(  # ty: ignore[invalid-assignment]
+    SYNC_INTERVAL: IntervalSchedule = hot_field(
         IntervalSchedule(every=1, period=Period.HOURS)
     )
-    ENABLE_MANUAL_SYNC: bool = hot_field(  # ty: ignore[invalid-assignment]
-        default=False
-    )
-    AUTO_APPROVE_BUILTIN_SNIPPETS: bool = hot_field(  # ty: ignore[invalid-assignment]
-        default=True
-    )
+    ENABLE_MANUAL_SYNC: bool = hot_field(default=False)
+    AUTO_APPROVE_BUILTIN_SNIPPETS: bool = hot_field(default=True)
     SYNC_ON_STARTUP: bool = True
-    PREVIEW_MAX_CHARS: PositiveInt = hot_field(10000)  # ty: ignore[invalid-assignment]
-    PREVIEW_MAX_LINES: PositiveInt = hot_field(500)  # ty: ignore[invalid-assignment]
+    PREVIEW_MAX_CHARS: PositiveInt = hot_field(10000)
+    PREVIEW_MAX_LINES: PositiveInt = hot_field(500)
 
     @model_validator(mode="before")
     @classmethod

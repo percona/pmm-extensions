@@ -265,33 +265,6 @@ include = [
 unresolved-attribute = "ignore"
 
 [[tool.ty.overrides]]
-# `Celery` installs `loop` and the other attributes read here at runtime, so the
-# stub declares none of them.
-include = [
-    "app/extensions/apps/alerts/celery.py",
-    "app/extensions/apps/atw/celery.py",
-    "app/extensions/apps/om_inventory/celery.py",
-    "app/extensions/apps/report/celery.py",
-    "app/extensions/settings_override.py",
-    "tests/app/extensions/test_app_drain.py",
-]
-[tool.ty.overrides.rules]
-unresolved-attribute = "ignore"
-
-[[tool.ty.overrides]]
-# A `Field(...)` default is a `FieldInfo` until pydantic builds the model, so ty
-# sees the declared field type assigned a `FieldInfo`.
-include = [
-    "tests/app/core/settings_override/api/test_registry_helpers.py",
-    "tests/app/core/settings_override/test_registry.py",
-    "tests/app/core/settings_override/test_resolution.py",
-    "tests/app/core/settings_override/test_secret_preservation.py",
-    "tests/app/extensions/test_settings_override_worker.py",
-]
-[tool.ty.overrides.rules]
-invalid-assignment = "ignore"
-
-[[tool.ty.overrides]]
 # `Settings()` fills `CELERY` from the environment and `_session` is injected, so
 # neither is passed at the call site ty inspects.
 include = [
