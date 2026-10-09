@@ -147,9 +147,9 @@ def _run_backup(
     :param post_run_encrypt: Whether GPG runs after the backup finishes.
     :param dir_encrypt_config: Mapping assigned to ``inst.dir_encrypt_config`` and
         spread into ``encrypt_dir`` as kwargs. ``None`` leaves ``{}`` (no kwargs).
-    :param incremental: When True (the default), skip the local mycnf/certs copy
+    :param incremental: When ``True`` (the default), skip the local mycnf/certs copy
         block so encryption-format cases stay focused on the post-backup passes.
-    :param fail_metadata_copy: When True, force a localhost non-incremental run
+    :param fail_metadata_copy: When ``True``, force a localhost non-incremental run
         whose ``backup_mycnf`` raises the payload ``BackupError``, exercising the
         soft-fail warning before post-run encryption.
     :return: Probe of which encryption passes ran, which GPG kwargs were seen,
