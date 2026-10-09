@@ -258,7 +258,7 @@ async def fetch_pmm_node_service_names(
     try:
         nodes = await pmm_api.get_nodes()
         services = await pmm_api.get_services()
-    except Exception:  # noqa: BLE001 — PMM being down must never fail the form
+    except Exception:
         logger.warning(
             "PMM node/service fetch failed; falling back to free-text inputs",
             exc_info=True,

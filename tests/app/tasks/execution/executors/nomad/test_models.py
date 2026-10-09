@@ -5258,7 +5258,7 @@ class TestNomadLogStreaming:
             )
 
         mock_log_timeout.assert_called_once()
-        args, kwargs = mock_log_timeout.call_args
+        args, _kwargs = mock_log_timeout.call_args
         assert args[0] == "alloc-stream"
         assert args[1] == "step1"
         assert args[2] == TaskLogType.STDOUT

@@ -1074,7 +1074,7 @@ class TestCardinalityPatterns:
             cardinality_rules=[rule],
         )
 
-        annotations = {name: str for name in fields}
+        annotations = dict.fromkeys(fields, str)
         defaults = dict.fromkeys(fields, "")
 
         body = type(
@@ -1485,7 +1485,7 @@ class TestMultiEntityRulePlan:
     def test_extract_unknown_entity_name(self) -> None:
         """Unknown ``entity_name`` raises with known entity list."""
         schema = _multi_entity_two_alpha_beta_schema()
-        with pytest.raises(ValueError, match="not an AppEntitySchema.name"):
+        with pytest.raises(ValueError, match=re.escape("not an AppEntitySchema.name")):
             _extract_rule_plan(schema, entity_name="gamma")
 
     def test_extract_scopes_rules_to_named_entity(self) -> None:

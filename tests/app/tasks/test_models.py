@@ -16,6 +16,7 @@
 """Define test cases for the tasks data models and validation."""
 
 import json
+import re
 from collections import defaultdict
 from datetime import datetime, UTC
 from typing import Any
@@ -204,8 +205,10 @@ class TestTaskHistoryStatusEnum:
             ),
             (
                 TaskHistoryStatusEnum.UNLAUNCHABLE,
-                "could not be launched (the executor node cannot run the "
-                "requested command)",
+                (
+                    "could not be launched (the executor node cannot run the "
+                    "requested command)"
+                ),
             ),
         ],
     )
@@ -410,7 +413,7 @@ class TestTaskWriteHookPathValidation:
     @pytest.mark.parametrize("path", REJECTED_HOOK_PATHS)
     def test_rejects_path_outside_allow_list(self, field: str, path: str) -> None:
         """Assert a hook path the allow-list denies is rejected at the write boundary."""
-        with pytest.raises(ValidationError, match="app.extensions.apps"):
+        with pytest.raises(ValidationError, match=re.escape("app.extensions.apps")):
             self._write(**{field: path})
 
     @pytest.mark.parametrize("field", HOOK_PATH_FIELDS)

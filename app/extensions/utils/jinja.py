@@ -64,7 +64,7 @@ def syntax_highlight_css(
     light_css = light_formatter.get_style_defs(light_prefix)
     dark_css = dark_formatter.get_style_defs(dark_prefix)
 
-    return Markup(f"{light_css}\n{dark_css}")  # nosec B704
+    return Markup(f"{light_css}\n{dark_css}")  # noqa: S704 # nosec B704
 
 
 def syntax_highlight(
@@ -140,7 +140,7 @@ def humanize_bytes(num_bytes: int) -> str:
     return f"{num_bytes:.1f}YiB"
 
 
-def timestamp_format(epoch_seconds: int | float) -> str:
+def timestamp_format(epoch_seconds: float) -> str:
     """Format a Unix timestamp (seconds) as a human-readable UTC date string.
 
     :param epoch_seconds: Seconds since epoch.
@@ -173,7 +173,7 @@ def backup_date(value: int | str) -> str:
     return str(value)
 
 
-def convert_bytes(value: str | int | float, unit: str = "G") -> str:
+def convert_bytes(value: str | float, unit: str = "G") -> str:
     """Convert a byte count (given as a string) to a human-readable size.
 
     :param value: Byte count as a string, int, or float.

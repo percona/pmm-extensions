@@ -1374,8 +1374,8 @@ async def test_aexit_finalizes_run_after_sweeping_hanging_items(
     lifecycle_mocks["finish_hanging_items"].side_effect = lambda *_args, **_kwargs: (
         order("sweep")
     )
-    lifecycle_mocks["finalize_run"].side_effect = lambda *_args, **_kwargs: (
-        order("finalize")
+    lifecycle_mocks["finalize_run"].side_effect = lambda *_args, **_kwargs: order(
+        "finalize"
     )
     syncer = lifecycle_syncer_cls(inventory_api=mock_remote_api)
 

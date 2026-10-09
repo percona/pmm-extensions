@@ -50,9 +50,7 @@ class AnonymizerSettings(BaseYamlSettings):
     """
 
     SETTINGS_PREFIXES: ClassVar[list[str]] = ["TASKS", "ANONYMIZER"]
-    DEFAULT_ENTITIES: defaultdict[
-        str, set[PIIEntity]
-    ] = (  # ty: ignore[invalid-assignment]
+    DEFAULT_ENTITIES: defaultdict[str, set[PIIEntity]] = (  # ty: ignore[invalid-assignment]
         hot_field(
             defaultdict(set),
             materializer=materialize_via_owning_model,

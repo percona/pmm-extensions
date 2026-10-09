@@ -17,6 +17,7 @@
 
 import importlib
 import logging
+import re
 
 import pytest
 from pytest_mock import MockerFixture
@@ -84,7 +85,9 @@ class TestAllowList:
     )
     def test_rejects_module_outside_allow_listed_namespace(self, path: str) -> None:
         """Reject a path whose module is not under an allow-listed root."""
-        with pytest.raises(HookPathNotAllowedError, match="app.extensions.apps"):
+        with pytest.raises(
+            HookPathNotAllowedError, match=re.escape("app.extensions.apps")
+        ):
             validate_hook_path(path)
 
     @pytest.mark.parametrize(

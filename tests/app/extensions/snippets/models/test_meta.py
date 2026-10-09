@@ -606,7 +606,7 @@ class TestVisibilityCondition:
 
     def test_self_reference_raises(self):
         """A condition that references the parameter itself is rejected."""
-        with pytest.raises(ValidationError, match="itself|self"):
+        with pytest.raises(ValidationError, match=r"itself|self"):
             SnippetMetaParameter(name="start", visible_when_not="start")
 
     def test_required_with_condition_raises(self):
@@ -734,7 +734,7 @@ class TestGateCondition:
 
     def test_self_reference_raises(self):
         """A gate that references the parameter itself is rejected."""
-        with pytest.raises(ValidationError, match="itself|self"):
+        with pytest.raises(ValidationError, match=r"itself|self"):
             SnippetMetaParameter(name="reason", requires_when="reason")
 
     def test_required_with_requires_gate_raises(self):
@@ -766,7 +766,7 @@ class TestGateCondition:
 
     def test_gate_combined_with_visibility_raises(self):
         """A gate cannot be combined with a visibility condition on one field."""
-        with pytest.raises(ValidationError, match="visibilit|combine"):
+        with pytest.raises(ValidationError, match=r"visibilit|combine"):
             SnippetMetaParameter(
                 name="reason", visible_when="mode", requires_when="other"
             )

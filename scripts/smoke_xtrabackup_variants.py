@@ -73,8 +73,12 @@ def load_dispatcher() -> Dispatcher:
     :return: The selection enumerator and the spec builder.
     """
     sys.path.insert(0, str(REPO_ROOT))
-    from app.extensions.apps.mysql_backups.payload_variants import selections
-    from tests.app.extensions.apps.mysql_backups.variant_specs import spec_for
+    from app.extensions.apps.mysql_backups.payload_variants import (  # noqa: PLC0415
+        selections,
+    )
+    from tests.app.extensions.apps.mysql_backups.variant_specs import (  # noqa: PLC0415
+        spec_for,
+    )
 
     return Dispatcher(selections=selections, spec_for=spec_for)
 

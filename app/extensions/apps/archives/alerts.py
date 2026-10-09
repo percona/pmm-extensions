@@ -42,6 +42,7 @@ import yaml
 from app.tasks.alert_hooks import OwnerAlertDetails
 from app.tasks.anonymizer import anonymize_text
 from app.tasks.anonymizer.entities import PIIEntity
+from app.tasks.crud import TaskHistoryLogManager
 
 if TYPE_CHECKING:
     from app.tasks.models import TaskHistory
@@ -330,8 +331,9 @@ async def _read_last_stderr(task_history_id: int) -> str | None:
     :param task_history_id: The ``TaskHistory`` identifier.
     :return: The trailing STDERR content, or ``None`` when unavailable.
     """
-    from app.tasks.crud import TaskHistoryLogManager
-    from app.tasks.db import get_async_session_maker
+    from app.tasks.db import (  # noqa: PLC0415 - builds the Tasks engine at import
+        get_async_session_maker,
+    )
 
     try:
         async_session = get_async_session_maker()

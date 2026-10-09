@@ -38,6 +38,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.requests import RemoteAPI
+from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.crud import list_hosts, upsert_host
 from app.extensions.apps.om_inventory.dispatch import (
     classify_terminal_failure,
@@ -127,8 +128,6 @@ def make_api(history: dict[str, Any], logs: list[str] | None = None) -> MagicMoc
 @pytest.fixture(autouse=True)
 def _fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the poll loop take a test's worth of time."""
-    from app.extensions.apps.om_inventory.config import om_inventory_settings
-
     monkeypatch.setattr(om_inventory_settings, "TASK_TIMEOUT", 1)
     monkeypatch.setattr(om_inventory_settings, "POLL_INTERVAL", 1)
 

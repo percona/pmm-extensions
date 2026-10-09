@@ -33,7 +33,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, status
 
@@ -307,7 +307,7 @@ def _is_terminal_task_status(status_value: Any) -> bool:
 async def topology_result(
     tasks_api: TaskAPI,
     current_user: ApiCurrentUser,
-    ids: str = Query(..., description="Comma-separated task history ids"),
+    ids: Annotated[str, Query(description="Comma-separated task history ids")],
 ) -> TopologyResultResponse:
     """Return the merged graph for the supplied task history ids.
 

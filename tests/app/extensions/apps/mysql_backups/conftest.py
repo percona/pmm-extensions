@@ -177,8 +177,8 @@ async def authenticated_get(
     previous_overrides = extensions_app.dependency_overrides.copy()
     extensions_app.dependency_overrides[get_session] = lambda: session
     extensions_app.dependency_overrides[get_current_user] = lambda: user
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None

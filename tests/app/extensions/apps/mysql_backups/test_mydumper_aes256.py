@@ -45,7 +45,7 @@ from tests.app.extensions.apps.mysql_backups.payload_harness import (
 
 _PATH = MYDUMPER_PAYLOAD_PATH
 _FORMATS = cast(
-    tuple[str, ...], load_constant("ENCRYPTION_FORMATS", payload_path=_PATH)
+    "tuple[str, ...]", load_constant("ENCRYPTION_FORMATS", payload_path=_PATH)
 )
 _resolve_encryption = load_function("_resolve_encryption", payload_path=_PATH)
 _KEYFILE = "/keys/aes.key"
