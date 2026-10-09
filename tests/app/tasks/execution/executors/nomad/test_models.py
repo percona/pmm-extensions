@@ -7118,9 +7118,12 @@ class TestStreamFile:
 
 
 class TestStreamDirectoryAsTarGz:
-    """Test NomadExecutor._stream_directory_as_tar_gz."""
+    """Test NomadExecutor._stream_directory_as_tar_gz.
 
-    #: Contract for directory members in streamed archives (independent of production).
+    :cvar EXPECTED_DIRECTORY_MODE: Contract for directory members in streamed
+        archives, independent of production.
+    """
+
     EXPECTED_DIRECTORY_MODE = 0o755
 
     @pytest.mark.asyncio
