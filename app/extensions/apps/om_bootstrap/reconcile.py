@@ -41,23 +41,26 @@ from ``TaskHistory``: this runs on a polling interval, not a push, so the two
 times differ by at most that interval — an acceptable approximation for a
 receipt, not a claim of exact timing.
 
-``detail`` on a non-``SUCCESS`` terminal status is currently just the
-``TaskHistory`` status name — it does not yet read the dispatch's stderr for a
-real error message (the way ``om_inventory/dispatch.py``'s ``_read_stdout``
-does for its own purpose). A worthwhile follow-up, not done here to keep this
-module to exactly the one thing its docstring claims.
+``detail`` on a non-``SUCCESS`` terminal status says why, in the node's own
+words: the ``TaskHistory``'s ``failure_reason`` and the end of the failed step's
+output, read with :mod:`~app.extensions.apps.shared.om.task_failure`. PMM shows
+``detail`` to the operator as it is. Reading the logs is bounded by
+:data:`LOG_READ_TIMEOUT_S` and best-effort: a step whose logs cannot be read still
+fails, with the reason alone, rather than staying ``running`` until they can.
 
 A Tasks API read that fails does not fail the reconcile: a ``404``/``410`` means
 the step's ``TaskHistory`` record is gone and it can never finish, so the step
 is recorded ``failed``; any other failure (an upstream error, a transport error,
 a timeout) is transient, so the step stays ``running`` and the next poll tries
-again. A readable answer that is not a ``TaskHistory`` — not a JSON object, or
-without a string ``status`` — is a ``502``, as it would otherwise leave the step
-looking in flight forever.
+again. A readable answer that is not a ``TaskHistory`` is a ``502``: one that is
+not a JSON object or has no string ``status`` would otherwise leave the step
+looking in flight forever, and a failed one whose ``failure_reason`` is neither a
+string nor ``null`` would lose its reason unseen.
 """
 
 import asyncio
 import logging
+import re
 
 import aiohttp
 from fastapi import HTTPException
@@ -82,6 +85,11 @@ from app.extensions.apps.om_bootstrap.strategy import (
     StepRecord,
     StepStatus,
 )
+from app.extensions.apps.shared.om.task_failure import (
+    describe_task_failure,
+    read_step_logs,
+)
+from app.tasks.execution.executors.nomad.steps import NomadStep
 from app.tasks.models import TaskHistoryStatusEnum
 
 __all__ = ["reconcile_run", "reconcile_step"]
@@ -96,6 +104,24 @@ _DONE_STATUSES = frozenset({StepStatus.SUCCEEDED, StepStatus.SKIPPED})
 #: is terminal.
 _IN_FLIGHT_STATUS_VALUES = frozenset(
     status.value for status in TaskHistoryStatusEnum.active_statuses()
+)
+
+#: How long reading a failed step's logs may take before the step is failed with
+#: its ``failure_reason`` alone. Reconciling runs inside ``GET /runs/{id}``, under
+#: the run's row lock, and PMM gives that whole request 15 seconds
+#: (``bootstrapRequestTimeout`` in ``managed/services/om/bootstrap_client.go``).
+LOG_READ_TIMEOUT_S = 5.0
+
+#: The reason the tasks service writes when ``exec-artifact``'s ``run-script``
+#: exits 123. That step launches the script through GNU ``xargs`` (see
+#: ``NOMAD_EXEC_ARTIFACT`` in ``app/tasks/db/seed.py``), and ``xargs`` exits 123
+#: whenever the command it ran exited with any status from 1 to 125 - so 123 is
+#: ``xargs``' code, not the step's, and all the reason says is that the script
+#: failed, which the script's own output already says better. The other codes
+#: ``xargs`` can exit with (124 for a 255, 125 for a signal, 126 and 127 when it
+#: could not run the command) say something real and are left as they are.
+_XARGS_ANY_FAILURE = re.compile(
+    rf"^Step '{re.escape(NomadStep.RUN_SCRIPT)}' failed \(exit code 123\)\.$"
 )
 
 
@@ -117,8 +143,9 @@ async def reconcile_step(tasks_api: RemoteAPI, step: StepRecord) -> StepRecord:
         dispatch's terminal status, or ``failed`` when its ``TaskHistory``
         record no longer exists.
     :raises HTTPBadGatewayException: When the Tasks API answers with something
-        that is not a ``TaskHistory`` — not a JSON object, or without a string
-        ``status``.
+        that is not a ``TaskHistory``: not a JSON object, without a string
+        ``status``, or failed with a ``failure_reason`` that is neither a string
+        nor ``null``.
     """
     if step.status != StepStatus.RUNNING or step.task_history_id is None:
         return step
@@ -152,13 +179,68 @@ async def reconcile_step(tasks_api: RemoteAPI, step: StepRecord) -> StepRecord:
         return step.model_copy(
             update={"status": StepStatus.SUCCEEDED, "finished_at": utc_now()}
         )
-    return step.model_copy(
-        update={
-            "status": StepStatus.FAILED,
-            "finished_at": utc_now(),
-            "detail": f"Task history {step.task_history_id} ended {task_status}",
-        }
+    failure_reason = as_json_object(payload).get("failure_reason")
+    if failure_reason is not None and not isinstance(failure_reason, str):
+        raise HTTPBadGatewayException(
+            detail=f"Task history {step.task_history_id} has a non-string "
+            "failure_reason"
+        )
+    detail = await _failure_detail(
+        tasks_api, step.task_history_id, task_status, failure_reason
     )
+    return step.model_copy(
+        update={"status": StepStatus.FAILED, "finished_at": utc_now(), "detail": detail}
+    )
+
+
+async def _failure_detail(
+    tasks_api: RemoteAPI,
+    task_history_id: int,
+    task_status: str,
+    failure_reason: str | None,
+) -> str:
+    """Say why a step's dispatch failed, naming the task history it ran as.
+
+    The tasks service's reason first, then the end of the failed step's output,
+    which is where a step body says what it refused or what broke - ``pre_check``
+    names the check that failed, ``dnf`` prints the repository it could not reach.
+    A reason that says only that the script failed (:data:`_XARGS_ANY_FAILURE`) is
+    left out when the script printed anything, since the output is the account of
+    it. The task history id stays in the text, last, so the full logs can still be
+    found from it.
+
+    :param tasks_api: The Tasks API client.
+    :param task_history_id: The step's dispatch.
+    :param task_status: Its terminal, non-success status.
+    :param failure_reason: The tasks service's account of it, when it has one.
+    :return: The detail.
+    """
+    try:
+        logs = await asyncio.wait_for(
+            read_step_logs(tasks_api, task_history_id), LOG_READ_TIMEOUT_S
+        )
+    except (HTTPException, aiohttp.ClientError, OSError):
+        # The reason alone is still better than leaving the step running: logs that
+        # cannot be read now (gone from the executor, or slow) may never be. The
+        # timeout lands here too, since TimeoutError is an OSError.
+        logger.warning(
+            "Could not read the logs of task history %s; reporting its reason alone",
+            task_history_id,
+            exc_info=True,
+        )
+        logs = {}
+    script_failed = failure_reason is not None and bool(
+        _XARGS_ANY_FAILURE.match(failure_reason)
+    )
+    described = describe_task_failure(
+        None if script_failed else failure_reason,
+        logs,
+        default_step=NomadStep.RUN_SCRIPT,
+    )
+    if script_failed and not described:
+        described = f"Step '{NomadStep.RUN_SCRIPT}' failed with no output."
+    described = described or f"Ended {task_status} with no output"
+    return f"{described} (task history {task_history_id})"
 
 
 async def reconcile_run(tasks_api: RemoteAPI, run: BootstrapRun) -> bool:
