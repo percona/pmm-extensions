@@ -399,6 +399,7 @@ async def test_a_failed_record_still_says_whether_the_mongod_is_running() -> Non
 
     assert outcome.service_documents == {}
     assert outcome.service_process_facts[DEFAULT_EXTERNAL_ID] == {
+        "probe_status": STATUS_FAILED,
         "installed_version": "7.0.39-21",
         "config_path": None,
         "argv": None,

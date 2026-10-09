@@ -285,14 +285,24 @@ PROCESS_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("uptime_seconds", ("process", "uptime_sec")),
 )
 
+PROBE_STATUS_FIELD: tuple[str, tuple[str, ...]] = ("probe_status", ("status",))
+
 #: Probe-record fields that belong to one **service**.
 SERVICE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("probe_status", ("status",)),
+    PROBE_STATUS_FIELD,
     ("version", ("database", "db_version")),
     ("git_version", ("database", "git_version")),
     ("vendor", ("database", "vendor")),
     ("storage_engine", ("database", "storage_engine")),
     ("replication_set", ("database", "set_name")),
+    *PROCESS_FIELDS,
+)
+
+#: What a failed attempt refreshes on a service's stored document: its probe status,
+#: so the document does not keep the last good scan's ``ok``, and the
+#: :data:`PROCESS_FIELDS`.
+FAILED_ATTEMPT_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    PROBE_STATUS_FIELD,
     *PROCESS_FIELDS,
 )
 
@@ -316,7 +326,7 @@ def _lift(
 
 
 def _process_facts(record: dict[str, Any]) -> dict[str, Any]:
-    """Lift :data:`PROCESS_FIELDS` out of a failed record, ``None`` for each one it lacks.
+    """Lift :data:`FAILED_ATTEMPT_FIELDS` out of a failed record, ``None`` where absent.
 
     ``None`` rather than absent, so that
     :func:`~app.extensions.apps.om_inventory.crud.upsert_service` drops what the last
@@ -324,10 +334,10 @@ def _process_facts(record: dict[str, Any]) -> dict[str, Any]:
     them, instead of keeping it beside ``server_running: false``.
 
     :param record: The failed probe record.
-    :return: Every :data:`PROCESS_FIELDS` key, with its value or ``None``.
+    :return: Every :data:`FAILED_ATTEMPT_FIELDS` key, with its value or ``None``.
     """
-    lifted = _lift(record, PROCESS_FIELDS)
-    return {key: lifted.get(key) for key, _ in PROCESS_FIELDS}
+    lifted = _lift(record, FAILED_ATTEMPT_FIELDS)
+    return {key: lifted.get(key) for key, _ in FAILED_ATTEMPT_FIELDS}
 
 
 def build_document(
@@ -375,8 +385,8 @@ class SweepOutcome:
     :param service_errors: Why a service did not answer, keyed by PMM's service id.
         Only for services a run actually attempted: an entity nobody targeted must
         not have its timestamps touched at all.
-    :param service_process_facts: What a failed record still saw of a service's
-        binary and process, keyed by PMM's service id; see :func:`_process_facts`.
+    :param service_process_facts: What a failed record still refreshes on a service's
+        document, keyed by PMM's service id; see :func:`_process_facts`.
     :param seen: ``(service, node_id)`` for every service PMM knows that resolved to
         a host in scope, orphans included — all of them get a row.
     :param attempted: PMM's service ids for the subset this run actually probed. The
