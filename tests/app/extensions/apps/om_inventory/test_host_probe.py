@@ -194,6 +194,30 @@ class TestProbeAllTargets:
         assert seen["pmm-client-node00"] == []
 
     @pytest.mark.asyncio
+    async def test_reports_each_host_as_it_comes_back(self) -> None:
+        """Hand every host's result to the caller's callback, for progress."""
+        landed: list[str] = []
+
+        async def fake_probe_host(_api, host, _entries):
+            return type("R", (), {"executor_host": host})()
+
+        async def on_host_done(result) -> None:
+            landed.append(result.executor_host)
+
+        with patch(
+            "app.extensions.apps.om_inventory.dispatch.probe_host",
+            AsyncMock(side_effect=fake_probe_host),
+        ):
+            await probe_all(
+                AsyncMock(),
+                [],
+                executor_hosts=["db00", "db01"],
+                on_host_done=on_host_done,
+            )
+
+        assert sorted(landed) == ["db00", "db01"]
+
+    @pytest.mark.asyncio
     async def test_an_orphaned_service_adds_no_dispatch(self) -> None:
         """Skip an orphan, which has no executor and so nowhere to dispatch.
 
