@@ -197,8 +197,10 @@ class TestViolationReporting:
                 "conftest.py",
                 "from .extensions.apps.atw.factories import AtwIncidentFactory",
                 [
-                    "tests/app/conftest.py:1 -> "
-                    "tests.app.extensions.apps.atw.factories.AtwIncidentFactory"
+                    (
+                        "tests/app/conftest.py:1 -> "
+                        "tests.app.extensions.apps.atw.factories.AtwIncidentFactory"
+                    )
                 ],
                 id="relative-re-export-resolved",
             ),

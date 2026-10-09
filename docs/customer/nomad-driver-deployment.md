@@ -31,7 +31,9 @@ Customer-facing reference for security and cloud architects reviewing how **Hash
 PMM Extensions registers parameterized Nomad jobs (`run-command`, `run-python`, `exec-artifact`, etc.) whose tasks declare `"Driver": "raw_exec"`. The Tasks service only schedules work onto nodes that advertise a healthy `raw_exec` driver. From `app/tasks/execution/executors/nomad/models.py`:
 
 ```python
-filter_expression = "Status == ready and raw_exec in Drivers and Drivers.raw_exec.Healthy == true"
+filter_expression = (
+    "Status == ready and raw_exec in Drivers and Drivers.raw_exec.Healthy == true"
+)
 return {
     node["Name"]: node["Address"]
     for node in self.backend.nodes.get_nodes(filter_=filter_expression)

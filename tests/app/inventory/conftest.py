@@ -121,8 +121,8 @@ def test_client(
         lambda: None
     )
     inventory_app.dependency_overrides[get_current_user] = lambda: regular_user
-    inventory_app.dependency_overrides[get_current_service_principal] = (
-        lambda: regular_user
+    inventory_app.dependency_overrides[get_current_service_principal] = lambda: (
+        regular_user
     )
     inventory_app.dependency_overrides[get_session] = lambda: session
     yield TestClient(inventory_app)

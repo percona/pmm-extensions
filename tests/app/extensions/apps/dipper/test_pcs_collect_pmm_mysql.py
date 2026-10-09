@@ -183,7 +183,7 @@ class TestPcsCollectPmmMysqlApikeyHidden:
     @pytest.mark.asyncio
     async def test_validated_apikey_parameter_is_hidden(self):
         """The parsed snippet parameter for apikey carries ``hidden=True``."""
-        from app.extensions.snippets.models.snippet import BaseSnippet
+        from app.extensions.snippets.models.snippet import BaseSnippet  # noqa: PLC0415
 
         meta = await BaseSnippet.get_meta_by_path(SCRIPT)
         snippet = BaseSnippet(
@@ -214,7 +214,7 @@ class TestPcsCollectPmmMysqlListVisibility:
     @pytest.mark.asyncio
     async def test_schema_forbids_gated_fields_when_list(self):
         """The synthesised schema hides the gated fields when ``list`` is truthy."""
-        from app.extensions.snippets.models.snippet import BaseSnippet
+        from app.extensions.snippets.models.snippet import BaseSnippet  # noqa: PLC0415
 
         meta = await BaseSnippet.get_meta_by_path(SCRIPT)
         snippet = BaseSnippet(

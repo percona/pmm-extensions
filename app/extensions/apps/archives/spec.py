@@ -51,7 +51,7 @@ from app.inventory.constants import DEFAULT_MYSQL_PORT
 _REQUIREMENTS = "PyMySQL[rsa,ed25519]\nfilelock\nPyYAML"
 
 
-def _flag_to_int(value: bool | None) -> int | None:
+def _flag_to_int(*, value: bool | None) -> int | None:
     """Map a tri-state flag to the integer the archiver config expects.
 
     :param value: ``True`` / ``False`` / ``None`` from a checkbox field.
@@ -145,9 +145,9 @@ def build_archives_spec(
         "extra_args": form.extra_args,
         "limit": form.limit,
         "sleep": form.sleep,
-        "disable_binlog": _flag_to_int(form.disable_binlog),
-        "disable_bulk_insert": _flag_to_int(form.disable_bulk_insert),
-        "delete_data": _flag_to_int(form.delete_data),
+        "disable_binlog": _flag_to_int(value=form.disable_binlog),
+        "disable_bulk_insert": _flag_to_int(value=form.disable_bulk_insert),
+        "delete_data": _flag_to_int(value=form.delete_data),
     }
 
     source = form.source

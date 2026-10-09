@@ -41,8 +41,8 @@ def _mock_check_for_conflicted_running_tasks(mocker: MockerFixture) -> Iterator[
         side_effect=_noop,
     )
     previous = extensions_app.dependency_overrides.copy()
-    extensions_app.dependency_overrides[check_for_conflicted_running_tasks] = (
-        lambda: None
+    extensions_app.dependency_overrides[check_for_conflicted_running_tasks] = lambda: (
+        None
     )
     yield
     extensions_app.dependency_overrides = previous

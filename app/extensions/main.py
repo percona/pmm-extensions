@@ -170,7 +170,7 @@ def _make_remote_api_rebinder(
     """
 
     async def _rebind(change: SnapshotChange) -> None:
-        new_endpoint = cast(CredentialHttpUrl, getattr(proxy, key))
+        new_endpoint = cast("CredentialHttpUrl", getattr(proxy, key))
         old = getattr(app.state, name, None)
         if old is None:
             previous_endpoint = previous_or_base(change, proxy, key)
@@ -464,7 +464,7 @@ async def internal_error_handler(
     :param exc: The unhandled exception.
     :return: A JSON response carrying a generic 500 detail.
     """
-    logger.exception("Unhandled exception:", exc_info=exc)
+    logger.error("Unhandled exception:", exc_info=exc)
     return JSONResponse(
         {"detail": "Internal Server Error"},
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -504,7 +504,7 @@ async def auth_provider_exception_handler(
     :param exc: The auth-provider exception to handle.
     :return: A JSON response with the error detail and status code.
     """
-    logger.exception("Error connecting to auth provider:", exc_info=exc)
+    logger.error("Error connecting to auth provider:", exc_info=exc)
     return JSONResponse(
         {"detail": exc.detail},
         status_code=exc.status_code,

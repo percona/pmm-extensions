@@ -166,7 +166,7 @@ async def list_hosts(
         ``OSError`` (e.g. a connection failure).
     """
     try:
-        executor_hosts = cast(dict[str, str], await tasks_api.get("/hosts/"))
+        executor_hosts = cast("dict[str, str]", await tasks_api.get("/hosts/"))
     except (HTTPException, OSError) as exc:
         detail = getattr(exc, "detail", str(exc))
         raise HTTPBadGatewayException(detail=str(detail)) from exc

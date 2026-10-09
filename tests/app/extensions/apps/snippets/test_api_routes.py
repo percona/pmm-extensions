@@ -1881,8 +1881,8 @@ class TestSnippetsApiNestedFilenameContract:
 @pytest.fixture
 def test_client(regular_user, session, snippets_dir):
     """Return a TestClient sharing the in-memory session and snippets dir."""
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None

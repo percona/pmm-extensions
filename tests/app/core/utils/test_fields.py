@@ -15,6 +15,8 @@
 
 """Define tests for the app.core.utils.fields module."""
 
+import re
+
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
@@ -40,7 +42,9 @@ from app.core.utils.path import resolve_relative_path
 def test_validate_attribute_is_importable_invalid_format():
     """Test that an invalid format raises a ValueError."""
     input_str = "invalidformat"
-    with pytest.raises(ValueError, match="Must follow the format module.attribute"):
+    with pytest.raises(
+        ValueError, match=re.escape("Must follow the format module.attribute")
+    ):
         validate_attribute_is_importable(input_str)
 
 

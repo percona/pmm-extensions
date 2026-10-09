@@ -81,8 +81,8 @@ class BaseCaseInsensitiveModel(BaseTransformFieldsModel):
     """
 
     model_config = ConfigDict(alias_generator=to_uppercase)
-    TRANSFORM_CALLABLE: ClassVar[Callable[[Any], Any]] = (
-        lambda v: v.upper() if isinstance(v, str) else v
+    TRANSFORM_CALLABLE: ClassVar[Callable[[Any], Any]] = lambda v: (
+        v.upper() if isinstance(v, str) else v
     )
 
 

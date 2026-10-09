@@ -904,7 +904,7 @@ class TestRequiresAppsValidation:
 
     def test_duplicate_app_key_raises(self) -> None:
         """Reject two apps sharing a key rather than silently collapsing them."""
-        with pytest.raises(ValueError, match="duplicate|Duplicate"):
+        with pytest.raises(ValueError, match=r"duplicate|Duplicate"):
             AppRegistry([_dep_app("dup"), _dep_app("dup")])
 
     def test_dangling_dependency_raises(self) -> None:
@@ -914,12 +914,12 @@ class TestRequiresAppsValidation:
 
     def test_self_dependency_raises(self) -> None:
         """Reject an app that depends on itself."""
-        with pytest.raises(ValueError, match="itself|self"):
+        with pytest.raises(ValueError, match=r"itself|self"):
             AppRegistry([_dep_app("a", requires_apps=("a",))])
 
     def test_dependency_cycle_raises(self) -> None:
         """Reject a dependency cycle across apps."""
-        with pytest.raises(ValueError, match="cycle|Cycle"):
+        with pytest.raises(ValueError, match=r"cycle|Cycle"):
             AppRegistry(
                 [
                     _dep_app("a", requires_apps=("b",)),
