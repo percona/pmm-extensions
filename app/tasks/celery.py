@@ -145,6 +145,8 @@ def _session_maker() -> async_sessionmaker:
 
     Passing ``get_async_session_maker`` itself would bind the function at import,
     so a test that rebinds the module attribute would never reach the refresher.
+
+    :return: The service-scoped session maker.
     """
     return get_async_session_maker()
 
