@@ -47,8 +47,9 @@
 # sh.status() reports the cluster's shards, databases, sharded collections,
 # chunk distribution per shard and the balancer state.
 #
-# Authentication is performed with db.auth() over the shell's stdin, so the
-# password is never placed on the process command line.
+# The credentials reach the MongoDB shell over stdin and never appear on its
+# command line. A --password given to this script is still visible in this
+# script's own argv.
 #
 # sh.status() is only meaningful against a mongos; run this on the router.
 # Host-level diagnostics for the config server and shard primaries are
@@ -147,33 +148,50 @@ if [ -z "$MONGO_BIN" ]; then
     exit 2
 fi
 
-# The credentials are never passed on the command line; only the connection
-# endpoint is. Authentication happens via db.auth() in the piped script below.
 MONGO_ARGS=(--host "$HOST" --port "$PORT")
+MONGO_ENDPOINT="$HOST:$PORT"
 
-js_escape() {
-    local value="$1"
-    value=${value//\\/\\\\}
-    value=${value//\'/\\\'}
-    value=${value//$'\n'/\\n}
-    value=${value//$'\r'/\\r}
-    value=${value//$'\t'/\\t}
-    printf '%s' "$value"
+# The script stays on --eval and only the credentials travel over stdin: piped
+# into mongosh, a script runs as a REPL that ignores a failed db.auth().
+MONGO_AUTH_FAILED=3
+MONGO_AUTH_JS="var __creds = (typeof require === 'function' ? require('fs').readFileSync(0, 'utf8') : cat('/dev/stdin')).split('\n'), __ok = false;
+try { __creds = __creds.slice(0, 3).map(function (h) { return decodeURIComponent(h.replace(/(..)/g, '%\$1')); }); } catch (e) { quit($MONGO_AUTH_FAILED); }
+try { __ok = db.getSiblingDB(__creds[0]).auth(__creds[1], __creds[2]); } catch (e) { if (e.code !== 18) { throw e; } }
+if (!__ok) { quit($MONGO_AUTH_FAILED); }"
+
+# Hex-encode each value on its own line: a MongoDB user name may contain a line
+# break, which would otherwise split the three-line framing.
+mongo_credentials() {
+    local value
+    for value in "$AUTH_DB" "$USER" "$PASSWORD"; do
+        printf '%s' "$value" | od -An -tx1 -v | tr -d ' \n'
+        printf '\n'
+    done
 }
 
-mongo_eval() {
+mongo_shell() {
     local script="$1"
-    local auth_prefix=""
-    if [ -n "$USER" ] && [ -n "$PASSWORD" ]; then
-        local escaped_auth_db escaped_user escaped_password
-        escaped_auth_db="$(js_escape "$AUTH_DB")"
-        escaped_user="$(js_escape "$USER")"
-        escaped_password="$(js_escape "$PASSWORD")"
-        auth_prefix="db = db.getSiblingDB('$escaped_auth_db'); if (!db.auth('$escaped_user', '$escaped_password')) { quit(1); }"
+    if [ -z "$USER" ]; then
+        "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet --eval "$script"
+        return
     fi
-    printf '%s\n%s\n' "$auth_prefix" "$script" |
-        "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet
+    mongo_credentials |
+        "$MONGO_BIN" "${MONGO_ARGS[@]}" --quiet --eval "$MONGO_AUTH_JS
+$script"
 }
+
+check_mongo_auth() {
+    [ -n "$USER" ] || return 0
+    local rc=0
+    mongo_shell "quit(0)" > /dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq "$MONGO_AUTH_FAILED" ]; then
+        echo "Error: MongoDB authentication failed for user '$USER' on authentication database '$AUTH_DB' at $MONGO_ENDPOINT." >&2
+        echo "Check the user, password and authentication database." >&2
+        exit 1
+    fi
+}
+
+check_mongo_auth
 
 echo "=== MongoDB Sharding Status ==="
 echo "MongoDB shell: $MONGO_BIN"
@@ -183,7 +201,7 @@ echo ""
 echo "********* Endpoint check *********"
 echo ""
 # A mongos router answers isMaster with msg == 'isdbgrid'.
-mongo_eval "
+mongo_shell "
 var info = db.runCommand({ isMaster: 1 });
 if (info.msg === 'isdbgrid') {
     print('Connected to a mongos router; sh.status() applies.');
@@ -196,7 +214,7 @@ if (info.msg === 'isdbgrid') {
 echo ""
 echo "********* sh.status() *********"
 echo ""
-mongo_eval "sh.status()" 2>&1 || echo "Could not retrieve sh.status()."
+mongo_shell "sh.status()" 2>&1 || echo "Could not retrieve sh.status()."
 
 echo ""
 echo "=== Done ==="
