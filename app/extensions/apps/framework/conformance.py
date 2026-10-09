@@ -288,8 +288,10 @@ def check_actor_fields_resolvable(app: "TaskExecutionApp") -> list[str]:
     if not unresolved:
         return []
     return [
-        f"response_context_provider is None, so {unresolved} render the stored "
-        "user id instead of a display name"
+        (
+            f"response_context_provider is None, so {unresolved} render the stored "
+            "user id instead of a display name"
+        )
     ]
 
 

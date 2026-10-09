@@ -190,12 +190,12 @@ class TasksSettings(BaseYamlAppSettings):
     :param INVENTORY_SYNC_SCHEDULES: Per-syncer schedules seeded beside the
         scalar default, for a syncer whose useful cadence differs from it. Each
         entry names a syncer in ``BaseSyncer.get_name()`` form and its own
-        interval. When the pinned ``INVENTORY_SYNC_SYNCER`` default is seeded,
-        each entry's seeded schedule is deferred until that syncer's first
-        completed inventory sync, which then starts the entry once if it has
-        never run; an entry an operator-managed schedule already covers is not
-        seeded, so that schedule is not deferred. Read at startup. Defaults to
-        no extra schedules.
+        interval, and runs on it from bring-up. When the pinned
+        ``INVENTORY_SYNC_SYNCER`` default is seeded, its runs also start each
+        seeded entry that has not run since that syncer's first completed
+        inventory sync, so the entry's next run reads that inventory; an entry an
+        operator-managed schedule already covers is not seeded. Read at
+        startup. Defaults to no extra schedules.
     :param LOG_STREAM_CAP_BYTES: The maximum captured-log bytes retained per
         ``(task_history_id, source, stream)``. As a stream grows past the cap
         the writer drops the oldest chunks, keeping a bounded recent tail so a
@@ -218,16 +218,12 @@ class TasksSettings(BaseYamlAppSettings):
     UVICORN_PORT: int = 8002
     NOMAD: NomadExecutor = nested_overridable_field(...)
     DATABASE: DatabaseOptions = DatabaseOptions(NAME="tasks.db")
-    SECURITY_HEADERS: (
-        SecurityHeadersOptions | None
-    ) = (  # ty: ignore[invalid-assignment]
+    SECURITY_HEADERS: SecurityHeadersOptions | None = (  # ty: ignore[invalid-assignment]
         nested_overridable_field(
             SecurityHeadersOptions(content_security_policy_strict=False), advanced=True
         )
     )
-    SYNC_LOCK_TTL: Annotated[
-        timedelta, Gt(timedelta(0))
-    ] = (  # ty: ignore[invalid-assignment]
+    SYNC_LOCK_TTL: Annotated[timedelta, Gt(timedelta(0))] = (  # ty: ignore[invalid-assignment]
         hot_field(timedelta(minutes=5), advanced=True)
     )
     PRE_EXECUTION_CONNECTIVITY_CHECK: PreExecutionCheckMode = (  # ty: ignore[invalid-assignment]
@@ -239,9 +235,7 @@ class TasksSettings(BaseYamlAppSettings):
     PENDING_ALLOCATION_TIMEOUT_SECONDS: PositiveInt = (  # ty: ignore[invalid-assignment]
         hot_field(3600, advanced=True)
     )
-    LOG_RETENTION_DAYS: Annotated[
-        int, Gt(0), Le(MAX_LOG_RETENTION_DAYS)
-    ] = (  # ty: ignore[invalid-assignment]
+    LOG_RETENTION_DAYS: Annotated[int, Gt(0), Le(MAX_LOG_RETENTION_DAYS)] = (  # ty: ignore[invalid-assignment]
         hot_field(90, advanced=True)
     )
     LOG_PURGE_BATCH_SIZE: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
@@ -261,9 +255,7 @@ class TasksSettings(BaseYamlAppSettings):
     LOG_STREAM_EVICTION_MAX_ROWS: PositiveInt = (  # ty: ignore[invalid-assignment]
         hot_field(1000, advanced=True)
     )
-    HOOK_MODULE_ALLOWLIST: tuple[
-        HookModuleRoot, ...
-    ] = (  # ty: ignore[invalid-assignment]
+    HOOK_MODULE_ALLOWLIST: tuple[HookModuleRoot, ...] = (  # ty: ignore[invalid-assignment]
         not_overridable_field(("app.extensions.apps",))
     )
 

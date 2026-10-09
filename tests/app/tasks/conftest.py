@@ -38,12 +38,14 @@ from app.core.utils import json_serializer
 from app.core.utils.fields import DatabaseDialect
 from app.tasks.crud import TaskHistoryManager, TaskManager
 from app.tasks.deps import get_request_executor, get_session
+from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.models import BaseExecutor
 from app.tasks.main import tasks_app
 from app.tasks.models import TaskHistory, TaskWrite
 from tests.app.conftest import postgres_worker_schema
 from tests.app.db_schema import apply_schema
 from tests.app.factories import build_task_history, TaskFactory
+from tests.app.tasks.nomad_log_stub import NomadLogStub
 
 #: Syncer names in ``BaseSyncer.get_name()`` form, as the inventory-sync settings and
 #: the schedules seeded from them spell a syncer. Shared so the tasks suite has one
@@ -53,6 +55,9 @@ PMM_SYNCER = "app.extensions.sync.syncers.pmm.PMMSyncer"
 MYSQL_SYNCER = "app.extensions.sync.syncers.mysql.syncer.MySQLSyncer"
 SYSTEM_FACTS_SYNCER = (
     "app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer"
+)
+UNMEASURED_HOST_FACTS_SYNCER = (
+    "app.extensions.sync.syncers.system_facts.syncer.UnmeasuredHostFactsSyncer"
 )
 
 #: The per-task hook-path fields the ``TaskWrite`` allow-list constrains.
@@ -92,11 +97,36 @@ async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
+def nomad_stub() -> Iterator[NomadLogStub]:
+    """Serve a running ``run-script`` step from a Nomad stub on its own thread.
+
+    :return: The started stub.
+    """
+    stub = NomadLogStub()
+    stub.start()
+    yield stub
+    stub.stop()
+
+
+@pytest_asyncio.fixture
+async def live_executor(nomad_stub: NomadLogStub) -> AsyncGenerator[NomadExecutor]:
+    """Enter a real Nomad executor pointed at the stub, as the lifecycle does.
+
+    :return: The entered executor.
+    """
+    executor = await NomadExecutor(
+        endpoint=nomad_stub.endpoint, verify_ssl=False
+    ).open()
+    yield executor
+    await executor.close()
+
+
+@pytest.fixture
 def mock_executor() -> AsyncMock:
     """Return a mock executor with spec of BaseExecutor."""
     executor = AsyncMock(spec=BaseExecutor)
-    executor.get_hosts = MagicMock(return_value={"node1": "10.0.0.1"})
-    executor.preflight_stream_logs = MagicMock(return_value=None)
+    executor.get_hosts = AsyncMock(return_value={"node1": "10.0.0.1"})
+    executor.preflight_stream_logs = AsyncMock(return_value=None)
     executor.get_events = MagicMock(return_value=[])
     return executor
 
@@ -110,8 +140,8 @@ def test_client(
     Mirrors the PMM Extensions ``test_client``'s ``require_minimum_role_for_unsafe_methods``
     override so the non-admin fixture user can exercise a mutating route.
     """
-    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
-        lambda: None
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
     )
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
     tasks_app.dependency_overrides[get_session] = lambda: session

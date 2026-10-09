@@ -33,6 +33,7 @@ app's ``field_for`` / ``evaluate_snippet_gates``: a framework home would invert 
 framework's no-dependency-on-apps direction (the framework must not import an app).
 """
 
+import asyncio
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -303,6 +304,15 @@ def _list_response(script: _DiskScript) -> DiskScriptListRow:
     )
 
 
+def _script_files(script_dir: Path) -> list[Path]:
+    """Return the regular files directly inside ``script_dir``, sorted by path.
+
+    :param script_dir: The directory to list.
+    :return: The files, in sorted order.
+    """
+    return sorted(path for path in script_dir.iterdir() if path.is_file())
+
+
 def build_disk_script_source(
     *,
     script_dir: Path,
@@ -359,8 +369,7 @@ def build_disk_script_source(
     async def materialize_scripts() -> list[_DiskScript]:
         return [
             _DiskScript(await script_cls.from_path(path.name, update_meta=True))
-            for path in sorted(script_dir.iterdir())
-            if path.is_file()
+            for path in await asyncio.to_thread(_script_files, script_dir)
         ]
 
     list_scripts = in_memory_list_scripts(

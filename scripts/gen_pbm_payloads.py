@@ -30,8 +30,10 @@ fail without writing when a payload has drifted.
 """
 
 import argparse
+import importlib.util
 import sys
 from pathlib import Path
+from types import ModuleType
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SEARCH_ROOT = REPO_ROOT / "app" / "extensions" / "apps" / "backup_mongo"
@@ -83,11 +85,13 @@ def render(text: str, region: str, begin_marker: str, end_marker: str) -> str:
         end = lines.index(end_marker, begin + 1)
     except ValueError as exc:
         raise ValueError("payload is missing a PBM CREDS PREAMBLE marker line") from exc
-    rebuilt = (
-        lines[:begin]
-        + [begin_marker, *region.split("\n"), end_marker]
-        + lines[end + 1 :]
-    )
+    rebuilt = [
+        *lines[:begin],
+        begin_marker,
+        *region.split("\n"),
+        end_marker,
+        *lines[end + 1 :],
+    ]
     return "\n".join(rebuilt)
 
 
@@ -138,6 +142,23 @@ def _sync_region(
     return payloads, drift, rewritten
 
 
+def _load_canonical() -> ModuleType:
+    """Return the canonical source module, loaded by path.
+
+    Loaded by path rather than imported: ``app.extensions.apps.backup_mongo.__init__``
+    imports the whole app, which a pre-commit hook must not have to stand up.
+
+    :return: The ``pbm_creds_common`` module.
+    :raises RuntimeError: When no import spec can be built for the canonical source.
+    """
+    spec = importlib.util.spec_from_file_location("pbm_creds_common", CANONICAL_SOURCE)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load the canonical regions from {CANONICAL_SOURCE}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def main(argv: list[str] | None = None) -> int:
     """Rewrite or check the payload generated regions against their canonical sources.
 
@@ -145,21 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     :return: ``0`` when every payload is in sync (or was rewritten); ``1`` when
         ``--check`` finds drift or a region has no opted-in payload.
     """
-    sys.path.insert(0, str(REPO_ROOT))
-    from app.extensions.apps.backup_mongo.pbm_creds_common import (
-        CONFIG_APPLY_BEGIN,
-        CONFIG_APPLY_END,
-        config_apply_source,
-        PREAMBLE_BEGIN,
-        PREAMBLE_END,
-        preamble_source,
-        RESTORE_YES_BEGIN,
-        RESTORE_YES_END,
-        restore_yes_source,
-        TEXTFILE_BEGIN,
-        TEXTFILE_END,
-        textfile_source,
-    )
+    canonical = _load_canonical()
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -176,10 +183,30 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     regions = (
-        ("creds preamble", PREAMBLE_BEGIN, PREAMBLE_END, preamble_source()),
-        ("config apply", CONFIG_APPLY_BEGIN, CONFIG_APPLY_END, config_apply_source()),
-        ("restore yes", RESTORE_YES_BEGIN, RESTORE_YES_END, restore_yes_source()),
-        ("textfile collector", TEXTFILE_BEGIN, TEXTFILE_END, textfile_source()),
+        (
+            "creds preamble",
+            canonical.PREAMBLE_BEGIN,
+            canonical.PREAMBLE_END,
+            canonical.preamble_source(),
+        ),
+        (
+            "config apply",
+            canonical.CONFIG_APPLY_BEGIN,
+            canonical.CONFIG_APPLY_END,
+            canonical.config_apply_source(),
+        ),
+        (
+            "restore yes",
+            canonical.RESTORE_YES_BEGIN,
+            canonical.RESTORE_YES_END,
+            canonical.restore_yes_source(),
+        ),
+        (
+            "textfile collector",
+            canonical.TEXTFILE_BEGIN,
+            canonical.TEXTFILE_END,
+            canonical.textfile_source(),
+        ),
     )
 
     total_payloads = 0

@@ -15,14 +15,16 @@
 
 """Share the scaffolding every om_inventory API test module needs."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
+from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.service import SweepOutcome
 from app.extensions.deps import (
     get_current_user,
@@ -45,6 +47,21 @@ HOST = "replicaset-cluster-node00"
 CLEAN_OUTCOME = SweepOutcome(resolved=1, answered=1)
 
 
+@pytest.fixture(autouse=True)
+def _reset_proxy_snapshot() -> Iterator[None]:
+    """Drop any snapshot a test published on ``om_inventory_settings``.
+
+    The proxy is a module singleton shared across the whole session, and a
+    published snapshot overrides ``monkeypatch.setattr``, so without this one test's
+    stored override leaks into every later test in the same xdist worker. The
+    autouse reset in ``tests/app/conftest.py`` clears the core proxies by name, not
+    this one.
+    """
+    yield
+    # ty-attr-ok: annotated as the settings class; the proxy owns ``_set_snapshot``.
+    om_inventory_settings._set_snapshot({})  # noqa: SLF001
+
+
 @pytest_asyncio.fixture
 async def api(
     regular_user: CasdoorUser, session: AsyncSession
@@ -59,8 +76,8 @@ async def api(
     :param session: The database session the routes should use.
     :return: The client.
     """
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None

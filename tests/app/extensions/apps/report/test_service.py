@@ -1460,7 +1460,7 @@ class TestGenerateReportPdf:
     @pytest.mark.asyncio
     async def test_pdf_contains_report_title(self):
         """Assert the report title ends up in the rendered PDF."""
-        from weasyprint import HTML
+        from weasyprint import HTML  # noqa: PLC0415
 
         report = self._make_report()
 
@@ -1481,7 +1481,7 @@ class TestGenerateReportPdf:
     @pytest.mark.asyncio
     async def test_html_is_self_contained(self):
         """Assert the intermediate HTML is a complete document with inline CSS."""
-        from weasyprint import HTML
+        from weasyprint import HTML  # noqa: PLC0415
 
         report = self._make_report()
 

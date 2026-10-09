@@ -386,7 +386,7 @@ class TestRecorderRegistration:
 
     def test_app_stamps_and_resolves_the_recorder(self) -> None:
         """Declare the recorder path on the app and resolve it to the callable."""
-        from app.extensions.apps.mysql_backups.app import app
+        from app.extensions.apps.mysql_backups.app import app  # noqa: PLC0415
 
         assert app.run_result_recorder == RUN_RESULT_RECORDER
         assert (

@@ -33,9 +33,12 @@ that contributes no revisions has to survive.
 from __future__ import annotations
 
 import argparse
+import os
 import posixpath
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -87,7 +90,9 @@ def compute_version_locations(apps_root: Path) -> str:
     repo_root = str(REPO_ROOT)
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
-    from app.extensions.migrations._discovery import discover_plugin_version_dirs
+    from app.extensions.migrations._discovery import (  # noqa: PLC0415
+        discover_plugin_version_dirs,
+    )
 
     entries = [MAIN_VERSIONS_ENTRY]
     for versions_dir in discover_plugin_version_dirs(apps_root):
@@ -260,11 +265,12 @@ def render_extensions_version_locations(text: str, value: str) -> str:
     if not comment_block.endswith(newline):
         comment_block += newline
     assignment = f"version_locations = {value}{newline}"
-    new_lines = (
-        lines[:comment_start]
-        + [comment_block, assignment]
-        + lines[assignment_idx + 1 :]
-    )
+    new_lines = [
+        *lines[:comment_start],
+        comment_block,
+        assignment,
+        *lines[assignment_idx + 1 :],
+    ]
     return "".join(new_lines)
 
 
@@ -308,9 +314,31 @@ def sync_alembic_ini(
         return True
     if check:
         return False
-    with ini_path.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(updated)
+    _atomic_write(ini_path, updated)
     return True
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Replace ``path``'s contents with ``text`` via a same-directory temp swap.
+
+    Truncating the target before writing lets a concurrent ``alembic`` run read a
+    torn file. Writing a sibling temp file and :func:`os.replace`-ing it in means
+    readers see either the whole old file or the whole new one, and a failed
+    write leaves the original intact. The target's mode is copied onto the temp
+    file (``mkstemp`` creates it ``0600``).
+
+    :param path: The file to overwrite.
+    :param text: The new contents.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        shutil.copymode(path, tmp)
+        Path(tmp).replace(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:

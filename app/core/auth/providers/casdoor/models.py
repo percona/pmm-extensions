@@ -15,7 +15,6 @@
 
 """Define the Casdoor user and token-payload models."""
 
-from collections.abc import Sequence
 from typing import Annotated, Any, cast, Literal, Self
 
 from pydantic import (
@@ -46,11 +45,11 @@ def _active_casdoor_sdk() -> CasdoorSDK:
     :return: The active provider, which is a ``CasdoorSDK`` while Casdoor is the
         selected provider.
     """
-    # lazy import: auth/config.py imports this module via the provider bundle, so
-    # a module-level import here would cycle
-    from app.core.auth.config import get_active_auth_provider
+    from app.core.auth.config import (  # noqa: PLC0415 - auth.config imports this module via the provider bundle (cycle)
+        get_active_auth_provider,
+    )
 
-    return cast(CasdoorSDK, get_active_auth_provider())
+    return cast("CasdoorSDK", get_active_auth_provider())
 
 
 class CasdoorTokenPayload(BaseTokenPayload):
@@ -217,23 +216,6 @@ class CasdoorUser(BaseUser):
         token_data = await casdoor.get_token(token_payload.jti)
         await casdoor.delete_token(token_data)
 
-    @staticmethod
-    async def invalidate_tokens_for_user(
-        username: CasdoorUsernameField, exclude_tokens: Sequence[str] = ()
-    ) -> None:
-        """Invalidate all OAuth tokens for a user.
-
-        :param username: The username to invalidate OAuth tokens for.
-        :param exclude_tokens: A sequence of access tokens to exclude from invalidation.
-        """
-        casdoor = _active_casdoor_sdk()
-        app_data = await casdoor.get_user_application(username)
-        async for active_token in casdoor.get_active_tokens(
-            app_data["owner"], username
-        ):
-            if active_token["accessToken"] not in exclude_tokens:
-                await casdoor.delete_token(active_token)
-
     @classmethod
     async def get_user(cls, username: CasdoorUsernameField) -> Self:
         """Get user by username.
@@ -279,24 +261,3 @@ class CasdoorUser(BaseUser):
         user = await cls.from_token_payload(token_payload)
         user.access_token = token
         return user
-
-    @classmethod
-    async def from_code(cls, code: str) -> Self:
-        """Create an instance of ``CasdoorUser`` from an authorization code.
-
-        :param code: The authorization code used to obtain user information.
-        :return: An instance of ``CasdoorUser``.
-        """
-        oauth_token = await cls.get_oauth_token(code)
-        return await cls.from_jwt(oauth_token.access_token)
-
-    @classmethod
-    async def from_password(cls, username: str, password: str) -> Self:
-        """Create an instance of ``CasdoorUser`` from a username and password.
-
-        :param username: The username of the user.
-        :param password: The password of the user.
-        :return: An instance of ``CasdoorUser``.
-        """
-        oauth_token = await cls.get_oauth_token(username=username, password=password)
-        return await cls.from_jwt(oauth_token.access_token)

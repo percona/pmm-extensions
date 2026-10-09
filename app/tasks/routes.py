@@ -15,7 +15,6 @@
 
 """Define routes for the Tasks API."""
 
-import asyncio
 import json
 import logging
 import os
@@ -23,7 +22,6 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import timedelta
 from typing import Annotated, cast
 
-import requests.exceptions
 from fastapi import APIRouter, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
@@ -37,7 +35,6 @@ from app.core.auth.models import UserRole
 from app.core.celery.deps import CeleryBeatSessionDep
 from app.core.config import settings
 from app.core.exceptions import (
-    HTTPBadGatewayException,
     HTTPBadRequestException,
     HTTPConflictException,
     HTTPUnprocessableEntityException,
@@ -127,6 +124,7 @@ async def list_tasks(
     list_query: TaskListQueryDep,
     owner: str | None = None,
     target: str | None = None,
+    *,
     parent_is_null: bool | None = None,
     backup_type: str | None = None,
     self_parent: bool | None = None,
@@ -283,7 +281,7 @@ async def execute_task_name(
 
     root_task = await TaskManager.get_root_task(session, queue_item.task)
     executor = get_executor_for_task(root_task)
-    if queue_item.execution_request.target not in executor.get_hosts():
+    if queue_item.execution_request.target not in await executor.get_hosts():
         raise HTTPBadRequestException(
             f"Failed to dispatch task: Target {queue_item.execution_request.target!r}"
             f"is not available in {executor.__class__.__name__} for task {task_name!r}"
@@ -418,7 +416,7 @@ async def _populate_log_metadata(
 
 async def _get_history_for_response(
     session: AsyncSession,
-    history_id: int,
+    history: TaskHistory,
 ) -> TaskHistory:
     """Re-read a task history with the columns its response model requires.
 
@@ -427,7 +425,7 @@ async def _get_history_for_response(
     resolved attempts IO from the async context.
 
     :param session: The SQLAlchemy asynchronous session.
-    :param history_id: The task history to re-read.
+    :param history: The saved task history to re-read.
     :return: The task history with ``task`` joined and ``execution_request``
         undeferred.
     """
@@ -435,7 +433,7 @@ async def _get_history_for_response(
         session,
         select_related=(TaskHistory.task,),
         query_options=[undefer(TaskHistory.execution_request)],
-        id=history_id,
+        id=history.id,
     )
 
 
@@ -559,7 +557,9 @@ async def stream_task_history_logs(
     but not started by the executor), so the client should retry; a 410 means
     the live data is gone for good.
 
-    :param session: Database session for reading persisted logs.
+    :param session: Database session for reading a finished history's persisted
+        logs. It is closed before a running history's live stream, so the stream
+        does not hold a pool connection for its duration.
     :param executor: Executor serving the live stream of a running history.
     :param task_history: The task history whose logs to stream.
     :param offsets: Per-step, per-stream offsets to resume from.
@@ -575,13 +575,15 @@ async def stream_task_history_logs(
     if task_history.status == TaskHistoryStatusEnum.PENDING:
         raise HTTPConflictException("Task history is pending.")
     if task_history.status == TaskHistoryStatusEnum.RUNNING:
+        await session.close()
         try:
             if isinstance(executor, BaseRemoteAPI):
-                await executor.run_in_thread_held(
-                    executor.preflight_stream_logs, task_history
-                )
+                # Held for the call, so a client retirement waiting on
+                # close_when_idle cannot close the executor under it.
+                async with executor.hold():
+                    await executor.preflight_stream_logs(task_history)
             else:
-                await asyncio.to_thread(executor.preflight_stream_logs, task_history)
+                await executor.preflight_stream_logs(task_history)
         except TaskNotStartedInExecutorError as exc:
             raise HTTPConflictException(str(exc)) from None
         stream_logs_generator = (
@@ -632,11 +634,26 @@ async def list_task_history_files(
     response_model=None,
 )
 async def stream_task_history_file(
+    session: SessionDep,
     executor: TaskExecutor,
     task_history: TaskHistoryWithTaskDep,
     path: str,
 ) -> StreamingResponse:
-    """Stream a file from a task history."""
+    """Stream a file from a task history.
+
+    The file is read from the executor alone, so the request's database session
+    is closed before the stream starts rather than holding a pool connection
+    for its duration.
+
+    :param session: Database session the task history was loaded through.
+    :param executor: Executor serving the file.
+    :param task_history: The finished task history whose output file to stream.
+    :param path: The file's path, relative to the task's ``output_files_path``.
+    :return: A streaming response of the file's bytes, or of a tar.gz archive
+        when the path is a directory.
+    :raises HTTPConflictException: When the history is not finished.
+    :raises HTTPBadRequestException: When the task has no ``output_files_path``.
+    """
     logger.debug("Requesting file %s for task history %s", path, task_history.id)
     if not task_history.status.is_finished():
         raise HTTPConflictException(f"Task history is {task_history.status}.")
@@ -644,6 +661,7 @@ async def stream_task_history_file(
         raise HTTPBadRequestException(
             f"Task {task_history.task.name} does not have output_files_path set."
         )
+    await session.close()
     return StreamingResponse(
         executor.stream_file(
             task_history,
@@ -720,9 +738,7 @@ async def sync_task_history(
     )
     if not claim_result.rowcount:
         session.expunge(task_history)
-        task_history = await _get_history_for_response(
-            session, cast(int, task_history.id)
-        )
+        task_history = await _get_history_for_response(session, task_history)
         await _populate_log_metadata(session, [task_history])
         return task_history
 
@@ -752,10 +768,10 @@ async def sync_task_history(
             id=task_history.id,
         )
         raise
-    synced = await _get_history_for_response(session, cast(int, saved.id))
+    synced = await _get_history_for_response(session, saved)
     await maybe_dispatch_chain(synced, was_running=True)
     if synced.status.is_terminal():
-        await maybe_record_run(cast(int, synced.id), executor)
+        await maybe_record_run(cast("int", synced.id), executor)
     await _populate_log_metadata(session, [synced])
     return synced
 
@@ -807,7 +823,7 @@ async def create_task_history(session: SessionDep, task: TaskHistory) -> TaskHis
         )
     task.set_failure_reason(task.failure_reason)
     saved = await TaskHistoryManager.save(session, task)
-    return await _get_history_for_response(session, cast(int, saved.id))
+    return await _get_history_for_response(session, saved)
 
 
 @router.get("/stats/{task}", dependencies=[IsAuthenticatedDep])
@@ -827,24 +843,18 @@ async def get_task_stats(session: SessionDep, task: str) -> TaskStats:
 async def get_executor_hosts(executor: TaskExecutor) -> dict[str, str]:
     """Return the executor hosts from the executor.
 
-    Wrap the upstream executor call so connection failures or non-JSON
-    bodies surface as a 502 JSON response instead of leaking a default
-    500 + text/plain that masks the real failure on the dashboard banner.
+    A connection failure or an unparseable body arrives as
+    :class:`~app.tasks.execution.executors.nomad.exceptions.NomadRequestError`,
+    which the app-level ``BaseNomadException`` handler (``app.tasks.main``)
+    answers with a 502 JSON response rather than a 500 + text/plain that would
+    mask the real failure on the dashboard banner.
 
     :param executor: The task executor backend used to fetch host metadata.
     :type executor: TaskExecutor
     :return: A mapping of executor node name to network address.
     :rtype: dict[str, str]
-    :raises HTTPBadGatewayException: If the executor backend raises a
-        ``requests.exceptions.RequestException`` (e.g. a non-JSON response
-        body or a connection failure outside the Nomad SDK's own wrapping).
     """
-    try:
-        return executor.get_hosts()
-    except requests.exceptions.RequestException as exc:
-        raise HTTPBadGatewayException(
-            detail=f"Executor backend unreachable: {exc}"
-        ) from exc
+    return await executor.get_hosts()
 
 
 @router.get("/hosts/states/", dependencies=[IsAuthenticatedDep])
@@ -857,20 +867,14 @@ async def get_executor_host_states(executor: TaskExecutor) -> list[ExecutorHostS
     onboarded, or be onboarded and down, or be up with a broken driver, and those are
     three different things for whoever has to fix it.
 
-    Wrapped the same way as ``/hosts/`` so an unreachable backend surfaces as a 502
-    rather than a 500 with a text/plain body.
+    An unreachable backend answers 502 rather than 500 with a text/plain body,
+    by the same route as ``/hosts/``: the app-level ``BaseNomadException``
+    handler owns it.
 
     :param executor: The task executor backend used to fetch host metadata.
     :return: One entry per host the backend knows about.
-    :raises HTTPBadGatewayException: If the executor backend is unreachable or
-        answers with something the client cannot parse.
     """
-    try:
-        return executor.get_host_states()
-    except requests.exceptions.RequestException as exc:
-        raise HTTPBadGatewayException(
-            detail=f"Executor backend unreachable: {exc}"
-        ) from exc
+    return await executor.get_host_states()
 
 
 @router.post(

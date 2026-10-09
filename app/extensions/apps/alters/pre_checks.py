@@ -30,7 +30,6 @@ import argparse
 import logging
 import shutil
 import sys
-from configparser import ConfigParser
 from pathlib import Path
 from typing import Any
 
@@ -444,34 +443,6 @@ class MySQLPreChecks:
             self.connection.close()
             self.logger.info("MySQL connection closed")
 
-    def read_my_cnf(self, config_file: str) -> dict:
-        """Read MySQL configuration from .my.cnf file.
-
-        Args:
-            config_file: Path to .my.cnf file. Defaults to ~/.my.cnf
-
-        Returns:
-            dict: Configuration parameters
-
-        """
-        if config_file is None:
-            config_file = Path.expanduser("~/.my.cnf")
-
-        config = {}
-        if Path.exists(config_file):
-            parser = ConfigParser()
-            parser.read(config_file)
-
-            # Read from [client] section
-            if parser.has_section("client"):
-                config.update(dict(parser.items("client")))
-
-            # Read from [mysql] section
-            if parser.has_section("mysql"):
-                config.update(dict(parser.items("mysql")))
-
-        return config
-
 
 def load_yaml_config(config_file: str) -> dict[str, Any]:
     """Load configuration from YAML file.
@@ -620,10 +591,10 @@ def main() -> None:
         sys.exit(0 if success else 1)
 
     except KeyboardInterrupt:
-        logging.exception("\nOperation cancelled by user")
+        pre_checks.logger.exception("\nOperation cancelled by user")
         sys.exit(1)
     except Exception:
-        logging.exception("Unexpected error occurred")
+        pre_checks.logger.exception("Unexpected error occurred")
         sys.exit(1)
     finally:
         pre_checks.close_connection()

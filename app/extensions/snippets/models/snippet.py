@@ -149,37 +149,6 @@ class FilePreview(NamedTuple):
     is_truncated: bool
 
     @property
-    def preamble_line_count(self) -> int:
-        """Return the number of lines in the preamble.
-
-        :return: Line count, or 0 if preamble is empty.
-        :rtype: int
-        """
-        if not self.preamble:
-            return 0
-        return len(self.preamble.splitlines())
-
-    @property
-    def frontmatter_line_count(self) -> int:
-        """Return the number of lines in the frontmatter.
-
-        :return: Line count, or 0 if frontmatter is empty.
-        :rtype: int
-        """
-        if not self.frontmatter:
-            return 0
-        return len(self.frontmatter.splitlines())
-
-    @property
-    def code_linenostart(self) -> int:
-        """Return the starting line number for the code body.
-
-        :return: Line number where the code body starts (1-based).
-        :rtype: int
-        """
-        return self.preamble_line_count + self.frontmatter_line_count + 1
-
-    @property
     def full_content(self) -> str:
         """Return the complete preview content including preamble and frontmatter.
 

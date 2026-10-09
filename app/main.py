@@ -50,6 +50,8 @@ from app.extensions.main import (
 from app.inventory.main import inventory_app, inventory_overrides_lifespan
 from app.tasks.main import tasks_app, tasks_lifespan
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def main_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -259,11 +261,11 @@ def start_celery_beat() -> None:
             interval=extensions_settings.API_READINESS_POLL_INTERVAL,
         )
     except KeyboardInterrupt:
-        logging.info("Celery beat start cancelled before the HTTP API became ready.")
+        logger.info("Celery beat start cancelled before the HTTP API became ready.")
         return
 
     if not api_ready:
-        logging.error(
+        logger.error(
             "Starting Celery beat without a ready HTTP API. An overdue periodic task "
             "that calls PMM Extensions' own API may fail to connect on its first run."
         )
@@ -291,11 +293,11 @@ if __name__ == "__main__":
         logging.config.dictConfig(settings.LOGGING_CONFIG)
 
         celery_worker_process = Process(target=start_celery_worker)
-        logging.info("Starting Celery worker...")
+        logger.info("Starting Celery worker...")
         celery_worker_process.start()
 
         celery_beat_process = Process(target=start_celery_beat)
-        logging.info("Starting Celery beat for periodic tasks...")
+        logger.info("Starting Celery beat for periodic tasks...")
         celery_beat_process.start()
 
         try:
@@ -320,8 +322,8 @@ if __name__ == "__main__":
                 ],
             )
         except KeyboardInterrupt:
-            logging.info("Shutting down Celery worker...")
-            logging.info("Shutting down Celery beat...")
+            logger.info("Shutting down Celery worker...")
+            logger.info("Shutting down Celery beat...")
         finally:
             celery_worker_process.terminate()
             celery_worker_process.join()

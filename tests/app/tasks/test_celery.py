@@ -78,6 +78,7 @@ from app.tasks.execution_request_secrets import (
 )
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
+    INVENTORY_SYNC_FIRST_RUN_KEY,
     Task,
     TaskBackendEnum,
     TaskExecutionRequest,
@@ -92,6 +93,7 @@ from tests.app.factories import TaskFactory
 from tests.app.tasks.conftest import (
     overwrite_execution_request,
     stored_execution_request,
+    SYSTEM_FACTS_SYNCER,
 )
 
 MODULE = "app.tasks.celery"
@@ -731,7 +733,7 @@ class TestRaiseIfIdenticalTaskConflict:
                 task=task.name,
                 target="node-1",
                 meta={"target": "node-1"}
-                | {key: f"--password {secret}" for key in ENCRYPTED_META_KEYS},
+                | dict.fromkeys(ENCRYPTED_META_KEYS, f"--password {secret}"),
                 payload=None,
             ),
         )
@@ -897,6 +899,70 @@ class TestIdenticalTaskConflictStatusScoping:
             match=r"Identical queue item already running \(\d+\)\.",
         ):
             await _raise_if_identical_task_conflict(queue_item, session)
+
+
+_FOLLOWER_BEAT_META = {"syncer": SYSTEM_FACTS_SYNCER}
+_FOLLOWER_START_META = {**_FOLLOWER_BEAT_META, INVENTORY_SYNC_FIRST_RUN_KEY: True}
+
+
+async def _refused_behind(
+    session: AsyncSession,
+    in_flight_meta: dict[str, object],
+    incoming_meta: dict[str, object],
+) -> bool:
+    """Return whether a dispatch carrying ``incoming_meta`` is refused.
+
+    :param session: The session the guard queries.
+    :param in_flight_meta: The meta of the run of the same task already in flight.
+    :param incoming_meta: The meta of the dispatch being checked.
+    :return: Whether the guard raised for the incoming dispatch.
+    """
+    task = await _create_pg_task(session)
+    await _seed_pg_history(
+        session, task_id=task.id, task_name=task.name, meta=in_flight_meta
+    )
+    incoming = _pg_queue_item(task, meta=dict(incoming_meta), item_id=_UNSEEDED_ITEM_ID)
+    try:
+        await _raise_if_identical_task_conflict(incoming, session)
+    except HTTPConflictException:
+        return True
+    return False
+
+
+class TestFollowerStartDeduplication:
+    """Pin the guard behaviour a leader-started follower run relies on.
+
+    The start carries the follower's beat-row meta plus the started-run flag, and
+    the guard matches the incoming request's meta by containment, so the beat
+    fire is held back behind a start while a start behind a beat fire goes on to
+    meet that run's claim on the syncer, where it skips.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_start_in_flight_holds_back_the_beat_fire(
+        self, session: AsyncSession
+    ) -> None:
+        """Assert a beat fire is refused while a start of the follower runs."""
+        assert await _refused_behind(session, _FOLLOWER_START_META, _FOLLOWER_BEAT_META)
+
+    @pytest.mark.asyncio
+    async def test_a_beat_fire_in_flight_lets_the_start_through(
+        self, session: AsyncSession
+    ) -> None:
+        """Assert a start is not refused behind a beat fire, which lacks its flag."""
+        assert not await _refused_behind(
+            session, _FOLLOWER_BEAT_META, _FOLLOWER_START_META
+        )
+
+    @pytest.mark.postgres
+    @pytest.mark.asyncio
+    async def test_a_start_in_flight_holds_back_the_beat_fire_on_postgres(
+        self, postgres_session: AsyncSession
+    ) -> None:
+        """Assert the same refusal through the ``jsonb`` containment path."""
+        assert await _refused_behind(
+            postgres_session, _FOLLOWER_START_META, _FOLLOWER_BEAT_META
+        )
 
 
 class TestIdenticalTaskConflictEncryptedLeaves:
@@ -3335,7 +3401,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {"node-1": "10.0.0.1"}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3364,7 +3430,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3412,7 +3478,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=False)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3442,7 +3508,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=False)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3475,7 +3541,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.side_effect = [{}, {"node-1": "10.0.0.1"}]
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3503,7 +3569,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.side_effect = BaseNomadException("nomad down")
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3541,7 +3607,7 @@ class TestExecuteTaskByName:
                 )
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {"local": "localhost"}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3571,7 +3637,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3620,7 +3686,7 @@ class TestExecuteTaskByName:
                 )
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3674,7 +3740,7 @@ class TestExecuteTaskByName:
             existing = test_loop.run_until_complete(_seed_pending())
 
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3704,7 +3770,7 @@ class TestExecuteTaskByName:
                 _seed_task(async_session_maker, name="test-task", alert_on_fail=True)
             )
             mock_executor = MagicMock(spec=BaseExecutor)
-            mock_executor.get_hosts = MagicMock()
+            mock_executor.get_hosts = AsyncMock()
             mock_executor.get_hosts.return_value = {}
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=mock_executor
@@ -3760,7 +3826,7 @@ class TestExecuteTaskByNamePeriodicAnnotationRegression:
                 )
 
             fake_executor = MagicMock(spec=BaseExecutor)
-            fake_executor.get_hosts = MagicMock(return_value={"node-1": "10.0.0.1"})
+            fake_executor.get_hosts = AsyncMock(return_value={"node-1": "10.0.0.1"})
             fake_executor.dispatch_task = fake_dispatch_task
             mocker.patch(
                 "app.tasks.celery.get_executor_for_task", return_value=fake_executor
@@ -4133,11 +4199,11 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=ca, cert=cl)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
 
         await _check_nomad_cert_expiry()
 
@@ -4160,11 +4226,11 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=ca, cert=None)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
 
         await _check_nomad_cert_expiry()
 
@@ -4187,11 +4253,11 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=ca, cert=None)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
 
         await _check_nomad_cert_expiry()
 
@@ -4209,11 +4275,11 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=ca, cert=None)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
 
         await _check_nomad_cert_expiry()
 
@@ -4234,14 +4300,14 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=ca, cert=None)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mocker.patch.object(
             Path, "read_bytes", side_effect=OSError("simulated read failure")
         )
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
         log_warning = mocker.patch(f"{MODULE}.logger.warning")
 
         await _check_nomad_cert_expiry()
@@ -4262,7 +4328,7 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=bad, cert=None)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         log_warning = mocker.patch(f"{MODULE}.logger.warning")
 
         await _check_nomad_cert_expiry()
@@ -4281,11 +4347,11 @@ class TestCheckNomadCertExpiry:
         # Exists at config-load (passes path validation) but gone by read time.
         ca.unlink()
         mocker.patch("app.tasks.celery.tasks_settings", MagicMock(NOMAD=nomad))
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
         log_warning = mocker.patch(f"{MODULE}.logger.warning")
 
         await _check_nomad_cert_expiry()
@@ -4297,7 +4363,7 @@ class TestCheckNomadCertExpiry:
 
     def test_celery_entrypoint_uses_event_loop(self, mocker) -> None:
         """Assert check_nomad_cert_expiry runs the async helper via the event loop."""
-        from app.celery import celery as app_celery
+        from app.celery import celery as app_celery  # noqa: PLC0415
 
         coro = MagicMock()
         mock_check = MagicMock(return_value=coro)

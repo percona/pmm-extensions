@@ -281,9 +281,11 @@ class TestSuppressResponseLog:
             )
             with caplog.at_level("DEBUG", logger=remote_api.logger.name):
                 async with remote_api:
-                    with remote_api.suppress_response_log():
-                        with pytest.raises(HTTPException):
-                            await remote_api.get("body")
+                    with (
+                        remote_api.suppress_response_log(),
+                        pytest.raises(HTTPException),
+                    ):
+                        await remote_api.get("body")
 
         messages = [record.getMessage() for record in caplog.records]
         assert all(_BODY_SENTINEL not in message for message in messages)
@@ -404,9 +406,11 @@ class TestNonJsonResponseLogging:
             )
             with caplog.at_level("DEBUG", logger=remote_api.logger.name):
                 async with remote_api:
-                    with remote_api.suppress_response_log():
-                        with pytest.raises(HTTPBadGatewayException):
-                            await remote_api.get("body")
+                    with (
+                        remote_api.suppress_response_log(),
+                        pytest.raises(HTTPBadGatewayException),
+                    ):
+                        await remote_api.get("body")
 
         assert _logged_non_json_body(caplog.records) == _WITHHELD_BODY
 

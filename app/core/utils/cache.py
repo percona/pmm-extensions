@@ -19,7 +19,6 @@ __all__ = ["TTLCache", "ttl_cache"]
 
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
 from functools import wraps
 from threading import RLock
 from time import monotonic
@@ -58,18 +57,6 @@ def _make_key(
             key += (_KW_MARKER, *((k, type(v)) for k, v in items))
 
     return key
-
-
-@dataclass(slots=True)
-class _CacheShortStats:
-    """Define structure to store hits and misses statistics in a cached function.
-
-    :param hits: Number of cache hits.
-    :param misses: Number of cache misses.
-    """
-
-    hits: int = 0
-    misses: int = 0
 
 
 class CacheInfo(NamedTuple):
@@ -124,8 +111,9 @@ class TTLCache(Generic[T]):
 
         This method checks the cache for expired entries and removes them. It also
         ensures that the cache does not exceed the maximum size limit. The eviction
-        process is limited to a number of entries defined by `prune_limit` to avoid
-        excessive performance overhead.
+        process is limited to a number of entries defined by ``prune_limit`` to avoid
+        excessive performance overhead. When ``maxsize`` is ``None``, no size limit is
+        applied and only expired entries are pruned, at most ``prune_limit`` per call.
 
         :param now: Current monotonic time in fractional seconds.
         """
@@ -135,7 +123,10 @@ class TTLCache(Generic[T]):
                 break
             self.store.popitem(last=False)
 
-        while len(self.store) > (self.maxsize or 0):
+        if self.maxsize is None:
+            return
+
+        while len(self.store) > self.maxsize:
             self.store.popitem(last=False)
 
     def set(self, key: tuple[Any, ...], value: T, now: float) -> None:

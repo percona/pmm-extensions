@@ -687,9 +687,9 @@ class TestMain:
         monkeypatch.setattr("sys.argv", ["payload", "-c", str(config)])
         mocker.patch(
             f"{MODULE}.collect_service_version",
-            side_effect=lambda address, _type: MYSQL_VERSION
-            if address == MYSQL_ADDRESS
-            else None,
+            side_effect=lambda address, _type: (
+                MYSQL_VERSION if address == MYSQL_ADDRESS else None
+            ),
         )
 
         main()

@@ -415,7 +415,7 @@ class TestDeprecatedPMMRemoved:
         rejected with a ``ValidationError`` so upgraded deployments fail fast at
         startup instead of silently carrying dead config.
         """
-        with pytest.raises(ValidationError, match="EXTENSIONS.PMM"):
+        with pytest.raises(ValidationError, match=re.escape("EXTENSIONS.PMM")):
             ExtensionsSettings(PMM={"ENDPOINT": "https://pmm.example.com"})
 
     def test_clean_build_without_stray_pmm(self):
@@ -850,6 +850,9 @@ class TestSyncerExtrasValidatedAtLoad:
             ("TASK_EXECUTION_TIMEOUT", -1),
             ("TASKS_EXECUTION_WAIT_INTERVAL", 0),
             ("TASKS_EXECUTION_WAIT_INTERVAL", -1),
+            ("FIRST_MEASUREMENT_RETRIES", -1),
+            ("FIRST_MEASUREMENT_RETRY_INTERVAL", 0),
+            ("FIRST_MEASUREMENT_CONCURRENCY", 0),
         ],
     )
     def test_per_entry_threshold_below_the_floor_is_rejected(
@@ -932,7 +935,7 @@ class TestSyncerExtrasValidatedAtLoad:
         self, build: Callable[[dict[str, Any]], ExtensionsSettings], value: Any
     ) -> None:
         """Reject every shape ``stale_run_after`` cannot be built from."""
-        with pytest.raises(ValidationError, match="(?i)stale_run_after"):
+        with pytest.raises(ValidationError, match=r"(?i)stale_run_after"):
             build(
                 {
                     "SYNCERS": [{"SYNCER": _PMM_SYNCER}],
@@ -946,7 +949,7 @@ class TestSyncerExtrasValidatedAtLoad:
         self, build: Callable[[dict[str, Any]], ExtensionsSettings], value: Any
     ) -> None:
         """Reject every shape ``missing_grace_generations`` cannot be built from."""
-        with pytest.raises(ValidationError, match="(?i)missing_grace_generations"):
+        with pytest.raises(ValidationError, match=r"(?i)missing_grace_generations"):
             build(
                 {
                     "SYNCERS": [{"SYNCER": _PMM_SYNCER}],
@@ -1040,7 +1043,7 @@ class TestSyncerExtrasValidatedAtLoad:
     @pytest.mark.parametrize("key", ["STALE_RUN_AFTER", "stale_run_after"])
     def test_key_is_matched_whatever_case_it_arrives_in(self, key: str) -> None:
         """Refuse the value however the operator spelled the key."""
-        with pytest.raises(ValidationError, match="(?i)stale_run_after"):
+        with pytest.raises(ValidationError, match=r"(?i)stale_run_after"):
             ExtensionsSettings.model_validate(
                 {
                     "SYNCERS": [{"SYNCER": _PMM_SYNCER}],
@@ -1056,7 +1059,7 @@ class TestSyncerExtrasValidatedAtLoad:
         entry that would silently drop it. A usable one still loads, and is still
         ignored.
         """
-        with pytest.raises(ValidationError, match="(?i)missing_grace_generations"):
+        with pytest.raises(ValidationError, match=r"(?i)missing_grace_generations"):
             ExtensionsSettings.model_validate(
                 {
                     "SYNCERS": [{"SYNCER": _MYSQL_SYNCER}],
@@ -1069,7 +1072,7 @@ class TestSyncerExtrasValidatedAtLoad:
         self, build: Callable[[dict[str, Any]], ExtensionsSettings]
     ) -> None:
         """Check the merged threshold, not the per-entry one the extras displace."""
-        with pytest.raises(ValidationError, match="(?i)stale_run_after"):
+        with pytest.raises(ValidationError, match=r"(?i)stale_run_after"):
             build(
                 {
                     "SYNCERS": [{"SYNCER": _PMM_SYNCER, "STALE_RUN_AFTER": 3600}],
@@ -1082,7 +1085,7 @@ class TestSyncerExtrasValidatedAtLoad:
         self, build: Callable[[dict[str, Any]], ExtensionsSettings]
     ) -> None:
         """Refuse a dead per-syncer ``pmm`` override carried by the extras."""
-        with pytest.raises(ValidationError, match="(?i)pmm"):
+        with pytest.raises(ValidationError, match=r"(?i)pmm"):
             build(
                 {
                     "SYNCERS": [{"SYNCER": _MYSQL_SYNCER}],

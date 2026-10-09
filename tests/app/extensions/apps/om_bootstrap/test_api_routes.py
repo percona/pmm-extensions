@@ -176,7 +176,17 @@ class TestTriggerRun:
         persistence.
         """
         client = api_client(regular_user, session, _fake_tasks_api())
-        override = {"priority": 0, "votes": False, "hidden": True, "delay_secs": 300}
+        override = {
+            "priority": 0,
+            "votes": False,
+            "hidden": True,
+            "delay_secs": 300,
+            # A concrete address, not None: None would pass even if a supplied value
+            # were dropped by model_dump, persistence or the response reconstruction,
+            # and PMM reads the echo to tell an older side-car from one that applied
+            # the per-member address.
+            "bind_ip": "10.1.2.3",
+        }
         response = client.post(
             f"{BASE}/runs",
             json={
@@ -329,6 +339,18 @@ class TestTriggerRunValidation:
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
+    @pytest.mark.parametrize("bind_ip", ["10.0.0.1\nnet: {}", "10.0.0.1 10.0.0.2", ""])
+    def test_rejects_a_malformed_member_bind_ip(
+        self, regular_user: CasdoorUser, session: AsyncSession, bind_ip: str
+    ) -> None:
+        """Reject a per-member bind address with whitespace or control characters."""
+        response = api_client(regular_user, session).post(
+            f"{BASE}/runs",
+            json=self._payload(member_configs={"node00": {"bind_ip": bind_ip}}),
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
     def test_accepts_a_full_patch_version(
         self, regular_user: CasdoorUser, session: AsyncSession
     ) -> None:
@@ -401,6 +423,32 @@ class TestListBootstrapRuns:
         assert response.status_code == status.HTTP_200_OK
         body = response.json()
         assert {run["id"] for run in body} == {str(first.id), str(second.id)}
+
+    @pytest.mark.parametrize("limit", [0, 101])
+    def test_rejects_an_out_of_range_limit(
+        self, regular_user: CasdoorUser, session: AsyncSession, limit: int
+    ) -> None:
+        """Reject a ``limit`` outside ``1..100`` before the query runs."""
+        response = api_client(regular_user, session, _fake_tasks_api()).get(
+            f"{BASE}/runs", params={"limit": limit}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+    @pytest.mark.asyncio
+    async def test_caps_the_list_at_limit(
+        self, regular_user: CasdoorUser, session: AsyncSession
+    ) -> None:
+        """Return no more runs than ``limit`` asks for."""
+        await self._seed_run(session, BootstrapRunStatus.RUNNING)
+        await self._seed_run(session, BootstrapRunStatus.SUCCEEDED)
+
+        response = api_client(regular_user, session, _fake_tasks_api()).get(
+            f"{BASE}/runs", params={"limit": 1}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert len(response.json()) == 1
 
 
 class TestGetBootstrapRun:

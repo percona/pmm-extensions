@@ -18,7 +18,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -223,7 +223,7 @@ class TestSyncItemManagerSyncIsRunning:
 
 
 # ---------------------------------------------------------------------------
-# SyncItemManager.inventory_sync_completed (real session)
+# SyncItemManager.first_inventory_sync_completed_at (real session)
 # ---------------------------------------------------------------------------
 
 _LEADER = "leader-syncer"
@@ -236,6 +236,7 @@ async def _record_run(
     items: list[tuple[SyncInventoryEntityTypeEnum, SyncStatusEnum]],
     *,
     run_status: SyncStatusEnum = SyncStatusEnum.SUCCESS,
+    at: datetime | None = None,
 ) -> None:
     """Persist one run of ``syncer`` carrying ``items``, as a finished sync leaves it.
 
@@ -243,8 +244,10 @@ async def _record_run(
     :param syncer: The ``get_name()`` form stored on the run.
     :param items: The ``(entity_type, status)`` of each item the run recorded.
     :param run_status: The run-level verdict ``finalize_run`` would have written.
+    :param at: When the run and its items were recorded, or ``None`` for now.
     """
-    instance = SyncInstance(syncer=syncer, status=run_status)
+    stamped = {} if at is None else {"created_at": at}
+    instance = SyncInstance(syncer=syncer, status=run_status, **stamped)
     session.add(instance)
     await session.commit()
     await session.refresh(instance)
@@ -259,16 +262,17 @@ async def _record_run(
                 entity_type=entity_type,
                 status=status,
                 sync_instance_id=instance.id,
+                **stamped,
             )
         )
     await session.commit()
 
 
-class TestSyncItemManagerInventorySyncCompleted:
-    """Test SyncItemManager.inventory_sync_completed against persisted runs."""
+class TestSyncItemManagerFirstInventorySyncCompletedAt:
+    """Test SyncItemManager.first_inventory_sync_completed_at against persisted runs."""
 
     @pytest.mark.asyncio
-    async def test_true_once_the_inventory_item_succeeded(self, session) -> None:
+    async def test_set_once_the_inventory_item_succeeded(self, session) -> None:
         """Report a completed pass when the syncer's INVENTORY item reached SUCCESS."""
         await _record_run(
             session,
@@ -279,10 +283,13 @@ class TestSyncItemManagerInventorySyncCompleted:
             ],
         )
 
-        assert await SyncItemManager.inventory_sync_completed(session, _LEADER) is True
+        assert (
+            await SyncItemManager.first_inventory_sync_completed_at(session, _LEADER)
+            is not None
+        )
 
     @pytest.mark.asyncio
-    async def test_true_when_only_an_entity_failed(self, session) -> None:
+    async def test_set_when_only_an_entity_failed(self, session) -> None:
         """Count a pass whose run is FAILED only because one node failed.
 
         ``finalize_run`` marks the run ``FAILED`` for any failed item, so gating on
@@ -299,7 +306,23 @@ class TestSyncItemManagerInventorySyncCompleted:
             run_status=SyncStatusEnum.FAILED,
         )
 
-        assert await SyncItemManager.inventory_sync_completed(session, _LEADER) is True
+        assert (
+            await SyncItemManager.first_inventory_sync_completed_at(session, _LEADER)
+            is not None
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_the_earliest_completed_pass(self, session) -> None:
+        """Report the first pass's finish, not a later one's, in UTC."""
+        first = (utc_now() - timedelta(hours=2)).replace(microsecond=0)
+        passes = [(SyncInventoryEntityTypeEnum.INVENTORY, SyncStatusEnum.SUCCESS)]
+        await _record_run(session, _LEADER, passes, at=utc_now() - timedelta(hours=1))
+        await _record_run(session, _LEADER, passes, at=first)
+
+        assert (
+            await SyncItemManager.first_inventory_sync_completed_at(session, _LEADER)
+            == first
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -331,7 +354,7 @@ class TestSyncItemManagerInventorySyncCompleted:
             "another-syncer-completed",
         ],
     )
-    async def test_false_without_a_successful_inventory_item_for_the_syncer(
+    async def test_none_without_a_successful_inventory_item_for_the_syncer(
         self,
         session,
         recorded_syncer: str,
@@ -340,7 +363,174 @@ class TestSyncItemManagerInventorySyncCompleted:
         """Report no completed pass unless this syncer's INVENTORY item succeeded."""
         await _record_run(session, recorded_syncer, items)
 
-        assert await SyncItemManager.inventory_sync_completed(session, _LEADER) is False
+        assert (
+            await SyncItemManager.first_inventory_sync_completed_at(session, _LEADER)
+            is None
+        )
+
+
+class TestSyncInstanceManagerHasRunSince:
+    """Test SyncInstanceManager.has_run_since against persisted runs."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "run_status",
+        [SyncStatusEnum.SUCCESS, SyncStatusEnum.FAILED, SyncStatusEnum.RUNNING],
+    )
+    async def test_true_for_a_run_begun_at_or_after_the_mark(
+        self, session, run_status: SyncStatusEnum
+    ) -> None:
+        """Count a later run whatever its outcome, including one still running."""
+        mark = utc_now() - timedelta(seconds=1)
+        await _record_run(session, _LEADER, [], run_status=run_status)
+
+        assert await SyncInstanceManager.has_run_since(session, _LEADER, mark) is True
+
+    @pytest.mark.asyncio
+    async def test_true_for_a_run_begun_exactly_at_the_mark(self, session) -> None:
+        """Count a run that began at the mark itself."""
+        mark = utc_now().replace(microsecond=0)
+        await _record_run(session, _LEADER, [], at=mark)
+
+        assert await SyncInstanceManager.has_run_since(session, _LEADER, mark) is True
+
+    @pytest.mark.asyncio
+    async def test_false_for_a_run_begun_before_the_mark(self, session) -> None:
+        """Ignore a run that began before the mark."""
+        await _record_run(session, _LEADER, [])
+
+        assert (
+            await SyncInstanceManager.has_run_since(
+                session, _LEADER, utc_now() + timedelta(seconds=1)
+            )
+            is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_false_for_another_syncers_run(self, session) -> None:
+        """Ignore a later run of a different syncer."""
+        mark = utc_now() - timedelta(seconds=1)
+        await _record_run(session, _OTHER_SYNCER, [])
+
+        assert await SyncInstanceManager.has_run_since(session, _LEADER, mark) is False
+
+
+# ---------------------------------------------------------------------------
+# SyncItemManager.finished_entity_attempts (real session)
+# ---------------------------------------------------------------------------
+
+
+async def _record_attempt(
+    session,
+    syncer: str,
+    entity_id: int,
+    status: SyncStatusEnum,
+    *,
+    entity_type: SyncInventoryEntityTypeEnum = SyncInventoryEntityTypeEnum.NODE,
+    age: timedelta = _NO_AGE,
+) -> SyncItem:
+    """Persist one run of ``syncer`` holding a single item on ``entity_id``.
+
+    :param session: The real PMM Extensions session the rows are written through.
+    :param syncer: The ``get_name()`` form stored on the run.
+    :param entity_id: The entity the item attempted.
+    :param status: The item's status.
+    :param entity_type: The entity level of the item.
+    :param age: How long before now the item was created.
+    :return: The persisted item.
+    """
+    instance = SyncInstance(syncer=syncer, status=SyncStatusEnum.SUCCESS)
+    session.add(instance)
+    await session.commit()
+    await session.refresh(instance)
+    item = SyncItem(
+        entity_id=entity_id,
+        entity_type=entity_type,
+        status=status,
+        sync_instance_id=instance.id,
+        created_at=utc_now() - age,
+    )
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    return item
+
+
+class TestSyncItemManagerFinishedEntityAttempts:
+    """Test SyncItemManager.finished_entity_attempts against persisted runs."""
+
+    @pytest.mark.asyncio
+    async def test_returns_finished_attempts_oldest_first(self, session) -> None:
+        """Return the syncer's SUCCESS and FAILED items on the entities, by age."""
+        newer = await _record_attempt(session, _LEADER, 1, SyncStatusEnum.SUCCESS)
+        older = await _record_attempt(
+            session, _LEADER, 1, SyncStatusEnum.FAILED, age=timedelta(hours=1)
+        )
+
+        attempts = await SyncItemManager.finished_entity_attempts(
+            session, _LEADER, SyncInventoryEntityTypeEnum.NODE, [1]
+        )
+
+        assert [item.id for item in attempts] == [older.id, newer.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("syncer", "entity_id", "status", "entity_type"),
+        [
+            (
+                _OTHER_SYNCER,
+                1,
+                SyncStatusEnum.FAILED,
+                SyncInventoryEntityTypeEnum.NODE,
+            ),
+            (_LEADER, 2, SyncStatusEnum.FAILED, SyncInventoryEntityTypeEnum.NODE),
+            (_LEADER, 1, SyncStatusEnum.PENDING, SyncInventoryEntityTypeEnum.NODE),
+            (_LEADER, 1, SyncStatusEnum.RUNNING, SyncInventoryEntityTypeEnum.NODE),
+            (
+                _LEADER,
+                1,
+                SyncStatusEnum.FAILED,
+                SyncInventoryEntityTypeEnum.SERVICE,
+            ),
+        ],
+        ids=[
+            "another-syncer",
+            "another-entity",
+            "still-pending",
+            "still-running",
+            "another-entity-level",
+        ],
+    )
+    async def test_excludes_items_outside_the_filter(
+        self,
+        session,
+        syncer: str,
+        entity_id: int,
+        status: SyncStatusEnum,
+        entity_type: SyncInventoryEntityTypeEnum,
+    ) -> None:
+        """Leave out items of another syncer, entity or level, and unfinished ones."""
+        await _record_attempt(
+            session, syncer, entity_id, status, entity_type=entity_type
+        )
+
+        attempts = await SyncItemManager.finished_entity_attempts(
+            session, _LEADER, SyncInventoryEntityTypeEnum.NODE, [1]
+        )
+
+        assert attempts == []
+
+    @pytest.mark.asyncio
+    async def test_no_entities_issues_no_query(self, session, mocker) -> None:
+        """Answer an empty entity set without reaching the database."""
+        exec_ = mocker.spy(session, "exec")
+
+        attempts = await SyncItemManager.finished_entity_attempts(
+            session, _LEADER, SyncInventoryEntityTypeEnum.NODE, []
+        )
+
+        assert attempts == []
+        exec_.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

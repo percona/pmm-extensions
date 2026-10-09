@@ -109,6 +109,40 @@ def test_sync_preserves_crlf_line_endings(tmp_path):
     assert b"app/extensions/apps/alpha/migrations/versions" in rewritten
 
 
+def test_sync_failed_write_leaves_original_and_no_temp_file(tmp_path, monkeypatch):
+    """Keep the original ini and leave no temp file when the final swap fails."""
+    apps_root = tmp_path / "apps"
+    apps_root.mkdir()
+    _migration_plugin(apps_root, "alpha")
+    ini_path = tmp_path / "alembic.ini"
+    ini_path.write_text(_MINIMAL_INI, encoding="utf-8")
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "replace", _boom)
+    with pytest.raises(OSError, match="disk full"):
+        sync_alembic_version_locations.sync_alembic_ini(ini_path, apps_root)
+
+    assert ini_path.read_text(encoding="utf-8") == _MINIMAL_INI
+    assert [p.name for p in tmp_path.iterdir() if p.name != "apps"] == ["alembic.ini"]
+
+
+def test_sync_preserves_file_mode(tmp_path):
+    """Keep the original file mode of a rewritten ``alembic.ini``."""
+    apps_root = tmp_path / "apps"
+    apps_root.mkdir()
+    _migration_plugin(apps_root, "alpha")
+    ini_path = tmp_path / "alembic.ini"
+    ini_path.write_text(_MINIMAL_INI, encoding="utf-8")
+    expected_mode = 0o644
+    ini_path.chmod(expected_mode)
+
+    assert sync_alembic_version_locations.sync_alembic_ini(ini_path, apps_root)
+    assert "alpha" in ini_path.read_text(encoding="utf-8")
+    assert ini_path.stat().st_mode & 0o777 == expected_mode
+
+
 def test_sync_rejects_multiline_version_locations(tmp_path):
     """Reject ``version_locations`` values with indented continuation lines."""
     apps_root = tmp_path / "apps"

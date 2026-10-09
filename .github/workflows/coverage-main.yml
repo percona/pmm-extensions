@@ -40,6 +40,10 @@ jobs:
       - name: Install test dependencies
         run: poetry sync --no-root
 
+      - name: Install the shells the seed tests execute under
+        # See the matching step in python.yaml.
+        run: sudo apt-get update && sudo apt-get install -y dash busybox
+
       - name: Run tests
         env:
           EXTENSIONS_PAYLOAD_CHECK_PYTHON: ${{ steps.py39.outputs.python-path }}

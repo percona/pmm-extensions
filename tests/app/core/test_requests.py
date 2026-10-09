@@ -670,7 +670,7 @@ async def test_stream_yields_content_chunks_and_logs_debug_lifecycle(remote_api)
 
     mock_response = MagicMock()
     mock_response.status = status.HTTP_200_OK
-    mock_response.content.iter_any = lambda: body()
+    mock_response.content.iter_any = body
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
@@ -717,14 +717,11 @@ async def test_stream_logs_warning_with_exc_info_and_reraises_on_content_error(
 
     with patch.object(remote_api.logger, "warning") as mock_warning:
         async with remote_api:
-            with patch.object(remote_api, "_request", return_value=mock_ctx):
-                with pytest.raises(ConnectionResetError, match="connection reset"):
-                    [
-                        _
-                        async for _ in remote_api.stream(
-                            "/history/1/logs/", method="GET"
-                        )
-                    ]
+            with (
+                patch.object(remote_api, "_request", return_value=mock_ctx),
+                pytest.raises(ConnectionResetError, match="connection reset"),
+            ):
+                [_ async for _ in remote_api.stream("/history/1/logs/", method="GET")]
 
     mock_warning.assert_called_once()
     args, kwargs = mock_warning.call_args
@@ -744,9 +741,11 @@ async def test_stream_logs_warning_when_request_context_raises(remote_api):
 
     with patch.object(remote_api.logger, "warning") as mock_warning:
         async with remote_api:
-            with patch.object(remote_api, "_request", return_value=mock_ctx):
-                with pytest.raises(RuntimeError, match="session failed"):
-                    [_ async for _ in remote_api.stream("/x/", method="POST")]
+            with (
+                patch.object(remote_api, "_request", return_value=mock_ctx),
+                pytest.raises(RuntimeError, match="session failed"),
+            ):
+                [_ async for _ in remote_api.stream("/x/", method="POST")]
 
     mock_warning.assert_called_once()
     wargs, wkwargs = mock_warning.call_args
@@ -766,7 +765,7 @@ async def test_stream_yields_long_line_above_default_aiohttp_limit(remote_api):
 
     mock_response = MagicMock()
     mock_response.status = status.HTTP_200_OK
-    mock_response.content.iter_any = lambda: body()
+    mock_response.content.iter_any = body
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
@@ -787,7 +786,7 @@ async def test_stream_flushes_trailing_partial_line_on_eof(remote_api):
 
     mock_response = MagicMock()
     mock_response.status = status.HTTP_200_OK
-    mock_response.content.iter_any = lambda: body()
+    mock_response.content.iter_any = body
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
@@ -810,7 +809,7 @@ async def test_stream_splits_lines_across_chunk_boundaries(remote_api):
 
     mock_response = MagicMock()
     mock_response.status = status.HTTP_200_OK
-    mock_response.content.iter_any = lambda: body()
+    mock_response.content.iter_any = body
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
@@ -832,15 +831,17 @@ async def test_stream_raises_when_single_line_exceeds_cap(remote_api, monkeypatc
 
     mock_response = MagicMock()
     mock_response.status = status.HTTP_200_OK
-    mock_response.content.iter_any = lambda: body()
+    mock_response.content.iter_any = body
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
     async with remote_api:
-        with patch.object(remote_api, "_request", return_value=mock_ctx):
-            with pytest.raises(ValueError, match="exceeded"):
-                [_ async for _ in remote_api.stream("/runaway/")]
+        with (
+            patch.object(remote_api, "_request", return_value=mock_ctx),
+            pytest.raises(ValueError, match="exceeded"),
+        ):
+            [_ async for _ in remote_api.stream("/runaway/")]
 
 
 @pytest.mark.asyncio
@@ -855,15 +856,17 @@ async def test_stream_raises_when_single_chunk_yields_oversized_line(
 
     mock_response = MagicMock()
     mock_response.status = status.HTTP_200_OK
-    mock_response.content.iter_any = lambda: body()
+    mock_response.content.iter_any = body
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
     async with remote_api:
-        with patch.object(remote_api, "_request", return_value=mock_ctx):
-            with pytest.raises(ValueError, match="exceeded"):
-                [_ async for _ in remote_api.stream("/oversized-line/")]
+        with (
+            patch.object(remote_api, "_request", return_value=mock_ctx),
+            pytest.raises(ValueError, match="exceeded"),
+        ):
+            [_ async for _ in remote_api.stream("/oversized-line/")]
 
 
 @pytest.mark.asyncio
@@ -876,16 +879,18 @@ async def test_stream_logs_warning_when_line_cap_exceeded(remote_api, monkeypatc
 
     mock_response = MagicMock()
     mock_response.status = status.HTTP_200_OK
-    mock_response.content.iter_any = lambda: body()
+    mock_response.content.iter_any = body
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
     with patch.object(remote_api.logger, "warning") as mock_warning:
         async with remote_api:
-            with patch.object(remote_api, "_request", return_value=mock_ctx):
-                with pytest.raises(ValueError, match="exceeded"):
-                    [_ async for _ in remote_api.stream("/cap-log/", method="GET")]
+            with (
+                patch.object(remote_api, "_request", return_value=mock_ctx),
+                pytest.raises(ValueError, match="exceeded"),
+            ):
+                [_ async for _ in remote_api.stream("/cap-log/", method="GET")]
 
     mock_warning.assert_called_once()
     args, kwargs = mock_warning.call_args
@@ -907,7 +912,7 @@ async def test_stream_chunks_yields_raw_bytes_without_line_splitting(remote_api)
 
     mock_response = MagicMock()
     mock_response.status = status.HTTP_200_OK
-    mock_response.content.iter_any = lambda: body()
+    mock_response.content.iter_any = body
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
@@ -933,7 +938,7 @@ async def test_stream_chunks_does_not_apply_line_size_cap(remote_api, monkeypatc
 
     mock_response = MagicMock()
     mock_response.status = status.HTTP_200_OK
-    mock_response.content.iter_any = lambda: body()
+    mock_response.content.iter_any = body
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
@@ -956,9 +961,11 @@ async def test_stream_chunks_raises_http_exception_on_error_status(remote_api):
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
     async with remote_api:
-        with patch.object(remote_api, "_request", return_value=mock_ctx):
-            with pytest.raises(HTTPNotFoundException) as exc_info:
-                [_ async for _ in remote_api.stream_chunks("/missing/")]
+        with (
+            patch.object(remote_api, "_request", return_value=mock_ctx),
+            pytest.raises(HTTPNotFoundException) as exc_info,
+        ):
+            [_ async for _ in remote_api.stream_chunks("/missing/")]
 
     assert type(exc_info.value) is HTTPNotFoundException
     assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
@@ -975,9 +982,11 @@ async def test_stream_chunks_maps_410_to_gone_with_headers(remote_api):
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
     async with remote_api:
-        with patch.object(remote_api, "_request", return_value=mock_ctx):
-            with pytest.raises(HTTPGoneException) as exc_info:
-                [_ async for _ in remote_api.stream_chunks("/gone/")]
+        with (
+            patch.object(remote_api, "_request", return_value=mock_ctx),
+            pytest.raises(HTTPGoneException) as exc_info,
+        ):
+            [_ async for _ in remote_api.stream_chunks("/gone/")]
 
     assert type(exc_info.value) is HTTPGoneException
     assert exc_info.value.status_code == status.HTTP_410_GONE
@@ -1000,9 +1009,11 @@ async def test_stream_chunks_coerces_numeric_error_code_to_str(remote_api):
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
     async with remote_api:
-        with patch.object(remote_api, "_request", return_value=mock_ctx):
-            with pytest.raises(HTTPNotFoundException) as exc_info:
-                [_ async for _ in remote_api.stream_chunks("/missing/")]
+        with (
+            patch.object(remote_api, "_request", return_value=mock_ctx),
+            pytest.raises(HTTPNotFoundException) as exc_info,
+        ):
+            [_ async for _ in remote_api.stream_chunks("/missing/")]
 
     assert exc_info.value.headers == {"X-Error-Code": "5"}
 
@@ -1031,9 +1042,11 @@ async def test_stream_chunks_non_json_error_stamps_upstream_header(remote_api):
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
     async with remote_api:
-        with patch.object(remote_api, "_request", return_value=mock_ctx):
-            with pytest.raises(HTTPBadGatewayException) as exc_info:
-                [_ async for _ in remote_api.stream_chunks("/proxy-5xx/")]
+        with (
+            patch.object(remote_api, "_request", return_value=mock_ctx),
+            pytest.raises(HTTPBadGatewayException) as exc_info,
+        ):
+            [_ async for _ in remote_api.stream_chunks("/proxy-5xx/")]
 
     assert type(exc_info.value) is HTTPBadGatewayException
     assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
@@ -1053,7 +1066,9 @@ async def test_stream_chunks_error_status_with_non_dict_json_body(remote_api):
     mock_context_manager.__aexit__.return_value = None
 
     async with remote_api:
-        with patch.object(remote_api, "_request", return_value=mock_context_manager):
-            with pytest.raises(HTTPBadGatewayException) as exc_info:
-                [_ async for _ in remote_api.stream_chunks("/list-error/")]
+        with (
+            patch.object(remote_api, "_request", return_value=mock_context_manager),
+            pytest.raises(HTTPBadGatewayException) as exc_info,
+        ):
+            [_ async for _ in remote_api.stream_chunks("/list-error/")]
     assert exc_info.value.detail == "An unexpected error occurred on the server."

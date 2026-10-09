@@ -68,6 +68,7 @@ from app.extensions.deps import (
     get_session,
     get_tasks_api,
     require_bearer_for_unsafe_methods,
+    reset_username_mapping_failure_window,
 )
 from app.extensions.inventory import (
     CreatedNode,
@@ -136,7 +137,7 @@ class HealthProbeServer:
         class Handler(BaseHTTPRequestHandler):
             """Answer the health path from the controller's script."""
 
-            def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's API
+            def do_GET(self) -> None:
                 """Answer with the next scripted status, honouring the host rule."""
                 server.requests.append((self.path, dict(self.headers.items())))
                 if self.path != HEALTH_PATH:
@@ -267,6 +268,16 @@ def _override_snapshot_cleared() -> None:
     snippets_settings._set_snapshot({})  # noqa: SLF001
     alert_settings._set_snapshot({})  # noqa: SLF001
     anonymizer_settings._set_snapshot({})  # noqa: SLF001
+
+
+@pytest.fixture(autouse=True)
+def _username_mapping_failure_window_cleared() -> None:
+    """Forget any provider failure ``get_username_mapping`` is remembering.
+
+    The window is process-wide, so one test with a failing provider would
+    otherwise answer every later test's lookup with an empty mapping.
+    """
+    reset_username_mapping_failure_window()
 
 
 @pytest.fixture(scope="session")
@@ -745,8 +756,8 @@ def test_client(
     DB. Tests that exercise the disabled path override ``get_session`` again
     with a session that carries an ``enabled=False`` row.
     """
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None
@@ -790,8 +801,8 @@ async def async_test_client(
 
     See :func:`test_client` for the gate-override rationale.
     """
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None

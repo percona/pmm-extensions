@@ -176,7 +176,7 @@ def _force_wizard(
         simulate ``Ctrl-C``.
     :return: The stub recording every prompt and confirm label asked.
     """
-    stub = _WizardStub(prompt_answers, confirm)
+    stub = _WizardStub(prompt_answers, confirm=confirm)
     monkeypatch.setattr(scaffold, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(Prompt, "ask", staticmethod(stub.ask))
     monkeypatch.setattr(Confirm, "ask", staticmethod(stub.confirm))
@@ -189,6 +189,7 @@ class _WizardStub:
     def __init__(
         self,
         prompt_answers: dict[str, object] | None,
+        *,
         confirm: bool | Callable[[str], bool],
     ) -> None:
         self._answers = {
@@ -376,6 +377,16 @@ def test_insertion_fails_without_default_plugins_block() -> None:
     """Fail loudly rather than corrupt a settings file lacking the default block."""
     with pytest.raises(ValueError, match="default"):
         scaffold.insert_app_entry("development:\n  EXTENSIONS:\n    APPS:\n", "demo")
+
+
+def test_settings_write_preserves_file_mode(tmp_settings: Path) -> None:
+    """Keep the original file mode of ``settings.yaml`` across a registration."""
+    expected_mode = 0o644
+    tmp_settings.chmod(expected_mode)
+
+    assert scaffold.write_settings_entry("scaffold_mode_demo")
+    assert "MODULE_NAME: scaffold_mode_demo" in tmp_settings.read_text(encoding="utf-8")
+    assert tmp_settings.stat().st_mode & 0o777 == expected_mode
 
 
 def test_refuses_to_clobber_existing_plugin(tmp_settings: Path) -> None:

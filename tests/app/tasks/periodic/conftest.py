@@ -97,12 +97,12 @@ def periodic_test_client(
     tasks_session: AsyncSession,
 ) -> Iterator[TestClient]:
     """Create an authenticated test client with both celery beat and tasks sessions."""
-    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
-        lambda: None
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
     )
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
-    tasks_app.dependency_overrides[get_celery_beat_session] = (
-        lambda: celery_beat_session
+    tasks_app.dependency_overrides[get_celery_beat_session] = lambda: (
+        celery_beat_session
     )
     tasks_app.dependency_overrides[get_tasks_session] = lambda: tasks_session
     yield TestClient(tasks_app)

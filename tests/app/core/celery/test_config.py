@@ -186,7 +186,7 @@ def test_worker_concurrency_coerces_env_path(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.parametrize("value", [0, -1, "x", 2.5])
-def test_worker_concurrency_rejects_invalid_values(value: int | str | float) -> None:
+def test_worker_concurrency_rejects_invalid_values(value: str | float) -> None:
     """Reject non-positive, non-numeric and fractional concurrency values.
 
     :param value: A concurrency value the field must refuse.

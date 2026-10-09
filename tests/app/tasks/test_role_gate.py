@@ -59,8 +59,8 @@ def bearer_client(
     answer from a failure on the way to it.
     """
     tasks_app.dependency_overrides[get_session] = lambda: session
-    tasks_app.dependency_overrides[get_celery_beat_session] = (
-        lambda: celery_beat_session
+    tasks_app.dependency_overrides[get_celery_beat_session] = lambda: (
+        celery_beat_session
     )
     tasks_app.dependency_overrides[get_request_executor] = lambda: mock_executor
     yield TestClient(tasks_app, raise_server_exceptions=False)

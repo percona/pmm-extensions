@@ -32,6 +32,15 @@ SNIPPETS_DIR = REPO_ROOT / "snippets"
 sys.path.insert(0, str(REPO_ROOT))
 
 
+def _snippet_files(snippets_dir: Path) -> list[Path]:
+    """Return every regular file under ``snippets_dir``, sorted by path.
+
+    :param snippets_dir: The snippets directory to walk.
+    :return: The files, in sorted order.
+    """
+    return sorted(path for path in snippets_dir.rglob("*") if path.is_file())
+
+
 async def _hash_snippet_entries(
     snippets_dir: Path,
     manifest_name: str,
@@ -43,12 +52,13 @@ async def _hash_snippet_entries(
     :return: ``(digest, relative_path)`` pairs in sorted-path order.
     :raises OSError: If a snippet file cannot be opened or read.
     """
-    from app.extensions.snippets.checksums import manifest_relative_path, sha256_file
+    from app.extensions.snippets.checksums import (  # noqa: PLC0415
+        manifest_relative_path,
+        sha256_file,
+    )
 
     entries: list[tuple[str, str]] = []
-    for path in sorted(snippets_dir.rglob("*")):
-        if not path.is_file():
-            continue
+    for path in await asyncio.to_thread(_snippet_files, snippets_dir):
         relative = manifest_relative_path(path, snippets_dir)
         if relative == manifest_name:
             continue
@@ -66,7 +76,9 @@ def generate_manifest() -> tuple[int, Path]:
     :raises SystemExit: If the snippets directory does not exist.
     :raises OSError: If a snippet file or the manifest cannot be read or written.
     """
-    from app.extensions.snippets.checksums import BUILTIN_CHECKSUM_MANIFEST
+    from app.extensions.snippets.checksums import (  # noqa: PLC0415
+        BUILTIN_CHECKSUM_MANIFEST,
+    )
 
     if not SNIPPETS_DIR.is_dir():
         raise SystemExit(f"Snippets directory not found: {SNIPPETS_DIR}")

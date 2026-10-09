@@ -17,6 +17,8 @@
 
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from contextlib import suppress
+from time import monotonic
 from typing import Annotated, Any, Literal, overload
 
 from fastapi import Depends, HTTPException, Request
@@ -46,6 +48,7 @@ from app.core.exceptions import (
 from app.core.pagination import fetch_all_dict_items
 from app.core.requests import as_json_object, RemoteAPI
 from app.core.security import is_bearer_authenticated, SAFE_HTTP_METHODS
+from app.core.utils.cache import TTLCache
 from app.core.utils.fields import URL
 from app.extensions.clients.pmm import PMMRemoteAPI
 from app.extensions.config import extensions_settings
@@ -249,25 +252,55 @@ async def resolve_ambient_exchange_token(
         return None
 
 
+#: Seconds a failed actor listing is answered with an empty map without a retry.
+USERNAME_MAPPING_FAILURE_WINDOW = 30.0
+
+
+_username_mapping_failure: TTLCache[bool] = TTLCache(
+    ttl=USERNAME_MAPPING_FAILURE_WINDOW, maxsize=1, typed=False
+)
+_USERNAME_MAPPING_FAILURE_KEY = ()
+
+
+def reset_username_mapping_failure_window() -> None:
+    """Forget any failure ``get_username_mapping`` is remembering."""
+    _username_mapping_failure.clear()
+
+
 async def get_username_mapping() -> dict[str, str]:
     """Create a mapping from actor ID to username using the active auth provider.
 
     Fetch every actor from the active provider (its users plus any identity
     that can run tasks without being listed as a user, such as a Grafana service
-    account) and map each actor's ID to their username. Caching should be
-    implemented in the provider's SDK to avoid repeated API calls.
+    account) and map each actor's ID to their username. A successful listing is
+    not cached here: the provider SDKs already cache it for 300 s.
 
     Any provider failure yields an empty mapping (logged with its traceback) so
-    a display-name lookup never fails the request that asked for it.
+    a display-name lookup never fails the request that asked for it. The SDKs
+    never cache a failure, so it is remembered here for
+    ``USERNAME_MAPPING_FAILURE_WINDOW`` (30 s): calls inside the window return
+    the empty mapping at once instead of each waiting on a downed provider.
 
     :return: A dictionary mapping actor IDs to usernames.
     """
+    with _username_mapping_failure.lock, suppress(KeyError):
+        _username_mapping_failure.get(_USERNAME_MAPPING_FAILURE_KEY, monotonic())
+        return {}
     try:
         users = await User.get_actors()
-        return {str(user.id): user.username for user in users}
     except Exception:
         logger.exception("Failed to get username mapping from the auth provider")
+        with _username_mapping_failure.lock:
+            now = monotonic()
+            _username_mapping_failure.set(
+                _USERNAME_MAPPING_FAILURE_KEY, value=True, now=now
+            )
+            _username_mapping_failure.evict_if_needed(now)
         return {}
+    # A concurrent call may have opened the window while this one was in flight;
+    # the provider has answered since, so stop serving raw ids.
+    reset_username_mapping_failure_window()
+    return {str(user.id): user.username for user in users}
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -334,9 +367,9 @@ def require_app_enabled(app_key: str) -> Callable[[AsyncSession], Awaitable[None
     """
 
     async def _gate(session: SessionDep) -> None:
-        # Deferred: the framework package __init__ imports back into this module,
-        # so a top-level import here would cycle.
-        from app.extensions.apps.framework.registry import get_app_registry
+        from app.extensions.apps.framework.registry import (  # noqa: PLC0415 - framework's __init__ imports this (cycle)
+            get_app_registry,
+        )
 
         try:
             states = await AppStateManager.all_lifecycle_states(session)
@@ -368,9 +401,9 @@ def get_toggleable_app_key(app_key: str) -> str:
         raise HTTPConflictException(
             detail=f"App '{app_key}' is protected and cannot be disabled.",
         )
-    # Deferred: the framework package __init__ imports back into this module,
-    # so a top-level import here would cycle.
-    from app.extensions.apps.framework.registry import get_app_registry
+    from app.extensions.apps.framework.registry import (  # noqa: PLC0415 - framework's __init__ imports this (cycle)
+        get_app_registry,
+    )
 
     app = get_app_registry().get(app_key)
     if app is None:

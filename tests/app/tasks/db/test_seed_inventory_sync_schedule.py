@@ -46,7 +46,7 @@ from app.core.utils import json_serializer
 from app.core.utils.date_time import make_datetime_utc, utc_now
 from app.extensions.apps.inventory.sync import (
     run_scheduled_inventory_sync,
-    start_follower_first_runs,
+    start_followers,
 )
 from app.extensions.crud import SyncInstanceManager, SyncItemManager
 from app.extensions.models import (
@@ -60,7 +60,6 @@ from app.tasks.celery import execute_task_by_name
 from app.tasks.config import InventorySyncSchedule, tasks_settings
 from app.tasks.models import (
     EXECUTE_TASK_BY_NAME_TASK,
-    INVENTORY_SYNC_AFTER_KEY,
     INVENTORY_SYNC_FIRST_RUN_KEY,
     INVENTORY_SYNC_FOLLOWERS_KEY,
     INVENTORY_SYNC_TASK_NAME,
@@ -70,6 +69,7 @@ from tests.app.tasks.conftest import (
     MYSQL_SYNCER,
     PMM_SYNCER,
     SYSTEM_FACTS_SYNCER,
+    UNMEASURED_HOST_FACTS_SYNCER,
 )
 
 FIFTEEN_MINUTES = IntervalScheduleOption(every=15, period=Period.MINUTES)
@@ -620,10 +620,10 @@ def _meta(row: PeriodicTask) -> dict[str, Any]:
 async def test_the_pinned_default_names_its_followers(
     with_system_facts_schedule, beat_maker
 ) -> None:
-    """Assert the default lists each per-syncer schedule and each names the default.
+    """Assert the default lists each per-syncer schedule, which waits on nothing.
 
-    Both rows stay due at first seed: the ordering is carried by the meta the
-    callable reads, not by delaying either row.
+    Both rows stay due at first seed: the follower runs from bring-up, and the
+    default's own meta is what later starts it again.
     """
     await seed_module.seed_system_periodic_tasks()
 
@@ -633,12 +633,44 @@ async def test_the_pinned_default_names_its_followers(
         "syncer": PMM_SYNCER,
         INVENTORY_SYNC_FOLLOWERS_KEY: [SYSTEM_FACTS_SYNCER],
     }
-    assert _meta(follower) == {
-        "syncer": SYSTEM_FACTS_SYNCER,
-        INVENTORY_SYNC_AFTER_KEY: PMM_SYNCER,
-    }
+    assert _meta(follower) == {"syncer": SYSTEM_FACTS_SYNCER}
     assert primary.start_time is not None
     assert follower.start_time is not None
+
+
+@pytest.mark.asyncio
+async def test_the_first_measurement_pass_follows_the_default(
+    configured, mocker, beat_maker
+) -> None:
+    """Assert the side-car pair seeds the pass as a follower beside the daily run.
+
+    Like the daily run, the pass runs from bring-up and waits on nothing; being
+    named on the default is what starts it after the default's first completed
+    pass, once PMM has populated the inventory.
+    """
+    mocker.patch.object(
+        tasks_settings,
+        "INVENTORY_SYNC_SCHEDULES",
+        [
+            InventorySyncSchedule(syncer=SYSTEM_FACTS_SYNCER, interval=ONE_DAY),
+            InventorySyncSchedule(
+                syncer=UNMEASURED_HOST_FACTS_SYNCER, interval=FIFTEEN_MINUTES
+            ),
+        ],
+    )
+
+    await seed_module.seed_system_periodic_tasks()
+
+    (primary,) = await _seeded_rows(beat_maker)
+    (follower,) = await _rows_named(
+        beat_maker,
+        seed_module._inventory_sync_schedule_name(UNMEASURED_HOST_FACTS_SYNCER),
+    )
+    assert _meta(primary)[INVENTORY_SYNC_FOLLOWERS_KEY] == [
+        SYSTEM_FACTS_SYNCER,
+        UNMEASURED_HOST_FACTS_SYNCER,
+    ]
+    assert _meta(follower) == {"syncer": UNMEASURED_HOST_FACTS_SYNCER}
 
 
 @pytest.mark.asyncio
@@ -692,8 +724,8 @@ async def test_an_operator_covered_follower_stays_listed_on_the_default(
 ) -> None:
     """Assert the default still names a follower whose own schedule is the operator's.
 
-    The kick starts it only if it has never run, so the operator's schedule sees
-    at most one extra first run.
+    The default starts it only while it has no run since the default's first
+    completed pass, so the operator's schedule sees at most one extra run.
     """
     mocker.patch.object(
         tasks_settings,
@@ -710,13 +742,14 @@ async def test_an_operator_covered_follower_stays_listed_on_the_default(
 
 
 @pytest.mark.asyncio
-async def test_reseeding_adds_the_ordering_to_existing_rows_only(
+async def test_reseeding_drops_the_wait_from_existing_rows_only(
     with_system_facts_schedule, beat_maker
 ) -> None:
     """Assert an upgrade reconciles the system rows and leaves the operator's alone.
 
-    The existing system rows keep their recorded timing, so gaining the ordering
-    does not move either schedule's next run.
+    A follower row an earlier build seeded still names the default it waited on;
+    the rewrite drops that key, and the existing system rows keep their recorded
+    timing, so neither schedule's next run moves.
     """
     dispatched_at = utc_now()
     operator_kwargs = _operator_kwargs(MYSQL_SYNCER)
@@ -736,7 +769,12 @@ async def test_reseeding_adds_the_ordering_to_existing_rows_only(
             json.dumps(
                 {
                     "task_name": INVENTORY_SYNC_TASK_NAME,
-                    "execution_data": {"meta": {"syncer": SYSTEM_FACTS_SYNCER}},
+                    "execution_data": {
+                        "meta": {
+                            "syncer": SYSTEM_FACTS_SYNCER,
+                            "after_syncer": PMM_SYNCER,
+                        }
+                    },
                 }
             ),
             name=with_system_facts_schedule,
@@ -754,7 +792,7 @@ async def test_reseeding_adds_the_ordering_to_existing_rows_only(
     (follower,) = await _rows_named(beat_maker, with_system_facts_schedule)
     (operator_row,) = await _rows_named(beat_maker, OPERATOR_TASK_NAME)
     assert _meta(primary)[INVENTORY_SYNC_FOLLOWERS_KEY] == [SYSTEM_FACTS_SYNCER]
-    assert _meta(follower)[INVENTORY_SYNC_AFTER_KEY] == PMM_SYNCER
+    assert _meta(follower) == {"syncer": SYSTEM_FACTS_SYNCER}
     assert operator_row.kwargs == operator_kwargs
     for row in (primary, follower):
         assert make_datetime_utc(row.last_run_at) == dispatched_at
@@ -795,15 +833,15 @@ async def test_the_seeded_meta_binds_to_the_scheduled_callable(
 
 
 @pytest.mark.asyncio
-async def test_the_leader_kick_is_the_seeded_follower_request_as_a_first_run(
+async def test_the_leader_start_is_the_seeded_follower_request_flagged(
     with_system_facts_schedule, beat_maker, tasks_maker, mocker, mock_remote_api
 ) -> None:
-    """Assert a kicked first run is the follower row's request plus the first-run flag.
+    """Assert a started run is the follower row's request plus the started-run flag.
 
-    The row's meta carries the ordering the run must honour, and the flag makes
-    the started run skip itself if the follower has run by the time it executes.
-    Every key is forwarded to the callable as a keyword argument, so each must
-    bind to it.
+    Carrying every key of the row's meta lets the identical-task guard hold the
+    follower's beat fire back behind the start, and the flag makes the start skip
+    rather than fail when it meets a run already in progress. Every key is
+    forwarded to the callable as a keyword argument, so each must bind to it.
     """
     await seed_module.seed_system_periodic_tasks()
     (primary,) = await _seeded_rows(beat_maker)
@@ -827,7 +865,7 @@ async def test_the_leader_kick_is_the_seeded_follower_request_as_a_first_run(
         )
     send_task = mocker.patch.object(celery, "send_task")
 
-    await start_follower_first_runs(
+    await start_followers(
         PMM_SYNCER,
         _meta(primary)[INVENTORY_SYNC_FOLLOWERS_KEY],
         [SystemFactsSyncer(inventory_api=mock_remote_api, tasks_api=mock_remote_api)],

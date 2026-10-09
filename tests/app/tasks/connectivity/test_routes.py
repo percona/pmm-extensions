@@ -79,7 +79,7 @@ def _clear_connectivity_cache():
 def mock_executor() -> MagicMock:
     """Return a mock executor with node1 available."""
     executor = MagicMock(spec=BaseExecutor)
-    executor.get_hosts = MagicMock(return_value={"node1": "10.0.0.1"})
+    executor.get_hosts = AsyncMock(return_value={"node1": "10.0.0.1"})
     return executor
 
 
@@ -87,8 +87,8 @@ def mock_executor() -> MagicMock:
 def test_client(regular_user, mock_executor) -> Iterator[TestClient]:
     """Create an authenticated test client for the Tasks API."""
     session = AsyncMock()
-    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
-        lambda: None
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
     )
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
     tasks_app.dependency_overrides[get_session] = lambda: session

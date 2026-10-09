@@ -3,9 +3,9 @@ default_language_version:
   python: python3
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 871f3bcae4fe473cd7109c3a068db975dc035e3b  # 0.9.4
+    rev: f12be1ebaa5351c1fc76472de98db2c3446c8253  # v0.16.10
     hooks:
-      - id: ruff
+      - id: ruff-check
       - id: ruff-format
   - repo: https://github.com/google/addlicense
     rev: b289835c0741ba2fb92dd5f61af070e79c69a55e  # v1.2.0
@@ -74,6 +74,14 @@ repos:
         entry: python3 scripts/gen_xtrabackup_payload_variants.py --check
         language: system
         files: ^(app/extensions/apps/mysql_backups/(xtrabackup[^/]*payload|payload_variants\.py)|scripts/gen_xtrabackup_payload_variants\.py)$
+        pass_filenames: false
+      - id: gen-pbm-payloads
+        name: Check PBM payload generated regions
+        description: "Ensure the PBM payload generated regions match pbm_creds_common.py"
+        entry: python3 scripts/gen_pbm_payloads.py --check
+        language: python
+        additional_dependencies: ["PyYAML==6.0.3"]
+        files: ^(app/extensions/apps/backup_mongo/(restore/)?pbm_[^/]*payload|app/extensions/apps/backup_mongo/pbm_creds_common\.py|scripts/gen_pbm_payloads\.py)$
         pass_filenames: false
       - id: oxfmt
         name: oxfmt (frontend formatter)

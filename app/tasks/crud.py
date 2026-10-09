@@ -728,16 +728,6 @@ class TaskHistoryManager(BaseSQLModelManager):
             status=status,
         )
 
-    @staticmethod
-    def _latest_status_from_history_statuses(
-        statuses: Sequence[TaskHistoryStatusEnum | None],
-    ) -> TaskHistoryStatusEnum | None:
-        """Return the first non-null status in newest-to-oldest order."""
-        for status in statuses:
-            if status is not None:
-                return status
-        return None
-
     @classmethod
     async def latest_status_by_task_names(
         cls,

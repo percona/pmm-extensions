@@ -709,7 +709,7 @@ async def test_refresh_all_skips_callback_for_unchanged_key(
     session_maker: async_sessionmaker,
 ) -> None:
     """A callback does not fire when its key's value is unchanged."""
-    proxy, registry = _make_proxies()
+    _proxy, registry = _make_proxies()
     override_value = not ExtensionsSettings().CONNECTIVITY_CHECK_DEFAULT
     await seed_connectivity_override(session_maker, value=override_value)
     await refresh_all(lambda: session_maker, registry)
@@ -775,7 +775,7 @@ async def test_start_refresh_task_fires_callback_on_loop_change(
     session_maker: async_sessionmaker,
 ) -> None:
     """A change inserted after startup fires the callback on a later loop cycle."""
-    proxy, registry = _make_proxies()
+    _proxy, registry = _make_proxies()
     fired = asyncio.Event()
 
     async def _callback(_: object) -> None:
