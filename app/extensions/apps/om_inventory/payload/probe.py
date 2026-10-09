@@ -72,10 +72,13 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote_plus
 
 DEFAULT_AUTH_SOURCE = "admin"
 DEFAULT_CONNECT_TIMEOUT_MS = 5000
+
+#: MongoDB's ``AuthenticationFailed`` error code.
+AUTHENTICATION_FAILED = 18
 #: Basename of the node-side credentials file, under ``$HOME``. The same file the
 #: PBM payloads and the MongoDB Status payload read.
 DEFAULT_CREDENTIALS_BASENAME = ".mongodb_uri"
@@ -506,18 +509,30 @@ def build_uri(target, userinfo, auth_source, connect_timeout_ms):
     return f"mongodb://{userinfo}{host}:{port}/?{query}"
 
 
-def collect_database_facts(target, userinfo, auth_source, connect_timeout_ms):
-    """Return facts read from the database for one target.
+def collect_database_facts(
+    target, userinfo, auth_source, connect_timeout_ms, credentials_file=None
+):
+    """Return facts read from the database for one target, or why there are none.
 
-    Each command is run independently so one failure does not lose the others —
-    ``replSetGetStatus`` legitimately fails against a mongos or a standalone, and
-    that must not discard the ``buildInfo`` that came back fine.
+    The database is reached and authenticated against once, up front. Failing that
+    is a target-level failure: the result carries ``error`` (see
+    :func:`describe_database_error`), ``error_type`` (the exception class name) and
+    ``error_code`` (the server's error code, ``None`` where there is none), and no
+    facts.
+
+    Once connected, each command is run independently so one failure does not lose
+    the others — ``replSetGetStatus`` legitimately fails against a mongos or a
+    standalone, and that must not discard the ``buildInfo`` that came back fine.
+    Those failures go to ``command_errors`` and do not fail the target.
 
     :param target: The target mapping carrying ``host`` and ``port``.
     :param userinfo: The credentials prefix.
     :param auth_source: The database to authenticate against.
     :param connect_timeout_ms: Connect and server-selection timeout.
-    :return: A mapping of database facts and per-command errors.
+    :param credentials_file: Where ``userinfo`` was read from, named in the error
+        when the database rejects it.
+    :return: A mapping of database facts and per-command errors, or of the
+        target-level ``error``, ``error_type`` and ``error_code``.
     """
     from pymongo import MongoClient
     from pymongo.errors import PyMongoError
@@ -528,6 +543,11 @@ def collect_database_facts(target, userinfo, auth_source, connect_timeout_ms):
     try:
         client = MongoClient(uri)
         admin = client.admin
+        # Ping first: ``MongoClient`` is lazy, so an unreachable server or a
+        # rejected password would otherwise surface only as per-command errors and
+        # leave the record ``ok``. It also costs one connect timeout instead of one
+        # per command.
+        admin.command("ping")
         for key, command in (
             ("build_info", "buildInfo"),
             ("hello", "hello"),
@@ -539,11 +559,61 @@ def collect_database_facts(target, userinfo, auth_source, connect_timeout_ms):
             except PyMongoError as err:
                 facts.setdefault("command_errors", {})[key] = str(err)
     except PyMongoError as err:
-        facts["error"] = str(err)
+        facts["error"] = describe_database_error(
+            err, target, userinfo, credentials_file, connect_timeout_ms
+        )
+        # Structured beside the text, so the orchestrator can tell a rejected
+        # password (``OperationFailure``, code 18) from an unreachable server
+        # (``ServerSelectionTimeoutError``, no code) without parsing the message.
+        facts["error_type"] = type(err).__name__
+        facts["error_code"] = getattr(err, "code", None)
     finally:
         if client is not None:
             client.close()
     return summarise_database_facts(facts)
+
+
+def describe_database_error(err, target, userinfo, credentials_file, connect_timeout_ms):
+    """Say why the database could not be queried, in terms an operator can act on.
+
+    pymongo's own text is written for whoever debugs the driver: a rejected password
+    comes with the server's whole reply appended, and a server-selection timeout with
+    the driver's topology description, which buries the one fact that matters - the
+    address that did not answer. Anything not recognised here keeps pymongo's text.
+
+    :param err: What the driver raised.
+    :param target: The target mapping carrying ``host`` and ``port``.
+    :param userinfo: The credentials prefix the payload connected with.
+    :param credentials_file: Where those credentials were read from, or ``None``.
+    :param connect_timeout_ms: Connect and server-selection timeout.
+    :return: The description.
+    """
+    host = target["host"]
+    port = target["port"]
+    if getattr(err, "code", None) == AUTHENTICATION_FAILED:
+        user = unquote_plus(userinfo.split(":", 1)[0]) if userinfo else ""
+        described = f"the credentials for user {user}"
+        if credentials_file:
+            described += f" (from {credentials_file})"
+        return described + " were rejected"
+    if type(err).__name__ == "ServerSelectionTimeoutError":
+        # pymongo appends ", Timeout: ..., Topology Description: ..." to the
+        # per-server errors, and " (configured timeouts: ...)" to each of those.
+        cause = str(err).split(", Timeout: ", 1)[0]
+        cut = cause.find(" (configured timeouts:")
+        if cut != -1:
+            cause = cause[:cut]
+        cause = cause.removeprefix(f"{host}:{port}: ")
+        # A filtered port gives either, depending on whether the connect or the
+        # server-selection timeout fires first; both are set to the same value.
+        if cause in ("", "No servers found yet", "timed out"):
+            seconds = connect_timeout_ms / 1000
+            return f"no answer from {host}:{port} within {seconds:g}s"
+        return f"could not connect to {host}:{port}: {cause}"
+    details = getattr(err, "details", None)
+    if isinstance(details, dict) and details.get("errmsg"):
+        return str(details["errmsg"])
+    return str(err)
 
 
 def determine_vendor(build_info):
@@ -570,6 +640,10 @@ def determine_vendor(build_info):
     if "enterprise" in (build_info.get("modules") or []):
         return "MongoDB Enterprise"
     return "MongoDB Community"
+
+
+#: The keys of the collected facts that say why they are missing, not what they are.
+ERROR_KEYS = ("error", "error_type", "error_code", "command_errors")
 
 
 def summarise_database_facts(facts):
@@ -599,14 +673,11 @@ def summarise_database_facts(facts):
         "set_name": hello.get("setName") or repl.get("set"),
         "state": repl.get("myState"),
     }
-    if "error" in facts:
-        summary["error"] = facts["error"]
-    if "command_errors" in facts:
-        summary["command_errors"] = facts["command_errors"]
+    for key in ERROR_KEYS:
+        if key in facts:
+            summary[key] = facts[key]
     summary["raw"] = {
-        key: value
-        for key, value in facts.items()
-        if key not in ("error", "command_errors")
+        key: value for key, value in facts.items() if key not in ERROR_KEYS
     }
     return summary
 
@@ -658,18 +729,25 @@ def probe(target, config, host_facts, processes=(), versions=None):
         return record
 
     try:
+        credentials_file = credentials_path(config)
         record["database"] = collect_database_facts(
             target,
-            read_userinfo(credentials_path(config)),
+            read_userinfo(credentials_file),
             config.get("auth_source") or DEFAULT_AUTH_SOURCE,
             config.get("connect_timeout_ms") or DEFAULT_CONNECT_TIMEOUT_MS,
+            credentials_file,
         )
         if record["database"].get("error"):
             record["status"] = STATUS_FAILED
             record["error"] = record["database"]["error"]
+            record["error_type"] = record["database"].get("error_type")
+            record["error_code"] = record["database"].get("error_code")
     except Exception as err:  # noqa: BLE001 - one target must not abort the rest
+        error_type = type(err).__name__
         record["status"] = STATUS_FAILED
-        record["error"] = f"{type(err).__name__}: {err}"
+        record["error"] = f"{error_type}: {err}"
+        record["error_type"] = error_type
+        record["error_code"] = None
         record["database"] = None
     return record
 

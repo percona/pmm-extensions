@@ -59,6 +59,11 @@ REQUIREMENTS = "pymongo>=4.6,<5"
 #: Prefix for this app's Nomad job ids, so a OM run is identifiable in Nomad.
 JOB_ID_PREFIX = "om"
 PROBE_PAYLOAD_PATH = Path(payload_pkg.__file__).parent / "probe.py"
+#: Bound on the failure detail stored for a failed scan, whether the dispatch
+#: failed or the database refused the payload. The row only needs the part that
+#: says what happened, and dispatch stderr or a driver error the payload does not
+#: recognise can run to several kilobytes.
+MAX_ERROR_DETAIL = 500
 
 # Bounds with_capacity_retry both ways, whichever runs out first.
 #
@@ -537,7 +542,8 @@ async def probe_host(
             and not result.records
             and result.host_record is None
         ):
-            result.error = f"probe run {status}: {stderr.strip()[:500] or 'no output'}"
+            detail = stderr.strip()[:MAX_ERROR_DETAIL] or "no output"
+            result.error = f"probe run {status}: {detail}"
     except Exception as err:
         logger.exception("OM inventory: probe of %s failed", executor_host)
         result.error = f"{type(err).__name__}: {err}"
