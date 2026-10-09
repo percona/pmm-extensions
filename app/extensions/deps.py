@@ -367,9 +367,7 @@ def require_app_enabled(app_key: str) -> Callable[[AsyncSession], Awaitable[None
     """
 
     async def _gate(session: SessionDep) -> None:
-        # Deferred: the framework package __init__ imports back into this module,
-        # so a top-level import here would cycle.
-        from app.extensions.apps.framework.registry import (  # noqa: PLC0415
+        from app.extensions.apps.framework.registry import (  # noqa: PLC0415 - framework's __init__ imports this (cycle)
             get_app_registry,
         )
 
@@ -403,9 +401,9 @@ def get_toggleable_app_key(app_key: str) -> str:
         raise HTTPConflictException(
             detail=f"App '{app_key}' is protected and cannot be disabled.",
         )
-    # Deferred: the framework package __init__ imports back into this module,
-    # so a top-level import here would cycle.
-    from app.extensions.apps.framework.registry import get_app_registry  # noqa: PLC0415
+    from app.extensions.apps.framework.registry import (  # noqa: PLC0415 - framework's __init__ imports this (cycle)
+        get_app_registry,
+    )
 
     app = get_app_registry().get(app_key)
     if app is None:

@@ -1252,9 +1252,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             parameterized_job.get("MetaRequired") or []
         )
         if "staleness_threshold_seconds" in declared_meta:
-            # Lazy import keeps app.tasks.config out of the nomad.models import
-            # chain (config imports NomadExecutor back from this package).
-            from app.tasks import config as tasks_config  # noqa: PLC0415
+            from app.tasks import (  # noqa: PLC0415 - tasks.config imports NomadExecutor from this module (cycle)
+                config as tasks_config,
+            )
 
             filtered_meta["staleness_threshold_seconds"] = str(
                 tasks_config.tasks_settings.STALENESS_THRESHOLD_SECONDS
@@ -2336,9 +2336,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         """
         if queue_item.started_at is None:
             return False
-        # Lazy import keeps app.tasks.config out of the nomad.models import
-        # chain (config imports NomadExecutor back from this package).
-        from app.tasks import config as tasks_config  # noqa: PLC0415
+        from app.tasks import (  # noqa: PLC0415 - tasks.config imports NomadExecutor from this module (cycle)
+            config as tasks_config,
+        )
 
         bound = tasks_config.tasks_settings.PENDING_ALLOCATION_TIMEOUT_SECONDS
         elapsed = utc_now() - make_datetime_utc(queue_item.started_at)
