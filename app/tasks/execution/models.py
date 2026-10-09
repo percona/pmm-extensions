@@ -330,12 +330,12 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
             for side-effect writes such as append-only log persistence. When
             ``None``, the executor falls back to whatever session management it
             has available.
-        :param await_annotations: When True, do not schedule or await the
+        :param await_annotations: When ``True``, do not schedule or await the
             terminal PMM annotation here; return its event label for the
-            caller to handle after persisting the row. When False (default),
+            caller to handle after persisting the row. When ``False`` (default),
             schedule it as a fire-and-forget background task.
         :return: The updated task history and, when ``await_annotations`` is
-            True and a RUNNING-to-terminal transition occurred, the PMM event
+            ``True`` and a RUNNING-to-terminal transition occurred, the PMM event
             label to await after save; otherwise ``None``.
         """
         was_running = queue_item.status == TaskHistoryStatusEnum.RUNNING

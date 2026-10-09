@@ -1113,9 +1113,7 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
     before chain dispatch.
 
     :param queue_id: The unique identifier of the queue item to sync.
-    :type queue_id: int
     :return: The TaskHistory object post sync.
-    :rtype: TaskHistory
     :raises HTTPBadRequestException: If the task backend is unsupported,
         raises a 400 Bad Request error.
     """
