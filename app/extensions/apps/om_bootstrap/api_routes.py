@@ -548,7 +548,7 @@ async def list_bootstrap_runs(
     status: BootstrapRunStatus | None = None,
     # pagination-ok: bounded by `limit` (capped at 100) and by the number of
     # concurrently in-flight bootstrap runs.
-    limit: int = Query(default=100, ge=1, le=100),
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
 ) -> list[RunResponse]:
     """Return runs, newest first, optionally narrowed to one status.
 

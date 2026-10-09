@@ -1342,7 +1342,7 @@ def _append_one_of_group_rules(
     field_scope_prefix: str,
 ) -> None:
     """Append branch-selection and leaf gates for one :class:`OneOfGroup`."""
-    from app.extensions.apps.framework.schema import OneOfGroup
+    from app.extensions.apps.framework.schema import OneOfGroup  # noqa: PLC0415
 
     if not isinstance(group, OneOfGroup):
         return
@@ -1407,7 +1407,7 @@ def _append_rules_for_form_sections(
     :param section_label_for_index: Returns the scope label for a section's
         cardinality / fail rules.
     """
-    from app.extensions.apps.framework.schema import OneOfGroup
+    from app.extensions.apps.framework.schema import OneOfGroup  # noqa: PLC0415
 
     for section_index, section in enumerate(forms):
         section_scope = section_label_for_index(section_index, section)

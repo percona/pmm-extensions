@@ -718,7 +718,7 @@ class TaskHistoryLogWriter:
         # circular import: app.tasks.config imports NomadExecutor from the nomad
         # executor package, whose models module imports log_writer (this module)
         # at module scope; log_writer needs config back for LOG_STREAM_CAP_BYTES.
-        from app.tasks import config as tasks_config
+        from app.tasks import config as tasks_config  # noqa: PLC0415
 
         cap = tasks_config.tasks_settings.LOG_STREAM_CAP_BYTES
         low_water = persisted_offset - cap

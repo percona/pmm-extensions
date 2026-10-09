@@ -61,10 +61,10 @@ def guess_mime_type(file_path: Path) -> str:
     :rtype: str
     """
     if snippets_settings.USE_MAGIC:
-        import magic
+        import magic  # noqa: PLC0415
 
         return magic.from_file(file_path, mime=True) or "text/plain"
-    import mimetypes
+    import mimetypes  # noqa: PLC0415
 
     return mimetypes.types_map.get(file_path.suffix) or "text/plain"
 

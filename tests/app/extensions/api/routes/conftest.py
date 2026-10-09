@@ -38,11 +38,11 @@ def admin_client(admin_user: CasdoorUser) -> Iterator[TestClient]:
     :return: The client, with its dependency overrides cleared on teardown.
     """
     extensions_app.dependency_overrides[get_current_user] = lambda: admin_user
-    extensions_app.dependency_overrides[get_api_authenticated_admin] = (
-        lambda: admin_user
+    extensions_app.dependency_overrides[get_api_authenticated_admin] = lambda: (
+        admin_user
     )
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None

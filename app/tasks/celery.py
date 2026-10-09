@@ -45,6 +45,7 @@ from nomad.api.exceptions import BaseNomadException
 from sqlalchemy import cast, func, literal, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import QueryableAttribute, undefer
 from sqlalchemy.sql import ColumnElement
 from sqlmodel import col, or_
@@ -139,9 +140,18 @@ def build_tasks_override_proxies() -> ProxyRegistry:
     }
 
 
+def _session_maker() -> async_sessionmaker:
+    """Return the current session maker, looked up when the refresher calls it.
+
+    Passing ``get_async_session_maker`` itself would bind the function at import,
+    so a test that rebinds the module attribute would never reach the refresher.
+    """
+    return get_async_session_maker()
+
+
 _refresher = WorkerRefresher(
     lambda: celery.loop,  # ty: ignore[unresolved-attribute]
-    lambda: get_async_session_maker(),
+    _session_maker,
     build_tasks_override_proxies,
 )
 
@@ -293,13 +303,11 @@ def execute_task_by_name(
         )
         if skipped is not None:
             return jsonable_encoder(skipped)
-        task_history = (
-            celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-                dispatch_queue_item(
-                    task_history,
-                    await_annotations=True,
-                    periodic_task_name=periodic_task_name,
-                )
+        task_history = celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
+            dispatch_queue_item(
+                task_history,
+                await_annotations=True,
+                periodic_task_name=periodic_task_name,
             )
         )
     except BaseNomadException:
@@ -1325,9 +1333,9 @@ def check_nomad_cert_expiry() -> None:
 
 async def _check_nomad_cert_expiry() -> None:
     """Evaluate Nomad CA and client PEM files and fire or clear expiry alerts."""
-    from app.core.alerts.config import alert_service, alert_settings
-    from app.core.alerts.models import AlertSeverity
-    from app.core.utils import utc_now
+    from app.core.alerts.config import alert_service, alert_settings  # noqa: PLC0415
+    from app.core.alerts.models import AlertSeverity  # noqa: PLC0415
+    from app.core.utils import utc_now  # noqa: PLC0415
 
     nomad = normalize_nomad_config_value(tasks_settings.NOMAD)
     warn_days = nomad.cert_expiry_warn_days
@@ -1342,7 +1350,7 @@ async def _check_nomad_cert_expiry() -> None:
 
         dedup_key = f"nomad-cert-expiry:{path.name}"
         try:
-            pem = path.read_bytes()
+            pem = await asyncio.to_thread(path.read_bytes)
             cert = x509.load_pem_x509_certificate(pem)
         except OSError as exc:
             logger.warning(

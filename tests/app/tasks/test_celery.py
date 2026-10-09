@@ -733,7 +733,7 @@ class TestRaiseIfIdenticalTaskConflict:
                 task=task.name,
                 target="node-1",
                 meta={"target": "node-1"}
-                | {key: f"--password {secret}" for key in ENCRYPTED_META_KEYS},
+                | dict.fromkeys(ENCRYPTED_META_KEYS, f"--password {secret}"),
                 payload=None,
             ),
         )
@@ -4363,7 +4363,7 @@ class TestCheckNomadCertExpiry:
 
     def test_celery_entrypoint_uses_event_loop(self, mocker) -> None:
         """Assert check_nomad_cert_expiry runs the async helper via the event loop."""
-        from app.celery import celery as app_celery
+        from app.celery import celery as app_celery  # noqa: PLC0415
 
         coro = MagicMock()
         mock_check = MagicMock(return_value=coro)

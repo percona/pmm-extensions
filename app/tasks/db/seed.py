@@ -484,9 +484,11 @@ NOMAD_RUN_PYTHON = {
                         "command": "sh",
                         "args": [
                             "-c",
-                            f"{STALENESS_PREAMBLE_SHELL}; "
-                            "python3 -m venv --copies ${NOMAD_ALLOC_DIR}/venv;"
-                            "${NOMAD_ALLOC_DIR}/venv/bin/pip install -r requirements.txt",
+                            (
+                                f"{STALENESS_PREAMBLE_SHELL}; "
+                                "python3 -m venv --copies ${NOMAD_ALLOC_DIR}/venv;"
+                                "${NOMAD_ALLOC_DIR}/venv/bin/pip install -r requirements.txt"
+                            ),
                         ],
                     },
                     "Meta": {},
@@ -506,9 +508,11 @@ NOMAD_RUN_PYTHON = {
                         "command": "sh",
                         "args": [
                             "-c",
-                            "gzip -d ${NOMAD_TASK_DIR}/script.py.gz;"
-                            "${NOMAD_ALLOC_DIR}/venv/bin/python3"
-                            " -u ${NOMAD_TASK_DIR}/script.py --config ${NOMAD_TASK_DIR}/script_config",
+                            (
+                                "gzip -d ${NOMAD_TASK_DIR}/script.py.gz;"
+                                "${NOMAD_ALLOC_DIR}/venv/bin/python3"
+                                " -u ${NOMAD_TASK_DIR}/script.py --config ${NOMAD_TASK_DIR}/script_config"
+                            ),
                         ],
                         "work_dir": "${NOMAD_TASK_DIR}/output_files",
                     },
@@ -590,10 +594,12 @@ NOMAD_EXEC_ARTIFACT = {
                         "command": "sh",
                         "args": [
                             "-c",
-                            f"i=$(cat {EFFECTIVE_INTERPRETER_PATH} 2>/dev/null); "
-                            '[ -n "$i" ] || i=$NOMAD_META_interpreter; '
-                            "xargs --arg-file ${NOMAD_TASK_DIR}/args_file "
-                            'env -S "$i" ${NOMAD_TASK_DIR}/script',
+                            (
+                                f"i=$(cat {EFFECTIVE_INTERPRETER_PATH} 2>/dev/null); "
+                                '[ -n "$i" ] || i=$NOMAD_META_interpreter; '
+                                "xargs --arg-file ${NOMAD_TASK_DIR}/args_file "
+                                'env -S "$i" ${NOMAD_TASK_DIR}/script'
+                            ),
                         ],
                         "work_dir": "${NOMAD_TASK_DIR}/output_files",
                     },
@@ -676,10 +682,12 @@ NOMAD_EXEC_PYTHON_ARTIFACT = {
                         "command": "sh",
                         "args": [
                             "-c",
-                            f"{STALENESS_PREAMBLE_SHELL}; "
-                            f"{_VENV_BUILDER_COMMAND} -m venv --copies "
-                            "${NOMAD_ALLOC_DIR}/venv;"
-                            "${NOMAD_ALLOC_DIR}/venv/bin/pip install -r requirements.txt",
+                            (
+                                f"{STALENESS_PREAMBLE_SHELL}; "
+                                f"{_VENV_BUILDER_COMMAND} -m venv --copies "
+                                "${NOMAD_ALLOC_DIR}/venv;"
+                                "${NOMAD_ALLOC_DIR}/venv/bin/pip install -r requirements.txt"
+                            ),
                         ],
                     },
                     "Meta": {},
@@ -699,13 +707,15 @@ NOMAD_EXEC_PYTHON_ARTIFACT = {
                         "command": "sh",
                         "args": [
                             "-c",
-                            f"i=$(cat {EFFECTIVE_INTERPRETER_PATH} 2>/dev/null); "
-                            '[ -n "$i" ] || i=$NOMAD_META_interpreter; '
-                            "PYTHON_CMD=${NOMAD_ALLOC_DIR}/venv/bin/python3;"
-                            'case "$i" in "sudo "*) '
-                            'PYTHON_CMD="sudo ${NOMAD_ALLOC_DIR}/venv/bin/python3";; esac;'
-                            "xargs --arg-file ${NOMAD_TASK_DIR}/args_file -- "
-                            "$PYTHON_CMD -u ${NOMAD_TASK_DIR}/script",
+                            (
+                                f"i=$(cat {EFFECTIVE_INTERPRETER_PATH} 2>/dev/null); "
+                                '[ -n "$i" ] || i=$NOMAD_META_interpreter; '
+                                "PYTHON_CMD=${NOMAD_ALLOC_DIR}/venv/bin/python3;"
+                                'case "$i" in "sudo "*) '
+                                'PYTHON_CMD="sudo ${NOMAD_ALLOC_DIR}/venv/bin/python3";; esac;'
+                                "xargs --arg-file ${NOMAD_TASK_DIR}/args_file -- "
+                                "$PYTHON_CMD -u ${NOMAD_TASK_DIR}/script"
+                            ),
                         ],
                         "work_dir": "${NOMAD_TASK_DIR}/output_files",
                     },

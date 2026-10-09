@@ -73,12 +73,14 @@ def render_report_pdf_job(
     :return: Download filename for the staged PDF artifact.
     :rtype: dict[str, str]
     """
-    from app.extensions.apps.report.artifact_store import write_artifact
-    from app.extensions.apps.report.job_service import (
+    from app.extensions.apps.report.artifact_store import (  # noqa: PLC0415
+        write_artifact,
+    )
+    from app.extensions.apps.report.job_service import (  # noqa: PLC0415
         report_pdf_filename,
     )
-    from app.extensions.apps.report.models import ReportData
-    from app.extensions.apps.report.service import generate_pdf_report
+    from app.extensions.apps.report.models import ReportData  # noqa: PLC0415
+    from app.extensions.apps.report.service import generate_pdf_report  # noqa: PLC0415
 
     try:
         report = ReportData.model_validate(report_json)
@@ -108,8 +110,8 @@ def upload_report_snapshot_job(
         intake error status.
     :raises DeliveryPlanError: When the rendered PDF exceeds the size cap.
     """
-    from app.extensions.apps.report.models import ReportData
-    from app.extensions.apps.report.service import (
+    from app.extensions.apps.report.models import ReportData  # noqa: PLC0415
+    from app.extensions.apps.report.service import (  # noqa: PLC0415
         generate_pdf_report,
         upload_pdf_report,
     )
@@ -193,12 +195,12 @@ async def _generate_health_report(
     :return: None.
     :rtype: None
     """
-    from app.extensions.apps.report.service import (
+    from app.extensions.apps.report.service import (  # noqa: PLC0415
         generate_pdf_report,
         generate_report,
         upload_pdf_report,
     )
-    from app.extensions.deps import resolve_pmm_api
+    from app.extensions.deps import resolve_pmm_api  # noqa: PLC0415
 
     pmm_api = await resolve_pmm_api()
     if pmm_api is None:
@@ -263,7 +265,7 @@ def purge_report_artifacts() -> None:
     :return: None.
     :rtype: None
     """
-    from app.extensions.apps.report.artifact_store import purge_expired
+    from app.extensions.apps.report.artifact_store import purge_expired  # noqa: PLC0415
 
     removed = purge_expired(health_report_settings.artifact_ttl)
     if removed:

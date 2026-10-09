@@ -153,8 +153,10 @@ class TestPositiveTimeout:
         assert timeout() == EXPECTED_TIMEOUT_SECONDS
         assert capsys.readouterr() == (
             "",
-            f"{prefix} {env_var}={raw.strip()!r} is not a finite positive "
-            f"number of seconds; waiting {EXPECTED_TIMEOUT_SECONDS:g}s instead.\n",
+            (
+                f"{prefix} {env_var}={raw.strip()!r} is not a finite positive "
+                f"number of seconds; waiting {EXPECTED_TIMEOUT_SECONDS:g}s instead.\n"
+            ),
         )
 
     @pytest.mark.parametrize(

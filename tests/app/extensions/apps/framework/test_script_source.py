@@ -30,6 +30,7 @@ the Wave-3 snippets migration. The framework programs against ``ScriptProtocol``
 so the fixture exercises the same code path a real consumer hits.
 """
 
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -864,7 +865,7 @@ class TestScriptSourceValidation:
     def test_script_source_with_schema_raises(self, source: ScriptSource) -> None:
         """Reject a ``script_source`` app that also sets ``schema=``."""
         schema = _plugin_schema()
-        with pytest.raises(ValueError, match="script_source.static_schema"):
+        with pytest.raises(ValueError, match=re.escape("script_source.static_schema")):
             _script_app(source, schema=schema)
 
     def test_script_source_with_create_extra_deps_raises(
@@ -889,7 +890,7 @@ class TestScriptSourceValidation:
         with pytest.raises(ValueError, match="list_query_dep supersedes"):
             replace(
                 source,
-                list_query_dep=lambda: object(),
+                list_query_dep=object,
                 in_memory_list_query=True,
             )
 

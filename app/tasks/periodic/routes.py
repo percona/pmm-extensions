@@ -60,6 +60,7 @@ async def list_periodic_tasks(
     tasks_session: SessionDep,
     pagination: PaginationDep,
     owner: str | None = None,
+    *,
     enabled: bool | None = None,
 ) -> PaginatedResponse[Any]:
     """List periodic tasks for the requested page window.

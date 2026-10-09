@@ -369,7 +369,9 @@ def require_app_enabled(app_key: str) -> Callable[[AsyncSession], Awaitable[None
     async def _gate(session: SessionDep) -> None:
         # Deferred: the framework package __init__ imports back into this module,
         # so a top-level import here would cycle.
-        from app.extensions.apps.framework.registry import get_app_registry
+        from app.extensions.apps.framework.registry import (  # noqa: PLC0415
+            get_app_registry,
+        )
 
         try:
             states = await AppStateManager.all_lifecycle_states(session)
@@ -403,7 +405,7 @@ def get_toggleable_app_key(app_key: str) -> str:
         )
     # Deferred: the framework package __init__ imports back into this module,
     # so a top-level import here would cycle.
-    from app.extensions.apps.framework.registry import get_app_registry
+    from app.extensions.apps.framework.registry import get_app_registry  # noqa: PLC0415
 
     app = get_app_registry().get(app_key)
     if app is None:

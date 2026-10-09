@@ -122,8 +122,8 @@ def generated_task() -> TaskWrite:
 def _mock_check_for_conflicted_running_tasks() -> Iterator[None]:
     """Mock check_for_conflicted_running_tasks."""
     previous = extensions_app.dependency_overrides.copy()
-    extensions_app.dependency_overrides[check_for_conflicted_running_tasks] = (
-        lambda: None
+    extensions_app.dependency_overrides[check_for_conflicted_running_tasks] = lambda: (
+        None
     )
     yield
     extensions_app.dependency_overrides = previous

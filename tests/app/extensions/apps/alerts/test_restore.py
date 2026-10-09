@@ -492,7 +492,7 @@ class TestGetRecentBackups:
     @pytest.mark.asyncio
     async def test_returns_backups_from_manager(self, mocker):
         """Assert recent backups are fetched via AlertBackupManager.list."""
-        from app.extensions.apps.alerts.deps import (
+        from app.extensions.apps.alerts.deps import (  # noqa: PLC0415
             _MAX_SIDEBAR_BACKUPS,
             get_recent_backups,
         )
@@ -513,7 +513,7 @@ class TestGetRecentBackups:
     @pytest.mark.asyncio
     async def test_returns_empty_list_when_no_backups(self, mocker):
         """Assert an empty list is returned when no backups exist."""
-        from app.extensions.apps.alerts.deps import (
+        from app.extensions.apps.alerts.deps import (  # noqa: PLC0415
             _MAX_SIDEBAR_BACKUPS,
             get_recent_backups,
         )

@@ -81,7 +81,7 @@ def validate_hook_path(path: str, field: str = "hook path") -> str:
     # Deferred: app.tasks.config imports the Nomad executor, which imports
     # app.tasks.models, which imports this module, so tasks_settings does not
     # exist yet while that chain is still initialising.
-    from app.tasks.config import tasks_settings
+    from app.tasks.config import tasks_settings  # noqa: PLC0415
 
     allowed = tasks_settings.HOOK_MODULE_ALLOWLIST
     module_path, _, func_name = path.partition(":")

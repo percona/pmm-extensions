@@ -41,8 +41,8 @@ def backup_alert_config() -> None:
 
 async def _backup_alert_config() -> None:
     """Fetch alert configuration from PMM and store as a backup."""
-    from app.extensions.apps.alerts.models import AlertBackup
-    from app.extensions.deps import resolve_pmm_api
+    from app.extensions.apps.alerts.models import AlertBackup  # noqa: PLC0415
+    from app.extensions.deps import resolve_pmm_api  # noqa: PLC0415
 
     pmm_api = await resolve_pmm_api()
     if pmm_api is None:
@@ -102,7 +102,7 @@ async def _backup_alert_config() -> None:
         backup = AlertBackup(data=data, metadata_=metadata)
         await AlertBackupManager.save(session, backup)
 
-        from app.extensions.apps.alerts.config import alerts_settings
+        from app.extensions.apps.alerts.config import alerts_settings  # noqa: PLC0415
 
         retention = alerts_settings.BACKUP_RETENTION
         all_backups = await AlertBackupManager.list(session)

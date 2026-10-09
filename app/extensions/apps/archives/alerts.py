@@ -330,8 +330,8 @@ async def _read_last_stderr(task_history_id: int) -> str | None:
     :param task_history_id: The ``TaskHistory`` identifier.
     :return: The trailing STDERR content, or ``None`` when unavailable.
     """
-    from app.tasks.crud import TaskHistoryLogManager
-    from app.tasks.db import get_async_session_maker
+    from app.tasks.crud import TaskHistoryLogManager  # noqa: PLC0415
+    from app.tasks.db import get_async_session_maker  # noqa: PLC0415
 
     try:
         async_session = get_async_session_maker()

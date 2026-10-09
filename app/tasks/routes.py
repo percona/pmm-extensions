@@ -124,6 +124,7 @@ async def list_tasks(
     list_query: TaskListQueryDep,
     owner: str | None = None,
     target: str | None = None,
+    *,
     parent_is_null: bool | None = None,
     backup_type: str | None = None,
     self_parent: bool | None = None,
@@ -738,7 +739,7 @@ async def sync_task_history(
     if not claim_result.rowcount:
         session.expunge(task_history)
         task_history = await _get_history_for_response(
-            session, cast(int, task_history.id)
+            session, cast("int", task_history.id)
         )
         await _populate_log_metadata(session, [task_history])
         return task_history
@@ -769,10 +770,10 @@ async def sync_task_history(
             id=task_history.id,
         )
         raise
-    synced = await _get_history_for_response(session, cast(int, saved.id))
+    synced = await _get_history_for_response(session, cast("int", saved.id))
     await maybe_dispatch_chain(synced, was_running=True)
     if synced.status.is_terminal():
-        await maybe_record_run(cast(int, synced.id), executor)
+        await maybe_record_run(cast("int", synced.id), executor)
     await _populate_log_metadata(session, [synced])
     return synced
 
@@ -824,7 +825,7 @@ async def create_task_history(session: SessionDep, task: TaskHistory) -> TaskHis
         )
     task.set_failure_reason(task.failure_reason)
     saved = await TaskHistoryManager.save(session, task)
-    return await _get_history_for_response(session, cast(int, saved.id))
+    return await _get_history_for_response(session, cast("int", saved.id))
 
 
 @router.get("/stats/{task}", dependencies=[IsAuthenticatedDep])

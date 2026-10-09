@@ -29,7 +29,9 @@ def __getattr__(name: str) -> object:
         # circular import: app.tasks.config imports NomadExecutor from this
         # package, which resolves it back out of nomad.models (this package's
         # submodule); deferring to first access keeps the chain open.
-        from app.tasks.execution.executors.nomad.models import NomadExecutor
+        from app.tasks.execution.executors.nomad.models import (  # noqa: PLC0415
+            NomadExecutor,
+        )
 
         globals()[name] = NomadExecutor
         return NomadExecutor
