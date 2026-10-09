@@ -506,20 +506,23 @@ async def trigger_run(session: SessionDep, request: TriggerRunRequest) -> RunRes
         member_configs=request.member_configs,
     )
     strategy = _strategy_for(request.install_method)
+
+    def plan(names: list[str]) -> list[StepRecord]:
+        return [
+            StepRecord(name=name, retryable=strategy.is_retryable(name))
+            for name in names
+        ]
+
     host_states = [
         HostBootstrapState(
             host=host,
-            steps=[StepRecord(name=name) for name in strategy.plan_steps(spec)],
-            rollback_steps=[
-                StepRecord(name=name) for name in strategy.plan_rollback_steps(spec)
-            ],
-            finalize_steps=[
-                StepRecord(name=name) for name in strategy.plan_finalize_steps(spec)
-            ],
+            steps=plan(strategy.plan_steps(spec)),
+            rollback_steps=plan(strategy.plan_rollback_steps(spec)),
+            finalize_steps=plan(strategy.plan_finalize_steps(spec)),
         )
         for host in request.hosts
     ]
-    run_steps = [StepRecord(name=name) for name in strategy.plan_run_steps(spec)]
+    run_steps = plan(strategy.plan_run_steps(spec))
     run = await BootstrapRunManager.save(
         session,
         BootstrapRun(
@@ -861,7 +864,12 @@ async def dispatch_rollback_step(
     Whether a host should be rolled back at all, and if so whether to dispatch
     its rollback steps in order or all at once, is PMM's stepper's call (its
     partial-failure policy), not this route's. This route only ever dispatches
-    the one step it is asked to.
+    the one step it is asked to - or records it ``skipped`` without dispatching
+    it, when the strategy says this run never changed anything on the host
+    (:meth:`~app.extensions.apps.om_bootstrap.strategy.InstallStrategy.has_anything_to_roll_back`).
+    Dispatched there, the step would only find nothing to undo and report
+    ``succeeded``, and the run would claim to have torn down an install that
+    never happened.
 
     :param run: The path's run, read under its row lock.
     :param host: The host to roll back.
@@ -873,7 +881,8 @@ async def dispatch_rollback_step(
     :raises HTTPNotFoundException: When there is no such run, host, or rollback step.
     :raises HTTPConflictException: When the step is running, succeeded, or
         skipped.
-    :return: The run, with the dispatched rollback step now ``running``.
+    :return: The run, with the dispatched rollback step now ``running``, or
+        ``skipped``.
     """
     states = parse_host_states(run)
     host_state = _host_state(states, host, run)
@@ -882,6 +891,16 @@ async def dispatch_rollback_step(
     step = host_state.rollback_steps[step_index]
 
     strategy, spec = _spec_for(run)
+    if not strategy.has_anything_to_roll_back(host_state):
+        host_state.rollback_steps[step_index] = step.model_copy(
+            update={
+                "status": StepStatus.SKIPPED,
+                "finished_at": utc_now(),
+                "detail": "nothing to undo: this run installed nothing on this host",
+            }
+        )
+        return await _save_host_states(session, run, states)
+
     action = _build_step_action(
         lambda: strategy.build_rollback_step(step_name, host, spec)
     )

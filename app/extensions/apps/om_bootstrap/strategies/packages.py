@@ -35,12 +35,12 @@ never an encryption block, so a run today gets neither.
 
 Rollback never touches a MongoDB this run did not install: ``pre_check``
 refuses a host that already has one (:data:`CONFIG_PATH`, a non-empty
-``spec.data_path``, or ``mongod`` on ``PATH``), ``install_package`` then writes
-this run's id to :data:`OWNERSHIP_MARKER_PATH` before installing anything, and
-every rollback step is a no-op on a host whose marker does not hold this run's
-id. The marker outlives a successful run, so a later run that fails
-``pre_check`` on the same host and rolls back leaves the earlier run's MongoDB
-intact.
+``spec.data_path``, or ``mongod`` on ``PATH`` or in :data:`EXTRA_MONGOD_DIRS`),
+``install_package`` then writes this run's id to :data:`OWNERSHIP_MARKER_PATH`
+before installing anything, and every rollback step is a no-op on a host whose
+marker does not hold this run's id. The marker outlives a successful run, so a
+later run that fails ``pre_check`` on the same host and rolls back leaves the
+earlier run's MongoDB intact.
 """
 
 import base64
@@ -50,9 +50,11 @@ import shlex
 
 from app.extensions.apps.om_bootstrap.strategy import (
     BootstrapSpec,
+    HostBootstrapState,
     MemberConfig,
     OperatingSystem,
     StepAction,
+    StepStatus,
 )
 
 #: Where every step here reads or writes the shared keyFile — planted by the
@@ -72,16 +74,67 @@ CONFIG_PATH = "/etc/mongod.conf"
 #: deletes it.
 OWNERSHIP_MARKER_PATH = "/etc/mongod.om-bootstrap"
 
+#: The packages ``percona-server-mongodb`` pulls in, as an awk regex over package
+#: names. apt's unused list can hold anything orphaned on the host, so rollback
+#: purges only the PSMDB packages in it.
+_PSMDB_PACKAGES_ERE = "^percona-(server-mongodb-|mongodb-mongosh$|telemetry-agent$)"
+
 #: Matches the packaged ``mongod.service``'s own ``PIDFile=`` on both supported
 #: OSes. The unit is ``Type=forking``, so this has to agree with the systemd unit
 #: exactly — see :meth:`PackagesInstallStrategy._configure_mongod`. Fixed for
 #: the same reason as :data:`KEY_FILE_PATH`.
 PID_FILE_PATH = "/var/run/mongod.pid"
 
+#: Where ``pre_check`` looks for an existing ``mongod`` besides ``PATH``. Steps run
+#: under ``sudo``, whose ``secure_path`` (``/sbin:/bin:/usr/sbin:/usr/bin`` on both
+#: supported OSes) leaves out where a tarball install usually lands, so
+#: ``command -v`` alone passed a host with ``/usr/local/bin/mongod`` and the install
+#: went on to put a second ``mongod`` beside it. Shell glob patterns: ``*`` is
+#: expanded on the host, everything else is matched literally.
+EXTRA_MONGOD_DIRS = ("/usr/local/bin", "/opt/*/bin")
+
+#: How many lines of ``mongod``'s journal :func:`_mongod_diagnostics` prints.
+JOURNAL_TAIL_LINES = 5
+
+#: The awk program :func:`_mongod_diagnostics` reads ``mongod``'s JSON log with.
+#: Each line becomes ``msg: error``, cut to 200 characters, and the last three
+#: with severity ``E`` or ``F`` are printed, or the last three lines when none has.
+#: ``error`` is the line's ``errmsg`` string field, else its ``error``, else its
+#: ``reason``, which is where mongod says ``Address already in use`` or
+#: ``DBPathInUse``; a line without ``msg`` is only cut. POSIX awk, so mawk on
+#: Ubuntu and gawk on Rocky run it alike.
+_MONGOD_LOG_AWK = r"""
+function field(line, key,   at) {
+  at = index(line, "\"" key "\":\"")
+  if (!at) return ""
+  line = substr(line, at + length(key) + 4)
+  match(line, /^([^"\\]|\\.)*/)
+  return substr(line, 1, RLENGTH)
+}
+function brief(line,   msg, why) {
+  msg = field(line, "msg")
+  if (msg == "") return substr(line, 1, 200)
+  why = field(line, "errmsg")
+  if (why == "") why = field(line, "error")
+  if (why == "") why = field(line, "reason")
+  if (why != "") msg = msg ": " why
+  return substr(msg, 1, 200)
+}
+{ seen[NR] = brief($0) }
+/"s":"[EF]"/ { errors[++n] = seen[NR] }
+END {
+  if (n) { for (i = (n > 3 ? n - 2 : 1); i <= n; i++) print errors[i] }
+  else { for (i = (NR > 3 ? NR - 2 : 1); i <= NR; i++) print seen[i] }
+}
+"""
+
 #: Minimum free space at ``spec.data_path`` ``pre_check`` requires, in bytes.
 #: 5 GiB — generous for phase-1's single-member/three-member replica sets, not a
 #: sized-for-production figure.
 MIN_DATA_DISK_BYTES = 5 * 1024 * 1024 * 1024
+
+#: Bytes in a GiB, the unit ``pre_check`` reports free space in.
+GIB = 1024 * 1024 * 1024
 
 #: Roles PMM's ``mongodb_exporter`` needs, granted to the user
 #: ``create_pmm_monitoring_user`` creates — ``clusterMonitor`` for replication/
@@ -175,6 +228,169 @@ def _with_loopback(bind_ip: str) -> str:
     if _REACHES_LOOPBACK.intersection(bind_ip.lower().split(",")):
         return bind_ip
     return f"{LOOPBACK_ADDRESS},{bind_ip}"
+
+
+def _glob_word(pattern: str) -> str:
+    """Quote a path pattern for the shell, leaving its ``*`` wildcards live.
+
+    :param pattern: A path that may contain ``*``.
+    :return: The pattern as one shell word: every literal part quoted, every ``*``
+        left for the shell to expand.
+    """
+    return "*".join(shlex.quote(part) if part else "" for part in pattern.split("*"))
+
+
+def _existing_mongod_check() -> str:
+    """Build the ``pre_check`` lines refusing a host that already has a ``mongod``.
+
+    ``command -v`` finds one on ``PATH``; :data:`EXTRA_MONGOD_DIRS` covers where a
+    tarball install lands outside ``sudo``'s ``secure_path``. The message names
+    where it was found, so the operator knows which install to look at. A pattern
+    that matches nothing stays a literal word, and the ``-x`` test rejects it.
+
+    :return: The shell lines.
+    """
+    candidates = " ".join(
+        _glob_word(posixpath.join(directory, "mongod"))
+        for directory in EXTRA_MONGOD_DIRS
+    )
+    return "\n".join(
+        [
+            f'for m in "$(command -v mongod 2>/dev/null || true)" {candidates}; do',
+            '  if [ -n "$m" ] && [ -x "$m" ]; then',
+            '    echo "pre_check: mongod is already installed at $m" >&2; exit 1',
+            "  fi",
+            "done",
+        ]
+    )
+
+
+#: Turns one line of ``ss -p`` output into ``pid N, NAME`` for the first process
+#: it lists, e.g. ``users:(("mongod",pid=812,fd=11))`` into ``pid 812, mongod``.
+_SS_HOLDER_SED = r's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/pid \2, \1/p'
+
+
+def _port_free_check(port: int) -> str:
+    """Build the ``pre_check`` lines refusing a port something already listens on.
+
+    Without this the install went all the way to ``start_service``, where the only
+    account of it was systemd's "see journalctl" - the real reason, ``Address
+    already in use``, stayed in mongod's own log on the node.
+
+    ``ss`` first, with ``-p`` so the message names the process holding the port
+    (``pre_check`` runs as root, so every process is visible). A host without
+    ``ss``, or whose ``ss`` refuses the arguments, falls back to the kernel's own
+    tables, ``/proc/net/tcp`` and ``tcp6``, where the port is the hex after the
+    local address's colon and state ``0A`` is ``LISTEN``; the holder is then the
+    process with a descriptor on that socket's inode, when ``find`` can see one,
+    named by its pid and by its command while that can still be read. Either way
+    a listener on any address counts: one that overlaps ``bindIp`` at all still
+    fails mongod's start.
+
+    :param port: The port the new ``mongod`` will listen on.
+    :return: The shell lines.
+    """
+    return "\n".join(
+        [
+            f"port={port}",
+            "held=''",
+            (
+                "if command -v ss >/dev/null 2>&1 &&"
+                ' listeners=$(ss -Hltnp "sport = :$port" 2>/dev/null); then'
+            ),
+            '  if [ -n "$listeners" ]; then',
+            (
+                f"    held=$(printf '%s\\n' \"$listeners\" | sed -n '{_SS_HOLDER_SED}'"
+                " | head -n 1)"
+            ),
+            '    [ -n "$held" ] || held="held by an unknown process"',
+            "  fi",
+            "else",
+            "  hex=$(printf '%04X' \"$port\")",
+            "  for table in /proc/net/tcp /proc/net/tcp6; do",
+            '    [ -r "$table" ] || continue',
+            (
+                '    inode=$(awk -v p=":$hex"'
+                ' \'$2 ~ (p "$") && $4 == "0A" { print $10; exit }\' "$table")'
+            ),
+            '    [ -n "$inode" ] || continue',
+            (
+                "    fd=$(find /proc/[0-9]*/fd -maxdepth 1"
+                ' -lname "socket:\\[$inode\\]" 2>/dev/null | head -n 1)'
+            ),
+            "    pid=${fd#/proc/}; pid=${pid%%/*}",
+            '    if [ -n "$pid" ]; then',
+            '      comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)',
+            '      held="pid $pid${comm:+, $comm}"',
+            "    else",
+            '      held="held by an unknown process"',
+            "    fi",
+            "    break",
+            "  done",
+            "fi",
+            'if [ -n "$held" ]; then',
+            '  echo "pre_check: port $port is already in use ($held)" >&2; exit 1',
+            "fi",
+        ]
+    )
+
+
+def _mongod_diagnostics(spec: BootstrapSpec) -> str:
+    """Build a shell function printing why ``mongod`` did not come up, to stderr.
+
+    A failed ``systemctl restart`` says only "see journalctl", and a failed
+    ``ping`` only that nothing answered; the reason (``Address already in use``, a
+    data directory it cannot lock) stays on the node unless the step prints it.
+    Only stderr leaves the node, and only its last
+    :data:`~app.extensions.apps.shared.om.task_failure.MAX_ERROR_DETAIL`
+    characters reach the step's detail, so the output is kept short and the most
+    specific part goes last: the unit's last :data:`JOURNAL_TAIL_LINES` journal
+    messages, without their timestamp and host, then the end of mongod's own log
+    as :data:`_MONGOD_LOG_AWK` shortens it - its last error and fatal entries,
+    each down to its message and error, or its last lines when it has none.
+
+    No part can fail the step: it is already failing, and the exit code that says
+    so is the command's, not this function's.
+
+    :param spec: The host's bootstrap spec; its log path is read.
+    :return: The shell function definition, called ``om_mongod_why``.
+    """
+    log = shlex.quote(spec.log_path)
+    return "\n".join(
+        [
+            "om_mongod_why() {",
+            '  echo "mongod did not come up; its journal and log say:" >&2',
+            "  if command -v journalctl >/dev/null 2>&1; then",
+            (
+                "    journalctl -u mongod --no-pager -o cat"
+                f" -n {JOURNAL_TAIL_LINES} >&2 || true"
+            ),
+            "  fi",
+            f"  if [ -r {log} ]; then",
+            f"    tail -n 200 {log} | awk {shlex.quote(_MONGOD_LOG_AWK)} >&2 || true",
+            "  fi",
+            "}",
+        ]
+    )
+
+
+def _run_or_explain(command: str) -> str:
+    """Run ``command``, and if it fails, say why mongod is down before exiting.
+
+    The command's own exit code is kept, so a step's failure still means what it
+    did; only the diagnostics are added in front of it.
+
+    :param command: One shell command.
+    :return: The shell lines, which call ``om_mongod_why`` from
+        :func:`_mongod_diagnostics`.
+    """
+    return "\n".join(
+        [
+            "rc=0",
+            f"{command} || rc=$?",
+            'if [ "$rc" -ne 0 ]; then om_mongod_why; exit "$rc"; fi',
+        ]
+    )
 
 
 def _mongod_config(spec: BootstrapSpec, host: str, *, with_auth: bool) -> str:
@@ -451,8 +667,8 @@ class PackagesInstallStrategy:
 
         - **OS**: the OS's package manager is present.
         - **Path**: no MongoDB already lives on the host — no ``mongod`` on
-          ``PATH``, no :data:`CONFIG_PATH`, and ``spec.data_path`` absent or
-          empty. This is also what makes rollback safe: ``install_package``
+          ``PATH`` or in :data:`EXTRA_MONGOD_DIRS`, no :data:`CONFIG_PATH`, and
+          ``spec.data_path`` absent or empty. This is also what makes rollback safe: ``install_package``
           claims the host for its run with :data:`OWNERSHIP_MARKER_PATH` only
           after this passed, and rollback removes nothing unless that marker
           holds its own run's id.
@@ -464,11 +680,14 @@ class PackagesInstallStrategy:
           ``/mnt/mongo/data`` can be absent while ``/mnt/mongo`` is a distinct,
           already-mounted volume. The loop terminates because ``dirname`` of
           ``/`` is ``/``.
+        - **Port**: nothing listens on ``spec.port`` yet - see
+          :func:`_port_free_check`.
 
         Each failed check names itself on stderr, and a free-space figure ``df``
         could not produce fails the check rather than passing it.
 
-        :param spec: The host's bootstrap spec; its OS and data path are read.
+        :param spec: The host's bootstrap spec; its OS, data path and port are
+            read.
         :return: The step action.
         """
         pkg_manager = self._require_package_manager(spec.os)
@@ -479,10 +698,7 @@ class PackagesInstallStrategy:
                     f"command -v {pkg_manager} >/dev/null 2>&1 || "
                     f'{{ echo "pre_check: {pkg_manager} not found" >&2; exit 1; }}'
                 ),
-                (
-                    "if command -v mongod >/dev/null 2>&1; then "
-                    'echo "pre_check: mongod is already installed" >&2; exit 1; fi'
-                ),
+                _existing_mongod_check(),
                 (
                     f"if [ -e {CONFIG_PATH} ]; then "
                     f'echo "pre_check: {CONFIG_PATH} already exists" >&2; exit 1; fi'
@@ -499,11 +715,14 @@ class PackagesInstallStrategy:
                     'echo "pre_check: could not measure free space at $target" >&2; '
                     "exit 1;; esac"
                 ),
+                f"tenths=$((avail * 10 / {GIB}))",
                 (
                     f'if [ "$avail" -lt {MIN_DATA_DISK_BYTES} ]; then '
-                    f'echo "pre_check: less than {MIN_DATA_DISK_BYTES} bytes free '
-                    'for the data directory" >&2; exit 1; fi'
+                    f'echo "pre_check: the data directory "{data_path}" needs at least '
+                    f"{MIN_DATA_DISK_BYTES // GIB} GiB free, but $target has "
+                    '$((tenths / 10)).$((tenths % 10)) GiB" >&2; exit 1; fi'
                 ),
+                _port_free_check(spec.port),
             ]
         )
         return _shell_step(body)
@@ -640,7 +859,7 @@ class PackagesInstallStrategy:
         )
         return _shell_step(command)
 
-    def _start_service(self, spec: BootstrapSpec) -> StepAction:  # noqa: ARG002
+    def _start_service(self, spec: BootstrapSpec) -> StepAction:
         """Enable the ``mongod`` systemd unit and (re)start it on the config just written.
 
         Explicitly ``restart``, not ``enable --now``: ``install_package`` may have
@@ -657,20 +876,34 @@ class PackagesInstallStrategy:
         does not, and ``restart`` is correct for both, since restarting a unit
         that ``install_package`` never started behaves exactly like starting it.
 
-        :param spec: The host's bootstrap spec. Unused.
+        A failed restart prints mongod's journal and log errors before exiting
+        with ``systemctl``'s own code - see :func:`_mongod_diagnostics`.
+
+        :param spec: The host's bootstrap spec; its log path is read.
         :return: The step action.
         """
         return _shell_step(
-            "systemctl enable mongod && systemctl restart mongod", timeout_s=60
+            f"{_mongod_diagnostics(spec)}\n"
+            "systemctl enable mongod\n"
+            f"{_run_or_explain('systemctl restart mongod')}\n",
+            timeout_s=60,
         )
 
     def _verify(self, spec: BootstrapSpec) -> StepAction:
         """Confirm ``mongod`` answers before declaring this host done.
 
-        :param spec: The host's bootstrap spec; only its port is read.
+        ``start_service`` can succeed with mongod dying right after (see
+        :meth:`_configure_mongod`), so this is often where a mongod that never
+        came up is first seen; a failed ``ping`` prints mongod's journal and log
+        errors before exiting with mongosh's own code.
+
+        :param spec: The host's bootstrap spec; its port and log path are read.
         :return: The step action.
         """
-        return _mongosh_eval("db.adminCommand('ping').ok", spec.port)
+        ping = _mongosh_eval_command("db.adminCommand('ping').ok", spec.port)
+        return _shell_step(
+            f"{_mongod_diagnostics(spec)}\n{_run_or_explain(ping)}\n", timeout_s=60
+        )
 
     def _require_package_manager(self, os_: OperatingSystem) -> str:
         """Map a supported OS to its package manager, or reject an unsupported one.
@@ -963,6 +1196,36 @@ class PackagesInstallStrategy:
         run_id = _require_run_id(spec, step_name)
         return builder(spec, run_id)
 
+    def is_retryable(self, step_name: str) -> bool:
+        """Retry every step but ``pre_check``, which only inspects the host.
+
+        A taken port, a mongod already installed or a small disk is still there a
+        few seconds later, so a second ``pre_check`` fails exactly like the first.
+
+        :param step_name: Any step name this strategy plans.
+        :return: Whether a failure of it is worth one retry.
+        """
+        return step_name != "pre_check"
+
+    def has_anything_to_roll_back(self, state: HostBootstrapState) -> bool:
+        """Report whether ``install_package`` was ever dispatched on this host.
+
+        It plants :data:`OWNERSHIP_MARKER_PATH` before the package manager runs, and
+        every rollback step is a no-op on a host whose marker does not hold this
+        run's id, so a host it never reached has nothing for rollback to do. The
+        steps before it change nothing rollback would undo: ``pre_check`` only
+        reads, and ``configure_repository`` is deliberately left in place (see
+        :meth:`plan_rollback_steps`).
+
+        :param state: The host's progress so far.
+        :return: Whether its rollback steps have anything to undo.
+        """
+        return any(
+            step.name == "install_package"
+            and (step.attempt_count > 0 or step.status != StepStatus.PENDING)
+            for step in state.steps
+        )
+
     def _rollback_stop_service(self, spec: BootstrapSpec, run_id: str) -> StepAction:  # noqa: ARG002
         """Stop and disable ``mongod``, tolerant of it never having started.
 
@@ -1000,17 +1263,35 @@ class PackagesInstallStrategy:
         ``install_package`` failed still rolls back, and the purge tolerates a
         package that never landed.
 
+        ``percona-server-mongodb`` is a metapackage: removing it with apt leaves
+        mongod, mongos, the tools and mongosh installed, so apt also purges those
+        it then reports unused. dnf removes every dependency only the install
+        needed itself, with ``clean_requirements_on_remove``, set here so the
+        host's ``dnf.conf`` cannot turn it off.
+
         :param spec: The host's bootstrap spec; only its OS is read.
         :param run_id: The run the rollback belongs to.
         :return: The step action.
         """
         pkg_manager = self._require_package_manager(spec.os)
-        remove = (
-            "apt-get remove -y --purge percona-server-mongodb"
-            if pkg_manager == "apt-get"
-            else "dnf remove -y percona-server-mongodb"
-        )
-        return _owned_step(f"{remove} || true", run_id, timeout_s=120)
+        if pkg_manager == "apt-get":
+            remove = "\n".join(
+                [
+                    "apt-get remove -y --purge percona-server-mongodb || true",
+                    (
+                        "unused=$(apt-get -s autoremove 2>/dev/null"
+                        f" | awk -v re={shlex.quote(_PSMDB_PACKAGES_ERE)}"
+                        ' \'($1 == "Remv" || $1 == "Purg") && $2 ~ re { print $2 }\')'
+                    ),
+                    '[ -z "$unused" ] || apt-get remove -y --purge $unused || true',
+                ]
+            )
+        else:
+            remove = (
+                "dnf remove -y --setopt=clean_requirements_on_remove=True "
+                "percona-server-mongodb || true"
+            )
+        return _owned_step(remove, run_id, timeout_s=120)
 
     def _rollback_remove_data(self, spec: BootstrapSpec, run_id: str) -> StepAction:
         """Remove the data directory, then the ownership marker, as the last step.

@@ -22,7 +22,13 @@ about, so both facts have to survive a host answering neither.
 
 from unittest.mock import patch
 
-from app.extensions.apps.om_inventory.payload.probe import collect_install_readiness
+import pytest
+
+from app.extensions.apps.om_bootstrap.api_routes import TriggerRunRequest
+from app.extensions.apps.om_inventory.payload.probe import (
+    collect_install_readiness,
+    DEFAULT_DATA_PATH,
+)
 from tests.app.extensions.apps.om_inventory.conftest import FREE_BYTES
 
 
@@ -63,17 +69,35 @@ class TestPackageManagerDetection:
 class TestDataDirFreeBytes:
     """Report free space on the filesystem an install would land on."""
 
-    def test_the_free_byte_count_is_reported(self) -> None:
-        """Report the ordinary case, where the data directory's filesystem answers."""
+    @pytest.mark.parametrize(
+        ("directories", "measured"),
+        [
+            ({"/var/lib/mongo", "/var/lib", "/var", "/"}, "/var/lib/mongo"),
+            ({"/var/lib", "/var", "/"}, "/var/lib"),
+        ],
+    )
+    def test_the_free_byte_count_is_reported_where_an_install_would_put_data(
+        self, directories: set[str], measured: str
+    ) -> None:
+        """Measure the data directory, or its nearest ancestor before it exists.
+
+        :param directories: The directories that exist on the host.
+        :param measured: Where the free space should be measured.
+        """
         usage = type("Usage", (), {"free": FREE_BYTES})()
         with (
             patch("shutil.which", return_value=None),
+            patch("os.path.isdir", side_effect=directories.__contains__),
             patch("shutil.disk_usage", return_value=usage) as disk_usage,
         ):
             facts = collect_install_readiness()
 
         assert facts["data_dir_free_bytes"] == FREE_BYTES
-        assert disk_usage.call_args.args == ("/var/lib",)
+        assert disk_usage.call_args.args == (measured,)
+
+    def test_the_measured_path_is_the_install_s_default(self) -> None:
+        """Measure where om_bootstrap installs when the request names no path."""
+        assert TriggerRunRequest.model_fields["data_path"].default == DEFAULT_DATA_PATH
 
     def test_an_unreadable_filesystem_is_none_not_an_exception(self) -> None:
         """Keep the rest of the host record when a permission or mount failure hits."""
