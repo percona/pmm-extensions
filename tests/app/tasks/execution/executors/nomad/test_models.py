@@ -2579,6 +2579,57 @@ class TestStopTask:
             await executor._stop_task(queue_item)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "lookup_error",
+        [
+            pytest.param(
+                AllocationNotFoundError(
+                    "gone",
+                    executor_name="nomad",
+                    resource_type="allocation",
+                ),
+                id="allocation-not-found",
+            ),
+            pytest.param(
+                BaseNomadException(MagicMock(text="nomad unavailable")),
+                id="base-nomad-exception",
+            ),
+        ],
+    )
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_stop_task_skips_hold_release_when_allocation_lookup_fails(
+        self, mock_nomad_cls, lookup_error
+    ):
+        """Assert post-deregister hold release is skipped when alloc lookup fails."""
+        mock_backend = MagicMock()
+        mock_nomad_cls.return_value = mock_backend
+        executor = _build_executor()
+        queue_item = _build_queue_item(
+            tracking={
+                "job_id": "job-to-stop",
+                "allocation_id": "alloc-1",
+                "evaluation_id": "eval-1",
+            }
+        )
+
+        with (
+            patch.object(
+                NomadExecutor,
+                "get_allocation_for_task_history",
+                side_effect=lookup_error,
+            ),
+            patch.object(
+                NomadExecutor,
+                "_release_capture_hold",
+                new_callable=AsyncMock,
+            ) as mock_release,
+        ):
+            await executor._stop_task(queue_item)
+
+        mock_backend.job.deregister_job.assert_called_once_with("job-to-stop")
+        mock_release.assert_not_awaited()
+
+    @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     @patch("app.tasks.execution.models.schedule_annotation")
     async def test_stop_task_with_task_states_less_allocation_reaches_stopped(
