@@ -215,6 +215,7 @@ def _counts(run: ProbeRun) -> ProbeCounts:
         hosts_total=run.hosts_total,
         hosts_probeable=run.hosts_probeable,
         hosts_answered=run.hosts_answered,
+        hosts_finished=run.hosts_finished,
     )
 
 

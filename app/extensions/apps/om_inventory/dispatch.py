@@ -724,6 +724,7 @@ async def probe_all(
     tasks_api: RemoteAPI,
     mapped: list[MappedService],
     executor_hosts: Iterable[str] = (),
+    on_host_done: Callable[[HostProbeResult], Awaitable[None]] | None = None,
 ) -> dict[str, HostProbeResult]:
     """Probe every executor host in reach, concurrently.
 
@@ -739,6 +740,8 @@ async def probe_all(
     :param tasks_api: The tasks API client.
     :param mapped: Every mapped service, resolved or orphaned.
     :param executor_hosts: Executor hosts to probe even if they serve no service.
+    :param on_host_done: Called with each host's result as it comes back, for a
+        caller reporting progress.
     :return: One result per executor host, keyed by host.
     """
     grouped = group_by_executor(mapped)
@@ -755,7 +758,10 @@ async def probe_all(
 
     async def guarded(host: str, entries: list[MappedService]) -> HostProbeResult:
         async with semaphore:
-            return await probe_host(tasks_api, host, entries)
+            result = await probe_host(tasks_api, host, entries)
+        if on_host_done is not None:
+            await on_host_done(result)
+        return result
 
     results = await asyncio.gather(
         *(guarded(host, entries) for host, entries in grouped.items())
