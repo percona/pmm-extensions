@@ -1152,9 +1152,9 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
         )
         await session.refresh(saved, attribute_names=["execution_request"])
     # Persist status before the best-effort PMM await so a slow annotation
-    # cannot delay the row the UI and chain dispatch depend on. Keep the
-    # await before maybe_dispatch_chain so the terminal event precedes the
-    # chained run's STARTED annotation.
+    # cannot delay the row the UI depends on. Still await before
+    # maybe_dispatch_chain so the terminal event precedes the chained run's
+    # STARTED annotation (chain dispatch may still wait on PMM).
     if pending_event:
         await await_annotation(saved, pending_event)
     await maybe_dispatch_chain(saved, was_running=was_running, await_annotations=True)
