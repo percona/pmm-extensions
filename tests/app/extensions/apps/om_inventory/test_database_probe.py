@@ -288,9 +288,9 @@ class TestProbeRecord:
     def test_a_queried_database_leaves_the_record_ok(self, tmp_path: Path) -> None:
         """Leave a record whose database answered unmarked."""
         command = MagicMock(
-            side_effect=lambda name: {"version": "6.0.14"}
-            if name == "buildInfo"
-            else {}
+            side_effect=lambda name: (
+                {"version": "6.0.14"} if name == "buildInfo" else {}
+            )
         )
 
         record, _ = build_record(fake_pymongo(command), tmp_path)
