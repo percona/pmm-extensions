@@ -16,9 +16,11 @@
 """Define tests for the app.tasks.execution.executors.nomad.models module."""
 
 import asyncio
+import io
 import json
 import logging
 import re
+import tarfile
 import threading
 import time
 from base64 import b64encode
@@ -1555,6 +1557,40 @@ class TestDetectStaleSkip:
         }
         assert _detect_stale_skip(task_states) is True
 
+    def test_returns_false_when_events_not_a_list(self):
+        """Assert a non-list ``Events`` value short-circuits to ``False``."""
+        assert (
+            _detect_stale_skip({"check-staleness": {"Events": "not-a-list"}}) is False
+        )
+
+    def test_returns_false_on_non_terminated_and_missing_type(self):
+        """Assert non-``Terminated`` (including missing) ``Type`` is not a match.
+
+        The walk keeps scanning and returns ``False`` once every event has been
+        checked without a sentinel hit.
+        """
+        task_states = {
+            "check-staleness": {
+                "Events": [
+                    {"Type": "Started", "ExitCode": 75},
+                    {"ExitCode": 75},
+                ],
+            }
+        }
+        assert _detect_stale_skip(task_states) is False
+
+    def test_skips_non_dict_event_then_matches_terminated(self):
+        """Assert a non-dict event is skipped while a later sentinel still matches."""
+        task_states = {
+            "check-staleness": {
+                "Events": [
+                    "not-a-dict",
+                    {"Type": "Terminated", "ExitCode": 75},
+                ],
+            }
+        }
+        assert _detect_stale_skip(task_states) is True
+
 
 class TestGetJob:
     """Test NomadExecutor.get_job."""
@@ -2454,6 +2490,59 @@ class TestDispatchTask:
         expected_dt = datetime.fromtimestamp(submit_ns / 10**9, UTC)
         assert result.started_at == expected_dt
 
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_dispatch_task_raises_when_job_cannot_be_determined(
+        self, mock_nomad_cls
+    ):
+        """Assert ValueError when neither register nor dispatch yields a job."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        task = _build_task(task_id="orphan-job", parameterized=False)
+        queue_item = _build_queue_item(
+            task=task,
+            status=TaskHistoryStatusEnum.PENDING,
+        )
+        session = AsyncMock()
+
+        with (
+            patch.object(
+                NomadExecutor,
+                "task_needs_job_register",
+                AsyncMock(return_value=False),
+            ),
+            pytest.raises(ValueError, match="job could not be determined"),
+        ):
+            await executor.dispatch_task(session, queue_item, task)
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.utc_now")
+    @patch("app.tasks.execution.executors.nomad.models.TaskHistoryManager")
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_dispatch_task_falls_back_to_utc_now_without_submit_time(
+        self, mock_nomad_cls, mock_th_manager, mock_utc_now
+    ):
+        """Assert started_at uses utc_now when the Nomad job has no SubmitTime."""
+        mock_nomad_cls.return_value = MagicMock()
+        now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
+        mock_utc_now.return_value = now
+        mock_th_manager.save = AsyncMock(side_effect=lambda _s, qi, **_kw: qi)
+
+        nomad_register = {"EvalID": "eval-1"}
+        nomad_job = {"ID": "job-no-submit", "SubmitTime": None}
+        executor = _build_executor(nomad_job=nomad_job, nomad_register=nomad_register)
+        task = _build_task(task_id="no-submit-job", parameterized=False)
+        queue_item = _build_queue_item(
+            task=task,
+            status=TaskHistoryStatusEnum.PENDING,
+        )
+        session = AsyncMock()
+
+        result = await executor.dispatch_task(session, queue_item, task)
+
+        assert result.started_at == now
+        mock_utc_now.assert_called()
+
 
 class TestStopTask:
     """Test NomadExecutor._stop_task."""
@@ -2490,6 +2579,57 @@ class TestStopTask:
 
         with pytest.raises(ValueError, match="job ID could not be determined"):
             await executor._stop_task(queue_item)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "lookup_error",
+        [
+            pytest.param(
+                AllocationNotFoundError(
+                    "gone",
+                    executor_name="nomad",
+                    resource_type="allocation",
+                ),
+                id="allocation-not-found",
+            ),
+            pytest.param(
+                BaseNomadException(MagicMock(text="nomad unavailable")),
+                id="base-nomad-exception",
+            ),
+        ],
+    )
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_stop_task_skips_hold_release_when_allocation_lookup_fails(
+        self, mock_nomad_cls, lookup_error
+    ):
+        """Assert post-deregister hold release is skipped when alloc lookup fails."""
+        mock_backend = MagicMock()
+        mock_nomad_cls.return_value = mock_backend
+        executor = _build_executor()
+        queue_item = _build_queue_item(
+            tracking={
+                "job_id": "job-to-stop",
+                "allocation_id": "alloc-1",
+                "evaluation_id": "eval-1",
+            }
+        )
+
+        with (
+            patch.object(
+                NomadExecutor,
+                "get_allocation_for_task_history",
+                side_effect=lookup_error,
+            ),
+            patch.object(
+                NomadExecutor,
+                "_release_capture_hold",
+                new_callable=AsyncMock,
+            ) as mock_release,
+        ):
+            await executor._stop_task(queue_item)
+
+        mock_backend.job.deregister_job.assert_called_once_with("job-to-stop")
+        mock_release.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
@@ -5215,6 +5355,63 @@ class TestNomadLogStreaming:
         assert stream_start is None
         mock_sleep.assert_awaited_once()
 
+    def test_log_stream_timeout_emits_warning(self, caplog: pytest.LogCaptureFixture):
+        """Direct call logs a WARNING naming the sock_read timeout."""
+        executor = _build_executor()
+        params = {"offset": 42}
+        with caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER):
+            executor._log_stream_timeout(
+                "alloc-stream",
+                "step1",
+                TaskLogType.STDOUT,
+                MOCK_LOG_STREAM_BODY_START_MONOTONIC,
+                params,
+                start_offset=0,
+            )
+
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+        assert "sock_read timeout" in caplog.text
+        assert "alloc-stream" in caplog.text
+        assert "step1" in caplog.text
+
+    def test_log_stream_cancelled_emits_info(self, caplog: pytest.LogCaptureFixture):
+        """Direct call logs an INFO that the stream was cancelled."""
+        executor = _build_executor()
+        params = {"offset": 7}
+        with caplog.at_level(logging.INFO, logger=NOMAD_MODELS_LOGGER):
+            executor._log_stream_cancelled(
+                "alloc-stream",
+                "step1",
+                TaskLogType.STDERR,
+                None,
+                params,
+                start_offset=3,
+            )
+
+        assert any(record.levelno == logging.INFO for record in caplog.records)
+        assert "cancelled" in caplog.text
+        assert "alloc-stream" in caplog.text
+
+    def test_log_stream_client_error_emits_exception(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """Direct call logs an ERROR for a ClientError via logger.exception."""
+        executor = _build_executor()
+        params = {"offset": 11}
+        with caplog.at_level(logging.ERROR, logger=NOMAD_MODELS_LOGGER):
+            executor._log_stream_client_error(
+                "alloc-stream",
+                "step1",
+                TaskLogType.STDOUT,
+                MOCK_LOG_STREAM_BODY_START_MONOTONIC,
+                params,
+                start_offset=0,
+            )
+
+        assert any(record.levelno == logging.ERROR for record in caplog.records)
+        assert "ClientError" in caplog.text
+        assert "alloc-stream" in caplog.text
+
     @pytest.mark.asyncio
     @patch.object(NomadExecutor, "_consume_nomad_log_stream", new_callable=AsyncMock)
     async def test_push_logs_queue_sock_timeout_logs_and_stops(self, mock_consume):
@@ -6972,6 +7169,57 @@ class TestStreamFile:
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.anonymize_text")
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_stream_file_undecodable_sends_raw_bytes(
+        self, mock_nomad_cls, mock_anonymize, caplog: pytest.LogCaptureFixture
+    ):
+        """Assert UnicodeDecodeError falls back to raw bytes on the stream path."""
+        mock_backend = MagicMock()
+        mock_nomad_cls.return_value = mock_backend
+        mock_backend.allocation.get_allocation.return_value = {"ID": "alloc-1"}
+
+        executor = _build_executor()
+        queue_item = _build_queue_item(
+            tracking={
+                "allocation_id": "alloc-1",
+                "evaluation_id": "eval-1",
+                "job_id": "job-1",
+            },
+        )
+        queue_item.anonymize_mask = int(PIIEntity.EMAIL_ADDRESS)
+
+        file_content = b"\xff\xfe binary"
+        stat_response = AsyncMock()
+        stat_response.raise_for_status = MagicMock()
+        stat_response.json = AsyncMock(
+            return_value={"Size": len(file_content), "IsDir": False}
+        )
+        read_response = AsyncMock()
+        read_response.raise_for_status = MagicMock()
+        read_response.read = AsyncMock(return_value=file_content)
+
+        def mock_request(_method, path, **_kwargs):
+            ctx = AsyncMock()
+            response = stat_response if "stat" in path else read_response
+            ctx.__aenter__ = AsyncMock(return_value=response)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            return ctx
+
+        with (
+            patch.object(executor, "_request", side_effect=mock_request),
+            caplog.at_level(logging.DEBUG, logger=NOMAD_MODELS_LOGGER),
+        ):
+            chunks = [
+                chunk
+                async for chunk in executor.stream_file(queue_item, "/output/bin.dat")
+            ]
+
+        assert b"".join(chunks) == file_content
+        mock_anonymize.assert_not_called()
+        assert "Could not decode file content" in caplog.text
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.anonymize_text")
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_stream_file_without_anonymization(
         self, mock_nomad_cls, mock_anonymize
     ):
@@ -7191,6 +7439,41 @@ class TestReadFileBytes:
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.anonymize_text")
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_read_file_bytes_undecodable_keeps_raw_bytes(
+        self, mock_nomad_cls, mock_anonymize, caplog: pytest.LogCaptureFixture
+    ):
+        """Assert UnicodeDecodeError falls back to raw bytes on the tar-read path."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        queue_item = _build_queue_item()
+        queue_item.anonymize_mask = int(PIIEntity.EMAIL_ADDRESS)
+
+        content = b"\xff\xfe binary"
+        read_response = AsyncMock()
+        read_response.raise_for_status = MagicMock()
+        read_response.read = AsyncMock(return_value=content)
+
+        def mock_request(_method, _path, **_kwargs):
+            ctx = AsyncMock()
+            ctx.__aenter__ = AsyncMock(return_value=read_response)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            return ctx
+
+        with (
+            patch.object(executor, "_request", side_effect=mock_request),
+            caplog.at_level(logging.DEBUG, logger=NOMAD_MODELS_LOGGER),
+        ):
+            result = await executor._read_file_bytes(
+                queue_item, "alloc-1", "/f.bin", len(content)
+            )
+
+        assert result == content
+        mock_anonymize.assert_not_called()
+        assert "Could not decode file content for anonymization" in caplog.text
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.anonymize_text")
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_read_file_bytes_without_anonymization(
         self, mock_nomad_cls, mock_anonymize
     ):
@@ -7306,6 +7589,124 @@ class TestIterDirectoryEntries:
         assert "root/sub/nested.txt" in rel_paths
 
 
+class TestStreamDirectoryAsTarGz:
+    """Test NomadExecutor._stream_directory_as_tar_gz."""
+
+    @staticmethod
+    async def _drain_archive(
+        executor: NomadExecutor,
+        queue_item: TaskHistory,
+        alloc_id: str,
+        path: str,
+    ) -> bytes:
+        """Consume the async generator and return the full tar.gz bytes."""
+        return b"".join(
+            [
+                chunk
+                async for chunk in executor._stream_directory_as_tar_gz(
+                    queue_item, alloc_id, path
+                )
+            ]
+        )
+
+    @staticmethod
+    def _tar_names(archive_bytes: bytes) -> set[str]:
+        """Return member names from a gzipped tar archive."""
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+            return {member.name for member in tar.getmembers()}
+
+    @staticmethod
+    def _tar_file_content(archive_bytes: bytes, name: str) -> bytes:
+        """Read one regular-file member from a gzipped tar archive."""
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+            member = tar.getmember(name)
+            extracted = tar.extractfile(member)
+            assert extracted is not None
+            return extracted.read()
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_streams_nested_directory_as_tar_gz(self, mock_nomad_cls):
+        """Assert a nested directory archive contains every expected entry."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        queue_item = _build_queue_item()
+        file_contents = {
+            "/output/dumps/a.txt": b"alpha",
+            "/output/dumps/nested/b.txt": b"beta",
+        }
+
+        async def fake_entries(_alloc_id, _path, _prefix):
+            yield "/output/dumps/a.txt", "dumps/a.txt", False, 5
+            yield "/output/dumps/nested", "dumps/nested/", True, 0
+            yield "/output/dumps/nested/b.txt", "dumps/nested/b.txt", False, 4
+
+        async def fake_read(_queue_item, _alloc_id, path, _size, **_kwargs):
+            return file_contents[path]
+
+        with (
+            patch.object(
+                NomadExecutor, "_iter_directory_entries", side_effect=fake_entries
+            ),
+            patch.object(NomadExecutor, "_read_file_bytes", side_effect=fake_read),
+        ):
+            archive = await self._drain_archive(
+                executor, queue_item, "alloc-1", "/output/dumps"
+            )
+
+        names = self._tar_names(archive)
+        # tarfile strips trailing slashes from directory member names on read.
+        assert "dumps" in names
+        assert "dumps/a.txt" in names
+        assert "dumps/nested" in names
+        assert "dumps/nested/b.txt" in names
+        assert self._tar_file_content(archive, "dumps/a.txt") == b"alpha"
+        assert self._tar_file_content(archive, "dumps/nested/b.txt") == b"beta"
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_skips_entry_when_read_raises(
+        self, mock_nomad_cls, caplog: pytest.LogCaptureFixture
+    ):
+        """Assert a failed entry is skipped while the rest of the archive completes."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        queue_item = _build_queue_item()
+
+        async def fake_entries(_alloc_id, _path, _prefix):
+            yield "/output/dumps/good.txt", "dumps/good.txt", False, 4
+            yield "/output/dumps/bad.txt", "dumps/bad.txt", False, 3
+            yield "/output/dumps/also-good.txt", "dumps/also-good.txt", False, 5
+
+        async def fake_read(_queue_item, _alloc_id, path, _size, **_kwargs):
+            if path.endswith("bad.txt"):
+                raise RuntimeError("read failed")
+            return b"ok-" + path.rsplit("/", 1)[-1].encode()
+
+        with (
+            patch.object(
+                NomadExecutor, "_iter_directory_entries", side_effect=fake_entries
+            ),
+            patch.object(NomadExecutor, "_read_file_bytes", side_effect=fake_read),
+            caplog.at_level(logging.ERROR, logger=NOMAD_MODELS_LOGGER),
+        ):
+            archive = await self._drain_archive(
+                executor, queue_item, "alloc-1", "/output/dumps"
+            )
+
+        names = self._tar_names(archive)
+        assert "dumps/good.txt" in names
+        assert "dumps/also-good.txt" in names
+        assert "dumps/bad.txt" not in names
+        assert self._tar_file_content(archive, "dumps/good.txt") == b"ok-good.txt"
+        assert (
+            self._tar_file_content(archive, "dumps/also-good.txt")
+            == b"ok-also-good.txt"
+        )
+        assert "Failed to add" in caplog.text
+        assert "dumps/bad.txt" in caplog.text
+
+
 class TestIsDirectory:
     """Test NomadExecutor._is_directory."""
 
@@ -7364,6 +7765,110 @@ class TestNomadTaskStatesToExecutionEvents:
         assert events[0].event_type == "Started"
         assert events[0].step == "step1"
         assert "Task received" in events[0].description
+
+    def test_skips_non_dict_state_and_non_list_events(self):
+        """Skip a non-dict task state and a task whose ``Events`` is not a list."""
+        task_states = {
+            "bad-state": "not-a-dict",
+            "bad-events": {"Events": {"Type": "Started"}},
+            "good": {
+                "Events": [
+                    {
+                        "Type": "Started",
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "ok",
+                    },
+                ],
+            },
+        }
+        events = nomad_task_states_to_execution_events(task_states)
+        assert len(events) == 1
+        assert events[0].step == "good"
+        assert events[0].event_type == "Started"
+
+    def test_skips_non_string_task_name(self):
+        """Ignore non-string task keys rather than raising on them."""
+        task_states = {
+            1: {
+                "Events": [
+                    {
+                        "Type": "Started",
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "ignored",
+                    },
+                ],
+            },
+            "step1": {
+                "Events": [
+                    {
+                        "Type": "Started",
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "kept",
+                    },
+                ],
+            },
+        }
+        events = nomad_task_states_to_execution_events(task_states)
+        assert len(events) == 1
+        assert events[0].step == "step1"
+        assert "kept" in events[0].description
+
+    def test_type_missing_coerces_to_unknown(self):
+        """Label an event ``Unknown`` when its ``Type`` is missing."""
+        task_states = {
+            "step1": {
+                "Events": [
+                    {
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "no type field",
+                    },
+                ],
+            },
+        }
+        events = nomad_task_states_to_execution_events(task_states)
+        assert len(events) == 1
+        assert events[0].event_type == "Unknown"
+        assert "no type field" in events[0].description
+
+    def test_type_non_string_is_coerced_with_str(self):
+        """Keep a non-string ``Type`` via ``str(value)`` rather than dropping it."""
+        task_states = {
+            "step1": {
+                "Events": [
+                    {
+                        "Type": 42,
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "numeric type",
+                    },
+                ],
+            },
+        }
+        events = nomad_task_states_to_execution_events(task_states)
+        assert len(events) == 1
+        assert events[0].event_type == "42"
+        assert "numeric type" in events[0].description
+
+    def test_non_numeric_time_drops_event(self):
+        """Drop an event whose ``Time`` is present but non-numeric."""
+        task_states = {
+            "step1": {
+                "Events": [
+                    {
+                        "Type": "Started",
+                        "Time": "not-a-number",
+                        "DisplayMessage": "bad time",
+                    },
+                    {
+                        "Type": "Started",
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "kept",
+                    },
+                ],
+            },
+        }
+        events = nomad_task_states_to_execution_events(task_states)
+        assert len(events) == 1
+        assert "kept" in events[0].description
 
     def test_sorted_oldest_first_across_tasks(self):
         """Events from multiple tasks are merged and sorted by Nomad time."""
@@ -7441,6 +7946,16 @@ class TestNomadTaskStatesToExecutionEvents:
         assert out[0].event_type == "Setup"
         assert "Downloading Artifacts" in out[0].description
         assert out[0].step == "step1"
+
+    def test_nomad_executor_get_events_non_dict_tracking_returns_empty(self):
+        """Degrade non-dict tracking to an empty event list."""
+        history = _build_queue_item(status=TaskHistoryStatusEnum.SUCCESS)
+        history.execution_request.tracking = "not-a-dict"  # type: ignore[assignment]
+        executor = _build_executor()
+        assert executor.get_events(history) == []
+
+        history.execution_request.tracking = None  # type: ignore[assignment]
+        assert executor.get_events(history) == []
 
     def test_prestart_artifact_download_failure_event_extracted(self):
         """Assert 'Failed Artifact Download' prestart event surfaces as ExecutionEvent."""
