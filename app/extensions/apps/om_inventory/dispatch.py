@@ -42,6 +42,7 @@ from typing import Any, TypeVar
 
 from app.core.exceptions import HTTPConflictException, HTTPServiceUnavailableException
 from app.core.requests import RemoteAPI
+from app.core.utils.strings import shorten_text
 from app.extensions.apps.framework.spec import RUN_PYTHON_TASK
 from app.extensions.apps.om_inventory import payload as payload_pkg
 from app.extensions.apps.om_inventory.config import om_inventory_settings
@@ -59,15 +60,6 @@ STDOUT_STEP = "run-script"
 #: When it fails the payload never starts, so its own output is the only account
 #: of why.
 PREPARE_ENV_STEP = "prepare-env"
-#: Terminal statuses that mean the run went away rather than failed: the node or its
-#: agent restarted, the queue let it go stale, or someone stopped it.
-LOST_STATUSES = frozenset(
-    {
-        TaskHistoryStatusEnum.LOST.value,
-        TaskHistoryStatusEnum.STALE.value,
-        TaskHistoryStatusEnum.STOPPED.value,
-    }
-)
 #: The step the tasks service names in a run's ``failure_reason``. The sentence is
 #: written by the Nomad executor's ``_failed_step_reason``, in this repository, and
 #: ``test_scan_failures.py`` feeds that function's own output through this pattern
@@ -84,6 +76,8 @@ PROBE_PAYLOAD_PATH = Path(payload_pkg.__file__).parent / "probe.py"
 #: says what happened, and dispatch stderr or a driver error the payload does not
 #: recognise can run to several kilobytes.
 MAX_ERROR_DETAIL = 500
+#: Marks where a failure detail was cut to ``MAX_ERROR_DETAIL``.
+TRUNCATION_MARK = "..."
 
 # Bounds with_capacity_retry both ways, whichever runs out first.
 #
@@ -268,6 +262,20 @@ class HostProbeResult:
     duration_seconds: float | None = None
     error: str | None = None
     error_code: ScanFailure | None = None
+
+    def fail(self, error: str, code: ScanFailure, *, keep_end: int = 0) -> None:
+        """Record why this host's scan failed, and what kind of failure that is.
+
+        One call for both, so a failure cannot be left without a code, and the one
+        place the detail is bounded.
+
+        :param error: The failure detail.
+        :param code: Its kind.
+        :param keep_end: How much of the detail's end to keep if it is cut; see
+            :func:`bound_error`.
+        """
+        self.error = bound_error(error, keep_end=keep_end)
+        self.error_code = code
 
 
 class ScanTimeoutError(TimeoutError):
@@ -522,16 +530,25 @@ async def _read_logs(
     return {step: dict(streams) for step, streams in steps.items()}
 
 
-def _excerpt(text: str) -> str:
-    """Return the end of a stream, bounded, which is where the error usually is.
+def bound_error(error: str, *, keep_end: int = 0) -> str:
+    """Cut a failure detail to ``MAX_ERROR_DETAIL`` characters, marking the cut.
 
-    The end rather than the start: a traceback ends with the exception, and ``pip``
-    prints its whole resolution before the line saying it gave up.
+    The start is kept: it says what failed and where, and an exception or a driver
+    puts what went wrong at the start of its own message. ``keep_end`` keeps that
+    much of the end as well, for a detail whose end is what matters.
 
-    :param text: The stream.
-    :return: At most ``MAX_ERROR_DETAIL`` characters of its end, stripped.
+    :param error: The failure detail.
+    :param keep_end: How many characters of its end to keep beside its start.
+    :return: The detail, at most ``MAX_ERROR_DETAIL`` characters.
     """
-    return text.strip()[-MAX_ERROR_DETAIL:].strip()
+    return shorten_text(
+        error,
+        max_length=MAX_ERROR_DETAIL,
+        keep_last_chars=min(
+            max(keep_end, 0), MAX_ERROR_DETAIL - len(TRUNCATION_MARK) - 1
+        ),
+        ellipsis=TRUNCATION_MARK,
+    )
 
 
 def classify_terminal_failure(status: str, failure_reason: str | None) -> ScanFailure:
@@ -541,7 +558,7 @@ def classify_terminal_failure(status: str, failure_reason: str | None) -> ScanFa
     :param failure_reason: The tasks service's account of it, when it has one.
     :return: The failure's kind.
     """
-    if status in LOST_STATUSES:
+    if status in TaskHistoryStatusEnum.interrupted_statuses():
         return ScanFailure.SCAN_LOST
     match = _FAILED_STEP.match(failure_reason or "")
     step = match.group("step") if match else None
@@ -553,27 +570,44 @@ def classify_terminal_failure(status: str, failure_reason: str | None) -> ScanFa
 
 
 def describe_terminal_failure(
-    status: str, failure_reason: str | None, logs: dict[str, dict[str, str]]
+    executor_host: str,
+    status: str,
+    failure_reason: str | None,
+    logs: dict[str, dict[str, str]],
 ) -> str:
     """Say why a run that ended without output failed, in the run's own words.
 
-    The failed step's output where the tasks service named one, since that is where
-    the reason is; otherwise the payload's. ``stderr`` first, and the step's
+    The node, then the tasks service's account of which step failed and its exit
+    code, then the failed step's output where the tasks service named one, since that
+    is where the reason is; otherwise the payload's. ``stderr`` first, and the step's
     ``stdout`` only when it said nothing on ``stderr`` - ``python3 -m venv`` reports
     a missing ``ensurepip`` there.
 
+    The output is what gives way to ``MAX_ERROR_DETAIL``, from its start: a traceback
+    ends with the exception, and ``pip`` prints its whole resolution before the line
+    saying it gave up.
+
+    :param executor_host: The node the run was dispatched to.
     :param status: The run's terminal status.
     :param failure_reason: The tasks service's account of it, when it has one.
     :param logs: The run's output, by step and stream.
-    :return: The failure detail.
+    :return: The failure detail, at most ``MAX_ERROR_DETAIL`` characters.
     """
     match = _FAILED_STEP.match(failure_reason or "")
     streams = logs.get(match.group("step") if match else STDOUT_STEP) or {}
-    output = _excerpt(streams.get(TaskLogType.STDERR, "")) or _excerpt(
-        streams.get(TaskLogType.STDOUT, "")
+    output = (
+        streams.get(TaskLogType.STDERR, "").strip()
+        or streams.get(TaskLogType.STDOUT, "").strip()
     )
-    detail = " ".join(part for part in (failure_reason, output) if part)
-    return f"scan {status}: {detail or 'no output'}"
+    lead = " ".join(
+        part for part in (f"scan {status} on {executor_host}:", failure_reason) if part
+    )
+    if not (failure_reason or output):
+        output = "no output"
+    return bound_error(
+        " ".join(part for part in (lead, output) if part),
+        keep_end=MAX_ERROR_DETAIL - len(TRUNCATION_MARK) - len(lead) - 1,
+    )
 
 
 async def _release_abandoned(tasks_api: RemoteAPI, result: HostProbeResult) -> None:
@@ -592,11 +626,15 @@ async def _release_abandoned(tasks_api: RemoteAPI, result: HostProbeResult) -> N
         return
     release_error = await _release(tasks_api, result.task_history_id)
     if release_error:
-        result.error = (
-            f"{result.error} -- and task history {result.task_history_id} could not "
-            f"be released, so it will block this node's next scan: {release_error}"
+        # The notice is kept whole if the detail has to be cut; the failure before it
+        # gives way instead.
+        notice = (
+            f" -- and task history {result.task_history_id} could not be released, "
+            f"so it will block this node's next scan: {release_error}"
         )
-        result.error_code = ScanFailure.BLOCKED
+        result.fail(
+            f"{result.error}{notice}", ScanFailure.BLOCKED, keep_end=len(notice)
+        )
 
 
 async def probe_host(
@@ -645,8 +683,11 @@ async def probe_host(
             )
             created = {"id": adopted}
         if not isinstance(created, dict) or "id" not in created:
-            result.error = "the tasks API did not return a task history id"
-            result.error_code = ScanFailure.DISPATCH_REJECTED
+            result.fail(
+                f"the tasks API did not return a task history id for the scan on "
+                f"{executor_host}",
+                ScanFailure.DISPATCH_REJECTED,
+            )
             return result
         result.task_history_id = int(created["id"])
         logger.info(
@@ -674,31 +715,40 @@ async def probe_host(
             and not result.records
             and result.host_record is None
         ):
-            result.error = describe_terminal_failure(status, failure_reason, logs)
-            result.error_code = classify_terminal_failure(status, failure_reason)
+            result.fail(
+                describe_terminal_failure(executor_host, status, failure_reason, logs),
+                classify_terminal_failure(status, failure_reason),
+            )
     except ScanTimeoutError as err:
         logger.warning("OM inventory: probe of %s timed out: %s", executor_host, err)
         never_started = err.status == TaskHistoryStatusEnum.PENDING.value
         verb = "start" if never_started else "finish"
-        result.error = f"the scan did not {verb} within {err.timeout}s"
-        result.error_code = (
-            ScanFailure.NOT_STARTED if never_started else ScanFailure.TIMED_OUT
-        )
+        timed_out = f"the scan on {executor_host} did not {verb} within {err.timeout}s"
+        code = ScanFailure.NOT_STARTED if never_started else ScanFailure.TIMED_OUT
+        result.fail(timed_out, code)
         await _release_abandoned(tasks_api, result)
         # Said after the release, not before: the run is stopped by then, and a
         # release that failed has already said so in its place.
         if result.error_code != ScanFailure.BLOCKED:
-            result.error += f" and was cancelled (task history {err.task_history_id})"
+            result.fail(
+                f"{timed_out} and was cancelled (task history {err.task_history_id})",
+                code,
+            )
     except Exception as err:
         logger.exception("OM inventory: probe of %s failed", executor_host)
         if result.task_history_id is None:
             # Nothing was queued: the tasks API refused the dispatch, ran out of
             # capacity retries, or could not be reached.
-            result.error = f"could not queue the scan: {type(err).__name__}: {err}"
-            result.error_code = ScanFailure.DISPATCH_REJECTED
+            result.fail(
+                f"could not queue the scan on {executor_host}: "
+                f"{type(err).__name__}: {err}",
+                ScanFailure.DISPATCH_REJECTED,
+            )
         else:
-            result.error = f"{type(err).__name__}: {err}"
-            result.error_code = ScanFailure.UNKNOWN
+            result.fail(
+                f"the scan on {executor_host} failed: {type(err).__name__}: {err}",
+                ScanFailure.UNKNOWN,
+            )
             await _release_abandoned(tasks_api, result)
     finally:
         # In a finally so a host that failed or returned early is still timed: how

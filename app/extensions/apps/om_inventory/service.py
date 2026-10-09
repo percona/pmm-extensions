@@ -58,8 +58,8 @@ from app.extensions.apps.om_inventory.crud import (
     upsert_service,
 )
 from app.extensions.apps.om_inventory.dispatch import (
+    bound_error,
     HostProbeResult,
-    MAX_ERROR_DETAIL,
     probe_all,
     record_key,
 )
@@ -255,7 +255,7 @@ def _record_failure(record: dict[str, Any] | None) -> tuple[str, ScanFailure] | 
         return None
     error = str(record.get("error") or "no detail was reported")
     return (
-        f"could not query the database: {error[:MAX_ERROR_DETAIL]}",
+        bound_error(f"could not query the database: {error}"),
         classify_record_failure(record),
     )
 
