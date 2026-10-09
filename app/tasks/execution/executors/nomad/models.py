@@ -112,7 +112,7 @@ logger = logging.getLogger(__name__)
 
 _ONE_MEBIBYTE = 1024 * 1024
 #: Fixed mode for directory members in streamed allocation archives. Allocation
-#: modes are not preserved; see SEP-2160.
+#: modes are not preserved.
 _ARCHIVE_DIRECTORY_MODE = 0o755
 NOMAD_DEAD_JOB_STATUS = "dead"
 NOMAD_DEAD_TASK_STATE = "dead"

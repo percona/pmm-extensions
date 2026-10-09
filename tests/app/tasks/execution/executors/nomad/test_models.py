@@ -71,7 +71,6 @@ from app.tasks.execution.executors.nomad.models import (
     _alloc_step_state,
     _alloc_task_states,
     _ANONYMIZED_STEPS,
-    _ARCHIVE_DIRECTORY_MODE,
     _CAPTURE_HOLD_RELEASE_INTERVAL_SECONDS,
     _CAPTURE_HOLD_RELEASE_MAX_ATTEMPTS,
     _capture_hold_step_state,
@@ -7121,6 +7120,9 @@ class TestStreamFile:
 class TestStreamDirectoryAsTarGz:
     """Test NomadExecutor._stream_directory_as_tar_gz."""
 
+    #: Contract for directory members in streamed archives (independent of production).
+    EXPECTED_DIRECTORY_MODE = 0o755
+
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_directory_entries_have_executable_mode(self, mock_nomad_cls):
@@ -7158,8 +7160,8 @@ class TestStreamDirectoryAsTarGz:
         with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz") as tar:
             members = {member.name: member for member in tar}
 
-        assert members["mydir"].mode & 0o777 == _ARCHIVE_DIRECTORY_MODE
-        assert members["mydir/nested"].mode & 0o777 == _ARCHIVE_DIRECTORY_MODE
+        assert members["mydir"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
+        assert members["mydir/nested"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
         assert members["mydir/nested/file.txt"].mode & 0o777 == default_file_mode
         assert members["mydir"].mtime > 0
         assert members["mydir/nested"].mtime > 0
@@ -7193,7 +7195,7 @@ class TestStreamDirectoryAsTarGz:
 
         assert list(members) == ["mydir"]
         assert members["mydir"].isdir()
-        assert members["mydir"].mode & 0o777 == _ARCHIVE_DIRECTORY_MODE
+        assert members["mydir"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
         assert members["mydir"].mtime > 0
 
     @pytest.mark.asyncio
@@ -7232,7 +7234,7 @@ class TestStreamDirectoryAsTarGz:
 
         assert "mydir/bad.txt" not in members
         assert "mydir/good.txt" in members
-        assert members["mydir"].mode & 0o777 == _ARCHIVE_DIRECTORY_MODE
+        assert members["mydir"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
 
 
 class TestReadFileBytes:
