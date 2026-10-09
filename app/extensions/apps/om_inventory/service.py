@@ -642,7 +642,7 @@ class RunProgress(SweepProgress):
                 run.hosts_probeable = self._per_executor.total()
                 run.hosts_finished = self._finished
                 await ProbeRunManager.save(session, run)
-        except Exception:  # noqa: BLE001 - progress must never fail the sweep
+        except Exception:  # progress must never fail the sweep
             logger.warning(
                 "OM inventory: could not record progress of sweep %s",
                 self._run_id,
