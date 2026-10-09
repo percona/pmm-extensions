@@ -2092,6 +2092,10 @@ class TestTombstonesOpenNoSyncItem:
 _MOVED_SERVICE_ID = 7
 _MOVED_EXTERNAL_ID = "pmm-service-x"
 _CREATED_SERVICE_ID = 99
+_REFUSED_MOVE_WRITES = [
+    pytest.param(f"/services/{_MOVED_SERVICE_ID}", id="move-refused"),
+    pytest.param("/nodes/2", id="new-node-refused"),
+]
 
 
 class TestServiceMovedBetweenNodes:
@@ -2214,15 +2218,33 @@ class TestServiceMovedBetweenNodes:
         inventory_api.post.side_effect = post
 
     @staticmethod
+    def _refuse(inventory_api: AsyncMock, refused: str) -> None:
+        """Make ``inventory_api`` raise on every write to ``refused``."""
+        serve_put = inventory_api.put.side_effect
+
+        async def put(path: str, json: dict[str, Any]) -> dict[str, Any]:
+            if path == refused:
+                raise RuntimeError("inventory refused the write")
+            return await serve_put(path, json)
+
+        inventory_api.put.side_effect = put
+
+    @staticmethod
     async def _run(
         session: AsyncSession,
         mock_pmm_api: AsyncMock,
         mock_remote_api: AsyncMock,
         nodes: list[CreatedNode],
         snapshot: PMMInventorySnapshot,
+        refused: str | None = None,
     ) -> PMMSyncer:
-        """Run one full generation on a fresh syncer, closed as ``__aexit__`` would."""
+        """Run one full generation on a fresh syncer, closed as ``__aexit__`` would.
+
+        :param refused: A path the inventory refuses every write to, if any.
+        """
         TestServiceMovedBetweenNodes._serve(mock_remote_api, *nodes)
+        if refused is not None:
+            TestServiceMovedBetweenNodes._refuse(mock_remote_api, refused)
         mock_pmm_api.get_inventory_snapshot = AsyncMock(return_value=snapshot)
         syncer = await _own_run(
             _build_pmmsyncer(mock_pmm_api, mock_remote_api), session
@@ -2650,26 +2672,13 @@ class TestServiceMovedBetweenNodes:
         assert [row.entity_id for row in await _absence_rows(session)] == [node_a.id]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "refused",
-        [
-            pytest.param(f"/services/{_MOVED_SERVICE_ID}", id="move-refused"),
-            pytest.param("/nodes/2", id="new-node-refused"),
-        ],
-    )
+    @pytest.mark.parametrize("refused", _REFUSED_MOVE_WRITES)
     async def test_failed_move_leaves_the_row_held_on_its_old_node(
         self, owned_pmmsyncer, node_a, node_b, moved, session, refused
     ):
         """Keep the one row where it was, held rather than failed, if no move ran."""
         self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
-        serve_put = owned_pmmsyncer.inventory_api.put.side_effect
-
-        async def put(path: str, json: dict[str, Any]) -> dict[str, Any]:
-            if path == refused:
-                raise RuntimeError("inventory refused the write")
-            return await serve_put(path, json)
-
-        owned_pmmsyncer.inventory_api.put.side_effect = put
+        self._refuse(owned_pmmsyncer.inventory_api, refused)
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=_snapshot(
                 self._reporting(node_a), self._reporting(node_b, moved)
@@ -2687,6 +2696,56 @@ class TestServiceMovedBetweenNodes:
         assert await self._item_status(session, owned_pmmsyncer, moved.id) == (
             SyncStatusEnum.SUCCESS
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refused", _REFUSED_MOVE_WRITES)
+    async def test_failed_move_still_clears_an_earlier_absence_count(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved, refused
+    ):
+        """Reset the counter of a service PMM reported, even if moving it failed."""
+        nodes = [node_a, node_b]
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            nodes,
+            _snapshot(self._reporting(node_a), self._reporting(node_b)),
+        )
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            nodes,
+            _snapshot(self._reporting(node_a), self._reporting(node_b, moved)),
+            refused=refused,
+        )
+
+        assert refused in [call.args[0] for call in mock_remote_api.put.await_args_list]
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refused", _REFUSED_MOVE_WRITES)
+    async def test_failed_move_keeps_its_vanished_old_node(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved, refused
+    ):
+        """Hold an absent node while a service PMM moved off it is still under it."""
+        grace = _build_pmmsyncer(
+            mock_pmm_api, mock_remote_api
+        ).missing_grace_generations
+        for _ in range(grace):
+            await self._run(
+                session,
+                mock_pmm_api,
+                mock_remote_api,
+                [node_a, node_b],
+                _snapshot(self._reporting(node_b, moved)),
+                refused=refused,
+            )
+
+        assert refused in [call.args[0] for call in mock_remote_api.put.await_args_list]
+        mock_remote_api.delete.assert_not_awaited()
+        assert await _absence_rows(session) == []
 
     @pytest.mark.asyncio
     async def test_service_filtered_under_its_new_node_is_held(

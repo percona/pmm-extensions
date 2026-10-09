@@ -92,6 +92,7 @@ class PMMSyncer(BaseSyncer):
     _pmm_api: PMMRemoteAPI | None = None
     _generation: PMMInventorySnapshot | None = None
     _service_moves: dict[str, CreatedService] | None = None
+    _rehomed_ids: frozenset[int | None] = frozenset()
 
     async def __aenter__(self) -> Self:
         """Enter the asynchronous context manager.
@@ -308,21 +309,21 @@ class PMMSyncer(BaseSyncer):
         retire: Callable[[_Retirable], Awaitable[None]],
         *,
         permitted: bool,
-        filtered_external_ids: set[str],
+        held_external_ids: set[str],
     ) -> None:
         """Advance the missing-grace counter for absent entities and retire the spent.
 
-        An entity excluded by the caller's filter is held without its counter moving:
-        an operator exclusion is evidence in neither direction, exactly like an
-        incomplete generation. An entity that is *already* retired is skipped
-        outright, neither held nor counted: it is in the state this method exists to
-        reach, and it has no ``SyncItem`` in this run to close.
+        An entity the caller marks held, such as one excluded by the fetch filter, is
+        held without its counter moving: an operator exclusion is evidence in neither
+        direction, exactly like an incomplete generation. An entity that is *already*
+        retired is skipped outright, neither held nor counted: it is in the state this
+        method exists to reach, and it has no ``SyncItem`` in this run to close.
 
         :param entity_type: The type of the absent entities.
         :param absent_entities: The local entities this generation did not report.
         :param retire: The retirement call to make once grace is spent.
         :param permitted: Whether this generation may retire anything.
-        :param filtered_external_ids: External IDs excluded by the fetch filter.
+        :param held_external_ids: External IDs to hold without counting.
         :raises SyncFailError: If holding or retiring an entity fails and
             ``break_on_error`` is set.
         :raises HTTPBadRequestException: If a ledger write hits a database error.
@@ -330,8 +331,7 @@ class PMMSyncer(BaseSyncer):
         for created_entity in absent_entities:
             if created_entity.is_retired:
                 continue
-            excluded = created_entity.external_id in filtered_external_ids
-            if not permitted or excluded:
+            if not permitted or created_entity.external_id in held_external_ids:
                 await self.hold_entity(entity_type, created_entity)
                 continue
             missing = await SyncEntityAbsenceManager.record_missing(
@@ -384,6 +384,15 @@ class PMMSyncer(BaseSyncer):
             self._service_moves = self._plan_service_moves(
                 syncable_nodes.values(), snapshot
             )
+            # Cleared up front: PMM reported these services, so a move that fails
+            # below must not leave a stale count to retire them a generation early.
+            if self._service_moves and await self._owns_run():
+                await SyncEntityAbsenceManager.clear(
+                    self._session,
+                    self.get_name(),
+                    SyncInventoryEntityTypeEnum.SERVICE,
+                    *(moved.id for moved in self._service_moves.values()),
+                )
             present_ids: list[int | None] = []
             for node in snapshot.nodes:
                 matched_id = external_id_to_id.get(node.external_id)
@@ -410,16 +419,29 @@ class PMMSyncer(BaseSyncer):
                     SyncInventoryEntityTypeEnum.NODE,
                     *present_ids,
                 )
+            # Retiring a node retires its services, so a node still holding a
+            # service PMM reports elsewhere is held until that service moves off.
+            stranded_node_ids = {
+                moved.node_id
+                for moved in self._service_moves.values()
+                if moved.id not in self._rehomed_ids
+            }
             await self._retire_absent(
                 SyncInventoryEntityTypeEnum.NODE,
                 syncable_nodes.values(),
                 self.retire_node,
                 permitted=owns_run and self._generation_is_complete(),
-                filtered_external_ids=snapshot.diagnostics.filtered_node_ids,
+                held_external_ids=snapshot.diagnostics.filtered_node_ids
+                | {
+                    node.external_id
+                    for node in syncable_nodes.values()
+                    if node.id in stranded_node_ids
+                },
             )
         finally:
             self._generation = None
             self._service_moves = None
+            self._rehomed_ids = frozenset()
 
     async def fetch_node(self, created_node: CreatedNode) -> Node | None:
         """Fetch updated data for a specific node.
@@ -492,12 +514,12 @@ class PMMSyncer(BaseSyncer):
             matched_id = external_id_to_id.get(service.external_id)
             if (moved := service_moves.get(service.external_id)) is not None:
                 if not (self._generation_is_complete() and await self._owns_run()):
-                    present_ids.append(moved.id)
                     await self.hold_entity(SyncInventoryEntityTypeEnum.SERVICE, moved)
                     continue
                 created_service = await self._rehome_service(
                     moved, service, detached_node
                 )
+                self._rehomed_ids |= {moved.id}
             elif (created_service := syncable_services.pop(matched_id, None)) is None:
                 logger.info("Creating new service: %r", service)
                 created_service = CreatedService.model_validate(
@@ -536,7 +558,7 @@ class PMMSyncer(BaseSyncer):
             ),
             self.retire_service,
             permitted=owns_run and self._generation_is_complete(),
-            filtered_external_ids=filtered_service_ids,
+            held_external_ids=filtered_service_ids,
         )
 
     async def fetch_service(self, created_service: CreatedService) -> PMMService | None:
