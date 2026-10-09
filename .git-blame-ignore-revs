@@ -5,3 +5,5 @@ db66b2b1c064a7bc59cdf28cfa7f7b3496db9861
 bc744cfbde11dc69547e0a8b69a147d7bd5279e0
 # Rename plugins to apps
 162660fff82d70a0bd2ea7a253b7aefe755e63cf
+# Upgrade ruff to 0.16.10
+91ba47b5d9f6e1f37a8249df54fa0405b8a4b232
