@@ -21,23 +21,21 @@ scope as soon as they are known and counts each host's scan as it comes back.
 """
 
 from contextlib import nullcontext
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.extensions.apps.om_inventory.crud import ProbeRunManager
+from app.extensions.apps.om_inventory.dispatch import HostProbeResult
 from app.extensions.apps.om_inventory.models import ProbeRun
 from app.extensions.apps.om_inventory.service import (
     finalise,
     RunProgress,
-    sweep,
     SweepOutcome,
     SweepProgress,
 )
-from tests.app.extensions.apps.om_inventory.test_sweep_nodes import host
-
-BASE = "app.extensions.apps.om_inventory.service"
+from tests.app.extensions.apps.om_inventory.conftest import host, RunSweep, SERVICE
 
 
 @pytest.mark.asyncio
@@ -49,11 +47,11 @@ async def test_writes_the_hosts_in_scope_and_counts_each_one_back(
     progress = RunProgress(run.id)
 
     with patch(
-        f"{BASE}.get_async_session_maker", return_value=lambda: nullcontext(session)
+        f"{SERVICE}.get_async_session_maker", return_value=lambda: nullcontext(session)
     ):
         await progress.started(hosts_total=5, hosts_probeable=4)
-        await progress.host_done(MagicMock())
-        await progress.host_done(MagicMock())
+        await progress.host_done(HostProbeResult(executor_host="node00"))
+        await progress.host_done(HostProbeResult(executor_host="node01"))
 
     stored = await ProbeRunManager.get(session, id=run.id)
     assert (stored.hosts_total, stored.hosts_probeable, stored.hosts_finished) == (
@@ -70,38 +68,30 @@ async def test_a_failed_write_does_not_fail_the_sweep(
     """Log and carry on: progress is for a reader, the outcome is the record."""
     broken = MagicMock(side_effect=RuntimeError("database gone"))
 
-    with patch(f"{BASE}.get_async_session_maker", return_value=broken):
-        await RunProgress(ProbeRun().id).host_done(MagicMock())
+    with patch(f"{SERVICE}.get_async_session_maker", return_value=broken):
+        await RunProgress(ProbeRun().id).host_done(
+            HostProbeResult(executor_host="node00")
+        )
 
     assert "could not record progress" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_the_sweep_reports_its_hosts_and_each_one_back() -> None:
-    """Report the totals once enumerated, and hand probe_all the per-host callback."""
+async def test_the_sweep_reports_its_hosts_and_each_one_back(
+    run_sweep: RunSweep,
+) -> None:
+    """Report the totals once enumerated, and each host's result as it comes back."""
     progress = MagicMock(spec=SweepProgress)
-    progress.started = AsyncMock()
     hosts = [host("node00"), host("node01"), host("node02", orphaned=True)]
-    clients = (MagicMock(), MagicMock())
-    for client in clients:
-        client.auth.return_value = nullcontext()
-    probe_all = AsyncMock(return_value={})
+    results = {
+        name: HostProbeResult(executor_host=name) for name in ("node00", "node01")
+    }
 
-    with (
-        patch(f"{BASE}._build_clients", AsyncMock(return_value=clients)),
-        patch(f"{BASE}.get_internal_token", return_value="token"),
-        patch(f"{BASE}.list_mongodb_services", AsyncMock(return_value=[])),
-        patch(f"{BASE}.list_inventory_nodes", AsyncMock(return_value=[])),
-        patch(f"{BASE}.build_hosts", return_value=hosts),
-        patch(f"{BASE}.get_executor_states", AsyncMock(return_value={})),
-        patch(f"{BASE}.map_services", return_value=[]),
-        patch(f"{BASE}.probe_all", probe_all),
-    ):
-        await sweep("2026-10-07T12:00:00+00:00", progress=progress)
+    await run_sweep([], results, hosts=hosts, progress=progress)
 
     progress.started.assert_awaited_once_with(hosts_total=3, hosts_probeable=2)
-    assert probe_all.await_args is not None
-    assert probe_all.await_args.kwargs["on_host_done"] is progress.host_done
+    landed = [call.args[0] for call in progress.host_done.await_args_list]
+    assert landed == list(results.values())
 
 
 @pytest.mark.asyncio
