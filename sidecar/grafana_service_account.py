@@ -453,14 +453,12 @@ def resolve_provider() -> GrafanaSDK | str | None:
         ``None``.
     """
     try:
-        # import-time-settings: `auth_settings = AuthSettings()` runs at import
-        # of app.core.auth.config, and the provider module reads
-        # settings.SECRET_KEY at import to derive its assertion key. Both raise
-        # on a profile that does not validate, and the five supervised programs
-        # report that with far better context — so a settings problem must not
-        # become a container that never starts.
-        from app.core.auth.config import auth_settings
-        from app.core.auth.providers.grafana.provider import GrafanaAuthProvider
+        from app.core.auth.config import (  # noqa: PLC0415 - resolves settings at import; a failure is reported, never fatal
+            auth_settings,
+        )
+        from app.core.auth.providers.grafana.provider import (  # noqa: PLC0415
+            GrafanaAuthProvider,
+        )
 
         provider = auth_settings.active_provider
         pmm_api_key = settings.PMM.api_key

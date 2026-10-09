@@ -533,23 +533,35 @@ class PackagesInstallStrategy:
         data_path = shlex.quote(spec.data_path)
         body = "\n".join(
             [
-                f"command -v {pkg_manager} >/dev/null 2>&1 || "
-                f'{{ echo "pre_check: {pkg_manager} not found" >&2; exit 1; }}',
-                "if command -v mongod >/dev/null 2>&1; then "
-                'echo "pre_check: mongod is already installed" >&2; exit 1; fi',
-                f"if [ -e {CONFIG_PATH} ]; then "
-                f'echo "pre_check: {CONFIG_PATH} already exists" >&2; exit 1; fi',
-                f'if [ -d {data_path} ] && [ -n "$(ls -A {data_path})" ]; then '
-                f'echo "pre_check: "{data_path}" is not empty" >&2; exit 1; fi',
+                (
+                    f"command -v {pkg_manager} >/dev/null 2>&1 || "
+                    f'{{ echo "pre_check: {pkg_manager} not found" >&2; exit 1; }}'
+                ),
+                (
+                    "if command -v mongod >/dev/null 2>&1; then "
+                    'echo "pre_check: mongod is already installed" >&2; exit 1; fi'
+                ),
+                (
+                    f"if [ -e {CONFIG_PATH} ]; then "
+                    f'echo "pre_check: {CONFIG_PATH} already exists" >&2; exit 1; fi'
+                ),
+                (
+                    f'if [ -d {data_path} ] && [ -n "$(ls -A {data_path})" ]; then '
+                    f'echo "pre_check: "{data_path}" is not empty" >&2; exit 1; fi'
+                ),
                 f"target={data_path}",
                 'while [ ! -d "$target" ]; do target="$(dirname "$target")"; done',
                 'avail=$(df --output=avail -B1 "$target" | tail -1)',
-                "case \"$avail\" in ''|*[!0-9]*) "
-                'echo "pre_check: could not measure free space at $target" >&2; '
-                "exit 1;; esac",
-                f'if [ "$avail" -lt {MIN_DATA_DISK_BYTES} ]; then '
-                f'echo "pre_check: less than {MIN_DATA_DISK_BYTES} bytes free '
-                'for the data directory" >&2; exit 1; fi',
+                (
+                    "case \"$avail\" in ''|*[!0-9]*) "
+                    'echo "pre_check: could not measure free space at $target" >&2; '
+                    "exit 1;; esac"
+                ),
+                (
+                    f'if [ "$avail" -lt {MIN_DATA_DISK_BYTES} ]; then '
+                    f'echo "pre_check: less than {MIN_DATA_DISK_BYTES} bytes free '
+                    'for the data directory" >&2; exit 1; fi'
+                ),
             ]
         )
         return _shell_step(body)

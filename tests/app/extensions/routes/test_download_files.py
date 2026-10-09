@@ -126,8 +126,8 @@ def mock_tasks_api_dep(task_history_response):
     """Override the TaskAPI dependency with an AsyncMock."""
     mock = AsyncMock(spec=RemoteAPI)
     extensions_app.dependency_overrides[get_tasks_api] = lambda: mock
-    extensions_app.dependency_overrides[get_task_history] = (
-        lambda: task_history_response
+    extensions_app.dependency_overrides[get_task_history] = lambda: (
+        task_history_response
     )
     extensions_app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
         access_token="test-token"
@@ -147,8 +147,8 @@ def mock_tasks_client_dep(task_history_response):
 
     client.auth = auth
     extensions_app.dependency_overrides[get_tasks_client] = lambda: client
-    extensions_app.dependency_overrides[get_task_history] = (
-        lambda: task_history_response
+    extensions_app.dependency_overrides[get_task_history] = lambda: (
+        task_history_response
     )
     extensions_app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
         access_token="test-token"
@@ -402,18 +402,16 @@ class TestDownloadTaskHistoryFile:
         mock_tasks_client_dep.stream_chunks.return_value = _mock_rejected_file_stream(
             HTTP_500_INTERNAL_SERVER_ERROR
         )
-        log_exception = mocker.patch(
-            "app.extensions.routes.download_files.logger.exception"
-        )
+        log_error = mocker.patch("app.extensions.routes.download_files.logger.error")
 
         response = test_client.get(
             f"/files/{task_history_response.id}/download?path=backup.sql"
         )
 
         assert response.status_code == HTTP_500_INTERNAL_SERVER_ERROR
-        log_exception.assert_called_once()
+        log_error.assert_called_once()
         assert (
-            log_exception.call_args.args[0]
+            log_error.call_args.args[0]
             == "Upstream error while priming file download stream:"
         )
 
@@ -427,16 +425,14 @@ class TestDownloadTaskHistoryFile:
         mock_tasks_client_dep.stream_chunks.return_value = _mock_rejected_file_stream(
             HTTP_400_BAD_REQUEST
         )
-        log_exception = mocker.patch(
-            "app.extensions.routes.download_files.logger.exception"
-        )
+        log_error = mocker.patch("app.extensions.routes.download_files.logger.error")
 
         response = test_client.get(
             f"/files/{task_history_response.id}/download?path=backup.sql"
         )
 
         assert response.status_code == HTTP_400_BAD_REQUEST
-        log_exception.assert_not_called()
+        log_error.assert_not_called()
 
     def test_empty_upstream_file_returns_200_with_empty_body(
         self, test_client, mock_tasks_client_dep, task_history_response

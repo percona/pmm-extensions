@@ -45,9 +45,7 @@ class AlertsSettings(BaseYamlSettings):
         IntervalSchedule(every=24, period=Period.HOURS)
     )
     BACKUP_RETENTION: PositiveInt = hot_field(10)  # ty: ignore[invalid-assignment]
-    ALERT_FOLDER_NAME: str = hot_field(
-        "PMM Extensions Alerts"
-    )  # ty: ignore[invalid-assignment]
+    ALERT_FOLDER_NAME: str = hot_field("PMM Extensions Alerts")  # ty: ignore[invalid-assignment]
 
 
 alerts_settings: AlertsSettings = OverridableSettingsProxy(AlertsSettings)

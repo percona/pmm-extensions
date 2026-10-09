@@ -185,10 +185,10 @@ def _load_apps() -> dict[str, Any]:
     :return: The four whole-app objects keyed by spec name.
     """
     sys.path.insert(0, str(REPO_ROOT))
-    from app.extensions.main import extensions_app
-    from app.inventory.main import inventory_app
-    from app.main import app as main_app
-    from app.tasks.main import tasks_app
+    from app.extensions.main import extensions_app  # noqa: PLC0415
+    from app.inventory.main import inventory_app  # noqa: PLC0415
+    from app.main import app as main_app  # noqa: PLC0415
+    from app.tasks.main import tasks_app  # noqa: PLC0415
 
     return {
         "main": main_app,
@@ -216,7 +216,7 @@ def main() -> int:
     apps = _load_apps()
     # Imported after _load_apps() prepends REPO_ROOT to sys.path so the local
     # worktree's app package is resolved, not the editable .pth worktree.
-    from app.core.utils.openapi import namespaced_openapi
+    from app.core.utils.openapi import namespaced_openapi  # noqa: PLC0415
 
     drift = []
     for name, fastapi_app in apps.items():

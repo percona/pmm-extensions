@@ -564,7 +564,9 @@ class TestAltersApiUpdate:
         mocker: MockerFixture,
     ) -> None:
         """PUT honors continue_on_pre_check_failure when rebuilding the pre-checks task."""
-        from app.extensions.apps.framework.schema import ChainedPredecessor
+        from app.extensions.apps.framework.schema import (  # noqa: PLC0415
+            ChainedPredecessor,
+        )
 
         group = build_alters_task_group(DEFAULT_PARENT_NAME)
         mock_task_api_dep.get = AsyncMock(

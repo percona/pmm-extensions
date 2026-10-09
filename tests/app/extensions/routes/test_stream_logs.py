@@ -96,8 +96,8 @@ def mock_tasks_client(task_history_response):
     client.post.return_value = task_history_response.model_dump()
 
     extensions_app.dependency_overrides[get_tasks_client] = lambda: client
-    extensions_app.dependency_overrides[get_task_history] = (
-        lambda: task_history_response
+    extensions_app.dependency_overrides[get_task_history] = lambda: (
+        task_history_response
     )
     extensions_app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
         access_token="test-token"

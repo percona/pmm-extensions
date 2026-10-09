@@ -41,7 +41,7 @@ from tests.app.extensions.apps.mysql_backups.payload_harness import (
     payload_method,
 )
 
-_FORMATS = cast(tuple[str, ...], load_constant("ENCRYPTION_FORMATS"))
+_FORMATS = cast("tuple[str, ...]", load_constant("ENCRYPTION_FORMATS"))
 assert isinstance(_FORMATS, tuple)
 _resolve_encryption = load_function("_resolve_encryption")
 

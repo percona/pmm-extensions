@@ -117,7 +117,7 @@ class TestGenerateTagPrefixedUniqueId:
     def test_enum_tag_uses_enum_value(self) -> None:
         """Use an ``Enum`` tag's ``.value``, not its ``repr``."""
 
-        class TagEnum(str, Enum):
+        class TagEnum(Enum):
             EXTENSIONS = "extensions"
 
         route = _make_route("list_things", "/things", [TagEnum.EXTENSIONS])

@@ -23,6 +23,7 @@ executable — the same technique as ``test_xtrabackup_aes256_restore.py``.
 import ast
 import os
 import pathlib
+import re
 import stat
 import subprocess
 import types
@@ -300,7 +301,7 @@ class TestDecryptAesMissingKeyfile:
             real_subprocess=False,
         )
         restore_inst.xtrabackup_aes256_keyfile = str(keyfile)
-        with pytest.raises(backup_error, match="No .xbcrypt files"):
+        with pytest.raises(backup_error, match=re.escape("No .xbcrypt files")):
             restore_inst.decrypt_aes(str(empty))
         assert calls == []
 
@@ -383,7 +384,7 @@ class TestRunAesBranch:
             post_script=None,
             copy_back=lambda: None,
             is_encrypted=lambda _p: "aes",
-            decrypt_aes=lambda path: decrypted.append(path),
+            decrypt_aes=decrypted.append,
             decrypt_gpg=lambda _p: (_ for _ in ()).throw(
                 AssertionError("gpg path must not run for aes")
             ),

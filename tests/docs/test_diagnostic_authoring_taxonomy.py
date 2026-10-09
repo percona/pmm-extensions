@@ -32,10 +32,29 @@ _ROW_RE = re.compile(
     r"^\| `(?P<name>[A-Z_]+)` \| (?P<label>[^|]+?) \| (?P<parent>[^|]+?) \|$"
 )
 _COUNT_RE = re.compile(r"(?P<members>\w+)\s+members under (?P<parents>\w+) parents")
-_NUMBER_WORDS = (
-    "zero one two three four five six seven eight nine ten eleven twelve"
-    " thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty"
-).split()
+_NUMBER_WORDS = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+]
 
 
 def _guide_text() -> str:

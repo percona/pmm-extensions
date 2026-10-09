@@ -243,7 +243,7 @@ async def test_aexit_force_closes_idle_retiree_cancelled_mid_reconcile(
     try:
         await holder.__aenter__()
         retired = holder.current
-        entered, resume = patch_paused_close_when_idle(mocker, NomadExecutor)
+        entered, _resume = patch_paused_close_when_idle(mocker, NomadExecutor)
 
         _override_nomad(_NOMAD_B)
         reconcile_task = asyncio.create_task(holder.reconcile())

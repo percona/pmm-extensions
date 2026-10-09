@@ -135,8 +135,8 @@ async def _authenticated_api_client(
         share, so both run on one event loop.
     :return: The configured client, torn down with the overrides on exit.
     """
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None

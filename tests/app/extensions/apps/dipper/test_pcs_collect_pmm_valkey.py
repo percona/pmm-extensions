@@ -194,7 +194,7 @@ class TestPcsCollectPmmValkeyParses:
     @pytest.mark.asyncio
     async def test_metadata_header_parses_without_errors(self):
         """Assert the parsed metadata header yields no validation errors."""
-        from app.extensions.snippets.models.snippet import BaseSnippet
+        from app.extensions.snippets.models.snippet import BaseSnippet  # noqa: PLC0415
 
         meta = await BaseSnippet.get_meta_by_path(SCRIPT)
         snippet = BaseSnippet(

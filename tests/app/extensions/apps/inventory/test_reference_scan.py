@@ -55,7 +55,7 @@ def _session_maker(session: AsyncSession) -> Callable[[], Any]:
     async def maker():
         yield session
 
-    return lambda: maker()
+    return maker
 
 
 @pytest.fixture

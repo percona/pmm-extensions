@@ -76,7 +76,7 @@ class TestPcsCollectEnvironmentValkeySentinelPortValidation:
 
     async def _port_adapter(self) -> TypeAdapter:
         """Build a validator for the Sentinel port from the parsed metadata."""
-        from app.extensions.snippets.models.snippet import BaseSnippet
+        from app.extensions.snippets.models.snippet import BaseSnippet  # noqa: PLC0415
 
         meta = await BaseSnippet.get_meta_by_path(SCRIPT)
         snippet = BaseSnippet(
@@ -110,7 +110,7 @@ class TestPcsCollectEnvironmentValkeyParses:
     @pytest.mark.asyncio
     async def test_metadata_header_parses_without_errors(self):
         """Assert the parsed metadata header yields no validation errors."""
-        from app.extensions.snippets.models.snippet import BaseSnippet
+        from app.extensions.snippets.models.snippet import BaseSnippet  # noqa: PLC0415
 
         meta = await BaseSnippet.get_meta_by_path(SCRIPT)
         snippet = BaseSnippet(

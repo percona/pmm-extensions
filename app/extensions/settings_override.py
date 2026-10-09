@@ -30,6 +30,7 @@ from copy import deepcopy
 from typing import Any, cast
 
 from celery.signals import task_prerun, worker_process_init, worker_process_shutdown
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.celery import celery
@@ -136,7 +137,7 @@ async def invalidate_pmm_clients(change: SnapshotChange) -> None:
 
     :param change: The override snapshots on either side of the republish.
     """
-    previous_pmm = cast(PMMSettings, previous_or_base(change, settings, "PMM"))
+    previous_pmm = cast("PMMSettings", previous_or_base(change, settings, "PMM"))
     for endpoint in dict.fromkeys(
         str(pmm.endpoint)
         for pmm in (previous_pmm, settings.PMM)
@@ -193,9 +194,20 @@ WORKER_OVERRIDE_CALLBACKS: CallbackRegistry = {
 }
 
 
+def _session_maker() -> async_sessionmaker:
+    """Return the current session maker, looked up when the refresher calls it.
+
+    Passing ``get_async_session_maker`` itself would bind the function at import,
+    so a test that rebinds the module attribute would never reach the refresher.
+
+    :return: The service-scoped session maker.
+    """
+    return get_async_session_maker()
+
+
 _refresher = WorkerRefresher(
     lambda: celery.loop,
-    lambda: get_async_session_maker(),
+    _session_maker,
     build_extensions_override_proxies,
 )
 

@@ -249,7 +249,9 @@ class TestBuildStep:
 
     def test_install_package_requires_a_run_id(self) -> None:
         """Refuse to write an ownership marker no run's rollback could match."""
-        with pytest.raises(ValueError, match="install_package requires spec.run_id"):
+        with pytest.raises(
+            ValueError, match=re.escape("install_package requires spec.run_id")
+        ):
             PackagesInstallStrategy().build_step(
                 "install_package", "node00", _spec(OperatingSystem.UBUNTU, None)
             )

@@ -221,8 +221,12 @@ class TestRecordTaskSignals:
 
     def test_drainable_tasks_carry_their_owner(self) -> None:
         """Each drainable Celery task is tagged with its owning app key."""
-        from app.extensions.apps.alerts.celery import backup_alert_config
-        from app.extensions.apps.report.celery import generate_health_report
+        from app.extensions.apps.alerts.celery import (  # noqa: PLC0415
+            backup_alert_config,
+        )
+        from app.extensions.apps.report.celery import (  # noqa: PLC0415
+            generate_health_report,
+        )
 
         assert getattr(generate_health_report, "owner_app_key", None) == "report"
         assert getattr(backup_alert_config, "owner_app_key", None) == "alerts"

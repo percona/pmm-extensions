@@ -97,7 +97,7 @@ class ErrorPrimingStreamingResponse(StreamingResponse):
             preserved response headers are merged into ``exc.headers``.
         """
         if exc.status_code >= http_status.HTTP_500_INTERNAL_SERVER_ERROR:
-            logger.exception(
+            logger.error(
                 "Upstream error while priming file download stream:",
                 exc_info=exc,
             )

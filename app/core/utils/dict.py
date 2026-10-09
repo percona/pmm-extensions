@@ -143,7 +143,7 @@ def remove_falsy_values_from_dict(data: dict[Any, Any]) -> dict[Any, Any]:
     :return: A new dictionary with all falsy values removed.
     :rtype: dict[Any, Any]
     """
-    return filter_dict(data, lambda v: bool(v))
+    return filter_dict(data, bool)
 
 
 def merge_dict_at_start(

@@ -113,7 +113,7 @@ class TestParseBackupPriority:
     @pytest.mark.parametrize("value", ["{}", "  "])
     def test_rejects_empty_mapping(self, value: str) -> None:
         """Raise ValueError on a present-but-empty mapping (would be silently dropped)."""
-        with pytest.raises(ValueError, match="empty|mapping"):
+        with pytest.raises(ValueError, match=r"empty|mapping"):
             parse_backup_priority(value)
 
     def test_rejects_bool_value(self) -> None:

@@ -826,7 +826,7 @@ class TestSnippetModel:
 
     def test_is_approved_when_set(self):
         """Verify is_approved returns True when approved_at is set."""
-        from app.core.utils import utc_now
+        from app.core.utils import utc_now  # noqa: PLC0415
 
         snippet = Snippet(
             filename="test.sh",
@@ -856,7 +856,7 @@ class TestSnippetModel:
 
     def test_remove_approval_clears_approved_at(self):
         """Verify remove_approval() sets approved_at to None."""
-        from app.core.utils import utc_now
+        from app.core.utils import utc_now  # noqa: PLC0415
 
         snippet = Snippet(
             filename="test.sh",
@@ -891,7 +891,7 @@ class TestSnippetModel:
     @pytest.mark.asyncio
     async def test_update_from_snippet(self):
         """Verify content updates preserve approval fields."""
-        from app.core.utils import utc_now
+        from app.core.utils import utc_now  # noqa: PLC0415
 
         approved_at = utc_now()
         original = Snippet(

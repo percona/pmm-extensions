@@ -51,9 +51,8 @@ def check_mysql(host: str, port: int) -> dict[str, bool | str]:
     :param port: The database port number.
     :return: A dict with ``success`` and optionally ``error``.
     """
-    # optional-dependency: mysql
-    import myloginpath
-    import pymysql
+    import myloginpath  # noqa: PLC0415 - optional mysql driver
+    import pymysql  # noqa: PLC0415
 
     connect_kwargs = {"host": host, "port": port, "connect_timeout": CONNECT_TIMEOUT}
     with contextlib.suppress(Exception):
@@ -90,8 +89,7 @@ def check_postgresql(host: str, port: int) -> dict[str, bool | str]:
     :param port: The database port number.
     :return: A dict with ``success`` and optionally ``error``.
     """
-    # optional-dependency: postgresql
-    import psycopg2
+    import psycopg2  # noqa: PLC0415 - optional postgresql driver
 
     try:
         conn = psycopg2.connect(host=host, port=port, connect_timeout=CONNECT_TIMEOUT)
@@ -122,8 +120,7 @@ def check_mongodb(host: str, port: int) -> dict[str, bool | str]:
     :param port: The database port number.
     :return: A dict with ``success`` and optionally ``error``.
     """
-    # optional-dependency: mongodb
-    import pymongo.errors
+    import pymongo.errors  # noqa: PLC0415 - optional mongodb driver
 
     try:
         client = pymongo.MongoClient(

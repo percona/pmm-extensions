@@ -176,7 +176,7 @@ def _force_wizard(
         simulate ``Ctrl-C``.
     :return: The stub recording every prompt and confirm label asked.
     """
-    stub = _WizardStub(prompt_answers, confirm)
+    stub = _WizardStub(prompt_answers, confirm=confirm)
     monkeypatch.setattr(scaffold, "_stdin_is_tty", lambda: True)
     monkeypatch.setattr(Prompt, "ask", staticmethod(stub.ask))
     monkeypatch.setattr(Confirm, "ask", staticmethod(stub.confirm))
@@ -189,6 +189,7 @@ class _WizardStub:
     def __init__(
         self,
         prompt_answers: dict[str, object] | None,
+        *,
         confirm: bool | Callable[[str], bool],
     ) -> None:
         self._answers = {
