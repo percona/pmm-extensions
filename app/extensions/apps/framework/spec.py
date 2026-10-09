@@ -255,7 +255,7 @@ async def _resolve_ref(
 
     entity = await get_created_entity(inventory_api, entity_type, entity_id)
     if isinstance(ref, ServiceRef):
-        service = cast(CreatedService, entity)
+        service = cast("CreatedService", entity)
         if service.type not in ref.service_types:
             raise HTTPBadRequestException(
                 f"service {entity_id} has type {service.type.value!r}, which is "

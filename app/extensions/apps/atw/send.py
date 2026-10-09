@@ -714,7 +714,7 @@ async def _run_send_for_row(session: AsyncSession, row: AtwSendLog) -> None:
         await _fail(session, row, detail, [], reason)
         return
     # A resolution refuses to hold neither member, so an empty reason is a plan.
-    plan = cast(DeliveryPlan, resolution.plan)
+    plan = cast("DeliveryPlan", resolution.plan)
 
     incident = await AtwIncidentManager.get_or_404(session, id=row.incident_id)
     incident_name = incident.name
@@ -748,7 +748,7 @@ async def _run_send_for_row(session: AsyncSession, row: AtwSendLog) -> None:
             result.reference,
             result.detail,
         )
-    except Exception as exc:  # noqa: BLE001 -- every family must land terminally
+    except Exception as exc:
         logger.warning("Diagnostics send %s failed.", row.id, exc_info=True)
         await _fail(session, row, detail, records, _error_message(exc, records))
         return

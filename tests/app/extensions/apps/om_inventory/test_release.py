@@ -109,7 +109,9 @@ def stop_calls(api: MagicMock) -> list[str]:
 @pytest.fixture(autouse=True)
 def _fast_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shorten the wait so a timeout case takes a test's worth of time, not minutes."""
-    from app.extensions.apps.om_inventory.config import om_inventory_settings
+    from app.extensions.apps.om_inventory.config import (  # noqa: PLC0415
+        om_inventory_settings,
+    )
 
     monkeypatch.setattr(om_inventory_settings, "TASK_TIMEOUT", 1)
     monkeypatch.setattr(om_inventory_settings, "POLL_INTERVAL", 1)

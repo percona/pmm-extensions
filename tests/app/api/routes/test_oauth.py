@@ -41,9 +41,7 @@ def test_client():
     return TestClient(app)
 
 
-def _build_user(
-    faker: Faker, valid_username: str, *, active: bool = True
-) -> "User":  # ty: ignore[invalid-type-form]
+def _build_user(faker: Faker, valid_username: str, *, active: bool = True) -> "User":  # ty: ignore[invalid-type-form]
     """Build a ``User`` instance with a configurable active/forbidden state."""
     return User(
         id=faker.uuid4(),

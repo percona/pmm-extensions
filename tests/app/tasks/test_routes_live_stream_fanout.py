@@ -23,6 +23,7 @@ HTTP test clients buffer the whole body and so cannot time a single line.
 """
 
 import asyncio
+import gc
 import json
 import logging
 import time
@@ -122,8 +123,8 @@ def live_route_overrides(
         async with live_executor.hold():
             yield live_executor
 
-    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
-        lambda: None
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
     )
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
     tasks_app.dependency_overrides[get_session] = lambda: session
@@ -236,17 +237,28 @@ async def test_every_subscriber_receives_each_line_live(
 async def _longest_loop_gap(stop: asyncio.Event) -> float:
     """Measure the longest stretch the event loop went without running this task.
 
+    Automatic garbage collection is suspended while measuring. A full
+    collection stops every thread, so late in a suite, over a heap of millions
+    of objects, it shows up here as a gap of a second or more that no code
+    under test caused.
+
     :param stop: Set by the caller to end the measurement.
     :return: The longest gap between two consecutive wake-ups, in seconds.
     """
-    longest = 0.0
-    last = time.monotonic()
-    while not stop.is_set():
-        await asyncio.sleep(LOOP_TICK)
-        now = time.monotonic()
-        longest = max(longest, now - last)
-        last = now
-    return longest
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        longest = 0.0
+        last = time.monotonic()
+        while not stop.is_set():
+            await asyncio.sleep(LOOP_TICK)
+            now = time.monotonic()
+            longest = max(longest, now - last)
+            last = now
+        return longest
+    finally:
+        if gc_was_enabled:
+            gc.enable()
 
 
 @pytest.mark.usefixtures("live_route_overrides")

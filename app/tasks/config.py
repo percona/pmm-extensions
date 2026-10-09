@@ -218,16 +218,12 @@ class TasksSettings(BaseYamlAppSettings):
     UVICORN_PORT: int = 8002
     NOMAD: NomadExecutor = nested_overridable_field(...)
     DATABASE: DatabaseOptions = DatabaseOptions(NAME="tasks.db")
-    SECURITY_HEADERS: (
-        SecurityHeadersOptions | None
-    ) = (  # ty: ignore[invalid-assignment]
+    SECURITY_HEADERS: SecurityHeadersOptions | None = (  # ty: ignore[invalid-assignment]
         nested_overridable_field(
             SecurityHeadersOptions(content_security_policy_strict=False), advanced=True
         )
     )
-    SYNC_LOCK_TTL: Annotated[
-        timedelta, Gt(timedelta(0))
-    ] = (  # ty: ignore[invalid-assignment]
+    SYNC_LOCK_TTL: Annotated[timedelta, Gt(timedelta(0))] = (  # ty: ignore[invalid-assignment]
         hot_field(timedelta(minutes=5), advanced=True)
     )
     PRE_EXECUTION_CONNECTIVITY_CHECK: PreExecutionCheckMode = (  # ty: ignore[invalid-assignment]
@@ -239,9 +235,7 @@ class TasksSettings(BaseYamlAppSettings):
     PENDING_ALLOCATION_TIMEOUT_SECONDS: PositiveInt = (  # ty: ignore[invalid-assignment]
         hot_field(3600, advanced=True)
     )
-    LOG_RETENTION_DAYS: Annotated[
-        int, Gt(0), Le(MAX_LOG_RETENTION_DAYS)
-    ] = (  # ty: ignore[invalid-assignment]
+    LOG_RETENTION_DAYS: Annotated[int, Gt(0), Le(MAX_LOG_RETENTION_DAYS)] = (  # ty: ignore[invalid-assignment]
         hot_field(90, advanced=True)
     )
     LOG_PURGE_BATCH_SIZE: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
@@ -261,9 +255,7 @@ class TasksSettings(BaseYamlAppSettings):
     LOG_STREAM_EVICTION_MAX_ROWS: PositiveInt = (  # ty: ignore[invalid-assignment]
         hot_field(1000, advanced=True)
     )
-    HOOK_MODULE_ALLOWLIST: tuple[
-        HookModuleRoot, ...
-    ] = (  # ty: ignore[invalid-assignment]
+    HOOK_MODULE_ALLOWLIST: tuple[HookModuleRoot, ...] = (  # ty: ignore[invalid-assignment]
         not_overridable_field(("app.extensions.apps",))
     )
 

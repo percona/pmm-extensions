@@ -121,8 +121,8 @@ def admin_client_fixture(
     """Yield an admin client (Bearer gate satisfied) with the Tasks API mocked."""
     extensions_app.dependency_overrides[get_current_user] = lambda: admin_user
     extensions_app.dependency_overrides[get_session] = lambda: override_session
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None
@@ -138,8 +138,8 @@ def non_admin_client_fixture(
     """Yield a non-admin client (role gate should reject) with the Tasks API mocked."""
     extensions_app.dependency_overrides[get_current_user] = lambda: regular_user
     extensions_app.dependency_overrides[get_session] = lambda: override_session
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None

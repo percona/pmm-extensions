@@ -89,8 +89,8 @@ def admin_client(
     admin_user: CasdoorUser, session: AsyncSession
 ) -> Iterator[TestClient]:
     """Return a TestClient authenticated as an admin with the real session."""
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None
@@ -106,8 +106,8 @@ def non_admin_client(
     regular_user: CasdoorUser, session: AsyncSession
 ) -> Iterator[TestClient]:
     """Return a TestClient authenticated as a non-admin user."""
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None
@@ -123,8 +123,8 @@ def api_admin_client(
     admin_user: CasdoorUser, session: AsyncSession
 ) -> Iterator[TestClient]:
     """Return a TestClient authenticated as an admin via the JSON API auth path."""
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None
@@ -140,8 +140,8 @@ def api_non_admin_client(
     regular_user: CasdoorUser, session: AsyncSession
 ) -> Iterator[TestClient]:
     """Return a TestClient authenticated as a non-admin via the JSON API auth path."""
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None

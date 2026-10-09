@@ -240,19 +240,25 @@ def _run_response(run: ProbeRun) -> ProbeRunResponse:
 async def list_estate_hosts(
     session: SessionDep,
     pagination: PaginationDep,
-    has_service: bool | None = Query(
-        default=None,
-        description="True for hosts running a MongoDB service, False for those with "
-        "none. Omit for all of them.",
-    ),
-    failing: bool | None = Query(
-        default=None, description="Restrict to hosts that are, or are not, failing."
-    ),
-    executor: bool | None = Query(
-        default=None,
-        description="True for hosts a payload can run on, False for those with no "
-        "executor.",
-    ),
+    *,
+    has_service: Annotated[
+        bool | None,
+        Query(
+            description="True for hosts running a MongoDB service, False for those "
+            "with none. Omit for all of them.",
+        ),
+    ] = None,
+    failing: Annotated[
+        bool | None,
+        Query(description="Restrict to hosts that are, or are not, failing."),
+    ] = None,
+    executor: Annotated[
+        bool | None,
+        Query(
+            description="True for hosts a payload can run on, False for those with "
+            "no executor.",
+        ),
+    ] = None,
 ) -> PaginatedResponse[HostResponse]:
     """Return every host OM holds, each with its services.
 
@@ -336,10 +342,12 @@ async def get_estate_host(node_id: str, session: SessionDep) -> HostResponse:
 async def list_estate_services(
     session: SessionDep,
     pagination: PaginationDep,
-    node_id: str | None = Query(default=None, description="Restrict to one host."),
-    failing: bool | None = Query(
-        default=None, description="Restrict to services that are, or are not, failing."
-    ),
+    node_id: Annotated[str | None, Query(description="Restrict to one host.")] = None,
+    *,
+    failing: Annotated[
+        bool | None,
+        Query(description="Restrict to services that are, or are not, failing."),
+    ] = None,
 ) -> PaginatedResponse[ServiceResponse]:
     """Return the services OM holds, flat.
 
@@ -441,7 +449,7 @@ async def delete_estate_service(service_id: str, session: SessionDep) -> None:
 async def list_runs(
     session: SessionDep,
     # pagination-ok: bounded by `limit`, which the query applies and caps at 100.
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
     since: Annotated[
         UTCDatetime | None,
         Query(

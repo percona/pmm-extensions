@@ -300,7 +300,7 @@ def batch_execution_fields(scripts: list[SnippetScript]) -> list[AnyField]:
     """
     fields = [
         cast(
-            AnyField,
+            "AnyField",
             HostField(
                 name=EXECUTOR_HOST_FIELD_NAME,
                 label=EXECUTION_HOST_LABEL,
@@ -312,7 +312,7 @@ def batch_execution_fields(scripts: list[SnippetScript]) -> list[AnyField]:
     if optional_sudo:
         fields.append(
             cast(
-                AnyField,
+                "AnyField",
                 BoolField(
                     name=SUDO_FIELD_NAME,
                     label="Run with sudo",

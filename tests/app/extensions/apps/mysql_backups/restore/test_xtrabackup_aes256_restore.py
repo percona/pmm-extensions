@@ -28,11 +28,13 @@ just that the right argv was built.
 import ast
 import multiprocessing.pool as thread_pool
 import os
+import re
 import stat
 import subprocess
 import types
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import Self
 
 import pytest
 
@@ -118,7 +120,7 @@ class _RecordingThreadPool:
     def __init__(self, processes: int) -> None:
         self.processes = processes
 
-    def __enter__(self) -> "_RecordingThreadPool":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc: object) -> bool:
@@ -257,7 +259,7 @@ class TestAes256RoundTrip:
             extra_namespace={"XBCRYPT_BIN": fake_bin},
         )
         restore_inst.xtrabackup_aes256_keyfile = str(keyfile)
-        with pytest.raises(backup_error, match="ibdata1.xbcrypt"):
+        with pytest.raises(backup_error, match=re.escape("ibdata1.xbcrypt")):
             restore_inst.decrypt_aes(str(backup_dir))
         assert ciphertext.exists()
         assert not partial.exists()
@@ -272,7 +274,7 @@ class TestAes256RoundTrip:
             real_subprocess=False,
         )
         restore_inst.xtrabackup_aes256_keyfile = str(keyfile)
-        with pytest.raises(backup_error, match="No .xbcrypt files"):
+        with pytest.raises(backup_error, match=re.escape("No .xbcrypt files")):
             restore_inst.decrypt_aes(str(empty))
         assert calls == []
 

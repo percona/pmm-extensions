@@ -87,8 +87,8 @@ def mock_executor() -> MagicMock:
 def test_client(regular_user, mock_executor) -> Iterator[TestClient]:
     """Create an authenticated test client for the Tasks API."""
     session = AsyncMock()
-    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
-        lambda: None
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
     )
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
     tasks_app.dependency_overrides[get_session] = lambda: session

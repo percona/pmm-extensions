@@ -455,9 +455,9 @@ def test_synth_ui_default_distinct_from_model_default(
 
 def test_build_valid_create_body_wraps_multi_value_refs() -> None:
     """Wrap seeded inventory ids in lists when a ref marker declares ``multiple=True``."""
-    from app.extensions.apps.checksums.app import app as checksums_app
-    from app.extensions.apps.checksums.models import ChecksumsForm
-    from tests.app.factories import (
+    from app.extensions.apps.checksums.app import app as checksums_app  # noqa: PLC0415
+    from app.extensions.apps.checksums.models import ChecksumsForm  # noqa: PLC0415
+    from tests.app.factories import (  # noqa: PLC0415
         MOCK_CREATED_SCHEMA_ID,
         MOCK_CREATED_SERVICE_ID,
         MOCK_CREATED_TABLE_ID,
@@ -539,8 +539,10 @@ class TestBuildValidCreateBodyRecursion:
         ``host`` groups carry the inventory references, so the generator must recurse
         into the selected branch and pin each nested ref to its seeded ``MOCK_*_ID``.
         """
-        from app.extensions.apps.archives.app import app as archives_app
-        from tests.app.factories import (
+        from app.extensions.apps.archives.app import (  # noqa: PLC0415
+            app as archives_app,
+        )
+        from tests.app.factories import (  # noqa: PLC0415
             MOCK_CREATED_SCHEMA_ID,
             MOCK_CREATED_SERVICE_ID,
             MOCK_CREATED_TABLE_ID,
@@ -571,7 +573,7 @@ class TestBuildValidCreateBodyRecursion:
         branch is wasted when the caller pins the field, so a name in ``skip`` is left
         out of the map entirely while every other reference still resolves.
         """
-        from app.extensions.apps.archives.models import ArchivesCreate
+        from app.extensions.apps.archives.models import ArchivesCreate  # noqa: PLC0415
 
         full = ref_overrides(ArchivesCreate)
         assert "destination" in full
@@ -586,7 +588,9 @@ class TestBuildValidCreateBodyRecursion:
         The override must win even over an inventory-reference field the generator would
         otherwise pin to its seeded ``MOCK_*_ID`` (``service_id`` here).
         """
-        from app.extensions.apps.archives.app import app as archives_app
+        from app.extensions.apps.archives.app import (  # noqa: PLC0415
+            app as archives_app,
+        )
 
         pinned_service_id = 4242
         body = build_valid_create_body(
@@ -626,7 +630,7 @@ def run_archives_branch_probe() -> int:
         arm, :data:`_BRANCH_PROBE_MISORDERED` when a group picked a different arm, and
         :data:`_BRANCH_PROBE_BUILD_FAILED` when the body could not be built at all.
     """
-    from app.extensions.apps.archives.app import app as archives_app
+    from app.extensions.apps.archives.app import app as archives_app  # noqa: PLC0415
 
     try:
         body = build_valid_create_body(

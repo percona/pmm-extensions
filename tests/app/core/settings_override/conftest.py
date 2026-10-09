@@ -18,6 +18,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
+from typing import Self
 
 import pytest
 import pytest_asyncio
@@ -192,7 +193,7 @@ def recording_callback(fired: list[SnapshotChange]) -> RefreshCallback:
 class HangingSession:
     """Stand in for an async session whose enter hangs until cancelled."""
 
-    async def __aenter__(self) -> "HangingSession":
+    async def __aenter__(self) -> Self:
         await asyncio.Event().wait()
         return self
 

@@ -591,10 +591,10 @@ def main() -> None:
         sys.exit(0 if success else 1)
 
     except KeyboardInterrupt:
-        logging.exception("\nOperation cancelled by user")
+        pre_checks.logger.exception("\nOperation cancelled by user")
         sys.exit(1)
     except Exception:
-        logging.exception("Unexpected error occurred")
+        pre_checks.logger.exception("Unexpected error occurred")
         sys.exit(1)
     finally:
         pre_checks.close_connection()

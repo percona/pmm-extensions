@@ -450,7 +450,7 @@ def test_capabilities_omitted_stats_in_payload_defaults_false():
 
 def test_dipper_schema_stats_capability_defaults_false():
     """Dipper plugin schema must not opt into the stats card."""
-    from app.extensions.apps.dipper.schema import dipper_schema
+    from app.extensions.apps.dipper.schema import dipper_schema  # noqa: PLC0415
 
     assert dipper_schema.capabilities is not None
     assert dipper_schema.capabilities.stats is False
@@ -2024,7 +2024,7 @@ class TestRelatedApp:
         self, segment: str
     ) -> None:
         """Reject ``route_segment`` values that collide with shell routes."""
-        with pytest.raises(ValidationError, match="route_segment .+ is reserved"):
+        with pytest.raises(ValidationError, match=r"route_segment .+ is reserved"):
             RelatedApp(
                 app_key="parent/child",
                 label="Child",

@@ -309,8 +309,10 @@ async def _seed_snippets_task(
     beat_maker: async_sessionmaker, *, every: int, enabled: bool
 ) -> None:
     """Seed a ``extensions__sync_snippets`` beat row at the given interval/gating state."""
-    from sqlalchemy_celery_beat.models import IntervalSchedule as BeatInterval
-    from sqlalchemy_celery_beat.models import Period
+    from sqlalchemy_celery_beat.models import (  # noqa: PLC0415
+        IntervalSchedule as BeatInterval,
+    )
+    from sqlalchemy_celery_beat.models import Period  # noqa: PLC0415
 
     async with beat_maker() as session:
         schedule = BeatInterval(every=every, period=Period.HOURS)
@@ -331,8 +333,10 @@ async def _seed_alert_backup_task(
     beat_maker: async_sessionmaker, *, every: int, enabled: bool
 ) -> None:
     """Seed a ``extensions__backup_alert_config`` beat row at the given interval/gating."""
-    from sqlalchemy_celery_beat.models import IntervalSchedule as BeatInterval
-    from sqlalchemy_celery_beat.models import Period
+    from sqlalchemy_celery_beat.models import (  # noqa: PLC0415
+        IntervalSchedule as BeatInterval,
+    )
+    from sqlalchemy_celery_beat.models import Period  # noqa: PLC0415
 
     async with beat_maker() as session:
         schedule = BeatInterval(every=every, period=Period.HOURS)
@@ -399,7 +403,7 @@ async def test_sync_interval_override_reseeds_beat_schedule_live(
     async with beat_maker() as session:
         task = await BasePeriodicTaskManager.first(session, name=SNIPPETS_TASK)
     assert task is not None
-    from sqlalchemy_celery_beat.models import Period
+    from sqlalchemy_celery_beat.models import Period  # noqa: PLC0415
 
     assert task.schedule_model.every == OVERRIDE_EVERY_MINUTES
     assert task.schedule_model.period == Period.MINUTES
@@ -425,9 +429,9 @@ async def test_backup_interval_override_reseeds_alert_backup_beat_schedule_live(
     # emits the alerts backup schedule.
     monkeypatch.setattr(
         "app.extensions.db.seed.app_celery_module_for",
-        lambda key, *_: "app.extensions.apps.alerts.celery"
-        if key == "alerts"
-        else None,
+        lambda key, *_: (
+            "app.extensions.apps.alerts.celery" if key == "alerts" else None
+        ),
     )
     # Gated OFF so we can prove the re-seed preserves the ``enabled`` flag.
     await _seed_alert_backup_task(beat_maker, every=1, enabled=False)
@@ -466,7 +470,7 @@ async def test_backup_interval_override_reseeds_alert_backup_beat_schedule_live(
         async with beat_maker() as session:
             task = await BasePeriodicTaskManager.first(session, name=ALERT_BACKUP_TASK)
         assert task is not None
-        from sqlalchemy_celery_beat.models import Period
+        from sqlalchemy_celery_beat.models import Period  # noqa: PLC0415
 
         assert task.schedule_model.every == OVERRIDE_EVERY_MINUTES
         assert task.schedule_model.period == Period.MINUTES
@@ -569,7 +573,9 @@ async def _seed_reconciler_task(beat_maker: async_sessionmaker) -> None:
     get-or-create resolves to this same schedule row and leaves the task
     untouched -- the precondition for the no-churn assertion.
     """
-    from sqlalchemy_celery_beat.models import IntervalSchedule as BeatInterval
+    from sqlalchemy_celery_beat.models import (  # noqa: PLC0415
+        IntervalSchedule as BeatInterval,
+    )
 
     interval = extensions_settings.APP_DRAIN.reconcile_interval
     async with beat_maker() as session:
@@ -684,7 +690,7 @@ async def test_reseed_does_not_churn_unrelated_task(
     finally:
         snippets_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
 
-    from sqlalchemy_celery_beat.models import Period
+    from sqlalchemy_celery_beat.models import Period  # noqa: PLC0415
 
     async with beat_maker() as session:
         reconciler_after = await BasePeriodicTaskManager.first(
@@ -717,7 +723,7 @@ async def test_removing_sync_interval_override_reverts_beat_to_yaml_default(
     snapshot change re-fires the callback, which re-seeds ``extensions__sync_snippets``
     back to the default cadence.
     """
-    from sqlalchemy_celery_beat.models import Period
+    from sqlalchemy_celery_beat.models import Period  # noqa: PLC0415
 
     yaml_default = snippets_settings.SYNC_INTERVAL
     await _seed_snippets_task(beat_maker, every=1, enabled=True)

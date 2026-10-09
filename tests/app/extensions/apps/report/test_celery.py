@@ -42,11 +42,11 @@ class TestGenerateHealthReportCooperativeCancel:
     async def test_skips_generation_when_pmm_not_configured(self, mocker):
         """Skip report generation when PMM is not configured (``resolve_pmm_api`` -> ``None``)."""
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.report.celery.resolve_pmm_api",
             new=AsyncMock(return_value=None),
         )
         generate = mocker.patch(
-            "app.extensions.apps.report.service.generate_report",
+            "app.extensions.apps.report.celery.generate_report",
             new=AsyncMock(return_value=self._mock_report()),
         )
 
@@ -58,11 +58,11 @@ class TestGenerateHealthReportCooperativeCancel:
     async def test_stops_before_generation_on_cancel(self, mocker):
         """A cancel before generation skips report generation entirely."""
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.report.celery.resolve_pmm_api",
             new=AsyncMock(return_value=MagicMock()),
         )
         generate = mocker.patch(
-            "app.extensions.apps.report.service.generate_report",
+            "app.extensions.apps.report.celery.generate_report",
             new=AsyncMock(return_value=self._mock_report()),
         )
         mocker.patch(f"{MODULE}.should_cancel", new=AsyncMock(return_value=True))
@@ -76,21 +76,21 @@ class TestGenerateHealthReportCooperativeCancel:
         """Scheduled upload renders/uploads same report without second collection."""
         report = self._mock_report()
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.report.celery.resolve_pmm_api",
             new=AsyncMock(return_value=MagicMock()),
         )
         mock_settings = mocker.patch(f"{MODULE}.health_report_settings")
         mock_settings.is_upload_configured = True
         generate = mocker.patch(
-            "app.extensions.apps.report.service.generate_report",
+            "app.extensions.apps.report.celery.generate_report",
             new=AsyncMock(return_value=report),
         )
         generate_pdf = mocker.patch(
-            "app.extensions.apps.report.service.generate_pdf_report",
+            "app.extensions.apps.report.celery.generate_pdf_report",
             new=AsyncMock(return_value=b"%PDF-1.4"),
         )
         upload = mocker.patch(
-            "app.extensions.apps.report.service.upload_pdf_report",
+            "app.extensions.apps.report.celery.upload_pdf_report",
             new=AsyncMock(return_value={"sys_id": "abc123", "status": "uploaded"}),
         )
         mocker.patch(f"{MODULE}.should_cancel", new=AsyncMock(return_value=False))
@@ -114,21 +114,21 @@ class TestGenerateHealthReportCooperativeCancel:
     ):
         """Keep the scheduled task alive when the upload fails, logging the cause."""
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.report.celery.resolve_pmm_api",
             new=AsyncMock(return_value=MagicMock()),
         )
         mock_settings = mocker.patch(f"{MODULE}.health_report_settings")
         mock_settings.is_upload_configured = True
         mocker.patch(
-            "app.extensions.apps.report.service.generate_report",
+            "app.extensions.apps.report.celery.generate_report",
             new=AsyncMock(return_value=self._mock_report()),
         )
         mocker.patch(
-            "app.extensions.apps.report.service.generate_pdf_report",
+            "app.extensions.apps.report.celery.generate_pdf_report",
             new=AsyncMock(return_value=b"%PDF-1.4"),
         )
         mocker.patch(
-            "app.extensions.apps.report.service.upload_pdf_report",
+            "app.extensions.apps.report.celery.upload_pdf_report",
             new=AsyncMock(side_effect=failure),
         )
         mocker.patch(f"{MODULE}.should_cancel", new=AsyncMock(return_value=False))

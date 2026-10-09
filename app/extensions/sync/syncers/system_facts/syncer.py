@@ -325,7 +325,7 @@ class SystemFactsSyncer(BaseTaskSyncer):
                 f"/nodes/{created_node.id}/system-observation",
                 json=observation.model_dump(mode="json", exclude_none=True),
             )
-        except Exception:  # noqa: BLE001 - best-effort; must not block service syncs
+        except Exception:
             logger.warning(
                 "Failed to upsert host system observation for node %s",
                 created_node.id,
