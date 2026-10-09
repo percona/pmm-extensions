@@ -32,6 +32,7 @@ live until there is a second caller to justify one.
 
 import asyncio
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from typing import Any
@@ -547,18 +548,31 @@ async def enumerate_estate(
     raise AssertionError("unreachable: the loop returns or raises")
 
 
+def _probeable_hosts_per_executor(hosts: list[InventoryHost]) -> Counter[str]:
+    """Count the hosts each usable executor serves.
+
+    Two hosts can share one executor, since :func:`build_hosts` also matches by
+    address, and one dispatch then scans both.
+
+    :param hosts: The hosts in scope.
+    :return: How many hosts with a usable executor each executor serves.
+    """
+    return Counter(
+        host.executor_host for host in hosts if host.has_executor and host.executor_host
+    )
+
+
 class SweepProgress:
-    """Where a sweep reports how far it has got. This one reports nowhere."""
+    """Report how far a sweep has got; this base records nothing."""
 
-    async def started(self, hosts_total: int, hosts_probeable: int) -> None:
-        """Note how many hosts the sweep covers, once it knows.
+    async def started(self, hosts: list[InventoryHost]) -> None:
+        """Note the hosts the sweep covers, once it knows them.
 
-        :param hosts_total: Hosts in scope.
-        :param hosts_probeable: ...of which can be dispatched to.
+        :param hosts: The hosts in scope.
         """
 
     async def host_done(self, result: HostProbeResult) -> None:
-        """Note one host's scan as come back.
+        """Note one executor's scan as come back.
 
         :param result: Its outcome.
         """
@@ -568,9 +582,11 @@ class RunProgress(SweepProgress):
     """Write a running sweep's progress onto its run row as the sweep makes it.
 
     Without it the row says nothing but ``running`` until the sweep ends, tens of
-    seconds later. The count is kept here and written whole, under a lock, rather than
-    incremented in the database: every host's result comes back on this event loop,
-    so this count is the true one and the writes cannot interleave. Best-effort: a
+    seconds later. The counts are kept here and written whole, under a lock, rather
+    than incremented in the database: every result comes back on this event loop, so
+    these counts are the true ones and the writes cannot interleave. A result finishes
+    every host its executor serves, so ``hosts_finished`` counts the same hosts as
+    ``hosts_probeable`` and reaches it when the last one comes back. Best-effort: a
     write that fails is logged and the sweep carries on, since progress is for a
     reader and the outcome is the record.
 
@@ -583,36 +599,38 @@ class RunProgress(SweepProgress):
         :param run_id: The run being swept.
         """
         self._run_id = run_id
+        self._total = 0
+        self._per_executor: Counter[str] = Counter()
         self._finished = 0
         self._lock = asyncio.Lock()
 
-    async def started(self, hosts_total: int, hosts_probeable: int) -> None:
-        """Record how many hosts the sweep covers, once it knows.
+    async def started(self, hosts: list[InventoryHost]) -> None:
+        """Record how many hosts the sweep covers, and which executors serve them.
 
-        :param hosts_total: Hosts in scope.
-        :param hosts_probeable: ...of which can be dispatched to.
-        """
-        await self._write(hosts_total=hosts_total, hosts_probeable=hosts_probeable)
-
-    async def host_done(self, result: HostProbeResult) -> None:  # noqa: ARG002
-        """Count one host's scan as come back.
-
-        :param result: Its outcome, which progress does not need.
+        :param hosts: The hosts in scope.
         """
         async with self._lock:
-            self._finished += 1
-            await self._write(hosts_finished=self._finished)
+            self._total = len(hosts)
+            self._per_executor = _probeable_hosts_per_executor(hosts)
+            await self._write()
 
-    async def _write(self, **values: int) -> None:
-        """Set ``values`` on the run row, logging rather than raising on failure.
+    async def host_done(self, result: HostProbeResult) -> None:
+        """Count every host the result's executor serves as come back.
 
-        :param values: Column names and the values to store.
+        :param result: One executor's outcome.
         """
+        async with self._lock:
+            self._finished += self._per_executor[result.executor_host]
+            await self._write()
+
+    async def _write(self) -> None:
+        """Store the counts on the run row, logging rather than raising on failure."""
         try:
             async with get_async_session_maker()() as session:
                 run = await ProbeRunManager.get(session, id=self._run_id)
-                for name, value in values.items():
-                    setattr(run, name, value)
+                run.hosts_total = self._total
+                run.hosts_probeable = self._per_executor.total()
+                run.hosts_finished = self._finished
                 await ProbeRunManager.save(session, run)
         except Exception:  # noqa: BLE001 - progress must never fail the sweep
             logger.warning(
@@ -663,10 +681,7 @@ async def sweep(
         hosts = build_hosts(nodes, services, executor_states)
         if node_ids:
             hosts, services, mapped = narrow_to_scope(hosts, services, mapped, node_ids)
-        await progress.started(
-            hosts_total=len(hosts),
-            hosts_probeable=sum(1 for host in hosts if host.has_executor),
-        )
+        await progress.started(hosts)
         # Every host with an executor is dispatched to, service or no service:
         # a machine with a PMM client and no database is the one an install
         # decision is about, and it has no service to be reached through.
@@ -983,10 +998,13 @@ async def finalise(
     # Hosts as well as services, because a sweep attempts both. A host-only refresh
     # would otherwise report "0 of 0 services", which reads exactly like a run that
     # did nothing — on the one host OM most exists to describe.
+    per_executor = _probeable_hosts_per_executor(outcome.hosts)
     finished.hosts_total = len(outcome.hosts)
-    finished.hosts_probeable = sum(1 for host in outcome.hosts if host.has_executor)
+    finished.hosts_probeable = per_executor.total()
     finished.hosts_answered = len(outcome.host_documents)
-    finished.hosts_finished = len(outcome.dispatched)
+    finished.hosts_finished = sum(
+        per_executor[executor] for executor in outcome.dispatched
+    )
     finished.nodes = outcome.nodes
     return await ProbeRunManager.save(session, finished)
 

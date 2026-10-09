@@ -402,9 +402,10 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
         difference from ``hosts_total`` is the estate nothing can be run on, which is
         a fact about onboarding rather than a failure of the sweep.
     :param hosts_answered: Hosts that returned a usable record.
-    :param hosts_finished: Hosts whose scan has come back, answered or not. Counted up
-        while the sweep runs, with ``hosts_total`` and ``hosts_probeable`` written as
-        soon as the sweep knows them, so a running sweep can say how far it has got.
+    :param hosts_finished: Hosts whose scan has come back, answered or not, out of
+        ``hosts_probeable``. Counted up while the sweep runs, with ``hosts_total``
+        and ``hosts_probeable`` written as soon as the sweep knows them, so a running
+        sweep can say how far it has got.
     :param nodes: One record per host: where it was probed, how that host was
         matched, whether it answered, how long it took, and its dispatch's task
         history id — so a reader can still open the probe's raw output, which the
@@ -521,8 +522,8 @@ class ProbeCounts(BaseModel):
     :param hosts_total: Hosts in scope this sweep, service or no service.
     :param hosts_probeable: ...of which had a usable executor to dispatch to.
     :param hosts_answered: Hosts that returned a usable record.
-    :param hosts_finished: Hosts whose scan has come back, answered or not; counted up
-        while the sweep is still running.
+    :param hosts_finished: Hosts whose scan has come back, answered or not, out of
+        ``hosts_probeable``; counted up while the sweep is still running.
     """
 
     services_total: int

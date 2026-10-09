@@ -15,9 +15,10 @@
 
 """Test that a running sweep says how far it has got.
 
-The run row used to hold nothing but ``running`` until the sweep ended, so the page
-could show only a spinner for tens of seconds. ``RunProgress`` writes the hosts in
-scope as soon as they are known and counts each host's scan as it comes back.
+``RunProgress`` writes the hosts in scope onto the run row as soon as they are known,
+and counts each host as its executor's scan comes back, so the row says more than
+``running`` while a sweep is in flight. ``finalise`` settles the same count, and both
+count a host, not an executor, so the finished count reaches ``hosts_probeable``.
 """
 
 from contextlib import nullcontext
@@ -28,6 +29,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.extensions.apps.om_inventory.crud import ProbeRunManager
 from app.extensions.apps.om_inventory.dispatch import HostProbeResult
+from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.models import ProbeRun
 from app.extensions.apps.om_inventory.service import (
     finalise,
@@ -37,28 +39,69 @@ from app.extensions.apps.om_inventory.service import (
 )
 from tests.app.extensions.apps.om_inventory.conftest import host, RunSweep, SERVICE
 
+#: Hosts in scope, the executors whose scans came back, and the
+#: ``(hosts_total, hosts_probeable, hosts_finished)`` that should be stored for them.
+COUNTS = [
+    pytest.param(
+        [host("node00"), host("node01"), host("node02", orphaned=True)],
+        ["node00", "node01"],
+        (3, 2, 2),
+        id="one-host-per-executor",
+    ),
+    pytest.param(
+        [host("node00", executor="db00"), host("node01", executor="db00")],
+        ["db00"],
+        (2, 2, 2),
+        id="two-hosts-on-one-executor",
+    ),
+    pytest.param(
+        [host("node00")],
+        ["serves-no-host-in-scope"],
+        (1, 1, 0),
+        id="an-executor-serving-no-host",
+    ),
+]
+
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("hosts", "came_back", "counts"), COUNTS)
 async def test_writes_the_hosts_in_scope_and_counts_each_one_back(
     session: AsyncSession,
+    hosts: list[InventoryHost],
+    came_back: list[str],
+    counts: tuple[int, int, int],
 ) -> None:
-    """Store the totals at once, and the finished count as hosts come back."""
+    """Store the totals at once, and count every host an executor serves as it lands."""
     run = await ProbeRunManager.save(session, ProbeRun())
     progress = RunProgress(run.id)
 
     with patch(
         f"{SERVICE}.get_async_session_maker", return_value=lambda: nullcontext(session)
     ):
-        await progress.started(hosts_total=5, hosts_probeable=4)
-        await progress.host_done(HostProbeResult(executor_host="node00"))
-        await progress.host_done(HostProbeResult(executor_host="node01"))
+        await progress.started(hosts)
+        for executor in came_back:
+            await progress.host_done(HostProbeResult(executor_host=executor))
 
     stored = await ProbeRunManager.get(session, id=run.id)
-    assert (stored.hosts_total, stored.hosts_probeable, stored.hosts_finished) == (
-        5,
-        4,
-        2,
+    assert (stored.hosts_total, stored.hosts_probeable, stored.hosts_finished) == counts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("hosts", "came_back", "counts"), COUNTS)
+async def test_a_finished_sweep_settles_the_same_counts(
+    session: AsyncSession,
+    hosts: list[InventoryHost],
+    came_back: list[str],
+    counts: tuple[int, int, int],
+) -> None:
+    """Settle the counts on the hosts whose executor was dispatched to."""
+    run = await ProbeRunManager.save(session, ProbeRun())
+
+    stored = await finalise(
+        session, run.id, SweepOutcome(hosts=hosts, dispatched=set(came_back))
     )
+
+    assert (stored.hosts_total, stored.hosts_probeable, stored.hosts_finished) == counts
 
 
 @pytest.mark.asyncio
@@ -69,9 +112,7 @@ async def test_a_failed_write_does_not_fail_the_sweep(
     broken = MagicMock(side_effect=RuntimeError("database gone"))
 
     with patch(f"{SERVICE}.get_async_session_maker", return_value=broken):
-        await RunProgress(ProbeRun().id).host_done(
-            HostProbeResult(executor_host="node00")
-        )
+        await RunProgress(ProbeRun().id).started([host("node00")])
 
     assert "could not record progress" in caplog.text
 
@@ -80,7 +121,7 @@ async def test_a_failed_write_does_not_fail_the_sweep(
 async def test_the_sweep_reports_its_hosts_and_each_one_back(
     run_sweep: RunSweep,
 ) -> None:
-    """Report the totals once enumerated, and each host's result as it comes back."""
+    """Report the hosts once enumerated, and each executor's result as it lands."""
     progress = MagicMock(spec=SweepProgress)
     hosts = [host("node00"), host("node01"), host("node02", orphaned=True)]
     results = {
@@ -89,19 +130,6 @@ async def test_the_sweep_reports_its_hosts_and_each_one_back(
 
     await run_sweep([], results, hosts=hosts, progress=progress)
 
-    progress.started.assert_awaited_once_with(hosts_total=3, hosts_probeable=2)
+    progress.started.assert_awaited_once_with(hosts)
     landed = [call.args[0] for call in progress.host_done.await_args_list]
     assert landed == list(results.values())
-
-
-@pytest.mark.asyncio
-async def test_a_finished_sweep_counts_every_host_it_dispatched_to(
-    session: AsyncSession,
-) -> None:
-    """Settle the count on the hosts dispatched to, whatever progress recorded."""
-    run = await ProbeRunManager.save(session, ProbeRun())
-    dispatched = {"node00", "node01"}
-
-    stored = await finalise(session, run.id, SweepOutcome(dispatched=dispatched))
-
-    assert stored.hosts_finished == len(dispatched)

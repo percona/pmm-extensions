@@ -66,22 +66,34 @@ OBSERVED_AT = "2026-08-12T12:00:00+00:00"
 RunSweep = Callable[..., Awaitable[SweepOutcome]]
 
 
-def host(name: str, *, orphaned: bool = False) -> InventoryHost:
+def host(
+    name: str, *, executor: str | None = None, orphaned: bool = False
+) -> InventoryHost:
     """Build one enumerated host.
 
     :param name: The host's name, which is also its node id here.
+    :param executor: The executor serving it, matched by address, or ``None`` for
+        one of its own name.
     :param orphaned: Whether no executor matched it, so nothing could run there.
     :return: The host.
     """
+    if orphaned:
+        return InventoryHost(
+            node_id=name,
+            name=name,
+            address=None,
+            executor_host=None,
+            resolution=NodeResolution.ORPHANED,
+        )
     return InventoryHost(
         node_id=name,
         name=name,
         address=None,
-        executor_host=None if orphaned else name,
-        resolution=NodeResolution.ORPHANED if orphaned else NodeResolution.NAME,
-        executor_state=None
-        if orphaned
-        else ExecutorState(name, "10.0.0.1", reachable=True, driver_healthy=True),
+        executor_host=executor or name,
+        resolution=NodeResolution.ADDRESS if executor else NodeResolution.NAME,
+        executor_state=ExecutorState(
+            executor or name, "10.0.0.1", reachable=True, driver_healthy=True
+        ),
     )
 
 
