@@ -1555,6 +1555,40 @@ class TestDetectStaleSkip:
         }
         assert _detect_stale_skip(task_states) is True
 
+    def test_returns_false_when_events_not_a_list(self):
+        """Assert a non-list ``Events`` value short-circuits to ``False``."""
+        assert (
+            _detect_stale_skip({"check-staleness": {"Events": "not-a-list"}}) is False
+        )
+
+    def test_returns_false_on_non_terminated_and_missing_type(self):
+        """Assert non-``Terminated`` (including missing) ``Type`` is not a match.
+
+        The walk keeps scanning and returns ``False`` once every event has been
+        checked without a sentinel hit.
+        """
+        task_states = {
+            "check-staleness": {
+                "Events": [
+                    {"Type": "Started", "ExitCode": 75},
+                    {"ExitCode": 75},
+                ],
+            }
+        }
+        assert _detect_stale_skip(task_states) is False
+
+    def test_skips_non_dict_event_then_matches_terminated(self):
+        """Assert a non-dict event is skipped while a later sentinel still matches."""
+        task_states = {
+            "check-staleness": {
+                "Events": [
+                    "not-a-dict",
+                    {"Type": "Terminated", "ExitCode": 75},
+                ],
+            }
+        }
+        assert _detect_stale_skip(task_states) is True
+
 
 class TestGetJob:
     """Test NomadExecutor.get_job."""
@@ -7365,6 +7399,110 @@ class TestNomadTaskStatesToExecutionEvents:
         assert events[0].step == "step1"
         assert "Task received" in events[0].description
 
+    def test_skips_non_dict_state_and_non_list_events(self):
+        """Skip a non-dict task state and a task whose ``Events`` is not a list."""
+        task_states = {
+            "bad-state": "not-a-dict",
+            "bad-events": {"Events": {"Type": "Started"}},
+            "good": {
+                "Events": [
+                    {
+                        "Type": "Started",
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "ok",
+                    },
+                ],
+            },
+        }
+        events = nomad_task_states_to_execution_events(task_states)
+        assert len(events) == 1
+        assert events[0].step == "good"
+        assert events[0].event_type == "Started"
+
+    def test_skips_non_string_task_name(self):
+        """Non-string task keys are ignored rather than raised on."""
+        task_states = {
+            1: {
+                "Events": [
+                    {
+                        "Type": "Started",
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "ignored",
+                    },
+                ],
+            },
+            "step1": {
+                "Events": [
+                    {
+                        "Type": "Started",
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "kept",
+                    },
+                ],
+            },
+        }
+        events = nomad_task_states_to_execution_events(task_states)
+        assert len(events) == 1
+        assert events[0].step == "step1"
+        assert "kept" in events[0].description
+
+    def test_type_missing_coerces_to_unknown(self):
+        """A missing ``Type`` still produces an event labeled ``Unknown``."""
+        task_states = {
+            "step1": {
+                "Events": [
+                    {
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "no type field",
+                    },
+                ],
+            },
+        }
+        events = nomad_task_states_to_execution_events(task_states)
+        assert len(events) == 1
+        assert events[0].event_type == "Unknown"
+        assert "no type field" in events[0].description
+
+    def test_type_non_string_is_coerced_with_str(self):
+        """A non-string ``Type`` is kept via ``str(value)`` rather than dropped."""
+        task_states = {
+            "step1": {
+                "Events": [
+                    {
+                        "Type": 42,
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "numeric type",
+                    },
+                ],
+            },
+        }
+        events = nomad_task_states_to_execution_events(task_states)
+        assert len(events) == 1
+        assert events[0].event_type == "42"
+        assert "numeric type" in events[0].description
+
+    def test_non_numeric_time_drops_event(self):
+        """A present but non-numeric ``Time`` drops the event."""
+        task_states = {
+            "step1": {
+                "Events": [
+                    {
+                        "Type": "Started",
+                        "Time": "not-a-number",
+                        "DisplayMessage": "bad time",
+                    },
+                    {
+                        "Type": "Started",
+                        "Time": _NS_EARLY,
+                        "DisplayMessage": "kept",
+                    },
+                ],
+            },
+        }
+        events = nomad_task_states_to_execution_events(task_states)
+        assert len(events) == 1
+        assert "kept" in events[0].description
+
     def test_sorted_oldest_first_across_tasks(self):
         """Events from multiple tasks are merged and sorted by Nomad time."""
         task_states = {
@@ -7441,6 +7579,16 @@ class TestNomadTaskStatesToExecutionEvents:
         assert out[0].event_type == "Setup"
         assert "Downloading Artifacts" in out[0].description
         assert out[0].step == "step1"
+
+    def test_nomad_executor_get_events_non_dict_tracking_returns_empty(self):
+        """Non-dict tracking degrades to an empty event list."""
+        history = _build_queue_item(status=TaskHistoryStatusEnum.SUCCESS)
+        history.execution_request.tracking = "not-a-dict"  # type: ignore[assignment]
+        executor = _build_executor()
+        assert executor.get_events(history) == []
+
+        history.execution_request.tracking = None  # type: ignore[assignment]
+        assert executor.get_events(history) == []
 
     def test_prestart_artifact_download_failure_event_extracted(self):
         """Assert 'Failed Artifact Download' prestart event surfaces as ExecutionEvent."""
