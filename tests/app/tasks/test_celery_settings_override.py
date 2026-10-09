@@ -488,11 +488,11 @@ class TestCheckNomadCertExpiryWithOverride:
         assert tasks_settings.NOMAD.ssl_cafile == ca
         assert tasks_settings.NOMAD.ssl_certfile == client
 
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
 
         await celery_module._check_nomad_cert_expiry()
 

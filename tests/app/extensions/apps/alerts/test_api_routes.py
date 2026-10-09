@@ -133,6 +133,14 @@ def unauthenticated_api_client(session: AsyncSession) -> Iterator[TestClient]:
     extensions_app.dependency_overrides = {}
 
 
+def _no_pmm_present_names() -> set[str]:
+    """Report that PMM holds none of the names, as an empty-PMM override.
+
+    :return: An empty set of names.
+    """
+    return set()
+
+
 @pytest.fixture
 def mock_pmm_api(api_client: TestClient) -> AsyncMock:
     """Return a mock PMMRemoteAPI wired into dependency overrides."""
@@ -144,7 +152,7 @@ def mock_pmm_api(api_client: TestClient) -> AsyncMock:
     extensions_app.dependency_overrides[get_pmm_api] = lambda: mock
     extensions_app.dependency_overrides[get_alert_templates] = lambda: _ALERT_TEMPLATES
     extensions_app.dependency_overrides[get_or_create_alert_folder] = lambda: _FOLDER
-    extensions_app.dependency_overrides[get_pmm_present_names] = lambda: set()
+    extensions_app.dependency_overrides[get_pmm_present_names] = _no_pmm_present_names
     return mock
 
 
@@ -257,8 +265,8 @@ class TestAlertsIndexApi:
     @pytest.mark.usefixtures("_mock_pmm_unavailable")
     def test_index_degrades_when_pmm_unavailable(self, api_client):
         """Report ``pmm_connected=False`` and null PagerDuty when PMM is down."""
-        extensions_app.dependency_overrides[get_alert_templates] = (
-            lambda: _ALERT_TEMPLATES
+        extensions_app.dependency_overrides[get_alert_templates] = lambda: (
+            _ALERT_TEMPLATES
         )
 
         response = api_client.get(f"{API_BASE}/")
@@ -782,8 +790,8 @@ class TestAlertsPushApi:
     def test_push_pmm_not_configured(self, api_client):
         """Return 503 when PMM is not configured."""
         extensions_app.dependency_overrides[get_pmm_api] = lambda: None
-        extensions_app.dependency_overrides[get_alert_templates] = (
-            lambda: _ALERT_TEMPLATES
+        extensions_app.dependency_overrides[get_alert_templates] = lambda: (
+            _ALERT_TEMPLATES
         )
         extensions_app.dependency_overrides[get_or_create_alert_folder] = lambda: None
         extensions_app.dependency_overrides[get_pmm_present_names] = lambda: None

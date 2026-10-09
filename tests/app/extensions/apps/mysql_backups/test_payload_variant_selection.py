@@ -52,14 +52,14 @@ _SELECTIONS = [
 class TestVariantSelection:
     """Assert each upload selection dispatches the payload carrying its providers."""
 
-    @pytest.mark.parametrize(("upload", "expected"), _SELECTIONS, ids=lambda v: str(v))
+    @pytest.mark.parametrize(("upload", "expected"), _SELECTIONS, ids=str)
     def test_selection_picks_its_variant(
         self, upload: list[str], expected: str
     ) -> None:
         """Assert the selection resolves to the variant named for those providers."""
         assert spec_for(upload).payload.endswith(f"/{expected}")
 
-    @pytest.mark.parametrize(("upload", "expected"), _SELECTIONS, ids=lambda v: str(v))
+    @pytest.mark.parametrize(("upload", "expected"), _SELECTIONS, ids=str)
     def test_selected_variant_exists_on_disk(
         self, upload: list[str], expected: str
     ) -> None:

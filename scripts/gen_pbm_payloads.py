@@ -85,11 +85,13 @@ def render(text: str, region: str, begin_marker: str, end_marker: str) -> str:
         end = lines.index(end_marker, begin + 1)
     except ValueError as exc:
         raise ValueError("payload is missing a PBM CREDS PREAMBLE marker line") from exc
-    rebuilt = (
-        lines[:begin]
-        + [begin_marker, *region.split("\n"), end_marker]
-        + lines[end + 1 :]
-    )
+    rebuilt = [
+        *lines[:begin],
+        begin_marker,
+        *region.split("\n"),
+        end_marker,
+        *lines[end + 1 :],
+    ]
     return "\n".join(rebuilt)
 
 

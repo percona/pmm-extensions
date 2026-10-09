@@ -40,7 +40,7 @@ def _default_operator_config() -> "OperatorConfig":
 
     :return: The default operator configuration used by the anonymizer engine.
     """
-    from presidio_anonymizer import OperatorConfig
+    from presidio_anonymizer import OperatorConfig  # noqa: PLC0415
 
     return OperatorConfig("replace", {})
 
@@ -73,7 +73,9 @@ class PresidioEngineManager:
         if self._nlp_engine is None:
             with self._engine_lock:
                 if self._nlp_engine is None:
-                    from presidio_analyzer.nlp_engine import NlpEngineProvider
+                    from presidio_analyzer.nlp_engine import (  # noqa: PLC0415
+                        NlpEngineProvider,
+                    )
 
                     nlp_provider = NlpEngineProvider(
                         nlp_configuration=self._build_nlp_config()
@@ -95,7 +97,7 @@ class PresidioEngineManager:
         if self._analyzer_engine is None:
             with self._engine_lock:
                 if self._analyzer_engine is None:
-                    from presidio_analyzer import AnalyzerEngine
+                    from presidio_analyzer import AnalyzerEngine  # noqa: PLC0415
 
                     self._analyzer_engine = AnalyzerEngine(
                         nlp_engine=self.nlp_engine,
@@ -116,7 +118,7 @@ class PresidioEngineManager:
         if self._anonymizer_engine is None:
             with self._engine_lock:
                 if self._anonymizer_engine is None:
-                    from presidio_anonymizer import AnonymizerEngine
+                    from presidio_anonymizer import AnonymizerEngine  # noqa: PLC0415
 
                     self._anonymizer_engine = AnonymizerEngine()
         return self._anonymizer_engine

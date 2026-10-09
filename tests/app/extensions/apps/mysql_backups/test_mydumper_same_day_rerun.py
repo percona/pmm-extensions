@@ -791,8 +791,8 @@ class TestReclaimInterruptedPublish:
         stale.mkdir()
         (stale / "sakila.film.sql").write_text("half a dump\n")
         instance, _, _ = _dumper(tmp_path, _RECLAIM_METHODS)
-        instance._process_started_at = (
-            lambda _pid: real_time.time() + OLDER_THAN_ANY_GRACE_PERIOD
+        instance._process_started_at = lambda _pid: (
+            real_time.time() + OLDER_THAN_ANY_GRACE_PERIOD
         )
 
         instance._reclaim_interrupted_publish()
@@ -886,8 +886,8 @@ class TestReclaimInterruptedPublish:
         aside.mkdir()
         (aside / "metadata").write_text("Finished dump at: first\n")
         instance, _, _ = _dumper(tmp_path, _RECLAIM_METHODS)
-        instance._process_started_at = (
-            lambda _pid: real_time.time() + OLDER_THAN_ANY_GRACE_PERIOD
+        instance._process_started_at = lambda _pid: (
+            real_time.time() + OLDER_THAN_ANY_GRACE_PERIOD
         )
 
         instance._reclaim_interrupted_publish()
@@ -942,8 +942,8 @@ class TestReclaimInterruptedPublish:
         stale.mkdir()
         (stale / "sakila.film.sql").write_text("half a dump\n")
         instance, _, _ = _dumper(tmp_path, _RECLAIM_METHODS)
-        instance._process_started_at = (
-            lambda _pid: real_time.time() + OLDER_THAN_ANY_GRACE_PERIOD
+        instance._process_started_at = lambda _pid: (
+            real_time.time() + OLDER_THAN_ANY_GRACE_PERIOD
         )
 
         instance._reclaim_interrupted_publish()

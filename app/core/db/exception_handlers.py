@@ -60,7 +60,7 @@ async def db_capacity_exception_handler(
     :param exc: The capacity failure to report.
     :return: A JSON response carrying the service-unavailable detail.
     """
-    logger.exception("Database capacity exhausted:", exc_info=exc)
+    logger.error("Database capacity exhausted:", exc_info=exc)
     return JSONResponse(
         {"detail": _CAPACITY_UNAVAILABLE.detail},
         status_code=_CAPACITY_UNAVAILABLE.status_code,

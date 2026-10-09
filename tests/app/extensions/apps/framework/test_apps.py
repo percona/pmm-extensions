@@ -22,6 +22,7 @@ end-to-end. The create test issues a real form POST and never overrides the
 body resolution it exists to cover is genuinely executed.
 """
 
+import re
 from dataclasses import replace
 from typing import Annotated, Any, get_args
 from unittest.mock import AsyncMock
@@ -1136,12 +1137,12 @@ class TestDefinitionValidation:
 
     def test_list_suppress_without_custom_list_raises(self) -> None:
         """Assert ``list=False`` with no custom ``GET /`` in extra_routes is rejected."""
-        with pytest.raises(ValueError, match="capabilities.list"):
+        with pytest.raises(ValueError, match=re.escape("capabilities.list")):
             _synth_app(capabilities=AppCapabilities(list=False))
 
     def test_custom_list_route_with_list_enabled_raises(self) -> None:
         """Assert a custom ``GET /`` while ``list`` stays enabled is rejected as shadowed."""
-        with pytest.raises(ValueError, match="capabilities.list"):
+        with pytest.raises(ValueError, match=re.escape("capabilities.list")):
             _synth_app(extra_routes=(_custom_list_router(),))
 
     def test_list_suppress_with_custom_list_constructs(self) -> None:
@@ -1213,7 +1214,7 @@ class TestDefinitionValidation:
 
     def test_detail_suppressed_without_custom_detail_raises(self) -> None:
         """Assert ``capabilities.detail=False`` needs a custom detail extra route."""
-        with pytest.raises(ValueError, match="capabilities.detail"):
+        with pytest.raises(ValueError, match=re.escape("capabilities.detail")):
             _synth_app(capabilities=AppCapabilities(detail=False))
 
     def test_detail_enabled_with_custom_detail_route_raises(self) -> None:
@@ -1298,7 +1299,7 @@ class TestDefinitionValidation:
 
     def test_response_builder_return_type_mismatch_raises(self) -> None:
         """Reject a ``response_builder`` whose return type differs from ``response_model``."""
-        with pytest.raises(ValueError, match="_AltListResponse.*SynthResponse"):
+        with pytest.raises(ValueError, match=r"_AltListResponse.*SynthResponse"):
             _synth_app(response_builder=_alt_list_builder)
 
     def test_response_builder_matching_return_type_constructs(self) -> None:

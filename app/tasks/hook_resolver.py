@@ -78,10 +78,9 @@ def validate_hook_path(path: str, field: str = "hook path") -> str:
     :raises HookPathNotAllowedError: When the path is malformed or names a
         module outside the allow-listed namespace.
     """
-    # Deferred: app.tasks.config imports the Nomad executor, which imports
-    # app.tasks.models, which imports this module, so tasks_settings does not
-    # exist yet while that chain is still initialising.
-    from app.tasks.config import tasks_settings
+    from app.tasks.config import (  # noqa: PLC0415 - tasks.config imports nomad, whose models import tasks.models, which imports this (cycle)
+        tasks_settings,
+    )
 
     allowed = tasks_settings.HOOK_MODULE_ALLOWLIST
     module_path, _, func_name = path.partition(":")

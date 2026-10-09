@@ -117,7 +117,7 @@ async def get_dashboard_stats(
             failed.append(name)
             counts[name] = 0
         else:
-            counts[name] = cast(int, result)
+            counts[name] = cast("int", result)
 
     if failed:
         response.headers[UPSTREAM_ERROR_HEADER] = ",".join(failed)

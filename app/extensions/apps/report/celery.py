@@ -30,8 +30,17 @@ from pydantic import ValidationError
 
 from app.celery import celery
 from app.extensions.app_drain import owned_by, should_cancel
+from app.extensions.apps.report.artifact_store import purge_expired, write_artifact
 from app.extensions.apps.report.config import health_report_settings
+from app.extensions.apps.report.job_service import report_pdf_filename
+from app.extensions.apps.report.models import ReportData
+from app.extensions.apps.report.service import (
+    generate_pdf_report,
+    generate_report,
+    upload_pdf_report,
+)
 from app.extensions.bundle_upload.plan import DeliveryPlanError
+from app.extensions.deps import resolve_pmm_api
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +82,6 @@ def render_report_pdf_job(
     :return: Download filename for the staged PDF artifact.
     :rtype: dict[str, str]
     """
-    from app.extensions.apps.report.artifact_store import write_artifact
-    from app.extensions.apps.report.job_service import (
-        report_pdf_filename,
-    )
-    from app.extensions.apps.report.models import ReportData
-    from app.extensions.apps.report.service import generate_pdf_report
-
     try:
         report = ReportData.model_validate(report_json)
     except ValidationError as exc:
@@ -108,12 +110,6 @@ def upload_report_snapshot_job(
         intake error status.
     :raises DeliveryPlanError: When the rendered PDF exceeds the size cap.
     """
-    from app.extensions.apps.report.models import ReportData
-    from app.extensions.apps.report.service import (
-        generate_pdf_report,
-        upload_pdf_report,
-    )
-
     try:
         report = ReportData.model_validate(report_json)
     except ValidationError as exc:
@@ -193,13 +189,6 @@ async def _generate_health_report(
     :return: None.
     :rtype: None
     """
-    from app.extensions.apps.report.service import (
-        generate_pdf_report,
-        generate_report,
-        upload_pdf_report,
-    )
-    from app.extensions.deps import resolve_pmm_api
-
     pmm_api = await resolve_pmm_api()
     if pmm_api is None:
         logger.warning("PMM not configured, skipping health report generation")
@@ -263,8 +252,6 @@ def purge_report_artifacts() -> None:
     :return: None.
     :rtype: None
     """
-    from app.extensions.apps.report.artifact_store import purge_expired
-
     removed = purge_expired(health_report_settings.artifact_ttl)
     if removed:
         logger.info("Purged %d expired report artifact(s)", removed)

@@ -3,9 +3,9 @@ default_language_version:
   python: python3
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 871f3bcae4fe473cd7109c3a068db975dc035e3b  # 0.9.4
+    rev: f12be1ebaa5351c1fc76472de98db2c3446c8253  # v0.16.10
     hooks:
-      - id: ruff
+      - id: ruff-check
       - id: ruff-format
   - repo: https://github.com/google/addlicense
     rev: b289835c0741ba2fb92dd5f61af070e79c69a55e  # v1.2.0

@@ -32,8 +32,8 @@ def mock_tasks_api_dep(task_history_response):
     """Override the TaskAPI dependency with an AsyncMock."""
     mock = AsyncMock(spec=RemoteAPI)
     extensions_app.dependency_overrides[get_tasks_api] = lambda: mock
-    extensions_app.dependency_overrides[get_task_history] = (
-        lambda: task_history_response
+    extensions_app.dependency_overrides[get_task_history] = lambda: (
+        task_history_response
     )
     extensions_app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
         access_token="test-token"

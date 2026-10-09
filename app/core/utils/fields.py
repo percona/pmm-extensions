@@ -588,7 +588,20 @@ This annotated type validates the string as a relative path and ensures it is re
 as a string.
 """
 
-FilePathLike = Annotated[FilePath, BeforeValidator(lambda v: Path(v))]
+
+def _to_path(value: Any) -> Path:
+    """Coerce a path-like input to :class:`~pathlib.Path` before validation.
+
+    Pydantic rejects ``Path``'s own ``(*args, **kwargs)`` signature as a
+    validator, so the before-validator needs a plain function to wrap it.
+
+    :param value: The raw field input.
+    :return: The input as a ``Path``.
+    """
+    return Path(value)
+
+
+FilePathLike = Annotated[FilePath, BeforeValidator(_to_path)]
 """Define a :class:`FilePath` that accepts any :class:`os.PathLike` object as input."""
 
 DatabaseUrl = database_url_normalized_scheme_field_factory(DatabaseEngine)

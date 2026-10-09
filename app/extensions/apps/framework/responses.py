@@ -331,7 +331,7 @@ def derive_create_response_model(
     fields = dict(extra_fields or {})
     fields[CONNECTIVITY_WARNING_FIELD] = (ConnectivityWarning | None, None)
     return cast(
-        type[R],
+        "type[R]",
         create_model(name, __base__=response_model, __doc__=doc, **fields),
     )
 

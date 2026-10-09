@@ -15,6 +15,7 @@
 
 """Tests for the ``scripts/changelog.py`` CLI."""
 
+import re
 import subprocess
 
 import pytest
@@ -250,7 +251,9 @@ def test_load_rejects_unknown_project(repo):
     """
     (repo / "changelog.d" / "FOO-1.added.md").write_text("x\n", encoding="utf-8")
 
-    with pytest.raises(changelog.FragmentError, match="FOO-1.added.md") as exc:
+    with pytest.raises(
+        changelog.FragmentError, match=re.escape("FOO-1.added.md")
+    ) as exc:
         changelog.load_fragments()
 
     assert "SEP-<n>.<section>.md" in str(exc.value)
