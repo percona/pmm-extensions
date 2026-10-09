@@ -1479,7 +1479,7 @@ class TestSyncTaskHistoryChainDispatch:
         chain_on_failure: bool = False,
         sync_lock=None,
         chain_value: list[str] | None = None,
-    ) -> tuple[TaskHistory, str | None]:
+    ) -> TaskHistory:
         parent.status = TaskHistoryStatusEnum.RUNNING
         if chain_value is not None:
             parent.execution_request.meta["_chain_task_names"] = chain_value
@@ -2743,7 +2743,7 @@ CONNECTIVITY_META = {
 
 async def _fake_dispatch_queue_item(
     queue_item: TaskHistory, passed_session: AsyncSession
-) -> tuple[TaskHistory, str | None]:
+) -> TaskHistory:
     """Persist the queue item so the route's ``session.refresh`` call succeeds.
 
     :param queue_item: The ``TaskHistory`` queue item dispatched by the route.
@@ -3629,7 +3629,7 @@ class TestExecutionRequestEncryptionOverHTTP:
     _PAYLOAD = "secret document"
 
     @classmethod
-    async def _seed(cls, session, *, name: str) -> tuple[TaskHistory, str | None]:
+    async def _seed(cls, session, *, name: str) -> TaskHistory:
         """Persist a task and one history row carrying every protected leaf.
 
         :param session: The session to persist through.
