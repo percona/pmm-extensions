@@ -72,6 +72,7 @@ declare TABLE_FILTER=""
 declare OUTPUT_MODE="stdout"
 declare OUTPUT_FILE=""
 declare ERR_FILE=""
+declare CNF_OPEN=""
 
 function usage() {
     cat << EOF
@@ -197,6 +198,292 @@ function mysql_stdout() {
     return $retvalue
 }
 
+#
+# Print a config value as the literal string a shell assignment gives it
+#
+# Return 1, printing nothing, for a value that only shell evaluation could
+# complete or that goes on past the end of its line.
+#
+# Arguments:
+#   1: the text after the "="
+#
+function cnf_unquote() {
+    local raw=$1
+    local value=""
+    local rest=""
+    local char
+    local closed=0
+    local prev
+    local i
+
+    case ${raw:0:1} in
+        "'")
+            [[ $raw =~ ^\'([^\']*)\'(.*)$ ]] || return 1
+            value=${BASH_REMATCH[1]}
+            rest=${BASH_REMATCH[2]}
+            ;;
+        '"')
+            for ((i = 1; i < ${#raw}; i++)); do
+                char=${raw:i:1}
+                if [[ $char == $'\\' ]]; then
+                    char=${raw:i+1:1}
+                    [[ $char == [\"\\\$\`] ]] || value+=$'\\'
+                    value+=$char
+                    ((i++))
+                elif [[ $char == '"' ]]; then
+                    closed=1
+                    rest=${raw:i+1}
+                    break
+                elif [[ $char == [\$\`] ]]; then
+                    return 1
+                else
+                    value+=$char
+                fi
+            done
+            ((closed)) || return 1
+            ;;
+        *)
+            # The shell expands a tilde that starts an assignment value or
+            # follows an unquoted colon in it.
+            prev=":"
+            for ((i = 0; i < ${#raw}; i++)); do
+                char=${raw:i:1}
+                if [[ $char == [[:space:]] ]]; then
+                    rest=${raw:i}
+                    break
+                elif [[ $char == $'\\' ]]; then
+                    ((i == ${#raw} - 1)) && return 1
+                    value+=${raw:i+1:1}
+                    prev=""
+                    ((i++))
+                elif [[ $char == [\$\`\'\"\;\&\|\<\>\(\)] || ($char == '~' && $prev == ':') ]]; then
+                    return 1
+                else
+                    value+=$char
+                    prev=$char
+                fi
+            done
+            ;;
+    esac
+    [[ $rest =~ ^([[:space:]]+#.*|[[:space:]]*)$ ]] || return 1
+    printf '%s' "$value"
+}
+
+#
+# Update what the config lines read so far leave open for the next one: the
+# quote opened, a backslash when a line ends in a continuation, or nothing
+#
+# Globals:
+#   CNF_OPEN
+# Arguments:
+#   1: the next line
+#
+function cnf_open_quote() {
+    local line=$1
+    local open=$CNF_OPEN
+    local word_start=1
+    local q="'"
+    local in_single="^[^${q}]*${q}(.*)\$"
+    local in_double='^([^"\\]*)(.*)$'
+    local in_word="^([^\\\\${q}\"#]*)(.*)\$"
+    local plain
+
+    if [[ $open == $'\\' ]]; then
+        open=""
+        word_start=0
+    fi
+    # Jumps from one quoting character to the next: a character-by-character
+    # scan takes quadratic time on a long line.
+    while [[ -n $line ]]; do
+        case $open in
+            "'")
+                [[ $line =~ $in_single ]] || break
+                line=${BASH_REMATCH[1]}
+                open=""
+                ;;
+            '"')
+                [[ $line =~ $in_double ]]
+                line=${BASH_REMATCH[2]}
+                [[ -n $line ]] || break
+                if [[ ${line:0:1} == '"' ]]; then
+                    open=""
+                    line=${line:1}
+                else
+                    line=${line:2}
+                fi
+                ;;
+            *)
+                [[ $line =~ $in_word ]]
+                plain=${BASH_REMATCH[1]}
+                line=${BASH_REMATCH[2]}
+                [[ -n $line ]] || break
+                if [[ ${plain:${#plain}-1} == [[:space:]\;\&\|\(\)] ]]; then
+                    word_start=1
+                elif [[ -n $plain ]]; then
+                    word_start=0
+                fi
+                case ${line:0:1} in
+                    $'\\')
+                        ((${#line} == 1)) && open=$'\\'
+                        line=${line:2}
+                        ;;
+                    '#')
+                        ((word_start)) && break
+                        line=${line:1}
+                        ;;
+                    *)
+                        open=${line:0:1}
+                        line=${line:1}
+                        ;;
+                esac
+                word_start=0
+                ;;
+        esac
+    done
+    CNF_OPEN=$open
+}
+
+#
+# Set the credential global that a ProxySQL admin setting names
+#
+# Globals:
+#   USER
+#   PASSWORD
+#   HOST
+#   PORT
+# Arguments:
+#   1: the setting's name
+#   2: the value
+#
+function set_credential() {
+    case $1 in
+        PROXYSQL_USERNAME) USER=$2 ;;
+        PROXYSQL_PASSWORD) PASSWORD=$2 ;;
+        PROXYSQL_HOSTNAME) HOST=$2 ;;
+        PROXYSQL_PORT) PORT=$2 ;;
+    esac
+}
+
+#
+# Print, space-separated, the credential settings a config line assigns
+# under the shell but not as the KEY=value that opens it
+#
+# The shell assigns every word of a line made only of assignments, and the
+# declaring builtins assign theirs too, so such a line can set a credential
+# the plain KEY=value reading never sees.
+#
+# Arguments:
+#   1: the line, with any lines it continues onto joined on
+#
+function cnf_unread_credentials() {
+    local rest=$1
+    local q="'"
+    local builtin='^[[:space:]]*(export|readonly|declare|typeset)(([[:space:]]+-[A-Za-z]+)*)[[:space:]]+(.*)$'
+    local word="^([A-Za-z_][A-Za-z0-9_]*)(\\+?=)([^[:space:]${q}\"\\\\]|\\\\.|${q}[^${q}]*${q}|\"([^\"\\\\]|\\\\.)*\")*([[:space:]]+(.*))?\$"
+    local credential='^PROXYSQL_(USERNAME|PASSWORD|HOSTNAME|PORT)$'
+    local read_first=1
+    local name op
+
+    if [[ $rest =~ $builtin ]]; then
+        [[ ${BASH_REMATCH[1]} == export && -z ${BASH_REMATCH[2]} ]] || read_first=0
+        rest=${BASH_REMATCH[4]}
+    else
+        rest=${rest#"${rest%%[![:space:]]*}"}
+    fi
+    while [[ $rest =~ $word ]]; do
+        name=${BASH_REMATCH[1]}
+        op=${BASH_REMATCH[2]}
+        rest=${BASH_REMATCH[6]}
+        if [[ $name =~ $credential ]]; then
+            ((read_first)) && [[ $op == "=" ]] || printf '%s ' "$name"
+        fi
+        read_first=0
+    done
+}
+
+#
+# Set the ProxySQL admin credentials from a proxysql-admin.cnf style file
+#
+# The file is read as KEY=value text and never run: --defaults-file can name
+# any readable file, and running it would execute whatever it holds with the
+# snippet's privileges. A setting the file lacks takes its default, never a
+# same-named environment variable, so the file alone decides.
+#
+# Globals:
+#   USER
+#   PASSWORD
+#   HOST
+#   PORT
+#   CNF_OPEN
+# Arguments:
+#   1: the config file
+#
+function load_credentials() {
+    local cnf=$1
+    local q="'"
+    local assignment='^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
+    local credential='^PROXYSQL_(USERNAME|PASSWORD|HOSTNAME|PORT)$'
+    # Spares most lines the character scan, which is slow in bash.
+    local closed="^([^${q}\"\\\\]|${q}[^${q}]*${q}|\"[^\"\\\\]*\")*\$"
+    local line key raw value status
+    local logical=""
+    local continued=0
+
+    CNF_OPEN=""
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%$'\r'}
+        case $CNF_OPEN in
+            "'" | '"')
+                # A line inside a quoted value belongs to that value, however
+                # much it looks like a setting of its own.
+                cnf_open_quote "$line"
+                continue
+                ;;
+            $'\\')
+                logical=${logical%$'\\'}$line
+                continued=1
+                ;;
+            *)
+                logical=$line
+                continued=0
+                ;;
+        esac
+        if [[ -n $CNF_OPEN || ! $line =~ $closed ]]; then
+            cnf_open_quote "$line"
+        fi
+        [[ $CNF_OPEN == $'\\' || $logical != *PROXYSQL_* ]] && continue
+
+        if [[ $logical =~ $assignment ]]; then
+            key=${BASH_REMATCH[2]}
+            raw=${BASH_REMATCH[3]}
+            if [[ $key =~ $credential ]]; then
+                status=1
+                value=""
+                # Joining hides the line break, but a value that ran on past
+                # it is no plain string.
+                if ((!continued)); then
+                    value=$(cnf_unquote "$raw")
+                    status=$?
+                fi
+                # A rejected value still overrides an earlier one, as the
+                # last assignment does under the shell, and so falls back to
+                # the default.
+                set_credential "$key" "$value"
+                # Never the value: it may be the password.
+                ((status == 0)) || echo "Ignoring ${key} in ${cnf}: its value is not a plain string."
+            fi
+        fi
+        for key in $(cnf_unread_credentials "$logical"); do
+            set_credential "$key" ""
+            echo "Ignoring ${key} in ${cnf}: its line is not a plain KEY=value setting."
+        done
+    done < "$cnf"
+
+    HOST=${HOST:-127.0.0.1}
+    PORT=${PORT:-6032}
+}
+
 function parse_args() {
     local go_out=""
 
@@ -274,18 +561,12 @@ function parse_args() {
         esac
     done
 
-    if [[ ! -r $DEFAULTS_FILE ]]; then
+    if [[ ! -r $DEFAULTS_FILE || -d $DEFAULTS_FILE ]]; then
         echo "Cannot find or read the config file (check --defaults-file): $DEFAULTS_FILE."
         exit 1
     fi
 
-    # Load credentials from config file
-    # shellcheck disable=SC1090
-    source "$DEFAULTS_FILE"
-    USER=${PROXYSQL_USERNAME:-}
-    PASSWORD=${PROXYSQL_PASSWORD:-}
-    HOST=${PROXYSQL_HOSTNAME:-127.0.0.1}
-    PORT=${PROXYSQL_PORT:-6032}
+    load_credentials "$DEFAULTS_FILE"
 
     # Validate output mode
     if [[ $OUTPUT_MODE != "stdout" && $OUTPUT_MODE != "file" ]]; then
