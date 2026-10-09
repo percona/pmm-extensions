@@ -94,7 +94,39 @@ PID_FILE_PATH = "/var/run/mongod.pid"
 EXTRA_MONGOD_DIRS = ("/usr/local/bin", "/opt/*/bin")
 
 #: How many lines of ``mongod``'s journal :func:`_mongod_diagnostics` prints.
-JOURNAL_TAIL_LINES = 20
+JOURNAL_TAIL_LINES = 5
+
+#: The awk program :func:`_mongod_diagnostics` reads ``mongod``'s JSON log with.
+#: Each line becomes ``msg: error``, cut to 200 characters, and the last three
+#: with severity ``E`` or ``F`` are printed, or the last three lines when none has.
+#: ``error`` is the line's ``errmsg`` string field, else its ``error``, else its
+#: ``reason``, which is where mongod says ``Address already in use`` or
+#: ``DBPathInUse``; a line without ``msg`` is only cut. POSIX awk, so mawk on
+#: Ubuntu and gawk on Rocky run it alike.
+_MONGOD_LOG_AWK = r"""
+function field(line, key,   at) {
+  at = index(line, "\"" key "\":\"")
+  if (!at) return ""
+  line = substr(line, at + length(key) + 4)
+  match(line, /^([^"\\]|\\.)*/)
+  return substr(line, 1, RLENGTH)
+}
+function brief(line,   msg, why) {
+  msg = field(line, "msg")
+  if (msg == "") return substr(line, 1, 200)
+  why = field(line, "errmsg")
+  if (why == "") why = field(line, "error")
+  if (why == "") why = field(line, "reason")
+  if (why != "") msg = msg ": " why
+  return substr(msg, 1, 200)
+}
+{ seen[NR] = brief($0) }
+/"s":"[EF]"/ { errors[++n] = seen[NR] }
+END {
+  if (n) { for (i = (n > 3 ? n - 2 : 1); i <= n; i++) print errors[i] }
+  else { for (i = (NR > 3 ? NR - 2 : 1); i <= NR; i++) print seen[i] }
+}
+"""
 
 #: Minimum free space at ``spec.data_path`` ``pre_check`` requires, in bytes.
 #: 5 GiB — generous for phase-1's single-member/three-member replica sets, not a
@@ -250,9 +282,10 @@ def _port_free_check(port: int) -> str:
     ``ss``, or whose ``ss`` refuses the arguments, falls back to the kernel's own
     tables, ``/proc/net/tcp`` and ``tcp6``, where the port is the hex after the
     local address's colon and state ``0A`` is ``LISTEN``; the holder is then the
-    process with a descriptor on that socket's inode, when ``find`` can see one.
-    Either way a listener on any address counts: one that overlaps ``bindIp`` at
-    all still fails mongod's start.
+    process with a descriptor on that socket's inode, when ``find`` can see one,
+    named by its pid and by its command while that can still be read. Either way
+    a listener on any address counts: one that overlaps ``bindIp`` at all still
+    fails mongod's start.
 
     :param port: The port the new ``mongod`` will listen on.
     :return: The shell lines.
@@ -279,7 +312,8 @@ def _port_free_check(port: int) -> str:
             ' -lname "socket:\\[$inode\\]" 2>/dev/null | head -n 1)',
             "    pid=${fd#/proc/}; pid=${pid%%/*}",
             '    if [ -n "$pid" ]; then',
-            '      held="pid $pid, $(cat "/proc/$pid/comm" 2>/dev/null)"',
+            '      comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)',
+            '      held="pid $pid${comm:+, $comm}"',
             "    else",
             '      held="held by an unknown process"',
             "    fi",
@@ -299,12 +333,13 @@ def _mongod_diagnostics(spec: BootstrapSpec) -> str:
     A failed ``systemctl restart`` says only "see journalctl", and a failed
     ``ping`` only that nothing answered; the reason (``Address already in use``, a
     data directory it cannot lock) stays on the node unless the step prints it.
-    Only stderr leaves the node, and only its end survives into the step's detail
-    (:data:`~app.extensions.apps.shared.om.task_failure.MAX_ERROR_DETAIL`), so the
-    most specific part goes last: the unit's journal first, then the error and
-    fatal entries near the end of mongod's own log - severity ``E``/``F`` in its
-    JSON log lines. A log with none of those prints its last few lines instead, so
-    the step still says something.
+    Only stderr leaves the node, and only its last
+    :data:`~app.extensions.apps.shared.om.task_failure.MAX_ERROR_DETAIL`
+    characters reach the step's detail, so the output is kept short and the most
+    specific part goes last: the unit's last :data:`JOURNAL_TAIL_LINES` journal
+    messages, without their timestamp and host, then the end of mongod's own log
+    as :data:`_MONGOD_LOG_AWK` shortens it - its last error and fatal entries,
+    each down to its message and error, or its last lines when it has none.
 
     No part can fail the step: it is already failing, and the exit code that says
     so is the command's, not this function's.
@@ -318,16 +353,11 @@ def _mongod_diagnostics(spec: BootstrapSpec) -> str:
             "om_mongod_why() {",
             '  echo "mongod did not come up; its journal and log say:" >&2',
             "  if command -v journalctl >/dev/null 2>&1; then",
-            f"    journalctl -u mongod --no-pager -n {JOURNAL_TAIL_LINES} >&2 || true",
+            "    journalctl -u mongod --no-pager -o cat"
+            f" -n {JOURNAL_TAIL_LINES} >&2 || true",
             "  fi",
             f"  if [ -r {log} ]; then",
-            f'    errors=$(tail -n 200 {log} | grep -E \'"s":"[EF]"\' | tail -n 3)'
-            " || true",
-            '    if [ -n "$errors" ]; then',
-            "      printf '%s\\n' \"$errors\" >&2",
-            "    else",
-            f"      tail -n 5 {log} >&2 || true",
-            "    fi",
+            f"    tail -n 200 {log} | awk {shlex.quote(_MONGOD_LOG_AWK)} >&2 || true",
             "  fi",
             "}",
         ]
