@@ -39,6 +39,7 @@ from app.extensions.apps.om_inventory.models import (
     OmService,
     ProbeRun,
     ProbeRunStatus,
+    ScanFailure,
 )
 
 
@@ -124,6 +125,7 @@ def _apply_attempt(
     observed: dict[str, Any] | None,
     error: str | None,
     run_id: UUID | None,
+    error_code: ScanFailure | None = None,
 ) -> None:
     """Fold one attempt's outcome into an entity's freshness columns.
 
@@ -147,6 +149,7 @@ def _apply_attempt(
     :param observed: The collected document on success; ``None`` on failure.
     :param error: The failure detail; ``None`` on success.
     :param run_id: The run this attempt belongs to.
+    :param error_code: What kind of failure it is; ``None`` on success.
     """
     now = utc_now()
     entity.last_attempt_at = now
@@ -159,11 +162,13 @@ def _apply_attempt(
         entity.failing_since = None
         entity.consecutive_failures = 0
         entity.last_error = None
+        entity.last_error_code = None
         return
 
     entity.failing_since = entity.failing_since or now
     entity.consecutive_failures += 1
     entity.last_error = error
+    entity.last_error_code = error_code
 
 
 async def upsert_host(
@@ -176,6 +181,7 @@ async def upsert_host(
     observed: dict[str, Any] | None = None,
     executor: dict[str, Any] | None = None,
     error: str | None = None,
+    error_code: ScanFailure | None = None,
     run_id: UUID | None = None,
     attempted: bool = True,
 ) -> OmHost:
@@ -203,6 +209,7 @@ async def upsert_host(
         anything — and the hosts it cannot run anything on are exactly the ones whose
         document would otherwise be empty with no explanation for it.
     :param error: The failure detail.
+    :param error_code: What kind of failure it is.
     :param run_id: The run this attempt belongs to.
     :param attempted: Whether this run actually probed the host.
     :return: The stored row.
@@ -225,7 +232,13 @@ async def upsert_host(
     host.updated_at = utc_now()
 
     if attempted:
-        _apply_attempt(host, observed=observed, error=error, run_id=run_id)
+        _apply_attempt(
+            host,
+            observed=observed,
+            error=error,
+            run_id=run_id,
+            error_code=error_code,
+        )
 
     # After the attempt, not before: a successful probe replaces ``observed``
     # wholesale, which would drop these on exactly the hosts that did answer.
@@ -244,6 +257,7 @@ async def upsert_service(
     role: str | None,
     observed: dict[str, Any] | None = None,
     error: str | None = None,
+    error_code: ScanFailure | None = None,
     process_facts: dict[str, Any] | None = None,
     run_id: UUID | None = None,
     attempted: bool = True,
@@ -272,6 +286,7 @@ async def upsert_service(
     :param role: The observed role, or ``None`` when this attempt did not see one.
     :param observed: The collected document, or ``None`` when the attempt failed.
     :param error: The failure detail.
+    :param error_code: What kind of failure it is.
     :param process_facts: What a failed attempt refreshes: its probe status and what
         it saw of the binary and the process, merged into the stored ``observed``. A
         ``None`` value removes that key. Ignored while nothing is stored, since there
@@ -295,7 +310,13 @@ async def upsert_service(
         service.role = role
 
     if attempted:
-        _apply_attempt(service, observed=observed, error=error, run_id=run_id)
+        _apply_attempt(
+            service,
+            observed=observed,
+            error=error,
+            run_id=run_id,
+            error_code=error_code,
+        )
 
     if process_facts is not None and service.observed:
         merged = {**service.observed, **process_facts}
