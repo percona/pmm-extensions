@@ -44,10 +44,13 @@ from app.extensions.apps.om_bootstrap.strategy import (
     StepStatus,
 )
 from app.extensions.apps.shared.om.task_failure import MAX_ERROR_DETAIL
-from app.tasks.execution.executors.nomad.models import _failed_step_reason
 from tests.app.extensions.apps.om_bootstrap.factories import BootstrapRunFactory
 
 TASK_HISTORY_ID = 99
+
+#: The reason the executor writes for ``run-script`` exiting 123, word for word;
+#: the executor's own tests pin that it writes this sentence.
+XARGS_REASON = "Step 'run-script' failed (exit code 123)."
 
 
 def _tasks_api(
@@ -88,28 +91,6 @@ def _log_line(stream: str, msg: str, step: str = "run-script") -> str:
     :return: The NDJSON line.
     """
     return json.dumps({"step": step, "type": stream, "msg": msg})
-
-
-def _xargs_reason() -> str:
-    """Return the reason the executor writes for ``run-script`` exiting 123.
-
-    Built by the executor's own function, so the rewrite in ``reconcile`` is
-    tested against the sentence it really receives.
-
-    :return: The reason.
-    """
-    reason = _failed_step_reason(
-        {
-            "TaskStates": {
-                "run-script": {
-                    "Failed": True,
-                    "Events": [{"Type": "Terminated", "ExitCode": 123}],
-                }
-            }
-        }
-    )
-    assert reason is not None
-    return reason
 
 
 class TestReconcileStep:
@@ -215,7 +196,7 @@ class TestReconcileStep:
             name="pre_check", status=StepStatus.RUNNING, task_history_id=TASK_HISTORY_ID
         )
         api = _tasks_api(
-            "failed", failure_reason=_xargs_reason(), logs=[_log_line(stream, msg)]
+            "failed", failure_reason=XARGS_REASON, logs=[_log_line(stream, msg)]
         )
 
         result = await reconcile.reconcile_step(api, step)
@@ -229,7 +210,7 @@ class TestReconcileStep:
         step = StepRecord(
             name="pre_check", status=StepStatus.RUNNING, task_history_id=TASK_HISTORY_ID
         )
-        api = _tasks_api("failed", failure_reason=_xargs_reason())
+        api = _tasks_api("failed", failure_reason=XARGS_REASON)
 
         result = await reconcile.reconcile_step(api, step)
 
@@ -271,7 +252,7 @@ class TestReconcileStep:
         error = '"errmsg":"Address already in use"'
         api = _tasks_api(
             "failed",
-            failure_reason=_xargs_reason(),
+            failure_reason=XARGS_REASON,
             logs=[_log_line("stderr", noise + error + "\n")],
         )
 
@@ -358,6 +339,29 @@ class TestReconcileStep:
         )
         tasks_api = AsyncMock()
         tasks_api.get.return_value = payload
+
+        with pytest.raises(HTTPBadGatewayException):
+            await reconcile.reconcile_step(tasks_api, step)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure_reason", [3, ["Step 'run-script' failed."]])
+    async def test_a_failed_history_with_a_non_string_reason_raises(
+        self, failure_reason: int | list[str]
+    ) -> None:
+        """Reject a ``failure_reason`` that is neither a string nor null.
+
+        :param failure_reason: The malformed reason.
+        """
+        step = StepRecord(
+            name="install_package",
+            status=StepStatus.RUNNING,
+            task_history_id=TASK_HISTORY_ID,
+        )
+        tasks_api = AsyncMock()
+        tasks_api.get.return_value = {
+            "status": "failed",
+            "failure_reason": failure_reason,
+        }
 
         with pytest.raises(HTTPBadGatewayException):
             await reconcile.reconcile_step(tasks_api, step)

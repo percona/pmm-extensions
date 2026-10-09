@@ -43,10 +43,8 @@ receipt, not a claim of exact timing.
 
 ``detail`` on a non-``SUCCESS`` terminal status says why, in the node's own
 words: the ``TaskHistory``'s ``failure_reason`` and the end of the failed step's
-output, read the same way ``om_inventory`` reads a failed scan's
-(:mod:`~app.extensions.apps.shared.om.task_failure`). The status alone said
-"ended failed" for a full disk, an unreachable repository and a taken port alike,
-and PMM shows ``detail`` to the operator as it is. Reading the logs is bounded by
+output, read with :mod:`~app.extensions.apps.shared.om.task_failure`. PMM shows
+``detail`` to the operator as it is. Reading the logs is bounded by
 :data:`LOG_READ_TIMEOUT_S` and best-effort: a step whose logs cannot be read still
 fails, with the reason alone, rather than staying ``running`` until they can.
 
@@ -54,9 +52,10 @@ A Tasks API read that fails does not fail the reconcile: a ``404``/``410`` means
 the step's ``TaskHistory`` record is gone and it can never finish, so the step
 is recorded ``failed``; any other failure (an upstream error, a transport error,
 a timeout) is transient, so the step stays ``running`` and the next poll tries
-again. A readable answer that is not a ``TaskHistory`` — not a JSON object, or
-without a string ``status`` — is a ``502``, as it would otherwise leave the step
-looking in flight forever.
+again. A readable answer that is not a ``TaskHistory`` is a ``502``: one that is
+not a JSON object or has no string ``status`` would otherwise leave the step
+looking in flight forever, and a failed one whose ``failure_reason`` is neither a
+string nor ``null`` would lose its reason unseen.
 """
 
 import asyncio
@@ -144,8 +143,9 @@ async def reconcile_step(tasks_api: RemoteAPI, step: StepRecord) -> StepRecord:
         dispatch's terminal status, or ``failed`` when its ``TaskHistory``
         record no longer exists.
     :raises HTTPBadGatewayException: When the Tasks API answers with something
-        that is not a ``TaskHistory`` — not a JSON object, or without a string
-        ``status``.
+        that is not a ``TaskHistory``: not a JSON object, without a string
+        ``status``, or failed with a ``failure_reason`` that is neither a string
+        nor ``null``.
     """
     if step.status != StepStatus.RUNNING or step.task_history_id is None:
         return step
@@ -180,11 +180,13 @@ async def reconcile_step(tasks_api: RemoteAPI, step: StepRecord) -> StepRecord:
             update={"status": StepStatus.SUCCEEDED, "finished_at": utc_now()}
         )
     failure_reason = as_json_object(payload).get("failure_reason")
+    if failure_reason is not None and not isinstance(failure_reason, str):
+        raise HTTPBadGatewayException(
+            detail=f"Task history {step.task_history_id} has a non-string "
+            "failure_reason"
+        )
     detail = await _failure_detail(
-        tasks_api,
-        step.task_history_id,
-        task_status,
-        failure_reason if isinstance(failure_reason, str) else None,
+        tasks_api, step.task_history_id, task_status, failure_reason
     )
     return step.model_copy(
         update={"status": StepStatus.FAILED, "finished_at": utc_now(), "detail": detail}
