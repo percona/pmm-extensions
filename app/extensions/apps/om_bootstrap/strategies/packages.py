@@ -294,22 +294,30 @@ def _port_free_check(port: int) -> str:
         [
             f"port={port}",
             "held=''",
-            "if command -v ss >/dev/null 2>&1 &&"
-            ' listeners=$(ss -Hltnp "sport = :$port" 2>/dev/null); then',
+            (
+                "if command -v ss >/dev/null 2>&1 &&"
+                ' listeners=$(ss -Hltnp "sport = :$port" 2>/dev/null); then'
+            ),
             '  if [ -n "$listeners" ]; then',
-            f"    held=$(printf '%s\\n' \"$listeners\" | sed -n '{_SS_HOLDER_SED}'"
-            " | head -n 1)",
+            (
+                f"    held=$(printf '%s\\n' \"$listeners\" | sed -n '{_SS_HOLDER_SED}'"
+                " | head -n 1)"
+            ),
             '    [ -n "$held" ] || held="held by an unknown process"',
             "  fi",
             "else",
             "  hex=$(printf '%04X' \"$port\")",
             "  for table in /proc/net/tcp /proc/net/tcp6; do",
             '    [ -r "$table" ] || continue',
-            '    inode=$(awk -v p=":$hex"'
-            ' \'$2 ~ (p "$") && $4 == "0A" { print $10; exit }\' "$table")',
+            (
+                '    inode=$(awk -v p=":$hex"'
+                ' \'$2 ~ (p "$") && $4 == "0A" { print $10; exit }\' "$table")'
+            ),
             '    [ -n "$inode" ] || continue',
-            "    fd=$(find /proc/[0-9]*/fd -maxdepth 1"
-            ' -lname "socket:\\[$inode\\]" 2>/dev/null | head -n 1)',
+            (
+                "    fd=$(find /proc/[0-9]*/fd -maxdepth 1"
+                ' -lname "socket:\\[$inode\\]" 2>/dev/null | head -n 1)'
+            ),
             "    pid=${fd#/proc/}; pid=${pid%%/*}",
             '    if [ -n "$pid" ]; then',
             '      comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)',
@@ -353,8 +361,10 @@ def _mongod_diagnostics(spec: BootstrapSpec) -> str:
             "om_mongod_why() {",
             '  echo "mongod did not come up; its journal and log say:" >&2',
             "  if command -v journalctl >/dev/null 2>&1; then",
-            "    journalctl -u mongod --no-pager -o cat"
-            f" -n {JOURNAL_TAIL_LINES} >&2 || true",
+            (
+                "    journalctl -u mongod --no-pager -o cat"
+                f" -n {JOURNAL_TAIL_LINES} >&2 || true"
+            ),
             "  fi",
             f"  if [ -r {log} ]; then",
             f"    tail -n 200 {log} | awk {shlex.quote(_MONGOD_LOG_AWK)} >&2 || true",
@@ -684,24 +694,34 @@ class PackagesInstallStrategy:
         data_path = shlex.quote(spec.data_path)
         body = "\n".join(
             [
-                f"command -v {pkg_manager} >/dev/null 2>&1 || "
-                f'{{ echo "pre_check: {pkg_manager} not found" >&2; exit 1; }}',
+                (
+                    f"command -v {pkg_manager} >/dev/null 2>&1 || "
+                    f'{{ echo "pre_check: {pkg_manager} not found" >&2; exit 1; }}'
+                ),
                 _existing_mongod_check(),
-                f"if [ -e {CONFIG_PATH} ]; then "
-                f'echo "pre_check: {CONFIG_PATH} already exists" >&2; exit 1; fi',
-                f'if [ -d {data_path} ] && [ -n "$(ls -A {data_path})" ]; then '
-                f'echo "pre_check: "{data_path}" is not empty" >&2; exit 1; fi',
+                (
+                    f"if [ -e {CONFIG_PATH} ]; then "
+                    f'echo "pre_check: {CONFIG_PATH} already exists" >&2; exit 1; fi'
+                ),
+                (
+                    f'if [ -d {data_path} ] && [ -n "$(ls -A {data_path})" ]; then '
+                    f'echo "pre_check: "{data_path}" is not empty" >&2; exit 1; fi'
+                ),
                 f"target={data_path}",
                 'while [ ! -d "$target" ]; do target="$(dirname "$target")"; done',
                 'avail=$(df --output=avail -B1 "$target" | tail -1)',
-                "case \"$avail\" in ''|*[!0-9]*) "
-                'echo "pre_check: could not measure free space at $target" >&2; '
-                "exit 1;; esac",
+                (
+                    "case \"$avail\" in ''|*[!0-9]*) "
+                    'echo "pre_check: could not measure free space at $target" >&2; '
+                    "exit 1;; esac"
+                ),
                 f"tenths=$((avail * 10 / {GIB}))",
-                f'if [ "$avail" -lt {MIN_DATA_DISK_BYTES} ]; then '
-                f'echo "pre_check: the data directory "{data_path}" needs at least '
-                f"{MIN_DATA_DISK_BYTES // GIB} GiB free, but $target has "
-                '$((tenths / 10)).$((tenths % 10)) GiB" >&2; exit 1; fi',
+                (
+                    f'if [ "$avail" -lt {MIN_DATA_DISK_BYTES} ]; then '
+                    f'echo "pre_check: the data directory "{data_path}" needs at least '
+                    f"{MIN_DATA_DISK_BYTES // GIB} GiB free, but $target has "
+                    '$((tenths / 10)).$((tenths % 10)) GiB" >&2; exit 1; fi'
+                ),
                 _port_free_check(spec.port),
             ]
         )
@@ -1258,9 +1278,11 @@ class PackagesInstallStrategy:
             remove = "\n".join(
                 [
                     "apt-get remove -y --purge percona-server-mongodb || true",
-                    "unused=$(apt-get -s autoremove 2>/dev/null"
-                    f" | awk -v re={shlex.quote(_PSMDB_PACKAGES_ERE)}"
-                    ' \'($1 == "Remv" || $1 == "Purg") && $2 ~ re { print $2 }\')',
+                    (
+                        "unused=$(apt-get -s autoremove 2>/dev/null"
+                        f" | awk -v re={shlex.quote(_PSMDB_PACKAGES_ERE)}"
+                        ' \'($1 == "Remv" || $1 == "Purg") && $2 ~ re { print $2 }\')'
+                    ),
                     '[ -z "$unused" ] || apt-get remove -y --purge $unused || true',
                 ]
             )

@@ -1371,26 +1371,36 @@ _LISTENER_ERROR = (
 #: What a failed start leaves in mongod's log around :data:`_LISTENER_ERROR`:
 #: long informational entries on either side of it.
 _LISTENER_FAILURE_LOG = [
-    '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"I",  "c":"CONTROL",  '
-    '"id":4615611, "ctx":"initandlisten","msg":"MongoDB starting","attr":{'
-    '"pid":812,"port":27017,"dbPath":"/var/lib/mongo","architecture":"64-bit",'
-    '"host":"node00"}}',
-    '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"I",  "c":"CONTROL",  '
-    '"id":21951,   "ctx":"initandlisten","msg":"Options set by command line",'
-    '"attr":{"options":{"config":"/etc/mongod.conf","net":{"bindIp":'
-    '"127.0.0.1,10.0.0.5","port":27017},"processManagement":{"fork":true,'
-    '"pidFilePath":"/var/run/mongod.pid"},"replication":{"replSetName":"rs0"},'
-    '"storage":{"dbPath":"/var/lib/mongo"},"systemLog":{"destination":"file",'
-    '"logAppend":true,"path":"/var/log/mongo/mongod.log"}}}}',
+    (
+        '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"I",  "c":"CONTROL",  '
+        '"id":4615611, "ctx":"initandlisten","msg":"MongoDB starting","attr":{'
+        '"pid":812,"port":27017,"dbPath":"/var/lib/mongo","architecture":"64-bit",'
+        '"host":"node00"}}'
+    ),
+    (
+        '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"I",  "c":"CONTROL",  '
+        '"id":21951,   "ctx":"initandlisten","msg":"Options set by command line",'
+        '"attr":{"options":{"config":"/etc/mongod.conf","net":{"bindIp":'
+        '"127.0.0.1,10.0.0.5","port":27017},"processManagement":{"fork":true,'
+        '"pidFilePath":"/var/run/mongod.pid"},"replication":{"replSetName":"rs0"},'
+        '"storage":{"dbPath":"/var/lib/mongo"},"systemLog":{"destination":"file",'
+        '"logAppend":true,"path":"/var/log/mongo/mongod.log"}}}}'
+    ),
     _LISTENER_ERROR,
-    '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"I",  "c":"REPL",     '
-    '"id":4784900, "ctx":"initandlisten","msg":"Stepping down the '
-    'ReplicationCoordinator for shutdown","attr":{"waitTimeMillis":15000}}',
-    '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"I",  "c":"CONTROL",  '
-    '"id":20565,   "ctx":"initandlisten","msg":"Now exiting"}',
-    '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"I",  "c":"CONTROL",  '
-    '"id":23138,   "ctx":"initandlisten","msg":"Shutting down",'
-    '"attr":{"exitCode":48}}',
+    (
+        '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"I",  "c":"REPL",     '
+        '"id":4784900, "ctx":"initandlisten","msg":"Stepping down the '
+        'ReplicationCoordinator for shutdown","attr":{"waitTimeMillis":15000}}'
+    ),
+    (
+        '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"I",  "c":"CONTROL",  '
+        '"id":20565,   "ctx":"initandlisten","msg":"Now exiting"}'
+    ),
+    (
+        '{"t":{"$date":"2026-10-07T10:00:00.000+00:00"},"s":"I",  "c":"CONTROL",  '
+        '"id":23138,   "ctx":"initandlisten","msg":"Shutting down",'
+        '"attr":{"exitCode":48}}'
+    ),
 ]
 
 #: The unit's journal after a restart that failed, oldest first, as
@@ -1680,9 +1690,11 @@ class TestRollbackCommands:
         assert (tmp_path / "calls.log").read_text().splitlines() == [
             "apt-get remove -y --purge percona-server-mongodb",
             "apt-get -s autoremove",
-            "apt-get remove -y --purge percona-server-mongodb-mongos"
-            " percona-server-mongodb-server percona-telemetry-agent"
-            " percona-mongodb-mongosh percona-server-mongodb-tools",
+            (
+                "apt-get remove -y --purge percona-server-mongodb-mongos"
+                " percona-server-mongodb-server percona-telemetry-agent"
+                " percona-mongodb-mongosh percona-server-mongodb-tools"
+            ),
         ]
 
 

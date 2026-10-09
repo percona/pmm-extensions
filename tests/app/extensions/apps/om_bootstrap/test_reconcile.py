@@ -163,19 +163,27 @@ class TestReconcileStep:
         [
             (
                 "stderr",
-                "pre_check: /var/lib/mongo has 1.0 GiB free, but the data "
-                "directory /var/lib/mongo needs at least 5 GiB\n",
-                "pre_check: /var/lib/mongo has 1.0 GiB free, but the data "
-                "directory /var/lib/mongo needs at least 5 GiB",
+                (
+                    "pre_check: /var/lib/mongo has 1.0 GiB free, but the data "
+                    "directory /var/lib/mongo needs at least 5 GiB\n"
+                ),
+                (
+                    "pre_check: /var/lib/mongo has 1.0 GiB free, but the data "
+                    "directory /var/lib/mongo needs at least 5 GiB"
+                ),
             ),
             (
                 "stderr",
-                "Curl error (7): Couldn't connect to server for "
-                "http://repo.percona.com/ [Failed to connect: Connection refused]\n"
-                "Error: Failed to download metadata for repo: All mirrors were tried\n",
-                "Curl error (7): Couldn't connect to server for "
-                "http://repo.percona.com/ [Failed to connect: Connection refused]\n"
-                "Error: Failed to download metadata for repo: All mirrors were tried",
+                (
+                    "Curl error (7): Couldn't connect to server for "
+                    "http://repo.percona.com/ [Failed to connect: Connection refused]\n"
+                    "Error: Failed to download metadata for repo: All mirrors were tried\n"
+                ),
+                (
+                    "Curl error (7): Couldn't connect to server for "
+                    "http://repo.percona.com/ [Failed to connect: Connection refused]\n"
+                    "Error: Failed to download metadata for repo: All mirrors were tried"
+                ),
             ),
         ],
     )
