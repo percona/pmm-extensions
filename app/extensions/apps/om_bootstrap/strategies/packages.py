@@ -86,6 +86,15 @@ PID_FILE_PATH = "/var/run/mongod.pid"
 #: listens.
 MONGOD_READY_WAIT_S = 60
 
+#: How long one readiness ping may run, in seconds. mongosh's socket timeout
+#: defaults to none, so a mongod that accepts the connection but stalls on the
+#: command would otherwise hold the ping until the step's own timeout kills it.
+MONGOD_PING_TIMEOUT_S = 10
+
+#: How long ``enable_auth`` allows for writing the config and ``systemctl restart
+#: mongod``, in seconds, on top of the readiness wait that follows them.
+MONGOD_RESTART_ALLOWANCE_S = 60
+
 #: Minimum free space at ``spec.data_path`` ``pre_check`` requires, in bytes.
 #: 5 GiB — generous for phase-1's single-member/three-member replica sets, not a
 #: sized-for-production figure.
@@ -219,7 +228,7 @@ def _mongod_config(spec: BootstrapSpec, host: str, *, with_auth: bool) -> str:
     )
 
 
-def _mongosh_eval_command(js: str, port: int) -> str:
+def _mongosh_eval_command(js: str, port: int, *, timeout_s: int | None = None) -> str:
     """Build one ``mongosh --quiet --eval`` shell fragment.
 
     For JS that carries no secret only: ``--eval``'s argument is visible in
@@ -238,11 +247,15 @@ def _mongosh_eval_command(js: str, port: int) -> str:
 
     :param js: The JavaScript to evaluate.
     :param port: The port mongod listens on.
+    :param timeout_s: Kill mongosh after this many seconds, through coreutils
+        ``timeout``, which then exits 124 with nothing printed. ``None`` leaves
+        mongosh to the step's own timeout.
     :return: The shell fragment, not yet wrapped in a :class:`StepAction`.
     """
+    bound = "" if timeout_s is None else f"timeout {timeout_s} "
     return (
         "MONGOSH_DISABLE_ATLAS_LOCAL_DEV_CLUSTER_CHECK=1 "
-        f"mongosh --quiet --port {port} --eval {shlex.quote(js)}"
+        f"{bound}mongosh --quiet --port {port} --eval {shlex.quote(js)}"
     )
 
 
@@ -251,27 +264,47 @@ def _wait_for_mongod_command(port: int) -> str:
 
     The pings in the loop are silent; one more after it decides the fragment's exit
     code, so a mongod that never answers fails with mongosh's own error rather than
-    a bare timeout. The wait is measured in seconds, not attempts, because each
-    mongosh start takes about as long as the sleep between them.
+    with the wait just running out. Each ping is killed after
+    :data:`MONGOD_PING_TIMEOUT_S`, and a final ping killed that way says so, since
+    mongosh prints nothing then. The wait is measured in seconds, not attempts,
+    because each mongosh start takes about as long as the sleep between them.
 
     :param port: The port mongod listens on.
     :return: The fragment, braced so it can be chained with ``&&`` as one command.
     """
-    ping = _mongosh_eval_command("db.adminCommand('ping').ok", port)
+    ping = _mongosh_eval_command(
+        "db.adminCommand('ping').ok", port, timeout_s=MONGOD_PING_TIMEOUT_S
+    )
+    timed_out = (
+        f"ping to mongod on port {port} timed out after {MONGOD_PING_TIMEOUT_S}s"
+    )
     return (
         f"{{ deadline=$(( $(date +%s) + {MONGOD_READY_WAIT_S} )); "
         f'while [ "$(date +%s)" -lt "$deadline" ] && ! {ping} >/dev/null 2>&1; '
-        f"do sleep 1; done; {ping}; }}"
+        f'do sleep 1; done; {ping} || {{ ping_rc=$?; [ "$ping_rc" -ne 124 ] '
+        f"|| echo '{timed_out}' >&2; (exit \"$ping_rc\"); }}; }}"
     )
+
+
+def _wait_for_mongod_max_s() -> int:
+    """Return how long :func:`_wait_for_mongod_command`'s fragment can run, at most.
+
+    The loop's last ping can start just before the deadline and be followed by a
+    sleep and the final ping, so the fragment can outlast
+    :data:`MONGOD_READY_WAIT_S` by two pings and a second.
+
+    :return: The bound in seconds, for a step's timeout to outlast.
+    """
+    return MONGOD_READY_WAIT_S + 2 * MONGOD_PING_TIMEOUT_S + 1
 
 
 def _mongosh_eval(js: str, port: int) -> StepAction:
     """Build a ``StepAction`` running one ``mongosh --quiet --eval`` command.
 
-    Its only caller, ``rs_initiate``, runs before authorization is ever enabled
-    (see :meth:`PackagesInstallStrategy._configure_mongod`'s own docstring), so
-    it works unauthenticated on the member it runs on and this never has to
-    route around MongoDB's localhost exception. ``enable_auth``
+    Every caller runs before authorization is ever enabled (see
+    :meth:`PackagesInstallStrategy._configure_mongod`'s own docstring), so the
+    command works unauthenticated on the member it runs on and this never has
+    to route around MongoDB's localhost exception. ``enable_auth``
     (:meth:`PackagesInstallStrategy._enable_auth`) is what turns authorization
     on afterward, once ``create_pmm_monitoring_user`` has created the first
     user.
@@ -609,15 +642,15 @@ class PackagesInstallStrategy:
 
         Sets ``processManagement.fork``/``pidFilePath`` for the same reason:
         PSMDB 7.0's packaged ``mongod.service`` is ``Type=forking``, so systemd
-        waits for mongod itself to daemonize and write :data:`PID_FILE_PATH`. Without
-        ``fork: true`` mongod runs in the foreground indefinitely — confirmed
-        against a real run where mongod started and stayed healthy, but systemd's
-        default 90s ``TimeoutStartSec`` elapsed waiting for a fork that was never
-        coming and killed it, so ``verify`` found nothing listening on 27017 a
-        step later, again after ``start_service`` had already reported success.
-        8.0's unit sets ``MONGODB_CONFIG_OVERRIDE_NOFORK=1``, which overrides
-        ``fork`` back to false, and runs mongod in the foreground, so both
-        settings are inert there.
+        waits for mongod itself to daemonize and write :data:`PID_FILE_PATH`.
+        Without ``fork: true`` mongod runs in the foreground indefinitely —
+        confirmed against a real run where mongod started and stayed healthy,
+        but systemd's default 90s ``TimeoutStartSec`` elapsed waiting for a fork
+        that was never coming and killed it, so ``verify`` found nothing
+        listening on 27017 a step later, again after ``start_service`` had
+        already reported success. 8.0's unit sets ``fork`` back to false with
+        ``MONGODB_CONFIG_OVERRIDE_NOFORK=1`` and runs mongod in the foreground,
+        so both settings are inert there.
 
         ``systemLog.path`` is required alongside ``fork: true`` — mongod refuses
         to start at all otherwise (``BadValue: --fork has to be used with
@@ -632,14 +665,14 @@ class PackagesInstallStrategy:
         this one had until a real bootstrap run against a bare host (no
         pre-existing ``/var/log/mongo``, unlike the sandbox's own database
         topology images) confirmed it the same way: mongod's control process
-        exits immediately (``Can't initialize rotatable log file :: caused by
-        :: Failed to open <path>``) if the directory the configured log path
-        names does not already exist, and ``start_service`` again reports
-        success regardless, for the same reason. The
-        package's own post-install cannot be assumed to have created it: it
-        defaults to a directory (``/var/log/mongo`` on both Ubuntu and Rocky)
-        that only matches ``spec.log_path`` by coincidence, and the wizard's
-        own default (``/var/log/mongodb/mongod.log``) does not.
+        exits immediately (``Can't initialize rotatable log file :: caused by ::
+        Failed to open <path>``) if the directory the configured log path names
+        does not already exist, and ``start_service`` again reports success
+        regardless, for the same reason. The package's own post-install cannot
+        be assumed to have created it: it defaults to a directory
+        (``/var/log/mongo`` on both Ubuntu and Rocky) that only matches
+        ``spec.log_path`` by coincidence, and the wizard's own default
+        (``/var/log/mongodb/mongod.log``) does not.
 
         :param spec: The host's bootstrap spec.
         :param host: The host being configured, which decides its ``bindIp``.
@@ -691,7 +724,7 @@ class PackagesInstallStrategy:
         :return: The step action.
         """
         return _shell_step(
-            _wait_for_mongod_command(spec.port), timeout_s=MONGOD_READY_WAIT_S + 30
+            _wait_for_mongod_command(spec.port), timeout_s=_wait_for_mongod_max_s() + 30
         )
 
     def _require_package_manager(self, os_: OperatingSystem) -> str:
@@ -924,7 +957,9 @@ class PackagesInstallStrategy:
             f"cat > {CONFIG_PATH} <<'MONGOD_CONF' && systemctl restart mongod "
             f"&& {_wait_for_mongod_command(spec.port)}\n{config}MONGOD_CONF\n"
         )
-        return _shell_step(command, timeout_s=120)
+        return _shell_step(
+            command, timeout_s=MONGOD_RESTART_ALLOWANCE_S + _wait_for_mongod_max_s()
+        )
 
     def plan_rollback_steps(self, spec: BootstrapSpec) -> list[str]:  # noqa: ARG002
         """Return this strategy's fixed per-host rollback step names.
