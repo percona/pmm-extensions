@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_371d9cf23249de3a_config_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -148,7 +148,7 @@
     <p class="run"><span class="n"><a id="t64" href="#t64">64</a></span><span class="t">    <span class="nam">light_css</span> <span class="op">=</span> <span class="nam">light_formatter</span><span class="op">.</span><span class="nam">get_style_defs</span><span class="op">(</span><span class="nam">light_prefix</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t65" href="#t65">65</a></span><span class="t">    <span class="nam">dark_css</span> <span class="op">=</span> <span class="nam">dark_formatter</span><span class="op">.</span><span class="nam">get_style_defs</span><span class="op">(</span><span class="nam">dark_prefix</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t66" href="#t66">66</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t67" href="#t67">67</a></span><span class="t">    <span class="key">return</span> <span class="nam">Markup</span><span class="op">(</span><span class="fst">f&quot;</span><span class="op">{</span><span class="nam">light_css</span><span class="op">}</span><span class="fst">\n</span><span class="op">{</span><span class="nam">dark_css</span><span class="op">}</span><span class="fst">&quot;</span><span class="op">)</span>  <span class="com"># nosec B704</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t67" href="#t67">67</a></span><span class="t">    <span class="key">return</span> <span class="nam">Markup</span><span class="op">(</span><span class="fst">f&quot;</span><span class="op">{</span><span class="nam">light_css</span><span class="op">}</span><span class="fst">\n</span><span class="op">{</span><span class="nam">dark_css</span><span class="op">}</span><span class="fst">&quot;</span><span class="op">)</span>  <span class="com"># noqa: S704 # nosec B704</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t68" href="#t68">68</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t69" href="#t69">69</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t70" href="#t70">70</a></span><span class="t"><span class="key">def</span> <span class="nam">syntax_highlight</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
@@ -224,7 +224,7 @@
     <p class="mis show_mis"><span class="n"><a id="t140" href="#t140">140</a></span><span class="t">    <span class="key">return</span> <span class="fst">f&quot;</span><span class="op">{</span><span class="nam">num_bytes</span><span class="op">:</span><span class="fst">.1f</span><span class="op">}</span><span class="fst">YiB</span><span class="fst">&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t141" href="#t141">141</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t142" href="#t142">142</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t143" href="#t143">143</a></span><span class="t"><span class="key">def</span> <span class="nam">timestamp_format</span><span class="op">(</span><span class="nam">epoch_seconds</span><span class="op">:</span> <span class="nam">int</span> <span class="op">|</span> <span class="nam">float</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">str</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t143" href="#t143">143</a></span><span class="t"><span class="key">def</span> <span class="nam">timestamp_format</span><span class="op">(</span><span class="nam">epoch_seconds</span><span class="op">:</span> <span class="nam">float</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">str</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t144" href="#t144">144</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Format a Unix timestamp (seconds) as a human-readable UTC date string.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t145" href="#t145">145</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t146" href="#t146">146</a></span><span class="t"><span class="str">    :param epoch_seconds: Seconds since epoch.</span>&nbsp;</span><span class="r"></span></p>
@@ -257,7 +257,7 @@
     <p class="run"><span class="n"><a id="t173" href="#t173">173</a></span><span class="t">    <span class="key">return</span> <span class="nam">str</span><span class="op">(</span><span class="nam">value</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t174" href="#t174">174</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t175" href="#t175">175</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t176" href="#t176">176</a></span><span class="t"><span class="key">def</span> <span class="nam">convert_bytes</span><span class="op">(</span><span class="nam">value</span><span class="op">:</span> <span class="nam">str</span> <span class="op">|</span> <span class="nam">int</span> <span class="op">|</span> <span class="nam">float</span><span class="op">,</span> <span class="nam">unit</span><span class="op">:</span> <span class="nam">str</span> <span class="op">=</span> <span class="str">&quot;G&quot;</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">str</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t176" href="#t176">176</a></span><span class="t"><span class="key">def</span> <span class="nam">convert_bytes</span><span class="op">(</span><span class="nam">value</span><span class="op">:</span> <span class="nam">str</span> <span class="op">|</span> <span class="nam">float</span><span class="op">,</span> <span class="nam">unit</span><span class="op">:</span> <span class="nam">str</span> <span class="op">=</span> <span class="str">&quot;G&quot;</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">str</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t177" href="#t177">177</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Convert a byte count (given as a string) to a human-readable size.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t178" href="#t178">178</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t179" href="#t179">179</a></span><span class="t"><span class="str">    :param value: Byte count as a string, int, or float.</span>&nbsp;</span><span class="r"></span></p>
@@ -294,7 +294,7 @@
             <a class="nav" href="z_371d9cf23249de3a_config_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
     </div>
 </footer>

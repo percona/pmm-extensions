@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_ed3adf5d80bb8926_provider_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -275,9 +275,9 @@
     <p class="pln"><span class="n"><a id="t191" href="#t191">191</a></span><span class="t"><span class="str">    :return: The active provider, which is a ``GrafanaSDK`` while Grafana is the</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t192" href="#t192">192</a></span><span class="t"><span class="str">        selected provider.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t193" href="#t193">193</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t194" href="#t194">194</a></span><span class="t">    <span class="com"># lazy import: auth/config.py imports this module via the provider bundle, so</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t195" href="#t195">195</a></span><span class="t">    <span class="com"># a module-level import here would cycle</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t196" href="#t196">196</a></span><span class="t">    <span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">auth</span><span class="op">.</span><span class="nam">config</span> <span class="key">import</span> <span class="nam">get_active_auth_provider</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t194" href="#t194">194</a></span><span class="t">    <span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">auth</span><span class="op">.</span><span class="nam">config</span> <span class="key">import</span> <span class="op">(</span>  <span class="com"># noqa: PLC0415 - auth.config imports this module via the provider bundle (cycle)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t195" href="#t195">195</a></span><span class="t">        <span class="nam">get_active_auth_provider</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t196" href="#t196">196</a></span><span class="t">    <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t197" href="#t197">197</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t198" href="#t198">198</a></span><span class="t">    <span class="key">return</span> <span class="nam">cast</span><span class="op">(</span><span class="str">&quot;GrafanaSDK&quot;</span><span class="op">,</span> <span class="nam">get_active_auth_provider</span><span class="op">(</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t199" href="#t199">199</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
@@ -884,7 +884,7 @@
             <a class="nav" href="z_ed3adf5d80bb8926_provider_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
     </div>
 </footer>

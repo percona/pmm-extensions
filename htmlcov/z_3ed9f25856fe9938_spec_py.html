@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_3ed9f25856fe9938_views_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -135,7 +135,7 @@
     <p class="run"><span class="n"><a id="t51" href="#t51">51</a></span><span class="t"><span class="nam">_REQUIREMENTS</span> <span class="op">=</span> <span class="str">&quot;PyMySQL[rsa,ed25519]\nfilelock\nPyYAML&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t52" href="#t52">52</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t53" href="#t53">53</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t54" href="#t54">54</a></span><span class="t"><span class="key">def</span> <span class="nam">_flag_to_int</span><span class="op">(</span><span class="nam">value</span><span class="op">:</span> <span class="nam">bool</span> <span class="op">|</span> <span class="key">None</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">int</span> <span class="op">|</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t54" href="#t54">54</a></span><span class="t"><span class="key">def</span> <span class="nam">_flag_to_int</span><span class="op">(</span><span class="op">*</span><span class="op">,</span> <span class="nam">value</span><span class="op">:</span> <span class="nam">bool</span> <span class="op">|</span> <span class="key">None</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">int</span> <span class="op">|</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t55" href="#t55">55</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Map a tri-state flag to the integer the archiver config expects.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t56" href="#t56">56</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t57" href="#t57">57</a></span><span class="t"><span class="str">    :param value: ``True`` / ``False`` / ``None`` from a checkbox field.</span>&nbsp;</span><span class="r"></span></p>
@@ -229,9 +229,9 @@
     <p class="run run2"><span class="n"><a id="t145" href="#t145">145</a></span><span class="t">        <span class="str">&quot;extra_args&quot;</span><span class="op">:</span> <span class="nam">form</span><span class="op">.</span><span class="nam">extra_args</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t146" href="#t146">146</a></span><span class="t">        <span class="str">&quot;limit&quot;</span><span class="op">:</span> <span class="nam">form</span><span class="op">.</span><span class="nam">limit</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t147" href="#t147">147</a></span><span class="t">        <span class="str">&quot;sleep&quot;</span><span class="op">:</span> <span class="nam">form</span><span class="op">.</span><span class="nam">sleep</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t148" href="#t148">148</a></span><span class="t">        <span class="str">&quot;disable_binlog&quot;</span><span class="op">:</span> <span class="nam">_flag_to_int</span><span class="op">(</span><span class="nam">form</span><span class="op">.</span><span class="nam">disable_binlog</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t149" href="#t149">149</a></span><span class="t">        <span class="str">&quot;disable_bulk_insert&quot;</span><span class="op">:</span> <span class="nam">_flag_to_int</span><span class="op">(</span><span class="nam">form</span><span class="op">.</span><span class="nam">disable_bulk_insert</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t150" href="#t150">150</a></span><span class="t">        <span class="str">&quot;delete_data&quot;</span><span class="op">:</span> <span class="nam">_flag_to_int</span><span class="op">(</span><span class="nam">form</span><span class="op">.</span><span class="nam">delete_data</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t148" href="#t148">148</a></span><span class="t">        <span class="str">&quot;disable_binlog&quot;</span><span class="op">:</span> <span class="nam">_flag_to_int</span><span class="op">(</span><span class="nam">value</span><span class="op">=</span><span class="nam">form</span><span class="op">.</span><span class="nam">disable_binlog</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t149" href="#t149">149</a></span><span class="t">        <span class="str">&quot;disable_bulk_insert&quot;</span><span class="op">:</span> <span class="nam">_flag_to_int</span><span class="op">(</span><span class="nam">value</span><span class="op">=</span><span class="nam">form</span><span class="op">.</span><span class="nam">disable_bulk_insert</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t150" href="#t150">150</a></span><span class="t">        <span class="str">&quot;delete_data&quot;</span><span class="op">:</span> <span class="nam">_flag_to_int</span><span class="op">(</span><span class="nam">value</span><span class="op">=</span><span class="nam">form</span><span class="op">.</span><span class="nam">delete_data</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t151" href="#t151">151</a></span><span class="t">    <span class="op">}</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t152" href="#t152">152</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t153" href="#t153">153</a></span><span class="t">    <span class="nam">source</span> <span class="op">=</span> <span class="nam">form</span><span class="op">.</span><span class="nam">source</span>&nbsp;</span><span class="r"></span></p>
@@ -289,7 +289,7 @@
             <a class="nav" href="z_3ed9f25856fe9938_views_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
     </div>
 </footer>

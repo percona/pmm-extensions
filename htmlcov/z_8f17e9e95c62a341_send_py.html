@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_c28c1bfdf50aeebf_api_routes_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -798,7 +798,7 @@
     <p class="run"><span class="n"><a id="t714" href="#t714">714</a></span><span class="t">        <span class="key">await</span> <span class="nam">_fail</span><span class="op">(</span><span class="nam">session</span><span class="op">,</span> <span class="nam">row</span><span class="op">,</span> <span class="nam">detail</span><span class="op">,</span> <span class="op">[</span><span class="op">]</span><span class="op">,</span> <span class="nam">reason</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t715" href="#t715">715</a></span><span class="t">        <span class="key">return</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t716" href="#t716">716</a></span><span class="t">    <span class="com"># A resolution refuses to hold neither member, so an empty reason is a plan.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t717" href="#t717">717</a></span><span class="t">    <span class="nam">plan</span> <span class="op">=</span> <span class="nam">cast</span><span class="op">(</span><span class="nam">DeliveryPlan</span><span class="op">,</span> <span class="nam">resolution</span><span class="op">.</span><span class="nam">plan</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t717" href="#t717">717</a></span><span class="t">    <span class="nam">plan</span> <span class="op">=</span> <span class="nam">cast</span><span class="op">(</span><span class="str">&quot;DeliveryPlan&quot;</span><span class="op">,</span> <span class="nam">resolution</span><span class="op">.</span><span class="nam">plan</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t718" href="#t718">718</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t719" href="#t719">719</a></span><span class="t">    <span class="nam">incident</span> <span class="op">=</span> <span class="key">await</span> <span class="nam">AtwIncidentManager</span><span class="op">.</span><span class="nam">get_or_404</span><span class="op">(</span><span class="nam">session</span><span class="op">,</span> <span class="nam">id</span><span class="op">=</span><span class="nam">row</span><span class="op">.</span><span class="nam">incident_id</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t720" href="#t720">720</a></span><span class="t">    <span class="nam">incident_name</span> <span class="op">=</span> <span class="nam">incident</span><span class="op">.</span><span class="nam">name</span>&nbsp;</span><span class="r"></span></p>
@@ -832,7 +832,7 @@
     <p class="run run2"><span class="n"><a id="t748" href="#t748">748</a></span><span class="t">            <span class="nam">result</span><span class="op">.</span><span class="nam">reference</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t749" href="#t749">749</a></span><span class="t">            <span class="nam">result</span><span class="op">.</span><span class="nam">detail</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t750" href="#t750">750</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t751" href="#t751">751</a></span><span class="t">    <span class="key">except</span> <span class="nam">Exception</span> <span class="key">as</span> <span class="nam">exc</span><span class="op">:</span>  <span class="com"># noqa: BLE001 -- every family must land terminally</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t751" href="#t751">751</a></span><span class="t">    <span class="key">except</span> <span class="nam">Exception</span> <span class="key">as</span> <span class="nam">exc</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t752" href="#t752">752</a></span><span class="t">        <span class="nam">logger</span><span class="op">.</span><span class="nam">warning</span><span class="op">(</span><span class="str">&quot;Diagnostics send %s failed.&quot;</span><span class="op">,</span> <span class="nam">row</span><span class="op">.</span><span class="nam">id</span><span class="op">,</span> <span class="nam">exc_info</span><span class="op">=</span><span class="key">True</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t753" href="#t753">753</a></span><span class="t">        <span class="key">await</span> <span class="nam">_fail</span><span class="op">(</span><span class="nam">session</span><span class="op">,</span> <span class="nam">row</span><span class="op">,</span> <span class="nam">detail</span><span class="op">,</span> <span class="nam">records</span><span class="op">,</span> <span class="nam">_error_message</span><span class="op">(</span><span class="nam">exc</span><span class="op">,</span> <span class="nam">records</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t754" href="#t754">754</a></span><span class="t">        <span class="key">return</span>&nbsp;</span><span class="r"></span></p>
@@ -1021,7 +1021,7 @@
             <a class="nav" href="z_c28c1bfdf50aeebf_api_routes_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
     </div>
 </footer>

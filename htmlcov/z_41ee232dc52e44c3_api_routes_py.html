@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_41ee232dc52e44c3_app_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -117,7 +117,7 @@
     <p class="run"><span class="n"><a id="t33" href="#t33">33</a></span><span class="t"><span class="key">import</span> <span class="nam">json</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t34" href="#t34">34</a></span><span class="t"><span class="key">import</span> <span class="nam">logging</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t35" href="#t35">35</a></span><span class="t"><span class="key">from</span> <span class="nam">pathlib</span> <span class="key">import</span> <span class="nam">Path</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t36" href="#t36">36</a></span><span class="t"><span class="key">from</span> <span class="nam">typing</span> <span class="key">import</span> <span class="nam">Any</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t36" href="#t36">36</a></span><span class="t"><span class="key">from</span> <span class="nam">typing</span> <span class="key">import</span> <span class="nam">Annotated</span><span class="op">,</span> <span class="nam">Any</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t37" href="#t37">37</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t38" href="#t38">38</a></span><span class="t"><span class="key">from</span> <span class="nam">fastapi</span> <span class="key">import</span> <span class="nam">APIRouter</span><span class="op">,</span> <span class="nam">Query</span><span class="op">,</span> <span class="nam">status</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t39" href="#t39">39</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
@@ -391,7 +391,7 @@
     <p class="run"><span class="n"><a id="t307" href="#t307">307</a></span><span class="t"><span class="key">async</span> <span class="key">def</span> <span class="nam">topology_result</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t308" href="#t308">308</a></span><span class="t">    <span class="nam">tasks_api</span><span class="op">:</span> <span class="nam">TaskAPI</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t309" href="#t309">309</a></span><span class="t">    <span class="nam">current_user</span><span class="op">:</span> <span class="nam">ApiCurrentUser</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t310" href="#t310">310</a></span><span class="t">    <span class="nam">ids</span><span class="op">:</span> <span class="nam">str</span> <span class="op">=</span> <span class="nam">Query</span><span class="op">(</span><span class="op">...</span><span class="op">,</span> <span class="nam">description</span><span class="op">=</span><span class="str">&quot;Comma-separated task history ids&quot;</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t310" href="#t310">310</a></span><span class="t">    <span class="nam">ids</span><span class="op">:</span> <span class="nam">Annotated</span><span class="op">[</span><span class="nam">str</span><span class="op">,</span> <span class="nam">Query</span><span class="op">(</span><span class="nam">description</span><span class="op">=</span><span class="str">&quot;Comma-separated task history ids&quot;</span><span class="op">)</span><span class="op">]</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t311" href="#t311">311</a></span><span class="t"><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">TopologyResultResponse</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t312" href="#t312">312</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Return the merged graph for the supplied task history ids.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t313" href="#t313">313</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
@@ -436,7 +436,7 @@
             <a class="nav" href="z_41ee232dc52e44c3_app_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
     </div>
 </footer>

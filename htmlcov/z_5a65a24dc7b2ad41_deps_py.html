@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_5a65a24dc7b2ad41_inventory_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -451,9 +451,9 @@
     <p class="pln"><span class="n"><a id="t367" href="#t367">367</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t368" href="#t368">368</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t369" href="#t369">369</a></span><span class="t">    <span class="key">async</span> <span class="key">def</span> <span class="nam">_gate</span><span class="op">(</span><span class="nam">session</span><span class="op">:</span> <span class="nam">SessionDep</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t370" href="#t370">370</a></span><span class="t">        <span class="com"># Deferred: the framework package __init__ imports back into this module,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t371" href="#t371">371</a></span><span class="t">        <span class="com"># so a top-level import here would cycle.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t372" href="#t372">372</a></span><span class="t">        <span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">extensions</span><span class="op">.</span><span class="nam">apps</span><span class="op">.</span><span class="nam">framework</span><span class="op">.</span><span class="nam">registry</span> <span class="key">import</span> <span class="nam">get_app_registry</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t370" href="#t370">370</a></span><span class="t">        <span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">extensions</span><span class="op">.</span><span class="nam">apps</span><span class="op">.</span><span class="nam">framework</span><span class="op">.</span><span class="nam">registry</span> <span class="key">import</span> <span class="op">(</span>  <span class="com"># noqa: PLC0415 - framework&#x27;s __init__ imports this (cycle)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t371" href="#t371">371</a></span><span class="t">            <span class="nam">get_app_registry</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t372" href="#t372">372</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t373" href="#t373">373</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t374" href="#t374">374</a></span><span class="t">        <span class="key">try</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t375" href="#t375">375</a></span><span class="t">            <span class="nam">states</span> <span class="op">=</span> <span class="key">await</span> <span class="nam">AppStateManager</span><span class="op">.</span><span class="nam">all_lifecycle_states</span><span class="op">(</span><span class="nam">session</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
@@ -485,9 +485,9 @@
     <p class="run"><span class="n"><a id="t401" href="#t401">401</a></span><span class="t">        <span class="key">raise</span> <span class="nam">HTTPConflictException</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t402" href="#t402">402</a></span><span class="t">            <span class="nam">detail</span><span class="op">=</span><span class="fst">f&quot;</span><span class="fst">App &#x27;</span><span class="op">{</span><span class="nam">app_key</span><span class="op">}</span><span class="fst">&#x27; is protected and cannot be disabled.</span><span class="fst">&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t403" href="#t403">403</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t404" href="#t404">404</a></span><span class="t">    <span class="com"># Deferred: the framework package __init__ imports back into this module,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t405" href="#t405">405</a></span><span class="t">    <span class="com"># so a top-level import here would cycle.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t406" href="#t406">406</a></span><span class="t">    <span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">extensions</span><span class="op">.</span><span class="nam">apps</span><span class="op">.</span><span class="nam">framework</span><span class="op">.</span><span class="nam">registry</span> <span class="key">import</span> <span class="nam">get_app_registry</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t404" href="#t404">404</a></span><span class="t">    <span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">extensions</span><span class="op">.</span><span class="nam">apps</span><span class="op">.</span><span class="nam">framework</span><span class="op">.</span><span class="nam">registry</span> <span class="key">import</span> <span class="op">(</span>  <span class="com"># noqa: PLC0415 - framework&#x27;s __init__ imports this (cycle)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t405" href="#t405">405</a></span><span class="t">        <span class="nam">get_app_registry</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t406" href="#t406">406</a></span><span class="t">    <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t407" href="#t407">407</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t408" href="#t408">408</a></span><span class="t">    <span class="nam">app</span> <span class="op">=</span> <span class="nam">get_app_registry</span><span class="op">(</span><span class="op">)</span><span class="op">.</span><span class="nam">get</span><span class="op">(</span><span class="nam">app_key</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t409" href="#t409">409</a></span><span class="t">    <span class="key">if</span> <span class="nam">app</span> <span class="key">is</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
@@ -1222,7 +1222,7 @@
             <a class="nav" href="z_5a65a24dc7b2ad41_inventory_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-10-08 17:44 +0000
+            created at 2026-10-09 16:55 +0000
         </p>
     </div>
 </footer>
