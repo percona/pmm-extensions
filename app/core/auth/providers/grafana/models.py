@@ -191,9 +191,9 @@ def _active_grafana_sdk() -> GrafanaSDK:
     :return: The active provider, which is a ``GrafanaSDK`` while Grafana is the
         selected provider.
     """
-    # lazy import: auth/config.py imports this module via the provider bundle, so
-    # a module-level import here would cycle
-    from app.core.auth.config import get_active_auth_provider
+    from app.core.auth.config import (  # noqa: PLC0415 - auth.config imports this module via the provider bundle (cycle)
+        get_active_auth_provider,
+    )
 
     return cast("GrafanaSDK", get_active_auth_provider())
 

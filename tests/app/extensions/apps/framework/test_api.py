@@ -915,8 +915,8 @@ class TestCapabilitiesEndpointRegistration:
         via ``typing.get_type_hints`` instead of failing the BaseModel
         guard with a misleading error.
         """
-        import textwrap
-        import types
+        import textwrap  # noqa: PLC0415
+        import types  # noqa: PLC0415
 
         module = types.ModuleType("_sep1133_future_annotations_probe")
         module.__dict__["_DummyCapabilities"] = _DummyCapabilities
@@ -2106,7 +2106,9 @@ class TestDeriveCrudRoutesConnectivity:
         ``connectivity_warning`` so the React detail page can link the run-script
         log — the gap the ``None``-only probe-patch tests leave uncovered.
         """
-        from app.extensions.connectivity import _fetch_connectivity_result
+        from app.extensions.connectivity import (  # noqa: PLC0415
+            _fetch_connectivity_result,
+        )
 
         _fetch_connectivity_result.cache_clear()
 

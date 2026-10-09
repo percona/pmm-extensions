@@ -179,8 +179,8 @@ def _override_auth(regular_user: CasdoorUser) -> None:
 
     :param regular_user: The user the requests run as.
     """
-    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
-        lambda: None
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
     )
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
 

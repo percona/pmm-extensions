@@ -143,7 +143,7 @@ def _choice_field_from_options(
     :rtype: AnyField
     """
     return cast(
-        AnyField,
+        "AnyField",
         ChoiceField(
             name=name,
             label=label,
@@ -215,7 +215,7 @@ def build_dipper_form_schema(
 
     execution_fields: list[AnyField] = [
         cast(
-            AnyField,
+            "AnyField",
             HostField(
                 name=EXECUTOR_HOST_FIELD_NAME,
                 label=EXECUTION_HOST_LABEL,
@@ -226,7 +226,7 @@ def build_dipper_form_schema(
     if script.sudo.is_optional:
         execution_fields.append(
             cast(
-                AnyField,
+                "AnyField",
                 BoolField(
                     name=SUDO_FIELD_NAME,
                     label="Run with sudo",
@@ -238,7 +238,7 @@ def build_dipper_form_schema(
     elif script.sudo == SnippetSudoOption.ALWAYS:
         execution_fields.append(
             cast(
-                AnyField,
+                "AnyField",
                 BoolField(
                     name=SUDO_FIELD_NAME,
                     label="Run with sudo",
@@ -252,7 +252,7 @@ def build_dipper_form_schema(
     )
     execution_fields.append(
         cast(
-            AnyField,
+            "AnyField",
             ScriptPreviewField(
                 name=SCRIPT_PREVIEW_FIELD_NAME,
                 label="Script preview",

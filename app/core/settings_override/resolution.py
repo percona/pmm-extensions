@@ -425,7 +425,7 @@ def resolve_nested_field_metadata(
     # bound yet. The failure depends on the entry point rather than on this
     # file, so the module-boundary tests import each entry point in a fresh
     # interpreter instead of trusting that this one stays acyclic.
-    from app.core.settings_override.registry import (
+    from app.core.settings_override.registry import (  # noqa: PLC0415
         _field_contains_secret,
         _field_is_complex,
         _resolve_default,

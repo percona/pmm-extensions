@@ -271,8 +271,10 @@ def test_builder_reads_sync_interval_at_call_time() -> None:
     Built per call, so a DB-backed override published to the proxy snapshot is
     honored without a restart.
     """
-    from app.core.celery.models import IntervalSchedule as CoreIntervalSchedule
-    from app.extensions.snippets.config import snippets_settings
+    from app.core.celery.models import (  # noqa: PLC0415
+        IntervalSchedule as CoreIntervalSchedule,
+    )
+    from app.extensions.snippets.config import snippets_settings  # noqa: PLC0415
 
     snippets_settings._set_snapshot(  # ty: ignore[unresolved-attribute]
         {"SYNC_INTERVAL": CoreIntervalSchedule(every=30, period=Period.MINUTES)}
@@ -586,8 +588,10 @@ class TestAppScheduleContribution:
 
     def test_builder_reads_backup_interval_at_call_time(self, mocker) -> None:
         """Reflect a live ``BACKUP_INTERVAL`` override on each builder call."""
-        from app.core.celery.models import IntervalSchedule as CoreIntervalSchedule
-        from app.extensions.apps.alerts.config import alerts_settings
+        from app.core.celery.models import (  # noqa: PLC0415
+            IntervalSchedule as CoreIntervalSchedule,
+        )
+        from app.extensions.apps.alerts.config import alerts_settings  # noqa: PLC0415
 
         mocker.patch.object(
             seed_module.extensions_settings, "APPS", [_plugin("alerts")]
@@ -621,8 +625,10 @@ class TestAppScheduleContribution:
 
     def test_report_kwargs_assemble_from_non_default_entry(self, mocker) -> None:
         """Carry kwargs only for non-default report schedule-entry fields."""
-        from app.core.celery.models import IntervalSchedule as CoreIntervalSchedule
-        from app.extensions.apps.report.config import (
+        from app.core.celery.models import (  # noqa: PLC0415
+            IntervalSchedule as CoreIntervalSchedule,
+        )
+        from app.extensions.apps.report.config import (  # noqa: PLC0415
             health_report_settings,
             ReportScheduleEntry,
         )
