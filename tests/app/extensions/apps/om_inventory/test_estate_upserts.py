@@ -51,6 +51,7 @@ from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import ExecutorState
 from app.extensions.apps.om_inventory.models import NodeResolution, OmHost, OmService
+from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED, STATUS_OK
 from app.extensions.apps.om_inventory.service import persist_estate, SweepOutcome
 
 NODE_ID = "id-db00"
@@ -586,6 +587,7 @@ class TestTheFailureReasonReachesTheRow:
 #: A service document from a scan that could query the database, mongod running.
 RUNNING_SERVICE = {
     "collected_at": "2026-08-17T09:00:00+00:00",
+    "probe_status": STATUS_OK,
     "version": "7.0.39-21",
     "storage_engine": "wiredTiger",
     "installed_version": "7.0.39-21",
@@ -599,6 +601,7 @@ RUNNING_SERVICE = {
 #: What a later scan that could not query the database read off the host, the
 #: mongod having stopped since.
 STOPPED_PROCESS = {
+    "probe_status": STATUS_FAILED,
     "installed_version": "7.0.39-21",
     "config_path": None,
     "argv": None,
@@ -670,6 +673,7 @@ class TestAFailedAttemptRefreshesTheProcessFacts:
             "storage_engine": "wiredTiger",
             "installed_version": "7.0.39-21",
             "server_running": False,
+            "probe_status": STATUS_FAILED,
         }
         assert stored.role == "primary"
         assert stored.last_success_at == before

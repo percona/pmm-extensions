@@ -33,6 +33,7 @@ from unittest.mock import MagicMock, patch
 
 from app.extensions.apps.om_inventory.payload import probe as payload
 from app.extensions.apps.om_inventory.payload.probe import (
+    AUTHENTICATION_FAILED,
     collect_database_facts,
     describe_database_error,
     STATUS_FAILED,
@@ -40,8 +41,6 @@ from app.extensions.apps.om_inventory.payload.probe import (
 )
 
 TARGET = {"service": "rs0-0", "service_id": "svc-1", "host": "node00", "port": 27017}
-#: MongoDB's ``AuthenticationFailed``.
-AUTH_FAILED = 18
 #: MongoDB's ``NoReplicationEnabled``, which a standalone legitimately returns.
 NO_REPLICATION = 76
 
@@ -140,14 +139,16 @@ class TestCollectDatabaseFacts:
     def test_a_rejected_password_is_the_target_s_error(self) -> None:
         """Report an authentication failure as the error, with its type and code."""
         command = MagicMock(
-            side_effect=OperationFailure("Authentication failed.", AUTH_FAILED)
+            side_effect=OperationFailure(
+                "Authentication failed.", AUTHENTICATION_FAILED
+            )
         )
 
         facts = collect(command)
 
         assert facts["error"] == "the credentials for user root were rejected"
         assert facts["error_type"] == "OperationFailure"
-        assert facts["error_code"] == AUTH_FAILED
+        assert facts["error_code"] == AUTHENTICATION_FAILED
         # Not four command errors restating it.
         assert "command_errors" not in facts
         command.assert_called_once_with("ping")
@@ -190,7 +191,7 @@ class TestDescribeDatabaseError:
         err = OperationFailure(
             "Authentication failed., full error: {'ok': 0.0, 'errmsg': "
             "'Authentication failed.', 'code': 18, 'codeName': 'AuthenticationFailed'}",
-            AUTH_FAILED,
+            AUTHENTICATION_FAILED,
         )
 
         described = describe_database_error(
@@ -259,7 +260,9 @@ class TestProbeRecord:
     ) -> None:
         """Mark the record failed, with the type and code beside the message."""
         command = MagicMock(
-            side_effect=OperationFailure("Authentication failed.", AUTH_FAILED)
+            side_effect=OperationFailure(
+                "Authentication failed.", AUTHENTICATION_FAILED
+            )
         )
 
         record, credentials = build_record(fake_pymongo(command), tmp_path)
@@ -269,7 +272,7 @@ class TestProbeRecord:
             f"the credentials for user root (from {credentials}) were rejected"
         )
         assert record["error_type"] == "OperationFailure"
-        assert record["error_code"] == AUTH_FAILED
+        assert record["error_code"] == AUTHENTICATION_FAILED
 
     def test_a_failure_outside_the_driver_carries_the_same_keys(
         self, tmp_path: Path

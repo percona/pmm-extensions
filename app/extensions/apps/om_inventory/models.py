@@ -666,8 +666,9 @@ class FreshnessResponse(BaseModel):
 
     :param observed: Everything collected, with its own ``collected_at``: when the
         last successful probe ran. On a service, a failed attempt since then still
-        refreshes the facts read off the host rather than out of the database (the
-        installed binary and the process serving the port), so those can be newer.
+        refreshes ``probe_status`` and the facts read off the host rather than out of
+        the database (the installed binary and the process serving the port), so those
+        can be newer.
         Empty when this entity has never been successfully probed.
     :param first_seen_at: When OM first wrote a row for it.
     :param last_attempt_at: When a run last targeted it. ``None`` means no run ever
