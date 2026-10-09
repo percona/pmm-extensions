@@ -408,7 +408,7 @@ class TestConnectivityCheckEndpointRealSession:
 
         async def real_dispatch(
             queue_item: TaskHistory, db: AsyncSession
-        ) -> tuple[TaskHistory, str | None]:
+        ) -> TaskHistory:
             queue_item.status = TaskHistoryStatusEnum.RUNNING
             queue_item.execution_request.tracking.update(
                 evaluation_id="eval-1", job_id="job-1"
@@ -535,7 +535,7 @@ class TestConnectivityCheckEndpointRealSession:
 
         async def real_dispatch(
             queue_item: TaskHistory, db: AsyncSession
-        ) -> tuple[TaskHistory, str | None]:
+        ) -> TaskHistory:
             queue_item.status = TaskHistoryStatusEnum.RUNNING
             queue_item.execution_request.tracking.update(
                 evaluation_id="eval-1", job_id="job-1"

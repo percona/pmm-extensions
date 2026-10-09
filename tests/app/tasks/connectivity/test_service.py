@@ -817,7 +817,7 @@ class TestCheckConnectivityRealSession:
 
         async def pending_dispatch(
             queue_item: TaskHistory, db: AsyncSession
-        ) -> tuple[TaskHistory, str | None]:
+        ) -> TaskHistory:
             queue_item.status = TaskHistoryStatusEnum.PENDING
             saved = await TaskHistoryManager.save(
                 db, queue_item, flag_modified_fields=["execution_request"]
@@ -1186,7 +1186,7 @@ class TestCheckConnectivityRealSession:
 
         async def started_dispatch(
             queue_item: TaskHistory, db: AsyncSession
-        ) -> tuple[TaskHistory, str | None]:
+        ) -> TaskHistory:
             queue_item.status = TaskHistoryStatusEnum.RUNNING
             queue_item.execution_request.tracking.update(
                 evaluation_id="eval-1",
