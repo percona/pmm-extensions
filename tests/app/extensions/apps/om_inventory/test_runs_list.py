@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Test ``GET /runs`` date-range filtering.
+"""Test ``GET /runs`` date-range filtering, and ``GET /runs/{run_id}``'s 404.
 
 The window is applied before ``limit``: a week of twenty-one runs is twenty-one
 runs, not the twenty newest overall with the older-than-a-week ones dropped. That
@@ -22,6 +22,7 @@ page.
 """
 
 from datetime import datetime, timedelta, UTC
+from uuid import uuid4
 
 import pytest
 from fastapi import status
@@ -152,3 +153,19 @@ class TestRunsListProgress:
 
         counts = response.json()[0]["counts"]
         assert (counts["hosts_probeable"], counts["hosts_finished"]) == (4, 3)
+
+
+class TestGetRun:
+    """Pin what ``GET /runs/{run_id}`` says about a run that does not exist."""
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_run_is_a_404_in_the_ui_s_words(
+        self, api: AsyncClient
+    ) -> None:
+        """Call it a scan, as PMM's UI does, naming the id asked for."""
+        run_id = uuid4()
+
+        response = await api.get(f"{BASE}/runs/{run_id}")
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert response.json()["detail"] == f"Scan {run_id} not found"

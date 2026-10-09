@@ -79,7 +79,9 @@ DEFAULT_CONNECT_TIMEOUT_MS = 5000
 
 #: Where an install puts mongod's data unless told otherwise: om_bootstrap's
 #: default ``data_path``, and the install form's. Free space is measured here, as
-#: the install's own ``pre_check`` measures it, so the two agree about a host.
+#: the install's own ``pre_check`` measures it, so the two agree about a host; a
+#: parent such as ``/var/lib`` can be on another disk than a data directory
+#: mounted on its own.
 DEFAULT_DATA_PATH = "/var/lib/mongo"
 
 #: MongoDB's ``AuthenticationFailed`` error code.
@@ -938,13 +940,6 @@ def _nearest_directory(path):
 
 def _free_bytes(path):
     """Return the free byte count on the filesystem holding ``path``, or ``None``.
-
-    Called with :data:`DEFAULT_DATA_PATH` or its nearest existing ancestor, not a
-    fixed ``/var/lib``: a host can mount the data directory itself from a disk of
-    its own, and measuring its parent then reported room the install's
-    ``pre_check`` would not find - 7.4 GiB at ``/var/lib`` against 1 GiB at
-    ``/var/lib/mongo`` on the low-disk fault node, which every scan called fine and
-    every install refused.
 
     :param path: The path whose filesystem to measure.
     :return: The free byte count, or ``None`` if it could not be read.

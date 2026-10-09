@@ -39,6 +39,7 @@ from app.extensions.apps.om_inventory.models import (
     OmService,
     ProbeRun,
     ProbeRunStatus,
+    ScanFailure,
 )
 
 
@@ -124,7 +125,7 @@ def _apply_attempt(
     observed: dict[str, Any] | None,
     error: str | None,
     run_id: UUID | None,
-    error_code: str | None = None,
+    error_code: ScanFailure | None = None,
 ) -> None:
     """Fold one attempt's outcome into an entity's freshness columns.
 
@@ -134,9 +135,10 @@ def _apply_attempt(
     * ``failing_since`` is only set when it is unset. Overwriting it on every failure
       turns "since" into "most recent failure", so the duration is always about one
       schedule interval and the column stops being worth reading.
-    * A failure does **not** touch ``observed``. The last known good document stays,
+    * A failure does **not** replace ``observed``. The last known good document stays,
       with its own ``collected_at``, because what a host was running when it was last
-      reachable is exactly what is wanted while it is not.
+      reachable is exactly what is wanted while it is not. :func:`upsert_service`
+      merges in only what the failed attempt read off the host, and its status.
     * ``last_attempt_at`` moves on every attempt, ``last_success_at`` only on success.
       The gap between them is the answer to "how stale is this".
     * The caller decides what counts as an attempt. An entity a run did not target
@@ -147,8 +149,7 @@ def _apply_attempt(
     :param observed: The collected document on success; ``None`` on failure.
     :param error: The failure detail; ``None`` on success.
     :param run_id: The run this attempt belongs to.
-    :param error_code: What kind of failure it is, a ``ScanFailure`` value;
-        ``None`` on success.
+    :param error_code: What kind of failure it is; ``None`` on success.
     """
     now = utc_now()
     entity.last_attempt_at = now
@@ -180,7 +181,7 @@ async def upsert_host(
     observed: dict[str, Any] | None = None,
     executor: dict[str, Any] | None = None,
     error: str | None = None,
-    error_code: str | None = None,
+    error_code: ScanFailure | None = None,
     run_id: UUID | None = None,
     attempted: bool = True,
 ) -> OmHost:
@@ -208,7 +209,7 @@ async def upsert_host(
         anything — and the hosts it cannot run anything on are exactly the ones whose
         document would otherwise be empty with no explanation for it.
     :param error: The failure detail.
-    :param error_code: What kind of failure it is, a ``ScanFailure`` value.
+    :param error_code: What kind of failure it is.
     :param run_id: The run this attempt belongs to.
     :param attempted: Whether this run actually probed the host.
     :return: The stored row.
@@ -256,7 +257,7 @@ async def upsert_service(
     role: str | None,
     observed: dict[str, Any] | None = None,
     error: str | None = None,
-    error_code: str | None = None,
+    error_code: ScanFailure | None = None,
     process_facts: dict[str, Any] | None = None,
     run_id: UUID | None = None,
     attempted: bool = True,
@@ -272,10 +273,10 @@ async def upsert_service(
     not blank out what the last good one saw, for the same reason it must not blank
     out ``observed``.
 
-    What a failed attempt did read off the host is not discarded with the rest: a
-    stopped mongod must stop reading as running even while its database facts stay
-    those of the last scan that could query it. ``collected_at`` stays the time of
-    that scan, the one the database facts are from.
+    What a failed attempt did read off the host is not discarded with the rest, nor is
+    its status: a stopped mongod must stop reading as running, and as probed ``ok``,
+    even while its database facts stay those of the last scan that could query it.
+    ``collected_at`` stays the time of that scan, the one the database facts are from.
 
     :param session: The database session.
     :param service_id: PMM's service id.
@@ -285,11 +286,11 @@ async def upsert_service(
     :param role: The observed role, or ``None`` when this attempt did not see one.
     :param observed: The collected document, or ``None`` when the attempt failed.
     :param error: The failure detail.
-    :param error_code: What kind of failure it is, a ``ScanFailure`` value.
-    :param process_facts: What a failed attempt still saw of the binary and the
-        process, merged into the stored ``observed``. A ``None`` value removes that
-        key. Ignored while nothing is stored, since there are no database facts to
-        keep.
+    :param error_code: What kind of failure it is.
+    :param process_facts: What a failed attempt refreshes: its probe status and what
+        it saw of the binary and the process, merged into the stored ``observed``. A
+        ``None`` value removes that key. Ignored while nothing is stored, since there
+        are no database facts to keep.
     :param run_id: The run this attempt belongs to.
     :param attempted: Whether this run actually probed the service.
     :return: The stored row.

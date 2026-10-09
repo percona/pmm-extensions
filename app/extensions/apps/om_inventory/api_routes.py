@@ -486,7 +486,7 @@ async def get_probe_run(run_id: UUID, session: SessionDep) -> ProbeRunDetail:
     """
     run = await get_run(session, run_id)
     if run is None:
-        raise HTTPNotFoundException(detail=f"Probe run {run_id} not found")
+        raise HTTPNotFoundException(detail=f"Scan {run_id} not found")
     return ProbeRunDetail(
         **_run_response(run).model_dump(),
         # Runs recorded before `nodes` existed have none, and answer with an empty

@@ -13,11 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Test the task-history failure reading every OM app shares.
-
-``om_inventory``'s scan tests pin what a scan reports end to end; these pin the
-pieces both it and ``om_bootstrap`` build on, apart from either app.
-"""
+"""Test reading why a task history failed, apart from any app that reports it."""
 
 import json
 from collections.abc import AsyncIterator
@@ -28,12 +24,10 @@ import pytest
 
 from app.extensions.apps.shared.om.task_failure import (
     describe_task_failure,
-    excerpt,
     failed_step,
     MAX_ERROR_DETAIL,
     read_step_logs,
 )
-from app.tasks.execution.executors.nomad.models import _failed_step_reason
 
 
 def _line(step: str, stream: str, msg: str) -> str:
@@ -48,25 +42,24 @@ def _line(step: str, stream: str, msg: str) -> str:
 
 
 class TestFailedStep:
-    """Read the failed step off the reason the executor really writes."""
+    """Read the failed step off the reason the executor writes."""
 
-    @pytest.mark.parametrize("step", ["prepare-env", "run-script", "check-launchable"])
-    def test_names_the_step_from_the_executor_s_own_sentence(self, step: str) -> None:
-        """Parse the step out of ``_failed_step_reason``'s output.
+    @pytest.mark.parametrize(
+        ("reason", "step"),
+        [
+            ("Step 'prepare-env' failed (exit code 127).", "prepare-env"),
+            ("Step 'run-script' failed (exit code 123).", "run-script"),
+            ("Step 'check-launchable' failed.", "check-launchable"),
+        ],
+    )
+    def test_names_the_step_the_reason_names(self, reason: str, step: str) -> None:
+        """Parse the step out of the executor's sentence, with or without a code.
 
-        :param step: The step that failed.
+        The executor's own tests pin that it writes this sentence.
+
+        :param reason: The reason.
+        :param step: The step it names.
         """
-        reason = _failed_step_reason(
-            {
-                "TaskStates": {
-                    step: {
-                        "Failed": True,
-                        "Events": [{"Type": "Terminated", "ExitCode": 123}],
-                    }
-                }
-            }
-        )
-
         assert failed_step(reason) == step
 
     @pytest.mark.parametrize("reason", [None, "", "Execution tracking lost."])
@@ -136,9 +129,14 @@ class TestDescribeTaskFailure:
         assert describe_task_failure(None, {}, default_step="run-script") == ""
 
     def test_keeps_the_end_of_a_long_stream_within_the_cap(self) -> None:
-        """Bound the excerpt, keeping its end where the error is."""
-        stream = "x" * (MAX_ERROR_DETAIL * 3) + "the error"
+        """Bound the output, keeping its end where the error is, and the reason whole."""
+        reason = "Step 'run-script' failed (exit code 124)."
+        stream = "x" * (MAX_ERROR_DETAIL * 3) + "the error\n"
 
-        assert excerpt(stream).endswith("the error")
-        assert len(excerpt(stream)) == MAX_ERROR_DETAIL
-        assert excerpt(stream, 9) == "the error"
+        detail = describe_task_failure(
+            reason, {"run-script": {"stderr": stream}}, default_step="run-script"
+        )
+
+        assert detail.startswith(f"{reason} x")
+        assert detail.endswith("the error")
+        assert len(detail) == len(reason) + 1 + MAX_ERROR_DETAIL

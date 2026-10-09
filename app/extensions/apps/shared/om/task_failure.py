@@ -15,12 +15,9 @@
 
 """Read why a finished task history failed, in the node's own words.
 
-Shared by every OM app that dispatches work through the tasks API: a scan
-(``om_inventory``) and an install step (``om_bootstrap``) fail the same way, and the
-reason is in the same two places for both. The run's ``failure_reason`` names the
-step that failed and its exit code, and that step's own output says why. The
-status alone says neither, which is how an install step once reported nothing but
-"ended failed" for a full disk, an unreachable repository and a taken port alike.
+The reason is in two places: the run's ``failure_reason`` names the step that
+failed and its exit code, and that step's own output says why. The status alone
+says neither.
 """
 
 import json
@@ -33,7 +30,6 @@ from app.tasks.models import TaskLogType
 __all__ = [
     "MAX_ERROR_DETAIL",
     "describe_task_failure",
-    "excerpt",
     "failed_step",
     "read_step_logs",
 ]
@@ -45,10 +41,10 @@ __all__ = [
 #: saying it gave up can run to several kilobytes.
 MAX_ERROR_DETAIL = 500
 
-#: The step the tasks service names in a run's ``failure_reason``. The sentence is
-#: written by the Nomad executor's ``_failed_step_reason``, in this repository, and
-#: ``om_inventory/test_scan_failures.py`` feeds that function's own output through
-#: this pattern so a change to its wording fails a test here.
+#: The step the tasks service names in a run's ``failure_reason``, in the sentence
+#: the Nomad executor's ``_failed_step_reason`` writes. That function's tests pin
+#: the sentence and read it back through :func:`failed_step`, so a change to its
+#: wording fails a test there.
 _FAILED_STEP = re.compile(r"^Step '(?P<step>[^']+)' failed")
 
 
@@ -88,17 +84,16 @@ async def read_step_logs(
     return {step: dict(streams) for step, streams in steps.items()}
 
 
-def excerpt(text: str, limit: int = MAX_ERROR_DETAIL) -> str:
+def _excerpt(text: str) -> str:
     """Return the end of a stream, bounded, which is where the error usually is.
 
     The end rather than the start: a traceback ends with the exception, and ``pip``
     or ``dnf`` print their whole resolution before the line saying they gave up.
 
     :param text: The stream.
-    :param limit: How many characters of its end to keep.
-    :return: At most ``limit`` characters of its end, stripped.
+    :return: At most :data:`MAX_ERROR_DETAIL` characters of its end, stripped.
     """
-    return text.strip()[-limit:].strip()
+    return text.strip()[-MAX_ERROR_DETAIL:].strip()
 
 
 def describe_task_failure(
@@ -106,7 +101,6 @@ def describe_task_failure(
     logs: dict[str, dict[str, str]],
     *,
     default_step: str,
-    limit: int = MAX_ERROR_DETAIL,
 ) -> str:
     """Say why a run failed: the tasks service's reason, then the step's own output.
 
@@ -120,13 +114,12 @@ def describe_task_failure(
         returns it.
     :param default_step: The step whose output to report when the reason names
         none - the one that does the run's actual work.
-    :param limit: The bound on the output excerpt. The reason itself is one short
-        sentence and is kept whole.
-    :return: The reason and the excerpt joined by a space, either one alone when
-        the other is missing, or an empty string when there is neither.
+    :return: The reason, kept whole, and the last :data:`MAX_ERROR_DETAIL`
+        characters of the output, joined by a space; either one alone when the
+        other is missing, or an empty string when there is neither.
     """
     streams = logs.get(failed_step(failure_reason) or default_step) or {}
-    output = excerpt(streams.get(TaskLogType.STDERR, ""), limit) or excerpt(
-        streams.get(TaskLogType.STDOUT, ""), limit
+    output = _excerpt(streams.get(TaskLogType.STDERR, "")) or _excerpt(
+        streams.get(TaskLogType.STDOUT, "")
     )
     return " ".join(part for part in (failure_reason, output) if part)

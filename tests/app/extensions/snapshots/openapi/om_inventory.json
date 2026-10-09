@@ -4364,13 +4364,12 @@
           "last_error_code": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/om_inventory__ScanFailure"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Last Error Code"
+            ]
           },
           "last_run_id": {
             "anyOf": [
@@ -4848,6 +4847,25 @@
         "title": "ProbeRunResponse",
         "type": "object"
       },
+      "om_inventory__ScanFailure": {
+        "description": "Enumerate the kinds of scan failure a reader can be told what to do about.\n\nStored beside ``last_error`` rather than parsed back out of it: the message mixes\nthe node's own stderr, exception text and task API detail, and its wording must\nstay free to change without breaking whoever keys a resolution hint off it.\n\nA node with no usable executor has no code here, because it is never dispatched\nto and so never fails; its state is the ``executor`` block every host row\nalready carries.\n\n:cvar DISPATCH_REJECTED: The scan was never queued: the tasks API refused it or\n    could not be reached.\n:cvar NOT_STARTED: The scan was queued but had not started when the wait ran out.\n:cvar TIMED_OUT: The scan started but had not finished when the wait ran out.\n:cvar BLOCKED: A scan given up on could not be stopped, and will block this\n    node's next one until it is.\n:cvar ENVIRONMENT_SETUP_FAILED: The node could not prepare the scan's Python\n    environment: no ``python3``, no ``venv`` module, or ``pip`` could not install\n    the scan's one dependency.\n:cvar SCAN_CRASHED: The scan itself failed on the node.\n:cvar SCAN_LOST: The scan was lost, stopped or went stale before it reported -\n    usually because the node or its agent restarted.\n:cvar NO_OUTPUT: The scan finished but reported nothing for this node or service.\n:cvar DATABASE_UNREACHABLE: The scan ran but could not connect to the database.\n:cvar DATABASE_AUTH_FAILED: The scan ran but the database rejected its\n    credentials.\n:cvar DATABASE_ERROR: The scan ran but the database failed it some other way.\n:cvar UNKNOWN: Anything not recognised. A reader gets the raw detail and no hint,\n    rather than a guessed one.",
+        "enum": [
+          "dispatch_rejected",
+          "not_started",
+          "timed_out",
+          "blocked",
+          "environment_setup_failed",
+          "scan_crashed",
+          "scan_lost",
+          "no_output",
+          "database_unreachable",
+          "database_auth_failed",
+          "database_error",
+          "unknown"
+        ],
+        "title": "ScanFailure",
+        "type": "string"
+      },
       "om_inventory__ServiceResponse": {
         "description": "Report one MongoDB service PMM has registered, as OM currently holds it.\n\nKeyed on **PMM's** service id, which is the whole benefit of storing it that way:\nthe path and the payload carry the id every consumer already has, with nothing to\ntranslate on either side.\n\n:param service_id: PMM's service id.\n:param node_id: The host it runs on.\n:param name: The service name as PMM registered it.\n:param port: The port it listens on.\n:param role: What the probe found it to be, when a probe determined one.",
         "properties": {
@@ -4899,13 +4917,12 @@
           "last_error_code": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/om_inventory__ScanFailure"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Last Error Code"
+            ]
           },
           "last_run_id": {
             "anyOf": [
