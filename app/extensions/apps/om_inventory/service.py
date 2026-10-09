@@ -1011,7 +1011,9 @@ async def finalise(
     per_executor = _probeable_hosts_per_executor(outcome.hosts)
     finished.hosts_total = len(outcome.hosts)
     finished.hosts_probeable = per_executor.total()
-    finished.hosts_answered = len(outcome.host_documents)
+    finished.hosts_answered = sum(
+        per_executor[executor] for executor in outcome.host_documents
+    )
     finished.hosts_finished = sum(
         per_executor[executor] for executor in outcome.dispatched
     )

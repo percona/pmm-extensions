@@ -18,7 +18,8 @@
 ``RunProgress`` writes the hosts in scope onto the run row as soon as they are known,
 and counts each host as its executor's scan comes back, so the row says more than
 ``running`` while a sweep is in flight. ``finalise`` settles the same count, and both
-count a host, not an executor, so the finished count reaches ``hosts_probeable``.
+count a host, not an executor, so the finished count reaches ``hosts_probeable``; the
+answered count is in hosts as well.
 """
 
 from contextlib import nullcontext
@@ -102,6 +103,29 @@ async def test_a_finished_sweep_settles_the_same_counts(
     )
 
     assert (stored.hosts_total, stored.hosts_probeable, stored.hosts_finished) == counts
+
+
+@pytest.mark.asyncio
+async def test_answered_hosts_are_counted_as_hosts_too(session: AsyncSession) -> None:
+    """Count every host an answering executor serves, and none of a silent one's."""
+    run = await ProbeRunManager.save(session, ProbeRun())
+    hosts = [
+        host("node00", executor="db00"),
+        host("node01", executor="db00"),
+        host("node02"),
+    ]
+
+    stored = await finalise(
+        session,
+        run.id,
+        SweepOutcome(
+            hosts=hosts,
+            dispatched={"db00", "node02"},
+            host_documents={"db00": {"collected_at": "2026-10-09T12:00:00+00:00"}},
+        ),
+    )
+
+    assert (stored.hosts_probeable, stored.hosts_answered) == (3, 2)
 
 
 @pytest.mark.asyncio
