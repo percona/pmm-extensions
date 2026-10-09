@@ -1089,6 +1089,13 @@ async def sync_finishing_items() -> None:
 async def sync_queue_item(queue_id: int) -> TaskHistory:
     """Sync a task history item.
 
+    Pass ``await_annotations=True`` into ``sync_task_history`` and await any
+    returned terminal event after save. Celery drives the loop with discrete
+    ``celery.loop.run_until_complete(...)`` calls, so a fire-and-forget
+    annotation would be abandoned when the coroutine returns; awaiting after
+    save keeps the UI status prompt while still completing the annotation
+    before chain dispatch.
+
     :param queue_id: The unique identifier of the queue item to sync.
     :type queue_id: int
     :return: The TaskHistory object post sync.
@@ -1127,7 +1134,7 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
                 return queue_item
     executor = get_executor_for_task(task)
     async with async_session() as writer_session:
-        queue_item = await executor.sync_task_history(
+        queue_item, pending_event = await executor.sync_task_history(
             queue_item, writer_session=writer_session, await_annotations=True
         )
     queue_item.sync_in_progress_started_at = None
@@ -1145,6 +1152,12 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
             ],
         )
         await session.refresh(saved, attribute_names=["execution_request"])
+    # Persist status before the best-effort PMM await so a slow annotation
+    # cannot delay the row the UI depends on. Still await before
+    # maybe_dispatch_chain so the terminal event precedes the chained run's
+    # STARTED annotation (chain dispatch may still wait on PMM).
+    if pending_event:
+        await await_annotation(saved, pending_event)
     await maybe_dispatch_chain(saved, was_running=was_running, await_annotations=True)
     if saved.status.is_terminal():
         await maybe_record_run(saved.id, executor)

@@ -2142,10 +2142,10 @@ class TestSyncFinishingItems:
             *,
             writer_session=None,
             await_annotations: bool = False,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             del writer_session, await_annotations
             item.status = TaskHistoryStatusEnum.SUCCESS
-            return item
+            return item, None
 
         executor = MagicMock()
         executor.sync_task_history = AsyncMock(side_effect=stamp_success)
@@ -2524,7 +2524,7 @@ class TestSyncQueueItem:
         saved_item = _make_history(task=task, status=TaskHistoryStatusEnum.RUNNING)
 
         mock_executor = MagicMock()
-        mock_executor.sync_task_history = AsyncMock(return_value=running_item)
+        mock_executor.sync_task_history = AsyncMock(return_value=(running_item, None))
 
         get_or_404_calls = [pending_item, running_item]
 
@@ -2579,7 +2579,7 @@ class TestSyncQueueItem:
         saved_item = _make_history(task=task, status=TaskHistoryStatusEnum.RUNNING)
 
         mock_executor = MagicMock()
-        mock_executor.sync_task_history = AsyncMock(return_value=queue_item)
+        mock_executor.sync_task_history = AsyncMock(return_value=(queue_item, None))
 
         with (
             patch(
@@ -2848,12 +2848,12 @@ class TestSyncQueueItemChainDispatch:
             writer_session=None,
             *,
             await_annotations: bool = False,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             del writer_session, await_annotations
             queue_item.status = TaskHistoryStatusEnum.FAILED
             queue_item.started_at = datetime(2026, 4, 1, 10, 1, 0, tzinfo=UTC)
             queue_item.finished_at = datetime(2026, 4, 1, 10, 2, 0, tzinfo=UTC)
-            return queue_item
+            return queue_item, None
 
         async def save_returns_item(session, queue_item, **kwargs):
             return queue_item
@@ -2947,7 +2947,7 @@ class TestSyncQueueItemChainDispatch:
             ) as mock_chain,
         ):
             executor = AsyncMock()
-            executor.sync_task_history = AsyncMock(return_value=done_history)
+            executor.sync_task_history = AsyncMock(return_value=(done_history, None))
             mock_executor.return_value = executor
 
             await sync_queue_item(1)
@@ -2995,7 +2995,7 @@ class TestSyncQueueItemChainDispatch:
             ) as mock_chain,
         ):
             executor = AsyncMock()
-            executor.sync_task_history = AsyncMock(return_value=running_history)
+            executor.sync_task_history = AsyncMock(return_value=(running_history, None))
             mock_executor.return_value = executor
 
             await sync_queue_item(1)
@@ -3046,7 +3046,7 @@ class TestSyncQueueItemChainDispatch:
             ) as mock_chain,
         ):
             executor = AsyncMock()
-            executor.sync_task_history = AsyncMock(return_value=failed_history)
+            executor.sync_task_history = AsyncMock(return_value=(failed_history, None))
             mock_executor.return_value = executor
 
             await sync_queue_item(1)
@@ -3098,7 +3098,9 @@ class TestSyncQueueItemChainDispatch:
             ) as mock_chain,
         ):
             executor = AsyncMock()
-            executor.sync_task_history = AsyncMock(return_value=terminal_history)
+            executor.sync_task_history = AsyncMock(
+                return_value=(terminal_history, None)
+            )
             mock_executor.return_value = executor
 
             await sync_queue_item(1)
@@ -3160,7 +3162,9 @@ class TestSyncQueueItemChainDispatch:
             ) as mock_chain,
         ):
             executor = AsyncMock()
-            executor.sync_task_history = AsyncMock(return_value=terminal_history)
+            executor.sync_task_history = AsyncMock(
+                return_value=(terminal_history, None)
+            )
             mock_executor.return_value = executor
 
             await sync_queue_item(1)
@@ -3210,12 +3214,241 @@ class TestSyncQueueItemChainDispatch:
             ) as mock_chain,
         ):
             executor = AsyncMock()
-            executor.sync_task_history = AsyncMock(return_value=done_history)
+            executor.sync_task_history = AsyncMock(return_value=(done_history, None))
             mock_executor.return_value = executor
 
             await sync_queue_item(1)
 
         mock_chain.assert_not_awaited()
+
+
+class TestSyncQueueItemAnnotationOrdering:
+    """Cover terminal PMM await placement relative to save and chain dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_save_completes_before_slow_terminal_annotation(self) -> None:
+        """Assert TaskHistoryManager.save finishes before await_annotation starts."""
+        main_task = _make_chain_task("main-task")
+        running_history = _make_chain_history(
+            main_task,
+            TaskHistoryStatusEnum.RUNNING,
+            {},
+        )
+        done_history = _make_chain_history(
+            main_task,
+            TaskHistoryStatusEnum.SUCCESS,
+            {},
+        )
+
+        session_maker, _ = _make_chain_session_mock()
+        mock_save = AsyncMock(return_value=done_history)
+        save_done_when_annotation_started = False
+
+        async def slow_await_annotation(saved, event):
+            nonlocal save_done_when_annotation_started
+            save_done_when_annotation_started = mock_save.await_count >= 1
+            assert event == "COMPLETED"
+            assert saved is done_history
+
+        with (
+            patch(
+                "app.tasks.celery.get_async_session_maker", return_value=session_maker
+            ),
+            patch(
+                "app.tasks.celery.TaskHistoryManager.get_or_404",
+                new_callable=AsyncMock,
+                return_value=running_history,
+            ),
+            patch(
+                "app.tasks.celery.TaskManager.get_root_task",
+                new_callable=AsyncMock,
+                return_value=main_task,
+            ),
+            patch("app.tasks.celery.get_executor_for_task") as mock_get_executor,
+            patch("app.tasks.celery.TaskHistoryManager.save", new=mock_save),
+            patch(
+                "app.tasks.celery.await_annotation",
+                new_callable=AsyncMock,
+                side_effect=slow_await_annotation,
+            ) as mock_await,
+            patch("app.tasks.celery.maybe_dispatch_chain", new_callable=AsyncMock),
+            patch("app.tasks.celery.maybe_record_run", new_callable=AsyncMock),
+        ):
+            executor = AsyncMock()
+            executor.sync_task_history = AsyncMock(
+                return_value=(done_history, "COMPLETED")
+            )
+            mock_get_executor.return_value = executor
+
+            await sync_queue_item(1)
+
+        mock_save.assert_awaited_once()
+        mock_await.assert_awaited_once_with(done_history, "COMPLETED")
+        assert save_done_when_annotation_started
+
+    @pytest.mark.asyncio
+    async def test_awaits_terminal_annotation_only_for_running_transition(
+        self,
+    ) -> None:
+        """Assert terminal annotation is awaited only on RUNNING to terminal."""
+        main_task = _make_chain_task("main-task")
+        running_history = _make_chain_history(
+            main_task,
+            TaskHistoryStatusEnum.RUNNING,
+            {},
+        )
+        done_history = _make_chain_history(
+            main_task,
+            TaskHistoryStatusEnum.SUCCESS,
+            {},
+        )
+        still_running = _make_chain_history(
+            main_task,
+            TaskHistoryStatusEnum.RUNNING,
+            {},
+        )
+
+        session_maker, _ = _make_chain_session_mock()
+
+        with (
+            patch(
+                "app.tasks.celery.get_async_session_maker", return_value=session_maker
+            ),
+            patch(
+                "app.tasks.celery.TaskHistoryManager.get_or_404",
+                new_callable=AsyncMock,
+                return_value=running_history,
+            ),
+            patch(
+                "app.tasks.celery.TaskManager.get_root_task",
+                new_callable=AsyncMock,
+                return_value=main_task,
+            ),
+            patch("app.tasks.celery.get_executor_for_task") as mock_get_executor,
+            patch(
+                "app.tasks.celery.TaskHistoryManager.save",
+                new_callable=AsyncMock,
+                return_value=done_history,
+            ),
+            patch(
+                "app.tasks.celery.await_annotation", new_callable=AsyncMock
+            ) as mock_await,
+            patch("app.tasks.celery.maybe_dispatch_chain", new_callable=AsyncMock),
+            patch("app.tasks.celery.maybe_record_run", new_callable=AsyncMock),
+        ):
+            executor = AsyncMock()
+            executor.sync_task_history = AsyncMock(
+                return_value=(done_history, "COMPLETED")
+            )
+            mock_get_executor.return_value = executor
+
+            await sync_queue_item(1)
+
+        mock_await.assert_awaited_once_with(done_history, "COMPLETED")
+
+        mock_await.reset_mock()
+        with (
+            patch(
+                "app.tasks.celery.get_async_session_maker", return_value=session_maker
+            ),
+            patch(
+                "app.tasks.celery.TaskHistoryManager.get_or_404",
+                new_callable=AsyncMock,
+                return_value=running_history,
+            ),
+            patch(
+                "app.tasks.celery.TaskManager.get_root_task",
+                new_callable=AsyncMock,
+                return_value=main_task,
+            ),
+            patch("app.tasks.celery.get_executor_for_task") as mock_get_executor,
+            patch(
+                "app.tasks.celery.TaskHistoryManager.save",
+                new_callable=AsyncMock,
+                return_value=still_running,
+            ),
+            patch(
+                "app.tasks.celery.await_annotation", new_callable=AsyncMock
+            ) as mock_await_still_running,
+            patch("app.tasks.celery.maybe_dispatch_chain", new_callable=AsyncMock),
+            patch("app.tasks.celery.maybe_record_run", new_callable=AsyncMock),
+        ):
+            executor = AsyncMock()
+            executor.sync_task_history = AsyncMock(return_value=(still_running, None))
+            mock_get_executor.return_value = executor
+
+            await sync_queue_item(1)
+
+        mock_await_still_running.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_terminal_annotation_precedes_chain_dispatch(self) -> None:
+        """Assert terminal await_annotation runs before maybe_dispatch_chain."""
+        main_task = _make_chain_task("main-task")
+        chain_task = _make_chain_task("chain-task")
+        running_history = _make_chain_history(
+            main_task,
+            TaskHistoryStatusEnum.RUNNING,
+            {"_chain_task_names": [chain_task.name]},
+        )
+        done_history = _make_chain_history(
+            main_task,
+            TaskHistoryStatusEnum.SUCCESS,
+            {"_chain_task_names": [chain_task.name]},
+        )
+
+        session_maker, _ = _make_chain_session_mock()
+        call_order: list[str] = []
+
+        async def track_annotation(saved, event):
+            del saved, event
+            call_order.append("terminal_annotation")
+
+        async def track_chain(saved, *, was_running, await_annotations=False):
+            del saved, was_running, await_annotations
+            call_order.append("chain_dispatch")
+
+        with (
+            patch(
+                "app.tasks.celery.get_async_session_maker", return_value=session_maker
+            ),
+            patch(
+                "app.tasks.celery.TaskHistoryManager.get_or_404",
+                new_callable=AsyncMock,
+                return_value=running_history,
+            ),
+            patch(
+                "app.tasks.celery.TaskManager.get_root_task",
+                new_callable=AsyncMock,
+                return_value=main_task,
+            ),
+            patch("app.tasks.celery.get_executor_for_task") as mock_get_executor,
+            patch(
+                "app.tasks.celery.TaskHistoryManager.save",
+                new_callable=AsyncMock,
+                return_value=done_history,
+            ),
+            patch(
+                "app.tasks.celery.await_annotation",
+                new_callable=AsyncMock,
+                side_effect=track_annotation,
+            ),
+            patch(
+                "app.tasks.celery.maybe_dispatch_chain",
+                new_callable=AsyncMock,
+                side_effect=track_chain,
+            ),
+            patch("app.tasks.celery.maybe_record_run", new_callable=AsyncMock),
+        ):
+            executor = AsyncMock()
+            executor.sync_task_history = AsyncMock(
+                return_value=(done_history, "COMPLETED")
+            )
+            mock_get_executor.return_value = executor
+
+            await sync_queue_item(1)
+
+        assert call_order == ["terminal_annotation", "chain_dispatch"]
 
 
 class TestMaybeDispatchChainMetaNone:
@@ -4064,10 +4297,10 @@ class TestSyncQueueItemRegression:
             *,
             writer_session=None,
             await_annotations: bool = False,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             del writer_session, await_annotations
             item.status = TaskHistoryStatusEnum.SUCCESS
-            return item
+            return item, None
 
         fake_executor = MagicMock()
         fake_executor.sync_task_history = AsyncMock(side_effect=fake_sync)
@@ -4117,11 +4350,11 @@ class TestSyncQueueItemRegression:
                 *,
                 writer_session=None,
                 await_annotations: bool = False,
-            ) -> TaskHistory:
+            ) -> tuple[TaskHistory, str | None]:
                 del writer_session, await_annotations
                 item.status = TaskHistoryStatusEnum.FAILED
                 item.set_failure_reason("Step 'run-script' failed (exit code 1).")
-                return item
+                return item, None
 
             fake_executor = MagicMock(spec=BaseExecutor)
             fake_executor.sync_task_history = AsyncMock(side_effect=fake_sync)

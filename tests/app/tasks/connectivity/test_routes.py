@@ -299,11 +299,11 @@ class TestConnectivityCheckEndpointRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             call_count["n"] += 1
             assert writer_session is not None
             if call_count["n"] == 1:
-                return queue_item
+                return queue_item, None
             await TaskHistoryLogWriter.append(
                 writer_session,
                 queue_item.id,
@@ -314,7 +314,7 @@ class TestConnectivityCheckEndpointRealSession:
                 producer_offset_after=len(stdout_bytes),
             )
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         fake_service_executor = MagicMock(spec=BaseExecutor)
         fake_service_executor.sync_task_history = sync_task_history
@@ -422,16 +422,16 @@ class TestConnectivityCheckEndpointRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             call_count["n"] += 1
             assert writer_session is not None
             n = call_count["n"]
             if n < CONNECT_START_POLL:
                 # Provisioning: still RUNNING, run-script task not yet started.
-                return queue_item
+                return queue_item, None
             if n == CONNECT_START_POLL:
                 _mark_run_script_started(queue_item)
-                return queue_item
+                return queue_item, None
             await TaskHistoryLogWriter.append(
                 writer_session,
                 queue_item.id,
@@ -442,7 +442,7 @@ class TestConnectivityCheckEndpointRealSession:
                 producer_offset_after=len(stdout_bytes),
             )
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         fake_service_executor = MagicMock(spec=BaseExecutor)
         fake_service_executor.sync_task_history = sync_task_history
@@ -549,7 +549,7 @@ class TestConnectivityCheckEndpointRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             call_count["n"] += 1
             assert writer_session is not None
             if call_count["n"] == 1:
@@ -564,7 +564,7 @@ class TestConnectivityCheckEndpointRealSession:
                     producer_offset_after=len(partial_bytes),
                 )
             # Never flip the status: the connect budget exhausts and times out.
-            return queue_item
+            return queue_item, None
 
         fake_service_executor = MagicMock(spec=BaseExecutor)
         fake_service_executor.sync_task_history = sync_task_history

@@ -284,12 +284,13 @@ class TestSyncTaskHistoryPmmRegressionSep1021:
         ``TaskHistory`` with ``undefer(TaskHistory.execution_request)`` in a
         reader session, closes that session, then calls
         ``executor.sync_task_history(queue_item, writer_session=...)`` inside
-        a fresh writer session. The terminal annotation site (now
-        ``await await_annotation(...)``, formerly ``schedule_annotation``)
-        must snapshot the request primitives via ``execution_request_for_pmm_snapshot``
-        rather than touching the deferred column getter across the closed
-        reader session — that would raise ``MissingGreenlet`` on async
-        drivers and abort ``sync_task_history`` before chain dispatch.
+        a fresh writer session. With ``await_annotations=True`` the sync
+        returns a pending event and the caller awaits ``await_annotation``,
+        which must snapshot the request primitives via
+        ``execution_request_for_pmm_snapshot`` rather than touching the
+        deferred column getter across the closed reader session — that would
+        raise ``MissingGreenlet`` on async drivers and abort before chain
+        dispatch.
 
         Patch ``create_pmm_annotation`` (the HTTP boundary) so the real
         ``await_annotation`` — and therefore ``execution_request_for_pmm_snapshot``
@@ -331,9 +332,11 @@ class TestSyncTaskHistoryPmmRegressionSep1021:
             with patch(
                 "app.core.pmm.create_pmm_annotation", new_callable=AsyncMock
             ) as mock_create:
-                await executor.sync_task_history(
+                loaded, pending_event = await executor.sync_task_history(
                     loaded, writer_session=writer_session, await_annotations=True
                 )
+                assert pending_event == "COMPLETED"
+                await await_annotation(loaded, pending_event)
 
         assert loaded.status == TaskHistoryStatusEnum.SUCCESS
         mock_create.assert_awaited_once_with(
@@ -387,9 +390,11 @@ class TestSyncTaskHistoryPmmRegressionSep1021:
             with patch(
                 "app.core.pmm.create_pmm_annotation", new_callable=AsyncMock
             ) as mock_create:
-                await executor.sync_task_history(
+                loaded, pending_event = await executor.sync_task_history(
                     loaded, writer_session=writer_session, await_annotations=True
                 )
+                assert pending_event == "COMPLETED"
+                await await_annotation(loaded, pending_event)
 
         mock_create.assert_awaited_once_with(
             text=f"PMM Extensions: {task.name} - COMPLETED",
@@ -402,7 +407,7 @@ class TestSyncTaskHistoryPmmRegressionSep1021:
     async def test_non_terminal_status_skips_annotation(
         self, session: AsyncSession
     ) -> None:
-        """Assert a non-terminal sync result schedules no PMM annotation."""
+        """Assert a non-terminal sync result yields no pending PMM annotation."""
         task = await TaskManager.create(
             session,
             TaskWrite.model_validate(
@@ -426,11 +431,12 @@ class TestSyncTaskHistoryPmmRegressionSep1021:
         with patch(
             "app.core.pmm.create_pmm_annotation", new_callable=AsyncMock
         ) as mock_create:
-            await executor.sync_task_history(
+            result, pending_event = await executor.sync_task_history(
                 saved, writer_session=session, await_annotations=True
             )
 
-        assert saved.status == TaskHistoryStatusEnum.RUNNING
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        assert pending_event is None
         mock_create.assert_not_awaited()
 
 

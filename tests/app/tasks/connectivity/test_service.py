@@ -314,7 +314,7 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             await self._append_log(
                 writer_session,
@@ -323,7 +323,7 @@ class TestCheckConnectivityRealSession:
                 json.dumps({"success": True}),
             )
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -373,7 +373,7 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             await self._append_log(
                 writer_session,
@@ -382,7 +382,7 @@ class TestCheckConnectivityRealSession:
                 json.dumps({"success": True}),
             )
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -461,7 +461,7 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             await self._append_log(
                 writer_session,
@@ -470,7 +470,7 @@ class TestCheckConnectivityRealSession:
                 json.dumps({"success": False, "error": "Connection refused"}),
             )
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -506,7 +506,7 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             await self._append_log(
                 writer_session,
@@ -515,7 +515,7 @@ class TestCheckConnectivityRealSession:
                 "ImportError: No module named 'pymysql'",
             )
             queue_item.status = TaskHistoryStatusEnum.FAILED
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -552,8 +552,8 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
-            return queue_item
+        ) -> tuple[TaskHistory, str | None]:
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -590,7 +590,7 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             await self._append_log(
                 writer_session,
@@ -599,7 +599,7 @@ class TestCheckConnectivityRealSession:
                 "not valid json",
             )
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -635,9 +635,9 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             queue_item.status = TaskHistoryStatusEnum.FAILED
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -697,9 +697,9 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -758,9 +758,9 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -828,8 +828,8 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
-            return queue_item
+        ) -> tuple[TaskHistory, str | None]:
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -888,7 +888,7 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             # Simulates NomadExecutor._sync_task_history reading tracking
             # from plain sync code within the async call chain — this is
             # where the lazy-load raises MissingGreenlet pre-fix.
@@ -896,7 +896,7 @@ class TestCheckConnectivityRealSession:
             captured_history_id.append(queue_item.id)
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
             queue_item.execution_request.tracking["allocation_id"] = "alloc-1"
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -954,13 +954,13 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             call_count["n"] += 1
             assert writer_session is not None, (
                 "check_connectivity must supply a writer_session"
             )
             if call_count["n"] == 1:
-                return queue_item
+                return queue_item, None
             await TaskHistoryLogWriter.append(
                 writer_session,
                 queue_item.id,
@@ -971,7 +971,7 @@ class TestCheckConnectivityRealSession:
                 producer_offset_after=len(stdout_bytes),
             )
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -1027,7 +1027,7 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             call_count["n"] += 1
             if call_count["n"] < CONNECT_START_CALL:
@@ -1044,7 +1044,7 @@ class TestCheckConnectivityRealSession:
                     json.dumps({"success": True}),
                 )
                 queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -1087,9 +1087,9 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             # Stays RUNNING and the run-script task never starts.
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -1133,11 +1133,11 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             self._mark_run_script_started(queue_item)
             # Connect phase started but never completes.
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -1202,14 +1202,14 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             call_count["n"] += 1
             if call_count["n"] == 1:
                 # Burn more than the entire connect budget in non-sleep wall
                 # time (Nomad round-trip + DB commits), staying RUNNING.
                 advancing_clock.now += request.timeout + POLL_INTERVAL
-                return queue_item
+                return queue_item, None
             # A sleep-only budget would reach here and succeed; a wall-clock
             # budget must have already broken out on the timeout.
             await self._append_log(
@@ -1219,7 +1219,7 @@ class TestCheckConnectivityRealSession:
                 json.dumps({"success": True}),
             )
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
@@ -1269,7 +1269,7 @@ class TestCheckConnectivityRealSession:
         async def sync_task_history(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             if call_count["n"] == 0:
                 self._mark_run_script_started(queue_item)
@@ -1281,7 +1281,7 @@ class TestCheckConnectivityRealSession:
                 )
             call_count["n"] += 1
             # Never finishes — stays RUNNING until the connect budget expires.
-            return queue_item
+            return queue_item, None
 
         mock_executor = MagicMock(spec=BaseExecutor)
         mock_executor.sync_task_history = sync_task_history
