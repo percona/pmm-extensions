@@ -1290,7 +1290,9 @@ class TestNonLiteralCredential:
         assert result.returncode == 0, result.stderr
         assert _warnings(result) == [_unread("PROXYSQL_PASSWORD", harness.admin_cnf)]
         assert harness.credentials == {**SHIPPED_CLIENT, "password": ""}
-        assert "leaked" not in "\n".join(_warnings(result))
+        warning_text = "\n".join(_warnings(result))
+        assert warning_text
+        assert "leaked" not in warning_text
 
     def test_warns_about_each_credential_on_a_line(self, harness):
         """Name both credentials of a two-assignment line, each with its own reason."""
@@ -1328,7 +1330,9 @@ class TestNonLiteralCredential:
         assert result.returncode == 0, result.stderr
         assert _warnings(result) == [_ignored("PROXYSQL_PASSWORD", harness.admin_cnf)]
         (report,) = harness.root.glob("proxysql_status_*.log")
-        assert "Ignoring " not in report.read_text(encoding="utf-8")
+        report_text = report.read_text(encoding="utf-8")
+        assert report_text
+        assert "Ignoring " not in report_text
 
 
 class TestUnreadableDefaultsFile:
