@@ -376,7 +376,7 @@ class TestTheCodeReachesTheRow:
         await persist(session, outcome)
 
         stored = (await list_hosts(session))[0]
-        assert stored.last_error_code == ScanFailure.ENVIRONMENT_SETUP_FAILED
+        assert stored.last_error_code is ScanFailure.ENVIRONMENT_SETUP_FAILED
 
         recovered = SweepOutcome(total=0, hosts=[failing_host()])
         recovered.dispatched.add("db00")

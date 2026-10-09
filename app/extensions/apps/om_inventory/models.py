@@ -227,9 +227,8 @@ class ObservedEntity(SQLModel):
         while healthy.
     :param consecutive_failures: Failures since the last success.
     :param last_error: The most recent failure detail.
-    :param last_error_code: What kind of failure ``last_error`` is, as a
-        :class:`ScanFailure` value. ``None`` while healthy, and on a row whose last
-        failure predates the column.
+    :param last_error_code: What kind of failure ``last_error`` is. ``None`` while
+        healthy, and on a row whose last failure predates the column.
     :param last_run_id: The run that last attempted it, for joining to the receipt.
     :param updated_at: When this row last changed.
     """
@@ -257,7 +256,10 @@ class ObservedEntity(SQLModel):
     )
     consecutive_failures: int = SQLField(default=0, nullable=False)
     last_error: str | None = SQLField(default=None)
-    last_error_code: str | None = SQLField(default=None)
+    last_error_code: ScanFailure | None = SQLField(
+        default=None,
+        sa_type=EnumField(ScanFailure, native_enum=False, create_constraint=True),
+    )
     last_run_id: UUID | None = SQLField(default=None)
     updated_at: UTCDatetime = SQLField(
         default_factory=utc_now, sa_type=DateTimeWithTimezone, nullable=False
@@ -668,8 +670,8 @@ class FreshnessResponse(BaseModel):
         healthy.
     :param consecutive_failures: Failures since the last success.
     :param last_error: The most recent failure detail.
-    :param last_error_code: What kind of failure it is, as a :class:`ScanFailure`
-        value; ``None`` while healthy or when the failure predates classification.
+    :param last_error_code: What kind of failure it is; ``None`` while healthy or
+        when the failure predates classification.
     :param last_run_id: The run that last attempted it, so a reader of the failure
         can open the run that produced it; ``None`` until a run has.
     """
@@ -681,7 +683,7 @@ class FreshnessResponse(BaseModel):
     failing_since: UTCDatetime | None = None
     consecutive_failures: int = 0
     last_error: str | None = None
-    last_error_code: str | None = None
+    last_error_code: ScanFailure | None = None
     last_run_id: UUID | None = None
 
 

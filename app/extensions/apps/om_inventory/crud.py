@@ -39,6 +39,7 @@ from app.extensions.apps.om_inventory.models import (
     OmService,
     ProbeRun,
     ProbeRunStatus,
+    ScanFailure,
 )
 
 
@@ -124,7 +125,7 @@ def _apply_attempt(
     observed: dict[str, Any] | None,
     error: str | None,
     run_id: UUID | None,
-    error_code: str | None = None,
+    error_code: ScanFailure | None = None,
 ) -> None:
     """Fold one attempt's outcome into an entity's freshness columns.
 
@@ -147,8 +148,7 @@ def _apply_attempt(
     :param observed: The collected document on success; ``None`` on failure.
     :param error: The failure detail; ``None`` on success.
     :param run_id: The run this attempt belongs to.
-    :param error_code: What kind of failure it is, a ``ScanFailure`` value;
-        ``None`` on success.
+    :param error_code: What kind of failure it is; ``None`` on success.
     """
     now = utc_now()
     entity.last_attempt_at = now
@@ -180,7 +180,7 @@ async def upsert_host(
     observed: dict[str, Any] | None = None,
     executor: dict[str, Any] | None = None,
     error: str | None = None,
-    error_code: str | None = None,
+    error_code: ScanFailure | None = None,
     run_id: UUID | None = None,
     attempted: bool = True,
 ) -> OmHost:
@@ -208,7 +208,7 @@ async def upsert_host(
         anything — and the hosts it cannot run anything on are exactly the ones whose
         document would otherwise be empty with no explanation for it.
     :param error: The failure detail.
-    :param error_code: What kind of failure it is, a ``ScanFailure`` value.
+    :param error_code: What kind of failure it is.
     :param run_id: The run this attempt belongs to.
     :param attempted: Whether this run actually probed the host.
     :return: The stored row.
@@ -256,7 +256,7 @@ async def upsert_service(
     role: str | None,
     observed: dict[str, Any] | None = None,
     error: str | None = None,
-    error_code: str | None = None,
+    error_code: ScanFailure | None = None,
     process_facts: dict[str, Any] | None = None,
     run_id: UUID | None = None,
     attempted: bool = True,
@@ -285,7 +285,7 @@ async def upsert_service(
     :param role: The observed role, or ``None`` when this attempt did not see one.
     :param observed: The collected document, or ``None`` when the attempt failed.
     :param error: The failure detail.
-    :param error_code: What kind of failure it is, a ``ScanFailure`` value.
+    :param error_code: What kind of failure it is.
     :param process_facts: What a failed attempt still saw of the binary and the
         process, merged into the stored ``observed``. A ``None`` value removes that
         key. Ignored while nothing is stored, since there are no database facts to
