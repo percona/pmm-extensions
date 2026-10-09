@@ -2488,6 +2488,59 @@ class TestDispatchTask:
         expected_dt = datetime.fromtimestamp(submit_ns / 10**9, UTC)
         assert result.started_at == expected_dt
 
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_dispatch_task_raises_when_job_cannot_be_determined(
+        self, mock_nomad_cls
+    ):
+        """Assert ValueError when neither register nor dispatch yields a job."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        task = _build_task(task_id="orphan-job", parameterized=False)
+        queue_item = _build_queue_item(
+            task=task,
+            status=TaskHistoryStatusEnum.PENDING,
+        )
+        session = AsyncMock()
+
+        with (
+            patch.object(
+                NomadExecutor,
+                "task_needs_job_register",
+                AsyncMock(return_value=False),
+            ),
+            pytest.raises(ValueError, match="job could not be determined"),
+        ):
+            await executor.dispatch_task(session, queue_item, task)
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.utc_now")
+    @patch("app.tasks.execution.executors.nomad.models.TaskHistoryManager")
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_dispatch_task_falls_back_to_utc_now_without_submit_time(
+        self, mock_nomad_cls, mock_th_manager, mock_utc_now
+    ):
+        """Assert started_at uses utc_now when the Nomad job has no SubmitTime."""
+        mock_nomad_cls.return_value = MagicMock()
+        now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
+        mock_utc_now.return_value = now
+        mock_th_manager.save = AsyncMock(side_effect=lambda _s, qi, **_kw: qi)
+
+        nomad_register = {"EvalID": "eval-1"}
+        nomad_job = {"ID": "job-no-submit", "SubmitTime": None}
+        executor = _build_executor(nomad_job=nomad_job, nomad_register=nomad_register)
+        task = _build_task(task_id="no-submit-job", parameterized=False)
+        queue_item = _build_queue_item(
+            task=task,
+            status=TaskHistoryStatusEnum.PENDING,
+        )
+        session = AsyncMock()
+
+        result = await executor.dispatch_task(session, queue_item, task)
+
+        assert result.started_at == now
+        mock_utc_now.assert_called()
+
 
 class TestStopTask:
     """Test NomadExecutor._stop_task."""
