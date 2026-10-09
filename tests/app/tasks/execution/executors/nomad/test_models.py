@@ -7132,6 +7132,8 @@ class TestStreamDirectoryAsTarGz:
         queue_item = _build_queue_item()
         file_content = b"hello world"
         default_file_mode = tarfile.TarInfo().mode & 0o777
+        archive_time = datetime(2026, 10, 8, 12, 0, 0, tzinfo=UTC)
+        expected_mtime = int(archive_time.timestamp())
 
         async def fake_entries(*_args, **_kwargs):
             yield "/output/mydir/nested", "mydir/nested/", True, 0
@@ -7146,6 +7148,10 @@ class TestStreamDirectoryAsTarGz:
             patch.object(executor, "_iter_directory_entries", side_effect=fake_entries),
             patch.object(
                 executor, "_read_file_bytes", AsyncMock(return_value=file_content)
+            ),
+            patch(
+                "app.tasks.execution.executors.nomad.models.utc_now",
+                return_value=archive_time,
             ),
         ):
             archive_bytes = b"".join(
@@ -7163,8 +7169,8 @@ class TestStreamDirectoryAsTarGz:
         assert members["mydir"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
         assert members["mydir/nested"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
         assert members["mydir/nested/file.txt"].mode & 0o777 == default_file_mode
-        assert members["mydir"].mtime > 0
-        assert members["mydir/nested"].mtime > 0
+        assert members["mydir"].mtime == expected_mtime
+        assert members["mydir/nested"].mtime == expected_mtime
 
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
@@ -7173,13 +7179,19 @@ class TestStreamDirectoryAsTarGz:
         mock_nomad_cls.return_value = MagicMock()
         executor = _build_executor()
         queue_item = _build_queue_item()
+        archive_time = datetime(2026, 10, 8, 12, 0, 0, tzinfo=UTC)
+        expected_mtime = int(archive_time.timestamp())
 
         async def fake_entries(*_args, **_kwargs):
             for _entry in ():
                 yield _entry
 
-        with patch.object(
-            executor, "_iter_directory_entries", side_effect=fake_entries
+        with (
+            patch.object(executor, "_iter_directory_entries", side_effect=fake_entries),
+            patch(
+                "app.tasks.execution.executors.nomad.models.utc_now",
+                return_value=archive_time,
+            ),
         ):
             archive_bytes = b"".join(
                 [
@@ -7196,7 +7208,7 @@ class TestStreamDirectoryAsTarGz:
         assert list(members) == ["mydir"]
         assert members["mydir"].isdir()
         assert members["mydir"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
-        assert members["mydir"].mtime > 0
+        assert members["mydir"].mtime == expected_mtime
 
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
