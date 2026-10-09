@@ -104,7 +104,7 @@ class TestCheckMySQL:
 
     def test_success(self, mock_myloginpath, mock_pymysql):
         """Verify successful MySQL connectivity check."""
-        from app.tasks.connectivity.payload import check_mysql
+        from app.tasks.connectivity.payload import check_mysql  # noqa: PLC0415
 
         mock_myloginpath.parse.return_value = {
             "user": "root",
@@ -131,7 +131,7 @@ class TestCheckMySQL:
 
     def test_connection_failure(self, mock_myloginpath, mock_pymysql):
         """Verify MySQL check returns error on connection failure."""
-        from app.tasks.connectivity.payload import check_mysql
+        from app.tasks.connectivity.payload import check_mysql  # noqa: PLC0415
 
         mock_myloginpath.parse.return_value = {}
         mock_pymysql.connect.side_effect = Exception("Connection refused")
@@ -142,7 +142,7 @@ class TestCheckMySQL:
 
     def test_myloginpath_failure_falls_back(self, mock_myloginpath, mock_pymysql):
         """Verify connectivity check proceeds when myloginpath parsing fails."""
-        from app.tasks.connectivity.payload import check_mysql
+        from app.tasks.connectivity.payload import check_mysql  # noqa: PLC0415
 
         mock_myloginpath.parse.side_effect = Exception("No login path found")
         mock_conn = MagicMock()
@@ -167,7 +167,7 @@ class TestCheckMySQL:
         The goal is to test connectivity: an auth-denied response from the
         server proves the server is reachable.
         """
-        from app.tasks.connectivity.payload import check_mysql
+        from app.tasks.connectivity.payload import check_mysql  # noqa: PLC0415
 
         mock_myloginpath.parse.return_value = {}
         mock_pymysql.connect.side_effect = mock_pymysql.err.OperationalError(
@@ -180,7 +180,7 @@ class TestCheckMySQL:
         self, mock_myloginpath, mock_pymysql
     ):
         """Verify a network-level OperationalError (code 2xxx) reports failure."""
-        from app.tasks.connectivity.payload import check_mysql
+        from app.tasks.connectivity.payload import check_mysql  # noqa: PLC0415
 
         mock_myloginpath.parse.return_value = {}
         mock_pymysql.connect.side_effect = mock_pymysql.err.OperationalError(
@@ -197,7 +197,7 @@ class TestCheckMySQL:
         self, mock_myloginpath, mock_pymysql
     ):
         """Verify OperationalError with no args does not crash and reports failure."""
-        from app.tasks.connectivity.payload import check_mysql
+        from app.tasks.connectivity.payload import check_mysql  # noqa: PLC0415
 
         mock_myloginpath.parse.return_value = {}
         mock_pymysql.connect.side_effect = mock_pymysql.err.OperationalError()
@@ -211,7 +211,7 @@ class TestCheckPostgreSQL:
 
     def test_success(self, mock_psycopg2):
         """Verify successful PostgreSQL connectivity check."""
-        from app.tasks.connectivity.payload import check_postgresql
+        from app.tasks.connectivity.payload import check_postgresql  # noqa: PLC0415
 
         mock_conn = MagicMock()
         mock_psycopg2.connect.return_value = mock_conn
@@ -230,7 +230,7 @@ class TestCheckPostgreSQL:
 
     def test_connection_failure(self, mock_psycopg2):
         """Verify PostgreSQL check returns error on connection failure."""
-        from app.tasks.connectivity.payload import check_postgresql
+        from app.tasks.connectivity.payload import check_postgresql  # noqa: PLC0415
 
         mock_psycopg2.connect.side_effect = Exception("Connection refused")
 
@@ -245,7 +245,7 @@ class TestCheckPostgreSQL:
         An auth-rejected response from the server proves the server is
         reachable, which is what this check measures.
         """
-        from app.tasks.connectivity.payload import check_postgresql
+        from app.tasks.connectivity.payload import check_postgresql  # noqa: PLC0415
 
         err = mock_psycopg2.OperationalError("FATAL: auth rejected")
         err.pgcode = pgcode
@@ -260,7 +260,7 @@ class TestCheckPostgreSQL:
         an explicit ``None`` is treated as a failure to avoid fragile message
         string matching.
         """
-        from app.tasks.connectivity.payload import check_postgresql
+        from app.tasks.connectivity.payload import check_postgresql  # noqa: PLC0415
 
         err = mock_psycopg2.OperationalError("FATAL: password authentication failed")
         err.pgcode = None
@@ -278,7 +278,7 @@ class TestCheckMongoDB:
 
     def test_success(self, mock_pymongo):
         """Verify successful MongoDB connectivity check."""
-        from app.tasks.connectivity.payload import check_mongodb
+        from app.tasks.connectivity.payload import check_mongodb  # noqa: PLC0415
 
         mock_client = MagicMock()
         mock_pymongo.MongoClient.return_value = mock_client
@@ -294,7 +294,7 @@ class TestCheckMongoDB:
 
     def test_connection_failure(self, mock_pymongo):
         """Verify MongoDB check returns error on connection failure."""
-        from app.tasks.connectivity.payload import check_mongodb
+        from app.tasks.connectivity.payload import check_mongodb  # noqa: PLC0415
 
         mock_pymongo.MongoClient.side_effect = Exception("Server selection timeout")
 
@@ -309,7 +309,7 @@ class TestCheckMongoDB:
         A server-side auth rejection (``13`` Unauthorized, ``18``
         AuthenticationFailed) proves the server is reachable.
         """
-        from app.tasks.connectivity.payload import check_mongodb
+        from app.tasks.connectivity.payload import check_mongodb  # noqa: PLC0415
 
         mock_client = MagicMock()
         mock_pymongo.MongoClient.return_value = mock_client
@@ -321,7 +321,7 @@ class TestCheckMongoDB:
 
     def test_other_operation_failure_remains_failure(self, mock_pymongo):
         """Verify ``OperationFailure`` with a non-auth code reports failure."""
-        from app.tasks.connectivity.payload import check_mongodb
+        from app.tasks.connectivity.payload import check_mongodb  # noqa: PLC0415
 
         mock_client = MagicMock()
         mock_pymongo.MongoClient.return_value = mock_client
@@ -361,7 +361,7 @@ class TestMain:
         )
 
         with patch("sys.argv", ["payload.py", "--config", str(config_path)]):
-            from app.tasks.connectivity.payload import main
+            from app.tasks.connectivity.payload import main  # noqa: PLC0415
 
             main()
 
@@ -375,7 +375,7 @@ class TestMain:
 
     def test_unknown_service_type_raises(self, tmp_path):
         """Verify KeyError raised for unsupported service type."""
-        from app.tasks.connectivity.payload import main
+        from app.tasks.connectivity.payload import main  # noqa: PLC0415
 
         config_path = tmp_path / "script_config"
         config_path.write_text(
@@ -400,8 +400,10 @@ class TestConnectTimeoutBudget:
         dispatch latency is added, producing a false-negative. The inner
         timeout must stay strictly less than ``CONNECTIVITY_CHECK_TIMEOUT``.
         """
-        from app.tasks.connectivity.constants import CONNECTIVITY_CHECK_TIMEOUT
-        from app.tasks.connectivity.payload import CONNECT_TIMEOUT
+        from app.tasks.connectivity.constants import (  # noqa: PLC0415
+            CONNECTIVITY_CHECK_TIMEOUT,
+        )
+        from app.tasks.connectivity.payload import CONNECT_TIMEOUT  # noqa: PLC0415
 
         assert CONNECT_TIMEOUT < CONNECTIVITY_CHECK_TIMEOUT
 
@@ -413,7 +415,7 @@ class TestConnectTimeoutBudget:
         A future edit must not be able to reintroduce a per-driver literal that
         drifts from the shared constant.
         """
-        from app.tasks.connectivity.payload import (
+        from app.tasks.connectivity.payload import (  # noqa: PLC0415
             check_mongodb,
             check_mysql,
             check_postgresql,
@@ -445,8 +447,10 @@ class TestConnectTimeoutBudget:
         declared in separate modules with no shared source, so this pins them
         equal to catch a silent drift.
         """
-        from app.extensions.connectivity import CHECK_TIMEOUT
-        from app.tasks.connectivity.constants import CONNECTIVITY_CHECK_TIMEOUT
+        from app.extensions.connectivity import CHECK_TIMEOUT  # noqa: PLC0415
+        from app.tasks.connectivity.constants import (  # noqa: PLC0415
+            CONNECTIVITY_CHECK_TIMEOUT,
+        )
 
         assert CHECK_TIMEOUT == CONNECTIVITY_CHECK_TIMEOUT
 
@@ -459,10 +463,14 @@ class TestConnectTimeoutBudget:
         the Tasks API" instead of the diagnostic timeout response, so keep a
         comfortable margin below the read timeout.
         """
-        from annotated_types import Le
+        from annotated_types import Le  # noqa: PLC0415
 
-        from app.tasks.connectivity.constants import PROVISIONING_TIMEOUT
-        from app.tasks.connectivity.models import ConnectivityCheckWrite
+        from app.tasks.connectivity.constants import (  # noqa: PLC0415
+            PROVISIONING_TIMEOUT,
+        )
+        from app.tasks.connectivity.models import (  # noqa: PLC0415
+            ConnectivityCheckWrite,
+        )
 
         timeout_field = ConnectivityCheckWrite.model_fields["timeout"]
         max_connect_budget = next(
@@ -484,7 +492,7 @@ class TestMainOutputContract:
         ``_parse_check_result`` reads the result with ``json.loads`` over the
         ``run-script`` stdout, so stdout must stay a pure JSON document.
         """
-        from app.tasks.connectivity.payload import main
+        from app.tasks.connectivity.payload import main  # noqa: PLC0415
 
         mock_myloginpath.parse.return_value = {}
         mock_conn = MagicMock()

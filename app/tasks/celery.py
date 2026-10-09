@@ -45,13 +45,14 @@ from nomad.api.exceptions import BaseNomadException
 from sqlalchemy import cast, func, literal, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import QueryableAttribute, undefer
 from sqlalchemy.sql import ColumnElement
 from sqlmodel import col, or_
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.celery import celery
-from app.core.alerts.config import alert_service
+from app.core.alerts.config import alert_service, alert_settings
 from app.core.alerts.models import AlertSeverity
 from app.core.db.utils import (
     func_json_extract,
@@ -137,9 +138,20 @@ def build_tasks_override_proxies() -> ProxyRegistry:
     }
 
 
+def _session_maker() -> async_sessionmaker:
+    """Return the current session maker, looked up when the refresher calls it.
+
+    Passing ``get_async_session_maker`` itself would bind the function at import,
+    so a test that rebinds the module attribute would never reach the refresher.
+
+    :return: The service-scoped session maker.
+    """
+    return get_async_session_maker()
+
+
 _refresher = WorkerRefresher(
     lambda: celery.loop,
-    lambda: get_async_session_maker(),
+    _session_maker,
     build_tasks_override_proxies,
 )
 
@@ -1305,10 +1317,6 @@ def check_nomad_cert_expiry() -> None:
 
 async def _check_nomad_cert_expiry() -> None:
     """Evaluate Nomad CA and client PEM files and fire or clear expiry alerts."""
-    from app.core.alerts.config import alert_service, alert_settings
-    from app.core.alerts.models import AlertSeverity
-    from app.core.utils import utc_now
-
     nomad = normalize_nomad_config_value(tasks_settings.NOMAD)
     warn_days = nomad.cert_expiry_warn_days
     now = utc_now()
@@ -1322,7 +1330,7 @@ async def _check_nomad_cert_expiry() -> None:
 
         dedup_key = f"nomad-cert-expiry:{path.name}"
         try:
-            pem = path.read_bytes()
+            pem = await asyncio.to_thread(path.read_bytes)
             cert = x509.load_pem_x509_certificate(pem)
         except OSError as exc:
             logger.warning(

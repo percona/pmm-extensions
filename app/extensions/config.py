@@ -176,7 +176,9 @@ class App(BaseCaseInsensitiveModel):
     api_router_path: StrImportableAttribute | None = None
     celery_module_path: str | None = None
 
-    def __eq__(self, other: Any) -> bool:
+    __hash__ = None
+
+    def __eq__(self, other: object) -> bool:
         if isinstance(other, App):
             return self.module_name == other.module_name
         raise NotImplementedError
@@ -434,7 +436,9 @@ class SyncOptions(BaseLowercaseModel):
     model_config = ConfigDict(extra="allow")
     syncer: StrImportableAttribute
 
-    def __eq__(self, other: Any) -> bool:
+    __hash__ = None
+
+    def __eq__(self, other: object) -> bool:
         if isinstance(other, SyncOptions):
             return self.syncer == other.syncer
         raise NotImplementedError

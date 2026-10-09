@@ -424,6 +424,32 @@ class TestListBootstrapRuns:
         body = response.json()
         assert {run["id"] for run in body} == {str(first.id), str(second.id)}
 
+    @pytest.mark.parametrize("limit", [0, 101])
+    def test_rejects_an_out_of_range_limit(
+        self, regular_user: CasdoorUser, session: AsyncSession, limit: int
+    ) -> None:
+        """Reject a ``limit`` outside ``1..100`` before the query runs."""
+        response = api_client(regular_user, session, _fake_tasks_api()).get(
+            f"{BASE}/runs", params={"limit": limit}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+    @pytest.mark.asyncio
+    async def test_caps_the_list_at_limit(
+        self, regular_user: CasdoorUser, session: AsyncSession
+    ) -> None:
+        """Return no more runs than ``limit`` asks for."""
+        await self._seed_run(session, BootstrapRunStatus.RUNNING)
+        await self._seed_run(session, BootstrapRunStatus.SUCCEEDED)
+
+        response = api_client(regular_user, session, _fake_tasks_api()).get(
+            f"{BASE}/runs", params={"limit": 1}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert len(response.json()) == 1
+
 
 class TestGetBootstrapRun:
     """Assert GET /runs/{id} reconciles and reports 404 for an unknown run."""

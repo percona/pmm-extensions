@@ -47,7 +47,7 @@ def test_a_class_is_the_same_object_across_routes() -> None:
     Asserting on the module alone would pass even if the helper re-executed
     the source, so this pins the class object an exception match resolves.
     """
-    from scripts.classify_ty_diagnostics import ReconciliationError
+    from scripts.classify_ty_diagnostics import ReconciliationError  # noqa: PLC0415
 
     assert load_script("classify_ty_diagnostics").ReconciliationError is (
         ReconciliationError

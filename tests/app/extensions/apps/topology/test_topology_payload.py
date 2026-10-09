@@ -21,7 +21,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -31,10 +31,10 @@ _SECONDS_BEHIND = 3
 
 
 class _FakeCursor:
-    def __enter__(self) -> _FakeCursor:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_args: Any) -> None:
+    def __exit__(self, *_args: object) -> None:
         return None
 
     def execute(self, query: str) -> None:
@@ -67,10 +67,10 @@ class _FakeCursor:
 
 
 class _FakeConnection:
-    def __enter__(self) -> _FakeConnection:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_args: Any) -> None:
+    def __exit__(self, *_args: object) -> None:
         return None
 
     def cursor(self, _cursor_cls: Any) -> _FakeCursor:

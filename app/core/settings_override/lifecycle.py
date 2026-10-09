@@ -557,8 +557,9 @@ def resolve_refresher_options(
     """
     if interval is not None and enabled is not None:
         return interval, enabled
-    # circular-import: config imports settings_override, whose __init__ imports lifecycle (this module)
-    from app.core.config import settings
+    from app.core.config import (  # noqa: PLC0415 - config imports settings_override, whose __init__ imports this (cycle)
+        settings,
+    )
 
     options = settings.SETTINGS_OVERRIDE
     return (

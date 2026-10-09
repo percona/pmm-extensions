@@ -122,8 +122,8 @@ def live_route_overrides(
         async with live_executor.hold():
             yield live_executor
 
-    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
-        lambda: None
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
     )
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
     tasks_app.dependency_overrides[get_session] = lambda: session

@@ -80,7 +80,7 @@ optional = true
 [tool.poetry.group.audit.dependencies]
 pip-audit = "^2.10.0"
 bandit = {extras = ["toml"], version = "^1.7.9"}
-ruff = "^0.9.4"
+ruff = "^0.16.10"
 
 [tool.poetry.group.typecheck]
 optional = true
@@ -447,6 +447,11 @@ select = [
     "PERF",
     "FURB",
     "RUF",
+    "FAST001",
+    "FAST002",
+    "PYI",
+    "SLOT",
+    "YTT",
 ]
 ignore = [
     "E501",
@@ -463,6 +468,7 @@ ignore = [
     "RUF007",
     "RUF012", # Too much false positives with Pydantic subclasses (https://github.com/astral-sh/ruff/issues/5639)
     "PLR0913",
+    "PLR0917", # same trade-off as PLR0913
 ]
 task-tags = ["TODO"]
 
@@ -488,7 +494,7 @@ runtime-evaluated-base-classes = [
 "app/core/config.py" = ["ARG003"]
 "app/core/utils/fields.py" = ["TRY004"] # Pydantic validation code should raise ValueError
 "celery.py" = ["ARG001"]
-"test_*.py" = ["S", "ARG001", "ARG002", "ANN", "SLF001"]
+"test_*.py" = ["S", "ARG001", "ARG002", "ANN", "SLF001", "ASYNC240"]
 "conftest.py" = ["S", "ARG001", "ARG002"]
 "tests/app/extensions/apps/framework/contract_suite.py" = ["S"] # pytest contract-suite mixin uses bare assert
 "tests/app/extensions/apps/mysql_backups/description_coverage.py" = ["S"] # shared pytest assertion helper uses bare assert
@@ -506,9 +512,6 @@ runtime-evaluated-base-classes = [
     "T201",   # canonical payload preamble prints diagnostics to stderr (as the shipped payloads do)
     "PTH123", # payload preamble uses builtin open(), as the shipped payloads do
     "BLE001", # payload preamble mirrors a deliberate catch-all credentials-read guard
-]
-"app/extensions/sync/syncers/system_facts/payload.py" = [
-    "S603", # host-run payload coordinates rpm/dpkg-query with literal arg lists
 ]
 
 

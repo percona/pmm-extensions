@@ -30,6 +30,7 @@ from typing import (
     Annotated,
     Any,
     ClassVar,
+    final,
     Literal,
     NoReturn,
     Protocol,
@@ -1016,15 +1017,16 @@ async def default_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa:
     :param app: The FastAPI application instance.
     :yield: None
     """
-    # lazy import: auth/config.py imports BaseYamlSettings from this module, so a
-    # module-level import here would cycle
-    from app.core.auth.config import get_active_auth_provider
+    from app.core.auth.config import (  # noqa: PLC0415 - auth.config imports BaseYamlSettings from here (cycle)
+        get_active_auth_provider,
+    )
 
     async with get_active_auth_provider().lifespan():
         yield
     await settings.close_client_registry()
 
 
+@final
 class _UnsetType:
     """Sentinel type for unset ``create_app`` parameters.
 
@@ -1058,8 +1060,8 @@ def create_app(
     version: str | None = None,
     description: str | None = None,
     generate_unique_id_function: Callable[[APIRoute], str] | None = None,
-    docs_url: str | None | _UnsetType = _UNSET,
-    redoc_url: str | None | _UnsetType = _UNSET,
+    docs_url: str | _UnsetType | None = _UNSET,
+    redoc_url: str | _UnsetType | None = _UNSET,
     root_path: str = "",
 ) -> FastAPI:
     """Create and configure the FastAPI app.
@@ -1094,7 +1096,7 @@ def create_app(
     :return: An instance of the FastAPI application, carrying the database
         capacity handlers every sub-application inherits from here.
     """
-    openapi_kwargs = {}
+    openapi_kwargs: dict[str, Any] = {}
     if title is not None:
         openapi_kwargs["title"] = title
     if version is not None:

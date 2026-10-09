@@ -124,6 +124,7 @@ async def list_tasks(
     list_query: TaskListQueryDep,
     owner: str | None = None,
     target: str | None = None,
+    *,
     parent_is_null: bool | None = None,
     backup_type: str | None = None,
     self_parent: bool | None = None,
@@ -415,7 +416,7 @@ async def _populate_log_metadata(
 
 async def _get_history_for_response(
     session: AsyncSession,
-    history_id: int,
+    history: TaskHistory,
 ) -> TaskHistory:
     """Re-read a task history with the columns its response model requires.
 
@@ -424,7 +425,7 @@ async def _get_history_for_response(
     resolved attempts IO from the async context.
 
     :param session: The SQLAlchemy asynchronous session.
-    :param history_id: The task history to re-read.
+    :param history: The saved task history to re-read.
     :return: The task history with ``task`` joined and ``execution_request``
         undeferred.
     """
@@ -432,7 +433,7 @@ async def _get_history_for_response(
         session,
         select_related=(TaskHistory.task,),
         query_options=[undefer(TaskHistory.execution_request)],
-        id=history_id,
+        id=history.id,
     )
 
 
@@ -737,9 +738,7 @@ async def sync_task_history(
     )
     if not claim_result.rowcount:
         session.expunge(task_history)
-        task_history = await _get_history_for_response(
-            session, cast(int, task_history.id)
-        )
+        task_history = await _get_history_for_response(session, task_history)
         await _populate_log_metadata(session, [task_history])
         return task_history
 
@@ -769,10 +768,10 @@ async def sync_task_history(
             id=task_history.id,
         )
         raise
-    synced = await _get_history_for_response(session, cast(int, saved.id))
+    synced = await _get_history_for_response(session, saved)
     await maybe_dispatch_chain(synced, was_running=True)
     if synced.status.is_terminal():
-        await maybe_record_run(cast(int, synced.id), executor)
+        await maybe_record_run(cast("int", synced.id), executor)
     await _populate_log_metadata(session, [synced])
     return synced
 
@@ -824,7 +823,7 @@ async def create_task_history(session: SessionDep, task: TaskHistory) -> TaskHis
         )
     task.set_failure_reason(task.failure_reason)
     saved = await TaskHistoryManager.save(session, task)
-    return await _get_history_for_response(session, cast(int, saved.id))
+    return await _get_history_for_response(session, saved)
 
 
 @router.get("/stats/{task}", dependencies=[IsAuthenticatedDep])

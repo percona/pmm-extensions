@@ -307,9 +307,9 @@ def field_for(parameter: SnippetMetaParameter) -> AnyField:
     :rtype: AnyField
     """
     if parameter.choices:
-        field = cast(AnyField, _choice_field_for(parameter))
+        field = cast("AnyField", _choice_field_for(parameter))
     else:
-        field = cast(AnyField, _FIELD_BUILDERS[parameter.py_type](parameter))
+        field = cast("AnyField", _FIELD_BUILDERS[parameter.py_type](parameter))
     update = {}
     requires = _requires_gates(parameter)
     if requires is not None:
@@ -351,7 +351,7 @@ def build_snippet_schema(snippet: BaseSnippet) -> AppSchema:
 
     execution_fields = [
         cast(
-            AnyField,
+            "AnyField",
             HostField(
                 name=EXECUTOR_HOST_FIELD_NAME,
                 label=EXECUTION_HOST_LABEL,
@@ -362,7 +362,7 @@ def build_snippet_schema(snippet: BaseSnippet) -> AppSchema:
     if snippet.sudo.is_optional:
         execution_fields.append(
             cast(
-                AnyField,
+                "AnyField",
                 BoolField(
                     name=SUDO_FIELD_NAME,
                     label="Run with sudo",
@@ -374,7 +374,7 @@ def build_snippet_schema(snippet: BaseSnippet) -> AppSchema:
     elif snippet.sudo == SnippetSudoOption.ALWAYS:
         execution_fields.append(
             cast(
-                AnyField,
+                "AnyField",
                 BoolField(
                     name=SUDO_FIELD_NAME,
                     label="Run with sudo",
@@ -386,7 +386,7 @@ def build_snippet_schema(snippet: BaseSnippet) -> AppSchema:
     if snippet.allow_extra_args:
         execution_fields.append(
             cast(
-                AnyField,
+                "AnyField",
                 StringField(
                     name=EXTRA_ARGS_FIELD_NAME,
                     label="Extra Args",
@@ -401,7 +401,7 @@ def build_snippet_schema(snippet: BaseSnippet) -> AppSchema:
             title="Script preview",
             fields=[
                 cast(
-                    AnyField,
+                    "AnyField",
                     ScriptPreviewField(
                         name=SCRIPT_PREVIEW_FIELD_NAME,
                         label="Snippet file",
