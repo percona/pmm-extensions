@@ -127,8 +127,8 @@ class TestReleaseOnAbandonedDispatch:
 
         assert stop_calls(api) == [f"/history/{HISTORY_ID}/stop/"]
         assert result.error == (
-            f"the scan did not finish within 1s and was cancelled (task history "
-            f"{HISTORY_ID})"
+            f"the scan on {HOST} did not finish within 1s and was cancelled (task "
+            f"history {HISTORY_ID})"
         )
         assert result.error_code == ScanFailure.TIMED_OUT
         # The sweep still reports the probe as failed — releasing the queue item is
@@ -145,7 +145,7 @@ class TestReleaseOnAbandonedDispatch:
         result = await probe_host(api, HOST, entries())
 
         assert stop_calls(api) == [f"/history/{HISTORY_ID}/stop/"]
-        assert "the scan did not finish" in (result.error or "")
+        assert f"the scan on {HOST} did not finish" in (result.error or "")
         # The operator needs to know which id is now blocking this host: the stop
         # route raises exactly where the allocation is gone, which is the case most
         # likely to have caused the abandonment.

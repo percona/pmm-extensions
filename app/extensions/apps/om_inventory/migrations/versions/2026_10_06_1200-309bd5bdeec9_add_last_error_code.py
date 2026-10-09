@@ -19,17 +19,18 @@ Revision ID: 309bd5bdeec9
 Revises: a3f1c8d24b71
 Create Date: 2026-10-06 12:00:00.000000
 
-What kind of failure ``last_error`` is, as a ``ScanFailure`` value, so a resolution
-hint can be keyed off it rather than off the message's wording.
+What kind of failure ``last_error`` is, as a ``ScanFailure``, so a resolution hint
+can be keyed off it rather than off the message's wording.
 
 A revision of its own rather than a column folded into ``a3f1c8d24b71``, although
 that file is still rewritten in place until OM ships: its ``upgrade()`` creates each
 table only when absent, so a column added there would never reach a database that
 already has the tables - every developer stack and feature build that has run it.
 
-Plain text rather than an enum with a CHECK constraint, so a new failure kind is a
-code change and not a migration. Nullable, with no default: ``None`` is what a
-healthy row holds, and what a failing row from before this revision honestly is.
+A non-native enum with a CHECK constraint, like ``om_inventory_run.status``, so a new
+failure kind needs a revision that widens the constraint. Nullable, with no default:
+``None`` is what a healthy row holds, and what a failing row from before this
+revision honestly is.
 """
 
 from typing import Sequence, Union
@@ -48,19 +49,58 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 _TABLES = ("om_host", "om_service")
+_COLUMN = "last_error_code"
+#: The name SQLAlchemy gives the model's CHECK constraint, so a database built by
+#: this revision and one built from the metadata agree.
+_CONSTRAINT = "scanfailure"
+#: ``ScanFailure``'s values, which are what the column stores.
+_VALUES = (
+    "dispatch_rejected",
+    "not_started",
+    "timed_out",
+    "blocked",
+    "environment_setup_failed",
+    "scan_crashed",
+    "scan_lost",
+    "no_output",
+    "database_unreachable",
+    "database_auth_failed",
+    "database_error",
+    "unknown",
+)
+
+
+def _column() -> sa.Column:
+    """Build the column, fresh for each table it is added to.
+
+    ``create_constraint`` is off and :func:`upgrade` creates the CHECK explicitly
+    instead, so each engine gets it once: left on, the type would emit it as well -
+    from ``ADD COLUMN`` on PostgreSQL, from the table rebuild on SQLite.
+
+    :return: The column.
+    """
+    return sa.Column(
+        _COLUMN,
+        sa.Enum(*_VALUES, name=_CONSTRAINT, native_enum=False, create_constraint=False),
+        nullable=True,
+    )
 
 
 def upgrade() -> None:
     schema = om_schema(sep_settings.DATABASE)
     for table in _TABLES:
-        op.add_column(
-            table,
-            sa.Column("last_error_code", sa.String(), nullable=True),
-            schema=schema,
-        )
+        # Batch mode, so SQLite gets the CHECK as well: it cannot add a constraint
+        # to an existing table, and batch mode rebuilds the table to do it.
+        with op.batch_alter_table(table, schema=schema) as batch_op:
+            batch_op.add_column(_column())
+            batch_op.create_check_constraint(
+                _CONSTRAINT, sa.column(_COLUMN).in_(_VALUES)
+            )
 
 
 def downgrade() -> None:
     schema = om_schema(sep_settings.DATABASE)
     for table in reversed(_TABLES):
-        op.drop_column(table, "last_error_code", schema=schema)
+        with op.batch_alter_table(table, schema=schema) as batch_op:
+            batch_op.drop_constraint(_CONSTRAINT, type_="check")
+            batch_op.drop_column(_COLUMN)

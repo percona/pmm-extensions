@@ -227,9 +227,8 @@ class ObservedEntity(SQLModel):
         while healthy.
     :param consecutive_failures: Failures since the last success.
     :param last_error: The most recent failure detail.
-    :param last_error_code: What kind of failure ``last_error`` is, as a
-        :class:`ScanFailure` value. ``None`` while healthy, and on a row whose last
-        failure predates the column.
+    :param last_error_code: What kind of failure ``last_error`` is. ``None`` while
+        healthy, and on a row whose last failure predates the column.
     :param last_run_id: The run that last attempted it, for joining to the receipt.
     :param updated_at: When this row last changed.
     """
@@ -257,7 +256,17 @@ class ObservedEntity(SQLModel):
     )
     consecutive_failures: int = SQLField(default=0, nullable=False)
     last_error: str | None = SQLField(default=None)
-    last_error_code: str | None = SQLField(default=None)
+    last_error_code: ScanFailure | None = SQLField(
+        default=None,
+        # The values, not the member names ``ProbeRunStatus`` stores: they are what
+        # the API reports, and what rows written before the CHECK already hold.
+        sa_type=EnumField(
+            ScanFailure,
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda members: [member.value for member in members],
+        ),
+    )
     last_run_id: UUID | None = SQLField(default=None)
     updated_at: UTCDatetime = SQLField(
         default_factory=utc_now, sa_type=DateTimeWithTimezone, nullable=False
@@ -657,8 +666,9 @@ class FreshnessResponse(BaseModel):
 
     :param observed: Everything collected, with its own ``collected_at``: when the
         last successful probe ran. On a service, a failed attempt since then still
-        refreshes the facts read off the host rather than out of the database (the
-        installed binary and the process serving the port), so those can be newer.
+        refreshes ``probe_status`` and the facts read off the host rather than out of
+        the database (the installed binary and the process serving the port), so those
+        can be newer.
         Empty when this entity has never been successfully probed.
     :param first_seen_at: When OM first wrote a row for it.
     :param last_attempt_at: When a run last targeted it. ``None`` means no run ever
@@ -668,8 +678,8 @@ class FreshnessResponse(BaseModel):
         healthy.
     :param consecutive_failures: Failures since the last success.
     :param last_error: The most recent failure detail.
-    :param last_error_code: What kind of failure it is, as a :class:`ScanFailure`
-        value; ``None`` while healthy or when the failure predates classification.
+    :param last_error_code: What kind of failure it is; ``None`` while healthy or
+        when the failure predates classification.
     :param last_run_id: The run that last attempted it, so a reader of the failure
         can open the run that produced it; ``None`` until a run has.
     """
@@ -681,7 +691,7 @@ class FreshnessResponse(BaseModel):
     failing_since: UTCDatetime | None = None
     consecutive_failures: int = 0
     last_error: str | None = None
-    last_error_code: str | None = None
+    last_error_code: ScanFailure | None = None
     last_run_id: UUID | None = None
 
 

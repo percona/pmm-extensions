@@ -33,24 +33,32 @@ from uuid import uuid4
 import pytest
 from fastapi import status
 from httpx import AsyncClient
+from sqlalchemy import String, type_coerce
+from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.requests import RemoteAPI
 from app.extensions.apps.om_inventory.crud import list_hosts, upsert_host
 from app.extensions.apps.om_inventory.dispatch import (
     classify_terminal_failure,
     probe_host,
+    TRUNCATION_MARK,
 )
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
-from app.extensions.apps.om_inventory.models import NodeResolution, ScanFailure
+from app.extensions.apps.om_inventory.models import NodeResolution, OmHost, ScanFailure
 from app.extensions.apps.om_inventory.service import (
     classify_record_failure,
     persist_estate,
     SweepOutcome,
 )
-from app.tasks.execution.executors.nomad.models import _failed_step_reason
-from tests.app.extensions.apps.om_inventory.conftest import BASE, HOST
+from app.tasks.models import TaskHistoryStatusEnum
+from tests.app.extensions.apps.om_inventory.conftest import (
+    BASE,
+    ERROR_DETAIL_CAP,
+    HOST,
+)
 
 HISTORY_ID = 811
 NODE_ID = "id-db00"
@@ -58,6 +66,8 @@ NODE_ID = "id-db00"
 AUTH_FAILED = 18
 #: The payload's record for the host itself, which carries a null ``service``.
 HOST_RECORD = {"service": None, "system": {"os_name": "Ubuntu 24.04"}}
+#: What the tasks service says when ``prepare-env`` cannot find ``python3``.
+NO_PYTHON = "Step 'prepare-env' failed (exit code 127)."
 
 
 def entries() -> list[MappedService]:
@@ -99,7 +109,7 @@ def make_api(history: dict[str, Any], logs: list[str] | None = None) -> MagicMoc
     :param logs: The lines the log stream yields, every step's.
     :return: The stub.
     """
-    api = MagicMock()
+    api = MagicMock(spec=RemoteAPI)
 
     async def get(path: str, **_: Any) -> dict[str, Any]:
         return {"id": HISTORY_ID, **history}
@@ -132,10 +142,7 @@ class TestADispatchSaysWhatKindOfFailureItWas:
     ) -> None:
         """Report a failed ``prepare-env`` from its own output, not "no output"."""
         api = make_api(
-            {
-                "status": "failed",
-                "failure_reason": "Step 'prepare-env' failed (exit code 127).",
-            },
+            {"status": TaskHistoryStatusEnum.FAILED.value, "failure_reason": NO_PYTHON},
             [log_line("prepare-env", "stderr", "sh: 1: python3: not found\n")],
         )
 
@@ -143,16 +150,29 @@ class TestADispatchSaysWhatKindOfFailureItWas:
 
         assert result.error_code == ScanFailure.ENVIRONMENT_SETUP_FAILED
         assert result.error == (
-            "scan failed: Step 'prepare-env' failed (exit code 127). "
-            "sh: 1: python3: not found"
+            f"scan failed on {HOST}: {NO_PYTHON} sh: 1: python3: not found"
         )
+
+    @pytest.mark.asyncio
+    async def test_a_silent_failed_step_is_still_named_with_its_exit_code(
+        self,
+    ) -> None:
+        """Name the node, the step and its exit code when the step printed nothing."""
+        api = make_api(
+            {"status": TaskHistoryStatusEnum.FAILED.value, "failure_reason": NO_PYTHON}
+        )
+
+        result = await probe_host(api, HOST, entries())
+
+        assert result.error_code == ScanFailure.ENVIRONMENT_SETUP_FAILED
+        assert result.error == f"scan failed on {HOST}: {NO_PYTHON}"
 
     @pytest.mark.asyncio
     async def test_a_step_silent_on_stderr_is_reported_from_its_stdout(self) -> None:
         """Fall back to the failed step's stdout, where ``venv`` reports ensurepip."""
         api = make_api(
             {
-                "status": "failed",
+                "status": TaskHistoryStatusEnum.FAILED.value,
                 "failure_reason": "Step 'prepare-env' failed (exit code 1).",
             },
             [
@@ -176,7 +196,7 @@ class TestADispatchSaysWhatKindOfFailureItWas:
         traceback = "Traceback (most recent call last):\n" + "  frame\n" * 200
         api = make_api(
             {
-                "status": "failed",
+                "status": TaskHistoryStatusEnum.FAILED.value,
                 "failure_reason": "Step 'run-script' failed (exit code 1).",
             },
             [
@@ -194,46 +214,48 @@ class TestADispatchSaysWhatKindOfFailureItWas:
     @pytest.mark.asyncio
     async def test_a_lost_run_is_scan_lost(self) -> None:
         """Report a run the node never finished as lost, not as a crash."""
-        api = make_api({"status": "lost", "failure_reason": None})
+        api = make_api(
+            {"status": TaskHistoryStatusEnum.LOST.value, "failure_reason": None}
+        )
 
         result = await probe_host(api, HOST, entries())
 
         assert result.error_code == ScanFailure.SCAN_LOST
-        assert result.error == "scan lost: no output"
+        assert result.error == f"scan lost on {HOST}: no output"
 
     @pytest.mark.asyncio
     async def test_a_run_that_never_started_is_not_a_timeout_of_the_node(
         self,
     ) -> None:
         """Tell a scan still queued apart from one that ran too long."""
-        api = make_api({"status": "pending"})
+        api = make_api({"status": TaskHistoryStatusEnum.PENDING.value})
 
         result = await probe_host(api, HOST, entries())
 
         assert result.error_code == ScanFailure.NOT_STARTED
         assert result.error == (
-            f"the scan did not start within 1s and was cancelled (task history "
-            f"{HISTORY_ID})"
+            f"the scan on {HOST} did not start within 1s and was cancelled (task "
+            f"history {HISTORY_ID})"
         )
 
     @pytest.mark.asyncio
     async def test_a_dispatch_the_tasks_api_refused_was_never_queued(self) -> None:
         """Report a refused dispatch as never queued."""
-        api = make_api({"status": "success"})
+        api = make_api({"status": TaskHistoryStatusEnum.SUCCESS.value})
         api.post = AsyncMock(side_effect=RuntimeError("connection refused"))
 
         result = await probe_host(api, HOST, entries())
 
         assert result.error_code == ScanFailure.DISPATCH_REJECTED
         assert result.error == (
-            "could not queue the scan: RuntimeError: connection refused"
+            f"could not queue the scan on {HOST}: RuntimeError: connection refused"
         )
 
     @pytest.mark.asyncio
     async def test_only_the_payload_s_stdout_is_read_as_records(self) -> None:
         """Parse records from ``run-script`` alone, though every step is streamed."""
         api = make_api(
-            {"status": "success"},
+            {"status": TaskHistoryStatusEnum.SUCCESS.value},
             [
                 # A JSON line from another step must not be taken for the payload's.
                 log_line("prepare-env", "stdout", '{"service": null}\n'),
@@ -246,6 +268,59 @@ class TestADispatchSaysWhatKindOfFailureItWas:
         assert result.error is None
         assert result.error_code is None
         assert result.host_record == HOST_RECORD
+
+
+class TestTheDetailIsBounded:
+    """Keep the stored detail within the cap, and keep the part that matters."""
+
+    @pytest.mark.asyncio
+    async def test_a_long_stream_keeps_the_node_the_step_and_its_end(self) -> None:
+        """Cut a long stream from its start, after the node and the failed step."""
+        last_line = "ERROR: No matching distribution found for pymongo<5,>=4.6"
+        api = make_api(
+            {
+                "status": TaskHistoryStatusEnum.FAILED.value,
+                "failure_reason": "Step 'prepare-env' failed (exit code 1).",
+            },
+            [
+                log_line(
+                    "prepare-env",
+                    "stderr",
+                    "Collecting pymongo\n" * 200 + last_line + "\n",
+                )
+            ],
+        )
+
+        result = await probe_host(api, HOST, entries())
+
+        error = result.error or ""
+        assert len(error) == ERROR_DETAIL_CAP
+        assert error.startswith(
+            f"scan failed on {HOST}: Step 'prepare-env' failed (exit code 1). "
+            f"{TRUNCATION_MARK}"
+        )
+        assert error.endswith(last_line)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_release_keeps_its_notice_whole(self) -> None:
+        """Cut the failure before an unreleased run, never the notice about it."""
+        api = make_api({"status": TaskHistoryStatusEnum.RUNNING.value})
+        api.get = AsyncMock(side_effect=RuntimeError("x" * 5000))
+        api.post = AsyncMock(
+            side_effect=[{"id": HISTORY_ID}, RuntimeError("stop refused")]
+        )
+
+        result = await probe_host(api, HOST, entries())
+
+        error = result.error or ""
+        assert result.error_code == ScanFailure.BLOCKED
+        assert len(error) == ERROR_DETAIL_CAP
+        assert error.startswith(f"the scan on {HOST} failed: RuntimeError: xxx")
+        assert error.endswith(
+            f"{TRUNCATION_MARK} -- and task history {HISTORY_ID} could not be "
+            "released, so it will block this node's next scan: RuntimeError: stop "
+            "refused"
+        )
 
 
 class TestTheFailedStepIsReadFromTheTasksService:
@@ -262,28 +337,38 @@ class TestTheFailedStepIsReadFromTheTasksService:
     def test_the_executor_s_own_reason_is_classified(
         self, step: str, expected: ScanFailure
     ) -> None:
-        """Classify the reason ``_failed_step_reason`` writes for each step.
+        """Classify the sentence the Nomad executor writes for a failed step.
 
         :param step: The step that failed.
         :param expected: The code it should map to.
         """
-        reason = _failed_step_reason(
-            {
-                "TaskStates": {
-                    step: {
-                        "Failed": True,
-                        "Events": [{"Type": "Terminated", "ExitCode": 127}],
-                    }
-                }
-            }
-        )
+        reason = f"Step '{step}' failed (exit code 127)."
 
-        assert reason is not None
-        assert classify_terminal_failure("failed", reason) == expected
+        assert (
+            classify_terminal_failure(TaskHistoryStatusEnum.FAILED.value, reason)
+            == expected
+        )
 
     def test_a_failure_with_no_reason_is_unknown(self) -> None:
         """Give no specific code where nothing says which step failed."""
-        assert classify_terminal_failure("failed", None) == ScanFailure.UNKNOWN
+        assert (
+            classify_terminal_failure(TaskHistoryStatusEnum.FAILED.value, None)
+            == ScanFailure.UNKNOWN
+        )
+
+    @pytest.mark.parametrize(
+        "status", sorted(TaskHistoryStatusEnum.interrupted_statuses())
+    )
+    def test_an_interrupted_run_is_scan_lost_whatever_step_it_names(
+        self, status: TaskHistoryStatusEnum
+    ) -> None:
+        """Report a run ended from outside as lost, not as the step it was in.
+
+        :param status: A status the run was ended in rather than finished.
+        """
+        assert classify_terminal_failure(status.value, NO_PYTHON) == (
+            ScanFailure.SCAN_LOST
+        )
 
 
 class TestAFailedRecordIsClassifiedByItsType:
@@ -371,12 +456,20 @@ class TestTheCodeReachesTheRow:
         outcome = SweepOutcome(total=0, hosts=[failing_host()])
         outcome.dispatched.add("db00")
         outcome.fail_host(
-            NODE_ID, "scan failed: no output", ScanFailure.ENVIRONMENT_SETUP_FAILED
+            NODE_ID,
+            f"scan failed on db00: {NO_PYTHON}",
+            ScanFailure.ENVIRONMENT_SETUP_FAILED,
         )
         await persist(session, outcome)
 
         stored = (await list_hosts(session))[0]
-        assert stored.last_error_code == ScanFailure.ENVIRONMENT_SETUP_FAILED
+        assert stored.last_error_code is ScanFailure.ENVIRONMENT_SETUP_FAILED
+        # Stored as the value the API reports, which rows written before the column
+        # was an enum already hold, so they read back too.
+        raw = await session.exec(
+            select(type_coerce(col(OmHost.last_error_code), String))
+        )
+        assert raw.one() == ScanFailure.ENVIRONMENT_SETUP_FAILED.value
 
         recovered = SweepOutcome(total=0, hosts=[failing_host()])
         recovered.dispatched.add("db00")
@@ -405,7 +498,7 @@ class TestTheCodeReachesTheRow:
             name="db00",
             address="10.0.0.1",
             executor_host="db00",
-            error="scan lost: no output",
+            error="scan lost on db00: no output",
             error_code=ScanFailure.SCAN_LOST,
             run_id=run_id,
         )
@@ -415,6 +508,6 @@ class TestTheCodeReachesTheRow:
 
         assert response.status_code == status.HTTP_200_OK
         host = response.json()["items"][0]
-        assert host["last_error"] == "scan lost: no output"
-        assert host["last_error_code"] == "scan_lost"
+        assert host["last_error"] == "scan lost on db00: no output"
+        assert host["last_error_code"] == ScanFailure.SCAN_LOST.value
         assert host["last_run_id"] == str(run_id)
