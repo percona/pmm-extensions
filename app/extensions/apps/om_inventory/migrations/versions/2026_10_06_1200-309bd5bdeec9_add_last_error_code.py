@@ -53,20 +53,20 @@ _COLUMN = "last_error_code"
 #: The name SQLAlchemy gives the model's CHECK constraint, so a database built by
 #: this revision and one built from the metadata agree.
 _CONSTRAINT = "scanfailure"
-#: ``ScanFailure``'s member *names*, which are what the column stores.
-_NAMES = (
-    "DISPATCH_REJECTED",
-    "NOT_STARTED",
-    "TIMED_OUT",
-    "BLOCKED",
-    "ENVIRONMENT_SETUP_FAILED",
-    "SCAN_CRASHED",
-    "SCAN_LOST",
-    "NO_OUTPUT",
-    "DATABASE_UNREACHABLE",
-    "DATABASE_AUTH_FAILED",
-    "DATABASE_ERROR",
-    "UNKNOWN",
+#: ``ScanFailure``'s values, which are what the column stores.
+_VALUES = (
+    "dispatch_rejected",
+    "not_started",
+    "timed_out",
+    "blocked",
+    "environment_setup_failed",
+    "scan_crashed",
+    "scan_lost",
+    "no_output",
+    "database_unreachable",
+    "database_auth_failed",
+    "database_error",
+    "unknown",
 )
 
 
@@ -81,7 +81,7 @@ def _column() -> sa.Column:
     """
     return sa.Column(
         _COLUMN,
-        sa.Enum(*_NAMES, name=_CONSTRAINT, native_enum=False, create_constraint=False),
+        sa.Enum(*_VALUES, name=_CONSTRAINT, native_enum=False, create_constraint=False),
         nullable=True,
     )
 
@@ -94,7 +94,7 @@ def upgrade() -> None:
         with op.batch_alter_table(table, schema=schema) as batch_op:
             batch_op.add_column(_column())
             batch_op.create_check_constraint(
-                _CONSTRAINT, sa.column(_COLUMN).in_(_NAMES)
+                _CONSTRAINT, sa.column(_COLUMN).in_(_VALUES)
             )
 
 

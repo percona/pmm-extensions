@@ -258,7 +258,14 @@ class ObservedEntity(SQLModel):
     last_error: str | None = SQLField(default=None)
     last_error_code: ScanFailure | None = SQLField(
         default=None,
-        sa_type=EnumField(ScanFailure, native_enum=False, create_constraint=True),
+        # The values, not the member names ``ProbeRunStatus`` stores: they are what
+        # the API reports, and what rows written before the CHECK already hold.
+        sa_type=EnumField(
+            ScanFailure,
+            native_enum=False,
+            create_constraint=True,
+            values_callable=lambda members: [member.value for member in members],
+        ),
     )
     last_run_id: UUID | None = SQLField(default=None)
     updated_at: UTCDatetime = SQLField(

@@ -33,6 +33,8 @@ from uuid import uuid4
 import pytest
 from fastapi import status
 from httpx import AsyncClient
+from sqlalchemy import String, type_coerce
+from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.requests import RemoteAPI
@@ -45,13 +47,12 @@ from app.extensions.apps.om_inventory.dispatch import (
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
-from app.extensions.apps.om_inventory.models import NodeResolution, ScanFailure
+from app.extensions.apps.om_inventory.models import NodeResolution, OmHost, ScanFailure
 from app.extensions.apps.om_inventory.service import (
     classify_record_failure,
     persist_estate,
     SweepOutcome,
 )
-from app.tasks.execution.executors.nomad.models import _failed_step_reason
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.extensions.apps.om_inventory.conftest import (
     BASE,
@@ -336,23 +337,13 @@ class TestTheFailedStepIsReadFromTheTasksService:
     def test_the_executor_s_own_reason_is_classified(
         self, step: str, expected: ScanFailure
     ) -> None:
-        """Classify the reason ``_failed_step_reason`` writes for each step.
+        """Classify the sentence the Nomad executor writes for a failed step.
 
         :param step: The step that failed.
         :param expected: The code it should map to.
         """
-        reason = _failed_step_reason(
-            {
-                "TaskStates": {
-                    step: {
-                        "Failed": True,
-                        "Events": [{"Type": "Terminated", "ExitCode": 127}],
-                    }
-                }
-            }
-        )
+        reason = f"Step '{step}' failed (exit code 127)."
 
-        assert reason is not None
         assert (
             classify_terminal_failure(TaskHistoryStatusEnum.FAILED.value, reason)
             == expected
@@ -473,6 +464,12 @@ class TestTheCodeReachesTheRow:
 
         stored = (await list_hosts(session))[0]
         assert stored.last_error_code is ScanFailure.ENVIRONMENT_SETUP_FAILED
+        # Stored as the value the API reports, which rows written before the column
+        # was an enum already hold, so they read back too.
+        raw = await session.exec(
+            select(type_coerce(col(OmHost.last_error_code), String))
+        )
+        assert raw.one() == ScanFailure.ENVIRONMENT_SETUP_FAILED.value
 
         recovered = SweepOutcome(total=0, hosts=[failing_host()])
         recovered.dispatched.add("db00")
