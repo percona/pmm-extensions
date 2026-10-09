@@ -1108,7 +1108,7 @@ def create_app(
     :return: An instance of the FastAPI application, carrying the database
         capacity handlers every sub-application inherits from here.
     """
-    openapi_kwargs = {}
+    openapi_kwargs: dict[str, Any] = {}
     if title is not None:
         openapi_kwargs["title"] = title
     if version is not None:
