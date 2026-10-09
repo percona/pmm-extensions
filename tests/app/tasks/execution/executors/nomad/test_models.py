@@ -7787,7 +7787,7 @@ class TestNomadTaskStatesToExecutionEvents:
         assert events[0].event_type == "Started"
 
     def test_skips_non_string_task_name(self):
-        """Non-string task keys are ignored rather than raised on."""
+        """Ignore non-string task keys rather than raising on them."""
         task_states = {
             1: {
                 "Events": [
@@ -7814,7 +7814,7 @@ class TestNomadTaskStatesToExecutionEvents:
         assert "kept" in events[0].description
 
     def test_type_missing_coerces_to_unknown(self):
-        """A missing ``Type`` still produces an event labeled ``Unknown``."""
+        """Label an event ``Unknown`` when its ``Type`` is missing."""
         task_states = {
             "step1": {
                 "Events": [
@@ -7831,7 +7831,7 @@ class TestNomadTaskStatesToExecutionEvents:
         assert "no type field" in events[0].description
 
     def test_type_non_string_is_coerced_with_str(self):
-        """A non-string ``Type`` is kept via ``str(value)`` rather than dropped."""
+        """Keep a non-string ``Type`` via ``str(value)`` rather than dropping it."""
         task_states = {
             "step1": {
                 "Events": [
@@ -7849,7 +7849,7 @@ class TestNomadTaskStatesToExecutionEvents:
         assert "numeric type" in events[0].description
 
     def test_non_numeric_time_drops_event(self):
-        """A present but non-numeric ``Time`` drops the event."""
+        """Drop an event whose ``Time`` is present but non-numeric."""
         task_states = {
             "step1": {
                 "Events": [
@@ -7948,7 +7948,7 @@ class TestNomadTaskStatesToExecutionEvents:
         assert out[0].step == "step1"
 
     def test_nomad_executor_get_events_non_dict_tracking_returns_empty(self):
-        """Non-dict tracking degrades to an empty event list."""
+        """Degrade non-dict tracking to an empty event list."""
         history = _build_queue_item(status=TaskHistoryStatusEnum.SUCCESS)
         history.execution_request.tracking = "not-a-dict"  # type: ignore[assignment]
         executor = _build_executor()
