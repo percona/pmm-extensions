@@ -592,8 +592,8 @@ as a string.
 def _to_path(value: Any) -> Path:
     """Coerce a path-like input to :class:`~pathlib.Path` before validation.
 
-    Pydantic cannot inspect the signature of the ``Path`` class itself, so the
-    before-validator needs a plain function to wrap it.
+    Pydantic rejects ``Path``'s own ``(*args, **kwargs)`` signature as a
+    validator, so the before-validator needs a plain function to wrap it.
 
     :param value: The raw field input.
     :return: The input as a ``Path``.

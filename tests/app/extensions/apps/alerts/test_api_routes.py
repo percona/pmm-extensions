@@ -134,7 +134,10 @@ def unauthenticated_api_client(session: AsyncSession) -> Iterator[TestClient]:
 
 
 def _no_pmm_present_names() -> set[str]:
-    """Report that PMM holds none of the names, as an empty-PMM override."""
+    """Report that PMM holds none of the names, as an empty-PMM override.
+
+    :return: An empty set of names.
+    """
     return set()
 
 

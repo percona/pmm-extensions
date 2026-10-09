@@ -4199,11 +4199,11 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=ca, cert=cl)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
 
         await _check_nomad_cert_expiry()
 
@@ -4226,11 +4226,11 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=ca, cert=None)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
 
         await _check_nomad_cert_expiry()
 
@@ -4253,11 +4253,11 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=ca, cert=None)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
 
         await _check_nomad_cert_expiry()
 
@@ -4275,11 +4275,11 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=ca, cert=None)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
 
         await _check_nomad_cert_expiry()
 
@@ -4300,14 +4300,14 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=ca, cert=None)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mocker.patch.object(
             Path, "read_bytes", side_effect=OSError("simulated read failure")
         )
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
         log_warning = mocker.patch(f"{MODULE}.logger.warning")
 
         await _check_nomad_cert_expiry()
@@ -4328,7 +4328,7 @@ class TestCheckNomadCertExpiry:
             "app.tasks.celery.tasks_settings",
             MagicMock(NOMAD=_nomad_config_for_paths(ca=bad, cert=None)),
         )
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         log_warning = mocker.patch(f"{MODULE}.logger.warning")
 
         await _check_nomad_cert_expiry()
@@ -4347,11 +4347,11 @@ class TestCheckNomadCertExpiry:
         # Exists at config-load (passes path validation) but gone by read time.
         ca.unlink()
         mocker.patch("app.tasks.celery.tasks_settings", MagicMock(NOMAD=nomad))
-        mocker.patch("app.core.utils.utc_now", return_value=ANCHOR)
+        mocker.patch("app.tasks.celery.utc_now", return_value=ANCHOR)
         mock_alert = MagicMock()
         mock_alert.trigger = AsyncMock()
         mock_alert.resolve = AsyncMock()
-        mocker.patch("app.core.alerts.config.alert_service", mock_alert)
+        mocker.patch("app.tasks.celery.alert_service", mock_alert)
         log_warning = mocker.patch(f"{MODULE}.logger.warning")
 
         await _check_nomad_cert_expiry()

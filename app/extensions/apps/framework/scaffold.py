@@ -951,7 +951,7 @@ def _default_item_display_name_plural(
     """
     if not singular_declared:
         return display_name
-    from app.extensions.apps.framework.schema import (  # noqa: PLC0415
+    from app.extensions.apps.framework.schema import (  # noqa: PLC0415 - module imports stdlib only
         pluralize_item_display_name,
     )
 

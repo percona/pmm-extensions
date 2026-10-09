@@ -52,7 +52,7 @@ from sqlmodel import col, or_
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.celery import celery
-from app.core.alerts.config import alert_service
+from app.core.alerts.config import alert_service, alert_settings
 from app.core.alerts.models import AlertSeverity
 from app.core.db.utils import (
     func_json_extract,
@@ -1335,10 +1335,6 @@ def check_nomad_cert_expiry() -> None:
 
 async def _check_nomad_cert_expiry() -> None:
     """Evaluate Nomad CA and client PEM files and fire or clear expiry alerts."""
-    from app.core.alerts.config import alert_service, alert_settings  # noqa: PLC0415
-    from app.core.alerts.models import AlertSeverity  # noqa: PLC0415
-    from app.core.utils import utc_now  # noqa: PLC0415
-
     nomad = normalize_nomad_config_value(tasks_settings.NOMAD)
     warn_days = nomad.cert_expiry_warn_days
     now = utc_now()

@@ -21,6 +21,7 @@ __all__ = [
     "mime_type_to_highlighter_language",
 ]
 
+import mimetypes
 import string
 from collections.abc import Generator
 from itertools import product
@@ -64,8 +65,6 @@ def guess_mime_type(file_path: Path) -> str:
         import magic  # noqa: PLC0415
 
         return magic.from_file(file_path, mime=True) or "text/plain"
-    import mimetypes  # noqa: PLC0415
-
     return mimetypes.types_map.get(file_path.suffix) or "text/plain"
 
 

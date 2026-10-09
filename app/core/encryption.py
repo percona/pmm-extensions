@@ -102,7 +102,7 @@ def _get_fernet() -> Fernet:
 
     :return: The cached cipher.
     """
-    from app.core.config import (  # noqa: PLC0415 - config imports settings_override.models, whose cache imports this (cycle)
+    from app.core.config import (  # noqa: PLC0415 - config imports settings_override, whose __init__ imports cache, which imports this (cycle)
         settings,
     )
 
