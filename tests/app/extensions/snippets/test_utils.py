@@ -47,7 +47,7 @@ class TestGuessMimeType:
 
     def test_with_magic_enabled(self, tmp_path):
         """Verify MIME type detection using python-magic when enabled."""
-        import sys
+        import sys  # noqa: PLC0415
 
         test_file = tmp_path / "test.txt"
         test_file.write_text("hello world")
@@ -68,7 +68,7 @@ class TestGuessMimeType:
 
     def test_magic_returns_none_falls_back_to_text_plain(self, tmp_path):
         """Verify fallback to text/plain when magic returns None."""
-        import sys
+        import sys  # noqa: PLC0415
 
         test_file = tmp_path / "test.dat"
         test_file.write_bytes(b"\x00\x00")

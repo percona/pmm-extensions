@@ -1263,9 +1263,7 @@ def test_reason_required_when_severity_critical() -> None:
     with pytest.raises(pydantic.ValidationError):
         LagcheckForm(task_name="t", hostname="h", severity="critical")
 
-    LagcheckForm(
-        task_name="t", hostname="h", severity="critical", reason="replica lag"
-    )
+    LagcheckForm(task_name="t", hostname="h", severity="critical", reason="replica lag")
 ```
 
 The second construction is the other half of the assertion: the gate must *not*

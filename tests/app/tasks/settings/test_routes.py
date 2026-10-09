@@ -59,8 +59,8 @@ def admin_test_client_fixture(
     mock_executor: AsyncMock,
 ) -> Iterator[TestClient]:
     """Yield an admin-authenticated Tasks TestClient bound to the test session."""
-    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
-        lambda: None
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
     )
     tasks_app.dependency_overrides[get_current_user] = lambda: admin_user
     tasks_app.dependency_overrides[get_session] = lambda: session
@@ -80,8 +80,8 @@ def non_admin_client_fixture(
     The router-level gate is overridden so the refusal under test comes from the
     route's own ``IsAdminDep``, not from the gate that precedes it.
     """
-    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
-        lambda: None
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
     )
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
     tasks_app.dependency_overrides[get_session] = lambda: session

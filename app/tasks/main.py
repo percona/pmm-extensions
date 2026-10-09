@@ -154,7 +154,7 @@ async def internal_error_handler(
     exc: BaseException,
 ) -> None:
     """Proper log unhandled exceptions."""
-    logger.exception("Unhandled exception:", exc_info=exc)
+    logger.error("Unhandled exception:", exc_info=exc)
     raise exc
 
 
@@ -204,7 +204,7 @@ async def task_data_not_found_handler(
 @tasks_app.exception_handler(BaseNomadException)
 async def nomad_exception_handler(_: Request, exc: BaseNomadException) -> None:
     """Handle exceptions raised by Nomad."""
-    logger.exception("Error getting a response from Nomad", exc_info=exc)
+    logger.error("Error getting a response from Nomad", exc_info=exc)
     raise HTTPBadGatewayException(
         detail="Failed to get a response from Nomad, make sure the agent is online.",
     )

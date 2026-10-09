@@ -21,6 +21,7 @@ file set is derived and why both branches are needed.
 """
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -383,7 +384,7 @@ def test_a_configured_interpreter_of_another_version_is_refused(
     """Refuse a configured interpreter that is not the minimum host Python."""
     monkeypatch.setenv(CHECK_PYTHON_ENV, sys.executable)
 
-    with pytest.raises(InterpreterMismatchError, match="not 3.9"):
+    with pytest.raises(InterpreterMismatchError, match=re.escape("not 3.9")):
         resolve_py39_interpreter()
 
 

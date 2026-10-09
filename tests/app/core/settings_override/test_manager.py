@@ -103,7 +103,7 @@ async def test_duplicate_setting_class_and_key_raises_conflict(
 @pytest.mark.asyncio
 async def test_null_value_rejected_at_insert(session: AsyncSession) -> None:
     """SQL ``NULL`` for the ``value`` column is rejected by the schema."""
-    from sqlalchemy import text
+    from sqlalchemy import text  # noqa: PLC0415
 
     table_name = SettingOverride.__tablename__
     insert_stmt = text(

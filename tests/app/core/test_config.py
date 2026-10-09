@@ -18,6 +18,7 @@
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 import warnings
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -123,7 +124,7 @@ def mock_yaml_data():
 def mock_yaml_file(tmp_path, mock_yaml_data):
     """Create a temporary mock YAML file for testing."""
     yaml_file = tmp_path / "settings.yaml"
-    import yaml
+    import yaml  # noqa: PLC0415
 
     with yaml_file.open("w") as f:
         yaml.dump(mock_yaml_data, f)
@@ -1482,7 +1483,7 @@ class TestDerivedBeatStoreDefault:
         """Reject an unusable PMM Extensions database rather than derive a malformed store URI."""
         monkeypatch.setenv("EXTENSIONS__DATABASE__PORT", "notanumber")
 
-        with pytest.raises(ValidationError, match="DATABASE.PORT"):
+        with pytest.raises(ValidationError, match=re.escape("DATABASE.PORT")):
             Settings()
 
     @pytest.mark.usefixtures("_postgres_profile")

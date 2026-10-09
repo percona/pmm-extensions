@@ -26,10 +26,9 @@ def __getattr__(name: str) -> object:
     :raises AttributeError: If ``name`` is not exported by this package.
     """
     if name == "NomadExecutor":
-        # circular import: app.tasks.config imports NomadExecutor from this
-        # package, which resolves it back out of nomad.models (this package's
-        # submodule); deferring to first access keeps the chain open.
-        from app.tasks.execution.executors.nomad.models import NomadExecutor
+        from app.tasks.execution.executors.nomad.models import (  # noqa: PLC0415 - tasks.config imports NomadExecutor from this package (cycle)
+            NomadExecutor,
+        )
 
         globals()[name] = NomadExecutor
         return NomadExecutor

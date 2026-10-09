@@ -24,6 +24,7 @@ import from request handlers, but not from the migration-discovered ``models.py`
 """
 
 from enum import StrEnum
+from typing import Self
 
 from app.inventory.models import ServiceTypeEnum
 
@@ -106,7 +107,7 @@ class ATWCategory(StrEnum):
     # --- Backup and Recovery ---
     BACKUP_PBM = ("Backup / PBM", ParentCategory.BACKUP_RECOVERY)
 
-    def __new__(cls, label: str, parent: ParentCategory) -> "ATWCategory":  # noqa: D102
+    def __new__(cls, label: str, parent: ParentCategory) -> Self:  # noqa: D102
         obj = str.__new__(cls, label)
         obj._value_ = label
         obj._parent = parent  # noqa: SLF001

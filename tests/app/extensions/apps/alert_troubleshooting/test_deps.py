@@ -43,7 +43,7 @@ def _fake_snippet(meta: dict[str, Any]) -> Snippet:
     :return: An object typed as ``Snippet`` but backed by ``SimpleNamespace``.
     :rtype: Snippet
     """
-    return cast(Snippet, SimpleNamespace(meta=meta))
+    return cast("Snippet", SimpleNamespace(meta=meta))
 
 
 class TestCamelCaseToTitle:

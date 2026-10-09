@@ -154,7 +154,7 @@ async def test_close_all_force_closes_idle_client_cancelled_mid_invalidate(
     """Keep an idle eviction on pending so cancel mid-close cannot leak."""
     registry = ClientRegistry()
     client = await registry.get(RemoteAPI, endpoint="https://a.example.org")
-    entered, resume = patch_paused_close_when_idle(mocker, RemoteAPI)
+    entered, _resume = patch_paused_close_when_idle(mocker, RemoteAPI)
 
     invalidate_task = asyncio.create_task(registry.invalidate("https://a.example.org"))
     await asyncio.wait_for(entered.wait(), timeout=5)

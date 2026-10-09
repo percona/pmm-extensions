@@ -141,8 +141,8 @@ def api_admin_client_fixture(
     """Yield an admin-authenticated PMM Extensions TestClient with the in-memory PMM Extensions session."""
     extensions_app.dependency_overrides[get_current_user] = lambda: admin_user
     extensions_app.dependency_overrides[get_session] = lambda: override_session
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None
@@ -161,8 +161,8 @@ def api_non_admin_client_fixture(
     """Yield a non-admin PMM Extensions TestClient with the in-memory PMM Extensions session."""
     extensions_app.dependency_overrides[get_current_user] = lambda: regular_user
     extensions_app.dependency_overrides[get_session] = lambda: override_session
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None
@@ -185,9 +185,11 @@ def api_unauthenticated_client_fixture(
 
 def _configure_health_report_upload(mocker) -> None:
     """Patch ``health_report_settings`` so upload is fully configured."""
-    from pydantic import SecretStr
+    from pydantic import SecretStr  # noqa: PLC0415
 
-    from app.extensions.apps.report.config import health_report_settings
+    from app.extensions.apps.report.config import (  # noqa: PLC0415
+        health_report_settings,
+    )
 
     mocker.patch.object(health_report_settings, "upload", new=True)
     mocker.patch.object(health_report_settings, "endpoint", "https://snow.example.com")
@@ -409,7 +411,7 @@ class TestExtensionsConfigExportYaml:
         self, api_admin_client: TestClient
     ) -> None:
         """Render ``INVENTORY_ENDPOINT`` with the password masked in YAML export."""
-        from app.extensions.config import extensions_settings
+        from app.extensions.config import extensions_settings  # noqa: PLC0415
 
         full_url = "http://inv-user:inv-secret@inventory.internal:8080"
         try:
@@ -427,7 +429,7 @@ class TestExtensionsConfigExportYaml:
         self, api_admin_client: TestClient
     ) -> None:
         """Dump ``INVENTORY_ENDPOINT`` to the same redacted value as the LIST endpoint."""
-        from app.extensions.config import extensions_settings
+        from app.extensions.config import extensions_settings  # noqa: PLC0415
 
         full_url = "http://inv-user:inv-secret@inventory.internal:8080"
         try:
@@ -657,7 +659,7 @@ def _one_extensions_key(client: TestClient) -> str:
     """Return one real key on ``ExtensionsSettings`` as seen by the LIST projection."""
     keys = _list_keys_by_class(client)[EXTENSIONS_CLASS]
     assert keys, "expected ExtensionsSettings to expose at least one LIST key"
-    return sorted(keys)[0]
+    return min(keys)
 
 
 @pytest.mark.asyncio

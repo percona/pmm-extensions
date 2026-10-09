@@ -28,7 +28,6 @@ from typing import cast, TYPE_CHECKING
 
 from pydantic import BaseModel, JsonValue
 from sqlalchemy import Column, event, Index, inspect, String
-from sqlalchemy.orm import InstanceState
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Field as SQLField
 
@@ -38,7 +37,7 @@ from app.core.settings_override.constants import SETTING_CLASS_MAX_LENGTH
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
-    from sqlalchemy.orm import Mapper
+    from sqlalchemy.orm import InstanceState, Mapper
 
 #: Columns whose change on an already-persisted row must be accompanied by a
 #: matching ``updated_by`` restamp in the same flush. Excludes ``updated_at``:
@@ -159,7 +158,7 @@ def _instance_state(instance: SettingOverride) -> InstanceState:
     :param instance: The ``SettingOverride`` to inspect.
     :return: Its instance state.
     """
-    return cast(InstanceState, inspect(instance))
+    return cast("InstanceState", inspect(instance))
 
 
 class StaleActorUpdateError(RuntimeError):
