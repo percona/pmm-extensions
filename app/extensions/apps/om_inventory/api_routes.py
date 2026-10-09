@@ -39,11 +39,14 @@ the rarest role. pmm-managed's service principal is admitted by identity at that
 so PMM reaches all of these with its deployment token whatever rank a human needs.
 """
 
+import logging
+from collections.abc import Iterable
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request
 from fastapi import status as http_status
+from pydantic import ValidationError
 from sqlmodel import col
 
 from app.api.deps import require_minimum_role
@@ -92,6 +95,7 @@ from app.extensions.apps.om_inventory.models import (
     ProbeRun,
     ProbeRunAccepted,
     ProbeRunDetail,
+    ProbeRunFailingNode,
     ProbeRunResponse,
     ServiceResponse,
     TriggerRequest,
@@ -99,6 +103,8 @@ from app.extensions.apps.om_inventory.models import (
 from app.extensions.apps.om_inventory.schema import om_inventory_schema
 from app.extensions.apps.om_inventory.service import SWITCHED_OFF_DETAIL
 from app.extensions.deps import ApiCurrentUser, SessionDep
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 schema_endpoint(router=router, plugin_schema=om_inventory_schema)
@@ -214,10 +220,52 @@ def _counts(run: ProbeRun) -> ProbeCounts:
     )
 
 
-def _run_response(run: ProbeRun) -> ProbeRunResponse:
+def _receipt(run: ProbeRun) -> list[ProbeNode]:
+    """Parse a run's stored receipt, logging and skipping any entry that does not parse.
+
+    A malformed entry costs only itself rather than the whole read, which for the run
+    list is every run beside it.
+
+    :param run: The run.
+    :return: The receipt's host entries, in stored order.
+    """
+    receipt: list[ProbeNode] = []
+    for index, entry in enumerate(run.nodes):
+        try:
+            receipt.append(ProbeNode.model_validate(entry))
+        except ValidationError as exc:
+            logger.warning(
+                "OM inventory: skipping entry %d of run %s's receipt -- not a host "
+                "record (%d validation errors)",
+                index,
+                run.id,
+                exc.error_count(),
+            )
+    return receipt
+
+
+def _failing_nodes(receipt: Iterable[ProbeNode]) -> list[ProbeRunFailingNode]:
+    """Name the nodes a run's receipt records a failure on, sorted by name.
+
+    A node whose entry recorded no name is named by its node id, so a failure is
+    listed whether or not the sweep could name it.
+
+    :param receipt: The run's parsed receipt.
+    :return: The failing nodes.
+    """
+    failing = [
+        ProbeRunFailingNode(node_id=node.node_id, name=node.host_name or node.node_id)
+        for node in receipt
+        if node.failed
+    ]
+    return sorted(failing, key=lambda node: (node.name, node.node_id))
+
+
+def _run_response(run: ProbeRun, receipt: Iterable[ProbeNode]) -> ProbeRunResponse:
     """Project one run for the wire.
 
     :param run: The run.
+    :param receipt: Its parsed receipt.
     :return: The response.
     """
     return ProbeRunResponse(
@@ -228,6 +276,7 @@ def _run_response(run: ProbeRun) -> ProbeRunResponse:
         counts=_counts(run),
         scope=run.scope,
         error=run.error,
+        failing_nodes=_failing_nodes(receipt),
     )
 
 
@@ -473,7 +522,7 @@ async def list_runs(
     if since is not None and until is not None and until < since:
         raise HTTPUnprocessableEntityException(detail="until must not be before since")
     return [
-        _run_response(run)
+        _run_response(run, _receipt(run))
         for run in await recent_runs(session, limit, since=since, until=until)
     ]
 
@@ -490,12 +539,8 @@ async def get_probe_run(run_id: UUID, session: SessionDep) -> ProbeRunDetail:
     run = await get_run(session, run_id)
     if run is None:
         raise HTTPNotFoundException(detail=f"Probe run {run_id} not found")
-    return ProbeRunDetail(
-        **_run_response(run).model_dump(),
-        # Runs recorded before `nodes` existed have none, and answer with an empty
-        # list rather than a 500: an old sweep is still worth its counters.
-        nodes=[ProbeNode(**node) for node in (run.nodes or [])],
-    )
+    receipt = _receipt(run)
+    return ProbeRunDetail(**_run_response(run, receipt).model_dump(), nodes=receipt)
 
 
 @router.post(
