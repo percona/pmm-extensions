@@ -39,6 +39,7 @@ from tests.app.extensions.apps.mysql_backups.payload_harness import (
     load_function,
     payload_instance,
     payload_method,
+    Recorder,
 )
 
 _FORMATS = cast("tuple[str, ...]", load_constant("ENCRYPTION_FORMATS"))
@@ -118,25 +119,56 @@ class _RunProbe:
     def __init__(self) -> None:
         self.aes_dirs: list[str] = []
         self.gpg_dirs: list[str] = []
+        self.gpg_cfgs: list[dict[str, object]] = []
+        self.warnings: list[str] = []
         self.saved_disk_space = 0
 
 
-def _run_backup(tmp_path, *, enc_aes: bool, enc_gpg: bool, post_run_encrypt: bool):
+def _run_backup(
+    tmp_path,
+    *,
+    enc_aes: bool,
+    enc_gpg: bool,
+    post_run_encrypt: bool,
+    dir_encrypt_config: dict[str, object] | None = None,
+    incremental: bool = True,
+    fail_metadata_copy: bool = False,
+) -> _RunProbe:
     """Run the real ``run`` past its post-backup encryption block.
 
     Every pass is replaced by a recorder, so the assertions are about which
-    branches the real method took rather than about its shape.
+    branches the real method took rather than about its shape. The
+    ``encrypt_dir`` stand-in accepts ``**cfg`` so a dropped
+    ``dir_encrypt_config`` cannot hide behind a two-argument stub.
+
+    :param tmp_path: Pytest temp directory used for the backup paths.
+    :param enc_aes: Whether the AES-256 post-backup pass is enabled.
+    :param enc_gpg: Whether GPG encryption is enabled on the instance.
+    :param post_run_encrypt: Whether GPG runs after the backup finishes.
+    :param dir_encrypt_config: Mapping assigned to ``inst.dir_encrypt_config`` and
+        spread into ``encrypt_dir`` as kwargs. ``None`` leaves ``{}`` (no kwargs).
+    :param incremental: When ``True`` (the default), skip the local mycnf/certs copy
+        block so encryption-format cases stay focused on the post-backup passes.
+    :param fail_metadata_copy: When ``True``, force a localhost non-incremental run
+        whose ``backup_mycnf`` raises the payload ``BackupError``, exercising the
+        soft-fail warning before post-run encryption.
+    :return: Probe of which encryption passes ran, which GPG kwargs were seen,
+        warnings logged during ``run``, and whether disk space was saved.
     """
     probe = _RunProbe()
     last_backup_dir = tmp_path / "backups" / "host1"
     last_backup_dir.mkdir(parents=True)
 
-    inst, _, _ = payload_instance(
+    def _record_gpg(dir_path: str, _logger: object, **cfg: object) -> None:
+        probe.gpg_dirs.append(dir_path)
+        probe.gpg_cfgs.append(cfg)
+
+    inst, backup_error, _ = payload_instance(
         ("run",),
         extra_namespace={
             "time": types.SimpleNamespace(time=lambda: 0.0),
             "is_encrypted_dir": lambda *_a, **_k: True,
-            "encrypt_dir": lambda dir_path, _logger: probe.gpg_dirs.append(dir_path),
+            "encrypt_dir": _record_gpg,
             "format_seconds_to_hhmmss": lambda _s: "00:00:00",
             "get_dir_size": lambda *_a, **_k: "1 MB",
             "_write_run_result": lambda *_a, **_k: None,
@@ -149,6 +181,9 @@ def _run_backup(tmp_path, *, enc_aes: bool, enc_gpg: bool, post_run_encrypt: boo
             "GSUploadProvider": object(),
         },
     )
+    recorder = Recorder()
+    inst.logger = recorder
+    probe.warnings = recorder.warnings
     inst.enc_aes = enc_aes
     inst.enc_gpg = enc_gpg
     inst.post_run_encrypt = post_run_encrypt
@@ -158,11 +193,22 @@ def _run_backup(tmp_path, *, enc_aes: bool, enc_gpg: bool, post_run_encrypt: boo
     inst.only_if_read_only = False
     inst.check_disk_space = False
     inst.is_pxc = False
-    inst.incremental = True
+    if fail_metadata_copy:
+        incremental = False
+
+        def _fail_mycnf(_backup_dir: str) -> None:
+            raise backup_error(
+                "Access denied for user 'root'@'localhost' (using password: YES)"
+            )
+
+        inst.backup_mycnf = _fail_mycnf
+        inst.backup_certs = lambda *_a, **_k: None
+    inst.incremental = incremental
     inst.host = "localhost"
     inst.upload_type = []
     inst.backup_dir = str(tmp_path / "xtrabackup_tmpdir")
     inst.last_backup_dir = str(last_backup_dir)
+    inst.dir_encrypt_config = {} if dir_encrypt_config is None else dir_encrypt_config
     inst.encrypt_files_aes256 = probe.aes_dirs.append
     inst._decrypt_metadata_file = lambda *_a, **_k: None
     inst._run_backup_cmd = lambda: None
@@ -244,6 +290,61 @@ class TestRunPostBackupPasses:
         )
         assert probe.gpg_dirs == []
         assert probe.saved_disk_space == 1
+
+    def test_post_run_gpg_passes_the_configured_recipient(self, tmp_path) -> None:
+        """Assert post-run GPG forwards ``DIR_ENCRYPT_CONFIG`` to ``encrypt_dir``.
+
+        Without the kwargs, ``DirectoryEncryptor`` falls back to the host
+        ``dir_encrypt.yml`` and the form recipient never applies.
+        """
+        recipient = {"encryption recipient": "ops@example.com"}
+        probe = _run_backup(
+            tmp_path,
+            enc_aes=False,
+            enc_gpg=True,
+            post_run_encrypt=True,
+            dir_encrypt_config=recipient,
+        )
+        assert len(probe.gpg_dirs) == 1
+        assert probe.gpg_cfgs == [recipient]
+
+    def test_post_run_gpg_with_empty_config_adds_no_kwargs(self, tmp_path) -> None:
+        """Assert an empty ``DIR_ENCRYPT_CONFIG`` still reaches ``encrypt_dir``.
+
+        Spreading ``{}`` adds nothing, so the encryptor keeps today's host-file
+        then default fallback.
+        """
+        probe = _run_backup(
+            tmp_path,
+            enc_aes=False,
+            enc_gpg=True,
+            post_run_encrypt=True,
+            dir_encrypt_config={},
+        )
+        assert len(probe.gpg_dirs) == 1
+        assert probe.gpg_cfgs == [{}]
+
+    def test_mycnf_copy_failure_warns_and_still_runs_post_run_gpg(
+        self, tmp_path
+    ) -> None:
+        """Assert a local metadata-copy ``BackupError`` cannot skip post-run GPG.
+
+        ``backup_mycnf`` / ``backup_certs`` used to abort ``run`` before
+        ``encrypt_dir``. The soft-fail path must warn and still forward the form
+        recipient.
+        """
+        recipient = {"encryption recipient": "ops@example.com"}
+        probe = _run_backup(
+            tmp_path,
+            enc_aes=False,
+            enc_gpg=True,
+            post_run_encrypt=True,
+            dir_encrypt_config=recipient,
+            fail_metadata_copy=True,
+        )
+        assert any("Access denied" in warning for warning in probe.warnings)
+        assert len(probe.gpg_dirs) == 1
+        assert probe.gpg_cfgs == [recipient]
 
 
 def _upload_instance(
