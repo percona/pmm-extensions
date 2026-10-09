@@ -5353,6 +5353,63 @@ class TestNomadLogStreaming:
         assert stream_start is None
         mock_sleep.assert_awaited_once()
 
+    def test_log_stream_timeout_emits_warning(self, caplog: pytest.LogCaptureFixture):
+        """Direct call logs a WARNING naming the sock_read timeout."""
+        executor = _build_executor()
+        params = {"offset": 42}
+        with caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER):
+            executor._log_stream_timeout(
+                "alloc-stream",
+                "step1",
+                TaskLogType.STDOUT,
+                MOCK_LOG_STREAM_BODY_START_MONOTONIC,
+                params,
+                start_offset=0,
+            )
+
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+        assert "sock_read timeout" in caplog.text
+        assert "alloc-stream" in caplog.text
+        assert "step1" in caplog.text
+
+    def test_log_stream_cancelled_emits_info(self, caplog: pytest.LogCaptureFixture):
+        """Direct call logs an INFO that the stream was cancelled."""
+        executor = _build_executor()
+        params = {"offset": 7}
+        with caplog.at_level(logging.INFO, logger=NOMAD_MODELS_LOGGER):
+            executor._log_stream_cancelled(
+                "alloc-stream",
+                "step1",
+                TaskLogType.STDERR,
+                None,
+                params,
+                start_offset=3,
+            )
+
+        assert any(record.levelno == logging.INFO for record in caplog.records)
+        assert "cancelled" in caplog.text
+        assert "alloc-stream" in caplog.text
+
+    def test_log_stream_client_error_emits_exception(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """Direct call logs an ERROR for a ClientError via logger.exception."""
+        executor = _build_executor()
+        params = {"offset": 11}
+        with caplog.at_level(logging.ERROR, logger=NOMAD_MODELS_LOGGER):
+            executor._log_stream_client_error(
+                "alloc-stream",
+                "step1",
+                TaskLogType.STDOUT,
+                MOCK_LOG_STREAM_BODY_START_MONOTONIC,
+                params,
+                start_offset=0,
+            )
+
+        assert any(record.levelno == logging.ERROR for record in caplog.records)
+        assert "ClientError" in caplog.text
+        assert "alloc-stream" in caplog.text
+
     @pytest.mark.asyncio
     @patch.object(NomadExecutor, "_consume_nomad_log_stream", new_callable=AsyncMock)
     async def test_push_logs_queue_sock_timeout_logs_and_stops(self, mock_consume):
