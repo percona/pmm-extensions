@@ -11241,7 +11241,8 @@ export interface components {
      * @description Name one node a sweep failed to scan.
      *
      *     :param node_id: PMM's node id.
-     *     :param name: The node's name, which is what the Nodes page is addressed by.
+     *     :param name: The node's name as the sweep recorded it, or its node id where the
+     *         sweep recorded none.
      */
     om_inventory__ProbeRunFailingNode: {
       /** Name */
@@ -11262,11 +11263,9 @@ export interface components {
      *         estate. Without it the counters cannot be read: "9 of 13 answered" means
      *         something different when the run was only ever asked about one host.
      *     :param error: The failure detail when the sweep itself raised.
-     *     :param failing_nodes: The nodes whose scan failed in this sweep - the node's own
-     *         dispatch, or any service on it - sorted by name. Carried on the list, unlike
-     *         the full receipt, because it is what tells one sweep from the next: the
-     *         history groups consecutive sweeps that failed on the same nodes, and links
-     *         each failure to its node.
+     *     :param failing_nodes: The nodes whose scan failed in this sweep, on the node's own
+     *         dispatch or on any service on it, sorted by name. A node with no automation
+     *         agent is not one: nothing was dispatched to it.
      */
     om_inventory__ProbeRunResponse: {
       counts: components['schemas']['om_inventory__ProbeCounts'];

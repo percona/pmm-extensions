@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Test ``GET /runs`` date-range filtering, and the failing nodes each run names.
+"""Test reading runs: the date-range filter, failing nodes, and unparseable entries.
 
 The window is applied before ``limit``: a week of twenty-one runs is twenty-one
 runs, not the twenty newest overall with the older-than-a-week ones dropped. That
@@ -21,10 +21,12 @@ is the difference between a real history filter and a cosmetic one over a capped
 page.
 """
 
+import logging
 from datetime import datetime, timedelta, UTC
 from typing import Any
 
 import pytest
+import pytest_asyncio
 from fastapi import status
 from httpx import AsyncClient
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -45,6 +47,8 @@ DAY = timedelta(days=1)
 T0 = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
 T1 = T0 + DAY
 T2 = T1 + DAY
+
+ROUTES_LOGGER = "app.extensions.apps.om_inventory.api_routes"
 
 
 async def record_run(session: AsyncSession, started_at: datetime) -> ProbeRun:
@@ -223,12 +227,86 @@ class TestRunsListFailingNodes:
         ]
 
     @pytest.mark.asyncio
-    async def test_a_run_with_no_receipt_names_none(
+    async def test_a_failing_node_with_no_recorded_name_is_named_by_its_node_id(
         self, api: AsyncClient, session: AsyncSession
     ) -> None:
-        """Answer an empty list for a run recorded before receipts existed."""
+        """Name a failing node by its node id where its entry recorded no name."""
+        run = await record_run(session, T0)
+        run.nodes = [
+            {
+                **receipt_node("n-2", "node02", error="the scan did not finish"),
+                "host_name": None,
+            }
+        ]
+        await ProbeRunManager.save(session, run)
+
+        response = await api.get(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()[0]["failing_nodes"] == [
+            {"node_id": "n-2", "name": "n-2"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_an_empty_receipt_names_none(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Answer an empty list for a run whose receipt records no host."""
         await record_run(session, T0)
 
         response = await api.get(f"{BASE}/runs")
 
+        assert response.status_code == status.HTTP_200_OK
         assert response.json()[0]["failing_nodes"] == []
+
+
+class TestRunReadsSkipAnEntryThatDoesNotParse:
+    """Pin both run reads skipping, and logging, a receipt entry that is not a host."""
+
+    @pytest_asyncio.fixture
+    async def run(self, session: AsyncSession) -> ProbeRun:
+        """Write a run whose receipt holds a bare service entry and a failing host.
+
+        :param session: The database session.
+        :return: The saved run.
+        """
+        run = await record_run(session, T0)
+        run.nodes = [
+            ProbeNodeService(
+                service_id="s-1",
+                service_name="node01-mongodb",
+                error="could not query the database",
+            ).model_dump(mode="json"),
+            receipt_node("n-2", "node02", error="the scan did not finish within 180s"),
+        ]
+        return await ProbeRunManager.save(session, run)
+
+    @pytest.mark.asyncio
+    async def test_the_list_names_the_host_beside_it(
+        self, api: AsyncClient, run: ProbeRun, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Answer the list, naming the failing host and logging the skipped entry."""
+        caplog.set_level(logging.WARNING, logger=ROUTES_LOGGER)
+
+        response = await api.get(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()[0]["failing_nodes"] == [
+            {"node_id": "n-2", "name": "node02"}
+        ]
+        assert f"skipping entry 0 of run {run.id}'s receipt" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_the_detail_answers_with_the_host_beside_it(
+        self, api: AsyncClient, run: ProbeRun, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Answer the run's detail with only the host, logging the skipped entry."""
+        caplog.set_level(logging.WARNING, logger=ROUTES_LOGGER)
+
+        response = await api.get(f"{BASE}/runs/{run.id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert [node["node_id"] for node in body["nodes"]] == ["n-2"]
+        assert body["failing_nodes"] == [{"node_id": "n-2", "name": "node02"}]
+        assert f"skipping entry 0 of run {run.id}'s receipt" in caplog.text
