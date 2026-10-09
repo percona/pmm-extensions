@@ -111,8 +111,9 @@ class TTLCache(Generic[T]):
 
         This method checks the cache for expired entries and removes them. It also
         ensures that the cache does not exceed the maximum size limit. The eviction
-        process is limited to a number of entries defined by `prune_limit` to avoid
-        excessive performance overhead.
+        process is limited to a number of entries defined by ``prune_limit`` to avoid
+        excessive performance overhead. When ``maxsize`` is ``None``, no size limit is
+        applied and only expired entries are pruned, at most ``prune_limit`` per call.
 
         :param now: Current monotonic time in fractional seconds.
         """
@@ -122,7 +123,10 @@ class TTLCache(Generic[T]):
                 break
             self.store.popitem(last=False)
 
-        while len(self.store) > (self.maxsize or 0):
+        if self.maxsize is None:
+            return
+
+        while len(self.store) > self.maxsize:
             self.store.popitem(last=False)
 
     def set(self, key: tuple[Any, ...], value: T, now: float) -> None:
