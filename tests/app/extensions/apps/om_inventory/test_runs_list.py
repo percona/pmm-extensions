@@ -310,3 +310,30 @@ class TestRunReadsSkipAnEntryThatDoesNotParse:
         assert [node["node_id"] for node in body["nodes"]] == ["n-2"]
         assert body["failing_nodes"] == [{"node_id": "n-2", "name": "node02"}]
         assert f"skipping entry 0 of run {run.id}'s receipt" in caplog.text
+
+
+class TestRunsListLimitBounds:
+    """Pin ``GET /runs``'s ``limit`` bounds, declared through ``Annotated``."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, 101])
+    async def test_out_of_range_limit_is_rejected(
+        self, api: AsyncClient, limit: int
+    ) -> None:
+        """Reject a ``limit`` outside ``1..100`` before the query runs."""
+        response = await api.get(f"{BASE}/runs", params={"limit": limit})
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+    @pytest.mark.asyncio
+    async def test_in_range_limit_caps_the_page(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Return at most ``limit`` runs, newest first."""
+        await record_run(session, T0)
+        newest = await record_run(session, T1)
+
+        response = await api.get(f"{BASE}/runs", params={"limit": 1})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert [row["run_id"] for row in response.json()] == [str(newest.id)]

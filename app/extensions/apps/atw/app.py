@@ -51,7 +51,9 @@ def atw_periodic_tasks() -> list[AppPeriodicTask]:
             AppPeriodicTask(
                 name="extensions__purge_atw_bundles",
                 task="purge_atw_bundles",
-                schedule=lambda: cast(IntervalSchedule, atw_settings.cleanup_interval),
+                schedule=lambda: cast(
+                    "IntervalSchedule", atw_settings.cleanup_interval
+                ),
             )
         )
     if atw_settings.reconcile_interval is not None:
@@ -60,7 +62,7 @@ def atw_periodic_tasks() -> list[AppPeriodicTask]:
                 name="extensions__reconcile_atw_executions",
                 task="reconcile_atw_executions",
                 schedule=lambda: cast(
-                    IntervalSchedule, atw_settings.reconcile_interval
+                    "IntervalSchedule", atw_settings.reconcile_interval
                 ),
             )
         )

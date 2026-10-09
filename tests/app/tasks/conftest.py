@@ -140,8 +140,8 @@ def test_client(
     Mirrors the PMM Extensions ``test_client``'s ``require_minimum_role_for_unsafe_methods``
     override so the non-admin fixture user can exercise a mutating route.
     """
-    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
-        lambda: None
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
     )
     tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
     tasks_app.dependency_overrides[get_session] = lambda: session

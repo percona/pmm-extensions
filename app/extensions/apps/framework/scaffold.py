@@ -600,7 +600,7 @@ def insert_app_entry(
         return settings_text, False
     enabled_literal = "true" if enabled else "false"
     entry = f"      - MODULE_NAME: {name}\n        ENABLED: {enabled_literal}\n"
-    return "".join(lines[:end] + [entry] + lines[end:]), True
+    return "".join([*lines[:end], entry, *lines[end:]]), True
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -951,7 +951,9 @@ def _default_item_display_name_plural(
     """
     if not singular_declared:
         return display_name
-    from app.extensions.apps.framework.schema import pluralize_item_display_name
+    from app.extensions.apps.framework.schema import (  # noqa: PLC0415 - module imports stdlib only
+        pluralize_item_display_name,
+    )
 
     return pluralize_item_display_name(item_display_name)
 

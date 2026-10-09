@@ -56,7 +56,7 @@ def _host_data(
         "host": host,
         "data": {
             "host_entry": host,
-            "address": address or host.split(":")[0],
+            "address": address or host.split(":", maxsplit=1)[0],
             "port": port,
             "server": {
                 "server_hash": server_hash,

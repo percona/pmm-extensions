@@ -302,8 +302,7 @@ def _mysql_creds(address: str) -> dict[str, str]:
     :return: A mapping with ``user``/``password`` keys, or an empty mapping.
     :rtype: dict[str, str]
     """
-    # optional-dependency: mysql
-    import myloginpath
+    import myloginpath  # noqa: PLC0415 - optional mysql driver
 
     try:
         content = myloginpath.read()
@@ -353,8 +352,7 @@ def _collect_mysql_version(address: str) -> str | None:
     :return: The MySQL version string, or ``None``.
     :rtype: str | None
     """
-    # optional-dependency: mysql
-    import pymysql
+    import pymysql  # noqa: PLC0415 - optional mysql driver
 
     creds = _mysql_creds(address)
     host, port = parse_host_port(address, default_port=DefaultPort.MYSQL)
@@ -381,8 +379,7 @@ def _collect_postgresql_version(address: str) -> str | None:
     :return: The PostgreSQL ``server_version``, or ``None``.
     :rtype: str | None
     """
-    # optional-dependency: postgresql
-    import psycopg
+    import psycopg  # noqa: PLC0415 - optional postgresql driver
 
     host, port = parse_host_port(address, default_port=DefaultPort.POSTGRESQL)
     conninfo = {
@@ -463,8 +460,7 @@ def _collect_mongodb_version(address: str) -> str | None:
     :return: The MongoDB ``buildInfo`` version, or ``None``.
     :rtype: str | None
     """
-    # optional-dependency: mongodb
-    import pymongo
+    import pymongo  # noqa: PLC0415 - optional mongodb driver
 
     args, kwargs = _mongo_connect_params(address)
     client = pymongo.MongoClient(

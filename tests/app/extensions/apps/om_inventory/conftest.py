@@ -76,8 +76,8 @@ async def api(
     :param session: The database session the routes should use.
     :return: The client.
     """
-    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = (
-        lambda: None
+    extensions_app.dependency_overrides[require_bearer_for_unsafe_methods] = lambda: (
+        None
     )
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None

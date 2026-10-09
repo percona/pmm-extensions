@@ -126,7 +126,7 @@ async def internal_error_handler(
     exc: BaseException,
 ) -> None:
     """Proper log unhandled exceptions."""
-    logger.exception("Unhandled exception:", exc_info=exc)
+    logger.error("Unhandled exception:", exc_info=exc)
     raise exc
 
 

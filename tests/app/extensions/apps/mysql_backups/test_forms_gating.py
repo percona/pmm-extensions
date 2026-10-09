@@ -572,7 +572,7 @@ class TestUploadProviderGate:
         ``upload`` requirement must not let a stray destination (e.g.
         ``s3_bucket``) slip through without its provider selected.
         """
-        with pytest.raises(ValidationError, match="s3_bucket|S3"):
+        with pytest.raises(ValidationError, match=r"s3_bucket|S3"):
             BackupCreate(
                 **_base_payload(BackupType.MYDUMPER, upload=[], s3_bucket="bkt")
             )
@@ -583,7 +583,7 @@ class TestUploadProviderGate:
         The schema ``forbidden`` gate on ``gs_bucket`` fires first; the model
         validator's reverse-pair branch is the backstop for the same contract.
         """
-        with pytest.raises(ValidationError, match="gs_bucket|GSUTIL"):
+        with pytest.raises(ValidationError, match=r"gs_bucket|GSUTIL"):
             BackupCreate(
                 **_base_payload(
                     BackupType.MYDUMPER, upload=[], s3_bucket=None, gs_bucket="g"
@@ -592,7 +592,7 @@ class TestUploadProviderGate:
 
     def test_empty_upload_with_rsync_path_set_fails(self):
         """Reject ``upload=[]`` when ``rsync_path`` is set → 422 (reverse-pair, RSYNC)."""
-        with pytest.raises(ValidationError, match="rsync_path|RSYNC"):
+        with pytest.raises(ValidationError, match=r"rsync_path|RSYNC"):
             BackupCreate(
                 **_base_payload(
                     BackupType.MYDUMPER, upload=[], s3_bucket=None, rsync_path="/r"
@@ -668,7 +668,7 @@ class TestMydumperVerbose:
     @pytest.mark.parametrize("bad", [4, -1, "abc"])
     def test_out_of_range_rejected(self, bad: int | str):
         """Out-of-range / garbage values are rejected before reaching YAML/CLI."""
-        with pytest.raises(ValidationError, match="(?i)mydumper_verbose"):
+        with pytest.raises(ValidationError, match=r"(?i)mydumper_verbose"):
             BackupCreate(**_base_payload(BackupType.MYDUMPER, mydumper_verbose=bad))
 
     def test_binlog_rejects_verbose(self):

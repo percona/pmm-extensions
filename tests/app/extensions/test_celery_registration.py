@@ -37,7 +37,7 @@ from app.extensions.config import App, extensions_settings
 
 def _seed_task_names() -> set[str]:
     """Return every ``task_name`` the PMM Extensions beat seed schedules."""
-    from app.extensions.db.seed import get_system_periodic_tasks
+    from app.extensions.db.seed import get_system_periodic_tasks  # noqa: PLC0415
 
     return {
         task.task_name
@@ -57,7 +57,7 @@ class TestCeleryInclude:
         ``build_celery_include()``; this pins them equal so beat cannot schedule
         against a module the worker never imports.
         """
-        import app.main
+        import app.main  # noqa: PLC0415
 
         worker_cls = mocker.patch.object(app.main.celery_app, "Worker")
 

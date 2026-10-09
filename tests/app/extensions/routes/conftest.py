@@ -76,8 +76,8 @@ def real_client_route_overrides(
     fixture may be the one to set it up last.
     """
     regular_user.access_token = "test-token"
-    extensions_app.dependency_overrides[get_task_history] = (
-        lambda: task_history_response
+    extensions_app.dependency_overrides[get_task_history] = lambda: (
+        task_history_response
     )
     extensions_app.dependency_overrides[get_current_user] = lambda: regular_user
     yield

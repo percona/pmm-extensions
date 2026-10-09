@@ -136,7 +136,7 @@ class TestParseBackupTaskDataXtrabackupQuiet:
         ],
     )
     def test_xtrabackup_quiet_round_trips(
-        self, all_servers: dict[str, Any], expected: bool | None
+        self, all_servers: dict[str, Any], *, expected: bool | None
     ):
         """XTRABACKUP_QUIET round-trips from persisted YAML to the edit-form dict."""
         result = parse_backup_task_data(self._make_task_dict(all_servers))
@@ -219,7 +219,7 @@ class TestParseBackupTaskDataUploadQuiet:
         ],
     )
     def test_upload_quiet_round_trips(
-        self, all_servers: dict[str, Any], expected: bool | None
+        self, all_servers: dict[str, Any], *, expected: bool | None
     ):
         """UPLOAD_QUIET round-trips from persisted YAML to the edit-form dict."""
         result = parse_backup_task_data(self._make_task_dict(all_servers))
@@ -273,7 +273,7 @@ class TestParseBackupTaskDataUploadQuiet:
     ],
 )
 def test_parse_backup_task_data_upload_quiet(
-    all_servers: dict, expected: bool | None
+    all_servers: dict[str, Any], *, expected: bool | None
 ) -> None:
     """Round-trip upload_quiet from persisted YAML on the edit form path."""
     fake_task_dict = {

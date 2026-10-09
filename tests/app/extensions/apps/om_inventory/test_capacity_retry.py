@@ -91,8 +91,10 @@ def entries() -> list[MappedService]:
 @pytest.fixture(autouse=True)
 def _no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     """Skip the real backoff wait, and the poll loop's own wait between them."""
-    from app.extensions.apps.om_inventory import dispatch
-    from app.extensions.apps.om_inventory.config import om_inventory_settings
+    from app.extensions.apps.om_inventory import dispatch  # noqa: PLC0415
+    from app.extensions.apps.om_inventory.config import (  # noqa: PLC0415
+        om_inventory_settings,
+    )
 
     monkeypatch.setattr(dispatch, "_CAPACITY_RETRY_BASE_DELAY_SECONDS", 0.0)
     monkeypatch.setattr(om_inventory_settings, "POLL_INTERVAL", 0)
@@ -393,7 +395,7 @@ class TestTheBudgetOutlastsAnOrphanedLock:
         the wait the algorithm intends, which a suite that sleeps for real could
         only check by taking 40 seconds to do it.
         """
-        from app.extensions.apps.om_inventory import dispatch
+        from app.extensions.apps.om_inventory import dispatch  # noqa: PLC0415
 
         clock = 0.0
         waited: list[float] = []

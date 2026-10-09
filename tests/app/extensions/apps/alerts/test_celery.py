@@ -75,7 +75,7 @@ def _mock_pmm_api():
 def _patch_pmm_settings(mocker, *, retention=10):
     """Patch alerts PMM config inside _backup_alert_config."""
     mocker.patch(
-        "app.extensions.apps.alerts.config.alerts_settings",
+        "app.extensions.apps.alerts.celery.alerts_settings",
         MagicMock(spec=AlertsSettings, BACKUP_RETENTION=retention),
     )
 
@@ -102,7 +102,7 @@ class TestBackupAlertConfig:
         mock_api = _mock_pmm_api()
         _patch_pmm_settings(mocker)
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=mock_api),
         )
         _patch_session(mocker, session)
@@ -125,7 +125,7 @@ class TestBackupAlertConfig:
     async def test_backup_pmm_not_configured(self, mocker) -> None:
         """Assert no backup is created when PMM is not configured."""
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=None),
         )
         mock_session_maker = mocker.patch(f"{MODULE}.get_async_session_maker")
@@ -142,7 +142,7 @@ class TestBackupAlertConfig:
             side_effect=ConnectionError("PMM unreachable")
         )
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=mock_api),
         )
         mock_session_maker = mocker.patch(f"{MODULE}.get_async_session_maker")
@@ -165,7 +165,7 @@ class TestBackupAlertConfig:
         mock_api = _mock_pmm_api()
         _patch_pmm_settings(mocker, retention=retention)
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=mock_api),
         )
         _patch_session(mocker, session)
@@ -189,7 +189,7 @@ class TestBackupAlertConfig:
         mock_api = _mock_pmm_api()
         _patch_pmm_settings(mocker, retention=retention)
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=mock_api),
         )
         _patch_session(mocker, session)
@@ -216,7 +216,7 @@ class TestBackupAlertConfig:
         mock_api = _mock_pmm_api()
         _patch_pmm_settings(mocker, retention=retention)
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=mock_api),
         )
         _patch_session(mocker, session)
@@ -234,7 +234,7 @@ class TestBackupAlertConfig:
         mock_api = _mock_pmm_api()
         _patch_pmm_settings(mocker)
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=mock_api),
         )
         _patch_session(mocker, session)
@@ -255,7 +255,7 @@ class TestBackupAlertConfig:
         mock_api = _mock_pmm_api()
         _patch_pmm_settings(mocker)
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=mock_api),
         )
         _patch_session(mocker, session)
@@ -279,7 +279,7 @@ class TestBackupAlertConfig:
         mock_api = _mock_pmm_api()
         _patch_pmm_settings(mocker)
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=mock_api),
         )
         _patch_session(mocker, session)
@@ -315,7 +315,7 @@ class TestBackupAlertConfigCooperativeCancel:
         """Skip the PMM round-trip entirely when cancelled before the fetch."""
         mock_api = _mock_pmm_api()
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=mock_api),
         )
         mocker.patch(f"{MODULE}.should_cancel", new=AsyncMock(return_value=True))
@@ -330,7 +330,7 @@ class TestBackupAlertConfigCooperativeCancel:
         mock_api = _mock_pmm_api()
         _patch_pmm_settings(mocker)
         mocker.patch(
-            "app.extensions.deps.resolve_pmm_api",
+            "app.extensions.apps.alerts.celery.resolve_pmm_api",
             new=AsyncMock(return_value=mock_api),
         )
         _patch_session(mocker, session)

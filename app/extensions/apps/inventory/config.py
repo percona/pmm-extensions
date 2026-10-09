@@ -71,14 +71,10 @@ class InventoryAppSettings(BaseYamlSettings):
     COLLECTION_INTERVAL: ManageableInterval | None = (  # ty: ignore[invalid-assignment]
         hot_field(None)
     )
-    COLLECTION_RETENTION: Annotated[
-        timedelta, Gt(timedelta(0))
-    ] = (  # ty: ignore[invalid-assignment]
+    COLLECTION_RETENTION: Annotated[timedelta, Gt(timedelta(0))] = (  # ty: ignore[invalid-assignment]
         hot_field(timedelta(days=30))
     )
-    IDENTITY_LINK_PIN_RETENTION: Annotated[
-        timedelta, Gt(timedelta(0))
-    ] = (  # ty: ignore[invalid-assignment]
+    IDENTITY_LINK_PIN_RETENTION: Annotated[timedelta, Gt(timedelta(0))] = (  # ty: ignore[invalid-assignment]
         hot_field(timedelta(days=180))
     )
     COLLECTION_BATCH_SIZE: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]

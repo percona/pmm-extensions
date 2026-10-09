@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 
+from aiofiles.ospath import isfile
 from fastapi import Depends, Query
 from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -127,7 +128,7 @@ async def get_snippet(
     """
     validate_snippet_filename(snippet_filename)
     snippet = await SnippetManager.get_or_404(session, filename=snippet_filename)
-    if not Path(snippet).is_file():
+    if not await isfile(Path(snippet)):
         raise HTTPNotFoundException
     return snippet
 
@@ -233,7 +234,7 @@ async def check_snippet_batch_existence(
     found = {snippet.filename for snippet in snippets}
     missing_in_db = sorted(filenames_set - found)
     missing_on_disk = sorted(
-        snippet.filename for snippet in snippets if not Path(snippet).is_file()
+        [snippet.filename for snippet in snippets if not await isfile(Path(snippet))]
     )
     return SnippetBatchExistenceResult(
         snippets=snippets,
