@@ -1,0 +1,12 @@
+# Fingerprints of real-but-remediated historical findings. A fingerprint here
+# asserts the credential is dead, not that the match was spurious — anything
+# still live belongs in a rotation, not in this file.
+
+# A feature-build harness fixture: the value only ever authenticated a local
+# `docker compose` stack against its own side-car, and bootstrap.sh replaced it
+# with a secret generated at bring-up before the file itself was deleted in the
+# move to sidecar/pmm-fb/. It reached no release — the commit is absent from
+# main — and the value appears in no current tree. Listed because the commit
+# stays in this branch's history, so every diff base that spans it re-reports a
+# finding that has nothing left to remediate.
+04c1192bbdd06f67645b1ad8d950cc0f3f698bf6:env/pmm-fb/settings.yaml:generic-api-key:60
