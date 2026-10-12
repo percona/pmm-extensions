@@ -103,7 +103,8 @@ DEFAULT_ENDPOINT = "localhost:27017"
 ENDPOINTS = {"mongodb_query_tuning.sh": "127.0.0.1:27017"}
 
 # Tools the collectors run when installed; each is replaced by a no-op so a run
-# finishes in seconds and touches nothing on the host.
+# finishes in seconds, touches nothing on the host, and prints the same output
+# every time (``uptime`` reports the wall clock and the load average).
 NOOP_TOOLS = (
     "pidstat",
     "top",
@@ -120,6 +121,7 @@ NOOP_TOOLS = (
     "sleep",
     "free",
     "df",
+    "uptime",
 )
 
 STUB_CLIENT = """\
