@@ -5356,7 +5356,7 @@ class TestNomadLogStreaming:
         mock_sleep.assert_awaited_once()
 
     def test_log_stream_timeout_emits_warning(self, caplog: pytest.LogCaptureFixture):
-        """Direct call logs a WARNING naming the sock_read timeout."""
+        """Emit a WARNING naming the sock_read timeout."""
         executor = _build_executor()
         params = {"offset": 42}
         with caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER):
@@ -5375,7 +5375,7 @@ class TestNomadLogStreaming:
         assert "step1" in caplog.text
 
     def test_log_stream_cancelled_emits_info(self, caplog: pytest.LogCaptureFixture):
-        """Direct call logs an INFO that the stream was cancelled."""
+        """Emit an INFO that the stream was cancelled."""
         executor = _build_executor()
         params = {"offset": 7}
         with caplog.at_level(logging.INFO, logger=NOMAD_MODELS_LOGGER):
@@ -5395,7 +5395,7 @@ class TestNomadLogStreaming:
     def test_log_stream_client_error_emits_exception(
         self, caplog: pytest.LogCaptureFixture
     ):
-        """Direct call logs an ERROR for a ClientError via logger.exception."""
+        """Emit an ERROR for a ClientError via logger.exception."""
         executor = _build_executor()
         params = {"offset": 11}
         with caplog.at_level(logging.ERROR, logger=NOMAD_MODELS_LOGGER):
@@ -7599,7 +7599,14 @@ class TestStreamDirectoryAsTarGz:
         alloc_id: str,
         path: str,
     ) -> bytes:
-        """Consume the async generator and return the full tar.gz bytes."""
+        """Consume the async generator and return the full tar.gz bytes.
+
+        :param executor: The executor under test.
+        :param queue_item: The task history whose allocation is archived.
+        :param alloc_id: The Nomad allocation ID to read from.
+        :param path: The allocation-relative directory path to archive.
+        :return: The concatenated tar.gz stream.
+        """
         return b"".join(
             [
                 chunk
@@ -7611,13 +7618,22 @@ class TestStreamDirectoryAsTarGz:
 
     @staticmethod
     def _tar_names(archive_bytes: bytes) -> set[str]:
-        """Return member names from a gzipped tar archive."""
+        """Return member names from a gzipped tar archive.
+
+        :param archive_bytes: The gzipped tar bytes to inspect.
+        :return: The set of member names.
+        """
         with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
             return {member.name for member in tar.getmembers()}
 
     @staticmethod
     def _tar_file_content(archive_bytes: bytes, name: str) -> bytes:
-        """Read one regular-file member from a gzipped tar archive."""
+        """Read one regular-file member from a gzipped tar archive.
+
+        :param archive_bytes: The gzipped tar bytes to inspect.
+        :param name: The member name to extract.
+        :return: The member's file contents.
+        """
         with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
             member = tar.getmember(name)
             extracted = tar.extractfile(member)
@@ -7947,14 +7963,20 @@ class TestNomadTaskStatesToExecutionEvents:
         assert "Downloading Artifacts" in out[0].description
         assert out[0].step == "step1"
 
-    def test_nomad_executor_get_events_non_dict_tracking_returns_empty(self):
+    @pytest.mark.parametrize(
+        "tracking",
+        [
+            pytest.param("not-a-dict", id="string"),
+            pytest.param(None, id="none"),
+        ],
+    )
+    def test_nomad_executor_get_events_non_dict_tracking_returns_empty(
+        self, tracking: Any
+    ):
         """Degrade non-dict tracking to an empty event list."""
         history = _build_queue_item(status=TaskHistoryStatusEnum.SUCCESS)
-        history.execution_request.tracking = "not-a-dict"  # type: ignore[assignment]
+        history.execution_request.tracking = tracking
         executor = _build_executor()
-        assert executor.get_events(history) == []
-
-        history.execution_request.tracking = None  # type: ignore[assignment]
         assert executor.get_events(history) == []
 
     def test_prestart_artifact_download_failure_event_extracted(self):
