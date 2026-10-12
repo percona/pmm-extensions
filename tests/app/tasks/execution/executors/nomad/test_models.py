@@ -47,6 +47,7 @@ from fastapi import status
 from nomad.api.exceptions import BaseNomadException, URLNotFoundNomadException
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import undefer
 from yarl import URL
 
 from app.core.exceptions import HTTPBadRequestException
@@ -2491,57 +2492,49 @@ class TestDispatchTask:
         assert result.started_at == expected_dt
 
     @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_dispatch_task_raises_when_job_cannot_be_determined(
-        self, mock_nomad_cls
-    ):
-        """Assert ValueError when neither register nor dispatch yields a job."""
-        mock_nomad_cls.return_value = MagicMock()
-        executor = _build_executor()
-        task = _build_task(task_id="orphan-job", parameterized=False)
-        queue_item = _build_queue_item(
-            task=task,
-            status=TaskHistoryStatusEnum.PENDING,
-        )
-        session = AsyncMock()
-
-        with (
-            patch.object(
-                NomadExecutor,
-                "task_needs_job_register",
-                AsyncMock(return_value=False),
-            ),
-            pytest.raises(ValueError, match="job could not be determined"),
-        ):
-            await executor.dispatch_task(session, queue_item, task)
-
-    @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.utc_now")
-    @patch("app.tasks.execution.executors.nomad.models.TaskHistoryManager")
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_dispatch_task_falls_back_to_utc_now_without_submit_time(
-        self, mock_nomad_cls, mock_th_manager, mock_utc_now
+        self,
+        mock_nomad_cls,
+        mock_utc_now,
+        session: AsyncSession,
+        created_task_with_history: TaskHistory,
     ):
-        """Assert started_at uses utc_now when the Nomad job has no SubmitTime."""
+        """Assert started_at uses utc_now when the Nomad job has no SubmitTime.
+
+        Nomad and wall-clock time are the only mocked boundaries: the real
+        ``TaskHistoryManager.save`` path runs against the session fixture.
+        """
         mock_nomad_cls.return_value = MagicMock()
         now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
         mock_utc_now.return_value = now
-        mock_th_manager.save = AsyncMock(side_effect=lambda _s, qi, **_kw: qi)
 
         nomad_register = {"EvalID": "eval-1"}
         nomad_job = {"ID": "job-no-submit", "SubmitTime": None}
         executor = _build_executor(nomad_job=nomad_job, nomad_register=nomad_register)
-        task = _build_task(task_id="no-submit-job", parameterized=False)
-        queue_item = _build_queue_item(
-            task=task,
-            status=TaskHistoryStatusEnum.PENDING,
-        )
-        session = AsyncMock()
 
-        result = await executor.dispatch_task(session, queue_item, task)
+        queue_item = created_task_with_history
+        queue_item.status = TaskHistoryStatusEnum.PENDING
+        queue_item.task.data = {"ID": "no-submit-job", "Constraints": []}
 
-        assert result.started_at == now
+        result = await executor.dispatch_task(session, queue_item, queue_item.task)
+
+        # SQLite returns the value tz-naive, so compare without tzinfo.
+        assert result.started_at.replace(tzinfo=None) == now.replace(tzinfo=None)
         mock_utc_now.assert_called()
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+
+        result_id = result.id
+        await session.rollback()
+        refetched = await TaskHistoryManager.get_or_404(
+            session,
+            query_options=[undefer(TaskHistory.execution_request)],
+            id=result_id,
+        )
+        assert refetched.started_at.replace(tzinfo=None) == now.replace(tzinfo=None)
+        assert refetched.status == TaskHistoryStatusEnum.RUNNING
+        assert refetched.execution_request.tracking["evaluation_id"] == "eval-1"
 
 
 class TestStopTask:
@@ -2582,29 +2575,32 @@ class TestStopTask:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "lookup_error",
+        "lookup_mode",
         [
-            pytest.param(
-                AllocationNotFoundError(
-                    "gone",
-                    executor_name="nomad",
-                    resource_type="allocation",
-                ),
-                id="allocation-not-found",
-            ),
-            pytest.param(
-                BaseNomadException(MagicMock(text="nomad unavailable")),
-                id="base-nomad-exception",
-            ),
+            pytest.param("allocation-not-found", id="allocation-not-found"),
+            pytest.param("base-nomad-exception", id="base-nomad-exception"),
         ],
     )
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_stop_task_skips_hold_release_when_allocation_lookup_fails(
-        self, mock_nomad_cls, lookup_error
+        self, mock_nomad_cls, lookup_mode: str
     ):
-        """Assert post-deregister hold release is skipped when alloc lookup fails."""
+        """Assert post-deregister hold release is skipped when alloc lookup fails.
+
+        Failures are raised at the Nomad client boundary so
+        ``get_allocation_for_task_history`` stays on the exercised path.
+        """
         mock_backend = MagicMock()
         mock_nomad_cls.return_value = mock_backend
+        if lookup_mode == "allocation-not-found":
+            mock_backend.allocation.get_allocation.side_effect = (
+                URLNotFoundNomadException(MagicMock(text="gone"))
+            )
+            mock_backend.allocations.get_allocations.return_value = []
+        else:
+            mock_backend.allocation.get_allocation.side_effect = BaseNomadException(
+                MagicMock(text="nomad unavailable")
+            )
         executor = _build_executor()
         queue_item = _build_queue_item(
             tracking={
@@ -2614,22 +2610,10 @@ class TestStopTask:
             }
         )
 
-        with (
-            patch.object(
-                NomadExecutor,
-                "get_allocation_for_task_history",
-                side_effect=lookup_error,
-            ),
-            patch.object(
-                NomadExecutor,
-                "_release_capture_hold",
-                new_callable=AsyncMock,
-            ) as mock_release,
-        ):
-            await executor._stop_task(queue_item)
+        await executor._stop_task(queue_item)
 
         mock_backend.job.deregister_job.assert_called_once_with("job-to-stop")
-        mock_release.assert_not_awaited()
+        mock_backend.client.allocation.signal_allocation.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
@@ -7640,6 +7624,49 @@ class TestStreamDirectoryAsTarGz:
             assert extracted is not None
             return extracted.read()
 
+    @staticmethod
+    def _fs_request_side_effect(
+        *,
+        listings: dict[str, list[dict[str, Any]]],
+        file_contents: dict[str, bytes],
+        read_errors: dict[str, Exception] | None = None,
+    ):
+        """Answer ``_request`` for client fs list/readat calls under test.
+
+        :param listings: Absolute directory path to Nomad ``fs/ls`` JSON entries.
+        :param file_contents: Absolute file path to bytes returned by ``fs/readat``.
+        :param read_errors: Absolute file path to exception raised from ``fs/readat``.
+        :return: A ``side_effect`` callable for ``NomadExecutor._request``.
+        """
+        read_errors = read_errors or {}
+
+        def mock_request(_method: str, path: str, **kwargs: Any):
+            params = kwargs.get("params") or {}
+            ctx = AsyncMock()
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            if "/fs/ls/" in path:
+                ls_path = params["path"]
+                response = AsyncMock()
+                response.raise_for_status = MagicMock()
+                response.json = AsyncMock(return_value=listings[ls_path])
+                ctx.__aenter__ = AsyncMock(return_value=response)
+                return ctx
+            if "/fs/readat/" in path:
+                file_path = params["path"]
+                response = AsyncMock()
+                if file_path in read_errors:
+                    response.raise_for_status = MagicMock(
+                        side_effect=read_errors[file_path]
+                    )
+                else:
+                    response.raise_for_status = MagicMock()
+                    response.read = AsyncMock(return_value=file_contents[file_path])
+                ctx.__aenter__ = AsyncMock(return_value=response)
+                return ctx
+            raise AssertionError(f"unexpected Nomad request {_method} {path}")
+
+        return mock_request
+
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_streams_nested_directory_as_tar_gz(self, mock_nomad_cls):
@@ -7647,24 +7674,26 @@ class TestStreamDirectoryAsTarGz:
         mock_nomad_cls.return_value = MagicMock()
         executor = _build_executor()
         queue_item = _build_queue_item()
+        listings = {
+            "/output/dumps": [
+                {"Name": "a.txt", "IsDir": False, "Size": 5},
+                {"Name": "nested", "IsDir": True, "Size": 0},
+            ],
+            "/output/dumps/nested": [
+                {"Name": "b.txt", "IsDir": False, "Size": 4},
+            ],
+        }
         file_contents = {
             "/output/dumps/a.txt": b"alpha",
             "/output/dumps/nested/b.txt": b"beta",
         }
 
-        async def fake_entries(_alloc_id, _path, _prefix):
-            yield "/output/dumps/a.txt", "dumps/a.txt", False, 5
-            yield "/output/dumps/nested", "dumps/nested/", True, 0
-            yield "/output/dumps/nested/b.txt", "dumps/nested/b.txt", False, 4
-
-        async def fake_read(_queue_item, _alloc_id, path, _size, **_kwargs):
-            return file_contents[path]
-
-        with (
-            patch.object(
-                NomadExecutor, "_iter_directory_entries", side_effect=fake_entries
+        with patch.object(
+            executor,
+            "_request",
+            side_effect=self._fs_request_side_effect(
+                listings=listings, file_contents=file_contents
             ),
-            patch.object(NomadExecutor, "_read_file_bytes", side_effect=fake_read),
         ):
             archive = await self._drain_archive(
                 executor, queue_item, "alloc-1", "/output/dumps"
@@ -7688,22 +7717,30 @@ class TestStreamDirectoryAsTarGz:
         mock_nomad_cls.return_value = MagicMock()
         executor = _build_executor()
         queue_item = _build_queue_item()
-
-        async def fake_entries(_alloc_id, _path, _prefix):
-            yield "/output/dumps/good.txt", "dumps/good.txt", False, 4
-            yield "/output/dumps/bad.txt", "dumps/bad.txt", False, 3
-            yield "/output/dumps/also-good.txt", "dumps/also-good.txt", False, 5
-
-        async def fake_read(_queue_item, _alloc_id, path, _size, **_kwargs):
-            if path.endswith("bad.txt"):
-                raise RuntimeError("read failed")
-            return b"ok-" + path.rsplit("/", 1)[-1].encode()
+        listings = {
+            "/output/dumps": [
+                {"Name": "good.txt", "IsDir": False, "Size": 12},
+                {"Name": "bad.txt", "IsDir": False, "Size": 3},
+                {"Name": "also-good.txt", "IsDir": False, "Size": 16},
+            ],
+        }
+        file_contents = {
+            "/output/dumps/good.txt": b"ok-good.txt",
+            "/output/dumps/also-good.txt": b"ok-also-good.txt",
+        }
 
         with (
             patch.object(
-                NomadExecutor, "_iter_directory_entries", side_effect=fake_entries
+                executor,
+                "_request",
+                side_effect=self._fs_request_side_effect(
+                    listings=listings,
+                    file_contents=file_contents,
+                    read_errors={
+                        "/output/dumps/bad.txt": RuntimeError("read failed"),
+                    },
+                ),
             ),
-            patch.object(NomadExecutor, "_read_file_bytes", side_effect=fake_read),
             caplog.at_level(logging.ERROR, logger=NOMAD_MODELS_LOGGER),
         ):
             archive = await self._drain_archive(
