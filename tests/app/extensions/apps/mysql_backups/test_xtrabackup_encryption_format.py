@@ -124,6 +124,13 @@ class _RunProbe:
         self.saved_disk_space = 0
 
 
+#: Query error ``backup_mycnf`` surfaces when ``_query_mysql`` fails for basedir.
+_METADATA_COPY_QUERY_ERROR = (
+    'Error running query "SELECT @@basedir, @@datadir": '
+    "(1045, \"Access denied for user 'root'@'localhost' (using password: YES)\")"
+)
+
+
 def _run_backup(
     tmp_path,
     *,
@@ -131,7 +138,6 @@ def _run_backup(
     enc_gpg: bool,
     post_run_encrypt: bool,
     dir_encrypt_config: dict[str, object] | None = None,
-    incremental: bool = True,
     fail_metadata_copy: bool = False,
 ) -> _RunProbe:
     """Run the real ``run`` past its post-backup encryption block.
@@ -147,10 +153,8 @@ def _run_backup(
     :param post_run_encrypt: Whether GPG runs after the backup finishes.
     :param dir_encrypt_config: Mapping assigned to ``inst.dir_encrypt_config`` and
         spread into ``encrypt_dir`` as kwargs. ``None`` leaves ``{}`` (no kwargs).
-    :param incremental: When ``True`` (the default), skip the local mycnf/certs copy
-        block so encryption-format cases stay focused on the post-backup passes.
     :param fail_metadata_copy: When ``True``, force a localhost non-incremental run
-        whose ``backup_mycnf`` raises the payload ``BackupError``, exercising the
+        whose ``_query_mysql`` raises from ``get_default_mycnf``, exercising the
         soft-fail warning before post-run encryption.
     :return: Probe of which encryption passes ran, which GPG kwargs were seen,
         warnings logged during ``run``, and whether disk space was saved.
@@ -163,8 +167,20 @@ def _run_backup(
         probe.gpg_dirs.append(dir_path)
         probe.gpg_cfgs.append(cfg)
 
+    method_names: tuple[str, ...] = ("run",)
+    if fail_metadata_copy:
+        # Real mycnf/certs path so the failure boundary is ``_query_mysql``.
+        method_names = (
+            "run",
+            "backup_mycnf",
+            "backup_certs",
+            "get_default_mycnf",
+            "get_datadir",
+            "get_included_config",
+        )
+
     inst, backup_error, _ = payload_instance(
-        ("run",),
+        method_names,
         extra_namespace={
             "time": types.SimpleNamespace(time=lambda: 0.0),
             "is_encrypted_dir": lambda *_a, **_k: True,
@@ -193,17 +209,19 @@ def _run_backup(
     inst.only_if_read_only = False
     inst.check_disk_space = False
     inst.is_pxc = False
+    inst.incremental = not fail_metadata_copy
     if fail_metadata_copy:
-        incremental = False
+        inst.mycnf_path = None
+        inst.all_cnf_files = []
 
-        def _fail_mycnf(_backup_dir: str) -> None:
+        def _fail_query(sql: str, *_args: object, **_kwargs: object) -> object:
             raise backup_error(
-                "Access denied for user 'root'@'localhost' (using password: YES)"
+                f'Error running query "{sql}": '
+                "(1045, \"Access denied for user 'root'@'localhost' "
+                '(using password: YES)")'
             )
 
-        inst.backup_mycnf = _fail_mycnf
-        inst.backup_certs = lambda *_a, **_k: None
-    inst.incremental = incremental
+        inst._query_mysql = _fail_query
     inst.host = "localhost"
     inst.upload_type = []
     inst.backup_dir = str(tmp_path / "xtrabackup_tmpdir")
@@ -342,7 +360,7 @@ class TestRunPostBackupPasses:
             dir_encrypt_config=recipient,
             fail_metadata_copy=True,
         )
-        assert any("Access denied" in warning for warning in probe.warnings)
+        assert probe.warnings == [_METADATA_COPY_QUERY_ERROR]
         assert len(probe.gpg_dirs) == 1
         assert probe.gpg_cfgs == [recipient]
 
