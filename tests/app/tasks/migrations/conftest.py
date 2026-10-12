@@ -22,17 +22,12 @@ import pytest
 from alembic.config import Config
 from pydantic import SecretStr
 from sqlalchemy import URL
-from sqlalchemy.engine import make_url
 
 from app.core.db.config import DatabaseOptions
 from app.core.utils.fields import AsyncDatabaseEngine
 from app.tasks.config import tasks_settings
 from tests.app.alembic_paths import ALEMBIC_INI
-from tests.app.conftest import (
-    POSTGRES_DSN_ENV,
-    postgres_dsn_or_skip,
-    postgres_worker_schema,
-)
+from tests.app.conftest import POSTGRES_DSN_ENV, postgres_worker_schema
 from tests.app.inventory.migrations.postgres_support import recreate_database
 
 #: The revision that attaches the ``taskhistory.status`` CHECK. The SQLite and
@@ -110,16 +105,6 @@ def tasks_alembic_config(
 
     cfg = Config(str(ALEMBIC_INI), ini_section="tasks")
     return cfg, sync_url
-
-
-@pytest.fixture
-def postgres_async_url() -> URL:
-    """Return an ``asyncpg`` URL to the real-PostgreSQL test database.
-
-    Skip when ``$EXTENSIONS_TEST_POSTGRES_DSN`` is unset (local runs without
-    PostgreSQL); the dedicated ``test_postgres`` CI job supplies it.
-    """
-    return make_url(postgres_dsn_or_skip()).set(drivername="postgresql+asyncpg")
 
 
 @pytest.fixture
