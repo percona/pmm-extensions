@@ -36,18 +36,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.inventory.migrations.postgres_support import run_on_postgres
-
-#: The revision that attaches the ``taskhistory.status`` CHECK.
-_CONSTRAINT_REVISION = "9c1d4f7a6b32"
-
-#: The head immediately before the CHECK constraint is added.
-_PRE_CONSTRAINT_REVISION = "b5e17f6b3bc7"
-
-#: Name SQLAlchemy derives for the enum's CHECK from the model side.
-_STATUS_CONSTRAINT = "taskhistorystatusenum"
-
-#: A status name no member of the enum carries, so only the CHECK rejects it.
-_OUT_OF_ENUM_STATUS = "ABANDONED"
+from tests.app.tasks.migrations.conftest import (
+    TASKHISTORY_STATUS_CONSTRAINT,
+    TASKHISTORY_STATUS_CONSTRAINT_REVISION,
+    TASKHISTORY_STATUS_OUT_OF_ENUM,
+    TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION,
+)
 
 #: The ``created_at`` / ``updated_at`` pair every real-PostgreSQL seed needs,
 #: spelled with the offset ``timestamptz`` requires.
@@ -93,7 +87,9 @@ async def _insert_history(conn: AsyncConnection, task_id: int, status: str) -> i
 
 async def _constraint_count(conn: AsyncConnection) -> int:
     """Return how many CHECKs of the guard's name the table carries."""
-    result = await conn.execute(text(_CONSTRAINT_PRESENT), {"name": _STATUS_CONSTRAINT})
+    result = await conn.execute(
+        text(_CONSTRAINT_PRESENT), {"name": TASKHISTORY_STATUS_CONSTRAINT}
+    )
     return result.scalar_one()
 
 
@@ -109,7 +105,7 @@ async def _history_status(conn: AsyncConnection, history_id: int) -> str:
 def test_upgrade_rejects_out_of_enum_status(tasks_postgres_config):
     """Carry the CHECK after the plain ALTER, and reject an out-of-enum status."""
     cfg, url = tasks_postgres_config
-    command.upgrade(cfg, _CONSTRAINT_REVISION)
+    command.upgrade(cfg, TASKHISTORY_STATUS_CONSTRAINT_REVISION)
 
     assert run_on_postgres(url, _constraint_count) == 1
 
@@ -119,27 +115,27 @@ def test_upgrade_rejects_out_of_enum_status(tasks_postgres_config):
         return task_id
 
     task_id = run_on_postgres(url, _seed_valid)
-    with pytest.raises(IntegrityError, match=_STATUS_CONSTRAINT):
+    with pytest.raises(IntegrityError, match=TASKHISTORY_STATUS_CONSTRAINT):
         run_on_postgres(
             url,
-            lambda conn: _insert_history(conn, task_id, _OUT_OF_ENUM_STATUS),
+            lambda conn: _insert_history(conn, task_id, TASKHISTORY_STATUS_OUT_OF_ENUM),
         )
 
 
 def test_downgrade_accepts_out_of_enum_status(tasks_postgres_config):
     """Accept an out-of-enum status again once the CHECK has been dropped."""
     cfg, url = tasks_postgres_config
-    command.upgrade(cfg, _CONSTRAINT_REVISION)
-    command.downgrade(cfg, _PRE_CONSTRAINT_REVISION)
+    command.upgrade(cfg, TASKHISTORY_STATUS_CONSTRAINT_REVISION)
+    command.downgrade(cfg, TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION)
 
     assert run_on_postgres(url, _constraint_count) == 0
 
     async def _seed(conn: AsyncConnection) -> int:
         task_id = await _insert_task(conn, "loose")
-        return await _insert_history(conn, task_id, _OUT_OF_ENUM_STATUS)
+        return await _insert_history(conn, task_id, TASKHISTORY_STATUS_OUT_OF_ENUM)
 
     history_id = run_on_postgres(url, _seed)
     assert (
         run_on_postgres(url, lambda conn: _history_status(conn, history_id))
-        == _OUT_OF_ENUM_STATUS
+        == TASKHISTORY_STATUS_OUT_OF_ENUM
     )

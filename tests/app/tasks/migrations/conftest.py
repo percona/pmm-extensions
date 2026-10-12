@@ -35,6 +35,20 @@ from tests.app.conftest import (
 )
 from tests.app.inventory.migrations.postgres_support import recreate_database
 
+#: The revision that attaches the ``taskhistory.status`` CHECK. The SQLite and
+#: real-PostgreSQL halves of that revision's coverage must land on the same
+#: revision so their assertions mean the same thing.
+TASKHISTORY_STATUS_CONSTRAINT_REVISION = "9c1d4f7a6b32"
+
+#: The head immediately before the CHECK constraint is added.
+TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION = "b5e17f6b3bc7"
+
+#: Name SQLAlchemy derives for the enum's CHECK from the model side.
+TASKHISTORY_STATUS_CONSTRAINT = "taskhistorystatusenum"
+
+#: A status name no member of the enum carries, so only the CHECK rejects it.
+TASKHISTORY_STATUS_OUT_OF_ENUM = "ABANDONED"
+
 #: PostgreSQL ``NAMEDATALEN - 1`` — identifiers longer than this are truncated
 #: by the server, which would make CREATE/DROP target a different name than
 #: the URL the tests connect with.

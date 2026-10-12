@@ -21,18 +21,16 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 
 from app.tasks.models import TaskHistoryStatusEnum
-
-#: The head immediately before the CHECK constraint is added.
-_PRE_CONSTRAINT_REVISION = "b5e17f6b3bc7"
+from tests.app.tasks.migrations.conftest import (
+    TASKHISTORY_STATUS_OUT_OF_ENUM,
+    TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION,
+)
 
 _INSERT_HISTORY_ROW = (
     "INSERT INTO taskhistory "
     "(created_at, task_id, execution_request, status, log_producer_epoch) "
     "VALUES ('2026-01-01 00:00:00', ?, '{}', ?, 0)"
 )
-
-#: A status name no member of the enum carries, so only the CHECK rejects it.
-_OUT_OF_ENUM_STATUS = "ABANDONED"
 
 
 def test_upgrade_constrains_status_to_the_enum_domain(tasks_alembic_config):
@@ -48,7 +46,9 @@ def test_upgrade_constrains_status_to_the_enum_domain(tasks_alembic_config):
             )
 
         with pytest.raises(IntegrityError), engine.begin() as conn:
-            conn.exec_driver_sql(_INSERT_HISTORY_ROW, (2, _OUT_OF_ENUM_STATUS))
+            conn.exec_driver_sql(
+                _INSERT_HISTORY_ROW, (2, TASKHISTORY_STATUS_OUT_OF_ENUM)
+            )
     finally:
         engine.dispose()
 
@@ -61,12 +61,14 @@ def test_upgrade_aborts_on_a_pre_existing_out_of_enum_row(tasks_alembic_config):
     ALTER refuses it.
     """
     cfg, sync_url = tasks_alembic_config
-    command.upgrade(cfg, _PRE_CONSTRAINT_REVISION)
+    command.upgrade(cfg, TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION)
 
     engine = create_engine(sync_url)
     try:
         with engine.begin() as conn:
-            conn.exec_driver_sql(_INSERT_HISTORY_ROW, (1, _OUT_OF_ENUM_STATUS))
+            conn.exec_driver_sql(
+                _INSERT_HISTORY_ROW, (1, TASKHISTORY_STATUS_OUT_OF_ENUM)
+            )
     finally:
         engine.dispose()
 
@@ -78,11 +80,13 @@ def test_downgrade_drops_the_constraint(tasks_alembic_config):
     """Assert the downgrade returns the column to its unconstrained state."""
     cfg, sync_url = tasks_alembic_config
     command.upgrade(cfg, "heads")
-    command.downgrade(cfg, _PRE_CONSTRAINT_REVISION)
+    command.downgrade(cfg, TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION)
 
     engine = create_engine(sync_url)
     try:
         with engine.begin() as conn:
-            conn.exec_driver_sql(_INSERT_HISTORY_ROW, (1, _OUT_OF_ENUM_STATUS))
+            conn.exec_driver_sql(
+                _INSERT_HISTORY_ROW, (1, TASKHISTORY_STATUS_OUT_OF_ENUM)
+            )
     finally:
         engine.dispose()
