@@ -23,6 +23,9 @@ this engine takes is never exercised.
 Everything runs over ``asyncpg``: the tasks track's ``env.py`` builds its own
 async engine, and the ``test_postgres`` CI job installs the ``postgresql`` group
 only, so no sync driver is available to lean on.
+
+Both cases stop at the CHECK revision itself rather than ``heads``, so a
+failure in an unrelated later revision cannot mask or break this harness.
 """
 
 import pytest
@@ -33,6 +36,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.inventory.migrations.postgres_support import run_on_postgres
+
+#: The revision that attaches the ``taskhistory.status`` CHECK.
+_CONSTRAINT_REVISION = "9c1d4f7a6b32"
 
 #: The head immediately before the CHECK constraint is added.
 _PRE_CONSTRAINT_REVISION = "b5e17f6b3bc7"
@@ -91,10 +97,19 @@ async def _constraint_count(conn: AsyncConnection) -> int:
     return result.scalar_one()
 
 
+async def _history_status(conn: AsyncConnection, history_id: int) -> str:
+    """Return the stored ``status`` for the named history row."""
+    result = await conn.execute(
+        text("SELECT status FROM taskhistory WHERE id = :id"),
+        {"id": history_id},
+    )
+    return result.scalar_one()
+
+
 def test_upgrade_rejects_out_of_enum_status(tasks_postgres_config):
     """Carry the CHECK after the plain ALTER, and reject an out-of-enum status."""
     cfg, url = tasks_postgres_config
-    command.upgrade(cfg, "heads")
+    command.upgrade(cfg, _CONSTRAINT_REVISION)
 
     assert run_on_postgres(url, _constraint_count) == 1
 
@@ -104,7 +119,7 @@ def test_upgrade_rejects_out_of_enum_status(tasks_postgres_config):
         return task_id
 
     task_id = run_on_postgres(url, _seed_valid)
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match=_STATUS_CONSTRAINT):
         run_on_postgres(
             url,
             lambda conn: _insert_history(conn, task_id, _OUT_OF_ENUM_STATUS),
@@ -114,7 +129,7 @@ def test_upgrade_rejects_out_of_enum_status(tasks_postgres_config):
 def test_downgrade_accepts_out_of_enum_status(tasks_postgres_config):
     """Accept an out-of-enum status again once the CHECK has been dropped."""
     cfg, url = tasks_postgres_config
-    command.upgrade(cfg, "heads")
+    command.upgrade(cfg, _CONSTRAINT_REVISION)
     command.downgrade(cfg, _PRE_CONSTRAINT_REVISION)
 
     assert run_on_postgres(url, _constraint_count) == 0
@@ -124,4 +139,7 @@ def test_downgrade_accepts_out_of_enum_status(tasks_postgres_config):
         return await _insert_history(conn, task_id, _OUT_OF_ENUM_STATUS)
 
     history_id = run_on_postgres(url, _seed)
-    assert history_id is not None
+    assert (
+        run_on_postgres(url, lambda conn: _history_status(conn, history_id))
+        == _OUT_OF_ENUM_STATUS
+    )
