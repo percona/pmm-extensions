@@ -636,7 +636,7 @@ def encrypt_dir(path: str, logger: "logging.Logger | None" = None, **cfg: Any) -
         raise BackupError("Encryption failed.")
 
     if not is_encrypted_dir(path, logger=logger):
-        raise BackupError("Something wrong, there are still unencrypted files!")
+        raise BackupError("Unencrypted files remain!")
 
     if logger:
         logger.info("OK Encryption complete and verified.")
@@ -2278,8 +2278,11 @@ class Xtrabackup(Backup):
 
         # Backup other files
         if self.host == 'localhost' and not self.incremental:
-            self.backup_mycnf(self.last_backup_dir)
-            self.backup_certs(self.last_backup_dir)
+            try:
+                self.backup_mycnf(self.last_backup_dir)
+                self.backup_certs(self.last_backup_dir)
+            except BackupError as e:
+                self.logger.warning('%s', e)
 
         # Purge changed page tracking
         if self._is_track_changed_pages():
@@ -2307,7 +2310,7 @@ class Xtrabackup(Backup):
             if self.enc_aes:
                 self.logger.info('Backup used PXB built-in encryption.')
             else:
-                encrypt_dir(self.last_backup_dir, self.logger)
+                encrypt_dir(self.last_backup_dir, self.logger, **self.dir_encrypt_config)
         # Try to save some disk space
         elif self.hardlink and self.max_copies > 1:
             self._save_disk_space()
@@ -3009,12 +3012,13 @@ class Xtrabackup(Backup):
         weekly - a full backup runs once a week on Monday.
         1..7 - also weekly cycle but a full backup runs once a week on the specified day Monday-Sunday.
         """
-        # Built, not spelled out: the 9-member literal measures 16,385 bytes after
-        # minify + gzip, one byte over the 16 KiB Nomad dispatch limit. This form
-        # measures 16,375. Re-check with scripts/check_nomad_payload_size.py.
+        # Built, not spelled out: the 9-member literal measures 16,387 bytes after
+        # minify + gzip (3 over the 16 KiB Nomad limit). This form measures 16,377
+        # (7 bytes headroom). Re-check with scripts/check_nomad_payload_size.py
+        # --report.
         cycles = ['daily', 'weekly'] + list('1234567')
         if cycle not in cycles:
-            msg = 'Invalid XTRABACKUP_INCREMENTAL_CYCLE setting: %s. Should be one of : %s.' % (cycle, cycles)
+            msg = 'Invalid XTRABACKUP_INCREMENTAL_CYCLE: %s (want %s)' % (cycle, cycles)
             self._clean_after_error()
             raise BackupError(msg)
 
