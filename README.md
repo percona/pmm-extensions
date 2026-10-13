@@ -256,11 +256,11 @@
 | app/extensions/apps/mysql\_backups/spec.py                                                                                          |       36 |        1 |       12 |        1 |     96% |       155 |
 | app/extensions/apps/mysql\_backups/views.py                                                                                         |        7 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/nav\_icons.py                                                                                                   |       16 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/om\_bootstrap/api\_routes.py                                                                                    |      218 |        6 |       34 |        2 |     97% |377, 485, 542, 816, 837, 1038 |
+| app/extensions/apps/om\_bootstrap/api\_routes.py                                                                                    |      223 |        6 |       36 |        2 |     97% |377, 485, 545, 819, 840, 1057 |
 | app/extensions/apps/om\_bootstrap/app.py                                                                                            |        5 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_bootstrap/crud.py                                                                                           |       23 |        3 |        4 |        1 |     78% |77-\>79, 80-82 |
 | app/extensions/apps/om\_bootstrap/deps.py                                                                                           |        9 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/om\_bootstrap/dispatch.py                                                                                       |       69 |        1 |       10 |        1 |     97% |       201 |
+| app/extensions/apps/om\_bootstrap/dispatch.py                                                                                       |       69 |        1 |       10 |        1 |     97% |       206 |
 | app/extensions/apps/om\_bootstrap/migrations/versions/2026\_09\_07\_0748-5020da27ed4b\_create\_bootstrap\_run.py                    |       27 |        5 |        4 |        2 |     77% |63, 75, 159-169 |
 | app/extensions/apps/om\_bootstrap/migrations/versions/2026\_09\_07\_0958-130e97b1c430\_add\_run\_steps.py                           |       14 |        1 |        0 |        0 |     93% |        68 |
 | app/extensions/apps/om\_bootstrap/migrations/versions/2026\_09\_09\_1000-2773844e362d\_add\_run\_config\_fields.py                  |       21 |        5 |        0 |        0 |     76% |     81-85 |
@@ -268,24 +268,24 @@
 | app/extensions/apps/om\_bootstrap/migrations/versions/2026\_09\_09\_1200-4d7a2e9c1b6f\_add\_member\_configs.py                      |       16 |        2 |        0 |        0 |     88% |     64-65 |
 | app/extensions/apps/om\_bootstrap/models.py                                                                                         |       35 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_bootstrap/persistence.py                                                                                    |       31 |        2 |        4 |        2 |     89% |    63, 70 |
-| app/extensions/apps/om\_bootstrap/reconcile.py                                                                                      |       68 |        1 |       24 |        2 |     97% |266-\>259, 300 |
+| app/extensions/apps/om\_bootstrap/reconcile.py                                                                                      |       89 |        1 |       28 |        2 |     97% |348-\>341, 382 |
 | app/extensions/apps/om\_bootstrap/schema.py                                                                                         |        2 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/om\_bootstrap/strategies/packages.py                                                                            |      166 |        2 |       26 |        2 |     98% |  591, 753 |
-| app/extensions/apps/om\_bootstrap/strategy.py                                                                                       |       74 |        3 |       16 |        3 |     93% |151, 153, 155 |
-| app/extensions/apps/om\_inventory/api\_routes.py                                                                                    |      143 |       23 |       32 |        3 |     78% |345, 356-357, 369-371, 374, 389-390, 435, 448-450, 478-479, 496-497, 551, 599-\>598, 600, 607-608, 611-612 |
+| app/extensions/apps/om\_bootstrap/strategies/packages.py                                                                            |      198 |        3 |       34 |        3 |     97% |815, 989, 1304 |
+| app/extensions/apps/om\_bootstrap/strategy.py                                                                                       |       77 |        3 |       16 |        3 |     94% |151, 153, 155 |
+| app/extensions/apps/om\_inventory/api\_routes.py                                                                                    |      143 |       22 |       32 |        3 |     79% |345, 356-357, 369-371, 374, 389-390, 435, 448-450, 478-479, 496-497, 551, 599-\>598, 600, 607, 613-614 |
 | app/extensions/apps/om\_inventory/app.py                                                                                            |       12 |        1 |        2 |        1 |     86% |        59 |
 | app/extensions/apps/om\_inventory/app\_owned\_settings.py                                                                           |        3 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/celery.py                                                                                         |       11 |        2 |        0 |        0 |     82% |     51-54 |
 | app/extensions/apps/om\_inventory/config.py                                                                                         |       26 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/om\_inventory/crud.py                                                                                           |      139 |        3 |       40 |        2 |     97% |373-\>377, 376, 456-462 |
-| app/extensions/apps/om\_inventory/dispatch.py                                                                                       |      232 |       12 |       62 |        8 |     93% |237, 239, 410-411, 413, 418-\>404, 444, 533, 536-537, 656, 722-727 |
+| app/extensions/apps/om\_inventory/crud.py                                                                                           |      140 |        3 |       40 |        2 |     97% |373-\>377, 376, 456-462 |
+| app/extensions/apps/om\_inventory/dispatch.py                                                                                       |      210 |        9 |       54 |        7 |     94% |232, 234, 405-406, 408, 413-\>399, 439, 590, 656-661 |
 | app/extensions/apps/om\_inventory/enumeration.py                                                                                    |       50 |        1 |       16 |        1 |     97% |142-\>146, 155 |
 | app/extensions/apps/om\_inventory/inventory.py                                                                                      |       22 |       11 |        2 |        0 |     46% |72-82, 98-117 |
 | app/extensions/apps/om\_inventory/mapping.py                                                                                        |       46 |        1 |       14 |        1 |     97% |       115 |
 | app/extensions/apps/om\_inventory/migrations/versions/2026\_08\_11\_1200-a3f1c8d24b71\_create\_om\_schema.py                        |       41 |        8 |        8 |        4 |     76% |128, 140-\>169, 169-\>205, 205-\>exit, 298-316 |
 | app/extensions/apps/om\_inventory/migrations/versions/2026\_10\_06\_1200-309bd5bdeec9\_add\_last\_error\_code.py                    |       27 |        0 |        4 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/models.py                                                                                         |      130 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/om\_inventory/payload/probe.py                                                                                  |      329 |       72 |      130 |       17 |     75% |99-107, 130-132, 140-150, 260-\>262, 264-\>258, 268, 278-\>271, 280-\>271, 284, 304-328, 345-\>343, 417-422, 455, 459-461, 463, 466, 469, 492-\>506, 571-\>573, 616, 764-765, 951-1006, 1010 |
+| app/extensions/apps/om\_inventory/payload/probe.py                                                                                  |      337 |       73 |      134 |       18 |     76% |106-114, 137-139, 147-157, 267-\>269, 271-\>265, 275, 285-\>278, 287-\>278, 291, 311-335, 352-\>350, 424-429, 462, 466-468, 470, 473, 476, 499-\>513, 578-\>580, 623, 771-772, 936, 967-1022, 1026 |
 | app/extensions/apps/om\_inventory/schema.py                                                                                         |        2 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/service.py                                                                                        |      305 |       17 |       88 |        6 |     94% |103-115, 196, 557, 594, 797, 847-859, 1111-1116 |
 | app/extensions/apps/report/api\_routes.py                                                                                           |       68 |        2 |       18 |        3 |     94% |80, 86-\>90, 195-\>197, 231 |
@@ -303,6 +303,7 @@
 | app/extensions/apps/shared/backups/responses.py                                                                                     |        3 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/shared/disk\_script\_source.py                                                                                  |       85 |        2 |       18 |        2 |     96% |  217, 263 |
 | app/extensions/apps/shared/om/config.py                                                                                             |        5 |        0 |        0 |        0 |    100% |           |
+| app/extensions/apps/shared/om/task\_failure.py                                                                                      |       33 |        0 |        6 |        0 |    100% |           |
 | app/extensions/apps/snippets/app.py                                                                                                 |       11 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/snippets/extra\_routes.py                                                                                       |       71 |        6 |       10 |        0 |     93% |80-82, 99, 183, 214 |
 | app/extensions/apps/tasks/api\_routes.py                                                                                            |       30 |        0 |        2 |        0 |    100% |           |
@@ -537,7 +538,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34481** | **1807** | **8328** |  **699** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34562** | **1805** | **8344** |  **700** | **93%** |           |
 
 
 ## Setup coverage badge
