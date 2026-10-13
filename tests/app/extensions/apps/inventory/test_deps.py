@@ -18,7 +18,7 @@
 import logging
 import re
 from typing import cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import status
@@ -40,6 +40,7 @@ from app.extensions.config import extensions_settings, SyncOptions
 from app.extensions.sync.exceptions import SyncerConfigurationError
 from app.extensions.sync.models import BaseSyncer
 from app.extensions.sync.syncers.pmm import PMMSyncer
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 
 _EXPECTED_DISAMBIGUATED_DISPLAY_NAMES = 2
 
@@ -312,3 +313,35 @@ class TestSyncerConstructionFailure:
 
         with pytest.raises(SyncerConfigurationError, match="STALE_RUN_AFTER"):
             await get_syncers_standalone()
+
+
+@pytest.mark.asyncio
+async def test_get_syncers_standalone_requests_the_tasks_client_log_policy(
+    mocker: MockerFixture,
+) -> None:
+    """Assert the Tasks client is requested from the registry with both log settings.
+
+    The registry keys a client on its endpoint and SSL settings alone, so a site
+    omitting the policy can hand every later site a client that logs in full.
+
+    :param mocker: The patching fixture standing in for the client registry.
+    """
+    get_remote_api = mocker.patch.object(
+        Settings,
+        "get_remote_api",
+        new=AsyncMock(return_value=MagicMock(spec=RemoteAPI)),
+    )
+
+    await get_syncers_standalone()
+
+    tasks_calls = [
+        awaited.kwargs
+        for awaited in get_remote_api.await_args_list
+        if awaited.kwargs["endpoint"] == extensions_settings.TASKS_ENDPOINT
+    ]
+    assert len(tasks_calls) == 1
+    assert (
+        tasks_calls[0]["sensitive_body_paths"]
+        == TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]
+    )
+    assert tasks_calls[0]["withhold_response_log"] is True

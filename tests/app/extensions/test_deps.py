@@ -50,10 +50,8 @@ from app.core.exceptions import (
 )
 from app.core.pagination import MAX_PAGINATION_LIMIT
 from app.core.requests.remote_api import RemoteAPI
-from app.extensions.apps.atw.send import get_tasks_api as atw_get_tasks_api
 from app.extensions.apps.framework.base import BaseApp
 from app.extensions.apps.framework.registry import AppRegistry, build_app_registry
-from app.extensions.apps.inventory.deps import get_syncers_standalone
 from app.extensions.clients.pmm import PMMRemoteAPI
 from app.extensions.config import App, extensions_settings
 from app.extensions.crud import AppStateManager
@@ -95,7 +93,7 @@ from app.extensions.models import (
     AppState,
     SyncInventoryEntityTypeEnum,
 )
-from app.tasks.execution_request_secrets import ENCRYPTED_LEAVES
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 from app.tasks.models import Task
 from tests.app.conftest import make_request
 from tests.app.extensions.path_unsafe_task_names import (
@@ -719,54 +717,41 @@ class TestGetTasksApi:
 
 
 class TestTasksClientLogPolicy:
-    """Cover the log policy at each site that asks the registry for a Tasks client.
+    """Cover the log policy of the Tasks client the request dependency resolves.
 
     The registry keys a client on its endpoint and SSL settings alone, so the
     first site to ask decides the log policy every later site receives. One site
     omitting it is enough to log request bodies and history responses in full.
     """
 
-    @staticmethod
-    async def _from_request_dependency() -> None:
-        """Resolve the Tasks client the way a request without app state does."""
-        request = MagicMock(spec=Request)
-        request.app.state = MagicMock(spec=[])
-        await get_tasks_client(request).__anext__()
-
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "build",
-        [
-            _from_request_dependency,
-            atw_get_tasks_api,
-            get_syncers_standalone,
-        ],
-        ids=["request-dependency", "atw-send", "inventory-sync"],
-    )
-    async def test_every_site_requests_the_policy(
-        self, mocker: MockerFixture, build: Any
+    async def test_the_request_dependency_requests_the_policy(
+        self, mocker: MockerFixture
     ) -> None:
         """Assert the Tasks client is requested with both log settings.
 
         :param mocker: The patching fixture standing in for the client registry.
-        :param build: The callable that asks the registry for a Tasks client.
         """
         get_remote_api = mocker.patch.object(
             Settings,
             "get_remote_api",
             new=AsyncMock(return_value=MagicMock(spec=RemoteAPI)),
         )
+        request = MagicMock(spec=Request)
+        request.app.state = MagicMock(spec=[])
+        dependency = get_tasks_client(request)
 
-        await build()
+        await dependency.__anext__()
+        await dependency.aclose()
 
-        tasks_calls = [
-            awaited.kwargs
-            for awaited in get_remote_api.await_args_list
-            if awaited.kwargs["endpoint"] == extensions_settings.TASKS_ENDPOINT
-        ]
-        assert len(tasks_calls) == 1
-        assert tasks_calls[0]["sensitive_body_paths"] == ENCRYPTED_LEAVES
-        assert tasks_calls[0]["withhold_response_log"] is True
+        get_remote_api.assert_awaited_once()
+        requested = get_remote_api.await_args.kwargs
+        assert requested["endpoint"] == extensions_settings.TASKS_ENDPOINT
+        assert (
+            requested["sensitive_body_paths"]
+            == TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]
+        )
+        assert requested["withhold_response_log"] is True
 
 
 class TestResolvePmmApi:

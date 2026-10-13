@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -38,6 +38,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.config import Settings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.exceptions import HTTPBadRequestException, HTTPConflictException
 from app.core.requests import RemoteAPI
@@ -53,6 +54,7 @@ from app.extensions.apps.atw.models import (
 )
 from app.extensions.apps.atw.send import (
     fail_stale_sends,
+    get_tasks_api,
     purge_expired_bundles,
     run_send,
 )
@@ -64,6 +66,7 @@ from app.extensions.bundle_upload.plan import (
 from app.extensions.bundle_upload.resolver import DRIFTED_INPUTS_REASON
 from app.extensions.bundle_upload.seam import BundleSource, UploadResult
 from app.extensions.config import DeliveryPlanInputs, extensions_settings
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 from app.tasks.models import TaskHistoryStatusEnum, TaskLogType
 from tests.app.core.settings_override.conftest import EXTENSIONS_SETTINGS_TOKEN
 from tests.app.db_schema import apply_schema
@@ -1729,3 +1732,35 @@ class TestPurgeExpiredBundles:
         )
 
         assert purge_expired_bundles(3600) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_tasks_api_requests_the_tasks_client_log_policy(
+    mocker: MockerFixture,
+) -> None:
+    """Assert the Tasks client is requested from the registry with both log settings.
+
+    The registry keys a client on its endpoint and SSL settings alone, so a site
+    omitting the policy can hand every later site a client that logs in full.
+
+    :param mocker: The patching fixture standing in for the client registry.
+    """
+    get_remote_api = mocker.patch.object(
+        Settings,
+        "get_remote_api",
+        new=AsyncMock(return_value=MagicMock(spec=RemoteAPI)),
+    )
+
+    await get_tasks_api()
+
+    tasks_calls = [
+        awaited.kwargs
+        for awaited in get_remote_api.await_args_list
+        if awaited.kwargs["endpoint"] == extensions_settings.TASKS_ENDPOINT
+    ]
+    assert len(tasks_calls) == 1
+    assert (
+        tasks_calls[0]["sensitive_body_paths"]
+        == TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]
+    )
+    assert tasks_calls[0]["withhold_response_log"] is True
