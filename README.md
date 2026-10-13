@@ -454,7 +454,7 @@
 | app/tasks/connectivity/service.py                                                                                                   |      146 |        2 |       54 |        6 |     96% |173, 432-\>431, 452-\>451, 458-\>457, 473, 485-\>484 |
 | app/tasks/crud.py                                                                                                                   |      312 |        4 |       76 |        5 |     98% |200, 609-\>611, 612, 614, 919 |
 | app/tasks/db/engine.py                                                                                                              |        7 |        0 |        0 |        0 |    100% |           |
-| app/tasks/db/seed.py                                                                                                                |      151 |       11 |       40 |        7 |     88% |839-\>852, 853-\>869, 870-\>884, 1130-1151, 1162, 1174, 1207 |
+| app/tasks/db/seed.py                                                                                                                |      150 |       11 |       40 |        7 |     88% |836-\>849, 850-\>866, 867-\>881, 1127-1148, 1159, 1171, 1204 |
 | app/tasks/deps.py                                                                                                                   |      110 |        0 |       30 |        0 |    100% |           |
 | app/tasks/execution/exceptions.py                                                                                                   |        9 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/executors/celery/models.py                                                                                      |       90 |        0 |       16 |        0 |    100% |           |
@@ -539,7 +539,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34616** | **1806** | **8346** |  **700** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34615** | **1806** | **8346** |  **700** | **93%** |           |
 
 
 ## Setup coverage badge

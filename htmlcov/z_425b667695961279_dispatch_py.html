@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_5cfb93c230ab358b_2026_09_07_0748-5020da27ed4b_create_bootstrap_run_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.2">coverage.py v7.16.2</a>,
-            created at 2026-10-13 18:37 +0000
+            created at 2026-10-13 19:06 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -105,10 +105,10 @@
     <p class="pln"><span class="n"><a id="t21" href="#t21">21</a></span><span class="t"><span class="str">package, writing ``/etc/mongod.conf``, managing a systemd unit &#8212; everything</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t22" href="#t22">22</a></span><span class="t"><span class="str">:class:`~app.extensions.apps.om_bootstrap.strategies.packages.PackagesInstallStrategy`</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t23" href="#t23">23</a></span><span class="t"><span class="str">does) would only work by accident, if the Nomad client agent itself happens to</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t24" href="#t24">24</a></span><span class="t"><span class="str">run as root. ``exec-artifact`` has an explicit sudo path: its job template keys</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t25" href="#t25">25</a></span><span class="t"><span class="str">off the ``interpreter`` meta literally starting with ``&quot;sudo &quot;``</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t"><span class="str">(``app/tasks/db/seed.py``) and runs ``env -S &quot;&lt;interpreter&gt;&quot; &lt;task dir&gt;/script``,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t27" href="#t27">27</a></span><span class="t"><span class="str">so the script is invoked by its absolute path as ``sudo bash &lt;path&gt;``.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t24" href="#t24">24</a></span><span class="t"><span class="str">run as root. ``exec-artifact`` has an explicit sudo path: its job template</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t25" href="#t25">25</a></span><span class="t"><span class="str">(``app/tasks/db/seed.py``) word-splits the ``interpreter`` meta and execs it</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t"><span class="str">against ``&lt;task dir&gt;/script``, so an interpreter of ``sudo bash`` invokes the</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t27" href="#t27">27</a></span><span class="t"><span class="str">script by its absolute path as ``sudo bash &lt;path&gt;``.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t28" href="#t28">28</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t29" href="#t29">29</a></span><span class="t"><span class="str">``exec-artifact`` downloads its script as a Nomad artifact rather than a</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t30" href="#t30">30</a></span><span class="t"><span class="str">dispatch payload (unlike ``run-python``), which means the script has to exist as</span>&nbsp;</span><span class="r"></span></p>
@@ -425,7 +425,7 @@
             <a class="nav" href="z_5cfb93c230ab358b_2026_09_07_0748-5020da27ed4b_create_bootstrap_run_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.2">coverage.py v7.16.2</a>,
-            created at 2026-10-13 18:37 +0000
+            created at 2026-10-13 19:06 +0000
         </p>
     </div>
 </footer>
