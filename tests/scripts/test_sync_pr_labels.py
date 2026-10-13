@@ -413,6 +413,17 @@ def test_compute_blast_radius_is_not_tests_only_on_a_truncated_file_list():
     assert result.tests_only is False
 
 
+def test_compute_blast_radius_is_not_app_isolated_on_a_truncated_file_list():
+    """Withhold ``app-isolated`` when the PR changed more files than were listed."""
+    result = sync_pr_labels.compute_blast_radius(
+        [_file("app/extensions/apps/report/a.py", additions=1)],
+        _APP_GLOBS,
+        changed_files=3001,
+    )
+
+    assert result.app_isolated is False
+
+
 def test_tests_only_diff_inside_one_app_slice_is_also_app_isolated():
     """Keep ``app-isolated`` alongside ``tests-only`` for one app's tests."""
     result = sync_pr_labels.compute_blast_radius(

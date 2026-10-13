@@ -110,7 +110,14 @@ _REGEX_ESCAPE = re.compile(r"[.*+?^${}()|[\]\\]")
 
 @dataclass(frozen=True, slots=True)
 class PrFile:
-    """Represent one changed file entry from the pulls list-files API."""
+    """Represent one changed file entry from the pulls list-files API.
+
+    :param filename: Path of the file after the change.
+    :param additions: Number of lines added.
+    :param deletions: Number of lines deleted.
+    :param previous_filename: Path before a rename, or ``None`` when the entry is
+        not a rename.
+    """
 
     filename: str
     additions: int = 0
@@ -135,8 +142,12 @@ class PullRequest:
 
     The identity fields come from the pulls API rather than the head branch name,
     which the pull-request author chooses and so proves nothing about who opened
-    it. ``changed_files`` is the API's own count, which the list-files endpoint
-    stops short of past its 3000-file cap.
+    it.
+
+    :param author_login: Login of the account that opened the pull request.
+    :param head_repository: Full name of the repository the head branch lives in.
+    :param changed_files: The API's own changed-file count, which the list-files
+        endpoint stops short of past its 3000-file cap.
     """
 
     author_login: str
@@ -146,7 +157,14 @@ class PullRequest:
 
 @dataclass(frozen=True, slots=True)
 class BlastRadiusResult:
-    """Carry the blast-radius signals derived from a PR file list."""
+    """Carry the blast-radius signals derived from a PR file list.
+
+    :param changed_lines: Added plus deleted lines, excluding generated files.
+    :param large_diff: Whether ``changed_lines`` exceeds the large-diff threshold.
+    :param app_isolated: Whether the PR is confined to a single app slice.
+    :param touched_apps: Sorted names of the apps the PR touches.
+    :param tests_only: Whether every path the PR names is a test file.
+    """
 
     changed_lines: int
     large_diff: bool
@@ -167,7 +185,15 @@ LABEL_EVENT_TYPES = frozenset(LabelEventKind)
 
 @dataclass(frozen=True, slots=True)
 class LabelEvent:
-    """Represent one ``labeled`` / ``unlabeled`` entry from the issue-events API."""
+    """Represent one ``labeled`` / ``unlabeled`` entry from the issue-events API.
+
+    :param event: Whether the label was added or removed.
+    :param label: Name of the label that changed.
+    :param actor_type: GitHub account type of whoever made the change.
+    :param created_at: ISO 8601 timestamp of the event.
+    :param event_id: Numeric id of the event, which breaks ties between events
+        sharing a timestamp.
+    """
 
     event: LabelEventKind
     label: str
@@ -376,7 +402,9 @@ def compute_blast_radius(
     :param files: Changed files from the pulls list-files API.
     :param app_globs: Parsed ``app:<name>`` globs from ``labeler.yml``.
     :param changed_files: The pull request's own changed-file count.
-    :return: Changed-line count and label predicates.
+    :return: Changed-line count and label predicates. ``app_isolated`` and
+        ``tests_only`` are ``False`` when ``files`` holds fewer entries than
+        ``changed_files``, since the unseen ones may be outside the app or code.
     """
     changed_lines = sum(
         file.additions + file.deletions
@@ -396,7 +424,9 @@ def compute_blast_radius(
         else:
             touched_apps.add(app)
 
-    app_isolated = not has_non_app_file and len(touched_apps) == 1
+    app_isolated = (
+        len(files) >= changed_files and not has_non_app_file and len(touched_apps) == 1
+    )
     return BlastRadiusResult(
         changed_lines=changed_lines,
         large_diff=large_diff,
