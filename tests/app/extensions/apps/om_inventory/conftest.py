@@ -112,10 +112,10 @@ def run_sweep() -> RunSweep:
     runs. The stubbed ``probe_all`` hands each result to ``on_host_done`` before
     returning them all, as the real one does.
 
-    :return: An awaitable ``(mapped_services, host_results, hosts=None,
-        progress=None)`` runner returning the sweep's outcome. ``hosts`` defaults to
-        one per executor the results mention, which is what the real enumeration
-        would have produced for them.
+    :return: An awaitable runner returning the sweep's outcome, called as
+        ``(mapped_services, host_results, hosts=None, progress=None)``. ``hosts``
+        defaults to one per executor the results mention, which is what the real
+        enumeration would have produced for them.
     """
 
     async def run(
