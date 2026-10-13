@@ -9,6 +9,9 @@ updates:
     commit-message:
       prefix: "fix"
       include: "scope"
+    labels:
+      - "dependencies"
+      - "language:python"
   - package-ecosystem: "npm"
     directory: "/frontend"
     schedule:
@@ -17,6 +20,9 @@ updates:
     commit-message:
       prefix: "fix"
       include: "scope"
+    labels:
+      - "dependencies"
+      - "language:typescript"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
