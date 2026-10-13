@@ -1362,8 +1362,8 @@ class DeliveryPlanExecutor:
     ) -> UploadResult:
         """Build the upload result from the receiver's response.
 
-        A response that is not a JSON object -- a non-JSON ``2xx`` body or a
-        list -- yields an empty result and a warning rather than an error, as
+        A response that is not a JSON object, such as a non-JSON ``2xx`` body or
+        a list, yields an empty result and a warning rather than an error, as
         does a reference pointer that fails to address a scalar. A pointer that
         addresses an empty string is treated as missing too: it is logged with
         the same warning and reported as ``None``, with the response detail
