@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     AsyncConnection,
     AsyncEngine,
+    AsyncTransaction,
     create_async_engine,
 )
 from sqlalchemy.ext.compiler import compiles
@@ -511,32 +512,48 @@ class AdvisoryLockHandle:
     transaction-scoped lock without anything in the holder's own coroutine
     failing.
 
-    :ivar connection: The connection whose transaction holds the lock, or
-        ``None`` where no lock was taken because the dialect has none.
+    :ivar transaction: The transaction holding the lock, or ``None`` where no
+        lock was taken because the dialect has none.
     """
 
-    def __init__(self, connection: AsyncConnection | None) -> None:
-        """Wrap the lock's connection.
+    def __init__(self, transaction: AsyncTransaction | None) -> None:
+        """Wrap the lock's transaction.
 
-        :param connection: The connection whose transaction holds the lock, or
-            ``None`` where no lock was taken.
+        :param transaction: The transaction holding the lock, or ``None`` where
+            no lock was taken.
         """
-        self.connection = connection
+        self.transaction = transaction
+
+    @property
+    def connection(self) -> AsyncConnection | None:
+        """Return the connection the lock's transaction runs on.
+
+        :return: The lock's connection, or ``None`` where no lock was taken.
+        """
+        return None if self.transaction is None else self.transaction.connection
 
     async def verify(self) -> None:
-        """Confirm the lock's transaction is still alive, and so still holds it.
+        """Confirm the lock's own transaction is still alive, and so still holds it.
 
         A transaction-scoped advisory lock is released only when its
-        transaction ends, so a statement that succeeds inside that transaction
-        proves the lock is still held. A no-op where no lock was taken.
+        transaction ends, so two things are checked: that the transaction the
+        lock was taken in has not ended client-side, and that a statement
+        succeeds inside it. The first is needed because the second alone would
+        pass on a transaction begun afresh after the lock's one was committed or
+        rolled back on the same live connection. A no-op where no lock was taken.
 
-        :raises AdvisoryLockLostError: If the lock's backend is gone or its
-            transaction has aborted.
+        :raises AdvisoryLockLostError: If the lock's transaction has ended, its
+            backend is gone, or it has aborted.
         """
-        if self.connection is None:
+        if self.transaction is None:
             return
+        if not self.transaction.is_active:
+            raise AdvisoryLockLostError(
+                "The advisory lock's transaction has ended, so the lock is no "
+                "longer held."
+            )
         try:
-            await self.connection.execute(text("SELECT 1"))
+            await self.transaction.connection.execute(text("SELECT 1"))
         except SQLAlchemyError as exc:
             raise AdvisoryLockLostError(
                 "The advisory lock's connection or transaction is gone, so the "
@@ -545,21 +562,21 @@ class AdvisoryLockHandle:
 
 
 @asynccontextmanager
-async def _advisory_lock_connection(
+async def _advisory_lock_transaction(
     session: AsyncSession,
     namespace: int,
     key: int,
-) -> AsyncIterator[AsyncConnection | None]:
-    """Open the connection an advisory lock on ``session``'s database is taken on.
+) -> AsyncIterator[AsyncTransaction | None]:
+    """Begin the transaction an advisory lock on ``session``'s database is taken in.
 
-    See :func:`try_pg_advisory_xact_lock` for why the connection is the helper's
+    See :func:`try_pg_advisory_xact_lock` for why its connection is the helper's
     own, on a throwaway ``NullPool`` engine.
 
     :param session: The session whose engine the lock connection is drawn from.
     :param namespace: The lock-space classifier, named in the warning only.
     :param key: The key within ``namespace``, named in the warning only.
-    :return: A connection with a begun transaction, or ``None`` on a dialect
-        without advisory locks or a bind that cannot be introspected.
+    :return: The begun transaction on a connection of its own, or ``None`` on a
+        dialect without advisory locks or a bind that cannot be introspected.
     :raises SQLAlchemyError: If the lock connection cannot be opened.
     """
     bind = session.bind
@@ -580,8 +597,7 @@ async def _advisory_lock_connection(
     lock_engine = create_async_engine(engine.url, poolclass=NullPool)
     try:
         async with lock_engine.connect() as connection:
-            await connection.begin()
-            yield connection
+            yield await connection.begin()
     finally:
         await lock_engine.dispose()
 
@@ -636,11 +652,11 @@ async def try_pg_advisory_xact_lock(
         refuse the connection or drop it. Raised before the block is entered, so
         the guarded sequence does not run under a lock it does not hold.
     """
-    async with _advisory_lock_connection(session, namespace, key) as connection:
-        if connection is None:
+    async with _advisory_lock_transaction(session, namespace, key) as transaction:
+        if transaction is None:
             yield True
             return
-        acquired = await connection.scalar(
+        acquired = await transaction.connection.scalar(
             text("SELECT pg_try_advisory_xact_lock(:namespace, :key)"),
             {"namespace": namespace, "key": key},
         )
@@ -701,10 +717,11 @@ async def pg_advisory_xact_lock(
     if max_wait <= timedelta(0):
         raise ValueError(f"max_wait must be positive, got {max_wait}")
     max_wait_ms = math.ceil(max_wait / timedelta(milliseconds=1))
-    async with _advisory_lock_connection(session, namespace, key) as connection:
-        if connection is None:
+    async with _advisory_lock_transaction(session, namespace, key) as transaction:
+        if transaction is None:
             yield AdvisoryLockHandle(None)
             return
+        connection = transaction.connection
         await connection.execute(
             text("SELECT set_config('idle_in_transaction_session_timeout', '0', true)")
         )
@@ -724,7 +741,7 @@ async def pg_advisory_xact_lock(
                     f"Advisory lock {namespace}/{key} not granted within {max_wait}."
                 ) from exc
             raise
-        yield AdvisoryLockHandle(connection)
+        yield AdvisoryLockHandle(transaction)
 
 
 def table_exists(bind: Connection, table_name: str) -> bool:

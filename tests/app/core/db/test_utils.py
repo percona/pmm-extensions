@@ -19,7 +19,7 @@ import asyncio
 import logging
 import time
 import warnings
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import nullcontext
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,7 +43,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool, StaticPool
 from sqlalchemy.sql import column
 from sqlmodel import col
@@ -1037,9 +1037,14 @@ async def postgres_dialect_session(
 
 @pytest.fixture
 def lock_connection() -> AsyncMock:
-    """Return the connection the helper is expected to take its lock on."""
+    """Return the connection the helper is expected to take its lock on.
+
+    Its begun transaction points back at it, as a real one does, since the helper
+    reaches the connection through the transaction it begins.
+    """
     connection = AsyncMock()
     connection.scalar.return_value = True
+    connection.begin.return_value.connection = connection
     return connection
 
 
@@ -1570,6 +1575,33 @@ class TestPgAdvisoryXactLockOnRealPostgres:
                 assert await admin.scalar(
                     text("SELECT pg_terminate_backend(:pid, 5000)"), {"pid": pid}
                 )
+            with pytest.raises(AdvisoryLockLostError):
+                await handle.verify()
+
+    @pytest.mark.postgres
+    @pytest.mark.parametrize(
+        "end",
+        [AsyncConnection.commit, AsyncConnection.rollback],
+        ids=["commit", "rollback"],
+    )
+    @pytest.mark.asyncio
+    async def test_verify_raises_once_the_lock_transaction_ends_on_a_live_connection(
+        self,
+        contending_sessions,
+        end: Callable[[AsyncConnection], Awaitable[None]],
+    ):
+        """Report a lost lock when its transaction ended but the connection lives.
+
+        The connection would begin a fresh transaction for the next statement, so
+        a probe statement alone would succeed there with the lock released.
+        """
+        first, _ = contending_sessions
+
+        async with pg_advisory_xact_lock(
+            first, 1, self._unique_key(), max_wait=LOCK_WAIT
+        ) as handle:
+            await handle.verify()
+            await end(handle.connection)
             with pytest.raises(AdvisoryLockLostError):
                 await handle.verify()
 
