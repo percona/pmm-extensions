@@ -259,7 +259,8 @@ def publish_masked_args(document: Mapping[str, Any]) -> dict[str, Any]:
     The masked copy the submitter recorded stands in for ``meta.args``. A run
     that recorded arguments and no usable copy shows a placeholder instead,
     because nothing here can tell which of its arguments are credentials. A
-    document holding no arguments is returned as it stands.
+    document holding no arguments, an empty value included, is returned as it
+    stands.
 
     Applying this to its own output changes nothing, which the PMM Extensions
     gateway relies on when it re-validates a response the Tasks service already
@@ -270,7 +271,7 @@ def publish_masked_args(document: Mapping[str, Any]) -> dict[str, Any]:
     """
     result, sites = _copy_with_leaf_sites(document)
     for path, container, name in sites:
-        if path == ARGS_LEAF:
+        if path == ARGS_LEAF and container[name]:
             masked = container.get(MASKED_ARGS_META_KEY)
             container[name] = (
                 masked

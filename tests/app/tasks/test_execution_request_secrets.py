@@ -411,11 +411,19 @@ class TestPublishMaskedArgs:
         [
             {"task": "run-python", "target": "node-1", "meta": {"_snippet": "a.py"}},
             {"task": "run-python", "target": "node-1", "meta": {"args": None}},
+            {"task": "run-python", "target": "node-1", "meta": {"args": ""}},
             {"task": "run-python", "target": "node-1"},
             {"task": "run-python", "target": "node-1", "meta": None},
             {"task": "run-python", "target": "node-1", "meta": "not-a-mapping"},
         ],
-        ids=["no-args", "null-args", "no-meta", "null-meta", "non-mapping-meta"],
+        ids=[
+            "no-args",
+            "null-args",
+            "empty-args",
+            "no-meta",
+            "null-meta",
+            "non-mapping-meta",
+        ],
     )
     def test_a_document_without_arguments_is_returned_unchanged(self, document):
         """Assert there is nothing to withhold where no arguments were recorded.

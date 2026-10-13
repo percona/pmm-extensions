@@ -18,7 +18,6 @@
 import base64
 import gzip
 import json as json_lib
-import logging
 from datetime import datetime, timedelta, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -3806,15 +3805,11 @@ class TestExecutionRequestEncryptionOverHTTP:
 
     @pytest.mark.asyncio
     async def test_execute_route_publishes_the_submitted_masked_copy(
-        self, test_client, session, mocker, caplog
+        self, test_client, session, mocker
     ):
         """Assert ``POST /execute/{task_name}`` answers masked and stores raw.
 
-        The request must also leave the credential out of every Tasks log
-        record it produces.
-
         :param mocker: The patching fixture standing in for the executor edge.
-        :param caplog: The log-capture fixture.
         """
         task = await TaskManager.create(
             session,
@@ -3841,23 +3836,21 @@ class TestExecutionRequestEncryptionOverHTTP:
             side_effect=fake_dispatch_queue_item,
         )
 
-        with caplog.at_level(logging.DEBUG, logger="app"):
-            response = test_client.post(
-                f"/execute/{task.name}",
-                json={
-                    "meta": {
-                        "target": "node-1",
-                        "args": self._ARGS,
-                        MASKED_ARGS_META_KEY: self._MASKED_ARGS,
-                    }
-                },
-            )
+        response = test_client.post(
+            f"/execute/{task.name}",
+            json={
+                "meta": {
+                    "target": "node-1",
+                    "args": self._ARGS,
+                    MASKED_ARGS_META_KEY: self._MASKED_ARGS,
+                }
+            },
+        )
 
         assert response.status_code == status.HTTP_200_OK
         body = response.json()
         assert body["execution_request"]["meta"]["args"] == self._MASKED_ARGS
         assert "hunter2" not in response.text
-        assert all("hunter2" not in record.getMessage() for record in caplog.records)
         stored = await stored_execution_request(session, body["id"])
         assert json_lib.loads(decrypt(stored["meta"]["args"])) == self._ARGS
 

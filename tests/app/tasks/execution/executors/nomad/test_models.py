@@ -1124,18 +1124,21 @@ class TestDispatchJob:
         assert _dispatch_body(calls)["Payload"] == expected
 
     @pytest.mark.asyncio
-    async def test_dispatch_job_logs_no_protected_leaf(
-        self, caplog: pytest.LogCaptureFixture
+    @patch("app.tasks.execution.executors.nomad.models.TaskHistoryManager")
+    async def test_dispatching_a_run_logs_no_protected_leaf(
+        self, mock_th_manager, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Assert neither dispatch log line carries arguments, config or payload.
+        """Assert a whole dispatch logs no arguments, config or payload at DEBUG.
 
-        Nomad is stubbed at the HTTP layer so the executor's own request log is
-        emitted as in production.
+        Nomad is stubbed at the HTTP layer, so every request the executor makes
+        for the run, and every log line around them, is emitted as in production.
         """
+        mock_th_manager.save = AsyncMock(side_effect=lambda _s, qi, **_kw: qi)
         executor = _build_executor(stub_nomad=False)
         task = _build_task(task_id="log-job", parameterized=True)
         queue_item = _build_queue_item(
             task=task,
+            status=TaskHistoryStatusEnum.PENDING,
             payload="payload-secret-document",
             meta={
                 "target": "node-1",
@@ -1144,20 +1147,23 @@ class TestDispatchJob:
             },
         )
 
-        with (
-            aioresponses() as mock,
-            caplog.at_level(logging.DEBUG, logger=NomadExecutor.__module__),
-            caplog.at_level(logging.DEBUG, logger=executor.logger.name),
-        ):
+        with aioresponses() as mock, caplog.at_level(logging.DEBUG, logger="app"):
+            mock.get(
+                re.compile(r".*/v1/job/[^/]+$"),
+                payload={"ID": "log-job", "SubmitTime": 1_700_000_000_000_000_000},
+                repeat=True,
+            )
+            mock.post(re.compile(r".*/v1/job/[^/]+$"), payload={"EvalID": "eval-reg"})
             mock.post(
-                re.compile(r".*/v1/job/log-job/dispatch$"),
+                re.compile(r".*/v1/job/[^/]+/dispatch$"),
                 payload={"DispatchedJobID": "dispatched-1", "EvalID": "eval-1"},
             )
             async with executor:
-                await executor.dispatch_job(queue_item, task)
+                result = await executor.dispatch_task(AsyncMock(), queue_item, task)
 
-        assert "Dispatching job" in caplog.text
-        assert "Sending POST request" in caplog.text
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        assert "Dispatching job for task history" in caplog.text
+        assert "/dispatch with kwargs" in caplog.text
         assert "node-1" in caplog.text
         for leaked in ("hunter2", "cfg-secret", "payload-secret-document", "H4sI"):
             assert leaked not in caplog.text

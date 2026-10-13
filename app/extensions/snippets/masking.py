@@ -135,8 +135,10 @@ def _is_credential_name(name: str) -> bool:
 def is_credential_parameter(name: str, *, sensitive: bool) -> bool:
     """Return whether a snippet parameter carries a credential.
 
-    The one classification every surface applies, so the run form hides exactly
-    the parameters whose values history masks.
+    The one classification of a declared parameter, shared by the run form and
+    the masker so the two cannot disagree about a parameter. The masker goes
+    further than this on a recorded line: it also masks credential-named extra
+    arguments and passwords embedded in URLs.
 
     :param name: The parameter's frontmatter name.
     :param sensitive: The parameter's frontmatter ``sensitive`` flag.
@@ -512,9 +514,9 @@ def masked_args_for(execution_args: BaseSnippetArgs) -> str | None:
     """Return the masked rendering of a run's arguments, for recording beside them.
 
     Computed at submit time against the model the arguments were rendered from,
-    so the copy stays correct after the snippet is edited or deleted. A failure
-    to mask never fails the run: it records no copy, and history then withholds
-    the arguments rather than showing them.
+    so the copy stays correct after the snippet is edited or deleted. An error
+    raised while masking is logged and records no copy, and history then
+    withholds the arguments rather than showing them.
 
     :param execution_args: The validated arguments of the run being dispatched.
     :return: The masked argument string, or ``None`` when the run renders no

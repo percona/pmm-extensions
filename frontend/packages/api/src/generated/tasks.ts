@@ -1643,10 +1643,10 @@ export interface components {
      *         withheld instead of rendering an opaque token. Empty on every row that
      *         read cleanly, which is every row on a healthy deployment.
      *
-     *     ``execution_request.meta.args`` is never the argument string the run was
-     *     given. It is the masked copy the submitter recorded under
-     *     ``meta._masked_args``, or ``<withheld>`` when the run recorded arguments
-     *     and no such copy.
+     *     ``execution_request.meta.args`` is not read from the stored arguments. It
+     *     is the masked copy the submitter recorded under ``meta._masked_args``,
+     *     which equals the arguments only when none of them is a credential, or
+     *     ``<withheld>`` when the run recorded arguments and no such copy.
      */
     TaskHistoryResponse: {
       /** Anonymize Mask */
