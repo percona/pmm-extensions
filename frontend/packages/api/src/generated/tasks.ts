@@ -1612,6 +1612,12 @@ export interface components {
      * TaskHistoryResponse
      * @description Represent a task history API response.
      *
+     *     ``execution_request.meta.args`` is not published as stored. It is the masked
+     *     copy the submitter recorded under ``meta._masked_args``, which equals the
+     *     arguments only when none of them is a credential, or ``<withheld>`` when the
+     *     run recorded arguments and no such copy. Arguments this deployment could not
+     *     read stay ``null``, and an empty value is published as it stands.
+     *
      *     :param execution_request: The request that triggered the task execution.
      *     :param status: The status of the task execution.
      *     :param started_at: The datetime when the task execution started.
@@ -1642,11 +1648,6 @@ export interface components {
      *         rather than as the stored ciphertext, so a client shows the value as
      *         withheld instead of rendering an opaque token. Empty on every row that
      *         read cleanly, which is every row on a healthy deployment.
-     *
-     *     ``execution_request.meta.args`` is not read from the stored arguments. It
-     *     is the masked copy the submitter recorded under ``meta._masked_args``,
-     *     which equals the arguments only when none of them is a credential, or
-     *     ``<withheld>`` when the run recorded arguments and no such copy.
      */
     TaskHistoryResponse: {
       /** Anonymize Mask */

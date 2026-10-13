@@ -514,9 +514,10 @@ def masked_args_for(execution_args: BaseSnippetArgs) -> str | None:
     """Return the masked rendering of a run's arguments, for recording beside them.
 
     Computed at submit time against the model the arguments were rendered from,
-    so the copy stays correct after the snippet is edited or deleted. An error
-    raised while masking is logged and records no copy, and history then
-    withholds the arguments rather than showing them.
+    so the copy stays correct after the snippet is edited or deleted. A
+    ``TypeError``, ``ValueError``, ``KeyError`` or ``AttributeError`` raised
+    while masking is logged and records no copy, and history then withholds the
+    arguments rather than showing them.
 
     :param execution_args: The validated arguments of the run being dispatched.
     :return: The masked argument string, or ``None`` when the run renders no
