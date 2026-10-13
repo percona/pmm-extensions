@@ -28,18 +28,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import ClientConnectionError
 
-from app.extensions.apps.om_inventory.dispatch import HostProbeResult
+from app.extensions.apps.om_inventory.dispatch import (
+    HostProbeResult,
+    TRUNCATION_MARK,
+)
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
-from app.extensions.apps.om_inventory.models import NodeResolution
+from app.extensions.apps.om_inventory.models import NodeResolution, ScanFailure
 from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
 from app.extensions.apps.om_inventory.service import (
     enumerate_estate,
     STARTUP_RETRIES,
     sweep,
 )
-from tests.app.extensions.apps.om_inventory.conftest import FREE_BYTES
+from tests.app.extensions.apps.om_inventory.conftest import (
+    ERROR_DETAIL_CAP,
+    FREE_BYTES,
+)
 
 OBSERVED_AT = "2026-08-12T12:00:00+00:00"
 
@@ -56,9 +62,6 @@ SHARED_HOST_SECONDS = 8.25
 TASK_HISTORY_ID = 4711
 #: One refused connection then an answer: the cold start this workspace measured.
 RETRIED_ONCE = 2
-#: The stored failure detail's length limit. Pinned here rather than imported, so a
-#: change to the cap fails a test instead of passing silently.
-ERROR_DETAIL_CAP = 500
 
 #: A probe record shaped like the payload's NDJSON, trimmed to the fields asserted.
 RECORD: dict[str, Any] = {
@@ -422,8 +425,11 @@ async def test_a_failed_record_s_error_is_bounded() -> None:
         },
     )
 
+    lead = "could not query the database: "
     assert outcome.service_errors[DEFAULT_EXTERNAL_ID] == (
-        "could not query the database: " + "x" * ERROR_DETAIL_CAP
+        lead
+        + "x" * (ERROR_DETAIL_CAP - len(lead) - len(TRUNCATION_MARK))
+        + TRUNCATION_MARK
     )
 
 
@@ -489,8 +495,9 @@ async def test_a_host_that_answered_nothing_at_all_still_says_something() -> Non
     )
 
     assert outcome.host_errors["node00"] == (
-        "the host has an executor but returned no probe record"
+        "the scan finished but reported nothing about this node"
     )
+    assert outcome.host_error_codes["node00"] == ScanFailure.NO_OUTPUT
 
 
 @pytest.mark.asyncio
