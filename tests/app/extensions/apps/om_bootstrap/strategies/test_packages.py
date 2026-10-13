@@ -1127,42 +1127,70 @@ class TestRetryPolicy:
 
 
 class TestHasAnythingToRollBack:
-    """Assert rollback is skipped only on a host install_package never reached."""
+    """Assert rollback is skipped only where install_package cannot have run."""
 
     @staticmethod
-    def _state(install_package: StepRecord) -> HostBootstrapState:
+    def _state(
+        configure_repository: StepRecord, install_package: StepRecord
+    ) -> HostBootstrapState:
         return HostBootstrapState(
             host="node00",
             steps=[
                 StepRecord(name="pre_check", status=StepStatus.SUCCEEDED),
-                StepRecord(name="configure_repository", status=StepStatus.FAILED),
+                configure_repository,
                 install_package,
             ],
         )
 
-    def test_nothing_before_install_package_needs_undoing(self) -> None:
-        """Report nothing to undo while install_package was never dispatched."""
-        state = self._state(StepRecord(name="install_package"))
+    @pytest.mark.parametrize(
+        "configure_repository",
+        [
+            StepRecord(
+                name="configure_repository",
+                status=StepStatus.FAILED,
+                attempt_count=2,
+            ),
+            StepRecord(name="configure_repository", status=StepStatus.RUNNING),
+            StepRecord(name="configure_repository"),
+        ],
+    )
+    def test_a_host_stopped_before_install_package_has_nothing_to_undo(
+        self, configure_repository: StepRecord
+    ) -> None:
+        """Skip rollback where a step before install_package has not succeeded.
+
+        The stepper dispatches a host's steps in order, so install_package cannot
+        have been sent to this host.
+
+        :param configure_repository: The step before it, not succeeded.
+        """
+        state = self._state(configure_repository, StepRecord(name="install_package"))
 
         assert PackagesInstallStrategy().has_anything_to_roll_back(state) is False
 
     @pytest.mark.parametrize(
         "install_package",
         [
+            # Accepted by the Tasks API but never saved as dispatched: its record
+            # proves nothing, so the marker-guarded rollback still runs.
+            StepRecord(name="install_package"),
             StepRecord(
                 name="install_package", status=StepStatus.FAILED, attempt_count=1
             ),
             StepRecord(name="install_package", status=StepStatus.RUNNING),
         ],
     )
-    def test_a_dispatched_install_package_may_have_left_something(
+    def test_a_host_whose_earlier_steps_succeeded_is_rolled_back(
         self, install_package: StepRecord
     ) -> None:
-        """Roll back once install_package was dispatched, whatever it did.
+        """Roll back once install_package could have been sent, whatever it records.
 
-        :param install_package: The step, dispatched at least once.
+        :param install_package: The step, in any state.
         """
-        state = self._state(install_package)
+        state = self._state(
+            StepRecord(name="configure_repository", status=StepStatus.SUCCEEDED),
+            install_package,
+        )
 
         assert PackagesInstallStrategy().has_anything_to_roll_back(state) is True
 

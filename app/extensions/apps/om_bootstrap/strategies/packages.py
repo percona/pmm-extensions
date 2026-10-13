@@ -57,6 +57,11 @@ from app.extensions.apps.om_bootstrap.strategy import (
     StepStatus,
 )
 
+#: The step that only inspects the host, so a retry fails the same way.
+PRE_CHECK = "pre_check"
+#: The first step that changes what rollback undoes; see ``has_anything_to_roll_back``.
+INSTALL_PACKAGE = "install_package"
+
 #: Where every step here reads or writes the shared keyFile — planted by the
 #: ``distribute_keyfile`` step, ahead of ``configure_mongod``. Fixed, not a
 #: :class:`BootstrapSpec` field — keyFile *content* is per-run, but where it
@@ -632,9 +637,9 @@ class PackagesInstallStrategy:
         :return: Step names, in execution order.
         """
         return [
-            "pre_check",
+            PRE_CHECK,
             "configure_repository",
-            "install_package",
+            INSTALL_PACKAGE,
             "distribute_keyfile",
             "configure_mongod",
             "start_service",
@@ -666,9 +671,9 @@ class PackagesInstallStrategy:
         """
         builders = {
             "distribute_keyfile": lambda s: self._distribute_keyfile(s, params),
-            "pre_check": self._pre_check,
+            PRE_CHECK: self._pre_check,
             "configure_repository": self._configure_repository,
-            "install_package": self._install_package,
+            INSTALL_PACKAGE: self._install_package,
             "configure_mongod": lambda s: self._configure_mongod(s, host),
             "start_service": self._start_service,
             "verify": self._verify,
@@ -822,7 +827,7 @@ class PackagesInstallStrategy:
         :return: The step action.
         :raises ValueError: If ``spec.run_id`` is ``None``.
         """
-        run_id = _require_run_id(spec, "install_package")
+        run_id = _require_run_id(spec, INSTALL_PACKAGE)
         pkg_manager = self._require_package_manager(spec.os)
         install = "apt-get install -y" if pkg_manager == "apt-get" else "dnf install -y"
         return _shell_step(
@@ -1271,26 +1276,32 @@ class PackagesInstallStrategy:
         :param step_name: Any step name this strategy plans.
         :return: Whether a failure of it is worth one retry.
         """
-        return step_name != "pre_check"
+        return step_name != PRE_CHECK
 
     def has_anything_to_roll_back(self, state: HostBootstrapState) -> bool:
-        """Report whether ``install_package`` was ever dispatched on this host.
+        """Report whether ``install_package`` can have run on this host.
 
         It plants :data:`OWNERSHIP_MARKER_PATH` before the package manager runs, and
         every rollback step is a no-op on a host whose marker does not hold this
-        run's id, so a host it never reached has nothing for rollback to do. The
-        steps before it change nothing rollback would undo: ``pre_check`` only
-        reads, and ``configure_repository`` is deliberately left in place (see
-        :meth:`plan_rollback_steps`).
+        run's id. The steps before it change nothing rollback would undo:
+        ``pre_check`` only reads, and ``configure_repository`` is deliberately left
+        in place (see :meth:`plan_rollback_steps`).
+
+        Only a host where a step before it has not succeeded is proven untouched:
+        PMM's stepper dispatches a host's steps in order, each once every step
+        before it has succeeded or been skipped. ``install_package``'s own record
+        proves nothing, since the Tasks API can accept it before its attempt is
+        saved; there the marker makes the rollback a no-op if nothing was installed.
 
         :param state: The host's progress so far.
-        :return: Whether its rollback steps have anything to undo.
+        :return: Whether its rollback steps may have anything to undo.
         """
-        return any(
-            step.name == "install_package"
-            and (step.attempt_count > 0 or step.status != StepStatus.PENDING)
-            for step in state.steps
-        )
+        for step in state.steps:
+            if step.name == INSTALL_PACKAGE:
+                return True
+            if step.status not in (StepStatus.SUCCEEDED, StepStatus.SKIPPED):
+                return False
+        return False
 
     def _rollback_stop_service(self, spec: BootstrapSpec, run_id: str) -> StepAction:  # noqa: ARG002
         """Stop and disable ``mongod``, tolerant of it never having started.

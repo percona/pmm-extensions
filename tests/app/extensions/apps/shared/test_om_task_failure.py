@@ -99,6 +99,27 @@ class TestReadStepLogs:
         assert logs == {"prepare-env": {"stderr": "ac"}, "run-script": {"stdout": "b"}}
 
     @pytest.mark.asyncio
+    async def test_skips_json_of_the_wrong_shape(self) -> None:
+        """Skip a line that is JSON but no log record, rather than failing the read."""
+        lines = [
+            "[1, 2]",
+            "42",
+            json.dumps({"step": "prepare-env", "type": "stderr", "msg": 5}),
+            json.dumps({"step": "prepare-env", "type": "stdin", "msg": "x"}),
+            json.dumps({"type": "stderr", "msg": "no step"}),
+            _line("prepare-env", "stderr", "kept"),
+        ]
+
+        async def stream(path: str, **_: Any) -> AsyncIterator[str]:
+            for line in lines:
+                yield line
+
+        api = MagicMock()
+        api.stream = MagicMock(side_effect=stream)
+
+        assert await read_step_logs(api, 7) == {"prepare-env": {"stderr": "kept"}}
+
+    @pytest.mark.asyncio
     async def test_keeps_only_the_tail_of_a_stream_not_kept_whole(self) -> None:
         """Hold no more of a verbose step than a failure detail could use."""
         noise = "Collecting pymongo\n" * (3 * STEP_LOG_TAIL // 19)
