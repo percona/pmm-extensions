@@ -25,6 +25,7 @@ from unittest.mock import patch
 import pytest
 
 from app.extensions.apps.om_bootstrap.api_routes import TriggerRunRequest
+from app.extensions.apps.om_bootstrap.models import BootstrapRun
 from app.extensions.apps.om_inventory.payload.probe import (
     collect_install_readiness,
     DEFAULT_DATA_PATH,
@@ -96,8 +97,13 @@ class TestDataDirFreeBytes:
         assert disk_usage.call_args.args == (measured,)
 
     def test_the_measured_path_is_the_install_s_default(self) -> None:
-        """Measure where om_bootstrap installs when the request names no path."""
+        """Measure where om_bootstrap installs when the request names no path.
+
+        The payload runs on the node with the standard library alone, so it cannot
+        import the install's default; this is what keeps the two from drifting.
+        """
         assert TriggerRunRequest.model_fields["data_path"].default == DEFAULT_DATA_PATH
+        assert BootstrapRun.model_fields["data_path"].default == DEFAULT_DATA_PATH
 
     def test_an_unreadable_filesystem_is_none_not_an_exception(self) -> None:
         """Keep the rest of the host record when a permission or mount failure hits."""
