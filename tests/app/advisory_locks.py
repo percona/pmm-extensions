@@ -27,24 +27,66 @@ from uuid import uuid4
 
 from pytest_mock import MockerFixture
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.core.db.utils import advisory_lock_key
 from app.tasks import reference_fence
 
-__all__ = ["SHORT_LOCK_WAIT", "isolate_reference_fence", "wait_for_advisory_waiters"]
+__all__ = [
+    "SHORT_LOCK_WAIT",
+    "advisory_lock_holder_pids",
+    "isolate_reference_fence",
+    "wait_for_advisory_waiters",
+]
 
 #: Short enough to keep a lock-timeout test fast, long enough that a slow CI
 #: connect cannot be mistaken for the lock wait.
 SHORT_LOCK_WAIT = timedelta(milliseconds=200)
 
-_WAITERS = text(
-    "SELECT count(*) FROM pg_locks "
-    "WHERE locktype = 'advisory' AND NOT granted AND objsubid = 2 "
+_TWO_KEY_LOCK_ROWS = (
+    "FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 2 "
     "AND classid::bigint = :classid AND objid::bigint = :objid"
 )
 
+_WAITERS = text(f"SELECT count(*) {_TWO_KEY_LOCK_ROWS} AND NOT granted")
+
+_HOLDERS = text(f"SELECT pid {_TWO_KEY_LOCK_ROWS} AND granted AND mode = :mode")
+
 _OID_MASK = 0xFFFFFFFF
+
+
+def _two_key_params(namespace: int, key: int) -> dict[str, int]:
+    """Map a two-key advisory lock onto the ``oid`` columns ``pg_locks`` lists.
+
+    ``pg_locks`` lists the two keys as unsigned ``oid`` columns, so a negative
+    key is compared through its 32-bit two's-complement image.
+
+    :param namespace: The lock's first key.
+    :param key: The lock's second key.
+    :return: The query parameters naming the lock.
+    """
+    return {"classid": namespace & _OID_MASK, "objid": key & _OID_MASK}
+
+
+async def advisory_lock_holder_pids(
+    connection: AsyncConnection,
+    namespace: int,
+    key: int,
+    *,
+    mode: str = "ExclusiveLock",
+) -> list[int]:
+    """Return the backends holding a two-key advisory lock in ``mode``.
+
+    :param connection: A connection on the database the lock lives in.
+    :param namespace: The lock's first key.
+    :param key: The lock's second key.
+    :param mode: The ``pg_locks`` mode the lock is held in.
+    :return: The holders' backend pids.
+    """
+    pids = await connection.scalars(
+        _HOLDERS, {**_two_key_params(namespace, key), "mode": mode}
+    )
+    return list(pids)
 
 
 def isolate_reference_fence(mocker: MockerFixture) -> int:
@@ -72,9 +114,6 @@ async def wait_for_advisory_waiters(
 ) -> None:
     """Wait until ``count`` requests are queued on a two-key advisory lock.
 
-    ``pg_locks`` lists the two keys as unsigned ``oid`` columns, so a negative
-    key is compared through its 32-bit two's-complement image.
-
     :param engine: An engine on the database the lock lives in.
     :param namespace: The lock's first key.
     :param key: The lock's second key.
@@ -84,7 +123,7 @@ async def wait_for_advisory_waiters(
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + within
-    params = {"classid": namespace & _OID_MASK, "objid": key & _OID_MASK}
+    params = _two_key_params(namespace, key)
     async with engine.connect() as connection:
         while True:
             waiting = await connection.scalar(_WAITERS, params)

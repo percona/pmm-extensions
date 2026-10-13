@@ -66,7 +66,11 @@ from app.tasks.reference_fence import (
     hold_reference_write_fence,
     REFERENCE_FENCE_LOCK_NAMESPACE,
 )
-from tests.app.advisory_locks import isolate_reference_fence, wait_for_advisory_waiters
+from tests.app.advisory_locks import (
+    advisory_lock_holder_pids,
+    isolate_reference_fence,
+    wait_for_advisory_waiters,
+)
 from tests.app.factories import NodeWriteFactory, ServiceWriteFactory, TaskFactory
 from tests.app.tasks_api_client import tasks_api_client
 
@@ -1093,11 +1097,6 @@ class TestCollectionFenceOnPostgres:
         writer naming the service then commits at once. Only checking the fence
         before the delete stops that delete from removing the service.
         """
-        holder_pids = text(
-            "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted "
-            "AND mode = 'ExclusiveLock' AND objsubid = 2 "
-            "AND classid::bigint = :classid AND objid::bigint = :objid"
-        )
         payload = TaskWrite.model_validate(
             TaskFactory.build(
                 name="racing-task",
@@ -1111,15 +1110,9 @@ class TestCollectionFenceOnPostgres:
 
         async def lose_the_fence_then_write() -> None:
             async with postgres_engine.connect() as admin:
-                pids = (
-                    await admin.scalars(
-                        holder_pids,
-                        {
-                            "classid": REFERENCE_FENCE_LOCK_NAMESPACE,
-                            "objid": pg_collection_databases & 0xFFFFFFFF,
-                        },
-                    )
-                ).all()
+                pids = await advisory_lock_holder_pids(
+                    admin, REFERENCE_FENCE_LOCK_NAMESPACE, pg_collection_databases
+                )
                 assert len(pids) == 1
                 assert await admin.scalar(
                     text("SELECT pg_terminate_backend(:pid, 5000)"), {"pid": pids[0]}
