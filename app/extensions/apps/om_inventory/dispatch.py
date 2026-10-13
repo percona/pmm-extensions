@@ -79,6 +79,9 @@ PROBE_PAYLOAD_PATH = Path(payload_pkg.__file__).parent / "probe.py"
 MAX_ERROR_DETAIL = 500
 #: Marks where a failure detail was cut to ``MAX_ERROR_DETAIL``.
 TRUNCATION_MARK = "..."
+#: How much of each step's output is kept, from its end, besides the payload's
+#: records. Far more than the ``MAX_ERROR_DETAIL`` a failure detail takes from it.
+STEP_LOG_TAIL = 8192
 
 # Bounds with_capacity_retry both ways, whichever runs out first.
 #
@@ -514,6 +517,11 @@ async def _read_logs(
     payload never runs and its own streams are empty, so the failed step's output is
     the only account there is of why.
 
+    Only the payload's ``stdout`` is kept whole, since its records are parsed from
+    it. Every other stream keeps its last ``STEP_LOG_TAIL`` characters as it is
+    read: a failure detail takes only the end of one, and a verbose step would
+    otherwise be held in full for every host a sweep has in flight.
+
     :param tasks_api: The tasks API client.
     :param task_history_id: The run to read.
     :return: The concatenated output, keyed by step and then by ``stdout`` or
@@ -527,8 +535,29 @@ async def _read_logs(
             log = json.loads(entry)
         except ValueError:
             continue
-        steps[log.get("step") or ""][log.get("type") or ""] += log.get("msg") or ""
-    return {step: dict(streams) for step, streams in steps.items()}
+        step, stream = log.get("step") or "", log.get("type") or ""
+        text = steps[step][stream] + (log.get("msg") or "")
+        # Cut at twice the tail, so a stream of short lines is not copied per line.
+        if not _is_records(step, stream) and len(text) > 2 * STEP_LOG_TAIL:
+            text = text[-STEP_LOG_TAIL:]
+        steps[step][stream] = text
+    return {
+        step: {
+            stream: text if _is_records(step, stream) else text[-STEP_LOG_TAIL:]
+            for stream, text in streams.items()
+        }
+        for step, streams in steps.items()
+    }
+
+
+def _is_records(step: str, stream: str) -> bool:
+    """Say whether a log stream is the payload's records, which are kept whole.
+
+    :param step: The step that wrote it.
+    :param stream: ``stdout`` or ``stderr``.
+    :return: Whether it is the payload's ``stdout``.
+    """
+    return step == STDOUT_STEP and stream == TaskLogType.STDOUT
 
 
 def bound_error(error: str, *, keep_end: int = 0) -> str:
