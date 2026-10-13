@@ -1279,23 +1279,29 @@ class PackagesInstallStrategy:
         return step_name != PRE_CHECK
 
     def has_anything_to_roll_back(self, state: HostBootstrapState) -> bool:
-        """Report whether ``install_package`` was ever dispatched on this host.
+        """Report whether ``install_package`` can have run on this host.
 
         It plants :data:`OWNERSHIP_MARKER_PATH` before the package manager runs, and
         every rollback step is a no-op on a host whose marker does not hold this
-        run's id, so a host it never reached has nothing for rollback to do. The
-        steps before it change nothing rollback would undo: ``pre_check`` only
-        reads, and ``configure_repository`` is deliberately left in place (see
-        :meth:`plan_rollback_steps`).
+        run's id. The steps before it change nothing rollback would undo:
+        ``pre_check`` only reads, and ``configure_repository`` is deliberately left
+        in place (see :meth:`plan_rollback_steps`).
+
+        Only a host where a step before it has not succeeded is proven untouched:
+        PMM's stepper dispatches a host's steps in order, each once every step
+        before it has succeeded or been skipped. ``install_package``'s own record
+        proves nothing, since the Tasks API can accept it before its attempt is
+        saved; there the marker makes the rollback a no-op if nothing was installed.
 
         :param state: The host's progress so far.
-        :return: Whether its rollback steps have anything to undo.
+        :return: Whether its rollback steps may have anything to undo.
         """
-        return any(
-            step.name == INSTALL_PACKAGE
-            and (step.attempt_count > 0 or step.status != StepStatus.PENDING)
-            for step in state.steps
-        )
+        for step in state.steps:
+            if step.name == INSTALL_PACKAGE:
+                return True
+            if step.status not in (StepStatus.SUCCEEDED, StepStatus.SKIPPED):
+                return False
+        return False
 
     def _rollback_stop_service(self, spec: BootstrapSpec, run_id: str) -> StepAction:  # noqa: ARG002
         """Stop and disable ``mongod``, tolerant of it never having started.
