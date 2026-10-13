@@ -16,7 +16,7 @@
 
 """Compute and sync the pull-request labels ``actions/labeler`` cannot express.
 
-The action matches path globs only, so four labels need code: ``large-diff``
+The action matches path globs only, so these labels need code: ``large-diff``
 (a changed-line count), ``app-isolated`` (every file inside one app slice, bar
 changelog fragments and generated OpenAPI artifacts), ``tests-only`` (every
 changed path is a test file), and ``qa not required`` (a Dependabot PR, or one
@@ -399,6 +399,9 @@ def compute_blast_radius(
 ) -> BlastRadiusResult:
     """Derive blast-radius labels from a PR file list.
 
+    ``app_isolated`` and ``tests_only`` judge a rename by both of its paths, so
+    moving a file across an app boundary is not isolated to either side.
+
     :param files: Changed files from the pulls list-files API.
     :param app_globs: Parsed ``app:<name>`` globs from ``labeler.yml``.
     :param changed_files: The pull request's own changed-file count.
@@ -416,13 +419,14 @@ def compute_blast_radius(
     touched_apps: set[str] = set()
     has_non_app_file = False
     for file in files:
-        if is_isolation_neutral(file.filename):
-            continue
-        app = app_of(file.filename, app_globs)
-        if app is None:
-            has_non_app_file = True
-        else:
-            touched_apps.add(app)
+        for path in file.paths:
+            if is_isolation_neutral(path):
+                continue
+            app = app_of(path, app_globs)
+            if app is None:
+                has_non_app_file = True
+            else:
+                touched_apps.add(app)
 
     app_isolated = (
         len(files) >= changed_files and not has_non_app_file and len(touched_apps) == 1

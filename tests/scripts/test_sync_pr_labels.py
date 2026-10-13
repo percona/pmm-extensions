@@ -424,6 +424,33 @@ def test_compute_blast_radius_is_not_app_isolated_on_a_truncated_file_list():
     assert result.app_isolated is False
 
 
+@pytest.mark.parametrize(
+    ("previous_filename", "expected"),
+    [
+        pytest.param("app/main.py", False, id="from-cross-cutting"),
+        pytest.param("app/extensions/apps/alerts/x.py", False, id="from-another-app"),
+        pytest.param("app/extensions/apps/report/old.py", True, id="within-the-app"),
+    ],
+)
+def test_compute_blast_radius_judges_a_rename_by_both_paths(
+    previous_filename, expected
+):
+    """Withhold ``app-isolated`` from a rename whose old path is outside the app."""
+    files = [
+        sync_pr_labels.PrFile(
+            "app/extensions/apps/report/x.py",
+            additions=1,
+            previous_filename=previous_filename,
+        )
+    ]
+
+    result = sync_pr_labels.compute_blast_radius(
+        files, _APP_GLOBS, changed_files=len(files)
+    )
+
+    assert result.app_isolated is expected
+
+
 def test_tests_only_diff_inside_one_app_slice_is_also_app_isolated():
     """Keep ``app-isolated`` alongside ``tests-only`` for one app's tests."""
     result = sync_pr_labels.compute_blast_radius(
