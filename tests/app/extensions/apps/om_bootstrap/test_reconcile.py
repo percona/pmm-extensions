@@ -271,15 +271,23 @@ class TestReconcileStep:
         assert len(result.detail) <= MAX_ERROR_DETAIL + 100
 
     @pytest.mark.asyncio
-    async def test_unreadable_logs_still_fail_the_step_with_its_reason(self) -> None:
-        """Fail with the reason alone when the logs cannot be read."""
+    @pytest.mark.parametrize(
+        "logs_error", [HTTPGoneException(detail="gone"), TimeoutError()]
+    )
+    async def test_unreadable_logs_still_fail_the_step_with_its_reason(
+        self, logs_error: Exception
+    ) -> None:
+        """Fail with the reason alone when the logs cannot be read, or not in time.
+
+        :param logs_error: What reading the logs raises.
+        """
         step = StepRecord(
             name="pre_check", status=StepStatus.RUNNING, task_history_id=TASK_HISTORY_ID
         )
         api = _tasks_api(
             "failed",
             failure_reason="Step 'run-script' failed (exit code 124).",
-            logs_error=HTTPGoneException(detail="gone"),
+            logs_error=logs_error,
         )
 
         result = await reconcile.reconcile_step(api, step)

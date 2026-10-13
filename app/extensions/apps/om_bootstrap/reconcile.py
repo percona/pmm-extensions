@@ -215,6 +215,7 @@ async def _failure_detail(
     :param failure_reason: The tasks service's account of it, when it has one.
     :return: The detail.
     """
+    logs: dict[str, dict[str, str]] = {}
     try:
         logs = await asyncio.wait_for(
             read_step_logs(tasks_api, task_history_id), LOG_READ_TIMEOUT_S
@@ -228,7 +229,6 @@ async def _failure_detail(
             task_history_id,
             exc_info=True,
         )
-        logs = {}
     script_failed = failure_reason is not None and bool(
         _XARGS_ANY_FAILURE.match(failure_reason)
     )
