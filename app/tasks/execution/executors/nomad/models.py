@@ -50,7 +50,6 @@ from sqlalchemy_celery_beat.models import Period
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.celery.models import IntervalSchedule
-from app.core.exceptions import HTTPBadRequestException
 from app.core.requests import BaseRemoteAPI, StoredCredentialHeaderMixin
 from app.core.settings_override.registry import (
     hot_field,
@@ -60,7 +59,6 @@ from app.core.settings_override.registry import (
     REMOTE_API_TLS_MARKERS,
 )
 from app.core.utils import (
-    async_run,
     b64decode_str,
     make_datetime_utc,
     slugify,
@@ -1100,27 +1098,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         if not isinstance(tracking, dict):
             return []
         return nomad_task_states_to_execution_events(tracking.get("task_states"))
-
-    async def parse_payload(
-        self, payload: str | bytes, payload_format: str
-    ) -> dict[str, Any]:
-        """Parse a job spec payload based on its format.
-
-        This function parses the payload according to the specified format
-        (HCL, JSON, or YAML).
-
-        :param payload: The job specification payload to be parsed.
-        :type payload: str | bytes
-        :param payload_format: The format of the payload, which can be "hcl", "json",
-            or "yaml".
-        :type payload_format: str
-        :return: The parsed job specification.
-        :rtype: dict[str, Any]
-        :raises ValueError: If the provided payload format is unsupported.
-        """
-        if payload_format == "hcl":
-            return await async_run(self.backend.jobs.parse, payload)
-        return await super().parse_payload(payload, payload_format)
 
     async def nomad_json(self, method: str, path: str, **kwargs: Any) -> Any:
         """Issue one Nomad API call on the aiohttp session and decode its JSON body.
@@ -2829,31 +2806,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 task.updated_at or task.created_at
             ) > self.timestamp_to_datetime(submit_time)
         return True
-
-    # TODO: Use pydantic models instead of dict for job validation  # noqa: TD002, TD003
-    async def validate_job(self, job: dict[str, Any]) -> dict[str, Any]:
-        """Validate a Nomad job specification.
-
-        This function sends a job specification to the Nomad backend for validation.
-        If validation fails, it raises an HTTPException with the corresponding status code.
-
-        :param job: The Nomad job specification to validate.
-        :type job: dict[str, Any]
-        :return: The original job specification if validation is successful.
-        :rtype: dict[str, Any]
-        :raises HTTPBadRequestException: If validation fails or Nomad returns an
-            error status code.
-        """
-        valid = await async_run(self.backend.validate.validate_job, {"Job": job})
-        if valid.status_code != status.HTTP_200_OK:
-            raise HTTPBadRequestException(
-                f"Nomad job validation failed with status {valid.status_code}"
-            )
-        resp = json.loads(valid.text)
-        if not resp.get("ValidationErrors", []):
-            return job
-        logger.error(valid[0].text)
-        raise HTTPBadRequestException("Invalid job specification")
 
     def _stream_log_timing(
         self,

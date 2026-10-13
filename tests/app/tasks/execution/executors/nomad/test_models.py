@@ -47,7 +47,6 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from yarl import URL
 
-from app.core.exceptions import HTTPBadRequestException
 from app.core.settings_override.registry import ReloadClassification
 from app.core.settings_override.resolution import resolve_nested_field_metadata
 from app.core.utils import slugify, utc_now
@@ -4540,54 +4539,6 @@ class TestTaskNeedsJobRegister:
         assert await executor.task_needs_job_register(task) is True
 
 
-class TestValidateJob:
-    """Test NomadExecutor.validate_job."""
-
-    @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.async_run")
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_validate_job_success(self, mock_nomad_cls, mock_async_run):
-        """Assert validate_job returns job when validation passes."""
-        mock_response = MagicMock()
-        mock_response.status_code = status.HTTP_200_OK
-        mock_response.text = json.dumps({"ValidationErrors": []})
-        mock_async_run.return_value = mock_response
-
-        executor = _build_executor()
-        job = {"ID": "test-job", "Type": "batch"}
-        result = await executor.validate_job(job)
-        assert result == job
-
-    @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.async_run")
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_validate_job_validation_errors(self, mock_nomad_cls, mock_async_run):
-        """Assert validate_job raises HTTPBadRequestException on validation errors."""
-        mock_response = MagicMock()
-        mock_response.status_code = status.HTTP_200_OK
-        mock_response.text = json.dumps(
-            {"ValidationErrors": ["missing required field"]}
-        )
-        mock_async_run.return_value = mock_response
-
-        executor = _build_executor()
-        with pytest.raises(HTTPBadRequestException):
-            await executor.validate_job({"ID": "bad-job"})
-
-    @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.async_run")
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_validate_job_non_200_raises(self, mock_nomad_cls, mock_async_run):
-        """Assert validate_job raises HTTPBadRequestException on non-200 status."""
-        mock_response = MagicMock()
-        mock_response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        mock_async_run.return_value = mock_response
-
-        executor = _build_executor()
-        with pytest.raises(HTTPBadRequestException):
-            await executor.validate_job({"ID": "error-job"})
-
-
 class TestGetLogsForAllocation:
     """Test NomadExecutor.get_logs_for_allocation."""
 
@@ -6609,37 +6560,6 @@ class TestListFiles:
             pytest.raises(ClientError),
         ):
             await executor.list_files(queue_item, "/alloc/data")
-
-
-class TestParsePayload:
-    """Test NomadExecutor.parse_payload."""
-
-    @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.async_run")
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_parse_payload_hcl(self, mock_nomad_cls, mock_async_run):
-        """Assert parse_payload delegates HCL to backend.jobs.parse."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_async_run.return_value = {"Job": {"ID": "parsed"}}
-
-        executor = _build_executor()
-        result = await executor.parse_payload("job {}", "hcl")
-
-        mock_async_run.assert_called_once_with(mock_backend.jobs.parse, "job {}")
-        assert result == {"Job": {"ID": "parsed"}}
-
-    @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_parse_payload_json(self, mock_nomad_cls):
-        """Assert parse_payload delegates JSON to parent class."""
-        mock_nomad_cls.return_value = MagicMock()
-        executor = _build_executor()
-
-        json_payload = json.dumps({"Job": {"ID": "test"}})
-        result = await executor.parse_payload(json_payload, "json")
-
-        assert result == {"Job": {"ID": "test"}}
 
 
 class TestBackendFromWorkerThreads:
