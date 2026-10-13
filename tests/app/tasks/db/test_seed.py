@@ -696,6 +696,7 @@ class TestArtifactLauncher:
         )
 
         assert result.returncode == COMMAND_NOT_FOUND_EXIT_CODE, result.stderr
+        assert b"-u" in result.stderr
 
     @pytest.mark.parametrize(
         "interpreter",
@@ -704,11 +705,12 @@ class TestArtifactLauncher:
     def test_check_and_launcher_agree(
         self, tmp_path: Path, shell: list[str], interpreter: str
     ) -> None:
-        """Assert the check aborts exactly when the launcher cannot run.
+        """Assert the check aborts when, and only when, the launcher cannot run.
 
         The check and the launcher split the interpreter with the same
-        ``set -f`` word-split, so the check's resolution of the first word
-        predicts the exec. A check that passes an interpreter the launcher
+        ``set -f`` word-split, so the check resolves the word the launcher
+        execs. A shell builtin such as ``exec`` is the known exception and is
+        not among these rows. A check that passes an interpreter the launcher
         cannot run lands the execution in ``FAILED`` rather than Unlaunchable;
         one that aborts a runnable interpreter fails a working configuration.
         """
@@ -1344,9 +1346,10 @@ class TestLaunchCheckShell:
     ) -> None:
         """Assert ``run-command`` aborts on a single word that names no command.
 
-        Its launcher passes the meta to ``xargs`` as one argv element, so a
-        leading dash, an assignment or a quoted name is exec'd as written and
-        fails there.
+        Its launcher passes the meta to ``xargs`` as one argv element with no
+        ``--`` ahead of it, so a leading dash is taken as an ``xargs`` option and
+        an assignment or a quoted name is exec'd as written. None of them runs
+        a command.
         """
         result, _ = self._run(
             tmp_path, shell=shell, node="user-no-sudo", meta=meta, variant="command"
@@ -1354,7 +1357,7 @@ class TestLaunchCheckShell:
 
         assert result.returncode == LAUNCH_CHECK_EXIT_CODE, result.stdout
 
-    def test_sudo_walk_still_declines_an_assignment(
+    def test_sudo_walk_declines_an_assignment(
         self, tmp_path: Path, shell: list[str]
     ) -> None:
         """Assert ``sudo FOO=1 <cmd>`` is passed through rather than resolved.

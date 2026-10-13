@@ -147,11 +147,13 @@ def _launch_check_shell(
     commands the node would actually exec, and aborts with
     :data:`~app.tasks.execution.executors.nomad.steps.LAUNCH_CHECK_EXIT_CODE`
     when one of them is absent. It splits the meta with ``set -f`` exactly as
-    ``exec-artifact``'s ``run-script`` does, so for that spec its resolution of
-    the first word predicts the exec. What it still declines — ``env``, a
-    non-absolute path holding a slash, a ``sudo`` option the walk does not
-    recognize, and an assignment after ``sudo`` — it declines for reasons of
-    its own, given below.
+    ``exec-artifact``'s ``run-script`` does, so for that spec it resolves the
+    same first word the launcher execs. The one gap is a word the shell knows
+    only as a builtin or keyword (``exec``, ``cd``): ``command -v`` reports it
+    found, the exec fails, and the run lands in ``FAILED``. What it declines —
+    ``env``, a non-absolute path holding a slash, a ``sudo`` option the walk
+    does not recognize, and an assignment after ``sudo`` — it declines for
+    reasons of its own, given below.
 
     Under ``allow_strip`` it also drops a redundant ``sudo`` prefix when the
     node's tasks already run as uid 0 and the prefix's *own* token does not
@@ -173,10 +175,11 @@ def _launch_check_shell(
     only when the effective interpreter carries the literal prefix the launcher
     tests for, then resolves ``launches``.
 
-    A first word without a slash is resolved by name whatever its shape — a
-    ``NAME=VALUE`` assignment, a leading ``-``, quotes — because that word is
-    what the launcher execs. One that names no command fails there, and the
-    check aborts ahead of it.
+    With ``launches`` unset, a first word other than ``env`` that holds no
+    slash is resolved by name whatever its shape — a ``NAME=VALUE``
+    assignment, a leading ``-``, quotes — because that word is what
+    ``exec-artifact``'s launcher execs. One that names no command fails there,
+    and the check aborts ahead of it.
 
     ``env`` is declined because resolving it says nothing about the command it
     would run, which its own options and assignments decide. An assignment
