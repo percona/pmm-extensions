@@ -744,8 +744,8 @@ class TestTasksClientLogPolicy:
         await dependency.__anext__()
         await dependency.aclose()
 
-        get_remote_api.assert_awaited_once()
-        requested = get_remote_api.await_args.kwargs
+        (awaited,) = get_remote_api.await_args_list
+        requested = awaited.kwargs
         assert requested["endpoint"] == extensions_settings.TASKS_ENDPOINT
         assert (
             requested["sensitive_body_paths"]
