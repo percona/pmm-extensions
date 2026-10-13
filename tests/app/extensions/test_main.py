@@ -71,7 +71,7 @@ from app.extensions.main import lifespan as extensions_module_lifespan
 from app.extensions.models import AppLifecycleEnum, AppState
 from app.extensions.snippets.config import snippets_settings
 from app.extensions.snippets.constants import ARTIFACT_TYPE_SNIPPET
-from app.tasks.execution_request_secrets import ENCRYPTED_LEAVES
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 from tests.app.extensions.conftest import REDUCED_ACTIVATION
 
 _ORIGINAL_EXTENSIONS_APP = main_module.extensions_app
@@ -187,7 +187,10 @@ async def test_startup_tasks_client_keeps_credentials_out_of_its_log(mocker) -> 
         tasks_api = app.state.tasks_api
         inventory_api = app.state.inventory_api
 
-        assert tasks_api.sensitive_body_paths == ENCRYPTED_LEAVES
+        assert (
+            tasks_api.sensitive_body_paths
+            == TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]
+        )
         assert tasks_api.withhold_response_log is True
         assert inventory_api.withhold_response_log is False
 

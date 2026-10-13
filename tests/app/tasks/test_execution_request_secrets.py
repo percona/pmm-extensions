@@ -24,8 +24,10 @@ import logging
 from typing import Any
 
 import pytest
+from aioresponses import aioresponses
 
 from app.core.encryption import decrypt, is_encrypted
+from app.core.requests.remote_api import RemoteAPI
 from app.tasks.execution_request_secrets import (
     ARGS_LEAF,
     CONFIG_LEAF,
@@ -35,6 +37,7 @@ from app.tasks.execution_request_secrets import (
     ENCRYPTED_META_KEYS,
     MASKED_ARGS_META_KEY,
     PAYLOAD_LEAF,
+    PERIODIC_REQUEST_LEAVES,
     publish_masked_args,
     redact_request_leaves,
     redact_request_leaves_for_log,
@@ -493,7 +496,44 @@ class TestTasksClientLogPolicy:
 
     def test_names_every_protected_leaf_as_a_request_body_path(self):
         """Assert a leaf added to the inventory is redacted from request logs."""
-        assert TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"] == ENCRYPTED_LEAVES
+        assert set(TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]) == {
+            *ENCRYPTED_LEAVES,
+            *PERIODIC_REQUEST_LEAVES,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_schedule_body_logs_no_protected_leaf(self, caplog):
+        """Keep a periodic-task body's nested leaves out of the request log line."""
+        client = RemoteAPI(endpoint="http://localhost:8000/", **TASKS_CLIENT_LOG_POLICY)
+        with aioresponses() as tasks_service:
+            tasks_service.post("http://localhost:8000/backup/periodic/", payload={})
+            with caplog.at_level(logging.DEBUG, logger=client.logger.name):
+                async with client:
+                    await client.post(
+                        "backup/periodic/",
+                        json={
+                            "name": "nightly",
+                            "execute_request": {
+                                "meta": {
+                                    "args": EXECUTION_REQUEST_ARGS,
+                                    "config": EXECUTION_REQUEST_CONFIG,
+                                },
+                                "payload": EXECUTION_REQUEST_PAYLOAD,
+                            },
+                        },
+                    )
+
+        sending = [
+            r.getMessage() for r in caplog.records if "Sending" in r.getMessage()
+        ]
+        assert len(sending) == 1
+        assert "nightly" in sending[0]
+        for secret in (
+            EXECUTION_REQUEST_ARGS,
+            EXECUTION_REQUEST_CONFIG,
+            EXECUTION_REQUEST_PAYLOAD,
+        ):
+            assert secret not in sending[0]
 
     def test_withholds_response_bodies(self):
         """Assert history responses, which carry two leaves raw, are not logged."""

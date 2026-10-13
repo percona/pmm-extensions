@@ -46,7 +46,7 @@ from app.extensions.settings_override import (
     invalidate_pmm_clients,
 )
 from app.extensions.snippets.config import snippets_settings
-from app.tasks.execution_request_secrets import ENCRYPTED_LEAVES
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 from tests.app.core.requests.pending_close_helpers import patch_paused_close_when_idle
 
 
@@ -743,7 +743,10 @@ async def test_rebound_tasks_client_keeps_the_log_policy(
 
             replacement = app.state.tasks_api
             assert str(replacement.endpoint).startswith("https://new-tasks.example.org")
-            assert replacement.sensitive_body_paths == ENCRYPTED_LEAVES
+            assert (
+                replacement.sensitive_body_paths
+                == TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]
+            )
             assert replacement.withhold_response_log is True
             with (
                 aioresponses() as mock,

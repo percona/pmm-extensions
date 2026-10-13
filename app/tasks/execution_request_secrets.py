@@ -55,6 +55,7 @@ __all__ = [
     "ENCRYPTED_META_KEYS",
     "MASKED_ARGS_META_KEY",
     "PAYLOAD_LEAF",
+    "PERIODIC_REQUEST_LEAVES",
     "REDACTED_LEAF",
     "TASKS_CLIENT_LOG_POLICY",
     "WITHHELD_ARGS_PLACEHOLDER",
@@ -131,13 +132,23 @@ WITHHELD_ARGS_PLACEHOLDER: Final = "<withheld>"
 #: What a log line shows in place of a protected leaf's value.
 REDACTED_LEAF: Final = "<redacted>"
 
-#: The log settings every client of the Tasks API is constructed with. Request
-#: bodies carry the protected leaves at these paths, and history responses
-#: return ``meta.config`` and ``payload`` in clear, so a client logs neither.
+#: The protected leaves as a periodic-task create or update body carries them,
+#: nested under the schedule's ``execute_request``.
+PERIODIC_REQUEST_LEAVES: Final = tuple(
+    f"execute_request.{leaf}" for leaf in ENCRYPTED_LEAVES
+)
+
+#: The log settings every client of the Tasks API is constructed with. A run's
+#: request body carries the protected leaves at the top level and a schedule's
+#: at :data:`PERIODIC_REQUEST_LEAVES`, and history responses return
+#: ``meta.config`` and ``payload`` in clear, so a client logs neither.
 #: One mapping rather than two settings, so a construction site cannot apply
 #: one and forget the other.
 TASKS_CLIENT_LOG_POLICY: Final[Mapping[str, Any]] = MappingProxyType(
-    {"sensitive_body_paths": ENCRYPTED_LEAVES, "withhold_response_log": True}
+    {
+        "sensitive_body_paths": (*ENCRYPTED_LEAVES, *PERIODIC_REQUEST_LEAVES),
+        "withhold_response_log": True,
+    }
 )
 
 
