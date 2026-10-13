@@ -1364,12 +1364,16 @@ class DeliveryPlanExecutor:
 
         A response that is not a JSON object -- a non-JSON ``2xx`` body or a
         list -- yields an empty result and a warning rather than an error, as
-        does a reference pointer that fails to address a scalar: the bundle has
-        already landed, so failing here would only invite a duplicate re-send.
+        does a reference pointer that fails to address a scalar. A pointer that
+        addresses an empty string is treated as missing too: it is logged with
+        the same warning and reported as ``None``, with the response detail
+        kept. The bundle has already landed, so failing here would only invite
+        a duplicate re-send.
 
         :param response: The parsed upload response.
         :return: The extracted reference and the response detail, both ``None``
-            when the response is not a JSON object.
+            when the response is not a JSON object. The reference alone is
+            ``None`` when it is missing or an empty string.
         """
         if not isinstance(response, Mapping):
             logger.warning(
