@@ -1532,7 +1532,7 @@ class TestPgAdvisoryXactLockOnRealPostgres:
     async def test_raises_timeout_error_once_the_wait_exceeds_the_bound(
         self, contending_sessions
     ):
-        """Give up after ``timeout`` with the lock-specific error.
+        """Give up after ``max_wait`` with the lock-specific error.
 
         This is the one real-engine proof that ``lock_timeout`` bounds an
         advisory wait and that its SQLSTATE reaches the helper through

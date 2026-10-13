@@ -65,10 +65,12 @@ REFERENCE_FENCE_TIMEOUT: Final = timedelta(seconds=30)
 #: server received before the failure can land before any writer is let in.
 REFERENCE_FENCE_COMMIT_GRACE: Final = timedelta(seconds=5)
 
-#: The most writers one process lets hold the fence at once. Each opens a lock
-#: connection outside the pool before its write checks one out of it, so the cap
-#: matches the tasks engine's POOL_SIZE + MAX_OVERFLOW ceiling in the side-car: a
-#: writer past it would be waiting for a pooled connection anyway.
+#: The most writers one process lets hold the fence at once, which bounds the lock
+#: connections they open outside the pool. Sized to the side-car tasks engine's
+#: POOL_SIZE + MAX_OVERFLOW ceiling. A writer whose route already used its
+#: session holds a pooled connection while it waits for a slot, and one that has
+#: not yet used it takes a slot first, so a burst past both limits can leave the
+#: second kind waiting out the pool timeout behind the first.
 REFERENCE_FENCE_MAX_WRITERS: Final = 5
 
 #: Lock-wait floor for a writer whose slot wait used up the whole bound, so an
