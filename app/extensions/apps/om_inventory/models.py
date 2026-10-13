@@ -259,7 +259,7 @@ class ObservedEntity(SQLModel):
     last_error_code: ScanFailure | None = SQLField(
         default=None,
         # The values, not the member names ``ProbeRunStatus`` stores: they are what
-        # the API reports, and what rows written before the CHECK already hold.
+        # the API reports.
         sa_type=EnumField(
             ScanFailure,
             native_enum=False,
