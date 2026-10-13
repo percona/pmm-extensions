@@ -56,6 +56,7 @@ from app.extensions.apps.om_inventory.service import (
     persist_estate,
     SweepOutcome,
 )
+from app.tasks.execution.executors.nomad.models import _failed_step_reason
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.extensions.apps.om_inventory.conftest import (
     BASE,
@@ -391,10 +392,23 @@ class TestTheFailedStepIsReadFromTheTasksService:
     ) -> None:
         """Classify the sentence the Nomad executor writes for a failed step.
 
+        Written by the executor itself, from a failed step's allocation, so a change
+        to its wording fails here rather than silently leaving every failed step
+        unknown.
+
         :param step: The step that failed.
         :param expected: The code it should map to.
         """
-        reason = f"Step '{step}' failed (exit code 127)."
+        reason = _failed_step_reason(
+            {
+                "TaskStates": {
+                    step: {
+                        "Failed": True,
+                        "Events": [{"Type": "Terminated", "ExitCode": 127}],
+                    }
+                }
+            }
+        )
 
         assert (
             classify_terminal_failure(TaskHistoryStatusEnum.FAILED.value, reason)
