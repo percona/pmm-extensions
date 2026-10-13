@@ -732,6 +732,16 @@ class TestPMMRemoteAPI:
         mock_request.assert_awaited_once_with("GET", "/v1/version")
 
 
+class TestCanSyncService:
+    """Test PMMSyncer.can_sync_service."""
+
+    def test_service_without_node_is_not_syncable(self, created_service):
+        """A service whose node is None is non-syncable, not an AttributeError."""
+        created_service.node = None
+
+        assert PMMSyncer.can_sync_service(created_service) is False
+
+
 class TestPMMSyncerFilter:
     """Test PMMSyncer _filter_extensions_sync_disabled and filter usage."""
 

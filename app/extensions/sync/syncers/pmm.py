@@ -502,6 +502,7 @@ class PMMSyncer(BaseSyncer):
         """Determine if a specific service can be synchronized.
 
         Override the base method to check if the service's node's source is PMM.
+        A service with no node is non-syncable.
 
         :param service: The service instance to check.
         :type service: CreatedService
@@ -509,5 +510,7 @@ class PMMSyncer(BaseSyncer):
         :rtype: bool
         """
         return (
-            super().can_sync_service(service) and service.node.source == SourceEnum.PMM
+            super().can_sync_service(service)
+            and service.node is not None
+            and service.node.source == SourceEnum.PMM
         )
