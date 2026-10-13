@@ -20,12 +20,13 @@ failed and its exit code, and that step's own output says why. The status alone
 says neither.
 """
 
-import json
 import re
 from collections import defaultdict
 
+from pydantic import ValidationError
+
 from app.core.requests import RemoteAPI
-from app.tasks.models import TaskLogType
+from app.tasks.models import TaskLog, TaskLogType
 
 __all__ = [
     "MAX_ERROR_DETAIL",
@@ -91,12 +92,14 @@ async def read_step_logs(
     async for entry in tasks_api.stream(f"/history/{task_history_id}/logs/"):
         if not entry:
             continue
+        # Through the tasks API's own model, so a line of the wrong shape is skipped
+        # like any other noise rather than failing the read.
         try:
-            log = json.loads(entry)
-        except ValueError:
+            log = TaskLog.model_validate_json(entry)
+        except ValidationError:
             continue
-        step, stream = log.get("step") or "", log.get("type") or ""
-        text = steps[step][stream] + (log.get("msg") or "")
+        step, stream = log.step, log.type.value
+        text = steps[step][stream] + (log.msg or "")
         # Cut at twice the tail, so a stream of short lines is not copied per line.
         if (step, stream) not in keep_whole and len(text) > 2 * STEP_LOG_TAIL:
             text = text[-STEP_LOG_TAIL:]
