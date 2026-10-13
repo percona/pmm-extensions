@@ -48,6 +48,7 @@ from app.extensions.apps.om_inventory import payload as payload_pkg
 from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.mapping import MappedService
 from app.extensions.apps.om_inventory.models import ScanFailure
+from app.tasks.execution.executors.nomad.steps import NomadStep
 from app.tasks.models import TaskHistoryStatusEnum, TaskLogType
 
 logger = logging.getLogger(__name__)
@@ -55,11 +56,11 @@ logger = logging.getLogger(__name__)
 #: The Nomad task inside the ``run-python`` job whose stdout carries the payload's
 #: output. The job also runs prestart and poststop steps; their output is read for
 #: a failure's reason, but only this step's stdout is parsed as records.
-STDOUT_STEP = "run-script"
+STDOUT_STEP = NomadStep.RUN_SCRIPT
 #: The prestart step that builds the payload's venv and installs its requirement.
 #: When it fails the payload never starts, so its own output is the only account
 #: of why.
-PREPARE_ENV_STEP = "prepare-env"
+PREPARE_ENV_STEP = NomadStep.PREPARE_ENV
 #: The step the tasks service names in a run's ``failure_reason``. The sentence is
 #: written by the Nomad executor's ``_failed_step_reason``, in this repository, and
 #: ``test_scan_failures.py`` feeds that function's own output through this pattern
