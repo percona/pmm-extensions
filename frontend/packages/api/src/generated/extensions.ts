@@ -2137,7 +2137,12 @@ export interface paths {
      *     Whether a host should be rolled back at all, and if so whether to dispatch
      *     its rollback steps in order or all at once, is PMM's stepper's call (its
      *     partial-failure policy), not this route's. This route only ever dispatches
-     *     the one step it is asked to.
+     *     the one step it is asked to - or records it ``skipped`` without dispatching
+     *     it, when the strategy says this run never changed anything on the host
+     *     (:meth:`~app.extensions.apps.om_bootstrap.strategy.InstallStrategy.has_anything_to_roll_back`).
+     *     Dispatched there, the step would only find nothing to undo and report
+     *     ``succeeded``, and the run would claim to have torn down an install that
+     *     never happened.
      *
      *     :param run: The path's run, read under its row lock.
      *     :param host: The host to roll back.
@@ -2149,7 +2154,8 @@ export interface paths {
      *     :raises HTTPNotFoundException: When there is no such run, host, or rollback step.
      *     :raises HTTPConflictException: When the step is running, succeeded, or
      *         skipped.
-     *     :return: The run, with the dispatched rollback step now ``running``.
+     *     :return: The run, with the dispatched rollback step now ``running``, or
+     *         ``skipped``.
      */
     post: operations['om_bootstrap_dispatch_rollback_step_api_apps_om_bootstrap_runs__run_id__hosts__host__rollback__step_name__dispatch_post'];
     delete?: never;
@@ -10890,6 +10896,10 @@ export interface components {
      *         ``om_bootstrap`` only ever records the fact that a dispatch happened;
      *         deciding whether *another* one should is the stepper's call, not this
      *         field's.
+     *     :param retryable: Whether dispatching this step again after it failed could
+     *         change the outcome, as :meth:`InstallStrategy.is_retryable` answered when
+     *         the run was planned. PMM's stepper treats a non-retryable step's first
+     *         failure as final instead of spending its one retry on it.
      */
     om_bootstrap__StepRecord: {
       /**
@@ -10903,6 +10913,11 @@ export interface components {
       finished_at?: string | null;
       /** Name */
       name: string;
+      /**
+       * Retryable
+       * @default true
+       */
+      retryable: boolean;
       /** Started At */
       started_at?: string | null;
       /** @default pending */

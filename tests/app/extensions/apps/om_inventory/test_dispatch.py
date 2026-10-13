@@ -23,7 +23,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.core.requests import RemoteAPI
-from app.extensions.apps.om_inventory.dispatch import _read_logs, STEP_LOG_TAIL
+from app.extensions.apps.om_inventory.dispatch import RECORDS_STREAM
+from app.extensions.apps.shared.om.task_failure import read_step_logs, STEP_LOG_TAIL
 from tests.app.extensions.apps.om_inventory.conftest import log_line
 
 HISTORY_ID = 811
@@ -68,7 +69,9 @@ class TestTheLogsReadAreBounded:
             ]
         )
 
-        logs = await _read_logs(api, HISTORY_ID)
+        logs = await read_step_logs(
+            api, HISTORY_ID, keep_whole=frozenset({RECORDS_STREAM})
+        )
 
         prepare_env = logs["prepare-env"]["stderr"]
         assert len(prepare_env) == STEP_LOG_TAIL

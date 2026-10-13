@@ -48,6 +48,12 @@ from app.extensions.apps.om_inventory import payload as payload_pkg
 from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.mapping import MappedService
 from app.extensions.apps.om_inventory.models import ScanFailure
+from app.extensions.apps.shared.om.task_failure import (
+    describe_task_failure,
+    failed_step,
+    MAX_ERROR_DETAIL,
+    read_step_logs,
+)
 from app.tasks.execution.executors.nomad.steps import NomadStep
 from app.tasks.models import TaskHistoryStatusEnum, TaskLogType
 
@@ -57,31 +63,20 @@ logger = logging.getLogger(__name__)
 #: output. The job also runs prestart and poststop steps; their output is read for
 #: a failure's reason, but only this step's stdout is parsed as records.
 STDOUT_STEP = NomadStep.RUN_SCRIPT
+#: The payload's records: the one stream read whole, since they are parsed from it.
+RECORDS_STREAM = (STDOUT_STEP, TaskLogType.STDOUT)
 #: The prestart step that builds the payload's venv and installs its requirement.
 #: When it fails the payload never starts, so its own output is the only account
 #: of why.
 PREPARE_ENV_STEP = NomadStep.PREPARE_ENV
-#: The step the tasks service names in a run's ``failure_reason``. The sentence is
-#: written by the Nomad executor's ``failed_step_reason``, in this repository, and
-#: ``test_scan_failures.py`` feeds that function's own output through this pattern
-#: so a change to its wording fails a test here.
-_FAILED_STEP = re.compile(r"^Step '(?P<step>[^']+)' failed")
 #: The payload's only third-party import, installed into the executor's venv by the
 #: run-python job template's prestart step.
 REQUIREMENTS = "pymongo>=4.6,<5"
 #: Prefix for this app's Nomad job ids, so a OM run is identifiable in Nomad.
 JOB_ID_PREFIX = "om"
 PROBE_PAYLOAD_PATH = Path(payload_pkg.__file__).parent / "probe.py"
-#: Bound on the failure detail stored for a failed scan, whether the dispatch
-#: failed or the database refused the payload. The row only needs the part that
-#: says what happened, and dispatch stderr or a driver error the payload does not
-#: recognise can run to several kilobytes.
-MAX_ERROR_DETAIL = 500
 #: Marks where a failure detail was cut to ``MAX_ERROR_DETAIL``.
 TRUNCATION_MARK = "..."
-#: How much of each step's output is kept, from its end, besides the payload's
-#: records. Far more than the ``MAX_ERROR_DETAIL`` a failure detail takes from it.
-STEP_LOG_TAIL = 8192
 
 # Bounds with_capacity_retry both ways, whichever runs out first.
 #
@@ -508,58 +503,6 @@ async def _release(tasks_api: RemoteAPI, task_history_id: int) -> str | None:
     return None
 
 
-async def _read_logs(
-    tasks_api: RemoteAPI, task_history_id: int
-) -> dict[str, dict[str, str]]:
-    """Stream a finished run's logs, every step, and return them by step and stream.
-
-    Every step rather than only the payload's: when ``prepare-env`` fails, the
-    payload never runs and its own streams are empty, so the failed step's output is
-    the only account there is of why.
-
-    Only the payload's ``stdout`` is kept whole, since its records are parsed from
-    it. Every other stream keeps its last ``STEP_LOG_TAIL`` characters as it is
-    read: a failure detail takes only the end of one, and a verbose step would
-    otherwise be held in full for every host a sweep has in flight.
-
-    :param tasks_api: The tasks API client.
-    :param task_history_id: The run to read.
-    :return: The concatenated output, keyed by step and then by ``stdout`` or
-        ``stderr``. A step or stream with no output is absent.
-    """
-    steps: dict[str, dict[str, str]] = defaultdict(lambda: defaultdict(str))
-    async for entry in tasks_api.stream(f"/history/{task_history_id}/logs/"):
-        if not entry:
-            continue
-        try:
-            log = json.loads(entry)
-        except ValueError:
-            continue
-        step, stream = log.get("step") or "", log.get("type") or ""
-        text = steps[step][stream] + (log.get("msg") or "")
-        # Cut at twice the tail, so a stream of short lines is not copied per line.
-        if not _is_records(step, stream) and len(text) > 2 * STEP_LOG_TAIL:
-            text = text[-STEP_LOG_TAIL:]
-        steps[step][stream] = text
-    return {
-        step: {
-            stream: text if _is_records(step, stream) else text[-STEP_LOG_TAIL:]
-            for stream, text in streams.items()
-        }
-        for step, streams in steps.items()
-    }
-
-
-def _is_records(step: str, stream: str) -> bool:
-    """Say whether a log stream is the payload's records, which are kept whole.
-
-    :param step: The step that wrote it.
-    :param stream: ``stdout`` or ``stderr``.
-    :return: Whether it is the payload's ``stdout``.
-    """
-    return step == STDOUT_STEP and stream == TaskLogType.STDOUT
-
-
 def bound_error(error: str, *, keep_end: int = 0) -> str:
     """Cut a failure detail to ``MAX_ERROR_DETAIL`` characters, marking the cut.
 
@@ -590,8 +533,7 @@ def classify_terminal_failure(status: str, failure_reason: str | None) -> ScanFa
     """
     if status in TaskHistoryStatusEnum.interrupted_statuses():
         return ScanFailure.SCAN_LOST
-    match = _FAILED_STEP.match(failure_reason or "")
-    step = match.group("step") if match else None
+    step = failed_step(failure_reason)
     if step == PREPARE_ENV_STEP:
         return ScanFailure.ENVIRONMENT_SETUP_FAILED
     if step == STDOUT_STEP:
@@ -623,19 +565,11 @@ def describe_terminal_failure(
     :param logs: The run's output, by step and stream.
     :return: The failure detail, at most ``MAX_ERROR_DETAIL`` characters.
     """
-    match = _FAILED_STEP.match(failure_reason or "")
-    streams = logs.get(match.group("step") if match else STDOUT_STEP) or {}
-    output = (
-        streams.get(TaskLogType.STDERR, "").strip()
-        or streams.get(TaskLogType.STDOUT, "").strip()
-    )
-    lead = " ".join(
-        part for part in (f"scan {status} on {executor_host}:", failure_reason) if part
-    )
-    if not (failure_reason or output):
-        output = "no output"
+    prefix = f"scan {status} on {executor_host}:"
+    detail = describe_task_failure(failure_reason, logs, default_step=STDOUT_STEP)
+    lead = " ".join(part for part in (prefix, failure_reason) if part)
     return bound_error(
-        " ".join(part for part in (lead, output) if part),
+        f"{prefix} {detail or 'no output'}",
         keep_end=MAX_ERROR_DETAIL - len(TRUNCATION_MARK) - len(lead) - 1,
     )
 
@@ -735,7 +669,11 @@ async def probe_host(
 
         history_id = result.task_history_id
         status, failure_reason = await _wait_for_terminal(tasks_api, history_id)
-        logs = await with_capacity_retry(lambda: _read_logs(tasks_api, history_id))
+        logs = await with_capacity_retry(
+            lambda: read_step_logs(
+                tasks_api, history_id, keep_whole=frozenset({RECORDS_STREAM})
+            )
+        )
         stdout = (logs.get(STDOUT_STEP) or {}).get(TaskLogType.STDOUT, "")
         result.records, result.host_record = parse_ndjson(stdout)
 
