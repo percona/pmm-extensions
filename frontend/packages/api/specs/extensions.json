@@ -13872,11 +13872,16 @@
         "type": "object"
       },
       "om_inventory__ProbeCounts": {
-        "description": "Count what one sweep reached.\n\n``resolved`` versus ``answered`` is the diagnostic split: the first says the\nservice mapped to a live executor host, the second says the node ran the payload.\nA sweep with ``resolved=9, answered=0`` is a healthy mapping and broken executors.\n\n:param services_total: MongoDB services inventory reported.\n:param services_resolved: ...of which mapped to a live executor host.\n:param services_orphaned: ...of which did not. Not an error.\n:param services_answered: Services that returned a usable probe record.\n:param hosts_total: Hosts in scope this sweep, service or no service.\n:param hosts_probeable: ...of which had a usable executor to dispatch to.\n:param hosts_answered: Hosts that returned a usable record.",
+        "description": "Count what one sweep reached.\n\n``resolved`` versus ``answered`` is the diagnostic split: the first says the\nservice mapped to a live executor host, the second says the node ran the payload.\nA sweep with ``resolved=9, answered=0`` is a healthy mapping and broken executors.\n\n:param services_total: MongoDB services inventory reported.\n:param services_resolved: ...of which mapped to a live executor host.\n:param services_orphaned: ...of which did not. Not an error.\n:param services_answered: Services that returned a usable probe record.\n:param hosts_total: Hosts in scope this sweep, service or no service.\n:param hosts_probeable: ...of which had a usable executor to dispatch to.\n:param hosts_answered: Hosts that returned a usable record.\n:param hosts_finished: Hosts whose scan has come back, answered or not, out of\n    ``hosts_probeable``; counted up while the sweep is still running.",
         "properties": {
           "hosts_answered": {
             "default": 0,
             "title": "Hosts Answered",
+            "type": "integer"
+          },
+          "hosts_finished": {
+            "default": 0,
+            "title": "Hosts Finished",
             "type": "integer"
           },
           "hosts_probeable": {
