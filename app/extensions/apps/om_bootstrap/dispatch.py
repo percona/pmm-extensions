@@ -21,10 +21,10 @@ job template has no ``sudo`` branch at all, so a step needing root (installing a
 package, writing ``/etc/mongod.conf``, managing a systemd unit — everything
 :class:`~app.extensions.apps.om_bootstrap.strategies.packages.PackagesInstallStrategy`
 does) would only work by accident, if the Nomad client agent itself happens to
-run as root. ``exec-artifact`` has an explicit sudo path: its job template keys
-off the ``interpreter`` meta literally starting with ``"sudo "``
-(``app/tasks/db/seed.py``) and runs ``env -S "<interpreter>" <task dir>/script``,
-so the script is invoked by its absolute path as ``sudo bash <path>``.
+run as root. ``exec-artifact`` has an explicit sudo path: its job template
+(``app/tasks/db/seed.py``) word-splits the ``interpreter`` meta and execs it
+against ``<task dir>/script``, so an interpreter of ``sudo bash`` invokes the
+script by its absolute path as ``sudo bash <path>``.
 
 ``exec-artifact`` downloads its script as a Nomad artifact rather than a
 dispatch payload (unlike ``run-python``), which means the script has to exist as
