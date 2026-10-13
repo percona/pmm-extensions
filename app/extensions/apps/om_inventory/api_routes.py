@@ -606,7 +606,9 @@ async def trigger_probe(
         session, node_ids, stale_after=om_inventory_settings.STALE_RUN_AFTER
     )
     if blocking is not None:
-        raise HTTPConflictException(detail=conflict_detail(blocking, node_ids))
+        raise HTTPConflictException(
+            detail=await conflict_detail(session, blocking, node_ids)
+        )
 
     run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids or None))
     run_om_probe.delay(str(run.id), node_ids or None)

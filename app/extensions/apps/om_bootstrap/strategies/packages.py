@@ -94,9 +94,9 @@ PID_FILE_PATH = "/var/run/mongod.pid"
 #: Where ``pre_check`` looks for an existing ``mongod`` besides ``PATH``. Steps run
 #: under ``sudo``, whose ``secure_path`` (``/sbin:/bin:/usr/sbin:/usr/bin`` on both
 #: supported OSes) leaves out where a tarball install usually lands, so
-#: ``command -v`` alone passed a host with ``/usr/local/bin/mongod`` and the install
-#: went on to put a second ``mongod`` beside it. Shell glob patterns: ``*`` is
-#: expanded on the host, everything else is matched literally.
+#: ``command -v`` alone passes a host with ``/usr/local/bin/mongod`` and an install
+#: would put a second ``mongod`` beside it. Shell glob patterns: ``*`` is expanded
+#: on the host, everything else is matched literally.
 EXTRA_MONGOD_DIRS = ("/usr/local/bin", "/opt/*/bin")
 
 #: How many lines of ``mongod``'s journal :func:`_mongod_diagnostics` prints.
@@ -295,9 +295,9 @@ _SS_HOLDER_SED = r's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/pid \2, \1/p'
 def _port_free_check(port: int) -> str:
     """Build the ``pre_check`` lines refusing a port something already listens on.
 
-    Without this the install went all the way to ``start_service``, where the only
-    account of it was systemd's "see journalctl" - the real reason, ``Address
-    already in use``, stayed in mongod's own log on the node.
+    A taken port otherwise surfaces only at ``start_service``, after the package
+    is installed, where systemd's account of it is "see journalctl" and the real
+    reason, ``Address already in use``, stays in mongod's own log on the node.
 
     ``ss`` first, with ``-p`` so the message names the process holding the port
     (``pre_check`` runs as root, so every process is visible). A host without
@@ -731,10 +731,10 @@ class PackagesInstallStrategy:
         - **OS**: the OS's package manager is present.
         - **Path**: no MongoDB already lives on the host — no ``mongod`` on
           ``PATH`` or in :data:`EXTRA_MONGOD_DIRS`, no :data:`CONFIG_PATH`, and
-          ``spec.data_path`` absent or empty. This is also what makes rollback safe: ``install_package``
-          claims the host for its run with :data:`OWNERSHIP_MARKER_PATH` only
-          after this passed, and rollback removes nothing unless that marker
-          holds its own run's id.
+          ``spec.data_path`` absent or empty. This is also what makes rollback
+          safe: ``install_package`` claims the host for its run with
+          :data:`OWNERSHIP_MARKER_PATH` only after this passed, and rollback
+          removes nothing unless that marker holds its own run's id.
         - **Disk space**: at least :data:`MIN_DATA_DISK_BYTES` free on the
           filesystem ``spec.data_path`` will live on — that of its nearest
           existing ancestor, since on a fresh host the path itself does not

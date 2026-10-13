@@ -1418,7 +1418,7 @@ class TestPreCheckCommand:
     def test_fails_when_ss_reports_a_listener_it_cannot_attribute(
         self, tmp_path: Path, paths: tuple[Path, Path]
     ) -> None:
-        """Still fail when ``ss`` shows no process, which it does for non-root."""
+        """Fail all the same when ``ss`` shows no process, as it does for non-root."""
         result = self._run(
             tmp_path, ss_output="LISTEN 0 4096 0.0.0.0:27017 0.0.0.0:*\n"
         )
@@ -1763,7 +1763,7 @@ class TestMongodDiagnostics:
         assert result.stderr.rstrip().endswith(ending)
 
     def test_survives_a_missing_log(self, tmp_path: Path) -> None:
-        """Still fail with the command's own code when there is no log to read."""
+        """Fail with the command's own code even when there is no log to read."""
         result = self._run(tmp_path, "start_service", fails=True)
 
         assert result.returncode == 1
