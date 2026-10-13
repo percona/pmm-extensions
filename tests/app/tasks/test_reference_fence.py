@@ -15,9 +15,12 @@
 
 """Test the reference fence between Tasks API writers and inventory collection."""
 
+import time
+
 import pytest
 from fastapi import status
 from pytest_mock import MockerFixture
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db.utils import AdvisoryLockTimeoutError
 from app.core.exceptions import HTTPServiceUnavailableException
@@ -84,4 +87,28 @@ async def test_writers_hold_the_fence_together(contending_sessions):
         hold_reference_write_fence(first, max_wait=SHORT_LOCK_WAIT),
         hold_reference_write_fence(second, max_wait=SHORT_LOCK_WAIT),
     ):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_a_writer_past_the_cap_waits_then_answers_503(
+    session: AsyncSession, mocker: MockerFixture
+):
+    """Bound the lock connections writers open, and free a slot on exit.
+
+    SQLite takes no lock, so the only thing the second writer can wait on here
+    is a slot; the third proves the first writer's exit gave its slot back.
+    """
+    mocker.patch.object(reference_fence, "REFERENCE_FENCE_MAX_WRITERS", 1)
+
+    async with hold_reference_write_fence(session, max_wait=SHORT_LOCK_WAIT):
+        started = time.monotonic()
+        with pytest.raises(HTTPServiceUnavailableException) as raised:
+            async with hold_reference_write_fence(session, max_wait=SHORT_LOCK_WAIT):
+                pytest.fail("a writer entered past the cap")
+        waited = time.monotonic() - started
+
+    assert raised.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert waited >= SHORT_LOCK_WAIT.total_seconds() / 2
+    async with hold_reference_write_fence(session, max_wait=SHORT_LOCK_WAIT):
         pass
