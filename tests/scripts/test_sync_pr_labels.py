@@ -262,6 +262,7 @@ def test_sync_blast_radius_labels_adds_and_removes_labels():
         large_diff=False,
         app_isolated=True,
         touched_apps=("app:report",),
+        tests_only=False,
     )
 
     sync_pr_labels.sync_blast_radius_labels(
@@ -274,6 +275,154 @@ def test_sync_blast_radius_labels_adds_and_removes_labels():
     client.remove_issue_label.assert_called_once_with(
         "percona", "pmm-extensions", 42, "large-diff"
     )
+
+
+@pytest.mark.parametrize(
+    ("present", "tests_only", "added", "removed"),
+    [
+        pytest.param(set(), True, ["tests-only"], None, id="add"),
+        pytest.param({"tests-only"}, False, None, "tests-only", id="remove"),
+    ],
+)
+def test_sync_blast_radius_labels_syncs_the_tests_only_label(
+    present, tests_only, added, removed
+):
+    """Add ``tests-only`` to a tests-only diff and remove it once that stops holding."""
+    client = Mock(spec=sync_pr_labels.GitHubClient)
+    client.list_issue_labels.return_value = present
+    result = sync_pr_labels.BlastRadiusResult(
+        changed_lines=1,
+        large_diff=False,
+        app_isolated=False,
+        touched_apps=(),
+        tests_only=tests_only,
+    )
+
+    sync_pr_labels.sync_blast_radius_labels(
+        client, "percona", "pmm-extensions", 42, result, log=lambda _message: None
+    )
+
+    if added is None:
+        client.add_issue_labels.assert_not_called()
+    else:
+        client.add_issue_labels.assert_called_once_with(
+            "percona", "pmm-extensions", 42, added
+        )
+    if removed is None:
+        client.remove_issue_label.assert_not_called()
+    else:
+        client.remove_issue_label.assert_called_once_with(
+            "percona", "pmm-extensions", 42, removed
+        )
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "tests/a.py",
+        "tests/scripts/x.py",
+        "frontend/packages/e2e/tests/a.spec.ts",
+        "frontend/packages/e2e/playwright.config.ts",
+        "frontend/packages/framework/src/x/Foo.test.tsx",
+        "frontend/packages/api/src/a.spec.ts",
+    ],
+)
+def test_is_test_file_accepts_test_paths(filename):
+    """Count root ``tests/``, the e2e package, and frontend test/spec files."""
+    assert sync_pr_labels.is_test_file(filename)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "app/main.py",
+        "frontend/packages/apps/atw/tests/setup.ts",
+        "frontend/src/Foo.tsx",
+        "testsuite/a.py",
+        "app/extensions/apps/framework/templates/task/tests/test_x.py",
+        "snippets/a.sh",
+    ],
+)
+def test_is_test_file_rejects_non_test_paths(filename):
+    """Reject source, frontend test helpers, scaffold tests and prefix lookalikes."""
+    assert not sync_pr_labels.is_test_file(filename)
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        pytest.param(
+            [_file("tests/a.py"), _file("frontend/packages/x/src/Foo.test.ts")],
+            True,
+            id="all-tests",
+        ),
+        pytest.param(
+            [_file("tests/app/extensions/apps/report/test_a.py")],
+            True,
+            id="tests-inside-one-app-slice",
+        ),
+        pytest.param([_file("tests/a.py"), _file("app/main.py")], False, id="mixed"),
+        pytest.param(
+            [_file("tests/a.py"), _file("README.md")], False, id="tests-plus-docs"
+        ),
+        pytest.param([], False, id="empty"),
+        pytest.param(
+            [sync_pr_labels.PrFile("tests/foo.py", previous_filename="app/foo.py")],
+            False,
+            id="rename-into-tests",
+        ),
+        pytest.param(
+            [sync_pr_labels.PrFile("tests/b.py", previous_filename="tests/a.py")],
+            True,
+            id="rename-within-tests",
+        ),
+    ],
+)
+def test_compute_blast_radius_flags_a_tests_only_diff(files, expected):
+    """Mark a diff tests-only only when every path every entry names is a test file."""
+    assert sync_pr_labels.compute_blast_radius(files, _APP_GLOBS).tests_only is expected
+
+
+def test_tests_only_diff_inside_one_app_slice_is_also_app_isolated():
+    """Keep ``app-isolated`` alongside ``tests-only`` for one app's tests."""
+    result = sync_pr_labels.compute_blast_radius(
+        [_file("tests/app/extensions/apps/report/test_a.py")], _APP_GLOBS
+    )
+
+    assert result.app_isolated is True
+    assert result.tests_only is True
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["snippets/proxysql_status.sh", "app/extensions/snippets/service.py"],
+)
+def test_snippets_paths_are_not_app_slices(filename):
+    """Keep both snippets trees out of every ``app:<name>`` slice."""
+    assert sync_pr_labels.app_of(filename, _APP_GLOBS) is None
+    result = sync_pr_labels.compute_blast_radius(
+        [_file(filename, additions=1)], _APP_GLOBS
+    )
+    assert result.app_isolated is False
+    assert result.touched_apps == ()
+
+
+def test_labeler_declares_the_language_and_snippets_rules():
+    """Declare the path-rule labels, and none of the retired or script-owned names.
+
+    ``tests-only`` must stay out: ``sync-labels`` would strip the script's label
+    from any pull request its rule did not match.
+    """
+    declared = set(yaml.safe_load(_LABELER_TEXT))
+
+    assert {
+        "language:python",
+        "language:shell",
+        "language:typescript",
+        "builtin-snippets",
+        "snippets-core",
+    } <= declared
+    assert declared.isdisjoint({"python", "javascript", "tests-only"})
 
 
 def _event(
@@ -399,6 +548,41 @@ def test_qa_not_required_not_eligible_on_mixed_pr():
 def test_qa_not_required_not_eligible_on_empty_file_list():
     """Reject an empty file list instead of matching every glob vacuously."""
     assert not sync_pr_labels.qa_not_required_eligible([], _HUMAN_PULL, _REPOSITORY)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        pytest.param([_file("tests/a.py")], id="tests-only"),
+        pytest.param([_file("tests/a.py"), _file("README.md")], id="tests-plus-docs"),
+        pytest.param(
+            [sync_pr_labels.PrFile("tests/b.py", previous_filename="tests/a.py")],
+            id="rename-within-tests",
+        ),
+    ],
+)
+def test_qa_not_required_eligible_on_a_test_or_doc_diff(files):
+    """Qualify a human PR whose every changed path is a test file or documentation."""
+    assert sync_pr_labels.qa_not_required_eligible(files, _HUMAN_PULL, _REPOSITORY)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        pytest.param([_file("tests/a.py"), _file("app/main.py")], id="tests-plus-code"),
+        pytest.param(
+            [sync_pr_labels.PrFile("tests/foo.py", previous_filename="app/foo.py")],
+            id="rename-into-tests",
+        ),
+        pytest.param(
+            [sync_pr_labels.PrFile("dist/x.js", previous_filename="app/x.py")],
+            id="rename-into-dist",
+        ),
+    ],
+)
+def test_qa_not_required_not_eligible_when_any_path_needs_qa(files):
+    """Reject a diff with one path, old or new, outside the test and doc set."""
+    assert not sync_pr_labels.qa_not_required_eligible(files, _HUMAN_PULL, _REPOSITORY)
 
 
 def test_qa_not_required_manual_when_newest_event_is_a_user():
@@ -712,6 +896,29 @@ def test_list_pr_files_walks_every_page(monkeypatch):
         filename="app/core/x.py", additions=2, deletions=3
     )
     assert [_requested_page(url) for url in requested] == ["1", "2"]
+
+
+def test_list_pr_files_carries_the_previous_name_of_a_rename(monkeypatch):
+    """Map a renamed entry's ``previous_filename`` and leave others without one."""
+    page = [
+        {
+            "filename": "tests/foo.py",
+            "previous_filename": "app/foo.py",
+            "status": "renamed",
+            "additions": 0,
+            "deletions": 0,
+        },
+        {"filename": "README.md", "status": "modified", "additions": 1},
+    ]
+    _patch_urlopen_pages(monkeypatch, [page])
+
+    client = sync_pr_labels.UrllibGitHubClient("token")
+    files = client.list_pr_files("percona", "pmm-extensions", 1)
+
+    assert files == [
+        sync_pr_labels.PrFile(filename="tests/foo.py", previous_filename="app/foo.py"),
+        sync_pr_labels.PrFile(filename="README.md", additions=1),
+    ]
 
 
 def test_list_issue_labels_walks_every_page(monkeypatch):
@@ -1065,19 +1272,20 @@ def test_print_eligibility_honours_only_a_hand_applied_label(
     assert capsys.readouterr().out == expected
 
 
-def test_print_eligibility_needs_no_labeler_file(monkeypatch, capsys):
+@pytest.mark.parametrize("filename", ["README.md", "tests/a.py"])
+def test_print_eligibility_needs_no_labeler_file(monkeypatch, capsys, filename):
     """Compute the predicate without the labeler file the sync path requires.
 
     The predicate reads no ``app:<name>`` glob, and ``label-gate`` resolves the
     default ``--labeler`` against a checkout that need not carry it.
     """
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
-    _patch_urlopen_routes(
+    recorded = _patch_urlopen_routes(
         monkeypatch,
         [
             (
                 "/pulls/7/files",
-                [{"filename": "README.md", "additions": 1, "deletions": 0}],
+                [{"filename": filename, "additions": 1, "deletions": 0}],
             ),
             ("/pulls/7", _pull_payload("yyyyyyyan")),
         ],
@@ -1101,3 +1309,4 @@ def test_print_eligibility_needs_no_labeler_file(monkeypatch, capsys):
     )
 
     assert capsys.readouterr().out == "true\n"
+    assert {method for method, _url, _body in recorded} == {"GET"}

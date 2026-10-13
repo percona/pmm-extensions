@@ -16,12 +16,13 @@
 
 """Compute and sync the pull-request labels ``actions/labeler`` cannot express.
 
-The action matches path globs only, so three labels need code: ``large-diff``
+The action matches path globs only, so four labels need code: ``large-diff``
 (a changed-line count), ``app-isolated`` (every file inside one app slice, bar
-changelog fragments and generated OpenAPI artifacts), and
-``qa not required`` (a Dependabot or doc-only PR). This script reads ``app:<name>``
-globs from the default-branch ``.github/labeler.yml``, fetches the PR file list via
-the GitHub REST API, and adds or removes those labels.
+changelog fragments and generated OpenAPI artifacts), ``tests-only`` (every
+changed path is a test file), and ``qa not required`` (a Dependabot PR, or one
+whose every changed path is a test file or documentation). This script reads
+``app:<name>`` globs from the default-branch ``.github/labeler.yml``, fetches the
+PR file list via the GitHub REST API, and adds or removes those labels.
 
 ``qa not required`` is computed here rather than declared in ``.github/labeler.yml``
 because the action's ``sync-labels`` loop removes any label it holds a rule for,
@@ -97,6 +98,8 @@ CHANGELOG_FRAGMENT_RE = re.compile(
 
 QA_NOT_REQUIRED_LABEL = "qa not required"
 QA_NOT_REQUIRED_GLOBS = (".github/CODEOWNERS", "README.md", ".gitignore", "dist/**")
+TEST_FILE_PREFIXES = ("tests/", "frontend/packages/e2e/")
+FRONTEND_TEST_FILE_RE = re.compile(r"^frontend/.*\.(?:test|spec)\.tsx?$")
 DEPENDABOT_LOGIN = "dependabot[bot]"
 BOT_ACTOR_TYPE = "Bot"
 
@@ -112,6 +115,18 @@ class PrFile:
     filename: str
     additions: int = 0
     deletions: int = 0
+    previous_filename: str | None = None
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        """Return every path this entry names: the new one, and the old one on a rename.
+
+        :return: ``filename``, followed by ``previous_filename`` when the entry is
+            a rename.
+        """
+        if self.previous_filename is None:
+            return (self.filename,)
+        return (self.filename, self.previous_filename)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +149,7 @@ class BlastRadiusResult:
     large_diff: bool
     app_isolated: bool
     touched_apps: tuple[str, ...]
+    tests_only: bool
 
 
 class LabelEventKind(StrEnum):
@@ -259,6 +275,36 @@ def is_isolation_neutral(filename: str) -> bool:
     )
 
 
+def is_test_file(filename: str) -> bool:
+    """Return whether ``filename`` is a test file.
+
+    Frontend test-support modules (setup files, MSW servers, fixtures) are not
+    test files, so a pull request touching one still needs QA.
+
+    :param filename: Path relative to the repository root.
+    :return: ``True`` under root ``tests/`` or the e2e package, and for a
+        frontend ``*.test.ts(x)`` or ``*.spec.ts(x)`` file.
+    """
+    return (
+        filename.startswith(TEST_FILE_PREFIXES)
+        or FRONTEND_TEST_FILE_RE.match(filename) is not None
+    )
+
+
+def is_tests_only(files: list[PrFile]) -> bool:
+    """Return whether every path a pull request names is a test file.
+
+    A rename is judged by both of its paths, so moving source into ``tests/``
+    does not count.
+
+    :param files: Changed files from the pulls list-files API.
+    :return: ``True`` for a non-empty diff whose every path is a test file.
+    """
+    return bool(files) and all(
+        is_test_file(path) for file in files for path in file.paths
+    )
+
+
 def parse_app_globs(labeler_text: str) -> dict[str, list[str]]:
     """Build a map of ``app:<name>`` label to its path globs.
 
@@ -346,6 +392,7 @@ def compute_blast_radius(
         large_diff=large_diff,
         app_isolated=app_isolated,
         touched_apps=tuple(sorted(touched_apps)),
+        tests_only=is_tests_only(files),
     )
 
 
@@ -367,7 +414,11 @@ def sync_blast_radius_labels(
     :param result: Computed blast-radius signals.
     :param log: Callable for informational messages.
     """
-    desired = {"large-diff": result.large_diff, "app-isolated": result.app_isolated}
+    desired = {
+        "large-diff": result.large_diff,
+        "app-isolated": result.app_isolated,
+        "tests-only": result.tests_only,
+    }
     present = client.list_issue_labels(owner, repo, pr_number)
 
     for name, want in desired.items():
@@ -392,6 +443,17 @@ def is_dependabot_pull_request(pull: PullRequest, repository: str) -> bool:
     )
 
 
+def _is_qa_exempt(filename: str) -> bool:
+    """Return whether a change to ``filename`` alone needs no QA sign-off.
+
+    :param filename: Path relative to the repository root.
+    :return: ``True`` for a test file or a documentation path.
+    """
+    return is_test_file(filename) or any(
+        match_glob(glob, filename) for glob in QA_NOT_REQUIRED_GLOBS
+    )
+
+
 def qa_not_required_eligible(
     files: list[PrFile], pull: PullRequest, repository: str
 ) -> bool:
@@ -400,13 +462,13 @@ def qa_not_required_eligible(
     :param files: Changed files from the pulls list-files API.
     :param pull: Identity fields of the pull request.
     :param repository: ``owner/name`` of the base repository.
-    :return: ``True`` for a Dependabot pull request or an all-documentation diff.
+    :return: ``True`` for a Dependabot pull request, or a diff whose every path
+        is a test file or documentation.
     """
     if is_dependabot_pull_request(pull, repository):
         return True
     return bool(files) and all(
-        any(match_glob(glob, file.filename) for glob in QA_NOT_REQUIRED_GLOBS)
-        for file in files
+        _is_qa_exempt(path) for file in files for path in file.paths
     )
 
 
@@ -571,6 +633,7 @@ class UrllibGitHubClient:
                     filename=item["filename"],
                     additions=item.get("additions", 0),
                     deletions=item.get("deletions", 0),
+                    previous_filename=item.get("previous_filename"),
                 )
                 for item in batch
             )
@@ -695,7 +758,8 @@ def apply_blast_radius_labels(
     result = compute_blast_radius(files, app_globs)
     log(
         f"changedLines={result.changed_lines} largeDiff={result.large_diff} "
-        f"appIsolated={result.app_isolated} apps=[{', '.join(result.touched_apps)}]"
+        f"appIsolated={result.app_isolated} apps=[{', '.join(result.touched_apps)}] "
+        f"testsOnly={result.tests_only}"
     )
     sync_blast_radius_labels(client, owner, repo, pr_number, result, log=log)
     return result
