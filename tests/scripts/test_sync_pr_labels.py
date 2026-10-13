@@ -162,7 +162,9 @@ def test_compute_blast_radius_marks_a_single_app_pr_as_isolated():
         _file("app/extensions/apps/report/a.py", additions=1),
         _file("frontend/packages/apps/report/b.ts", additions=2),
     ]
-    result = sync_pr_labels.compute_blast_radius(files, _APP_GLOBS)
+    result = sync_pr_labels.compute_blast_radius(
+        files, _APP_GLOBS, changed_files=len(files)
+    )
     assert result.app_isolated is True
     assert result.touched_apps == ("app:report",)
 
@@ -176,7 +178,9 @@ def test_compute_blast_radius_ignores_changelog_and_generated_openapi_files():
         _file("frontend/packages/api/src/generated/extensions.ts", additions=1),
         _file("tests/app/extensions/snapshots/openapi/report.json", additions=1),
     ]
-    result = sync_pr_labels.compute_blast_radius(files, _APP_GLOBS)
+    result = sync_pr_labels.compute_blast_radius(
+        files, _APP_GLOBS, changed_files=len(files)
+    )
     assert result.app_isolated is True
     assert result.touched_apps == ("app:report",)
 
@@ -224,7 +228,9 @@ def test_compute_blast_radius_rejects_mixed_app_and_cross_cutting_prs(filenames)
     """Reject PRs that span apps, touch cross-cutting paths, or touch no app slice."""
     files = [_file(name, additions=1) for name in filenames]
 
-    result = sync_pr_labels.compute_blast_radius(files, _APP_GLOBS)
+    result = sync_pr_labels.compute_blast_radius(
+        files, _APP_GLOBS, changed_files=len(files)
+    )
 
     assert result.app_isolated is False
 
@@ -235,7 +241,9 @@ def test_compute_blast_radius_applies_threshold_with_generated_discount():
         _file("app/extensions/apps/report/a.py", additions=1000, deletions=500)
     ]
     assert (
-        sync_pr_labels.compute_blast_radius(at_threshold, _APP_GLOBS).large_diff
+        sync_pr_labels.compute_blast_radius(
+            at_threshold, _APP_GLOBS, changed_files=len(at_threshold)
+        ).large_diff
         is False
     )
 
@@ -243,7 +251,9 @@ def test_compute_blast_radius_applies_threshold_with_generated_discount():
         _file("app/extensions/apps/report/a.py", additions=1000, deletions=501)
     ]
     assert (
-        sync_pr_labels.compute_blast_radius(over_threshold, _APP_GLOBS).large_diff
+        sync_pr_labels.compute_blast_radius(
+            over_threshold, _APP_GLOBS, changed_files=len(over_threshold)
+        ).large_diff
         is True
     )
 
@@ -252,7 +262,9 @@ def test_compute_blast_radius_applies_threshold_with_generated_discount():
         _file("frontend/packages/api/src/generated/x.ts", additions=5000),
         _file("poetry.lock", additions=9000),
     ]
-    result = sync_pr_labels.compute_blast_radius(discounted, _APP_GLOBS)
+    result = sync_pr_labels.compute_blast_radius(
+        discounted, _APP_GLOBS, changed_files=len(discounted)
+    )
     assert result.changed_lines == discounted[0].additions
     assert result.large_diff is False
 
@@ -384,13 +396,29 @@ def test_is_test_file_rejects_non_test_paths(filename):
 )
 def test_compute_blast_radius_flags_a_tests_only_diff(files, expected):
     """Mark a diff tests-only only when every path every entry names is a test file."""
-    assert sync_pr_labels.compute_blast_radius(files, _APP_GLOBS).tests_only is expected
+    assert (
+        sync_pr_labels.compute_blast_radius(
+            files, _APP_GLOBS, changed_files=len(files)
+        ).tests_only
+        is expected
+    )
+
+
+def test_compute_blast_radius_is_not_tests_only_on_a_truncated_file_list():
+    """Withhold ``tests-only`` when the PR changed more files than were listed."""
+    result = sync_pr_labels.compute_blast_radius(
+        [_file("tests/a.py")], _APP_GLOBS, changed_files=3001
+    )
+
+    assert result.tests_only is False
 
 
 def test_tests_only_diff_inside_one_app_slice_is_also_app_isolated():
     """Keep ``app-isolated`` alongside ``tests-only`` for one app's tests."""
     result = sync_pr_labels.compute_blast_radius(
-        [_file("tests/app/extensions/apps/report/test_a.py")], _APP_GLOBS
+        [_file("tests/app/extensions/apps/report/test_a.py")],
+        _APP_GLOBS,
+        changed_files=1,
     )
 
     assert result.app_isolated is True
@@ -405,7 +433,7 @@ def test_snippets_paths_are_not_app_slices(filename):
     """Keep both snippets trees out of every ``app:<name>`` slice."""
     assert sync_pr_labels.app_of(filename, _APP_GLOBS) is None
     result = sync_pr_labels.compute_blast_radius(
-        [_file(filename, additions=1)], _APP_GLOBS
+        [_file(filename, additions=1)], _APP_GLOBS, changed_files=1
     )
     assert result.app_isolated is False
     assert result.touched_apps == ()

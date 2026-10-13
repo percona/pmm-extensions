@@ -295,15 +295,20 @@ def is_test_file(filename: str) -> bool:
     )
 
 
-def is_tests_only(files: list[PrFile]) -> bool:
+def is_tests_only(files: list[PrFile], changed_files: int) -> bool:
     """Return whether every path a pull request names is a test file.
 
     A rename is judged by both of its paths, so moving source into ``tests/``
     does not count.
 
     :param files: Changed files from the pulls list-files API.
+    :param changed_files: The pull request's own changed-file count.
     :return: ``True`` for a non-empty diff whose every path is a test file.
+        ``False`` when ``files`` holds fewer entries than ``changed_files``,
+        since the unseen ones may be code.
     """
+    if len(files) < changed_files:
+        return False
     return bool(files) and all(
         is_test_file(path) for file in files for path in file.paths
     )
@@ -364,12 +369,13 @@ def app_of(filename: str, app_globs: dict[str, list[str]]) -> str | None:
 
 
 def compute_blast_radius(
-    files: list[PrFile], app_globs: dict[str, list[str]]
+    files: list[PrFile], app_globs: dict[str, list[str]], *, changed_files: int
 ) -> BlastRadiusResult:
     """Derive blast-radius labels from a PR file list.
 
     :param files: Changed files from the pulls list-files API.
     :param app_globs: Parsed ``app:<name>`` globs from ``labeler.yml``.
+    :param changed_files: The pull request's own changed-file count.
     :return: Changed-line count and label predicates.
     """
     changed_lines = sum(
@@ -396,7 +402,7 @@ def compute_blast_radius(
         large_diff=large_diff,
         app_isolated=app_isolated,
         touched_apps=tuple(sorted(touched_apps)),
-        tests_only=is_tests_only(files),
+        tests_only=is_tests_only(files, changed_files),
     )
 
 
@@ -748,6 +754,7 @@ def apply_blast_radius_labels(
     files: list[PrFile],
     labeler_path: Path,
     *,
+    changed_files: int,
     log: Callable[[str], None] = print,
 ) -> BlastRadiusResult:
     """Compute blast-radius signals from a PR file list and sync the labels.
@@ -758,12 +765,13 @@ def apply_blast_radius_labels(
     :param pr_number: Pull request number.
     :param files: Changed files from the pulls list-files API.
     :param labeler_path: Path to the default-branch ``.github/labeler.yml``.
+    :param changed_files: The pull request's own changed-file count.
     :param log: Callable for informational messages.
     :return: Computed blast-radius signals.
     """
     labeler_text = labeler_path.read_text(encoding="utf-8")
     app_globs = parse_app_globs(labeler_text)
-    result = compute_blast_radius(files, app_globs)
+    result = compute_blast_radius(files, app_globs, changed_files=changed_files)
     log(
         f"changedLines={result.changed_lines} largeDiff={result.large_diff} "
         f"appIsolated={result.app_isolated} apps=[{', '.join(result.touched_apps)}] "
@@ -835,7 +843,14 @@ def main(argv: list[str] | None = None) -> int:
             print("true" if bypass else "false")
             return 0
         apply_blast_radius_labels(
-            client, args.owner, args.repo, args.pr_number, files, args.labeler, log=log
+            client,
+            args.owner,
+            args.repo,
+            args.pr_number,
+            files,
+            args.labeler,
+            changed_files=pull.changed_files,
+            log=log,
         )
         sync_qa_not_required_label(
             client,
