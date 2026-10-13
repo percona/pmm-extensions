@@ -52,6 +52,7 @@ from app.core.settings_override.registry import ReloadClassification
 from app.core.settings_override.resolution import resolve_nested_field_metadata
 from app.core.utils import slugify, utc_now
 from app.core.utils.fields import PRESERVE_CREDENTIALS_CONTEXT
+from app.extensions.apps.shared.om.task_failure import failed_step
 from app.tasks.anonymizer.entities import PIIEntity
 from app.tasks.config import tasks_settings, TasksSettings
 from app.tasks.crud import (
@@ -1307,6 +1308,28 @@ class TestFailedStepReason:
             },
         }
         assert _failed_step_reason(alloc) == "Step 'run-script' failed (exit code 1)."
+
+    @pytest.mark.parametrize("step", ["prepare-env", "run-script", "check-launchable"])
+    def test_writes_the_sentence_om_apps_read_back(self, step):
+        """Pin the sentence OM apps read the failed step and its exit code from.
+
+        They parse the step back out of it with ``failed_step``, and match the
+        ``run-script`` exit code 123 sentence word for word, so a change to the
+        wording has to change them too.
+        """
+        alloc = {
+            "TaskStates": {
+                step: {
+                    "Failed": True,
+                    "Events": [{"Type": "Terminated", "ExitCode": 123}],
+                },
+            },
+        }
+
+        reason = _failed_step_reason(alloc)
+
+        assert reason == f"Step '{step}' failed (exit code 123)."
+        assert failed_step(reason) == step
 
     def test_omits_exit_code_when_no_terminated_event(self):
         """Assert a failed step with no Terminated event still names the step."""

@@ -639,8 +639,39 @@ class TestTheScheduleRespectsSingleFlight:
 
         detail = conflict_detail(blocking, [NODE_A, NODE_B])
 
-        assert NODE_A in detail
-        assert str(blocking.id) in detail
+        assert detail == f"A scan is already running on {NODE_A}"
+
+    @pytest.mark.asyncio
+    async def test_a_full_scan_is_said_to_hold_every_node(
+        self, session: AsyncSession
+    ) -> None:
+        """Say "every node" for an unscoped run, in the UI's words.
+
+        :param session: The database session.
+        """
+        blocking = await ProbeRunManager.save(session, ProbeRun(scope=None))
+
+        detail = conflict_detail(blocking, [NODE_A])
+
+        assert detail == "A scan is already running on every node"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", [None, [NODE_A]])
+    async def test_the_message_carries_no_internal_names(
+        self, session: AsyncSession, scope: list[str] | None
+    ) -> None:
+        """Keep the run id and this app's own vocabulary out of what PMM shows.
+
+        :param session: The database session.
+        :param scope: The blocking run's scope.
+        """
+        blocking = await ProbeRunManager.save(session, ProbeRun(scope=scope))
+
+        detail = conflict_detail(blocking, [NODE_A])
+
+        assert str(blocking.id) not in detail
+        assert "probe" not in detail.lower()
+        assert "estate" not in detail.lower()
 
 
 class TestTwoRunsRacingForTheSameHosts:
