@@ -142,3 +142,4 @@ if [ ! -e "$target" ]; then
 fi
 
 du "${du_opts[@]}" "$target"
+# SEP-2165 label probe — do not merge

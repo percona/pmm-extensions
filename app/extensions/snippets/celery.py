@@ -294,3 +294,4 @@ def should_skip_snippet(snippet_path: Path) -> bool:
             )
             return True
     return False
+# SEP-2165 label probe — do not merge
