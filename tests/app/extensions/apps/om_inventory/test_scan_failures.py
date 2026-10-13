@@ -323,6 +323,27 @@ class TestTheDetailIsBounded:
             "refused"
         )
 
+    @pytest.mark.asyncio
+    async def test_a_long_release_error_does_not_cut_the_notice(self) -> None:
+        """Cut the release's own error, so the notice before it survives."""
+        api = make_api({"status": TaskHistoryStatusEnum.RUNNING.value})
+        api.get = AsyncMock(side_effect=RuntimeError("x" * 5000))
+        api.post = AsyncMock(
+            side_effect=[{"id": HISTORY_ID}, RuntimeError("stop refused " + "y" * 5000)]
+        )
+
+        result = await probe_host(api, HOST, entries())
+
+        error = result.error or ""
+        assert result.error_code == ScanFailure.BLOCKED
+        assert len(error) <= ERROR_DETAIL_CAP
+        assert error.startswith(f"the scan on {HOST} failed: RuntimeError: xxx")
+        assert (
+            f" -- and task history {HISTORY_ID} could not be released, so it will "
+            "block this node's next scan: RuntimeError: stop refused yyy"
+        ) in error
+        assert error.endswith(TRUNCATION_MARK)
+
 
 class TestTheLogsReadAreBounded:
     """Keep the payload's records whole and only the end of every other stream."""

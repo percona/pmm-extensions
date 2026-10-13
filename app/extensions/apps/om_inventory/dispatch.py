@@ -657,10 +657,16 @@ async def _release_abandoned(tasks_api: RemoteAPI, result: HostProbeResult) -> N
     release_error = await _release(tasks_api, result.task_history_id)
     if release_error:
         # The notice is kept whole if the detail has to be cut; the failure before it
-        # gives way instead.
-        notice = (
+        # gives way instead. Its own error is cut first, to half the cap with the
+        # notice, or a long one would leave too little room for the notice itself.
+        lead = (
             f" -- and task history {result.task_history_id} could not be released, "
-            f"so it will block this node's next scan: {release_error}"
+            "so it will block this node's next scan: "
+        )
+        notice = lead + shorten_text(
+            release_error,
+            max_length=MAX_ERROR_DETAIL // 2 - len(lead),
+            ellipsis=TRUNCATION_MARK,
         )
         result.fail(
             f"{result.error}{notice}", ScanFailure.BLOCKED, keep_end=len(notice)
