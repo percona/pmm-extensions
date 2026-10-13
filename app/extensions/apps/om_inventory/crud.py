@@ -599,23 +599,31 @@ def _claimed_first(one: ProbeRun, other: ProbeRun) -> bool:
     return str(one.id) < str(other.id)
 
 
-def conflict_detail(blocking: ProbeRun, node_ids: list[str] | None) -> str:
+async def conflict_detail(
+    session: AsyncSession, blocking: ProbeRun, node_ids: list[str] | None
+) -> str:
     """Say which hosts are held by a scan already in flight.
 
     Names them rather than saying "a sweep is already running", which was true of
     anything and useful for nothing once conflict became per-host.
 
     Written for the operator who reads it in PMM's UI, so it uses that UI's words:
-    a "scan" on "nodes". The blocking run's id and this app's internal names
-    ("probe", "estate") mean nothing there, and PMM shows the message as it is.
+    a "scan" on "nodes", each by its registered name. The blocking run's id, the
+    nodes' ids and this app's internal names ("probe", "estate") mean nothing
+    there, and PMM shows the message as it is.
 
+    :param session: The database session.
     :param blocking: The run already holding them.
     :param node_ids: The hosts that were asked for.
     :return: The message.
     """
     if not blocking.scope:
-        held = "every node"
-    else:
-        overlap = sorted(set(blocking.scope) & set(node_ids or []))
-        held = ", ".join(overlap) or "these nodes"
+        return "A scan is already running on every node"
+    overlap = set(blocking.scope) & set(node_ids or [])
+    result = await session.exec(
+        select(OmHost.name)
+        .where(col(OmHost.node_id).in_(overlap))
+        .order_by(col(OmHost.name))
+    )
+    held = ", ".join(result.all()) or "these nodes"
     return f"A scan is already running on {held}"
