@@ -18,6 +18,7 @@
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import nullcontext
+from typing import Protocol
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -67,8 +68,27 @@ SERVICE = "app.extensions.apps.om_inventory.service"
 #: When the sweep :func:`run_sweep` runs began, stamped on every fact it collects.
 OBSERVED_AT = "2026-08-12T12:00:00+00:00"
 
-#: The runner :func:`run_sweep` returns.
-RunSweep = Callable[..., Awaitable[SweepOutcome]]
+
+class RunSweep(Protocol):
+    """The runner :func:`run_sweep` returns, typed so a wrong call fails ty."""
+
+    def __call__(
+        self,
+        mapped_services: list[MappedService],
+        host_results: dict[str, HostProbeResult],
+        hosts: list[InventoryHost] | None = None,
+        progress: SweepProgress | None = None,
+    ) -> Awaitable[SweepOutcome]:
+        """Run the sweep over this mapping and these probe results.
+
+        :param mapped_services: What the mapping resolved.
+        :param host_results: Each executor's probe result.
+        :param hosts: The enumerated hosts; one per executor in the results if
+            omitted.
+        :param progress: Where the sweep reports progress, if anywhere.
+        :return: The sweep's outcome.
+        """
+        ...
 
 
 def host(
