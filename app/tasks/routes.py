@@ -106,6 +106,7 @@ from app.tasks.periodic.utils import (
     attach_last_run_status,
     generate_periodic_task_name,
 )
+from app.tasks.reference_fence import hold_reference_write_fence
 from app.tasks.run_result import maybe_record_run
 
 logger = logging.getLogger(__name__)
@@ -182,11 +183,12 @@ async def create_task(
 ) -> Task:
     """Create a new task."""
     logger.debug("Creating task %s", task.name)
-    return await TaskManager.create(
-        session,
-        task,
-        created_by=current_user_id,
-    )
+    async with hold_reference_write_fence(session):
+        return await TaskManager.create(
+            session,
+            task,
+            created_by=current_user_id,
+        )
 
 
 @router.put(
@@ -203,9 +205,10 @@ async def update_task(
 ) -> Task:
     """Update an existing task."""
     logger.debug("Updating task %s", existing_task.name)
-    return await TaskManager.update(
-        session, existing_task, updated_task, last_updated_by=current_user_id
-    )
+    async with hold_reference_write_fence(session):
+        return await TaskManager.update(
+            session, existing_task, updated_task, last_updated_by=current_user_id
+        )
 
 
 @router.get(
@@ -250,9 +253,10 @@ async def create_periodic_task_for_task_name(
             task.name, periodic_task.period, periodic_task.kwargs
         )
     kwargs["periodic_task_name"] = periodic_task.name
-    return await PeriodicTaskManager.create(
-        celery_beat_session, periodic_task, kwargs=json.dumps(kwargs)
-    )
+    async with hold_reference_write_fence(session):
+        return await PeriodicTaskManager.create(
+            celery_beat_session, periodic_task, kwargs=json.dumps(kwargs)
+        )
 
 
 @router.post(

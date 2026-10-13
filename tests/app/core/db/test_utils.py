@@ -15,10 +15,13 @@
 
 """Define tests for the app.core.db.utils module."""
 
+import asyncio
 import logging
+import time
 import warnings
 from collections.abc import AsyncGenerator
 from contextlib import nullcontext
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -50,12 +53,15 @@ from app.core.db.config import DatabaseOptions
 from app.core.db.utils import (
     acquire_pg_advisory_xact_lock,
     advisory_lock_key,
+    AdvisoryLockLostError,
+    AdvisoryLockTimeoutError,
     compare_type,
     create_app_async_engine,
     func_json_extract,
     get_async_session_maker_from_engine,
     idempotent_insert,
     NullsLastOrdering,
+    pg_advisory_xact_lock,
     translate_metadata_schemas,
     try_pg_advisory_xact_lock,
 )
@@ -63,6 +69,7 @@ from app.core.settings_override.constants import SETTINGOVERRIDE_MIGRATION_LOCK_
 from app.core.utils.fields import AsyncDatabaseEngine, DatabaseDialect
 from app.tasks.crud import TaskHistoryManager, TaskManager
 from app.tasks.models import TaskExecutionRequestJSON, TaskHistory, TaskWrite
+from tests.app.advisory_locks import SHORT_LOCK_WAIT, wait_for_advisory_waiters
 from tests.app.factories import build_task_history, TaskFactory
 
 
@@ -1220,24 +1227,6 @@ class TestTryPgAdvisoryXactLockAcquisition:
         lock_connection.scalar.assert_awaited_once()
 
 
-@pytest_asyncio.fixture
-async def contending_sessions(
-    postgres_engine: AsyncEngine,
-) -> AsyncGenerator[tuple[AsyncSession, AsyncSession], None]:
-    """Yield two sessions on independent connections of the same engine.
-
-    One session cannot contend with itself: the helper takes its lock on a
-    connection of its own, so a second lock attempt on the same session would be
-    that same caller locking twice rather than a competing one. Built on
-    the bare engine rather than on ``postgres_session_maker`` because an advisory
-    lock needs no table, so creating the whole schema here would be paid per test
-    for nothing.
-    """
-    session_maker = get_async_session_maker_from_engine(postgres_engine)
-    async with session_maker() as first, session_maker() as second:
-        yield first, second
-
-
 class TestTryPgAdvisoryXactLockOnRealPostgres:
     """Exercise the advisory lock against a real PostgreSQL server.
 
@@ -1406,3 +1395,198 @@ class TestTryPgAdvisoryXactLockOnRealPostgres:
         ):
             assert held_first is True
             assert held_second is True
+
+
+#: Long enough that no ordering test below can time out by accident, so a
+#: timeout there is a hang rather than a lost race.
+LOCK_WAIT = timedelta(seconds=10)
+
+_ALTER_IDLE_TIMEOUT_DEFAULT = (
+    "DO $$ BEGIN EXECUTE format("
+    "'ALTER DATABASE %I {action} idle_in_transaction_session_timeout{value}', "
+    "current_database()); END $$"
+)
+
+
+class TestPgAdvisoryXactLockOnSqlite:
+    """Pin the no-op contract of the waiting advisory lock off PostgreSQL."""
+
+    @pytest.mark.asyncio
+    async def test_enters_without_a_connection_and_verifies_trivially(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Grant at once on SQLite, and make ``verify`` a no-op there.
+
+        The collector calls ``verify`` unconditionally before its delete, so on a
+        dialect with nothing to lose the check has to pass rather than refuse.
+        """
+
+        def _fail(*_args, **_kwargs):
+            pytest.fail("SQLite must not open a connection for the advisory lock")
+
+        monkeypatch.setattr(AsyncEngine, "connect", _fail)
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with (
+                get_async_session_maker_from_engine(engine)() as session,
+                pg_advisory_xact_lock(session, 1, 2, max_wait=LOCK_WAIT) as handle,
+            ):
+                assert handle.connection is None
+                await handle.verify()
+        finally:
+            await engine.dispose()
+
+
+class TestPgAdvisoryXactLockOnRealPostgres:
+    """Exercise the shared/exclusive waiting lock against a real server.
+
+    SQLite cannot substitute: the helper no-ops there, so every ordering
+    assertion below would pass with the lock deleted.
+    """
+
+    @staticmethod
+    def _unique_key() -> int:
+        """Return a key no other test or xdist worker can be holding."""
+        return advisory_lock_key(uuid4().hex)
+
+    @pytest.mark.postgres
+    @pytest.mark.asyncio
+    async def test_shared_holders_do_not_block_each_other(self, contending_sessions):
+        """Admit a second shared holder while the first still holds the key."""
+        first, second = contending_sessions
+        key = self._unique_key()
+
+        async with (
+            pg_advisory_xact_lock(first, 1, key, shared=True, max_wait=SHORT_LOCK_WAIT),
+            pg_advisory_xact_lock(
+                second, 1, key, shared=True, max_wait=SHORT_LOCK_WAIT
+            ) as handle,
+        ):
+            await handle.verify()
+
+    @pytest.mark.postgres
+    @pytest.mark.parametrize(
+        ("holder_shared", "waiter_shared"),
+        [(False, True), (True, False)],
+        ids=["exclusive-blocks-shared", "shared-blocks-exclusive"],
+    )
+    @pytest.mark.asyncio
+    async def test_conflicting_request_waits_for_the_holder_to_exit(
+        self,
+        postgres_engine: AsyncEngine,
+        contending_sessions,
+        *,
+        holder_shared: bool,
+        waiter_shared: bool,
+    ):
+        """Queue a conflicting request until the holder leaves its block.
+
+        The waiter is observed *queued* in ``pg_locks`` before the holder exits,
+        so the assertion cannot pass on a waiter that merely had not started.
+        """
+        first, second = contending_sessions
+        key = self._unique_key()
+        entered = asyncio.Event()
+
+        async def _wait_then_enter() -> None:
+            async with pg_advisory_xact_lock(
+                second, 1, key, shared=waiter_shared, max_wait=LOCK_WAIT
+            ):
+                entered.set()
+
+        waiter = None
+        try:
+            async with pg_advisory_xact_lock(
+                first, 1, key, shared=holder_shared, max_wait=LOCK_WAIT
+            ):
+                waiter = asyncio.create_task(_wait_then_enter())
+                await wait_for_advisory_waiters(postgres_engine, 1, key)
+                assert not entered.is_set()
+            await asyncio.wait_for(waiter, LOCK_WAIT.total_seconds())
+            assert entered.is_set()
+        finally:
+            if waiter is not None and not waiter.done():
+                waiter.cancel()
+
+    @pytest.mark.postgres
+    @pytest.mark.asyncio
+    async def test_raises_timeout_error_once_the_wait_exceeds_the_bound(
+        self, contending_sessions
+    ):
+        """Give up after ``timeout`` with the lock-specific error.
+
+        This is the one real-engine proof that ``lock_timeout`` bounds an
+        advisory wait and that its SQLSTATE reaches the helper through
+        SQLAlchemy and asyncpg, which is what tells a timeout apart from every
+        other database failure.
+        """
+        first, second = contending_sessions
+        key = self._unique_key()
+
+        async with pg_advisory_xact_lock(first, 1, key, max_wait=LOCK_WAIT):
+            started = time.monotonic()
+            with pytest.raises(AdvisoryLockTimeoutError):
+                async with pg_advisory_xact_lock(
+                    second, 1, key, shared=True, max_wait=SHORT_LOCK_WAIT
+                ):
+                    pytest.fail("entered a lock held exclusively elsewhere")
+            elapsed = time.monotonic() - started
+
+        assert elapsed < LOCK_WAIT.total_seconds() / 2
+
+    @pytest.mark.postgres
+    @pytest.mark.asyncio
+    async def test_verify_raises_once_the_lock_backend_is_terminated(
+        self, postgres_engine: AsyncEngine, contending_sessions
+    ):
+        """Report a lost lock rather than let the holder carry on unfenced.
+
+        Terminating the backend releases its transaction-scoped lock while the
+        holder's code is still inside the block, so being inside the block is
+        not proof of holding the lock.
+        """
+        first, _ = contending_sessions
+
+        async with pg_advisory_xact_lock(
+            first, 1, self._unique_key(), max_wait=LOCK_WAIT
+        ) as handle:
+            await handle.verify()
+            pid = await handle.connection.scalar(text("SELECT pg_backend_pid()"))
+            async with postgres_engine.connect() as admin:
+                assert await admin.scalar(
+                    text("SELECT pg_terminate_backend(:pid, 5000)"), {"pid": pid}
+                )
+            with pytest.raises(AdvisoryLockLostError):
+                await handle.verify()
+
+    @pytest.mark.postgres
+    @pytest.mark.asyncio
+    async def test_lock_connection_disables_the_idle_in_transaction_timeout(
+        self, postgres_engine: AsyncEngine, contending_sessions
+    ):
+        """Keep a server-wide idle timeout from ending the holder's transaction.
+
+        The lock connection sits idle in its transaction while the guarded work
+        runs elsewhere, which is exactly what that timeout reaps. The database
+        default is raised first so the assertion cannot pass on a server that
+        simply never set one.
+        """
+        first, _ = contending_sessions
+        async with postgres_engine.begin() as connection:
+            await connection.exec_driver_sql(
+                _ALTER_IDLE_TIMEOUT_DEFAULT.format(action="SET", value=" = ''1h''")
+            )
+        try:
+            async with pg_advisory_xact_lock(
+                first, 1, self._unique_key(), max_wait=LOCK_WAIT
+            ) as handle:
+                setting = await handle.connection.scalar(
+                    text("SHOW idle_in_transaction_session_timeout")
+                )
+        finally:
+            async with postgres_engine.begin() as connection:
+                await connection.exec_driver_sql(
+                    _ALTER_IDLE_TIMEOUT_DEFAULT.format(action="RESET", value="")
+                )
+
+        assert setting == "0"
