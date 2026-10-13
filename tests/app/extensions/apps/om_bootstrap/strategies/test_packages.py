@@ -30,7 +30,6 @@ import yaml
 from app.extensions.apps.om_bootstrap.dispatch import build_step_script
 from app.extensions.apps.om_bootstrap.strategies import packages
 from app.extensions.apps.om_bootstrap.strategies.packages import (
-    _mongosh_eval,
     _mongosh_eval_command,
     _with_loopback,
     CONFIG_PATH,
@@ -100,6 +99,10 @@ _STEP_PARAMS: dict[str, dict[str, str]] = {
 }
 
 _SH = shutil.which("sh") or "/bin/sh"
+
+_REFUSED = "MongoNetworkError: connect ECONNREFUSED 127.0.0.1:27017"
+#: Which ping the stand-in mongod first answers in the readiness-wait tests.
+_ANSWERS_ON = 3
 
 
 def _body(command: list[str]) -> str:
@@ -484,13 +487,24 @@ class TestBuildStep:
 
         assert result.stdout.decode() == content
 
-    def test_verify_goes_through_mongosh_eval_too(self) -> None:
+    def test_verify_suppresses_the_atlas_cli_probe(self, tmp_path: Path) -> None:
         """Suppress the Atlas CLI probe in ``verify``, as every mongosh call must."""
         action = PackagesInstallStrategy().build_step(
             "verify", "node00", _spec(OperatingSystem.UBUNTU)
         )
+        switch = tmp_path / "probe-switch"
 
-        assert action == _mongosh_eval("db.adminCommand('ping').ok", 27017)
+        result = _run_with_stand_ins(
+            action.command[-1],
+            tmp_path,
+            mongosh=(
+                'printf %s "${MONGOSH_DISABLE_ATLAS_LOCAL_DEV_CLUSTER_CHECK:-}" '
+                f"> {shlex.quote(str(switch))}\necho 1"
+            ),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert switch.read_text() == "1"
 
 
 class TestPlanRunSteps:
@@ -801,7 +815,14 @@ class TestBuildFinalizeStep:
         )
 
         command = " ".join(action.command)
-        assert _mongosh_eval_command("db.adminCommand('ping').ok", 27017) in command
+        assert (
+            _mongosh_eval_command(
+                "db.adminCommand('ping').ok",
+                27017,
+                timeout_s=packages.MONGOD_PING_TIMEOUT_S,
+            )
+            in command
+        )
 
     def test_enable_auth_does_not_restart_when_the_config_write_fails(
         self, tmp_path: Path
@@ -812,12 +833,11 @@ class TestBuildFinalizeStep:
         instead of ``&&`` would let ``systemctl restart`` run regardless of
         whether ``cat`` actually wrote the new config — confirmed here by
         forcing the write itself to fail (read-only target file) and asserting
-        neither ``restart`` nor ``mongosh`` shell function is ever invoked.
+        neither the ``systemctl`` nor the ``mongosh`` stand-in is ever invoked.
         """
         action = PackagesInstallStrategy().build_finalize_step(
             "enable_auth", "node00", _spec(OperatingSystem.UBUNTU)
         )
-        script = action.command[-1]
 
         fake_config_path = tmp_path / "mongod.conf"
         marker = tmp_path / "restart-was-called"
@@ -826,18 +846,178 @@ class TestBuildFinalizeStep:
         # bug that *does* reach them fails loudly rather than by chance.
         fake_config_path.touch()
         fake_config_path.chmod(0o444)
-        rigged = script.replace(CONFIG_PATH, str(fake_config_path))
-        wrapped = (
-            f"systemctl() {{ : > {shlex.quote(str(marker))}; }}\n"
-            f"mongosh() {{ : > {shlex.quote(str(marker))}; }}\n{rigged}"
-        )
+        called = f": > {shlex.quote(str(marker))}"
 
-        result = subprocess.run(
-            ["sh", "-c", wrapped], capture_output=True, text=True, check=False
+        result = _run_with_stand_ins(
+            action.command[-1], tmp_path, mongosh=called, systemctl=called
         )
 
         assert result.returncode != 0
         assert not marker.exists()
+
+
+def _run_with_stand_ins(
+    script: str, tmp_path: Path, *, mongosh: str, systemctl: str = "exit 0"
+) -> subprocess.CompletedProcess[str]:
+    """Run a step's script with ``systemctl`` and ``mongosh`` stood in for.
+
+    The stand-ins are executables rather than shell functions because the readiness
+    wait runs mongosh through coreutils ``timeout``, which cannot see functions.
+    ``PATH`` holds only them and the real tools the scripts use, so no real mongosh
+    or systemd is ever reached, and a script still running after 30 seconds fails
+    the test rather than hanging it.
+
+    :param script: The step's ``sh -c`` body. :data:`CONFIG_PATH` in it is replaced
+        with ``mongod.conf`` in ``tmp_path``.
+    :param tmp_path: The test's scratch directory.
+    :param mongosh: The ``mongosh`` stand-in's shell body.
+    :param systemctl: The ``systemctl`` stand-in's shell body.
+    :return: The finished process.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("cat", "date", "sleep", "timeout"):
+        real = shutil.which(tool)
+        assert real is not None
+        (bin_dir / tool).symlink_to(real)
+    for name, body in (("mongosh", mongosh), ("systemctl", systemctl)):
+        stand_in = bin_dir / name
+        stand_in.write_text(f"#!/bin/sh\n{body}\n")
+        stand_in.chmod(0o755)
+    rigged = script.replace(CONFIG_PATH, str(tmp_path / "mongod.conf"))
+    return subprocess.run(
+        [_SH, "-c", rigged],
+        capture_output=True,
+        text=True,
+        env={"PATH": str(bin_dir)},
+        check=False,
+        timeout=30,
+    )
+
+
+def _run_against_slow_mongod(
+    script: str, tmp_path: Path, *, answers_on: int | None
+) -> subprocess.CompletedProcess[str]:
+    """Run a step's script against a stand-in mongod that refuses pings at first.
+
+    :param script: The step's ``sh -c`` body.
+    :param tmp_path: Where the stand-ins, the config file and the ping count live.
+    :param answers_on: Which ping mongod first answers, or ``None`` for never.
+    :return: The finished process.
+    """
+    pings = shlex.quote(str(tmp_path / "pings"))
+    answer = (
+        f'[ "$n" -ge {answers_on} ] && echo 1 && exit 0\n'
+        if answers_on is not None
+        else ""
+    )
+    mongosh = (
+        f"n=$(( $(cat {pings} 2>/dev/null || echo 0) + 1 ))\n"
+        f"echo $n > {pings}\n"
+        f"{answer}echo '{_REFUSED}' >&2\nexit 1"
+    )
+    return _run_with_stand_ins(script, tmp_path, mongosh=mongosh)
+
+
+#: The steps that wait for mongod to answer.
+_WAITING_STEPS = ["verify", "enable_auth"]
+
+
+def _build_waiting_step(step_name: str) -> StepAction:
+    """Build one of :data:`_WAITING_STEPS` for ``node00`` on Ubuntu."""
+    strategy = PackagesInstallStrategy()
+    spec = _spec(OperatingSystem.UBUNTU)
+    if step_name in FINALIZE_STEP_NAMES:
+        return strategy.build_finalize_step(step_name, "node00", spec)
+    return strategy.build_step(step_name, "node00", spec)
+
+
+class TestReadinessWait:
+    """Assert the steps waiting for mongod ping until it answers, within bounds."""
+
+    def test_verify_waits_for_mongod_to_answer(self, tmp_path: Path) -> None:
+        """Pass once mongod answers, not only when it already does.
+
+        On PSMDB 8.0 ``start_service`` returns before mongod listens.
+        """
+        action = PackagesInstallStrategy().build_step(
+            "verify", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+
+        result = _run_against_slow_mongod(
+            action.command[-1], tmp_path, answers_on=_ANSWERS_ON
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert int((tmp_path / "pings").read_text()) >= _ANSWERS_ON
+
+    def test_enable_auth_succeeds_once_mongod_answers(self, tmp_path: Path) -> None:
+        """Keep pinging while mongod is still starting.
+
+        PSMDB 8.0's unit returns from ``systemctl restart`` before mongod listens.
+        """
+        action = PackagesInstallStrategy().build_finalize_step(
+            "enable_auth", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+
+        result = _run_against_slow_mongod(
+            action.command[-1], tmp_path, answers_on=_ANSWERS_ON
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert int((tmp_path / "pings").read_text()) >= _ANSWERS_ON
+        assert "authorization: enabled" in (tmp_path / "mongod.conf").read_text()
+
+    @pytest.mark.parametrize("step_name", _WAITING_STEPS)
+    def test_fails_with_mongoshs_error_when_mongod_never_answers(
+        self, step_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Give up after the wait, saying what the last ping was told."""
+        monkeypatch.setattr(packages, "MONGOD_READY_WAIT_S", 2)
+        action = _build_waiting_step(step_name)
+
+        result = _run_against_slow_mongod(action.command[-1], tmp_path, answers_on=None)
+
+        assert result.returncode != 0
+        assert _REFUSED in result.stderr
+
+    @pytest.mark.parametrize("step_name", _WAITING_STEPS)
+    def test_cuts_a_stalled_ping_short_and_says_so(
+        self, step_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bound every ping, so a mongod that never replies cannot hold the step.
+
+        mongosh killed by ``timeout`` prints nothing, so the final ping has to say
+        what happened itself. The stand-in sleeps far longer than
+        :func:`_run_with_stand_ins` lets a script run, so an unbounded ping fails
+        the test.
+        """
+        monkeypatch.setattr(packages, "MONGOD_READY_WAIT_S", 2)
+        monkeypatch.setattr(packages, "MONGOD_PING_TIMEOUT_S", 1)
+        action = _build_waiting_step(step_name)
+
+        result = _run_with_stand_ins(
+            action.command[-1], tmp_path, mongosh="exec sleep 120"
+        )
+
+        assert result.returncode != 0
+        assert "ping to mongod on port 27017 timed out after 1s" in result.stderr
+
+    @pytest.mark.parametrize("step_name", _WAITING_STEPS)
+    def test_step_outlasts_the_longest_wait(
+        self, step_name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keep the step's timeout above the wait, however long the wait is set to.
+
+        The loop's last ping can start just before the deadline and one more
+        follows it, so a step killed any sooner loses the final ping's error.
+        """
+        monkeypatch.setattr(packages, "MONGOD_READY_WAIT_S", 600)
+        monkeypatch.setattr(packages, "MONGOD_PING_TIMEOUT_S", 100)
+
+        action = _build_waiting_step(step_name)
+
+        assert action.timeout_s > 600 + 2 * 100
 
 
 class TestPlanRollbackSteps:
