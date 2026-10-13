@@ -47,7 +47,7 @@ MAX_ERROR_DETAIL = 500
 STEP_LOG_TAIL = 8192
 
 #: The step the tasks service names in a run's ``failure_reason``, in the sentence
-#: the Nomad executor's ``_failed_step_reason`` writes. That function's tests pin
+#: the Nomad executor's ``failed_step_reason`` writes. That function's tests pin
 #: the sentence and read it back through :func:`failed_step`, so a change to its
 #: wording fails a test there.
 _FAILED_STEP = re.compile(r"^Step '(?P<step>[^']+)' failed")
