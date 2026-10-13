@@ -54,6 +54,7 @@ from app.extensions.apps.shared.om.task_failure import (
     MAX_ERROR_DETAIL,
     read_step_logs,
 )
+from app.tasks.execution.executors.nomad.steps import NomadStep
 from app.tasks.models import TaskHistoryStatusEnum, TaskLogType
 
 logger = logging.getLogger(__name__)
@@ -61,11 +62,13 @@ logger = logging.getLogger(__name__)
 #: The Nomad task inside the ``run-python`` job whose stdout carries the payload's
 #: output. The job also runs prestart and poststop steps; their output is read for
 #: a failure's reason, but only this step's stdout is parsed as records.
-STDOUT_STEP = "run-script"
+STDOUT_STEP = NomadStep.RUN_SCRIPT
+#: The payload's records: the one stream read whole, since they are parsed from it.
+RECORDS_STREAM = (STDOUT_STEP, TaskLogType.STDOUT)
 #: The prestart step that builds the payload's venv and installs its requirement.
 #: When it fails the payload never starts, so its own output is the only account
 #: of why.
-PREPARE_ENV_STEP = "prepare-env"
+PREPARE_ENV_STEP = NomadStep.PREPARE_ENV
 #: The payload's only third-party import, installed into the executor's venv by the
 #: run-python job template's prestart step.
 REQUIREMENTS = "pymongo>=4.6,<5"
@@ -588,10 +591,16 @@ async def _release_abandoned(tasks_api: RemoteAPI, result: HostProbeResult) -> N
     release_error = await _release(tasks_api, result.task_history_id)
     if release_error:
         # The notice is kept whole if the detail has to be cut; the failure before it
-        # gives way instead.
-        notice = (
+        # gives way instead. Its own error is cut first, to half the cap with the
+        # notice, or a long one would leave too little room for the notice itself.
+        lead = (
             f" -- and task history {result.task_history_id} could not be released, "
-            f"so it will block this node's next scan: {release_error}"
+            "so it will block this node's next scan: "
+        )
+        notice = lead + shorten_text(
+            release_error,
+            max_length=MAX_ERROR_DETAIL // 2 - len(lead),
+            ellipsis=TRUNCATION_MARK,
         )
         result.fail(
             f"{result.error}{notice}", ScanFailure.BLOCKED, keep_end=len(notice)
@@ -660,7 +669,11 @@ async def probe_host(
 
         history_id = result.task_history_id
         status, failure_reason = await _wait_for_terminal(tasks_api, history_id)
-        logs = await with_capacity_retry(lambda: read_step_logs(tasks_api, history_id))
+        logs = await with_capacity_retry(
+            lambda: read_step_logs(
+                tasks_api, history_id, keep_whole=frozenset({RECORDS_STREAM})
+            )
+        )
         stdout = (logs.get(STDOUT_STEP) or {}).get(TaskLogType.STDOUT, "")
         result.records, result.host_record = parse_ndjson(stdout)
 
