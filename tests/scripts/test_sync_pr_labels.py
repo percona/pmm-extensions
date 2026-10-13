@@ -44,16 +44,20 @@ def _file(name: str, additions: int = 0, deletions: int = 0):
 
 _REPOSITORY = "percona/pmm-extensions"
 _HUMAN_PULL = sync_pr_labels.PullRequest(
-    author_login="yyyyyyyan", head_repository=_REPOSITORY
+    author_login="yyyyyyyan", head_repository=_REPOSITORY, changed_files=1
 )
 _DEPENDABOT_PULL = sync_pr_labels.PullRequest(
-    author_login="dependabot[bot]", head_repository=_REPOSITORY
+    author_login="dependabot[bot]", head_repository=_REPOSITORY, changed_files=1
 )
 
 
-def _pull_payload(login: str) -> dict[str, Any]:
+def _pull_payload(login: str, changed_files: int = 1) -> dict[str, Any]:
     """Return a pulls-API body for a same-repository PR opened by ``login``."""
-    return {"user": {"login": login}, "head": {"repo": {"full_name": _REPOSITORY}}}
+    return {
+        "user": {"login": login},
+        "head": {"repo": {"full_name": _REPOSITORY}},
+        "changed_files": changed_files,
+    }
 
 
 _CI_WORKFLOW_PATH = _PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
@@ -484,7 +488,9 @@ def test_qa_not_required_not_eligible_for_dependabot_from_another_repository(
 ):
     """Reject a Dependabot-authored PR whose head is a fork or was deleted."""
     pull = sync_pr_labels.PullRequest(
-        author_login="dependabot[bot]", head_repository=head_repository
+        author_login="dependabot[bot]",
+        head_repository=head_repository,
+        changed_files=1,
     )
     assert not sync_pr_labels.qa_not_required_eligible(
         [_file("app/main.py")], pull, _REPOSITORY
@@ -494,7 +500,9 @@ def test_qa_not_required_not_eligible_for_dependabot_from_another_repository(
 def test_dependabot_repository_match_ignores_case():
     """Match the head repository against the base without regard to case."""
     pull = sync_pr_labels.PullRequest(
-        author_login="dependabot[bot]", head_repository="Percona/pmm-extensions"
+        author_login="dependabot[bot]",
+        head_repository="Percona/pmm-extensions",
+        changed_files=1,
     )
     assert sync_pr_labels.is_dependabot_pull_request(pull, _REPOSITORY)
 
@@ -583,6 +591,21 @@ def test_qa_not_required_eligible_on_a_test_or_doc_diff(files):
 def test_qa_not_required_not_eligible_when_any_path_needs_qa(files):
     """Reject a diff with one path, old or new, outside the test and doc set."""
     assert not sync_pr_labels.qa_not_required_eligible(files, _HUMAN_PULL, _REPOSITORY)
+
+
+def test_qa_not_required_not_eligible_when_the_file_list_is_truncated():
+    """Reject a diff larger than the file list the API returned.
+
+    The list-files endpoint stops at 3000 entries, so the files past the cap are
+    unseen and may be source.
+    """
+    pull = sync_pr_labels.PullRequest(
+        author_login="yyyyyyyan", head_repository=_REPOSITORY, changed_files=3001
+    )
+
+    assert not sync_pr_labels.qa_not_required_eligible(
+        [_file("tests/a.py")], pull, _REPOSITORY
+    )
 
 
 def test_qa_not_required_manual_when_newest_event_is_a_user():
@@ -1033,7 +1056,14 @@ def test_get_pull_request_reads_author_and_head_repository(monkeypatch):
 def test_get_pull_request_maps_a_deleted_head_repository_to_empty(monkeypatch):
     """Map a ``null`` head repository to a name that matches no base."""
     _patch_urlopen_pages(
-        monkeypatch, [{"user": {"login": "dependabot[bot]"}, "head": {"repo": None}}]
+        monkeypatch,
+        [
+            {
+                "user": {"login": "dependabot[bot]"},
+                "head": {"repo": None},
+                "changed_files": 1,
+            }
+        ],
     )
 
     client = sync_pr_labels.UrllibGitHubClient("token")

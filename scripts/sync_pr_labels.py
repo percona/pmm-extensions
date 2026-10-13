@@ -131,14 +131,17 @@ class PrFile:
 
 @dataclass(frozen=True, slots=True)
 class PullRequest:
-    """Carry the pull-request identity fields the ``qa not required`` predicate reads.
+    """Carry the pull-request fields the ``qa not required`` predicate reads.
 
-    Both come from the pulls API rather than the head branch name, which the
-    pull-request author chooses and so proves nothing about who opened it.
+    The identity fields come from the pulls API rather than the head branch name,
+    which the pull-request author chooses and so proves nothing about who opened
+    it. ``changed_files`` is the API's own count, which the list-files endpoint
+    stops short of past its 3000-file cap.
     """
 
     author_login: str
     head_repository: str
+    changed_files: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,12 +191,12 @@ class GitHubClient(Protocol):
     """Describe the subset of the GitHub REST API used by this script."""
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> PullRequest:
-        """Return the author and head repository of a pull request.
+        """Return the author, head repository and file count of a pull request.
 
         :param owner: Repository owner.
         :param repo: Repository name without owner.
         :param pr_number: Pull request number.
-        :return: The pull request's identity fields.
+        :return: The pull request's fields.
         """
 
     def list_pr_files(self, owner: str, repo: str, pr_number: int) -> list[PrFile]:
@@ -278,8 +281,9 @@ def is_isolation_neutral(filename: str) -> bool:
 def is_test_file(filename: str) -> bool:
     """Return whether ``filename`` is a test file.
 
-    Frontend test-support modules (setup files, MSW servers, fixtures) are not
-    test files, so a pull request touching one still needs QA.
+    Outside the e2e package, frontend test-support modules (setup files, MSW
+    servers, fixtures) are not test files, so a pull request touching one still
+    needs QA.
 
     :param filename: Path relative to the repository root.
     :return: ``True`` under root ``tests/`` or the e2e package, and for a
@@ -463,10 +467,13 @@ def qa_not_required_eligible(
     :param pull: Identity fields of the pull request.
     :param repository: ``owner/name`` of the base repository.
     :return: ``True`` for a Dependabot pull request, or a diff whose every path
-        is a test file or documentation.
+        is a test file or documentation. ``False`` when ``files`` holds fewer
+        entries than the pull request changed, since the unseen ones may be code.
     """
     if is_dependabot_pull_request(pull, repository):
         return True
+    if len(files) < pull.changed_files:
+        return False
     return bool(files) and all(
         _is_qa_exempt(path) for file in files for path in file.paths
     )
@@ -596,7 +603,7 @@ class UrllibGitHubClient:
             raise
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> PullRequest:
-        """Return the author and head repository of a pull request.
+        """Return the author, head repository and file count of a pull request.
 
         A deleted head repository yields an empty name, which matches no base
         repository.
@@ -604,12 +611,13 @@ class UrllibGitHubClient:
         :param owner: Repository owner.
         :param repo: Repository name without owner.
         :param pr_number: Pull request number.
-        :return: The pull request's identity fields.
+        :return: The pull request's fields.
         """
         item = self._request("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}")
         return PullRequest(
             author_login=(item.get("user") or {}).get("login", ""),
             head_repository=(item["head"].get("repo") or {}).get("full_name", ""),
+            changed_files=item["changed_files"],
         )
 
     def list_pr_files(self, owner: str, repo: str, pr_number: int) -> list[PrFile]:
