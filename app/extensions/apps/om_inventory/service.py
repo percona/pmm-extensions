@@ -1110,7 +1110,7 @@ async def run_probe(
         if blocking is not None:
             run.status = ProbeRunStatus.SKIPPED
             run.finished_at = utc_now()
-            run.error = conflict_detail(blocking, node_ids)
+            run.error = await conflict_detail(session, blocking, node_ids)
             await ProbeRunManager.save(session, run)
             logger.info("OM inventory: sweep %s skipped -- %s", run_id, run.error)
             return run_id

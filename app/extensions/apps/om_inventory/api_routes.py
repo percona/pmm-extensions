@@ -548,7 +548,7 @@ async def get_probe_run(run_id: UUID, session: SessionDep) -> ProbeRunDetail:
     """
     run = await get_run(session, run_id)
     if run is None:
-        raise HTTPNotFoundException(detail=f"Probe run {run_id} not found")
+        raise HTTPNotFoundException(detail=f"Scan {run_id} not found")
     receipt = _receipt(run)
     return ProbeRunDetail(**_run_response(run, receipt).model_dump(), nodes=receipt)
 
@@ -605,7 +605,9 @@ async def trigger_probe(
         session, node_ids, stale_after=om_inventory_settings.STALE_RUN_AFTER
     )
     if blocking is not None:
-        raise HTTPConflictException(detail=conflict_detail(blocking, node_ids))
+        raise HTTPConflictException(
+            detail=await conflict_detail(session, blocking, node_ids)
+        )
 
     run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids or None))
     run_om_probe.delay(str(run.id), node_ids or None)

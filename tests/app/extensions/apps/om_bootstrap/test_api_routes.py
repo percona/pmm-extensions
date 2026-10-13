@@ -165,6 +165,15 @@ class TestTriggerRun:
             assert all(step["status"] == "pending" for step in host["steps"])
             assert host["finalize_steps"]
             assert all(step["status"] == "pending" for step in host["finalize_steps"])
+            # As the strategy answered: pre_check fails the same way twice.
+            assert {step["name"]: step["retryable"] for step in host["steps"]}[
+                "pre_check"
+            ] is False
+            assert all(
+                step["retryable"]
+                for step in host["steps"]
+                if step["name"] != "pre_check"
+            )
 
     def test_accepts_per_host_member_configs(
         self, regular_user: CasdoorUser, session: AsyncSession
@@ -986,6 +995,50 @@ class TestDispatchRollbackStep:
         assert dispatch.await_args is not None
         action = dispatch.await_args.args[-1]
         assert f"= {run.id} ] || exit 0" in action.command[2]
+
+    @pytest.mark.asyncio
+    async def test_skips_a_rollback_step_on_a_host_the_run_never_touched(
+        self, regular_user: CasdoorUser, session: AsyncSession
+    ) -> None:
+        """Record skipped, without dispatching, when install_package never ran."""
+        run = await BootstrapRunManager.save(
+            session,
+            BootstrapRunFactory.build(
+                hosts=dump_host_states(
+                    [
+                        HostBootstrapState(
+                            host="node00",
+                            steps=[
+                                StepRecord(
+                                    name="pre_check",
+                                    status=StepStatus.FAILED,
+                                    attempt_count=1,
+                                ),
+                                StepRecord(name="install_package"),
+                            ],
+                            rollback_steps=[StepRecord(name="stop_service")],
+                        )
+                    ]
+                ),
+            ),
+        )
+        dispatch = AsyncMock(return_value=FAKE_TASK_HISTORY_ID)
+
+        with patch(
+            "app.extensions.apps.om_bootstrap.api_routes.dispatch_step", dispatch
+        ):
+            response = api_client(regular_user, session, _fake_tasks_api()).post(
+                f"{BASE}/runs/{run.id}/hosts/node00/rollback/stop_service:dispatch"
+            )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        rollback_step = response.json()["hosts"][0]["rollback_steps"][0]
+        assert rollback_step["status"] == "skipped"
+        assert rollback_step["detail"] == (
+            "nothing to undo: this run installed nothing on this host"
+        )
+        assert rollback_step["attempt_count"] == 0
+        dispatch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_404s_for_an_unplanned_rollback_step(
