@@ -318,7 +318,7 @@
 | app/extensions/apps/topology/topology.py                                                                                            |      173 |        7 |       58 |        8 |     94% |118-119, 122-\>114, 153, 156-157, 226-\>228, 229-\>231, 407, 491-\>501, 505 |
 | app/extensions/artifact\_constants.py                                                                                               |        8 |        0 |        0 |        0 |    100% |           |
 | app/extensions/bundle\_upload/factory.py                                                                                            |       37 |        1 |       10 |        1 |     96% |        71 |
-| app/extensions/bundle\_upload/plan.py                                                                                               |      314 |        2 |       92 |        2 |     99% |1114, 1263 |
+| app/extensions/bundle\_upload/plan.py                                                                                               |      315 |        2 |       92 |        2 |     99% |1114, 1263 |
 | app/extensions/bundle\_upload/resolver.py                                                                                           |       56 |        0 |       14 |        0 |    100% |           |
 | app/extensions/bundle\_upload/seam.py                                                                                               |       12 |        0 |        0 |        0 |    100% |           |
 | app/extensions/clients/pmm.py                                                                                                       |      286 |        2 |       74 |        3 |     99% |558, 560, 926-\>928 |
@@ -539,7 +539,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34615** | **1806** | **8346** |  **700** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34616** | **1806** | **8346** |  **700** | **93%** |           |
 
 
 ## Setup coverage badge
