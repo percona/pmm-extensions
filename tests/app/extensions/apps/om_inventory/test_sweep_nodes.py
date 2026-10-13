@@ -21,33 +21,24 @@ it probed, so what it claims has to survive the cases that make it interesting: 
 service with no executor, a host whose probe failed, and a service PMM does not know.
 """
 
-from contextlib import nullcontext
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientConnectionError
 
-from app.extensions.apps.om_inventory.dispatch import (
-    HostProbeResult,
-    TRUNCATION_MARK,
-)
-from app.extensions.apps.om_inventory.enumeration import InventoryHost
+from app.extensions.apps.om_inventory.dispatch import HostProbeResult, TRUNCATION_MARK
 from app.extensions.apps.om_inventory.inventory import InventoryService
-from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
+from app.extensions.apps.om_inventory.mapping import MappedService
 from app.extensions.apps.om_inventory.models import NodeResolution, ScanFailure
 from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
-from app.extensions.apps.om_inventory.service import (
-    enumerate_estate,
-    STARTUP_RETRIES,
-    sweep,
-)
+from app.extensions.apps.om_inventory.service import enumerate_estate, STARTUP_RETRIES
 from tests.app.extensions.apps.om_inventory.conftest import (
     ERROR_DETAIL_CAP,
     FREE_BYTES,
+    host,
+    RunSweep,
 )
-
-OBSERVED_AT = "2026-08-12T12:00:00+00:00"
 
 #: A host's wall-clock, as the dispatcher would have measured it.
 HOST_SECONDS = 12.5
@@ -119,73 +110,10 @@ def mapped(
     )
 
 
-def host(name: str, *, orphaned: bool = False) -> InventoryHost:
-    """Build one enumerated host.
-
-    The receipt is host-oriented, so these tests have to supply hosts: a sweep that
-    enumerated nothing attempted nothing, and its receipt is empty however many
-    services were mapped.
-
-    :param name: The host's name, which is also its node id here.
-    :param orphaned: Whether no executor matched it, so nothing could run there.
-    :return: The host.
-    """
-    return InventoryHost(
-        node_id=name,
-        name=name,
-        address=None,
-        executor_host=None if orphaned else name,
-        resolution=NodeResolution.ORPHANED if orphaned else NodeResolution.NAME,
-        executor_state=None
-        if orphaned
-        else ExecutorState(name, "10.0.0.1", reachable=True, driver_healthy=True),
-    )
-
-
-async def run_sweep(
-    mapped_services: list[MappedService],
-    host_results: dict[str, HostProbeResult],
-    hosts: list[InventoryHost] | None = None,
-):
-    """Run a sweep with the mapping, hosts and probe results stubbed.
-
-    Everything above the mapping is I/O — two authenticated clients, the inventory
-    and Nomad — so it is replaced wholesale; what is under test is what the sweep
-    concludes from a mapping and its probe results.
-
-    :param mapped_services: The mapping the sweep should see.
-    :param host_results: The probe results, keyed by executor host.
-    :param hosts: The enumerated hosts. Defaults to one per executor the results
-        mention, which is what the real enumeration would have produced for them.
-    :return: The sweep's outcome.
-    """
-    if hosts is None:
-        hosts = [host(name) for name in host_results]
-    # `auth` is a sync context manager setting a header for its block, so the stub
-    # clients have to be usable in a `with`, not merely present.
-    clients = (MagicMock(), MagicMock())
-    for client in clients:
-        client.auth.return_value = nullcontext()
-
-    base = "app.extensions.apps.om_inventory.service"
-    with (
-        patch(f"{base}._build_clients", AsyncMock(return_value=clients)),
-        patch(f"{base}.get_internal_token", return_value="token"),
-        patch(f"{base}.list_mongodb_services", AsyncMock(return_value=[])),
-        # The host half of enumeration, stubbed empty for the same reason as the
-        # service half: these tests are about what a sweep concludes from a mapping,
-        # and the hosts it would write have their own tests in test_enumeration.py.
-        patch(f"{base}.list_inventory_nodes", AsyncMock(return_value=[])),
-        patch(f"{base}.build_hosts", return_value=hosts),
-        patch(f"{base}.get_executor_states", AsyncMock(return_value={})),
-        patch(f"{base}.map_services", return_value=mapped_services),
-        patch(f"{base}.probe_all", AsyncMock(return_value=host_results)),
-    ):
-        return await sweep(OBSERVED_AT)
-
-
 @pytest.mark.asyncio
-async def test_records_the_host_it_probed_and_the_services_on_it() -> None:
+async def test_records_the_host_it_probed_and_the_services_on_it(
+    run_sweep: RunSweep,
+) -> None:
     """Name the host, how it was matched, how long it took, and what was on it."""
     outcome = await run_sweep(
         [mapped("svc-a", "node00", NodeResolution.NAME)],
@@ -215,7 +143,7 @@ async def test_records_the_host_it_probed_and_the_services_on_it() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_answering_service_s_role_is_classified() -> None:
+async def test_an_answering_service_s_role_is_classified(run_sweep: RunSweep) -> None:
     """Classify an answering service's role from the record, keyed by PMM's id."""
     record = {**RECORD, "process": {**RECORD["process"], "running": True}}
     outcome = await run_sweep(
@@ -231,7 +159,7 @@ async def test_an_answering_service_s_role_is_classified() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_host_with_no_database_is_in_the_receipt() -> None:
+async def test_a_host_with_no_database_is_in_the_receipt(run_sweep: RunSweep) -> None:
     """Include a host with no database, which a flat service list could not show.
 
     A machine carrying a PMM client and no database is what OM most exists to
@@ -258,7 +186,9 @@ async def test_a_host_with_no_database_is_in_the_receipt() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_dispatched_host_s_receipt_carries_its_task_history_id() -> None:
+async def test_a_dispatched_host_s_receipt_carries_its_task_history_id(
+    run_sweep: RunSweep,
+) -> None:
     """Carry the task history id a follow-up needs to stop an abandoned run's allocations.
 
     The receipt stays outcomes-only, but the task history id is how a reader still
@@ -279,7 +209,9 @@ async def test_a_dispatched_host_s_receipt_carries_its_task_history_id() -> None
 
 
 @pytest.mark.asyncio
-async def test_a_host_never_dispatched_to_has_no_task_history_id() -> None:
+async def test_a_host_never_dispatched_to_has_no_task_history_id(
+    run_sweep: RunSweep,
+) -> None:
     """Point at no run for an orphan, which was never sent anywhere."""
     outcome = await run_sweep(
         [mapped("svc-b", None, NodeResolution.ORPHANED)],
@@ -291,7 +223,7 @@ async def test_a_host_never_dispatched_to_has_no_task_history_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_orphan_host_is_recorded_with_no_executor() -> None:
+async def test_an_orphan_host_is_recorded_with_no_executor(run_sweep: RunSweep) -> None:
     """Keep an entry for a host nothing could run on, say why, and record no error."""
     outcome = await run_sweep(
         [mapped("svc-b", None, NodeResolution.ORPHANED)],
@@ -310,7 +242,9 @@ async def test_an_orphan_host_is_recorded_with_no_executor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_host_carries_its_error_and_its_time() -> None:
+async def test_a_failed_host_carries_its_error_and_its_time(
+    run_sweep: RunSweep,
+) -> None:
     """Report why a host produced nothing, and how long it took to say so."""
     outcome = await run_sweep(
         [mapped("svc-c", "node01", NodeResolution.ADDRESS)],
@@ -331,7 +265,9 @@ async def test_a_failed_host_carries_its_error_and_its_time() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_service_whose_database_could_not_be_queried_did_not_answer() -> None:
+async def test_a_service_whose_database_could_not_be_queried_did_not_answer(
+    run_sweep: RunSweep,
+) -> None:
     """Fail a service whose record says its database refused the payload.
 
     The host answered and printed a record, but the record is the payload saying it
@@ -372,7 +308,9 @@ async def test_a_service_whose_database_could_not_be_queried_did_not_answer() ->
 
 
 @pytest.mark.asyncio
-async def test_a_failed_record_still_says_whether_the_mongod_is_running() -> None:
+async def test_a_failed_record_still_says_whether_the_mongod_is_running(
+    run_sweep: RunSweep,
+) -> None:
     """Keep what a failed record read off the host, a stopped mongod above all.
 
     A stopped mongod is a common reason its database cannot be queried, and the
@@ -415,7 +353,7 @@ async def test_a_failed_record_still_says_whether_the_mongod_is_running() -> Non
 
 
 @pytest.mark.asyncio
-async def test_a_failed_record_s_error_is_bounded() -> None:
+async def test_a_failed_record_s_error_is_bounded(run_sweep: RunSweep) -> None:
     """Cap the stored error, since one the payload does not recognise can be long."""
     record = {**RECORD, "status": STATUS_FAILED, "error": "x" * 5000}
     outcome = await run_sweep(
@@ -436,7 +374,7 @@ async def test_a_failed_record_s_error_is_bounded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_service_pmm_does_not_know_is_still_listed() -> None:
+async def test_a_service_pmm_does_not_know_is_still_listed(run_sweep: RunSweep) -> None:
     """Record a service with no PMM id, which the estate could never key a row on."""
     outcome = await run_sweep(
         [mapped("svc-d", "node00", NodeResolution.NAME, external_id=None)],
@@ -458,7 +396,9 @@ async def test_a_service_pmm_does_not_know_is_still_listed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_host_s_error_is_kept_for_its_estate_row() -> None:
+async def test_a_failed_host_s_error_is_kept_for_its_estate_row(
+    run_sweep: RunSweep,
+) -> None:
     """Carry the dispatch's own error as far as ``om.host.last_error``.
 
     It reached the receipt and stopped there: the estate row was written with a
@@ -484,7 +424,9 @@ async def test_a_failed_host_s_error_is_kept_for_its_estate_row() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_host_that_answered_nothing_at_all_still_says_something() -> None:
+async def test_a_host_that_answered_nothing_at_all_still_says_something(
+    run_sweep: RunSweep,
+) -> None:
     """State the absence as a finding instead of leaving a null error.
 
     That absence *is* the finding, so it needs wording rather than a null: the queue
@@ -503,7 +445,7 @@ async def test_a_host_that_answered_nothing_at_all_still_says_something() -> Non
 
 
 @pytest.mark.asyncio
-async def test_a_host_that_answered_carries_no_error() -> None:
+async def test_a_host_that_answered_carries_no_error(run_sweep: RunSweep) -> None:
     """Leave no failure reason behind on success."""
     outcome = await run_sweep(
         [],
@@ -519,7 +461,9 @@ async def test_a_host_that_answered_carries_no_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_host_document_carries_the_installed_binary() -> None:
+async def test_the_host_document_carries_the_installed_binary(
+    run_sweep: RunSweep,
+) -> None:
     """Carry the installed binary version on the host document, not a service row.
 
     A host carrying a PMM client and no database is the case OM exists for. The
@@ -563,7 +507,7 @@ async def test_the_host_document_carries_the_installed_binary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_one_dispatch_is_timed_once_not_per_service() -> None:
+async def test_one_dispatch_is_timed_once_not_per_service(run_sweep: RunSweep) -> None:
     """Report a host's duration once on the host, not per service.
 
     It used to be copied onto every service the host served, which read as several
