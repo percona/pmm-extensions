@@ -705,3 +705,55 @@ class TestAFailedAttemptRefreshesTheProcessFacts:
         service = (await list_services(session))[0]
         assert service.observed == {}
         assert service.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("attempt", "kept"),
+        [
+            pytest.param(
+                {"observed": {**RUNNING_SERVICE, "uptime_seconds": 7200}},
+                {**RUNNING_SERVICE, "uptime_seconds": 7200},
+                id="a-successful-attempt",
+            ),
+            pytest.param(
+                {"attempted": False}, RUNNING_SERVICE, id="an-unattempted-service"
+            ),
+        ],
+    )
+    async def test_only_a_failed_attempt_takes_them(
+        self,
+        session: AsyncSession,
+        attempt: dict[str, Any],
+        kept: dict[str, Any],
+    ) -> None:
+        """Leave the document alone when the attempt did not fail.
+
+        :param session: The database session.
+        :param attempt: How this attempt reached ``upsert_service``.
+        :param kept: The document that should be stored after it.
+        """
+        await add_host(session)
+        await upsert_service(
+            session,
+            service_id=SERVICE_ID,
+            node_id=NODE_ID,
+            name="db00",
+            port=27017,
+            role="primary",
+            observed=RUNNING_SERVICE,
+        )
+        await session.commit()
+
+        await upsert_service(
+            session,
+            service_id=SERVICE_ID,
+            node_id=NODE_ID,
+            name="db00",
+            port=27017,
+            role="primary",
+            process_facts=STOPPED_PROCESS,
+            **attempt,
+        )
+        await session.commit()
+
+        assert (await list_services(session))[0].observed == kept
