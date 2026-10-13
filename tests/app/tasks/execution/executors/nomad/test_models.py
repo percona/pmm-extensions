@@ -1124,17 +1124,30 @@ class TestDispatchJob:
         assert _dispatch_body(calls)["Payload"] == expected
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "log_overrides",
+        [{}, {"sensitive_body_paths": ()}],
+        ids=["default-settings", "paths-overridden-empty"],
+    )
     @patch("app.tasks.execution.executors.nomad.models.TaskHistoryManager")
     async def test_dispatching_a_run_logs_no_protected_leaf(
-        self, mock_th_manager, caplog: pytest.LogCaptureFixture
+        self,
+        mock_th_manager,
+        caplog: pytest.LogCaptureFixture,
+        log_overrides: dict[str, Any],
     ) -> None:
         """Assert a whole dispatch logs no arguments, config or payload at DEBUG.
 
         Nomad is stubbed at the HTTP layer, so every request the executor makes
         for the run, and every log line around them, is emitted as in production.
+        The executor is a settings model, so the run is repeated with its
+        ``sensitive_body_paths`` overridden to nothing, which must not unmask the
+        protected leaves.
+
+        :param log_overrides: Settings the executor is constructed with.
         """
         mock_th_manager.save = AsyncMock(side_effect=lambda _s, qi, **_kw: qi)
-        executor = _build_executor(stub_nomad=False)
+        executor = _build_executor(stub_nomad=False, **log_overrides)
         task = _build_task(task_id="log-job", parameterized=True)
         queue_item = _build_queue_item(
             task=task,

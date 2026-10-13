@@ -50,6 +50,7 @@ __all__ = [
     "ARGS_META_KEY",
     "CONFIG_LEAF",
     "CONFIG_META_KEY",
+    "DISPLAY_ONLY_META_KEYS",
     "ENCRYPTED_LEAVES",
     "ENCRYPTED_META_KEYS",
     "MASKED_ARGS_META_KEY",
@@ -115,6 +116,13 @@ ENCRYPTED_META_KEYS: Final = tuple(
 #: a response publishes in their place. Not a protected leaf: it holds nothing
 #: a response may not show.
 MASKED_ARGS_META_KEY: Final = "_masked_args"
+
+#: The ``meta`` keys that carry no run identity: renderings of other leaves kept
+#: for display, which two submissions of one run need not agree on. A copy
+#: recorded by one release and absent from a row an earlier release wrote is the
+#: same run, and the leaf it renders is already compared in its own right, so a
+#: predicate deciding whether two requests are the same run skips these.
+DISPLAY_ONLY_META_KEYS: Final = (MASKED_ARGS_META_KEY,)
 
 #: What a response shows for ``meta.args`` when a run recorded arguments and no
 #: masked copy of them, so nothing can tell which of them are credentials.

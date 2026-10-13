@@ -619,7 +619,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     :param sensitive_body_paths: Dotted paths of nested request-body values this
         client never writes to its request log, such as ``meta.args``. Segments
         match case-insensitively. Applies to every call, on top of the body
-        fields always masked by name. Defaults to none.
+        fields always masked by name and of :attr:`SENSITIVE_BODY_PATHS`, which
+        it can add to but never remove from. Defaults to none.
     :param withhold_response_log: Whether this client keeps every response body
         out of its log, for an upstream whose responses carry credentials. The
         status, method and path are still logged. Defaults to ``False``.
@@ -628,10 +629,16 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         enters the client-registry key or model serialization. Override per
         client, or pass an explicit ``path`` to ``check_connectivity``.
     :cvar STREAM_CONNECTION_LIMIT: Default for :attr:`stream_connection_limit`.
+    :cvar SENSITIVE_BODY_PATHS: Dotted paths of nested request-body values every
+        instance of the client class keeps out of its request log, whatever its
+        ``sensitive_body_paths`` holds. A class variable rather than a field
+        default, so a client that is also a settings model carries its redaction
+        policy out of reach of an operator override.
     """
 
     CONNECTIVITY_CHECK_PATH: ClassVar[str] = "/"
     STREAM_CONNECTION_LIMIT: ClassVar[int] = 64
+    SENSITIVE_BODY_PATHS: ClassVar[tuple[str, ...]] = ()
     endpoint: CredentialHttpUrl = Field(..., frozen=True)
     verify_ssl: bool = Field(default=True, frozen=True)
     ssl_cafile: RelativeFilePathField | None = Field(None, frozen=True)
@@ -1409,7 +1416,10 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 kwargs,
                 extra_sensitive_headers=self._extra_sensitive_headers.get(),
                 extra_sensitive_body_fields=self._extra_sensitive_body_fields.get(),
-                sensitive_body_paths=self.sensitive_body_paths,
+                sensitive_body_paths=(
+                    *self.SENSITIVE_BODY_PATHS,
+                    *self.sensitive_body_paths,
+                ),
             ),
         )
         if self._session is None:

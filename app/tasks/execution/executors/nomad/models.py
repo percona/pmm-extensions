@@ -828,13 +828,16 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     :cvar INHERITED_MARKERS: Overlay marking the inherited ``BaseRemoteAPI`` TLS
         fields (``verify_ssl`` and the ``ssl_*`` paths) HOT and ``advanced``
         without redeclaring them; set to the shared :data:`REMOTE_API_TLS_MARKERS`.
+    :cvar SENSITIVE_BODY_PATHS: The protected execution-request leaves, which a
+        dispatch body carries in clear, so no settings override can put them back
+        in the request log.
     """
 
     # Overlay, not redeclaration: redeclaring would drop the inherited frozen
     # ``FieldInfo`` and force ``frozen=True`` repeated. ``endpoint`` left unmarked.
     # Reuses the shared TLS overlay so every remote-api model marks these the same.
     INHERITED_MARKERS: ClassVar[InheritedMarkers] = REMOTE_API_TLS_MARKERS
-    sensitive_body_paths: tuple[str, ...] = ENCRYPTED_LEAVES
+    SENSITIVE_BODY_PATHS: ClassVar[tuple[str, ...]] = ENCRYPTED_LEAVES
     secure: bool = hot_field(  # ty: ignore[invalid-assignment]
         default=False, advanced=True
     )

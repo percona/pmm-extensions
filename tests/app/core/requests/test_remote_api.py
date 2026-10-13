@@ -326,6 +326,47 @@ class TestSensitiveBodyPaths:
         assert "secret-document" not in sending[0]
         assert "node-1" in sending[0]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("instance_paths", "args_logged"),
+        [((), True), (("meta.args",), False)],
+        ids=["class-paths-only", "instance-adds-a-path"],
+    )
+    async def test_class_paths_apply_whatever_the_instance_declares(
+        self, caplog, instance_paths, args_logged
+    ):
+        """Mask the class's paths alongside, never instead of, the instance's.
+
+        :param instance_paths: The paths the instance is constructed with.
+        :param args_logged: Whether ``meta.args`` reaches the log, which it does
+            only while no path covers it.
+        """
+
+        class _PayloadClient(RemoteAPI):
+            SENSITIVE_BODY_PATHS = ("payload",)
+
+        client = _PayloadClient(
+            endpoint="http://localhost:8000/", sensitive_body_paths=instance_paths
+        )
+        with aioresponses() as mock:
+            mock.post(_RESPONSE_URL, payload={})
+            with caplog.at_level("DEBUG", logger=client.logger.name):
+                async with client:
+                    await client.post(
+                        "body",
+                        json={
+                            "meta": {"args": "--password hunter2"},
+                            "payload": "secret-document",
+                        },
+                    )
+
+        sending = [
+            r.getMessage() for r in caplog.records if "Sending" in r.getMessage()
+        ]
+        assert len(sending) == 1
+        assert "secret-document" not in sending[0]
+        assert ("hunter2" in sending[0]) is args_logged
+
 
 class TestWithholdResponseLog:
     """Cover a client constructed to never log its response bodies."""
