@@ -3955,9 +3955,15 @@ class TestWritersWaitForTheReferenceFence:
     ):
         """Answer a request that fails validation without queuing on a batch.
 
-        Only the write is fenced, so a 404 is not delayed into a 503 by a batch
-        that has nothing to do with it.
+        Only the write is fenced, so the route's own chain validation answers
+        400 rather than being delayed into a 503 by a batch that has nothing to
+        do with it.
         """
+        async with postgres_session_maker() as session:
+            await TaskManager.create(
+                session, TaskWrite.model_validate(TaskFactory.build(name="my-task"))
+            )
+
         async with (
             postgres_session_maker() as fence_session,
             hold_reference_collection_fence(fence_session),
@@ -3966,8 +3972,11 @@ class TestWritersWaitForTheReferenceFence:
             ) as client,
         ):
             response = await client.post(
-                "/no-such-task/periodic/",
-                json={"interval": {"every": 10, "period": "minutes"}},
+                "/my-task/periodic/",
+                json={
+                    "interval": {"every": 10, "period": "minutes"},
+                    "execute_request": {"chain_task_names": ["my-task"]},
+                },
             )
 
-        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert response.status_code == status.HTTP_400_BAD_REQUEST

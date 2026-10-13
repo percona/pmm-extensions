@@ -49,6 +49,7 @@ from app.core.exceptions import HTTPServiceUnavailableException
 #: ``SYNC_RUN_LOCK_NAMESPACE``, the only other two-key namespace.
 REFERENCE_FENCE_LOCK_NAMESPACE: Final = 0x52464E43
 
+#: The one key every writer and every batch contend on within the namespace.
 REFERENCE_FENCE_KEY: Final = advisory_lock_key("inventory-reference-holders")
 
 #: The longest a writer or a batch waits for the other side of the fence.
@@ -86,7 +87,7 @@ async def hold_reference_write_fence(
                     REFERENCE_FENCE_LOCK_NAMESPACE,
                     REFERENCE_FENCE_KEY,
                     shared=True,
-                    max_wait=max_wait or REFERENCE_FENCE_TIMEOUT,
+                    max_wait=REFERENCE_FENCE_TIMEOUT if max_wait is None else max_wait,
                 )
             )
         except AdvisoryLockTimeoutError as exc:
@@ -118,6 +119,6 @@ async def hold_reference_collection_fence(
         session,
         REFERENCE_FENCE_LOCK_NAMESPACE,
         REFERENCE_FENCE_KEY,
-        max_wait=max_wait or REFERENCE_FENCE_TIMEOUT,
+        max_wait=REFERENCE_FENCE_TIMEOUT if max_wait is None else max_wait,
     ) as handle:
         yield handle

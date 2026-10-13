@@ -1436,6 +1436,20 @@ class TestPgAdvisoryXactLockOnSqlite:
         finally:
             await engine.dispose()
 
+    @pytest.mark.asyncio
+    async def test_refuses_a_bound_that_is_not_positive(self):
+        """Refuse a zero bound up front, since the server reads it as no bound."""
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with get_async_session_maker_from_engine(engine)() as session:
+                with pytest.raises(ValueError, match="max_wait"):
+                    async with pg_advisory_xact_lock(
+                        session, 1, 2, max_wait=timedelta(0)
+                    ):
+                        pytest.fail("entered with an unbounded wait")
+        finally:
+            await engine.dispose()
+
 
 class TestPgAdvisoryXactLockOnRealPostgres:
     """Exercise the shared/exclusive waiting lock against a real server.

@@ -17,6 +17,7 @@
 
 import hashlib
 import logging
+import math
 import re
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
@@ -687,13 +688,19 @@ async def pg_advisory_xact_lock(
         the same class of object.
     :param key: The key identifying the locked object within ``namespace``.
     :param shared: Whether to take the lock shared rather than exclusive.
-    :param max_wait: The longest to wait for the lock to be granted.
+    :param max_wait: The longest to wait for the lock to be granted, rounded up
+        to whole milliseconds, the server's resolution.
     :return: A handle for checking the lock is still held.
+    :raises ValueError: If ``max_wait`` is not positive, since the server reads a
+        zero bound as no bound at all.
     :raises AdvisoryLockTimeoutError: If the lock is not granted within
         ``max_wait``. Raised before the block is entered.
     :raises SQLAlchemyError: If the lock connection cannot be opened or a lock
         statement fails for any other reason. Raised before the block is entered.
     """
+    if max_wait <= timedelta(0):
+        raise ValueError(f"max_wait must be positive, got {max_wait}")
+    max_wait_ms = math.ceil(max_wait / timedelta(milliseconds=1))
     async with _advisory_lock_connection(session, namespace, key) as connection:
         if connection is None:
             yield AdvisoryLockHandle(None)
@@ -703,7 +710,7 @@ async def pg_advisory_xact_lock(
         )
         await connection.execute(
             text("SELECT set_config('lock_timeout', :timeout, true)"),
-            {"timeout": f"{int(max_wait.total_seconds() * 1000)}ms"},
+            {"timeout": f"{max_wait_ms}ms"},
         )
         function = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
         try:

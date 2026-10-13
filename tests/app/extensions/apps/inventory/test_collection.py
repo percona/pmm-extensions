@@ -956,6 +956,42 @@ class TestCollectionFenceOnPostgres:
             postgres_session_maker, retired_service, response, done_at_delete
         )
 
+    async def test_a_batch_queued_behind_a_writer_keeps_what_it_wrote(
+        self,
+        postgres_engine,
+        postgres_session_maker,
+        pg_collection_databases,
+        retired_service,
+    ):
+        """Spare a service whose holder a writer committed while the batch waited.
+
+        The other half of the closure argument: a write already under way when
+        the batch asks for the fence makes the batch wait, and the batch's
+        retained set, read only once it holds the fence, sees that write.
+        """
+        collector: asyncio.Task[None] | None = None
+        try:
+            async with (
+                postgres_session_maker() as writer_session,
+                hold_reference_write_fence(writer_session),
+            ):
+                collector = asyncio.create_task(run_inventory_collection())
+                await wait_for_advisory_waiters(
+                    postgres_engine,
+                    REFERENCE_FENCE_LOCK_NAMESPACE,
+                    pg_collection_databases,
+                )
+                await _create_holder_task(
+                    writer_session, "first-writer", retired_service.id
+                )
+            await asyncio.wait_for(collector, WRITER_WAIT)
+        finally:
+            if collector is not None and not collector.done():
+                collector.cancel()
+
+        async with postgres_session_maker() as session:
+            assert await _service_exists(session, retired_service)
+
     async def test_a_fence_held_by_writers_past_the_bound_aborts_the_run(
         self,
         mocker,
@@ -1011,10 +1047,11 @@ class TestCollectionFenceOnPostgres:
             TaskFactory.build(name="racing-task")
         ).model_dump(mode="json")
         timings: dict[str, float] = {}
+        responses: list[Response] = []
         writer: asyncio.Task[None] | None = None
 
         async def send_and_time() -> None:
-            await client.post("/", json=payload)
+            responses.append(await client.post("/", json=payload))
             timings["writer_done"] = time.monotonic()
 
         async def fail_the_delete() -> None:
@@ -1036,6 +1073,7 @@ class TestCollectionFenceOnPostgres:
             if writer is not None and not writer.done():
                 writer.cancel()
 
+        assert responses[0].status_code == status.HTTP_201_CREATED
         held = timings["writer_done"] - timings["delete_failed"]
         assert held >= grace.total_seconds()
 

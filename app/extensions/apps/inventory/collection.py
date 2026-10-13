@@ -61,21 +61,26 @@ Knowingly outside that guarantee:
 1. **SQLite deployments.** SQLite has no advisory lock, so the fence is a no-op
    there. Collection ships scheduled only in the PostgreSQL side-car profile; an
    operator who schedules it on SQLite runs it unfenced.
-2. **Writers outside the Tasks API.** The seed data, the system beat schedules
-   and the form backfill write task and schedule rows directly, and none of
-   them writes a ``_service_id`` holder. An in-flight ``TaskHistory`` is created from a
-   ``Task`` the scan already read.
+2. **Writers the fence does not wrap.** The seed data, the system beat
+   schedules and the form backfill write task and schedule rows directly, and
+   none of them writes a ``_service_id`` holder. The Tasks API's execution
+   routes create in-flight ``TaskHistory`` rows unfenced, but the backup-run
+   recorder reads the service id off the live ``Task`` row, which the scan
+   already covers.
 3. **A write naming an id the batch it waited for deletes.** A request that
    arrives mid-batch commits after the delete and can name an id already gone.
    That is the Tasks API accepting unvalidated meta, not this window, and is
    tracked separately.
-4. **Infrastructure failure during the delete.** The guarantee holds while the
-   run's processes and database connections stay up. A fence backend ended or
-   cut off *during* the delete call, or a COMMIT left in doubt by a lost
-   connection or a dead worker, falls outside it: closing that needs the delete
-   and the fence in one transaction across two databases. The batch holds the
-   fence for ``REFERENCE_FENCE_COMMIT_GRACE`` after a failed delete, which
-   covers the in-doubt case a live process survives.
+4. **Infrastructure failure during a fenced call.** The guarantee holds while
+   the processes and database connections on both sides stay up. A fence
+   backend ended or cut off *during* the delete call, or a COMMIT left in doubt
+   by a lost connection or a dead worker, falls outside it: closing that needs
+   the delete and the fence in one transaction across two databases. The batch
+   holds the fence for ``REFERENCE_FENCE_COMMIT_GRACE`` after a failed delete,
+   which covers the in-doubt case a live process survives. The writer side has
+   the same boundary without that cover: a writer whose fence backend is lost
+   mid-write, or whose COMMIT is left in doubt, releases the fence while its
+   write may still land.
 """
 
 import asyncio
