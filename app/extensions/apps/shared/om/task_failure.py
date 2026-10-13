@@ -29,6 +29,7 @@ from app.tasks.models import TaskLogType
 
 __all__ = [
     "MAX_ERROR_DETAIL",
+    "STEP_LOG_TAIL",
     "describe_task_failure",
     "failed_step",
     "read_step_logs",
@@ -40,6 +41,10 @@ __all__ = [
 #: recognise, or a package manager printing its whole transaction before the line
 #: saying it gave up can run to several kilobytes.
 MAX_ERROR_DETAIL = 500
+#: How much of a step's stream :func:`read_step_logs` keeps, from its end, unless
+#: told to keep it whole. Far more than the ``MAX_ERROR_DETAIL`` a failure detail
+#: takes from it.
+STEP_LOG_TAIL = 8192
 
 #: The step the tasks service names in a run's ``failure_reason``, in the sentence
 #: the Nomad executor's ``_failed_step_reason`` writes. That function's tests pin
@@ -59,7 +64,10 @@ def failed_step(failure_reason: str | None) -> str | None:
 
 
 async def read_step_logs(
-    tasks_api: RemoteAPI, task_history_id: int
+    tasks_api: RemoteAPI,
+    task_history_id: int,
+    *,
+    keep_whole: frozenset[tuple[str, str]] = frozenset(),
 ) -> dict[str, dict[str, str]]:
     """Stream a finished run's logs, every step, and return them by step and stream.
 
@@ -67,8 +75,15 @@ async def read_step_logs(
     payload never runs and its own streams are empty, so the failed step's output is
     the only account there is of why.
 
+    Only the streams in ``keep_whole`` are kept in full. Every other one keeps its
+    last :data:`STEP_LOG_TAIL` characters as it is read: a failure detail takes only
+    the end of one, and a verbose step would otherwise be held in full for every
+    run read at once.
+
     :param tasks_api: The tasks API client.
     :param task_history_id: The run to read.
+    :param keep_whole: The ``(step, stream)`` pairs to keep in full, such as a
+        payload's ``stdout`` that is parsed rather than quoted.
     :return: The concatenated output, keyed by step and then by ``stdout`` or
         ``stderr``. A step or stream with no output is absent.
     """
@@ -80,8 +95,19 @@ async def read_step_logs(
             log = json.loads(entry)
         except ValueError:
             continue
-        steps[log.get("step") or ""][log.get("type") or ""] += log.get("msg") or ""
-    return {step: dict(streams) for step, streams in steps.items()}
+        step, stream = log.get("step") or "", log.get("type") or ""
+        text = steps[step][stream] + (log.get("msg") or "")
+        # Cut at twice the tail, so a stream of short lines is not copied per line.
+        if (step, stream) not in keep_whole and len(text) > 2 * STEP_LOG_TAIL:
+            text = text[-STEP_LOG_TAIL:]
+        steps[step][stream] = text
+    return {
+        step: {
+            stream: text if (step, stream) in keep_whole else text[-STEP_LOG_TAIL:]
+            for stream, text in streams.items()
+        }
+        for step, streams in steps.items()
+    }
 
 
 def _excerpt(text: str) -> str:

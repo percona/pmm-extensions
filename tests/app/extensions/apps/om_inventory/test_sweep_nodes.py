@@ -224,7 +224,7 @@ async def test_a_host_never_dispatched_to_has_no_task_history_id(
 
 @pytest.mark.asyncio
 async def test_an_orphan_host_is_recorded_with_no_executor(run_sweep: RunSweep) -> None:
-    """Keep an entry for a host nothing could run on, and say why."""
+    """Keep an entry for a host nothing could run on, say why, and record no error."""
     outcome = await run_sweep(
         [mapped("svc-b", None, NodeResolution.ORPHANED)],
         {},
@@ -237,6 +237,8 @@ async def test_an_orphan_host_is_recorded_with_no_executor(run_sweep: RunSweep) 
     assert node["resolution"] == NodeResolution.ORPHANED
     assert node["answered"] is False
     assert node["duration_seconds"] is None
+    assert node["error"] is None
+    assert [service["error"] for service in node["services"]] == [None]
 
 
 @pytest.mark.asyncio

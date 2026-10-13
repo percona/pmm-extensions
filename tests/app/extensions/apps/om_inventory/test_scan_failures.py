@@ -54,6 +54,8 @@ from app.extensions.apps.om_inventory.service import (
     persist_estate,
     SweepOutcome,
 )
+from app.extensions.apps.shared.om.task_failure import STEP_LOG_TAIL
+from app.tasks.execution.executors.nomad.models import _failed_step_reason
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.extensions.apps.om_inventory.conftest import (
     BASE,
@@ -321,6 +323,45 @@ class TestTheDetailIsBounded:
             "refused"
         )
 
+    @pytest.mark.asyncio
+    async def test_a_long_release_error_does_not_cut_the_notice(self) -> None:
+        """Cut the release's own error, so the notice before it survives."""
+        api = make_api({"status": TaskHistoryStatusEnum.RUNNING.value})
+        api.get = AsyncMock(side_effect=RuntimeError("x" * 5000))
+        api.post = AsyncMock(
+            side_effect=[{"id": HISTORY_ID}, RuntimeError("stop refused " + "y" * 5000)]
+        )
+
+        result = await probe_host(api, HOST, entries())
+
+        error = result.error or ""
+        assert result.error_code == ScanFailure.BLOCKED
+        assert len(error) <= ERROR_DETAIL_CAP
+        assert error.startswith(f"the scan on {HOST} failed: RuntimeError: xxx")
+        assert (
+            f" -- and task history {HISTORY_ID} could not be released, so it will "
+            "block this node's next scan: RuntimeError: stop refused yyy"
+        ) in error
+        assert error.endswith(TRUNCATION_MARK)
+
+
+class TestTheRecordsAreReadWhole:
+    """Keep the payload's records whole, though every other stream keeps its end."""
+
+    @pytest.mark.asyncio
+    async def test_a_record_ahead_of_long_output_is_still_read(self) -> None:
+        """Read the host record that opens a stream longer than the kept tail."""
+        noise = "Requirement already satisfied: pymongo\n" * (3 * STEP_LOG_TAIL // 39)
+        api = make_api(
+            {"status": TaskHistoryStatusEnum.SUCCESS.value},
+            [log_line("run-script", "stdout", json.dumps(HOST_RECORD) + "\n" + noise)],
+        )
+
+        result = await probe_host(api, HOST, entries())
+
+        assert result.error is None
+        assert result.host_record == HOST_RECORD
+
 
 class TestTheFailedStepIsReadFromTheTasksService:
     """Pin the pattern against the sentence the tasks service actually writes."""
@@ -338,10 +379,23 @@ class TestTheFailedStepIsReadFromTheTasksService:
     ) -> None:
         """Classify the sentence the Nomad executor writes for a failed step.
 
+        Written by the executor itself, from a failed step's allocation, so a change
+        to its wording fails here rather than silently leaving every failed step
+        unknown.
+
         :param step: The step that failed.
         :param expected: The code it should map to.
         """
-        reason = f"Step '{step}' failed (exit code 127)."
+        reason = _failed_step_reason(
+            {
+                "TaskStates": {
+                    step: {
+                        "Failed": True,
+                        "Events": [{"Type": "Terminated", "ExitCode": 127}],
+                    }
+                }
+            }
+        )
 
         assert (
             classify_terminal_failure(TaskHistoryStatusEnum.FAILED.value, reason)

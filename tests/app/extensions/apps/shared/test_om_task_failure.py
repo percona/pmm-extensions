@@ -27,6 +27,7 @@ from app.extensions.apps.shared.om.task_failure import (
     failed_step,
     MAX_ERROR_DETAIL,
     read_step_logs,
+    STEP_LOG_TAIL,
 )
 
 
@@ -96,6 +97,35 @@ class TestReadStepLogs:
         logs = await read_step_logs(api, 7)
 
         assert logs == {"prepare-env": {"stderr": "ac"}, "run-script": {"stdout": "b"}}
+
+    @pytest.mark.asyncio
+    async def test_keeps_only_the_tail_of_a_stream_not_kept_whole(self) -> None:
+        """Hold no more of a verbose step than a failure detail could use."""
+        noise = "Collecting pymongo\n" * (3 * STEP_LOG_TAIL // 19)
+        lines = [
+            *(
+                _line(step, "stderr", line)
+                for line in noise.splitlines(keepends=True)
+                for step in ("prepare-env", "run-script")
+            ),
+            _line("prepare-env", "stderr", "the last line\n"),
+        ]
+
+        async def stream(path: str, **_: Any) -> AsyncIterator[str]:
+            for line in lines:
+                yield line
+
+        api = MagicMock()
+        api.stream = MagicMock(side_effect=stream)
+
+        logs = await read_step_logs(
+            api, 7, keep_whole=frozenset({("run-script", "stderr")})
+        )
+
+        prepare_env = logs["prepare-env"]["stderr"]
+        assert len(prepare_env) == STEP_LOG_TAIL
+        assert prepare_env.endswith("the last line\n")
+        assert logs["run-script"]["stderr"] == noise
 
 
 class TestDescribeTaskFailure:
