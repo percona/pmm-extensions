@@ -1381,10 +1381,12 @@ async def test_sync_task_history_running_calls_executor(
     created_task_with_history.status = TaskHistoryStatusEnum.RUNNING
     await TaskHistoryManager.save(session, created_task_with_history)
 
-    async def fake_sync(item, writer_session=None):
+    async def fake_sync(
+        item: TaskHistory, writer_session=None
+    ) -> tuple[TaskHistory, str | None]:
         item.status = TaskHistoryStatusEnum.SUCCESS
         item.finished_at = utc_now()
-        return item
+        return item, None
 
     mock_executor.sync_task_history = AsyncMock(side_effect=fake_sync)
     response = test_client.post(f"/history/{created_task_with_history.id}/sync/")
@@ -1434,10 +1436,12 @@ async def test_sync_task_history_populates_has_logs(
 
     if running:
 
-        async def fake_sync(item, writer_session=None):
+        async def fake_sync(
+            item: TaskHistory, writer_session=None
+        ) -> tuple[TaskHistory, str | None]:
             item.status = TaskHistoryStatusEnum.SUCCESS
             item.finished_at = utc_now()
-            return item
+            return item, None
 
         # Only the RUNNING path reaches the executor; the early-return branch
         # short-circuits before it, so this wiring is a no-op there.
@@ -1507,10 +1511,12 @@ class TestSyncTaskHistoryChainDispatch:
 
     @staticmethod
     def _executor_flips_to(status_value: TaskHistoryStatusEnum):
-        async def fake_sync(item, writer_session=None):
+        async def fake_sync(
+            item: TaskHistory, writer_session=None
+        ) -> tuple[TaskHistory, str | None]:
             item.status = status_value
             item.finished_at = utc_now()
-            return item
+            return item, None
 
         return fake_sync
 
@@ -3258,7 +3264,7 @@ class TestSyncTaskHistoryRealSession:
         async def fake_sync(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             await TaskHistoryLogWriter.append(
                 writer_session,
@@ -3271,7 +3277,7 @@ class TestSyncTaskHistoryRealSession:
             )
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
             queue_item.finished_at = utc_now()
-            return queue_item
+            return queue_item, None
 
         mock_executor.sync_task_history = AsyncMock(side_effect=fake_sync)
 
@@ -3352,10 +3358,10 @@ class TestSyncTaskHistoryRealSession:
         async def fake_sync(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-        ) -> TaskHistory:
+        ) -> tuple[TaskHistory, str | None]:
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
             queue_item.finished_at = utc_now()
-            return queue_item
+            return queue_item, None
 
         async def fake_stream_file(*args, **kwargs):
             yield json_lib.dumps(result).encode()
@@ -3827,10 +3833,12 @@ class TestExecutionRequestEncryptionOverHTTP:
             session, {"status": TaskHistoryStatusEnum.RUNNING}, id=history.id
         )
 
-        async def fake_sync(item, writer_session=None):
+        async def fake_sync(
+            item: TaskHistory, writer_session=None
+        ) -> tuple[TaskHistory, str | None]:
             item.status = TaskHistoryStatusEnum.SUCCESS
             item.finished_at = utc_now()
-            return item
+            return item, None
 
         mock_executor.sync_task_history = AsyncMock(side_effect=fake_sync)
 

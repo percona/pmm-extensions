@@ -606,10 +606,11 @@ class TestSyncTaskHistory:
         mock_sync = AsyncMock(return_value=queue_item)
 
         with patch.object(ConcreteExecutor, "_sync_task_history", mock_sync):
-            result = await executor.sync_task_history(queue_item)
+            result, pending_event = await executor.sync_task_history(queue_item)
 
         mock_sync.assert_awaited_once_with(queue_item, writer_session=None)
         assert result is queue_item
+        assert pending_event is None
 
     @pytest.mark.asyncio
     async def test_forwards_writer_session(self, executor: ConcreteExecutor):
@@ -701,15 +702,17 @@ class TestSyncTaskHistory:
                 "app.tasks.execution.models.schedule_annotation",
             ) as mock_schedule,
         ):
-            await executor.sync_task_history(queue_item)
+            result, pending_event = await executor.sync_task_history(queue_item)
 
         mock_schedule.assert_called_once_with(synced_item, expected_event)
+        assert result is synced_item
+        assert pending_event is None
 
     @pytest.mark.asyncio
-    async def test_awaits_terminal_transition_when_await_annotations_true(
+    async def test_defers_terminal_event_when_await_annotations_true(
         self, executor: ConcreteExecutor
     ):
-        """Assert await_annotation is awaited when ``await_annotations=True``."""
+        """Assert await_annotations=True returns the event and does not annotate."""
         queue_item = MagicMock(spec=TaskHistory)
         queue_item.status = TaskHistoryStatusEnum.RUNNING
         queue_item.task = MagicMock()
@@ -727,16 +730,15 @@ class TestSyncTaskHistory:
                 AsyncMock(return_value=synced_item),
             ),
             patch(
-                "app.tasks.execution.models.await_annotation",
-                new_callable=AsyncMock,
-            ) as mock_await,
-            patch(
                 "app.tasks.execution.models.schedule_annotation",
             ) as mock_schedule,
         ):
-            await executor.sync_task_history(queue_item, await_annotations=True)
+            result, pending_event = await executor.sync_task_history(
+                queue_item, await_annotations=True
+            )
 
-        mock_await.assert_awaited_once_with(synced_item, "COMPLETED")
+        assert result is synced_item
+        assert pending_event == "COMPLETED"
         mock_schedule.assert_not_called()
 
     @pytest.mark.asyncio
@@ -763,15 +765,12 @@ class TestSyncTaskHistory:
             patch(
                 "app.tasks.execution.models.schedule_annotation",
             ) as mock_schedule,
-            patch(
-                "app.tasks.execution.models.await_annotation",
-                new_callable=AsyncMock,
-            ) as mock_await,
         ):
-            await executor.sync_task_history(queue_item)
+            result, pending_event = await executor.sync_task_history(queue_item)
 
+        assert result is synced_item
+        assert pending_event is None
         mock_schedule.assert_not_called()
-        mock_await.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_does_not_annotate_already_terminal(self, executor: ConcreteExecutor):
@@ -795,15 +794,12 @@ class TestSyncTaskHistory:
             patch(
                 "app.tasks.execution.models.schedule_annotation",
             ) as mock_schedule,
-            patch(
-                "app.tasks.execution.models.await_annotation",
-                new_callable=AsyncMock,
-            ) as mock_await,
         ):
-            await executor.sync_task_history(queue_item)
+            result, pending_event = await executor.sync_task_history(queue_item)
 
+        assert result is synced_item
+        assert pending_event is None
         mock_schedule.assert_not_called()
-        mock_await.assert_not_awaited()
 
 
 _DEFAULT_WAIT_INTERVAL = 5

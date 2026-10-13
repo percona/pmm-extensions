@@ -484,7 +484,7 @@ def _flip_status(target: TaskHistoryStatusEnum, *, result: dict | None = None):
         del writer_session, await_annotations
         item.status = target
         item.finished_at = utc_now()
-        return item
+        return item, None
 
     executor = _fake_executor(
         _raising(_response_error(404))

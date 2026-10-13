@@ -745,7 +745,7 @@ async def sync_task_history(
     async_session = get_async_session_maker()
     try:
         async with async_session() as writer_session:
-            updated = await executor.sync_task_history(
+            updated, _pending_event = await executor.sync_task_history(
                 task_history, writer_session=writer_session
             )
         updated.sync_in_progress_started_at = None
