@@ -4368,16 +4368,14 @@ class TestCheckNomadCertExpiry:
         coro = MagicMock()
         mock_check = MagicMock(return_value=coro)
         mocker.patch(f"{MODULE}._check_nomad_cert_expiry", mock_check)
-        mocker.patch.object(
-            app_celery.loop,  # ty: ignore[unresolved-attribute]
+        mock_run = mocker.patch.object(
+            app_celery.loop,
             "run_until_complete",
             autospec=True,
         )
 
         check_nomad_cert_expiry()
-        app_celery.loop.run_until_complete.assert_called_once_with(  # ty: ignore[unresolved-attribute]
-            coro
-        )
+        mock_run.assert_called_once_with(coro)
 
 
 class TestPreDispatchUnreadableRequest:
