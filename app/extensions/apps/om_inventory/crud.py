@@ -274,8 +274,8 @@ async def upsert_service(
     :param error: The failure detail.
     :param process_facts: What a failed attempt refreshes: its probe status and what
         it saw of the binary and the process, merged into the stored ``observed``. A
-        ``None`` value removes that key. Ignored while nothing is stored, since there
-        are no database facts to keep.
+        ``None`` value removes that key. Ignored unless the attempt failed, and while
+        nothing is stored, since there are no database facts to keep.
     :param run_id: The run this attempt belongs to.
     :param attempted: Whether this run actually probed the service.
     :return: The stored row.
@@ -297,7 +297,14 @@ async def upsert_service(
     if attempted:
         _apply_attempt(service, observed=observed, error=error, run_id=run_id)
 
-    if process_facts is not None and service.observed:
+    # Only a failed attempt merges: success has just replaced ``observed``, and an
+    # unattempted service read nothing off the host.
+    if (
+        attempted
+        and observed is None
+        and process_facts is not None
+        and service.observed
+    ):
         merged = {**service.observed, **process_facts}
         service.observed = {
             key: value for key, value in merged.items() if value is not None
