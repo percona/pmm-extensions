@@ -1406,3 +1406,4 @@ def test_print_eligibility_needs_no_labeler_file(monkeypatch, capsys, filename):
 
     assert capsys.readouterr().out == "true\n"
     assert {method for method, _url, _body in recorded} == {"GET"}
+# SEP-2165 label probe — do not merge
