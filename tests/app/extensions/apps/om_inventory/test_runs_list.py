@@ -261,11 +261,11 @@ class TestRunsListFailingNodes:
 
 
 class TestRunReadsSkipAnEntryThatDoesNotParse:
-    """Pin both run reads skipping, and logging, a receipt entry that is not a host."""
+    """Pin both run reads skipping, and logging, receipt entries that are not hosts."""
 
     @pytest_asyncio.fixture
     async def run(self, session: AsyncSession) -> ProbeRun:
-        """Write a run whose receipt holds a bare service entry and a failing host.
+        """Write a run whose receipt holds two bare service entries and a failing host.
 
         :param session: The database session.
         :return: The saved run.
@@ -273,20 +273,41 @@ class TestRunReadsSkipAnEntryThatDoesNotParse:
         run = await record_run(session, T0)
         run.nodes = [
             ProbeNodeService(
-                service_id="s-1",
-                service_name="node01-mongodb",
+                service_id=f"s-{index}",
+                service_name=f"node0{index}-mongodb",
                 error="could not query the database",
-            ).model_dump(mode="json"),
+            ).model_dump(mode="json")
+            for index in (1, 3)
+        ] + [
             receipt_node("n-2", "node02", error="the scan did not finish within 180s"),
         ]
         return await ProbeRunManager.save(session, run)
+
+    @staticmethod
+    def skip_levels(caplog: pytest.LogCaptureFixture, run: ProbeRun) -> list[int]:
+        """Return the level of each skip line logged for ``run``.
+
+        :param caplog: The captured log.
+        :param run: The run.
+        :return: One level per line, in order.
+        """
+        return [
+            record.levelno
+            for record in caplog.records
+            if f"skipped 2 of 3 entries in run {run.id}'s receipt"
+            in record.getMessage()
+        ]
 
     @pytest.mark.asyncio
     async def test_the_list_names_the_host_beside_it(
         self, api: AsyncClient, run: ProbeRun, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Answer the list, naming the failing host and logging the skipped entry."""
-        caplog.set_level(logging.WARNING, logger=ROUTES_LOGGER)
+        """Answer the list, naming the failing host, with one debug line for the skips.
+
+        A history that refreshes rereads the same old receipts each time, so a
+        warning there would repeat for as long as such a run is in the list.
+        """
+        caplog.set_level(logging.DEBUG, logger=ROUTES_LOGGER)
 
         response = await api.get(f"{BASE}/runs")
 
@@ -294,14 +315,14 @@ class TestRunReadsSkipAnEntryThatDoesNotParse:
         assert response.json()[0]["failing_nodes"] == [
             {"node_id": "n-2", "name": "node02"}
         ]
-        assert f"skipping entry 0 of run {run.id}'s receipt" in caplog.text
+        assert self.skip_levels(caplog, run) == [logging.DEBUG]
 
     @pytest.mark.asyncio
     async def test_the_detail_answers_with_the_host_beside_it(
         self, api: AsyncClient, run: ProbeRun, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Answer the run's detail with only the host, logging the skipped entry."""
-        caplog.set_level(logging.WARNING, logger=ROUTES_LOGGER)
+        """Answer the run's detail with only the host, warning once about the skips."""
+        caplog.set_level(logging.DEBUG, logger=ROUTES_LOGGER)
 
         response = await api.get(f"{BASE}/runs/{run.id}")
 
@@ -309,7 +330,7 @@ class TestRunReadsSkipAnEntryThatDoesNotParse:
         body = response.json()
         assert [node["node_id"] for node in body["nodes"]] == ["n-2"]
         assert body["failing_nodes"] == [{"node_id": "n-2", "name": "node02"}]
-        assert f"skipping entry 0 of run {run.id}'s receipt" in caplog.text
+        assert self.skip_levels(caplog, run) == [logging.WARNING]
 
 
 class TestRunsListLimitBounds:

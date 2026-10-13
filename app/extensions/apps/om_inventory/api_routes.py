@@ -220,27 +220,32 @@ def _counts(run: ProbeRun) -> ProbeCounts:
     )
 
 
-def _receipt(run: ProbeRun) -> list[ProbeNode]:
-    """Parse a run's stored receipt, logging and skipping any entry that does not parse.
+def _receipt(run: ProbeRun, log_level: int = logging.WARNING) -> list[ProbeNode]:
+    """Parse a run's stored receipt, skipping any entry that does not parse.
 
     A malformed entry costs only itself rather than the whole read, which for the run
-    list is every run beside it.
+    list is every run beside it. The skips are logged once per run, at ``log_level``.
 
     :param run: The run.
+    :param log_level: The level to log skipped entries at.
     :return: The receipt's host entries, in stored order.
     """
     receipt: list[ProbeNode] = []
-    for index, entry in enumerate(run.nodes):
+    skipped = 0
+    for entry in run.nodes:
         try:
             receipt.append(ProbeNode.model_validate(entry))
-        except ValidationError as exc:
-            logger.warning(
-                "OM inventory: skipping entry %d of run %s's receipt -- not a host "
-                "record (%d validation errors)",
-                index,
-                run.id,
-                exc.error_count(),
-            )
+        except ValidationError:
+            skipped += 1
+    if skipped:
+        logger.log(
+            log_level,
+            "OM inventory: skipped %d of %d entries in run %s's receipt -- not host "
+            "records",
+            skipped,
+            len(run.nodes),
+            run.id,
+        )
     return receipt
 
 
@@ -521,8 +526,9 @@ async def list_runs(
     """
     if since is not None and until is not None and until < since:
         raise HTTPUnprocessableEntityException(detail="until must not be before since")
+    # Debug, not warning: a refreshing history rereads the same old receipts each time.
     return [
-        _run_response(run, _receipt(run))
+        _run_response(run, _receipt(run, logging.DEBUG))
         for run in await recent_runs(session, limit, since=since, until=until)
     ]
 
