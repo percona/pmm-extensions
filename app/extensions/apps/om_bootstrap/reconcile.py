@@ -43,7 +43,7 @@ receipt, not a claim of exact timing.
 
 ``detail`` on a non-``SUCCESS`` terminal status is currently just the
 ``TaskHistory`` status name — it does not yet read the dispatch's stderr for a
-real error message (the way ``om_inventory/dispatch.py``'s ``_read_stdout``
+real error message (the way ``om_inventory/dispatch.py``'s ``_read_logs``
 does for its own purpose). A worthwhile follow-up, not done here to keep this
 module to exactly the one thing its docstring claims.
 

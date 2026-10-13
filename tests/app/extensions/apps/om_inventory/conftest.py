@@ -15,6 +15,7 @@
 
 """Share the scaffolding every om_inventory API test module needs."""
 
+import json
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
@@ -42,9 +43,24 @@ FREE_BYTES = 107374182400
 #: The Nomad client the dispatch suites probe, named as PMM registers it.
 HOST = "replicaset-cluster-node00"
 
+#: The stored failure detail's length limit. Pinned here rather than imported, so a
+#: change to the cap fails a test instead of passing silently.
+ERROR_DETAIL_CAP = 500
+
 #: One resolved, one answered: a stubbed sweep ``terminal_status`` reads as a clean
 #: ``SUCCESS``, so a run that ends in any other status was changed by something else.
 CLEAN_OUTCOME = SweepOutcome(resolved=1, answered=1)
+
+
+def log_line(step: str, stream: str, msg: str) -> str:
+    """Build one line of the tasks API's log stream.
+
+    :param step: The step that wrote it.
+    :param stream: ``stdout`` or ``stderr``.
+    :param msg: What it wrote.
+    :return: The NDJSON line.
+    """
+    return json.dumps({"step": step, "type": stream, "msg": msg})
 
 
 @pytest.fixture(autouse=True)
