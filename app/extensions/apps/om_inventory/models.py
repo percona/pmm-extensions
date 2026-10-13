@@ -481,6 +481,18 @@ class ProbeCounts(BaseModel):
     hosts_answered: int = 0
 
 
+class ProbeRunFailingNode(BaseModel):
+    """Name one node a sweep failed to scan.
+
+    :param node_id: PMM's node id.
+    :param name: The node's name as the sweep recorded it, or its node id where the
+        sweep recorded none.
+    """
+
+    node_id: str
+    name: str
+
+
 class ProbeRunResponse(BaseModel):
     """Carry one sweep's record.
 
@@ -493,6 +505,9 @@ class ProbeRunResponse(BaseModel):
         estate. Without it the counters cannot be read: "9 of 13 answered" means
         something different when the run was only ever asked about one host.
     :param error: The failure detail when the sweep itself raised.
+    :param failing_nodes: The nodes whose scan failed in this sweep, on the node's own
+        dispatch or on any service on it, sorted by name. A node with no automation
+        agent is not one: nothing was dispatched to it.
     """
 
     run_id: UUID
@@ -502,6 +517,7 @@ class ProbeRunResponse(BaseModel):
     counts: ProbeCounts
     scope: list[str] | None = None
     error: str | None = None
+    failing_nodes: list[ProbeRunFailingNode] = Field(default_factory=list)
 
 
 class ProbeNodeService(BaseModel):
@@ -555,6 +571,16 @@ class ProbeNode(BaseModel):
     task_history_id: int | None = None
     error: str | None = None
     services: list[ProbeNodeService] = Field(default_factory=list)
+
+    @property
+    def failed(self) -> bool:
+        """Return whether this host's dispatch, or any service on it, failed.
+
+        A host with no automation agent has neither: nothing was dispatched to it.
+
+        :return: ``True`` when the host or one of its services records an error.
+        """
+        return bool(self.error) or any(service.error for service in self.services)
 
 
 class ProbeRunDetail(ProbeRunResponse):
