@@ -15,6 +15,7 @@
 
 """Share the scaffolding more than one om_inventory test module needs."""
 
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -156,6 +157,17 @@ def run_sweep() -> RunSweep:
             return await sweep(OBSERVED_AT, progress=progress)
 
     return run
+
+
+def log_line(step: str, stream: str, msg: str) -> str:
+    """Build one line of the tasks API's log stream.
+
+    :param step: The step that wrote it.
+    :param stream: ``stdout`` or ``stderr``.
+    :param msg: What it wrote.
+    :return: The NDJSON line.
+    """
+    return json.dumps({"step": step, "type": stream, "msg": msg})
 
 
 @pytest.fixture(autouse=True)
