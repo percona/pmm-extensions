@@ -41,10 +41,8 @@ from app.core.requests import RemoteAPI
 from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.crud import list_hosts, upsert_host
 from app.extensions.apps.om_inventory.dispatch import (
-    _read_logs,
     classify_terminal_failure,
     probe_host,
-    STEP_LOG_TAIL,
     TRUNCATION_MARK,
 )
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
@@ -56,12 +54,13 @@ from app.extensions.apps.om_inventory.service import (
     persist_estate,
     SweepOutcome,
 )
-from app.tasks.execution.executors.nomad.models import _failed_step_reason
+from app.tasks.execution.executors.nomad.models import failed_step_reason
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.extensions.apps.om_inventory.conftest import (
     BASE,
     ERROR_DETAIL_CAP,
     HOST,
+    log_line,
 )
 
 HISTORY_ID = 811
@@ -93,17 +92,6 @@ def entries() -> list[MappedService]:
             resolution=NodeResolution.NAME,
         )
     ]
-
-
-def log_line(step: str, stream: str, msg: str) -> str:
-    """Build one line of the tasks API's log stream.
-
-    :param step: The step that wrote it.
-    :param stream: ``stdout`` or ``stderr``.
-    :param msg: What it wrote.
-    :return: The NDJSON line.
-    """
-    return json.dumps({"step": step, "type": stream, "msg": msg})
 
 
 def make_api(history: dict[str, Any], logs: list[str] | None = None) -> MagicMock:
@@ -346,36 +334,6 @@ class TestTheDetailIsBounded:
         assert error.endswith(TRUNCATION_MARK)
 
 
-class TestTheLogsReadAreBounded:
-    """Keep the payload's records whole and only the end of every other stream."""
-
-    @pytest.mark.asyncio
-    async def test_a_verbose_step_keeps_its_tail_and_the_records_stay_whole(
-        self,
-    ) -> None:
-        """Hold no more of a step's output than a failure detail could use."""
-        noise = "Collecting pymongo\n" * (3 * STEP_LOG_TAIL // 19)
-        records = (json.dumps(HOST_RECORD) + "\n") * (3 * STEP_LOG_TAIL // 60)
-        api = make_api(
-            {"status": TaskHistoryStatusEnum.SUCCESS.value},
-            [
-                *(
-                    log_line("prepare-env", "stderr", line)
-                    for line in noise.splitlines(keepends=True)
-                ),
-                log_line("prepare-env", "stderr", "the last line\n"),
-                log_line("run-script", "stdout", records),
-            ],
-        )
-
-        logs = await _read_logs(api, HISTORY_ID)
-
-        prepare_env = logs["prepare-env"]["stderr"]
-        assert len(prepare_env) == STEP_LOG_TAIL
-        assert prepare_env.endswith("the last line\n")
-        assert logs["run-script"]["stdout"] == records
-
-
 class TestTheFailedStepIsReadFromTheTasksService:
     """Pin the pattern against the sentence the tasks service actually writes."""
 
@@ -399,7 +357,7 @@ class TestTheFailedStepIsReadFromTheTasksService:
         :param step: The step that failed.
         :param expected: The code it should map to.
         """
-        reason = _failed_step_reason(
+        reason = failed_step_reason(
             {
                 "TaskStates": {
                     step: {
@@ -530,8 +488,7 @@ class TestTheCodeReachesTheRow:
 
         stored = (await list_hosts(session))[0]
         assert stored.last_error_code is ScanFailure.ENVIRONMENT_SETUP_FAILED
-        # Stored as the value the API reports, which rows written before the column
-        # was an enum already hold, so they read back too.
+        # Stored as the value the API reports, not the member name.
         raw = await session.exec(
             select(type_coerce(col(OmHost.last_error_code), String))
         )

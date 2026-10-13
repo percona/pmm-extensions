@@ -62,7 +62,7 @@ STDOUT_STEP = NomadStep.RUN_SCRIPT
 #: of why.
 PREPARE_ENV_STEP = NomadStep.PREPARE_ENV
 #: The step the tasks service names in a run's ``failure_reason``. The sentence is
-#: written by the Nomad executor's ``_failed_step_reason``, in this repository, and
+#: written by the Nomad executor's ``failed_step_reason``, in this repository, and
 #: ``test_scan_failures.py`` feeds that function's own output through this pattern
 #: so a change to its wording fails a test here.
 _FAILED_STEP = re.compile(r"^Step '(?P<step>[^']+)' failed")
