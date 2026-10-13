@@ -1385,7 +1385,8 @@ class DeliveryPlanExecutor:
             reference = _as_scalar(resolve_json_pointer(response, pointer))
         except JsonPointerResolutionError:
             reference = None
-        if reference is None:
+        if not reference:
+            reference = None
             logger.warning(
                 "Delivery plan: upload reference pointer %r addressed no scalar "
                 "value in the response.",

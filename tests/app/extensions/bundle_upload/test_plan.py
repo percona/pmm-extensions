@@ -1204,6 +1204,31 @@ class TestDeliveryPlanExecutor:
         assert result.detail == {"other": "x"}
         assert any("/result/sys_id" in record.getMessage() for record in caplog.records)
 
+    async def test_empty_reference_keeps_the_detail_and_warns(
+        self, api: RemoteAPI, bundle: BundleSource, caplog
+    ):
+        """Preserve the response detail and warn when the reference is empty."""
+        response = {"result": {"sys_id": ""}}
+        executor = DeliveryPlanExecutor(DeliveryPlan(**_upload_only_plan()), api)
+        with aioresponses() as mock:
+            mock.post(_UPLOAD_URL, status=status.HTTP_201_CREATED, payload=response)
+            with caplog.at_level("WARNING", logger=_PLAN_LOGGER):
+                async with api:
+                    result = await executor.upload_bundle(
+                        source_ref="src-9",
+                        bundle=bundle,
+                        case_ref=None,
+                        manifest=_MANIFEST,
+                    )
+
+        assert result.reference is None
+        assert result.detail == response
+        assert any(
+            "addressed no scalar value" in record.getMessage()
+            and "/result/sys_id" in record.getMessage()
+            for record in caplog.records
+        )
+
     async def test_manifest_key_field_resolves_from_the_send_manifest(
         self, api: RemoteAPI, bundle: BundleSource
     ):
