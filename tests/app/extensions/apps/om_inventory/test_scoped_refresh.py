@@ -683,10 +683,12 @@ class TestTheScheduleRespectsSingleFlight:
 
         detail = await conflict_detail(two_hosts, blocking, [NODE_A])
 
-        assert str(blocking.id) not in detail
-        assert NODE_A not in detail
-        assert "probe" not in detail.lower()
-        assert "estate" not in detail.lower()
+        said = detail.lower()
+        assert said
+        assert str(blocking.id) not in said
+        assert NODE_A not in said
+        assert "probe" not in said
+        assert "estate" not in said
 
 
 class TestTwoRunsRacingForTheSameHosts:
