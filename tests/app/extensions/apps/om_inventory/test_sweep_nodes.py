@@ -33,6 +33,7 @@ from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
 from app.extensions.apps.om_inventory.models import NodeResolution
+from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
 from app.extensions.apps.om_inventory.service import (
     enumerate_estate,
     STARTUP_RETRIES,
@@ -55,6 +56,9 @@ SHARED_HOST_SECONDS = 8.25
 TASK_HISTORY_ID = 4711
 #: One refused connection then an answer: the cold start this workspace measured.
 RETRIED_ONCE = 2
+#: The stored failure detail's length limit. Pinned here rather than imported, so a
+#: change to the cap fails a test instead of passing silently.
+ERROR_DETAIL_CAP = 500
 
 #: A probe record shaped like the payload's NDJSON, trimmed to the fields asserted.
 RECORD: dict[str, Any] = {
@@ -319,6 +323,108 @@ async def test_a_failed_host_carries_its_error_and_its_time() -> None:
     assert node["answered"] is False
     assert node["error"] == "probe run FAILED: no output"
     assert node["duration_seconds"] == FAILED_HOST_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_a_service_whose_database_could_not_be_queried_did_not_answer() -> None:
+    """Fail a service whose record says its database refused the payload.
+
+    The host answered and printed a record, but the record is the payload saying it
+    could not get in. Counting it as an answer cleared the service's failure state
+    and replaced its last good document with one holding no database facts at all.
+    """
+    record = {
+        **RECORD,
+        "process": {**RECORD["process"], "running": True},
+        "database": None,
+        "status": STATUS_FAILED,
+        "error": "Authentication failed.",
+        "error_type": "OperationFailure",
+        "error_code": 18,
+    }
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00",
+                host_record={"os": "Ubuntu 24.04"},
+                records={DEFAULT_EXTERNAL_ID: record},
+            )
+        },
+    )
+
+    assert (outcome.resolved, outcome.answered) == (1, 0)
+    assert outcome.service_documents == {}
+    # No role either: the one the last good attempt saw must not be overwritten.
+    assert outcome.service_roles == {}
+    error = outcome.service_errors[DEFAULT_EXTERNAL_ID]
+    assert error == "could not query the database: Authentication failed."
+    service = outcome.nodes[0]["services"][0]
+    assert service["answered"] is False
+    assert service["error"] == error
+    # The host itself still answered; only its database did not.
+    assert outcome.nodes[0]["answered"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_failed_record_still_says_whether_the_mongod_is_running() -> None:
+    """Keep what a failed record read off the host, a stopped mongod above all.
+
+    A stopped mongod is a common reason its database cannot be queried, and the
+    record says so: no process, ``running: False``. Dropping that with the database
+    facts left the stored document reading ``server_running: true``.
+    """
+    record = {
+        **RECORD,
+        "process": {
+            "running": False,
+            "program": None,
+            "pid": None,
+            "uptime_sec": None,
+            "argv": None,
+            "config_path": None,
+        },
+        "database": None,
+        "status": STATUS_FAILED,
+        "error": "could not connect to node00:27017: [Errno 111] Connection refused",
+    }
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00", records={DEFAULT_EXTERNAL_ID: record}
+            )
+        },
+    )
+
+    assert outcome.service_documents == {}
+    assert outcome.service_process_facts[DEFAULT_EXTERNAL_ID] == {
+        "probe_status": STATUS_FAILED,
+        "installed_version": "7.0.39-21",
+        "config_path": None,
+        "argv": None,
+        "server_process": None,
+        "server_running": False,
+        "uptime_seconds": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_failed_record_s_error_is_bounded() -> None:
+    """Cap the stored error, since one the payload does not recognise can be long."""
+    record = {**RECORD, "status": STATUS_FAILED, "error": "x" * 5000}
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00", records={DEFAULT_EXTERNAL_ID: record}
+            )
+        },
+    )
+
+    assert outcome.service_errors[DEFAULT_EXTERNAL_ID] == (
+        "could not query the database: " + "x" * ERROR_DETAIL_CAP
+    )
 
 
 @pytest.mark.asyncio
