@@ -91,6 +91,8 @@ class PMMSyncer(BaseSyncer):
     missing_grace_generations: MissingGraceGenerations = 2
     _pmm_api: PMMRemoteAPI | None = None
     _generation: PMMInventorySnapshot | None = None
+    _service_moves: dict[str, CreatedService] | None = None
+    _rehomed_ids: frozenset[int | None] = frozenset()
 
     async def __aenter__(self) -> Self:
         """Enter the asynchronous context manager.
@@ -233,6 +235,73 @@ class PMMSyncer(BaseSyncer):
         """
         return self._generation is not None and self._generation.diagnostics.is_complete
 
+    @staticmethod
+    def _plan_service_moves(
+        local_nodes: Iterable[CreatedNode],
+        snapshot: PMMInventorySnapshot,
+    ) -> dict[str, CreatedService]:
+        """Map each service PMM reports under a new node to the live row it left.
+
+        A service only moves when the node reporting it holds no live row for it;
+        otherwise that row is the match, and a live copy elsewhere is a stale
+        duplicate for absence handling to age out. A tombstone never moves: its
+        reappearance under another node is not proof it is the same row.
+
+        :param local_nodes: Every local node, read before any node is synced.
+        :param snapshot: What PMM reports this generation.
+        :return: The row to re-home, keyed by the service's external id.
+        """
+        live = [
+            (node.external_id, service)
+            for node in local_nodes
+            for service in node.services
+            if not service.is_retired
+        ]
+        homes = {(service.external_id, node_id) for node_id, service in live}
+        # Lowest id first, so a legacy duplicate never decides which row moves.
+        rows: dict[str, CreatedService] = {}
+        for _, service in sorted(live, key=lambda pair: pair[1].id or 0):
+            rows.setdefault(service.external_id, service)
+        return {
+            service.external_id: rows[service.external_id]
+            for node in snapshot.nodes
+            for service in node.services
+            if service.external_id in rows
+            and (service.external_id, node.external_id) not in homes
+        }
+
+    async def _rehome_service(
+        self,
+        created_service: CreatedService,
+        updated_service: Service,
+        node: CreatedNode,
+    ) -> CreatedService:
+        """Move a local service onto ``node``, keeping its row and history.
+
+        The reported fields travel with the move, so the service sync that follows
+        finds nothing left to write.
+
+        :param created_service: The live service PMM now reports elsewhere.
+        :param updated_service: The service as PMM reports it under ``node``.
+        :param node: The node PMM reports it under, without its services.
+        :return: The service as stored after the move.
+        """
+        logger.info(
+            "Moving service %s from node %s to node %s",
+            created_service.id,
+            created_service.node_id,
+            node.id,
+        )
+        rehomed = CreatedService.model_validate(
+            await self.inventory_api.put(
+                f"/services/{created_service.id}",
+                json=updated_service.model_dump(exclude={"schemas", "node_id"})
+                | {"node_id": node.id},
+            ),
+        )
+        rehomed.node = node
+        return rehomed
+
     async def _retire_absent(
         self,
         entity_type: SyncInventoryEntityTypeEnum,
@@ -240,21 +309,21 @@ class PMMSyncer(BaseSyncer):
         retire: Callable[[_Retirable], Awaitable[None]],
         *,
         permitted: bool,
-        filtered_external_ids: set[str],
+        held_external_ids: set[str],
     ) -> None:
         """Advance the missing-grace counter for absent entities and retire the spent.
 
-        An entity excluded by the caller's filter is held without its counter moving:
-        an operator exclusion is evidence in neither direction, exactly like an
-        incomplete generation. An entity that is *already* retired is skipped
-        outright, neither held nor counted: it is in the state this method exists to
-        reach, and it has no ``SyncItem`` in this run to close.
+        An entity the caller marks held, such as one excluded by the fetch filter, is
+        held without its counter moving: an operator exclusion is evidence in neither
+        direction, exactly like an incomplete generation. An entity that is *already*
+        retired is skipped outright, neither held nor counted: it is in the state this
+        method exists to reach, and it has no ``SyncItem`` in this run to close.
 
         :param entity_type: The type of the absent entities.
         :param absent_entities: The local entities this generation did not report.
         :param retire: The retirement call to make once grace is spent.
         :param permitted: Whether this generation may retire anything.
-        :param filtered_external_ids: External IDs excluded by the fetch filter.
+        :param held_external_ids: External IDs to hold without counting.
         :raises SyncFailError: If holding or retiring an entity fails and
             ``break_on_error`` is set.
         :raises HTTPBadRequestException: If a ledger write hits a database error.
@@ -262,8 +331,7 @@ class PMMSyncer(BaseSyncer):
         for created_entity in absent_entities:
             if created_entity.is_retired:
                 continue
-            excluded = created_entity.external_id in filtered_external_ids
-            if not permitted or excluded:
+            if not permitted or created_entity.external_id in held_external_ids:
                 await self.hold_entity(entity_type, created_entity)
                 continue
             missing = await SyncEntityAbsenceManager.record_missing(
@@ -308,9 +376,23 @@ class PMMSyncer(BaseSyncer):
             claim_identity(external_id_to_id, node.external_id, node, syncable_nodes)
         logger.debug("Syncable nodes: %s", syncable_nodes)
         snapshot = await self._fetch_snapshot()
-        self._generation = snapshot
         self._snapshot_complete = snapshot.diagnostics.is_complete
         try:
+            self._generation = snapshot
+            # Planned before any node syncs, so the order nodes arrive in cannot
+            # decide whether a moved service is re-homed or counted absent.
+            self._service_moves = self._plan_service_moves(
+                syncable_nodes.values(), snapshot
+            )
+            # Cleared up front: PMM reported these services, so a move that fails
+            # below must not leave a stale count to retire them a generation early.
+            if self._service_moves and await self._owns_run():
+                await SyncEntityAbsenceManager.clear(
+                    self._session,
+                    self.get_name(),
+                    SyncInventoryEntityTypeEnum.SERVICE,
+                    *(moved.id for moved in self._service_moves.values()),
+                )
             present_ids: list[int | None] = []
             for node in snapshot.nodes:
                 matched_id = external_id_to_id.get(node.external_id)
@@ -337,15 +419,29 @@ class PMMSyncer(BaseSyncer):
                     SyncInventoryEntityTypeEnum.NODE,
                     *present_ids,
                 )
+            # Retiring a node retires its services, so a node still holding a
+            # service PMM reports elsewhere is held until that service moves off.
+            stranded_node_ids = {
+                moved.node_id
+                for moved in self._service_moves.values()
+                if moved.id not in self._rehomed_ids
+            }
             await self._retire_absent(
                 SyncInventoryEntityTypeEnum.NODE,
                 syncable_nodes.values(),
                 self.retire_node,
                 permitted=owns_run and self._generation_is_complete(),
-                filtered_external_ids=snapshot.diagnostics.filtered_node_ids,
+                held_external_ids=snapshot.diagnostics.filtered_node_ids
+                | {
+                    node.external_id
+                    for node in syncable_nodes.values()
+                    if node.id in stranded_node_ids
+                },
             )
         finally:
             self._generation = None
+            self._service_moves = None
+            self._rehomed_ids = frozenset()
 
     async def fetch_node(self, created_node: CreatedNode) -> Node | None:
         """Fetch updated data for a specific node.
@@ -386,11 +482,19 @@ class PMMSyncer(BaseSyncer):
         port, so matching on port would attach one service's sync history to
         another's row.
 
+        Within a generation that match spans every node. A service this node
+        reports while its live row sits under another node is re-homed here
+        rather than created twice: a report under a new node is a positive
+        observation, so it needs no grace. Like retirement, the move waits for a
+        complete generation; until then the row stays where it is and is held.
+
         :param created_node: The local node instance to synchronize.
         :param updated_node: The updated node data fetched from the PMM API.
         :raises SyncFailError: If synchronizing, holding or retiring a service fails
             and ``break_on_error`` is set.
         :raises HTTPBadRequestException: If a ledger write hits a database error.
+        :raises Exception: Whatever the inventory API raises when creating or moving
+            a service, left for the node's SyncItem to record.
         """
         await self.update_node(created_node, updated_node)
         external_id_to_id: dict[str, int | None] = {}
@@ -404,9 +508,19 @@ class PMMSyncer(BaseSyncer):
                 syncable_services,
             )
         present_ids: list[int | None] = []
+        service_moves = self._service_moves or {}
+        detached_node = created_node.model_copy(update={"services": []})
         for service in updated_node.services:
             matched_id = external_id_to_id.get(service.external_id)
-            if (created_service := syncable_services.pop(matched_id, None)) is None:
+            if (moved := service_moves.get(service.external_id)) is not None:
+                if not (self._generation_is_complete() and await self._owns_run()):
+                    await self.hold_entity(SyncInventoryEntityTypeEnum.SERVICE, moved)
+                    continue
+                created_service = await self._rehome_service(
+                    moved, service, detached_node
+                )
+                self._rehomed_ids |= {moved.id}
+            elif (created_service := syncable_services.pop(matched_id, None)) is None:
                 logger.info("Creating new service: %r", service)
                 created_service = CreatedService.model_validate(
                     await self.inventory_api.post(
@@ -414,7 +528,7 @@ class PMMSyncer(BaseSyncer):
                         json=service.model_dump(exclude={"node_id"}),
                     ),
                 )
-                created_service.node = created_node.model_copy(update={"services": []})
+                created_service.node = detached_node
             else:
                 await self._revive_if_retired(
                     SyncInventoryEntityTypeEnum.SERVICE, created_service
@@ -434,12 +548,17 @@ class PMMSyncer(BaseSyncer):
                 SyncInventoryEntityTypeEnum.SERVICE,
                 *present_ids,
             )
+        moving_ids = {moved.id for moved in service_moves.values()}
         await self._retire_absent(
             SyncInventoryEntityTypeEnum.SERVICE,
-            syncable_services.values(),
+            (
+                service
+                for service in syncable_services.values()
+                if service.id not in moving_ids
+            ),
             self.retire_service,
             permitted=owns_run and self._generation_is_complete(),
-            filtered_external_ids=filtered_service_ids,
+            held_external_ids=filtered_service_ids,
         )
 
     async def fetch_service(self, created_service: CreatedService) -> PMMService | None:
@@ -468,6 +587,10 @@ class PMMSyncer(BaseSyncer):
         """Synchronize data for a specific service.
 
         Update the local inventory service with data from the PMM API.
+
+        A service PMM reports under another node is written back under the node it
+        already has: only a complete generation moves a service, and a re-homed
+        row reaches here already attached to its new node.
 
         :param created_service: The local service instance to synchronize.
         :param updated_service: The updated service data fetched from the PMM API.

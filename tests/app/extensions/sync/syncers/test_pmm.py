@@ -16,15 +16,23 @@
 """Define tests for the app.extensions.sync.syncers.pmm module."""
 
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from datetime import datetime
 from typing import Any
 from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.api.deps import (
+    get_current_service_principal,
+    get_current_user,
+    require_minimum_role_for_unsafe_methods,
+)
+from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.utils.date_time import utc_now
 from app.extensions.clients.pmm import (
     PMMFetchDiagnostics,
@@ -44,7 +52,11 @@ from app.extensions.models import (
     SyncInventoryEntityTypeEnum,
     SyncStatusEnum,
 )
+from app.extensions.sync.exceptions import SyncFailError
 from app.extensions.sync.syncers.pmm import PMMSyncer
+from app.inventory.crud import NodeManager, SchemaManager, ServiceManager
+from app.inventory.deps import get_session
+from app.inventory.main import inventory_app
 from app.inventory.models import Service, ServiceTypeEnum, SourceEnum
 from tests.app.extensions.sync.conftest import (
     close_run,
@@ -56,6 +68,9 @@ from tests.app.factories import (
     CreatedNodeFactory,
     CreatedServiceFactory,
     MOCK_CREATED_NODE_ID,
+    NodeWriteFactory,
+    SchemaWriteFactory,
+    ServiceWriteFactory,
 )
 
 
@@ -2085,6 +2100,845 @@ class TestTombstonesOpenNoSyncItem:
         assert items[(SyncInventoryEntityTypeEnum.SERVICE, service.id)] == (
             SyncStatusEnum.SUCCESS
         )
+
+
+_MOVED_SERVICE_ID = 7
+_MOVED_EXTERNAL_ID = "pmm-service-x"
+_CREATED_SERVICE_ID = 99
+_REFUSED_MOVE_WRITES = [
+    pytest.param(f"/services/{_MOVED_SERVICE_ID}", id="move-refused"),
+    pytest.param("/nodes/2", id="new-node-refused"),
+]
+
+
+class TestServiceMovedBetweenNodes:
+    """Test that a service PMM reports under another node keeps its one row.
+
+    A service reported under a new node in a complete generation is a positive
+    observation, not an absence, so it is re-homed in that generation instead of
+    being duplicated under the new node while the old row waits out grace.
+    """
+
+    @pytest.fixture
+    def node_a(self) -> CreatedNode:
+        """Return the local node the service starts under."""
+        return self._node(1, "pmm-node-a")
+
+    @pytest.fixture
+    def node_b(self) -> CreatedNode:
+        """Return the local node the service moves to."""
+        return self._node(2, "pmm-node-b")
+
+    @pytest.fixture
+    def moved(self, node_a) -> CreatedService:
+        """Return the active service under ``node_a`` that PMM moves."""
+        return self._service_on(node_a)
+
+    @staticmethod
+    def _node(node_id: int, external_id: str) -> CreatedNode:
+        """Build a live PMM node with no services."""
+        node = CreatedNodeFactory.build(
+            id=node_id,
+            external_id=external_id,
+            source=SourceEnum.PMM,
+            address="localhost",
+            retired_at=None,
+        )
+        node.services = []
+        return node
+
+    @staticmethod
+    def _service_on(
+        node: CreatedNode,
+        service_id: int = _MOVED_SERVICE_ID,
+        external_id: str = _MOVED_EXTERNAL_ID,
+        retired_at: datetime | None = None,
+    ) -> CreatedService:
+        """Attach a service, live unless ``retired_at`` is given, to ``node``."""
+        service = CreatedServiceFactory.build(
+            id=service_id,
+            external_id=external_id,
+            node_id=node.id,
+            type=ServiceTypeEnum.MYSQL,
+            retired_at=retired_at,
+        )
+        node.services = [*node.services, service]
+        return service
+
+    @staticmethod
+    def _reporting(node: CreatedNode, *services: CreatedService) -> Node:
+        """Build the PMM-side ``node`` reporting ``services`` under itself.
+
+        Unlike ``_node_reporting``, the services are built as ``PMMService``:
+        validating them through ``Node`` downcasts them to the base ``Service``,
+        which ``PMMSyncer.perform_service_sync`` rejects.
+        """
+        remote = _remote_node(node)
+        remote.services = [
+            PMMService.model_validate(
+                {
+                    "service_id": service.external_id,
+                    "service_name": service.name,
+                    "service_type": service.type,
+                    "port": service.port,
+                    "node_id": node.external_id,
+                }
+            )
+            for service in services
+        ]
+        return remote
+
+    @staticmethod
+    def _serve(
+        inventory_api: AsyncMock,
+        *nodes: CreatedNode,
+        unlisted: tuple[CreatedNode, ...] = (),
+    ) -> None:
+        """Make ``inventory_api`` answer reads and writes for ``nodes``.
+
+        Writes echo the stored row merged with the request body, so a re-home
+        comes back carrying the node it was moved to. An ``unlisted`` node is
+        answered for writes only, as one the run itself creates.
+        """
+        nodes_by_id = {node.id: node for node in (*nodes, *unlisted)}
+        services_by_id = {
+            service.id: service for node in nodes for service in node.services
+        }
+        inventory_api.get.side_effect = [local_nodes_payload(*nodes)]
+
+        async def put(path: str, json: dict[str, Any]) -> dict[str, Any]:
+            kind, entity_id = path.strip("/").split("/")
+            if kind == "nodes":
+                return nodes_by_id[int(entity_id)].model_dump() | json
+            return services_by_id[int(entity_id)].model_dump() | json
+
+        async def post(path: str, json: Any = None, **_: Any) -> dict[str, Any]:
+            if path == "/nodes/":
+                return next(
+                    node.model_dump()
+                    for node in unlisted
+                    if node.external_id == json["external_id"]
+                )
+            if path.endswith("/services/"):
+                return CreatedServiceFactory.build(
+                    id=_CREATED_SERVICE_ID,
+                    node_id=int(path.split("/")[2]),
+                    retired_at=None,
+                ).model_dump() | (json or {})
+            return {}
+
+        inventory_api.put.side_effect = put
+        inventory_api.post.side_effect = post
+
+    @staticmethod
+    def _refuse(inventory_api: AsyncMock, refused: str) -> None:
+        """Make ``inventory_api`` raise on every write to ``refused``."""
+        serve_put = inventory_api.put.side_effect
+
+        async def put(path: str, json: dict[str, Any]) -> dict[str, Any]:
+            if path == refused:
+                raise RuntimeError("inventory refused the write")
+            return await serve_put(path, json)
+
+        inventory_api.put.side_effect = put
+
+    @staticmethod
+    async def _run(
+        session: AsyncSession,
+        mock_pmm_api: AsyncMock,
+        mock_remote_api: AsyncMock,
+        nodes: list[CreatedNode],
+        snapshot: PMMInventorySnapshot,
+        refused: str | None = None,
+    ) -> PMMSyncer:
+        """Run one full generation on a fresh syncer, closed as ``__aexit__`` would.
+
+        :param refused: A path the inventory refuses every write to, if any.
+        """
+        TestServiceMovedBetweenNodes._serve(mock_remote_api, *nodes)
+        if refused is not None:
+            TestServiceMovedBetweenNodes._refuse(mock_remote_api, refused)
+        mock_pmm_api.get_inventory_snapshot = AsyncMock(return_value=snapshot)
+        syncer = await _own_run(
+            _build_pmmsyncer(mock_pmm_api, mock_remote_api), session
+        )
+        await syncer.sync_inventory()
+        await close_run(
+            session,
+            syncer.sync_instance.id,
+            snapshot_complete=syncer._snapshot_complete,
+        )
+        return syncer
+
+    @staticmethod
+    def _rehomes(
+        inventory_api: AsyncMock, *services: CreatedService
+    ) -> list[tuple[str, int]]:
+        """Return each write moving one of ``services`` off its starting node.
+
+        :param inventory_api: The inventory client the run wrote through.
+        :param services: The local rows as they stood before the run.
+        :return: ``(path, node_id)`` per write, so a move written twice shows.
+        """
+        homes = {f"/services/{service.id}": service.node_id for service in services}
+        return [
+            (call.args[0], call.kwargs["json"]["node_id"])
+            for call in inventory_api.put.await_args_list
+            if call.args[0] in homes
+            and call.kwargs["json"]["node_id"] != homes[call.args[0]]
+        ]
+
+    @staticmethod
+    def _creates(inventory_api: AsyncMock) -> list[str]:
+        """Return the paths of the service creates the run issued."""
+        return [
+            path for path in entity_posts(inventory_api) if path.endswith("/services/")
+        ]
+
+    @staticmethod
+    async def _item_status(
+        session: AsyncSession, syncer: PMMSyncer, service_id: int
+    ) -> SyncStatusEnum | None:
+        """Return the status of ``service_id``'s SyncItem in the run, if any."""
+        items = await SyncItemManager.list(
+            session, sync_instance_id=syncer.sync_instance.id
+        )
+        return next(
+            (
+                item.status
+                for item in items
+                if item.entity_type == SyncInventoryEntityTypeEnum.SERVICE
+                and item.entity_id == service_id
+            ),
+            None,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("step", [1, -1], ids=["a-first", "b-first"])
+    async def test_complete_generation_rehomes_the_row_in_one_pass(
+        self,
+        session,
+        mock_pmm_api,
+        mock_remote_api,
+        node_a,
+        node_b,
+        moved,
+        step,
+    ):
+        """Move the existing row onto the new node, whichever node syncs first."""
+        remote = [self._reporting(node_a), self._reporting(node_b, moved)][::step]
+
+        syncer = await self._run(
+            session, mock_pmm_api, mock_remote_api, [node_a, node_b], _snapshot(*remote)
+        )
+
+        assert self._rehomes(mock_remote_api, moved) == [
+            (f"/services/{moved.id}", node_b.id)
+        ]
+        assert self._creates(mock_remote_api) == []
+        mock_remote_api.delete.assert_not_awaited()
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+        assert await self._item_status(session, syncer, moved.id) == (
+            SyncStatusEnum.SUCCESS
+        )
+
+    @pytest.mark.asyncio
+    async def test_rehome_writes_the_reported_fields_in_one_put(
+        self, owned_pmmsyncer, node_a, node_b, moved
+    ):
+        """Carry the move and PMM's field changes in a single write to the row."""
+        renamed = moved.model_copy(update={"name": "renamed"})
+        self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(
+                self._reporting(node_a), self._reporting(node_b, renamed)
+            )
+        )
+
+        await owned_pmmsyncer.perform_inventory_sync()
+
+        service_puts = [
+            call.kwargs["json"]
+            for call in owned_pmmsyncer.inventory_api.put.await_args_list
+            if call.args[0] == f"/services/{moved.id}"
+        ]
+        assert [(body["node_id"], body["name"]) for body in service_puts] == [
+            (node_b.id, "renamed")
+        ]
+        # A row still pointing at its old node would make the service sync look
+        # that node up again; the one read is the run's own inventory read.
+        owned_pmmsyncer.inventory_api.get.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_move_onto_a_node_new_this_generation(
+        self, owned_pmmsyncer, node_a, moved
+    ):
+        """Re-home onto a node the same generation had to create first."""
+        node_c = self._node(3, "pmm-node-c")
+        self._serve(owned_pmmsyncer.inventory_api, node_a, unlisted=(node_c,))
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(
+                self._reporting(node_a), self._reporting(node_c, moved)
+            )
+        )
+
+        await owned_pmmsyncer.perform_inventory_sync()
+
+        assert self._rehomes(owned_pmmsyncer.inventory_api, moved) == [
+            (f"/services/{moved.id}", node_c.id)
+        ]
+        assert self._creates(owned_pmmsyncer.inventory_api) == []
+
+    @pytest.mark.asyncio
+    async def test_services_swapping_nodes_each_keep_their_row(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Re-home both rows when two services trade nodes in one generation."""
+        other = self._service_on(node_b, service_id=8, external_id="pmm-service-y")
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(self._reporting(node_a, other), self._reporting(node_b, moved)),
+        )
+
+        assert sorted(self._rehomes(mock_remote_api, moved, other)) == [
+            (f"/services/{moved.id}", node_b.id),
+            (f"/services/{other.id}", node_a.id),
+        ]
+        assert self._creates(mock_remote_api) == []
+        mock_remote_api.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_move_clears_an_earlier_absence_count(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Reset the counter a service built up before it reappeared elsewhere."""
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(self._reporting(node_a), self._reporting(node_b)),
+        )
+        assert [
+            row.missing_generations
+            for row in await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE)
+        ] == [1]
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(self._reporting(node_a), self._reporting(node_b, moved)),
+        )
+
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+        mock_remote_api.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_service_absent_everywhere_keeps_missing_grace(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Hold a service no node reports, and retire it only once grace is spent."""
+        snapshot = _snapshot(self._reporting(node_a), self._reporting(node_b))
+
+        await self._run(
+            session, mock_pmm_api, mock_remote_api, [node_a, node_b], snapshot
+        )
+        mock_remote_api.delete.assert_not_awaited()
+        await self._run(
+            session, mock_pmm_api, mock_remote_api, [node_a, node_b], snapshot
+        )
+
+        mock_remote_api.delete.assert_awaited_once_with(f"/services/{moved.id}")
+        assert self._rehomes(mock_remote_api, moved) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "diagnostics",
+        [
+            pytest.param({"invalid_services": 1}, id="invalid-service"),
+            pytest.param({"invalid_nodes": 1}, id="invalid-node"),
+            pytest.param({"orphan_service_node_ids": ["ghost"]}, id="orphans"),
+        ],
+    )
+    async def test_incomplete_generation_defers_the_move(
+        self,
+        session,
+        mock_pmm_api,
+        mock_remote_api,
+        node_a,
+        node_b,
+        moved,
+        diagnostics,
+    ):
+        """Keep the row where it is, with no copy, on a read that is not complete."""
+        syncer = await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(
+                self._reporting(node_a), self._reporting(node_b, moved), **diagnostics
+            ),
+        )
+
+        assert self._rehomes(mock_remote_api, moved) == []
+        assert self._creates(mock_remote_api) == []
+        mock_remote_api.delete.assert_not_awaited()
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+        assert await self._item_status(session, syncer, moved.id) == (
+            SyncStatusEnum.SUCCESS
+        )
+
+    @pytest.mark.asyncio
+    async def test_incomplete_generation_still_clears_an_earlier_absence_count(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Treat a deferred move as an observation, as any reported service is."""
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(self._reporting(node_a), self._reporting(node_b)),
+        )
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(
+                self._reporting(node_a),
+                self._reporting(node_b, moved),
+                invalid_services=1,
+            ),
+        )
+
+        assert self._rehomes(mock_remote_api, moved) == []
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+
+    @pytest.mark.asyncio
+    async def test_reclaimed_run_defers_the_move(
+        self, owned_pmmsyncer, node_a, node_b, moved, session
+    ):
+        """Move nothing once the run no longer owns its SyncInstance."""
+        self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(
+                self._reporting(node_a), self._reporting(node_b, moved)
+            )
+        )
+        await SyncInstanceManager.update_where(
+            session,
+            {"status": SyncStatusEnum.FAILED},
+            id=owned_pmmsyncer.sync_instance.id,
+        )
+
+        await owned_pmmsyncer.perform_inventory_sync()
+
+        assert self._rehomes(owned_pmmsyncer.inventory_api, moved) == []
+        assert self._creates(owned_pmmsyncer.inventory_api) == []
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_single_node_refresh_never_moves(
+        self, owned_pmmsyncer, node_a, node_b, moved
+    ):
+        """Keep a refresh outside a generation upsert-only, as it was."""
+        self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
+
+        await owned_pmmsyncer.perform_node_sync(node_b, self._reporting(node_b, moved))
+
+        assert self._rehomes(owned_pmmsyncer.inventory_api, moved) == []
+        assert self._creates(owned_pmmsyncer.inventory_api) == [
+            f"/nodes/{node_b.id}/services/"
+        ]
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_single_service_refresh_never_moves(
+        self, owned_pmmsyncer, node_a, node_b, moved
+    ):
+        """Write a refreshed service back under the node it already has."""
+        moved.node = node_a.model_copy(update={"services": []})
+        renamed = moved.model_copy(update={"name": "renamed"})
+        self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
+        (reported,) = self._reporting(node_b, renamed).services
+
+        await owned_pmmsyncer.perform_service_sync(moved, reported)
+
+        owned_pmmsyncer.inventory_api.put.assert_awaited_once()
+        assert owned_pmmsyncer.inventory_api.put.await_args.args == (
+            f"/services/{moved.id}",
+        )
+        assert owned_pmmsyncer.inventory_api.put.await_args.kwargs["json"][
+            "node_id"
+        ] == (node_a.id)
+
+    @pytest.mark.asyncio
+    async def test_a_different_external_id_is_never_matched_by_natural_key(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Create a new row for another external id sharing name and port."""
+        lookalike = moved.model_copy(update={"external_id": "pmm-service-other"})
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(self._reporting(node_a), self._reporting(node_b, lookalike)),
+        )
+
+        assert self._rehomes(mock_remote_api, moved) == []
+        assert self._creates(mock_remote_api) == [f"/nodes/{node_b.id}/services/"]
+        assert [
+            row.missing_generations
+            for row in await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE)
+        ] == [1]
+
+    @pytest.mark.asyncio
+    async def test_tombstone_under_the_old_node_is_not_rehomed(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Create the reappearing service afresh rather than reviving it elsewhere."""
+        moved.retired_at = utc_now()
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(self._reporting(node_a), self._reporting(node_b, moved)),
+        )
+
+        assert self._rehomes(mock_remote_api, moved) == []
+        assert entity_posts(mock_remote_api) == [f"/nodes/{node_b.id}/services/"]
+
+    @pytest.mark.asyncio
+    async def test_active_row_elsewhere_wins_over_a_local_tombstone(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Re-home the live row instead of reviving a tombstone beside it."""
+        self._service_on(
+            node_b, service_id=8, external_id=moved.external_id, retired_at=utc_now()
+        )
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(self._reporting(node_a), self._reporting(node_b, moved)),
+        )
+
+        assert self._rehomes(mock_remote_api, moved) == [
+            (f"/services/{moved.id}", node_b.id)
+        ]
+        assert entity_posts(mock_remote_api) == []
+
+    @pytest.mark.asyncio
+    async def test_live_duplicate_left_by_an_earlier_move_still_ages_out(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Count the stale copy absent when the new node already holds a live row."""
+        current = self._service_on(node_b, service_id=8, external_id=moved.external_id)
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(self._reporting(node_a), self._reporting(node_b, current)),
+        )
+
+        assert self._rehomes(mock_remote_api, moved) == []
+        assert [
+            (row.entity_id, row.missing_generations)
+            for row in await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE)
+        ] == [(moved.id, 1)]
+
+    @pytest.mark.asyncio
+    async def test_lowest_id_moves_when_two_live_copies_left_elsewhere(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Move the oldest row, whatever order the nodes holding copies arrive in."""
+        node_c = self._node(3, "pmm-node-c")
+        newer = self._service_on(node_c, service_id=8, external_id=moved.external_id)
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_c, node_a, node_b],
+            _snapshot(
+                self._reporting(node_c),
+                self._reporting(node_a),
+                self._reporting(node_b, moved),
+            ),
+        )
+
+        assert self._rehomes(mock_remote_api, moved, newer) == [
+            (f"/services/{moved.id}", node_b.id)
+        ]
+        assert [
+            (row.entity_id, row.missing_generations)
+            for row in await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE)
+        ] == [(newer.id, 1)]
+
+    @pytest.mark.asyncio
+    async def test_move_off_a_node_that_vanished_with_it(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Re-home the service even when its old node is absent from PMM."""
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(self._reporting(node_b, moved)),
+        )
+
+        assert self._rehomes(mock_remote_api, moved) == [
+            (f"/services/{moved.id}", node_b.id)
+        ]
+        assert self._creates(mock_remote_api) == []
+        mock_remote_api.delete.assert_not_awaited()
+        assert [row.entity_id for row in await _absence_rows(session)] == [node_a.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refused", _REFUSED_MOVE_WRITES)
+    async def test_failed_move_leaves_the_row_held_on_its_old_node(
+        self, owned_pmmsyncer, node_a, node_b, moved, session, refused
+    ):
+        """Keep the one row where it was, held rather than failed, if no move ran."""
+        self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
+        self._refuse(owned_pmmsyncer.inventory_api, refused)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(
+                self._reporting(node_a), self._reporting(node_b, moved)
+            )
+        )
+
+        await owned_pmmsyncer.perform_inventory_sync()
+
+        assert refused in [
+            call.args[0] for call in owned_pmmsyncer.inventory_api.put.await_args_list
+        ]
+        assert self._creates(owned_pmmsyncer.inventory_api) == []
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+        assert await self._item_status(session, owned_pmmsyncer, moved.id) == (
+            SyncStatusEnum.SUCCESS
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refused", _REFUSED_MOVE_WRITES)
+    async def test_failed_move_still_clears_an_earlier_absence_count(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved, refused
+    ):
+        """Reset the counter of a service PMM reported, even if moving it failed."""
+        nodes = [node_a, node_b]
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            nodes,
+            _snapshot(self._reporting(node_a), self._reporting(node_b)),
+        )
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            nodes,
+            _snapshot(self._reporting(node_a), self._reporting(node_b, moved)),
+            refused=refused,
+        )
+
+        assert refused in [call.args[0] for call in mock_remote_api.put.await_args_list]
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refused", _REFUSED_MOVE_WRITES)
+    async def test_failed_move_keeps_its_vanished_old_node(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved, refused
+    ):
+        """Hold an absent node while a service PMM moved off it is still under it."""
+        grace = _build_pmmsyncer(
+            mock_pmm_api, mock_remote_api
+        ).missing_grace_generations
+        for _ in range(grace):
+            await self._run(
+                session,
+                mock_pmm_api,
+                mock_remote_api,
+                [node_a, node_b],
+                _snapshot(self._reporting(node_b, moved)),
+                refused=refused,
+            )
+
+        assert refused in [call.args[0] for call in mock_remote_api.put.await_args_list]
+        mock_remote_api.delete.assert_not_awaited()
+        assert await _absence_rows(session) == []
+
+    @pytest.mark.asyncio
+    async def test_service_filtered_under_its_new_node_is_held(
+        self, session, mock_pmm_api, mock_remote_api, node_a, node_b, moved
+    ):
+        """Hold the old row without counting when the new report was filtered out."""
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(
+                self._reporting(node_a),
+                self._reporting(node_b),
+                filtered_service_ids={moved.external_id},
+            ),
+        )
+
+        assert self._rehomes(mock_remote_api, moved) == []
+        assert self._creates(mock_remote_api) == []
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+
+    @pytest.mark.asyncio
+    async def test_planned_moves_are_dropped_when_the_run_fails(
+        self, owned_pmmsyncer, node_a, node_b, moved
+    ):
+        """Leave no planned move behind for a later single-node refresh to act on."""
+        self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
+        serve_put = owned_pmmsyncer.inventory_api.put.side_effect
+
+        async def put(path: str, json: dict[str, Any]) -> dict[str, Any]:
+            if path.startswith("/nodes/"):
+                raise RuntimeError("inventory unavailable")
+            return await serve_put(path, json)
+
+        owned_pmmsyncer.inventory_api.put.side_effect = put
+        owned_pmmsyncer.break_on_error = True
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(
+                self._reporting(node_a), self._reporting(node_b, moved)
+            )
+        )
+        with pytest.raises(SyncFailError):
+            await owned_pmmsyncer.perform_inventory_sync()
+        owned_pmmsyncer.inventory_api.put.side_effect = serve_put
+
+        await owned_pmmsyncer.perform_node_sync(node_b, self._reporting(node_b, moved))
+
+        assert self._rehomes(owned_pmmsyncer.inventory_api, moved) == []
+        assert self._creates(owned_pmmsyncer.inventory_api) == [
+            f"/nodes/{node_b.id}/services/"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_generation_is_dropped_when_planning_fails(
+        self, owned_pmmsyncer, session, node_a, node_b, moved
+    ):
+        """Leave no generation behind to license a later refresh to count absence."""
+        self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
+        snapshot = _snapshot(self._reporting(node_a), self._reporting(node_b))
+        # Validation would reject the entry, so it is planted after the fact.
+        snapshot.nodes[1] = snapshot.nodes[1].model_copy(update={"services": [None]})
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=snapshot
+        )
+        with pytest.raises(AttributeError):
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        await owned_pmmsyncer.perform_node_sync(node_a, self._reporting(node_a))
+
+        assert await _absence_rows(session, SyncInventoryEntityTypeEnum.SERVICE) == []
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+
+
+class TestRehomeAgainstTheInventoryRoute:
+    """Test that the inventory's service route accepts the write a move sends.
+
+    The move tests above answer writes from a mock, so only a real route can
+    show the body is one it takes and that the row keeps its id and children.
+    """
+
+    @pytest_asyncio.fixture
+    async def inventory_client(
+        self, regular_user: CasdoorUser, session: AsyncSession
+    ) -> AsyncIterator[AsyncClient]:
+        """Yield a client for the inventory app, reading and writing ``session``."""
+        inventory_app.dependency_overrides |= {
+            require_minimum_role_for_unsafe_methods: lambda: None,
+            get_current_user: lambda: regular_user,
+            get_current_service_principal: lambda: regular_user,
+            get_session: lambda: session,
+        }
+        transport = ASGITransport(app=inventory_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
+        inventory_app.dependency_overrides = {}
+
+    @staticmethod
+    def _route(inventory_api: AsyncMock, client: AsyncClient) -> None:
+        """Send every write on ``inventory_api`` through ``client``."""
+
+        async def put(path: str, json: dict[str, Any]) -> dict[str, Any]:
+            response = await client.put(path, json=json)
+            response.raise_for_status()
+            return response.json()
+
+        inventory_api.put.side_effect = put
+
+    @pytest.mark.asyncio
+    async def test_the_route_moves_the_row_with_its_schemas(
+        self, session, inventory_client, mock_pmm_api, mock_remote_api
+    ):
+        """Keep the row's id and its schemas when the move is written."""
+        old_node = await NodeManager.create(session, NodeWriteFactory.build())
+        new_node = await NodeManager.create(session, NodeWriteFactory.build())
+        service = await ServiceManager.create(
+            session,
+            ServiceWriteFactory.build(type=ServiceTypeEnum.MYSQL),
+            node_id=old_node.id,
+        )
+        schema_id = (
+            await SchemaManager.create(
+                session, SchemaWriteFactory.build(), service_id=service.id
+            )
+        ).id
+        created_service = CreatedService.model_validate(
+            (await inventory_client.get(f"/services/{service.id}")).json()
+        )
+        destination = CreatedNode.model_validate(
+            (await inventory_client.get(f"/nodes/{new_node.id}")).json()
+        ).model_copy(update={"services": []})
+        reported = PMMService.model_validate(
+            {
+                "service_id": service.external_id,
+                "service_name": "renamed",
+                "service_type": service.type,
+                "port": service.port,
+                "node_id": new_node.external_id,
+            }
+        )
+        self._route(mock_remote_api, inventory_client)
+        syncer = _build_pmmsyncer(mock_pmm_api, mock_remote_api)
+
+        rehomed = await syncer._rehome_service(created_service, reported, destination)
+
+        assert (rehomed.id, rehomed.node_id, rehomed.name) == (
+            service.id,
+            new_node.id,
+            "renamed",
+        )
+        stored_schema = (await inventory_client.get(f"/schemas/{schema_id}")).json()
+        assert stored_schema["service_id"] == service.id
 
 
 class TestPMMSyncerKeepalive:
