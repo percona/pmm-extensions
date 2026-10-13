@@ -26,6 +26,7 @@ happened to answer — they belong to the host, they are collected once, and now
 are reported once.
 """
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -195,27 +196,45 @@ class TestProbeAllTargets:
 
     @pytest.mark.asyncio
     async def test_reports_each_host_as_it_comes_back(self) -> None:
-        """Hand every host's result to the caller's callback, for progress."""
+        """Report a host as soon as it lands, while another is still running.
+
+        Reporting them all once the sweep ends would leave a running scan's
+        progress at zero until it finished, which is what the callback is for.
+        """
+        release_db01 = asyncio.Event()
+        db00_reported = asyncio.Event()
         landed: list[str] = []
 
         async def fake_probe_host(_api, host, _entries):
+            if host == "db01":
+                await release_db01.wait()
             return type("R", (), {"executor_host": host})()
 
         async def on_host_done(result) -> None:
             landed.append(result.executor_host)
+            if result.executor_host == "db00":
+                db00_reported.set()
 
         with patch(
             "app.extensions.apps.om_inventory.dispatch.probe_host",
             AsyncMock(side_effect=fake_probe_host),
         ):
-            await probe_all(
-                AsyncMock(),
-                [],
-                executor_hosts=["db00", "db01"],
-                on_host_done=on_host_done,
+            probing = asyncio.create_task(
+                probe_all(
+                    AsyncMock(),
+                    [],
+                    executor_hosts=["db00", "db01"],
+                    on_host_done=on_host_done,
+                )
             )
+            await asyncio.wait_for(db00_reported.wait(), timeout=1)
+            assert landed == ["db00"]
+            assert not probing.done()
 
-        assert sorted(landed) == ["db00", "db01"]
+            release_db01.set()
+            await probing
+
+        assert landed == ["db00", "db01"]
 
     @pytest.mark.asyncio
     async def test_an_orphaned_service_adds_no_dispatch(self) -> None:
