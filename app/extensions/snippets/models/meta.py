@@ -319,12 +319,13 @@ class SnippetMetaParameter(BaseModel):
         ``to_validation_field``), so a value injected server-side -- e.g. the PMM
         ``apikey`` from ``settings.PMM.api_key`` -- continues to validate without
         a visible field. Defaults to False.
-    :param sensitive: Treat this parameter's value as a credential, so surfaces
-        that replay a recorded command line replace it with a fixed-width mask
-        (see :func:`app.extensions.snippets.masking.mask_snippet_args`). Parameters
-        whose name carries a credential word are masked without opting in; this
-        flag covers the ones the name pattern cannot recognise. Defaults to
-        False.
+    :param sensitive: Treat this parameter's value as a credential, so the run
+        form hides it as it is typed and surfaces that replay a recorded command
+        line replace it with a fixed-width mask
+        (see :func:`app.extensions.snippets.masking.is_credential_parameter`).
+        Parameters whose name carries a credential word are treated the same
+        without opting in; this flag covers the ones the name pattern cannot
+        recognise. Defaults to ``False``.
     """
 
     name: NonEmptyStr = Field(

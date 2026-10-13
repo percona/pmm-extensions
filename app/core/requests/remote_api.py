@@ -39,6 +39,7 @@ from collections.abc import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Collection,
     Generator,
     Iterable,
     Mapping,
@@ -288,8 +289,9 @@ def _sanitize_request_kwargs(
     *,
     extra_sensitive_headers: frozenset[str] = frozenset(),
     extra_sensitive_body_fields: frozenset[str] = frozenset(),
+    sensitive_body_paths: Collection[str] = (),
 ) -> dict[str, Any]:
-    """Return a shallow copy of request kwargs with credentials redacted.
+    """Return a copy of request kwargs with credentials redacted.
 
     The auth context injects an ``Authorization`` header into ``kwargs`` before
     the request is logged, and some endpoints post credentials in the request
@@ -303,6 +305,9 @@ def _sanitize_request_kwargs(
         beyond the always-masked credential headers.
     :param extra_sensitive_body_fields: Additional lowercase body field names to
         mask, beyond the always-masked credential fields.
+    :param sensitive_body_paths: Dotted paths of nested body values to mask,
+        each segment compared case-insensitively. A path whose parent is absent
+        or is not a mapping masks nothing.
     :return: A copy safe to log, with sensitive header and body values masked.
     """
     sensitive_headers = _SENSITIVE_HEADERS | extra_sensitive_headers
@@ -317,13 +322,45 @@ def _sanitize_request_kwargs(
     for body_key in ("json", "data"):
         body = kwargs.get(body_key)
         if isinstance(body, dict):
-            safe[body_key] = {
+            redacted = {
                 key: (
                     _REDACTED_VALUE if key.lower() in sensitive_body_fields else value
                 )
                 for key, value in body.items()
             }
+            for path in sensitive_body_paths:
+                redacted = _redact_body_path(redacted, path.lower().split("."))
+            safe[body_key] = redacted
     return safe
+
+
+def _redact_body_path(body: dict[str, Any], segments: list[str]) -> dict[str, Any]:
+    """Return ``body`` with the value its path names replaced by the redaction mark.
+
+    Only the containers on the path are copied, and only when the path resolves,
+    so the body the request is sent with is never touched.
+
+    :param body: The mapping the first segment is looked up in.
+    :param segments: The lowercase path segments still to resolve.
+    :return: A copy of ``body`` with the named value masked, or ``body`` itself
+        when the path names nothing in it.
+    """
+    head, *rest = segments
+    result = body
+    for key, value in body.items():
+        if not isinstance(key, str) or key.lower() != head:
+            continue
+        if not rest:
+            replacement: Any = _REDACTED_VALUE
+        elif isinstance(value, dict):
+            replacement = _redact_body_path(value, rest)
+        else:
+            continue
+        if replacement is not value:
+            if result is body:
+                result = {**body}
+            result[key] = replacement
+    return result
 
 
 def _raise_stream_line_too_big(size: int, path: str) -> NoReturn:
@@ -579,6 +616,13 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     :param ssl_keyfile: Path to the SSL key file. Defaults to None.
     :param ssl_certfile: Path to the SSL certificate file. Defaults to None.
     :param logger_name: Name to use for the logger. Defaults to ``__name__``.
+    :param sensitive_body_paths: Dotted paths of nested request-body values this
+        client never writes to its request log, such as ``meta.args``. Segments
+        match case-insensitively. Applies to every call, on top of the body
+        fields always masked by name. Defaults to none.
+    :param withhold_response_log: Whether this client keeps every response body
+        out of its log, for an upstream whose responses carry credentials. The
+        status, method and path are still logged. Defaults to ``False``.
     :cvar CONNECTIVITY_CHECK_PATH: Lightweight route hit by
         :meth:`RemoteAPI.check_connectivity` for a reachability probe. Never
         enters the client-registry key or model serialization. Override per
@@ -594,6 +638,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ssl_keyfile: RelativeFilePathField | None = Field(None, frozen=True)
     ssl_certfile: RelativeFilePathField | None = Field(None, frozen=True)
     logger_name: str = __name__
+    sensitive_body_paths: tuple[str, ...] = ()
+    withhold_response_log: bool = False
     _session: ClientSession | None = None
     _stream_session: ClientSession | None = None
     _in_flight: int = 0
@@ -1363,6 +1409,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 kwargs,
                 extra_sensitive_headers=self._extra_sensitive_headers.get(),
                 extra_sensitive_body_fields=self._extra_sensitive_body_fields.get(),
+                sensitive_body_paths=self.sensitive_body_paths,
             ),
         )
         if self._session is None:
@@ -1771,7 +1818,9 @@ class RemoteAPI(BaseRemoteAPI):
                     response.status,
                     detail="The server answered with an unfollowed redirect.",
                 )
-            withhold_body = self._suppress_response_log.get()
+            withhold_body = (
+                self._suppress_response_log.get() or self.withhold_response_log
+            )
             response_data: JSONBody = None
             try:
                 response_data = await response.json()

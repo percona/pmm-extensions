@@ -15,6 +15,7 @@
 
 """HTTP integration tests for the snippets plugin's JSON API routes."""
 
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, UTC
 from typing import Any
@@ -37,6 +38,7 @@ from app.extensions.deps import (
 from app.extensions.main import extensions_app
 from app.extensions.snippets.config import snippets_settings
 from app.extensions.snippets.crud import SnippetManager
+from app.extensions.snippets.masking import SENSITIVE_ARG_MASK
 from app.extensions.snippets.models import Snippet
 from app.extensions.snippets.models.responses import (
     BatchApprovalErrorResponse,
@@ -45,6 +47,7 @@ from app.extensions.snippets.models.responses import (
     SnippetResponse,
     SnippetsCapabilitiesResponse,
 )
+from app.tasks.execution_request_secrets import MASKED_ARGS_META_KEY
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.extensions.snippets.snippet_kit import persist_meta
 
@@ -564,6 +567,36 @@ class TestSnippetsApiPerSnippetSchema:
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["display_name"] == snippet.filename
 
+    async def test_credential_parameters_are_marked_sensitive(
+        self, test_client, create_snippet, session
+    ):
+        """Tell the client which parameters it must not display as typed."""
+        snippet = await _seed_gated_snippet(
+            create_snippet,
+            session,
+            [
+                {"name": "port", "type": "str"},
+                {"name": "password", "type": "str"},
+                {"name": "auth-blob", "type": "str", "sensitive": True},
+            ],
+            filename="credentialed.sh",
+        )
+
+        response = test_client.get(
+            f"{API_BASE}/snippet/schema",
+            params={"snippet_filename": snippet.filename},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        fields = {
+            field["name"]: field
+            for section in response.json()["forms"]
+            for field in section["fields"]
+        }
+        assert fields["password"]["sensitive"] is True
+        assert fields["auth-blob"]["sensitive"] is True
+        assert fields["port"]["sensitive"] is False
+
     async def test_unmarked_fields_omit_the_destructive_key(
         self, test_client, create_snippet
     ):
@@ -861,6 +894,45 @@ class TestSnippetsApiExecute:
         assert meta["target"] == "host1"
         assert meta["_snippet_filename"] == snippet.filename
         assert meta["md5_checksum"] == snippet.md5_digest
+
+    async def test_posts_a_masked_copy_beside_the_raw_arguments(
+        self, test_client, mock_task_api_dep, create_snippet, session, caplog
+    ):
+        """Send the executor the real password and history a masked rendering.
+
+        The body is built by the route itself, so this is what proves a real
+        request records the masked copy. The same request must not write the
+        password to any PMM Extensions log record.
+        """
+        snippet = await _seed_gated_snippet(
+            create_snippet,
+            session,
+            [
+                {"name": "port", "type": "int", "required": True},
+                {"name": "password", "type": "str", "required": True},
+            ],
+            filename="credentialed.sh",
+        )
+        mock_task_api_dep.post = AsyncMock(return_value={"id": 99})
+
+        with caplog.at_level(logging.DEBUG, logger="app"):
+            response = test_client.post(
+                f"{API_BASE}/snippet/execute",
+                params={"snippet_filename": snippet.filename},
+                json={
+                    "executor_host": "host1",
+                    "args": {"port": 3306, "password": "hunter2Secret"},
+                },
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        meta = mock_task_api_dep.post.call_args.kwargs["json"]["meta"]
+        assert meta["args"] == "--port 3306 --password hunter2Secret"
+        assert (
+            meta[MASKED_ARGS_META_KEY] == f"--port 3306 --password {SENSITIVE_ARG_MASK}"
+        )
+        assert "hunter2Secret" not in response.text
+        assert all("hunter2Secret" not in r.getMessage() for r in caplog.records)
 
     async def test_rejects_submitted_value_for_gated_hidden_param(
         self, test_client, mock_task_api_dep, create_snippet, session

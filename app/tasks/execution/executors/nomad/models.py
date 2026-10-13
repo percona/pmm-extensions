@@ -90,6 +90,7 @@ from app.tasks.execution.executors.nomad.steps import (
 )
 from app.tasks.execution.models import BaseExecutor
 from app.tasks.execution.utils import gzip_compress, minify_file_content
+from app.tasks.execution_request_secrets import ENCRYPTED_LEAVES
 from app.tasks.logs.line_split import split_complete_lines, WithheldLineBuffer
 from app.tasks.logs.log_reader import decompress_legacy_logs
 from app.tasks.logs.log_writer import (
@@ -833,6 +834,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     # ``FieldInfo`` and force ``frozen=True`` repeated. ``endpoint`` left unmarked.
     # Reuses the shared TLS overlay so every remote-api model marks these the same.
     INHERITED_MARKERS: ClassVar[InheritedMarkers] = REMOTE_API_TLS_MARKERS
+    sensitive_body_paths: tuple[str, ...] = ENCRYPTED_LEAVES
     secure: bool = hot_field(  # ty: ignore[invalid-assignment]
         default=False, advanced=True
     )
@@ -1231,7 +1233,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :raises NomadRequestError: If Nomad refuses the dispatch.
         """
         task = queue_item.task if task is None else task
-        logger.debug("Dispatching job: %s", queue_item)
+        logger.debug("Dispatching job for task history %s", queue_item.id)
         payload = queue_item.execution_request.payload_content
         if payload is not None:
             if self.minify_payload:

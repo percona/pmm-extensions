@@ -197,6 +197,201 @@ def test_extra_sensitive_body_fields_keeps_built_in_masking():
     assert safe["json"]["client_token"] == _REDACTED_VALUE
 
 
+class TestSensitiveBodyPaths:
+    """Cover redaction of nested request-body values named by dotted path."""
+
+    _PATHS = ("meta.args", "payload")
+
+    @pytest.mark.parametrize("body_key", ["json", "data"])
+    def test_redacts_the_value_at_a_nested_path(self, body_key):
+        """Mask a nested value and leave its siblings readable.
+
+        :param body_key: The request keyword carrying the body.
+        """
+        safe = _sanitize_request_kwargs(
+            {body_key: {"meta": {"args": "--password hunter2", "target": "node-1"}}},
+            sensitive_body_paths=self._PATHS,
+        )
+
+        assert safe[body_key]["meta"] == {"args": _REDACTED_VALUE, "target": "node-1"}
+
+    def test_redacts_a_top_level_path(self):
+        """Mask a value named by a single-segment path."""
+        safe = _sanitize_request_kwargs(
+            {"json": {"payload": "document", "task": "run-python"}},
+            sensitive_body_paths=self._PATHS,
+        )
+
+        assert safe["json"] == {"payload": _REDACTED_VALUE, "task": "run-python"}
+
+    def test_matches_each_segment_case_insensitively(self):
+        """Mask a body that spells the same path in another casing."""
+        safe = _sanitize_request_kwargs(
+            {"json": {"Payload": "ZG9j", "Meta": {"Args": "--password hunter2"}}},
+            sensitive_body_paths=self._PATHS,
+        )
+
+        assert safe["json"] == {
+            "Payload": _REDACTED_VALUE,
+            "Meta": {"Args": _REDACTED_VALUE},
+        }
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"task": "run-python"},
+            {"meta": None},
+            {"meta": "args=--password"},
+            {"meta": ["args"]},
+            {"meta": {"target": "node-1"}},
+        ],
+        ids=[
+            "absent-parent",
+            "null-parent",
+            "string-parent",
+            "list-parent",
+            "absent-leaf",
+        ],
+    )
+    def test_a_path_that_does_not_resolve_is_a_no_op(self, body):
+        """Leave a body alone where the path has no value to mask.
+
+        :param body: A request body the path does not resolve in.
+        """
+        safe = _sanitize_request_kwargs(
+            {"json": body}, sensitive_body_paths=("meta.args",)
+        )
+
+        assert safe["json"] == body
+
+    def test_does_not_mutate_the_outgoing_body(self):
+        """Keep the real nested value in the request that is actually sent."""
+        kwargs = {"json": {"meta": {"args": "--password hunter2"}}}
+
+        _sanitize_request_kwargs(kwargs, sensitive_body_paths=self._PATHS)
+
+        assert kwargs["json"]["meta"]["args"] == "--password hunter2"
+
+    def test_keeps_masking_top_level_keys_by_name(self):
+        """Mask the always-sensitive body keys alongside the declared paths."""
+        safe = _sanitize_request_kwargs(
+            {"json": {"password": "pw", "meta": {"args": "--token t"}}},
+            sensitive_body_paths=self._PATHS,
+        )
+
+        assert safe["json"]["password"] == _REDACTED_VALUE
+        assert safe["json"]["meta"]["args"] == _REDACTED_VALUE
+
+    def test_a_dotted_key_is_matched_by_name_not_as_a_path(self):
+        """Mask a top-level key that contains a dot through the by-name set."""
+        safe = _sanitize_request_kwargs(
+            {"json": {"meta.args": "raw", "meta": {"args": "nested"}}},
+            extra_sensitive_body_fields=frozenset({"meta.args"}),
+        )
+
+        assert safe["json"] == {
+            "meta.args": _REDACTED_VALUE,
+            "meta": {"args": "nested"},
+        }
+
+    def test_no_paths_leaves_nested_values_alone(self):
+        """Keep nested values readable for a client that declares no paths."""
+        safe = _sanitize_request_kwargs({"json": {"meta": {"args": "--fast"}}})
+
+        assert safe["json"]["meta"]["args"] == "--fast"
+
+    @pytest.mark.asyncio
+    async def test_the_request_log_of_a_client_declaring_paths_is_masked(self, caplog):
+        """Keep a declared nested value out of the client's request log line."""
+        client = RemoteAPI(
+            endpoint="http://localhost:8000/", sensitive_body_paths=self._PATHS
+        )
+        with aioresponses() as mock:
+            mock.post(_RESPONSE_URL, payload={})
+            with caplog.at_level("DEBUG", logger=client.logger.name):
+                async with client:
+                    await client.post(
+                        "body",
+                        json={
+                            "meta": {"args": "--password hunter2", "target": "node-1"},
+                            "payload": "secret-document",
+                        },
+                    )
+
+        sending = [
+            r.getMessage() for r in caplog.records if "Sending" in r.getMessage()
+        ]
+        assert len(sending) == 1
+        assert "hunter2" not in sending[0]
+        assert "secret-document" not in sending[0]
+        assert "node-1" in sending[0]
+
+
+class TestWithholdResponseLog:
+    """Cover a client constructed to never log its response bodies."""
+
+    _HISTORY = {
+        "id": 7,
+        "execution_request": {
+            "meta": {"args": "<withheld>", "config": "master_password: cfg-secret\n"},
+            "payload": "payload-secret",
+        },
+    }
+
+    @pytest.mark.asyncio
+    async def test_the_response_body_is_withheld_and_still_returned(self, caplog):
+        """Log the placeholder while handing the caller the full body."""
+        client = RemoteAPI(
+            endpoint="http://localhost:8000/", withhold_response_log=True
+        )
+        with aioresponses() as mock:
+            mock.get(_RESPONSE_URL, payload=self._HISTORY)
+            with caplog.at_level("DEBUG", logger=client.logger.name):
+                async with client:
+                    returned = await client.get("body")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert returned == self._HISTORY
+        assert any(_WITHHELD_BODY in message for message in messages)
+        assert all("cfg-secret" not in message for message in messages)
+        assert all("payload-secret" not in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_non_json_response_content_is_withheld(self, caplog):
+        """Render the placeholder on the non-JSON exception line as well."""
+        client = RemoteAPI(
+            endpoint="http://localhost:8000/", withhold_response_log=True
+        )
+        with aioresponses() as mock:
+            mock.get(
+                _RESPONSE_URL,
+                status=status.HTTP_200_OK,
+                body=_BODY_SENTINEL,
+                content_type="text/plain",
+            )
+            with caplog.at_level("DEBUG", logger=client.logger.name):
+                async with client:
+                    with pytest.raises(HTTPException):
+                        await client.get("body")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert all(_BODY_SENTINEL not in message for message in messages)
+        assert any(_WITHHELD_BODY in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_a_client_built_without_it_still_logs_the_body(
+        self, remote_api, caplog
+    ):
+        """Keep body logging for every client that does not ask to withhold."""
+        with aioresponses() as mock:
+            mock.get(_RESPONSE_URL, payload=self._HISTORY)
+            with caplog.at_level("DEBUG", logger=remote_api.logger.name):
+                async with remote_api:
+                    await remote_api.get("body")
+
+        assert any("payload-secret" in record.getMessage() for record in caplog.records)
+
+
 def test_redact_headers_masks_within_context_only(remote_api):
     """Mask extra header names only for the duration of the ``redact_headers`` block."""
     with remote_api.redact_headers(["X-Custom-Token"]):

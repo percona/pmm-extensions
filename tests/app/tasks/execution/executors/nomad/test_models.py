@@ -1124,6 +1124,45 @@ class TestDispatchJob:
         assert _dispatch_body(calls)["Payload"] == expected
 
     @pytest.mark.asyncio
+    async def test_dispatch_job_logs_no_protected_leaf(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Assert neither dispatch log line carries arguments, config or payload.
+
+        Nomad is stubbed at the HTTP layer so the executor's own request log is
+        emitted as in production.
+        """
+        executor = _build_executor(stub_nomad=False)
+        task = _build_task(task_id="log-job", parameterized=True)
+        queue_item = _build_queue_item(
+            task=task,
+            payload="payload-secret-document",
+            meta={
+                "target": "node-1",
+                "args": "--password hunter2",
+                "config": "master_password: cfg-secret\n",
+            },
+        )
+
+        with (
+            aioresponses() as mock,
+            caplog.at_level(logging.DEBUG, logger=NomadExecutor.__module__),
+            caplog.at_level(logging.DEBUG, logger=executor.logger.name),
+        ):
+            mock.post(
+                re.compile(r".*/v1/job/log-job/dispatch$"),
+                payload={"DispatchedJobID": "dispatched-1", "EvalID": "eval-1"},
+            )
+            async with executor:
+                await executor.dispatch_job(queue_item, task)
+
+        assert "Dispatching job" in caplog.text
+        assert "Sending POST request" in caplog.text
+        assert "node-1" in caplog.text
+        for leaked in ("hunter2", "cfg-secret", "payload-secret-document", "H4sI"):
+            assert leaked not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_dispatch_job_custom_prefix(self) -> None:
         """Assert dispatch_job uses custom job_id_prefix from meta."""
         executor = _build_executor()

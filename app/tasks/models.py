@@ -16,6 +16,7 @@
 """Define models for the Task API."""
 
 import json
+from collections.abc import Iterable
 from datetime import datetime
 from enum import auto, StrEnum
 from functools import cached_property
@@ -68,9 +69,12 @@ from app.tasks.alert_hooks import build_owner_alert_details
 from app.tasks.anonymizer.config import anonymizer_settings
 from app.tasks.anonymizer.entities import PIIEntity
 from app.tasks.execution_request_secrets import (
+    ARGS_META_KEY,
     decrypt_request_leaves,
     encrypt_request_leaves,
+    publish_masked_args,
     redact_request_leaves,
+    redact_request_leaves_for_log,
     reencrypt_request_leaves,
 )
 from app.tasks.hook_resolver import validate_hook_path
@@ -267,6 +271,22 @@ class TaskExecutionRequest(BaseModel):
     #: read into. Private so it never reaches ``model_dump``, and therefore
     #: neither the stored document nor an API response.
     _unreadable_leaves: tuple[str, ...] = PrivateAttr(default=())
+
+    def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
+        """Yield the fields ``repr`` and ``str`` render, protected leaves redacted.
+
+        A request reaches a log line whenever it, or a history row or response
+        holding it, is interpolated into a message. Redacting here covers every
+        such call at once, while ``model_dump`` keeps returning the real values
+        the executor and the storage layer read.
+
+        :return: Each field name paired with the value to render for it.
+        """
+        redacted = redact_request_leaves_for_log(
+            {"meta": self.meta, "payload": self.payload}
+        )
+        for name, value in super().__repr_args__():
+            yield name, redacted.get(name, value)
 
     @cached_property
     def payload_content(self) -> str | None:
@@ -1188,6 +1208,11 @@ class TaskHistoryResponse(TaskHistoryBase, BaseSQLModel):
         rather than as the stored ciphertext, so a client shows the value as
         withheld instead of rendering an opaque token. Empty on every row that
         read cleanly, which is every row on a healthy deployment.
+
+    ``execution_request.meta.args`` is never the argument string the run was
+    given. It is the masked copy the submitter recorded under
+    ``meta._masked_args``, or ``<withheld>`` when the run recorded arguments
+    and no such copy.
     """
 
     task: TaskResponse
@@ -1234,6 +1259,26 @@ class TaskHistoryResponse(TaskHistoryBase, BaseSQLModel):
                     self.execution_request.model_dump(mode="json"),
                     self.unreadable_request_leaves,
                 )
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _publish_masked_args(self) -> Self:
+        """Replace the raw arguments with the copy that may be shown.
+
+        Defined after :meth:`_redact_unreadable_request_leaves` so that
+        arguments this deployment could not read are already ``None`` and stay
+        reported as unreadable rather than being replaced by a masked copy.
+
+        A replacement rather than an in-place edit, for the reason given there:
+        writing the masked string into the row's own request would let a later
+        save persist it over the real arguments.
+
+        :return: This response, carrying no raw argument string.
+        """
+        if (self.execution_request.meta or {}).get(ARGS_META_KEY) is not None:
+            self.execution_request = TaskExecutionRequest(
+                **publish_masked_args(self.execution_request.model_dump(mode="json"))
             )
         return self
 

@@ -65,6 +65,7 @@ from app.extensions.inventory import (
 from app.extensions.models import SyncInventoryEntityTypeEnum
 from app.inventory.config import inventory_settings
 from app.tasks.config import tasks_settings
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 from app.tasks.models import (
     Task,
     TaskHistoryResponse,
@@ -500,6 +501,7 @@ async def get_tasks_client(request: Request) -> AsyncGenerator[RemoteAPI]:
         ssl_keyfile=tasks_settings.SSL_KEYFILE,
         ssl_certfile=tasks_settings.SSL_CERTFILE,
         logger_name="tasks_api",
+        **TASKS_CLIENT_LOG_POLICY,
     )
     async with client.hold():
         yield client
@@ -1014,7 +1016,7 @@ async def get_task_history(
     except ValidationError:
         logger.debug("ValidationError retrieving task history.", exc_info=True)
         raise HTTPNotFoundException from None
-    logger.debug("TASK IS %s", task_history)
+    logger.debug("Retrieved task history %s (%s)", task_history.id, task_history.status)
     return task_history
 
 
