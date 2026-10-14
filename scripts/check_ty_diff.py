@@ -19,7 +19,10 @@
 Every rule ``[tool.ty.rules]`` holds at ``warn`` is promoted to ``error``, and the
 changed non-test Python files are checked twice: once in the working tree and once
 in a detached worktree at the merge-base. The report is the multiset difference
-over :attr:`~scripts.classify_ty_diagnostics.Diagnostic.fingerprint`.
+over :func:`delta_key`: the path, the rule, and the enclosing statement's AST with
+locations stripped. The message is left out because an edit elsewhere can
+rewrite it (a signature change reprints the types in every call site's
+diagnostic) without adding anything.
 
 Attribution is a baseline delta rather than a test of whether a diagnostic sits on
 an added line, because an annotation change lands its consequences at call sites
@@ -33,6 +36,8 @@ The exit status is the whole signal: non-zero when the branch adds a diagnostic.
 from __future__ import annotations
 
 import argparse
+import ast
+import copy
 import os
 import shutil
 import subprocess
@@ -41,23 +46,49 @@ import tempfile
 import tomllib
 from collections import Counter
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import NamedTuple, TYPE_CHECKING
 
 from scripts.classify_ty_diagnostics import Diagnostic, parse_diagnostics
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 ANNOTATION_CAP = 50
 ALL_CHECKS_PASSED = "All checks passed!"
 TEST_ROOT = "tests/"
 PROMOTED_SEVERITY = "warn"
+_NESTED_BLOCKS = ("body", "orelse", "finalbody", "handlers", "cases")
+
+Block = ast.stmt | ast.ExceptHandler | ast.match_case
 
 
 class TyInvocationError(RuntimeError):
     """Indicate that ty failed for a reason other than reporting diagnostics."""
+
+
+class AnchorKind(StrEnum):
+    """Name what a delta key anchors a diagnostic on."""
+
+    STATEMENT = "statement"
+    MESSAGE = "message"
+
+
+class DeltaKey(NamedTuple):
+    """Identify one diagnostic across the two passes.
+
+    :param path: The repo-relative path, as the branch names it.
+    :param rule: The ty rule that fired.
+    :param kind: What ``anchor`` holds, so the two kinds can never collide.
+    :param anchor: The statement's location-free AST dump, or the message.
+    """
+
+    path: str
+    rule: str
+    kind: AnchorKind
+    anchor: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +108,64 @@ class ChangedFiles:
     base: tuple[str, ...]
     renames: Mapping[str, str]
     tests: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class Source:
+    """Carry one checked file as one side of the comparison read it.
+
+    :param lines: The file's lines, numbered as the parser numbers them.
+    :param tree: The parsed module.
+    """
+
+    lines: tuple[str, ...]
+    tree: ast.Module
+
+    @classmethod
+    def parse(cls, text: str) -> Source:
+        """Return ``text`` split into lines and parsed.
+
+        :param text: The file's contents, line endings already normalised.
+        :return: The parsed source.
+        :raises SyntaxError: When ``text`` does not parse.
+        :raises ValueError: When ``text`` holds a null byte, on Python 3.11.
+        :raises RecursionError: When ``text`` nests too deeply to parse.
+        :raises MemoryError: When ``text`` nests too deeply to parse.
+        """
+        # str.splitlines() also breaks on \x0c and \x1c-\x1e, which the parser
+        # treats as ordinary characters, so its line numbers would drift.
+        return cls(lines=tuple(text.split("\n")), tree=ast.parse(text))
+
+
+@dataclass(frozen=True, slots=True)
+class CheckedPass:
+    """Carry what one pass reported, with the files it reported on.
+
+    :param diagnostics: The pass's diagnostics, in output order.
+    :param sources: Each checked file that parsed, by repo-relative path.
+    """
+
+    diagnostics: Sequence[Diagnostic] = ()
+    sources: Mapping[str, Source] = field(default_factory=dict)
+
+    def rebased(self, renames: Mapping[str, str]) -> CheckedPass:
+        """Return this pass with its paths renamed to the branch's names.
+
+        :func:`delta_key` carries the path, so without this a file the branch
+        merely moved has every pre-existing diagnostic counted as surplus.
+
+        :param renames: Old path to new path, for the files the branch moved.
+        :return: The same pass, addressed as the branch addresses it.
+        """
+        return CheckedPass(
+            diagnostics=[
+                replace(item, path=renames.get(item.path, item.path))
+                for item in self.diagnostics
+            ],
+            sources={
+                renames.get(path, path): source for path, source in self.sources.items()
+            },
+        )
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
@@ -354,44 +443,185 @@ def run_pass(
     ]
 
 
-def rebase_paths(
-    diagnostics: Sequence[Diagnostic], renames: Mapping[str, str]
-) -> list[Diagnostic]:
-    """Rewrite base-side diagnostic paths to the names the branch gives them.
+def parse_sources(root: Path, paths: Iterable[str]) -> dict[str, Source]:
+    """Read and parse each of ``paths`` under ``root``.
 
-    ``Diagnostic.fingerprint`` carries the path, so without this a file the branch
-    merely moved has every pre-existing diagnostic counted as surplus.
+    A path that resolves outside ``root``, or a file that cannot be read or
+    parsed, is left out rather than raised on, so its diagnostics fall back to
+    being compared by message.
 
-    :param diagnostics: Diagnostics from the base pass.
-    :param renames: Old path to new path, for the files the branch moved.
-    :return: The same diagnostics, addressed as the branch addresses them.
+    :param root: The tree the paths are relative to.
+    :param paths: Repo-relative paths, as one pass checked them.
+    :return: Each readable path's parsed source.
     """
-    return [
-        replace(item, path=renames[item.path]) if item.path in renames else item
-        for item in diagnostics
-    ]
+    resolved_root = root.resolve()
+    sources: dict[str, Source] = {}
+    for path in paths:
+        file = (root / path).resolve()
+        if not file.is_relative_to(resolved_root):
+            continue
+        try:
+            # The parser rejects a byte order mark left in a str, and ty does
+            # not count one as a column.
+            sources[path] = Source.parse(file.read_text(encoding="utf-8-sig"))
+        # ValueError covers undecodable bytes and, on 3.11, a null byte; the
+        # parser raises RecursionError or MemoryError on pathological nesting.
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
+            continue
+    return sources
 
 
-def surplus_diagnostics(
-    head: Sequence[Diagnostic], base: Sequence[Diagnostic]
-) -> list[Diagnostic]:
+def _children(node: ast.Module | Block) -> Iterator[Block]:
+    """Yield the statement-like nodes nested directly inside ``node``.
+
+    :param node: A module, statement, exception handler, or match case.
+    :return: Statements, exception handlers, and match cases, in source order.
+    """
+    for name in _NESTED_BLOCKS:
+        for child in getattr(node, name, ()):
+            if isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case)):
+                yield child
+
+
+def _start(node: Block) -> tuple[int, int]:
+    """Return the ``(line, byte column)`` a statement-like node starts at.
+
+    Since Python 3.8 a definition's own position is its ``def`` or ``class``
+    line, so a diagnostic on a decorator would otherwise fall outside it.
+
+    :param node: A statement, exception handler, or match case.
+    :return: Its 1-indexed start line and 0-indexed UTF-8 byte offset.
+    """
+    # A match case carries no location of its own, and its line holds only
+    # the case, so it starts at its pattern's line, before any column.
+    if isinstance(node, ast.match_case):
+        return (node.pattern.lineno, 0)
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and (
+        node.decorator_list
+    ):
+        return (min(item.lineno for item in node.decorator_list), 0)
+    return (node.lineno, node.col_offset)
+
+
+def _end_line(node: Block) -> int:
+    """Return the line a statement-like node ends on.
+
+    :param node: A statement, exception handler, or match case.
+    :return: Its 1-indexed last line.
+    """
+    if isinstance(node, ast.match_case):
+        return _end_line(node.body[-1])
+    return node.end_lineno or node.lineno
+
+
+def _enclosing_statement(tree: ast.Module, line: int, byte_column: int) -> Block | None:
+    """Return the innermost statement-like node spanning a position.
+
+    Among siblings sharing the line, the last one starting at or before the
+    column wins, so a diagnostic past a statement's end — on its trailing
+    comment, say — still lands on the statement of its line.
+
+    :param tree: The parsed module.
+    :param line: 1-indexed line.
+    :param byte_column: 0-indexed UTF-8 byte offset into the line.
+    :return: The statement, exception handler, or match case, or ``None`` at
+        module level.
+    """
+    node: ast.Module | Block = tree
+    while True:
+        spanning = [
+            child
+            for child in _children(node)
+            if _start(child)[0] <= line <= _end_line(child)
+        ]
+        if not spanning:
+            return None if isinstance(node, ast.Module) else node
+        started = [child for child in spanning if _start(child) <= (line, byte_column)]
+        # Every child starts past the column only on a one-line block such as
+        # ``if bad: use()``, where the diagnostic sits on the header.
+        if not started and not isinstance(node, ast.Module):
+            return node
+        node = started[-1] if started else spanning[0]
+
+
+def _header_only(node: Block) -> Block:
+    """Return a copy of ``node`` with its nested blocks emptied.
+
+    Without this, a diagnostic on a ``def`` or ``if`` line would compare as new
+    whenever any line of the block below it changed.
+
+    :param node: A statement, exception handler, or match case.
+    :return: A shallow copy whose nested blocks are empty.
+    """
+    header = copy.copy(node)
+    for name in _NESTED_BLOCKS:
+        if hasattr(header, name):
+            setattr(header, name, [])
+    return header
+
+
+def delta_key(diagnostic: Diagnostic, source: Source | None) -> DeltaKey:
+    """Return the identity ``diagnostic`` is compared across the two passes on.
+
+    The anchor is the location-free AST of the enclosing statement, so a
+    diagnostic whose statement and rule are unchanged matches whatever its
+    message now says and however far the statement moved. Without a statement
+    to anchor on, the message stands in, which still reports anything new.
+
+    :param diagnostic: One diagnostic from either pass.
+    :param source: The file it points into, as the same pass read it.
+    :return: The diagnostic's key.
+    """
+    fallback = DeltaKey(
+        diagnostic.path, diagnostic.rule, AnchorKind.MESSAGE, diagnostic.message
+    )
+    if source is None or not 1 <= diagnostic.line <= len(source.lines):
+        return fallback
+    text = source.lines[diagnostic.line - 1]
+    if not text.strip() or text.lstrip().startswith("#"):
+        return fallback
+    # ty counts columns in characters; the AST counts UTF-8 bytes. A column
+    # inside the indentation still means the line's first statement, not the
+    # header of the block around it.
+    indent = len(text) - len(text.lstrip())
+    byte_column = len(text[: max(diagnostic.column - 1, indent)].encode())
+    node = _enclosing_statement(source.tree, diagnostic.line, byte_column)
+    if node is None:
+        return fallback
+    return DeltaKey(
+        diagnostic.path,
+        diagnostic.rule,
+        AnchorKind.STATEMENT,
+        ast.dump(_header_only(node)),
+    )
+
+
+def surplus_diagnostics(head: CheckedPass, base: CheckedPass) -> list[Diagnostic]:
     """Return the head diagnostics the merge-base did not already carry.
 
-    The difference is taken over fingerprints as a multiset, so duplicating a
-    defect that already exists still reports. Each surplus fingerprint is mapped
-    back to a head diagnostic to recover the line the fingerprint drops.
+    The difference is taken over :func:`delta_key` as a multiset, so duplicating
+    a defect that already exists still reports. Each surplus key is mapped back
+    to a head diagnostic to recover the message and line the key drops.
 
-    :param head: Diagnostics reported on the branch.
-    :param base: Diagnostics reported at the merge-base.
+    :param head: The branch's pass.
+    :param base: The merge-base's pass, under head paths.
     :return: The surplus, in head output order.
     """
-    remaining = Counter(item.fingerprint for item in head) - Counter(
-        item.fingerprint for item in base
+    # A file keyed by statement on one side and by message on the other would
+    # match nothing, so it is compared by statement only when both sides parse.
+    shared = head.sources.keys() & base.sources.keys()
+
+    def key_of(item: Diagnostic, sources: Mapping[str, Source]) -> DeltaKey:
+        return delta_key(item, sources[item.path] if item.path in shared else None)
+
+    head_keyed = [(item, key_of(item, head.sources)) for item in head.diagnostics]
+    remaining = Counter(key for _, key in head_keyed) - Counter(
+        key_of(item, base.sources) for item in base.diagnostics
     )
     extra: list[Diagnostic] = []
-    for diagnostic in head:
-        if remaining[diagnostic.fingerprint] > 0:
-            remaining[diagnostic.fingerprint] -= 1
+    for diagnostic, key in head_keyed:
+        if remaining[key] > 0:
+            remaining[key] -= 1
             extra.append(diagnostic)
     return extra
 
@@ -502,14 +732,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     executable = resolve_ty()
     rules = promoted_rules(repo_root / "pyproject.toml")
-    head = run_pass(executable, rules, changed.head, repo_root, per_file=args.per_file)
-    base: list[Diagnostic] = []
+    head = CheckedPass(
+        run_pass(executable, rules, changed.head, repo_root, per_file=args.per_file),
+        parse_sources(repo_root, changed.head),
+    )
+    base = CheckedPass()
     if changed.base:
+        # The worktree is removed when the block exits, so its sources must be
+        # read inside it.
         with base_tree(merge_base) as tree:
-            base = run_pass(
-                executable, rules, changed.base, tree, per_file=args.per_file
+            base = CheckedPass(
+                run_pass(executable, rules, changed.base, tree, per_file=args.per_file),
+                parse_sources(tree, changed.base),
             )
-        base = rebase_paths(base, changed.renames)
+        base = base.rebased(changed.renames)
 
     extra = surplus_diagnostics(head, base)
     if not extra:
