@@ -2137,7 +2137,12 @@ export interface paths {
      *     Whether a host should be rolled back at all, and if so whether to dispatch
      *     its rollback steps in order or all at once, is PMM's stepper's call (its
      *     partial-failure policy), not this route's. This route only ever dispatches
-     *     the one step it is asked to.
+     *     the one step it is asked to - or records it ``skipped`` without dispatching
+     *     it, when the strategy says this run never changed anything on the host
+     *     (:meth:`~app.extensions.apps.om_bootstrap.strategy.InstallStrategy.has_anything_to_roll_back`).
+     *     Dispatched there, the step would only find nothing to undo and report
+     *     ``succeeded``, and the run would claim to have torn down an install that
+     *     never happened.
      *
      *     :param run: The path's run, read under its row lock.
      *     :param host: The host to roll back.
@@ -2149,7 +2154,8 @@ export interface paths {
      *     :raises HTTPNotFoundException: When there is no such run, host, or rollback step.
      *     :raises HTTPConflictException: When the step is running, succeeded, or
      *         skipped.
-     *     :return: The run, with the dispatched rollback step now ``running``.
+     *     :return: The run, with the dispatched rollback step now ``running``, or
+     *         ``skipped``.
      */
     post: operations['om_bootstrap_dispatch_rollback_step_api_apps_om_bootstrap_runs__run_id__hosts__host__rollback__step_name__dispatch_post'];
     delete?: never;
@@ -10890,6 +10896,10 @@ export interface components {
      *         ``om_bootstrap`` only ever records the fact that a dispatch happened;
      *         deciding whether *another* one should is the stepper's call, not this
      *         field's.
+     *     :param retryable: Whether dispatching this step again after it failed could
+     *         change the outcome, as :meth:`InstallStrategy.is_retryable` answered when
+     *         the run was planned. PMM's stepper treats a non-retryable step's first
+     *         failure as final instead of spending its one retry on it.
      */
     om_bootstrap__StepRecord: {
       /**
@@ -10903,6 +10913,11 @@ export interface components {
       finished_at?: string | null;
       /** Name */
       name: string;
+      /**
+       * Retryable
+       * @default true
+       */
+      retryable: boolean;
       /** Started At */
       started_at?: string | null;
       /** @default pending */
@@ -11025,6 +11040,9 @@ export interface components {
       last_attempt_at?: string | null;
       /** Last Error */
       last_error?: string | null;
+      last_error_code?: components['schemas']['om_inventory__ScanFailure'] | null;
+      /** Last Run Id */
+      last_run_id?: string | null;
       /** Last Success At */
       last_success_at?: string | null;
       /** Name */
@@ -11075,6 +11093,8 @@ export interface components {
      *     :param hosts_total: Hosts in scope this sweep, service or no service.
      *     :param hosts_probeable: ...of which had a usable executor to dispatch to.
      *     :param hosts_answered: Hosts that returned a usable record.
+     *     :param hosts_finished: Hosts whose scan has come back, answered or not, out of
+     *         ``hosts_probeable``; counted up while the sweep is still running.
      */
     om_inventory__ProbeCounts: {
       /**
@@ -11082,6 +11102,11 @@ export interface components {
        * @default 0
        */
       hosts_answered: number;
+      /**
+       * Hosts Finished
+       * @default 0
+       */
+      hosts_finished: number;
       /**
        * Hosts Probeable
        * @default 0
@@ -11215,6 +11240,8 @@ export interface components {
       counts: components['schemas']['om_inventory__ProbeCounts'];
       /** Error */
       error?: string | null;
+      /** Failing Nodes */
+      failing_nodes?: components['schemas']['om_inventory__ProbeRunFailingNode'][];
       /** Finished At */
       finished_at?: string | null;
       /** Nodes */
@@ -11235,6 +11262,20 @@ export interface components {
       status: string;
     };
     /**
+     * ProbeRunFailingNode
+     * @description Name one node a sweep failed to scan.
+     *
+     *     :param node_id: PMM's node id.
+     *     :param name: The node's name as the sweep recorded it, or its node id where the
+     *         sweep recorded none.
+     */
+    om_inventory__ProbeRunFailingNode: {
+      /** Name */
+      name: string;
+      /** Node Id */
+      node_id: string;
+    };
+    /**
      * ProbeRunResponse
      * @description Carry one sweep's record.
      *
@@ -11247,11 +11288,16 @@ export interface components {
      *         estate. Without it the counters cannot be read: "9 of 13 answered" means
      *         something different when the run was only ever asked about one host.
      *     :param error: The failure detail when the sweep itself raised.
+     *     :param failing_nodes: The nodes whose scan failed in this sweep, on the node's own
+     *         dispatch or on any service on it, sorted by name. A node with no automation
+     *         agent is not one: nothing was dispatched to it.
      */
     om_inventory__ProbeRunResponse: {
       counts: components['schemas']['om_inventory__ProbeCounts'];
       /** Error */
       error?: string | null;
+      /** Failing Nodes */
+      failing_nodes?: components['schemas']['om_inventory__ProbeRunFailingNode'][];
       /** Finished At */
       finished_at?: string | null;
       /**
@@ -11269,6 +11315,52 @@ export interface components {
       /** Status */
       status: string;
     };
+    /**
+     * ScanFailure
+     * @description Enumerate the kinds of scan failure a reader can be told what to do about.
+     *
+     *     Stored beside ``last_error`` rather than parsed back out of it: the message mixes
+     *     the node's own stderr, exception text and task API detail, and its wording must
+     *     stay free to change without breaking whoever keys a resolution hint off it.
+     *
+     *     A node with no usable executor has no code here, because it is never dispatched
+     *     to and so never fails; its state is the ``executor`` block every host row
+     *     already carries.
+     *
+     *     :cvar DISPATCH_REJECTED: The scan was never queued: the tasks API refused it or
+     *         could not be reached.
+     *     :cvar NOT_STARTED: The scan was queued but had not started when the wait ran out.
+     *     :cvar TIMED_OUT: The scan started but had not finished when the wait ran out.
+     *     :cvar BLOCKED: A scan given up on could not be stopped, and will block this
+     *         node's next one until it is.
+     *     :cvar ENVIRONMENT_SETUP_FAILED: The node could not prepare the scan's Python
+     *         environment: no ``python3``, no ``venv`` module, or ``pip`` could not install
+     *         the scan's one dependency.
+     *     :cvar SCAN_CRASHED: The scan itself failed on the node.
+     *     :cvar SCAN_LOST: The scan was lost, stopped or went stale before it reported -
+     *         usually because the node or its agent restarted.
+     *     :cvar NO_OUTPUT: The scan finished but reported nothing for this node or service.
+     *     :cvar DATABASE_UNREACHABLE: The scan ran but could not connect to the database.
+     *     :cvar DATABASE_AUTH_FAILED: The scan ran but the database rejected its
+     *         credentials.
+     *     :cvar DATABASE_ERROR: The scan ran but the database failed it some other way.
+     *     :cvar UNKNOWN: Anything not recognised. A reader gets the raw detail and no hint,
+     *         rather than a guessed one.
+     * @enum {string}
+     */
+    om_inventory__ScanFailure:
+      | 'dispatch_rejected'
+      | 'not_started'
+      | 'timed_out'
+      | 'blocked'
+      | 'environment_setup_failed'
+      | 'scan_crashed'
+      | 'scan_lost'
+      | 'no_output'
+      | 'database_unreachable'
+      | 'database_auth_failed'
+      | 'database_error'
+      | 'unknown';
     /**
      * ServiceResponse
      * @description Report one MongoDB service PMM has registered, as OM currently holds it.
@@ -11300,6 +11392,9 @@ export interface components {
       last_attempt_at?: string | null;
       /** Last Error */
       last_error?: string | null;
+      last_error_code?: components['schemas']['om_inventory__ScanFailure'] | null;
+      /** Last Run Id */
+      last_run_id?: string | null;
       /** Last Success At */
       last_success_at?: string | null;
       /** Name */

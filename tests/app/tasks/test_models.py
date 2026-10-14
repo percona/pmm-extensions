@@ -169,6 +169,17 @@ class TestTaskHistoryStatusEnum:
         """Assert is_terminal returns False for active statuses."""
         assert status.is_terminal() is False
 
+    def test_interrupted_statuses(self) -> None:
+        """Assert the interrupted statuses are the terminal ones ended from outside."""
+        interrupted = TaskHistoryStatusEnum.interrupted_statuses()
+
+        assert interrupted == {
+            TaskHistoryStatusEnum.LOST,
+            TaskHistoryStatusEnum.STALE,
+            TaskHistoryStatusEnum.STOPPED,
+        }
+        assert all(status.is_terminal() for status in interrupted)
+
     @pytest.mark.parametrize("status", list(TaskHistoryStatusEnum))
     def test_every_member_is_classified(self, status: TaskHistoryStatusEnum) -> None:
         """Refuse a member that is neither terminal nor active.

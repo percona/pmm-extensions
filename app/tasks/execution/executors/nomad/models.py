@@ -111,6 +111,9 @@ from app.tasks.models import (
 logger = logging.getLogger(__name__)
 
 _ONE_MEBIBYTE = 1024 * 1024
+#: Fixed mode for directory members in streamed allocation archives. Allocation
+#: modes are not preserved.
+_ARCHIVE_DIRECTORY_MODE = 0o755
 NOMAD_DEAD_JOB_STATUS = "dead"
 NOMAD_DEAD_TASK_STATE = "dead"
 NOMAD_RUNNING_TASK_STATE = "running"
@@ -552,7 +555,7 @@ def _append_exit_code_suffix(
         parts.append(f"(exit code {exit_code})")
 
 
-def _failed_step_reason(alloc: dict[str, Any]) -> str | None:
+def failed_step_reason(alloc: dict[str, Any]) -> str | None:
     """Return prose naming the first producing step that failed, if any.
 
     Reads the failing step off the allocation's task states: those carry a
@@ -619,7 +622,7 @@ def _terminal_status_reason(
     :return: The reason to store, or ``None`` when the status carries none.
     """
     if status == TaskHistoryStatusEnum.FAILED:
-        return _failed_step_reason(alloc)
+        return failed_step_reason(alloc)
     summary = status.operator_summary()
     return f"{summary[:1].upper()}{summary[1:]}." if summary else None
 
@@ -3636,6 +3639,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 with tarfile.open(mode="w|gz", fileobj=writer) as tar:
                     root_info = tarfile.TarInfo(name=f"{root_name}/")
                     root_info.type = tarfile.DIRTYPE
+                    root_info.mode = _ARCHIVE_DIRECTORY_MODE
+                    root_info.mtime = int(utc_now().timestamp())
                     tar.addfile(root_info)
                     async for (
                         abs_path,
@@ -3648,6 +3653,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                             tarinfo.mtime = int(utc_now().timestamp())
                             if is_dir:
                                 tarinfo.type = tarfile.DIRTYPE
+                                tarinfo.mode = _ARCHIVE_DIRECTORY_MODE
                                 tar.addfile(tarinfo)
                                 continue
                             file_bytes = await self._read_file_bytes(
