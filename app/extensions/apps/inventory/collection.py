@@ -25,7 +25,8 @@ A tombstoned inventory entity may be deleted when all three of these hold:
    Celery-beat ``PeriodicTask.kwargs`` naming it. Nodes, schemas and tables have
    no external persisted holder at all, so this clause is vacuous for them.
 3. **Subtree safety.** Every descendant in its retirement subtree is itself
-   collectible — enforced by the Inventory API, which owns the walk.
+   collectible — enforced by :func:`app.inventory.crud.collect_retirable_entities`,
+   which owns the walk.
 
 Purely *historical* references do not block collection. A terminal
 ``TaskHistory.execution_request`` meta is the only such holder: it can never
@@ -43,40 +44,72 @@ resolves a recorder off the live ``Task`` row, so a recorder firing mid-window
 belongs to a task the scan already read — which is why the ``Task`` scan reads
 every row rather than only the active ones.
 
-A holder persisted *during* the window is not covered. The Tasks API takes
-arbitrary envelope meta, so a task or beat schedule created between a batch's
-dry run and its delete can name an id that batch removes, and a later run of it
-would record a backup run pointing at a service the catalog can no longer
-resolve. Fencing that off needs a lease or epoch spanning four databases; it is
-left open instead, bounded by how narrow it is — the id has to have been
-tombstoned for at least ``COLLECTION_RETENTION``, and the write has to land
-between two consecutive calls of one batch.
+A holder persisted *during* the window is covered by the reference fence
+(:mod:`app.tasks.reference_fence`). Every Tasks API route that creates or
+updates a task or a beat schedule — ``create_task``, ``update_task``,
+``create_periodic_task_for_task_name``, ``update_periodic_task`` — holds the
+fence shared across its write, and so does every PMM Extensions caller, since
+each one writes through those routes. Each batch holds it exclusive from its
+retained-set read through its delete, which runs in the same coroutine. So a
+write either committed before the batch took the fence, and the batch's read
+sees it, or it waits until the batch has finished deleting. A batch also checks
+it still holds the fence just before its delete, and the fence's connection runs
+with the idle-in-transaction timeout turned off.
+
+Knowingly outside that guarantee:
+
+1. **SQLite deployments.** SQLite has no advisory lock, so the fence is a no-op
+   there. Collection ships scheduled only in the PostgreSQL side-car profile; an
+   operator who schedules it on SQLite runs it unfenced.
+2. **Writers the fence does not wrap.** The seed data, the system beat
+   schedules and the form backfill write task and schedule rows directly, and
+   none of them writes a ``_service_id`` holder. The Tasks API's execution
+   routes create in-flight ``TaskHistory`` rows unfenced, but the backup-run
+   recorder reads the service id off the live ``Task`` row, which the scan
+   already covers.
+3. **A write naming an id the batch it waited for deletes.** A request that
+   arrives mid-batch commits after the delete and can name an id already gone.
+   That is the Tasks API accepting unvalidated meta, not this window, and is
+   tracked separately.
+4. **Infrastructure failure during a fenced call.** The guarantee holds while
+   the processes and database connections on both sides stay up. A fence
+   backend ended or cut off *during* the delete call, or a COMMIT left in doubt
+   by a lost connection or a dead worker, falls outside it: closing that needs
+   the delete and the fence in one transaction across two databases. The batch
+   holds the fence for ``REFERENCE_FENCE_COMMIT_GRACE`` after a failed delete,
+   which covers the in-doubt case a live process survives. The writer side has
+   the same boundary without that cover: a writer whose fence backend is lost
+   mid-write, or whose COMMIT is left in doubt, releases the fence while its
+   write may still land.
 """
 
+import asyncio
 import json
 import logging
 from collections.abc import Iterable, Mapping
+from functools import partial
 from typing import Any
 
 from app.core.celery.db import get_async_session_maker as get_beat_session_maker
-from app.core.security import get_internal_token
 from app.core.utils.date_time import utc_now
 from app.extensions.apps.framework.registry import collect_inventory_reference_providers
 from app.extensions.apps.inventory.config import inventory_app_settings
-from app.extensions.apps.inventory.deps import get_inventory_api_standalone
 from app.extensions.apps.meta_keys import SERVICE_ID_META_KEY
 from app.extensions.crud import SyncEntityAbsenceManager
 from app.extensions.db import get_async_session_maker as get_extensions_session_maker
 from app.extensions.models import SyncInventoryEntityTypeEnum
 from app.inventory.constants import RetirableEntityName
-from app.inventory.models import InventoryCollectResponse
+from app.inventory.crud import collect_retirable_entities
+from app.inventory.db import get_async_session_maker as get_inventory_session_maker
 from app.tasks.crud import TaskHistoryManager, TaskManager
 from app.tasks.db import get_async_session_maker as get_tasks_session_maker
 from app.tasks.periodic.crud import PeriodicTaskManager
+from app.tasks.reference_fence import (
+    hold_reference_collection_fence,
+    REFERENCE_FENCE_COMMIT_GRACE,
+)
 
 logger = logging.getLogger(__name__)
-
-COLLECT_PATH = "/collection/collect"
 
 #: The ledger's entity-type spelling for each collectable inventory entity. The
 #: two enums are deliberately separate — one is PMM Extensions', one is the Inventory
@@ -154,8 +187,9 @@ def _beat_kwargs_service_ids(payloads: Iterable[str | None]) -> set[int]:
 async def collect_task_envelope_service_ids() -> set[int]:
     """Return every inventory service id a task envelope can still re-emit.
 
-    Three reads, in two databases. The first two are what closes the scan-to-
-    delete window; the third covers a schedule that has not fired yet.
+    Three reads, in two databases. The first two cover every holder that existed
+    when the scan ran; the third covers a schedule that has not fired yet. A
+    holder written during a batch is covered by the reference fence instead.
 
     A read that cannot complete propagates rather than returning what it managed
     to gather: a holder that could not be read is not a holder that is empty, and
@@ -233,74 +267,78 @@ async def clear_absence_ledger(
             )
 
 
-def _parse_batch(
-    payload: Any,
-) -> tuple[dict[RetirableEntityName, list[int]], bool]:
-    """Read one collection response into its collected ids and remaining flag.
+def _log_collected(name: RetirableEntityName, collected: int) -> None:
+    """Log the rows one entity type's delete removed.
 
-    Parsed through the response model the Inventory API answers with, so every
-    level of the body is checked rather than only its outermost type.
-
-    :param payload: The decoded JSON body the Inventory API answered with.
-    :return: The collected ids per entity type, and whether more are waiting.
-    :raises ValidationError: If the body is not the documented object, or names
-        an entity type this service does not know.
+    :param name: The entity type the delete ran on.
+    :param collected: The number of rows it removed.
     """
-    parsed = InventoryCollectResponse.model_validate(payload)
-    return parsed.deleted, parsed.remaining
+    logger.info("Collected %s retired %s entities", collected, name)
 
 
-async def run_inventory_collection(api_key: str) -> None:
+async def run_inventory_collection() -> None:
     """Collect tombstoned inventory entities no live reference resolves.
 
-    Each batch calls the Inventory API twice with the same cutoffs and retained
-    set: a dry run naming the ids, then — once their ledger rows are gone — the
-    real delete. Both cutoffs are computed once for the whole run so successive
-    batches cannot drift. They cross to the Inventory API as values because it
-    cannot read this app's settings.
+    Each batch holds the reference fence exclusive from its retained-set read
+    through its delete, so no in-scope Tasks API write can land in between. Under
+    the fence it reads the retained set afresh, then calls the inventory
+    service's own collect twice with it: a dry run naming the ids, then — once
+    their ledger rows are gone and the fence is confirmed still held — the real
+    delete. The delete runs in this coroutine, on an inventory session of its
+    own, so the fence cannot be released before the delete has returned or
+    raised. Both cutoffs are computed once for the whole run so successive
+    batches cannot drift.
 
-    :param api_key: The internal token authenticating the Inventory API calls.
-    :raises HTTPException: Whatever :meth:`RemoteAPI.post` raises for a non-2xx
-        answer from the Inventory API — an expired token or a restarting service
-        is the likeliest runtime failure of this job.
-    :raises ValidationError: If the Inventory API answers a collect call with
-        something other than the documented object, or names an unknown entity
-        type.
+    When the real delete raises, the fence is held for
+    ``REFERENCE_FENCE_COMMIT_GRACE`` before the error propagates: a COMMIT the
+    server had already received may still land, and no writer may get in ahead
+    of it.
+
+    :raises AdvisoryLockTimeoutError: If in-flight writes hold the fence past its
+        bound. Raised before that batch clears or deletes anything.
+    :raises AdvisoryLockLostError: If the fence was lost after the retained set
+        was read. Raised before that batch's delete, after its ledger clear.
+    :raises SQLAlchemyError: If a database the run uses fails, including a
+        type's delete, with the deeper types' deletes of that batch already
+        committed.
     :raises Exception: Whatever computing the retained set raises, unchanged —
         deleting against a partial retained set is the failure this prevents.
     """
     now = utc_now()
     retired_before = now - inventory_app_settings.COLLECTION_RETENTION
     link_pin_retired_before = now - inventory_app_settings.IDENTITY_LINK_PIN_RETENTION
-    keep = {
-        name.value: sorted(entity_ids)
-        for name, entity_ids in (await collect_referenced_entities()).items()
-    }
-    client = await get_inventory_api_standalone()
-    body = {
-        "retired_before": retired_before.isoformat(),
-        "link_pin_retired_before": link_pin_retired_before.isoformat(),
-        "keep": keep,
-        "limit": inventory_app_settings.COLLECTION_BATCH_SIZE,
-        "dry_run": False,
-    }
-    with client.auth(api_key):
-        async with client.hold():
-            for batch in range(inventory_app_settings.COLLECTION_MAX_BATCHES):
-                candidates, _ = _parse_batch(
-                    await client.post(COLLECT_PATH, json={**body, "dry_run": True})
-                )
-                await clear_absence_ledger(candidates)
-                deleted, remaining = _parse_batch(
-                    await client.post(COLLECT_PATH, json=body)
-                )
-                logger.info(
-                    "Inventory collection batch %s deleted %s entities",
-                    batch + 1,
-                    sum(len(ids) for ids in deleted.values()),
-                )
-                if not remaining:
-                    return
+    tasks_session_maker = get_tasks_session_maker()
+    inventory_session_maker = get_inventory_session_maker()
+    for batch in range(inventory_app_settings.COLLECTION_MAX_BATCHES):
+        async with (
+            tasks_session_maker() as fence_session,
+            hold_reference_collection_fence(fence_session) as fence,
+            inventory_session_maker() as inventory_session,
+        ):
+            collect = partial(
+                collect_retirable_entities,
+                inventory_session,
+                retired_before=retired_before,
+                link_pin_retired_before=link_pin_retired_before,
+                keep=await collect_referenced_entities(),
+                limit=inventory_app_settings.COLLECTION_BATCH_SIZE,
+                on_collected=_log_collected,
+            )
+            candidates = await collect(dry_run=True)
+            await clear_absence_ledger(candidates.deleted)
+            await fence.verify()
+            try:
+                result = await collect(dry_run=False)
+            except BaseException:
+                await asyncio.sleep(REFERENCE_FENCE_COMMIT_GRACE.total_seconds())
+                raise
+        logger.info(
+            "Inventory collection batch %s deleted %s entities",
+            batch + 1,
+            sum(len(ids) for ids in result.deleted.values()),
+        )
+        if not result.remaining:
+            return
     logger.info(
         "Inventory collection stopped at its %s-batch cap; the next run continues.",
         inventory_app_settings.COLLECTION_MAX_BATCHES,
@@ -308,18 +346,20 @@ async def run_inventory_collection(api_key: str) -> None:
 
 
 async def run_scheduled_inventory_collection() -> None:
-    """Run inventory collection using the configured internal token.
+    """Run inventory collection, logging and re-raising any failure.
 
-    :raises HTTPException: Whatever the Inventory API's non-2xx answers raise.
-    :raises ValidationError: If the Inventory API answers a collect call with
-        something other than the documented object.
+    :raises AdvisoryLockTimeoutError: If in-flight writes hold the reference
+        fence past its bound.
+    :raises AdvisoryLockLostError: If a batch lost the fence before its delete.
+    :raises SQLAlchemyError: If a database the run uses fails.
     :raises Exception: Whatever computing the retained set raises, unchanged.
         Every failure is logged and re-raised so the Celery run records it and
         the task's failure alert fires; aborting deletes nothing, except in the
-        window between clearing a batch's ledger rows and its delete.
+        window between clearing a batch's ledger rows and its delete, and the
+        deeper types a failing delete had already committed.
     """
     try:
-        await run_inventory_collection(get_internal_token())
+        await run_inventory_collection()
     except Exception:
         logger.exception("Scheduled inventory collection failed")
         raise
