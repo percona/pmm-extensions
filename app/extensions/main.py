@@ -278,6 +278,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
     """
     pending = PendingCloses()
     app.state.retired_remote_apis = pending
+    extensions_proxy = cast("OverridableSettingsProxy", extensions_settings)
     callbacks: CallbackRegistry = {
         (entry.setting_class, key): _reseed_system_periodic_tasks
         for entry in collect_app_owned_settings_classes()
@@ -291,7 +292,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
             ): _make_remote_api_rebinder(
                 app,
                 "inventory_api",
-                extensions_settings,
+                extensions_proxy,
                 "INVENTORY_ENDPOINT",
                 pending=pending,
                 ssl_cafile=settings.SSL_CAFILE,
@@ -304,7 +305,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
             ): _make_remote_api_rebinder(
                 app,
                 "tasks_api",
-                extensions_settings,
+                extensions_proxy,
                 "TASKS_ENDPOINT",
                 pending=pending,
                 ssl_cafile=settings.SSL_CAFILE,
