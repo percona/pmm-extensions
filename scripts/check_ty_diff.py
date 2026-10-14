@@ -461,7 +461,9 @@ def parse_sources(root: Path, paths: Iterable[str]) -> dict[str, Source]:
         if not file.is_relative_to(resolved_root):
             continue
         try:
-            sources[path] = Source.parse(file.read_text(encoding="utf-8"))
+            # The parser rejects a byte order mark left in a str, and ty does
+            # not count one as a column.
+            sources[path] = Source.parse(file.read_text(encoding="utf-8-sig"))
         # ValueError covers undecodable bytes and, on 3.11, a null byte; the
         # parser raises RecursionError or MemoryError on pathological nesting.
         except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):

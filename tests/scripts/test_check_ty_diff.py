@@ -824,6 +824,30 @@ class TestDeltaKey:
 
         assert _key(before, 1) == _key(after, 1)
 
+    @pytest.mark.parametrize(
+        ("before", "line"),
+        [
+            ("for item in load(bad):\n    first()\n", 1),
+            ("with open(bad) as handle:\n    first()\n", 1),
+            ("async def build(settings: int = None):\n    first()\n", 1),
+            ("class Build(Base[bad]):\n    first = 1\n", 1),
+            ("try:\n    run()\nexcept* Missing as exc:\n    first()\n", 3),
+        ],
+        ids=["for", "with", "async-def", "class", "except-star"],
+    )
+    def test_every_compound_header_ignores_its_body(self, before, line):
+        """Match a header diagnostic across edits to the block below it."""
+        after = f"{before}    second()\n"
+
+        assert _key(before, line) == _key(after, line)
+        assert _key(before, line).kind == check_ty_diff.AnchorKind.STATEMENT
+
+    def test_identical_statements_in_one_file_share_a_key(self):
+        """Match identical statements wherever they sit, an accepted limit."""
+        text = "def first():\n    use(x)\n\n\ndef second():\n    use(x)\n"
+
+        assert _key(text, 2) == _key(text, 6)
+
     def test_a_header_diagnostic_follows_the_signature(self):
         """Separate a ``def``-line diagnostic once the signature changes."""
         before = "def build(settings: int = None):\n    return 1\n"
@@ -1009,6 +1033,27 @@ class TestParseSources:
         assert isinstance(sources["app/x.py"].tree, ast.Module)
         assert sources["app/x.py"].lines[0] == "x = 1"
 
+    def test_a_byte_order_mark_is_not_part_of_the_source(self, tmp_path):
+        """Parse a file that opens with a UTF-8 byte order mark."""
+        (tmp_path / "x.py").write_bytes(b"\xef\xbb\xbfx = f(a)\n")
+
+        sources = check_ty_diff.parse_sources(tmp_path, ["x.py"])
+
+        assert sources["x.py"].lines[0] == "x = f(a)"
+        assert check_ty_diff.delta_key(
+            _diagnostic(1, path="x.py"), sources["x.py"]
+        ) == _key("x = f(a)\n", 1, path="x.py")
+
+    def test_crlf_line_endings_number_lines_as_the_parser_does(self, tmp_path):
+        """Key a diagnostic in a CRLF file on the statement of its line."""
+        (tmp_path / "x.py").write_bytes(b"x = 1\r\ny = f(x)\r\n")
+
+        sources = check_ty_diff.parse_sources(tmp_path, ["x.py"])
+
+        assert check_ty_diff.delta_key(
+            _diagnostic(2, path="x.py"), sources["x.py"]
+        ) == _key("y = f(x)\n", 1, path="x.py")
+
     def test_a_missing_file_is_left_out(self, tmp_path):
         """Leave out a path that does not exist on that side."""
         assert check_ty_diff.parse_sources(tmp_path, ["app/gone.py"]) == {}
@@ -1102,6 +1147,25 @@ class TestMessageRewriteIsNotSurplus:
             {"app/old.py": CALL_SITE},
             _output(_row("app/new.py", 7, 12, HEAD_MESSAGE)),
             _output(_row("app/old.py", 5, 12, BASE_MESSAGE)),
+        )
+
+        assert code == 0
+
+    def test_a_diagnostic_moved_between_identical_statements_passes(
+        self, monkeypatch, tmp_path
+    ):
+        """Cancel a diagnostic that moved to an identical statement, an accepted limit."""
+        base = "def first():\n    use(x)\n\n\ndef second():\n    pass\n"
+        head = "def first():\n    pass\n\n\ndef second():\n    use(x)\n"
+
+        code, _, _ = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "M\tapp/x.py\n",
+            {"app/x.py": head},
+            {"app/x.py": base},
+            _output(_row("app/x.py", 6, 5, HEAD_MESSAGE)),
+            _output(_row("app/x.py", 2, 5, BASE_MESSAGE)),
         )
 
         assert code == 0
@@ -1227,23 +1291,27 @@ class TestAddedDiagnosticsStillReport:
 class TestUnparseableSourceDegrades:
     """Compare a file by message when either side cannot be keyed by statement."""
 
+    @pytest.mark.parametrize("broken", ["head", "base"])
     @pytest.mark.parametrize(
         ("head_message", "expected"),
         [(BASE_MESSAGE, 0), (HEAD_MESSAGE, 1)],
         ids=["same-message-matches", "changed-message-reports"],
     )
-    def test_an_unparseable_base_compares_by_message(
-        self, monkeypatch, tmp_path, head_message, expected
+    def test_an_unparseable_side_compares_by_message(
+        self, monkeypatch, tmp_path, broken, head_message, expected
     ):
         """Fall back to message identity, reporting what it cannot match."""
+        files = {"head": CALL_SITE, "base": CALL_SITE, broken: "def build(:\n"}
+        lines = {"head": 5, "base": 5, broken: 1}
+
         code, _, _ = _run_main_with_sources(
             monkeypatch,
             tmp_path,
             "M\tapp/x.py\n",
-            {"app/x.py": CALL_SITE},
-            {"app/x.py": "def build(:\n"},
-            _output(_row("app/x.py", 5, 12, head_message)),
-            _output(_row("app/x.py", 1, 1, BASE_MESSAGE)),
+            {"app/x.py": files["head"]},
+            {"app/x.py": files["base"]},
+            _output(_row("app/x.py", lines["head"], 12, head_message)),
+            _output(_row("app/x.py", lines["base"], 12, BASE_MESSAGE)),
         )
 
         assert code == expected
@@ -1263,3 +1331,27 @@ class TestUnparseableSourceDegrades:
         )
 
         assert code == 1
+
+
+class TestAgainstThePinnedTy:
+    """Hold the stubbed tests' assumptions about ty's output to the real binary."""
+
+    def test_real_output_keys_by_statement(self, tmp_path):
+        """Key a real diagnostic by statement, so its path and column line up."""
+        ty = check_ty_diff.resolve_ty()
+        if not ty.exists():
+            pytest.skip(f"no ty beside {sys.executable}")
+        # The non-ASCII prefix makes a byte column land on the wrong statement.
+        source = 'def take(x: int) -> None: ...\n\n\ny = "éé"; take("s")\n'
+        (tmp_path / "x.py").write_text(source, encoding="utf-8")
+
+        stdout = check_ty_diff._ty_stdout(
+            check_ty_diff.ty_argv(ty, (), ["x.py"]), tmp_path
+        )
+        (diagnostic,) = check_ty_diff.parse_ty_output(stdout)
+        sources = check_ty_diff.parse_sources(tmp_path, ["x.py"])
+
+        assert diagnostic.path == "x.py"
+        assert check_ty_diff.delta_key(diagnostic, sources["x.py"]) == _key(
+            'take("s")\n', 1, path="x.py", rule=diagnostic.rule
+        )
