@@ -296,6 +296,7 @@ async def overwrite_execution_request(
 #: as a command-line flag, ``config`` as a plain-string form field an app
 #: serialised, ``payload`` as the submitted document's reference.
 EXECUTION_REQUEST_ARGS = "restore --password hunter2"
+EXECUTION_REQUEST_MASKED_ARGS = "restore --password ***"
 EXECUTION_REQUEST_CONFIG = "master_password: hunter2\nmaster_host: db-1\n"
 EXECUTION_REQUEST_PAYLOAD = "file://snippets/foo.py"
 

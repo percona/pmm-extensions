@@ -35,6 +35,7 @@ redundant -- a parameter named ``mongodb-uri`` carries a password while matching
 no credential word.
 """
 
+import logging
 import re
 import shlex
 from dataclasses import dataclass
@@ -43,8 +44,15 @@ from app.core.utils.cache import ttl_cache
 from app.core.utils.fields import redact_credential_url
 from app.extensions.snippets.models.snippet import BaseSnippetArgs
 
+logger = logging.getLogger(__name__)
+
 #: Fixed-width replacement for a credential value, whatever its real length
 SENSITIVE_ARG_MASK = "***"
+
+ARG_MASKING_WARNING = (
+    "Could not mask the arguments of a snippet run, so no masked copy is recorded "
+    "and task history will withhold them."
+)
 
 #: Name segments that mark a parameter as credential-bearing on their own
 CREDENTIAL_NAME_SEGMENTS = frozenset(
@@ -124,6 +132,21 @@ def _is_credential_name(name: str) -> bool:
     return bool(CREDENTIAL_NAME_SEGMENTS & set(_NAME_SEGMENT_RE.split(name.lower())))
 
 
+def is_credential_parameter(name: str, *, sensitive: bool) -> bool:
+    """Return whether a snippet parameter carries a credential.
+
+    The one classification of a declared parameter, shared by the run form and
+    the masker so the two cannot disagree about a parameter. The masker goes
+    further than this on a recorded line: it also masks credential-named extra
+    arguments and passwords embedded in URLs.
+
+    :param name: The parameter's frontmatter name.
+    :param sensitive: The parameter's frontmatter ``sensitive`` flag.
+    :return: ``True`` when the flag is set or the name reads as a credential.
+    """
+    return sensitive or _is_credential_name(name)
+
+
 @ttl_cache(ttl=_ONE_HOUR, maxsize=32)
 def _masking_spec(execution_model: type[BaseSnippetArgs]) -> tuple[_ParamSpec, ...]:
     """Return the per-parameter token shapes and sensitivity for a snippet.
@@ -159,7 +182,9 @@ def _masking_spec(execution_model: type[BaseSnippetArgs]) -> tuple[_ParamSpec, .
             _ParamSpec(
                 name=name,
                 tokens=tokens,
-                sensitive=bool(metadata.get("sensitive")) or _is_credential_name(name),
+                sensitive=is_credential_parameter(
+                    name, sensitive=bool(metadata.get("sensitive"))
+                ),
                 positional=positional,
                 omittable=(not field.is_required() and field.default is None)
                 or (bool(metadata.get("is_flag")) and not positional),
@@ -483,3 +508,26 @@ def mask_snippet_args(args: str, execution_model: type[BaseSnippetArgs]) -> str 
     )
     masked = [_redact_credential_url_token(token) for token in tokens]
     return shlex.join(masked).replace(_MASK_PLACEHOLDER, SENSITIVE_ARG_MASK)
+
+
+def masked_args_for(execution_args: BaseSnippetArgs) -> str | None:
+    """Return the masked rendering of a run's arguments, for recording beside them.
+
+    Computed at submit time against the model the arguments were rendered from,
+    so the copy stays correct after the snippet is edited or deleted. A
+    ``TypeError``, ``ValueError``, ``KeyError`` or ``AttributeError`` raised
+    while masking is logged and records no copy, and history then withholds the
+    arguments rather than showing them.
+
+    :param execution_args: The validated arguments of the run being dispatched.
+    :return: The masked argument string, or ``None`` when the run renders no
+        arguments or they cannot be masked safely.
+    """
+    args = execution_args.to_args_string()
+    if not args:
+        return None
+    try:
+        return mask_snippet_args(args, type(execution_args))
+    except (TypeError, ValueError, KeyError, AttributeError):
+        logger.warning(ARG_MASKING_WARNING, exc_info=True)
+        return None

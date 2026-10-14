@@ -15,12 +15,15 @@
 
 """HTTP integration tests for the snippets plugin's JSON API routes."""
 
+import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, UTC
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aioresponses import aioresponses
 from fastapi import status
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +31,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import app.extensions.apps.snippets.extra_routes as snippets_extra_routes
 import app.extensions.snippets.models.responses as snippets_models
 from app.api.deps import require_minimum_role_for_unsafe_methods
+from app.core.config import Settings
+from app.core.requests import RemoteAPI
+from app.extensions.config import extensions_settings
 from app.extensions.deps import (
     BEARER_REQUIRED_DETAIL,
     get_current_user,
@@ -37,6 +43,7 @@ from app.extensions.deps import (
 from app.extensions.main import extensions_app
 from app.extensions.snippets.config import snippets_settings
 from app.extensions.snippets.crud import SnippetManager
+from app.extensions.snippets.masking import SENSITIVE_ARG_MASK
 from app.extensions.snippets.models import Snippet
 from app.extensions.snippets.models.responses import (
     BatchApprovalErrorResponse,
@@ -45,6 +52,7 @@ from app.extensions.snippets.models.responses import (
     SnippetResponse,
     SnippetsCapabilitiesResponse,
 )
+from app.tasks.execution_request_secrets import MASKED_ARGS_META_KEY
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.extensions.snippets.snippet_kit import persist_meta
 
@@ -564,6 +572,36 @@ class TestSnippetsApiPerSnippetSchema:
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["display_name"] == snippet.filename
 
+    async def test_credential_parameters_are_marked_sensitive(
+        self, test_client, create_snippet, session
+    ):
+        """Tell the client which parameters it must not display as typed."""
+        snippet = await _seed_gated_snippet(
+            create_snippet,
+            session,
+            [
+                {"name": "port", "type": "str"},
+                {"name": "password", "type": "str"},
+                {"name": "auth-blob", "type": "str", "sensitive": True},
+            ],
+            filename="credentialed.sh",
+        )
+
+        response = test_client.get(
+            f"{API_BASE}/snippet/schema",
+            params={"snippet_filename": snippet.filename},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        fields = {
+            field["name"]: field
+            for section in response.json()["forms"]
+            for field in section["fields"]
+        }
+        assert fields["password"]["sensitive"] is True
+        assert fields["auth-blob"]["sensitive"] is True
+        assert fields["port"]["sensitive"] is False
+
     async def test_unmarked_fields_omit_the_destructive_key(
         self, test_client, create_snippet
     ):
@@ -861,6 +899,108 @@ class TestSnippetsApiExecute:
         assert meta["target"] == "host1"
         assert meta["_snippet_filename"] == snippet.filename
         assert meta["md5_checksum"] == snippet.md5_digest
+
+    async def test_posts_a_masked_copy_beside_the_raw_arguments(
+        self, test_client, mock_task_api_dep, create_snippet, session
+    ):
+        """Send the executor the real password and history a masked rendering.
+
+        The body is built by the route itself, so this is what proves a real
+        request records the masked copy.
+        """
+        snippet = await _seed_gated_snippet(
+            create_snippet,
+            session,
+            [
+                {"name": "port", "type": "int", "required": True},
+                {"name": "password", "type": "str", "required": True},
+            ],
+            filename="credentialed.sh",
+        )
+        mock_task_api_dep.post = AsyncMock(return_value={"id": 99})
+
+        response = test_client.post(
+            f"{API_BASE}/snippet/execute",
+            params={"snippet_filename": snippet.filename},
+            json={
+                "executor_host": "host1",
+                "args": {"port": 3306, "password": "hunter2Secret"},
+            },
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        meta = mock_task_api_dep.post.call_args.kwargs["json"]["meta"]
+        assert meta["args"] == "--port 3306 --password hunter2Secret"
+        assert (
+            meta[MASKED_ARGS_META_KEY] == f"--port 3306 --password {SENSITIVE_ARG_MASK}"
+        )
+        assert "hunter2Secret" not in response.text
+
+    async def test_a_whole_run_submission_logs_no_credential(
+        self, async_test_client, create_snippet, session, mocker, caplog
+    ):
+        """Keep the password out of every DEBUG record of a real run submission.
+
+        Nothing between the route and the wire is stubbed: the Tasks client is
+        built from the arguments the application itself passes for one, and only
+        the Tasks service's answers are canned. The client is kept out of the
+        process-wide registry so no other test inherits it.
+        """
+        snippet = await _seed_gated_snippet(
+            create_snippet,
+            session,
+            [{"name": "password", "type": "str", "required": True}],
+            filename="credentialed.sh",
+        )
+        extensions_app.dependency_overrides[get_session] = lambda: session
+        built: list[RemoteAPI] = []
+
+        async def build_unregistered(
+            cls: type[RemoteAPI] = RemoteAPI, **kwargs: Any
+        ) -> RemoteAPI:
+            client = await cls(**kwargs).open()
+            built.append(client)
+            return client
+
+        mocker.patch.object(
+            Settings, "get_remote_api", new=AsyncMock(side_effect=build_unregistered)
+        )
+        history = {
+            "id": 99,
+            "execution_request": {
+                "meta": {"args": "--password ***", "config": "token: cfg-secret"},
+                "payload": "payload-secret",
+            },
+        }
+        tasks_url = re.compile(
+            rf"^{re.escape(str(extensions_settings.TASKS_ENDPOINT))}"
+        )
+
+        try:
+            with (
+                aioresponses() as tasks_service,
+                caplog.at_level(logging.DEBUG, logger="app"),
+                caplog.at_level(logging.DEBUG, logger="tasks_api"),
+            ):
+                tasks_service.get(tasks_url, payload={}, repeat=True)
+                tasks_service.post(tasks_url, payload=history, repeat=True)
+                response = await async_test_client.post(
+                    f"{API_BASE}/snippet/execute",
+                    params={"snippet_filename": snippet.filename},
+                    json={
+                        "executor_host": "host1",
+                        "args": {"password": "hunter2Secret"},
+                    },
+                )
+        finally:
+            for client in built:
+                await client.close()
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert "Sending POST request to /execute/" in caplog.text
+        assert "<withheld>" in caplog.text
+        for leaked in ("hunter2Secret", "cfg-secret", "payload-secret"):
+            assert leaked not in caplog.text
 
     async def test_rejects_submitted_value_for_gated_hidden_param(
         self, test_client, mock_task_api_dep, create_snippet, session

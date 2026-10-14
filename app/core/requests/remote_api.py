@@ -127,8 +127,8 @@ _SENSITIVE_HEADERS = frozenset(
 # logs. Compared case-insensitively against JSON/form body keys.
 _SENSITIVE_BODY_FIELDS = frozenset({"password", "secret", "token"})
 _REDACTED_VALUE = "****"
-# Stands in for a response body a caller withheld from the log, so the line
-# keeps naming the request that produced it.
+# Stands in for a request or response body a caller withheld from the log, so
+# the line keeps naming the request that produced it.
 _WITHHELD_BODY = "<withheld>"
 # Bounds the decoded body reaching the exception log: the upstream answering
 # HTML rather than JSON decides that body's size, so a large error page would
@@ -288,8 +288,9 @@ def _sanitize_request_kwargs(
     *,
     extra_sensitive_headers: frozenset[str] = frozenset(),
     extra_sensitive_body_fields: frozenset[str] = frozenset(),
+    withhold_body: bool = False,
 ) -> dict[str, Any]:
-    """Return a shallow copy of request kwargs with credentials redacted.
+    """Return a copy of request kwargs with credentials redacted.
 
     The auth context injects an ``Authorization`` header into ``kwargs`` before
     the request is logged, and some endpoints post credentials in the request
@@ -303,6 +304,9 @@ def _sanitize_request_kwargs(
         beyond the always-masked credential headers.
     :param extra_sensitive_body_fields: Additional lowercase body field names to
         mask, beyond the always-masked credential fields.
+    :param withhold_body: Whether to replace the request body outright, rather
+        than mask fields inside it, for a caller whose body carries credentials
+        under shapes no list of field names can anticipate.
     :return: A copy safe to log, with sensitive header and body values masked.
     """
     sensitive_headers = _SENSITIVE_HEADERS | extra_sensitive_headers
@@ -316,13 +320,16 @@ def _sanitize_request_kwargs(
         }
     for body_key in ("json", "data"):
         body = kwargs.get(body_key)
-        if isinstance(body, dict):
-            safe[body_key] = {
+        if withhold_body and body is not None:
+            safe[body_key] = _WITHHELD_BODY
+        elif isinstance(body, dict):
+            redacted = {
                 key: (
                     _REDACTED_VALUE if key.lower() in sensitive_body_fields else value
                 )
                 for key, value in body.items()
             }
+            safe[body_key] = redacted
     return safe
 
 
@@ -579,6 +586,10 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     :param ssl_keyfile: Path to the SSL key file. Defaults to None.
     :param ssl_certfile: Path to the SSL certificate file. Defaults to None.
     :param logger_name: Name to use for the logger. Defaults to ``__name__``.
+    :param withhold_body_log: Whether this client keeps every request and
+        response body out of its log, for an upstream whose bodies carry
+        credentials. The method, path, sanitized headers and status are still
+        logged. Defaults to ``False``.
     :cvar CONNECTIVITY_CHECK_PATH: Lightweight route hit by
         :meth:`RemoteAPI.check_connectivity` for a reachability probe. Never
         enters the client-registry key or model serialization. Override per
@@ -594,6 +605,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     ssl_keyfile: RelativeFilePathField | None = Field(None, frozen=True)
     ssl_certfile: RelativeFilePathField | None = Field(None, frozen=True)
     logger_name: str = __name__
+    withhold_body_log: bool = False
     _session: ClientSession | None = None
     _stream_session: ClientSession | None = None
     _in_flight: int = 0
@@ -620,6 +632,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     )
     _suppress_response_log: ContextVar[bool] = PrivateAttr(
         default_factory=lambda: ContextVar("api_suppress_response_log", default=False)
+    )
+    _suppress_request_log: ContextVar[bool] = PrivateAttr(
+        default_factory=lambda: ContextVar("api_suppress_request_log", default=False)
     )
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -1107,6 +1122,30 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         finally:
             self._suppress_response_log.reset(token)
 
+    @contextmanager
+    def suppress_request_log(self) -> Generator[Self]:
+        """Withhold the request body from the transport's own log record for the call.
+
+        Register that the ``json`` and ``data`` bodies of requests sent inside
+        the block must not reach the log. Use this where one call's body carries
+        data that must not outlive the request in a log line while the client's
+        other request bodies stay logged. The method, path and sanitized headers
+        are still logged.
+
+        Guards the request-logging site in :meth:`request` and nothing else.
+
+        Like :meth:`suppress_response_log` and unlike :meth:`redact_headers`,
+        this flag has nothing to union; an enclosing suppression survives an
+        inner block's exit unchanged.
+
+        :return: The instance with request body logging withheld.
+        """
+        token = self._suppress_request_log.set(True)
+        try:
+            yield self
+        finally:
+            self._suppress_request_log.reset(token)
+
     @cached_property
     def logger(self) -> logging.Logger:
         """Return logger object to use.
@@ -1363,6 +1402,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 kwargs,
                 extra_sensitive_headers=self._extra_sensitive_headers.get(),
                 extra_sensitive_body_fields=self._extra_sensitive_body_fields.get(),
+                withhold_body=(
+                    self._suppress_request_log.get() or self.withhold_body_log
+                ),
             ),
         )
         if self._session is None:
@@ -1771,7 +1813,7 @@ class RemoteAPI(BaseRemoteAPI):
                     response.status,
                     detail="The server answered with an unfollowed redirect.",
                 )
-            withhold_body = self._suppress_response_log.get()
+            withhold_body = self._suppress_response_log.get() or self.withhold_body_log
             response_data: JSONBody = None
             try:
                 response_data = await response.json()

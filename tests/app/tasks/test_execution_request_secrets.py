@@ -24,8 +24,10 @@ import logging
 from typing import Any
 
 import pytest
+from aioresponses import aioresponses
 
 from app.core.encryption import decrypt, is_encrypted
+from app.core.requests.remote_api import RemoteAPI
 from app.tasks.execution_request_secrets import (
     ARGS_LEAF,
     CONFIG_LEAF,
@@ -33,14 +35,21 @@ from app.tasks.execution_request_secrets import (
     encrypt_request_leaves,
     ENCRYPTED_LEAVES,
     ENCRYPTED_META_KEYS,
+    MASKED_ARGS_META_KEY,
     PAYLOAD_LEAF,
+    publish_masked_args,
     redact_request_leaves,
+    redact_request_leaves_for_log,
+    REDACTED_LEAF,
     reencrypt_request_leaves,
+    TASKS_CLIENT_LOG_POLICY,
+    WITHHELD_ARGS_PLACEHOLDER,
 )
 from tests.app.encryption_fixtures import FERNET_SHAPED_PLAINTEXT, foreign_token
 from tests.app.tasks.conftest import (
     EXECUTION_REQUEST_ARGS,
     EXECUTION_REQUEST_CONFIG,
+    EXECUTION_REQUEST_MASKED_ARGS,
     EXECUTION_REQUEST_PAYLOAD,
     request_document,
 )
@@ -344,3 +353,181 @@ class TestRedactRequestLeaves:
 
         assert document["meta"]["args"] == EXECUTION_REQUEST_ARGS
         assert document["payload"] == "file://snippets/foo.py"
+
+
+MASKED_ARGS = EXECUTION_REQUEST_MASKED_ARGS
+
+
+class TestPublishMaskedArgs:
+    """Cover the response-side swap of the raw arguments for their masked copy."""
+
+    @staticmethod
+    def _document(**meta: Any) -> dict[str, Any]:
+        """Return a request document whose ``meta`` gains the given keys.
+
+        :param meta: Keys to add to, or override in, the document's ``meta``.
+        :return: The dumped execution request.
+        """
+        document = request_document()
+        document["meta"].update(meta)
+        return document
+
+    def test_publishes_the_masked_copy_in_place_of_the_arguments(self):
+        """Assert a row carrying a masked copy shows it where the arguments were."""
+        document = self._document(**{MASKED_ARGS_META_KEY: MASKED_ARGS})
+
+        published = publish_masked_args(document)
+
+        assert published["meta"]["args"] == MASKED_ARGS
+        assert published["meta"]["config"] == EXECUTION_REQUEST_CONFIG
+        assert published["payload"] == EXECUTION_REQUEST_PAYLOAD
+
+    def test_does_not_mutate_the_caller_document(self):
+        """Assert the raw arguments survive in the document the caller passed."""
+        document = self._document(**{MASKED_ARGS_META_KEY: MASKED_ARGS})
+
+        publish_masked_args(document)
+
+        assert document["meta"]["args"] == EXECUTION_REQUEST_ARGS
+
+    def test_withholds_arguments_that_carry_no_masked_copy(self):
+        """Assert a row recorded without a masked copy shows the placeholder."""
+        published = publish_masked_args(request_document())
+
+        assert published["meta"]["args"] == WITHHELD_ARGS_PLACEHOLDER
+
+    @pytest.mark.parametrize("masked", ["", None, 7, ["--password", "***"]])
+    def test_withholds_when_the_masked_copy_is_not_a_usable_string(self, masked):
+        """Assert an empty or non-string masked copy is never published.
+
+        :param masked: The value stored under the masked-copy key.
+        """
+        published = publish_masked_args(
+            self._document(**{MASKED_ARGS_META_KEY: masked})
+        )
+
+        assert published["meta"]["args"] == WITHHELD_ARGS_PLACEHOLDER
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            {"task": "run-python", "target": "node-1", "meta": {"_snippet": "a.py"}},
+            {"task": "run-python", "target": "node-1", "meta": {"args": None}},
+            {"task": "run-python", "target": "node-1", "meta": {"args": ""}},
+            {"task": "run-python", "target": "node-1"},
+            {"task": "run-python", "target": "node-1", "meta": None},
+            {"task": "run-python", "target": "node-1", "meta": "not-a-mapping"},
+        ],
+        ids=[
+            "no-args",
+            "null-args",
+            "empty-args",
+            "no-meta",
+            "null-meta",
+            "non-mapping-meta",
+        ],
+    )
+    def test_a_document_without_arguments_is_returned_unchanged(self, document):
+        """Assert there is nothing to withhold where no arguments were recorded.
+
+        :param document: A dumped request holding no ``meta.args`` value.
+        """
+        assert publish_masked_args(document) == document
+
+    def test_a_masked_copy_without_arguments_adds_no_arguments(self):
+        """Assert a stray masked copy cannot invent arguments the run never had."""
+        document = {
+            "task": "run-python",
+            "target": "node-1",
+            "meta": {MASKED_ARGS_META_KEY: MASKED_ARGS},
+        }
+
+        assert "args" not in publish_masked_args(document)["meta"]
+
+    def test_publishing_twice_changes_nothing_further(self):
+        """Assert a gateway re-publishing an already-published body is a no-op."""
+        for document in (
+            request_document(),
+            self._document(**{MASKED_ARGS_META_KEY: MASKED_ARGS}),
+        ):
+            once = publish_masked_args(document)
+
+            assert publish_masked_args(once) == once
+
+
+class TestRedactRequestLeavesForLog:
+    """Cover the rendering of a request for a log line."""
+
+    def test_redacts_every_protected_leaf(self):
+        """Assert no protected leaf keeps its value."""
+        redacted = redact_request_leaves_for_log(request_document())
+
+        assert redacted["meta"]["args"] == REDACTED_LEAF
+        assert redacted["meta"]["config"] == REDACTED_LEAF
+        assert redacted["payload"] == REDACTED_LEAF
+
+    def test_leaves_every_other_leaf_readable(self):
+        """Assert a log line still identifies the run it describes."""
+        redacted = redact_request_leaves_for_log(request_document())
+
+        assert redacted["task"] == "run-python"
+        assert redacted["target"] == "node-1"
+        assert redacted["meta"]["_service_name"] == "mysql-1"
+
+    def test_an_absent_leaf_stays_absent(self):
+        """Assert a request with no payload does not log as if it had one."""
+        redacted = redact_request_leaves_for_log(request_document(payload=None))
+
+        assert redacted["payload"] is None
+
+    def test_does_not_mutate_the_caller_document(self):
+        """Assert the document the caller passed keeps its values."""
+        document = request_document()
+
+        redact_request_leaves_for_log(document)
+
+        assert document["meta"]["args"] == EXECUTION_REQUEST_ARGS
+        assert document["payload"] == EXECUTION_REQUEST_PAYLOAD
+
+
+class TestTasksClientLogPolicy:
+    """Cover the log settings every Tasks API client is constructed with."""
+
+    @pytest.mark.asyncio
+    async def test_a_schedule_body_logs_no_protected_leaf(self, caplog):
+        """Keep a periodic-task body's nested leaves out of the request log line."""
+        client = RemoteAPI(endpoint="http://localhost:8000/", **TASKS_CLIENT_LOG_POLICY)
+        with aioresponses() as tasks_service:
+            tasks_service.post("http://localhost:8000/backup/periodic/", payload={})
+            with caplog.at_level(logging.DEBUG, logger=client.logger.name):
+                async with client:
+                    await client.post(
+                        "backup/periodic/",
+                        json={
+                            "name": "nightly",
+                            "execute_request": {
+                                "meta": {
+                                    "args": EXECUTION_REQUEST_ARGS,
+                                    "config": EXECUTION_REQUEST_CONFIG,
+                                },
+                                "payload": EXECUTION_REQUEST_PAYLOAD,
+                            },
+                        },
+                    )
+
+        sending = [
+            r.getMessage() for r in caplog.records if "Sending" in r.getMessage()
+        ]
+        assert len(sending) == 1
+        assert "backup/periodic/" in sending[0]
+        assert "nightly" not in sending[0]
+        for secret in (
+            EXECUTION_REQUEST_ARGS,
+            EXECUTION_REQUEST_CONFIG,
+            EXECUTION_REQUEST_PAYLOAD,
+        ):
+            assert secret not in sending[0]
+
+    def test_withholds_request_and_response_bodies(self):
+        """Assert the policy sets the one flag that keeps both bodies unlogged."""
+        assert TASKS_CLIENT_LOG_POLICY == {"withhold_body_log": True}
