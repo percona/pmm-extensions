@@ -82,6 +82,7 @@ from app.extensions.apps.om_bootstrap.schema import om_bootstrap_schema
 from app.extensions.apps.om_bootstrap.strategies import strategy_for
 from app.extensions.apps.om_bootstrap.strategy import (
     BootstrapSpec,
+    CREATE_ADMIN_USER_STEP,
     HostBootstrapState,
     InstallMethod,
     InstallStrategy,
@@ -664,7 +665,7 @@ def _spec_for(run: BootstrapRun) -> tuple[InstallStrategy, BootstrapSpec]:
             host: MemberConfig(**config) for host, config in run.member_configs.items()
         },
         create_admin_user=any(
-            step.name == "create_admin_user" for step in parse_run_steps(run)
+            step.name == CREATE_ADMIN_USER_STEP for step in parse_run_steps(run)
         ),
     )
     return _strategy_for(install_method), spec

@@ -50,6 +50,7 @@ import shlex
 
 from app.extensions.apps.om_bootstrap.strategy import (
     BootstrapSpec,
+    CREATE_ADMIN_USER_STEP,
     HostBootstrapState,
     MemberConfig,
     OperatingSystem,
@@ -1004,7 +1005,7 @@ class PackagesInstallStrategy:
         """
         steps = ["rs_initiate"]
         if spec.create_admin_user:
-            steps.append("create_admin_user")
+            steps.append(CREATE_ADMIN_USER_STEP)
         steps.append("create_pmm_monitoring_user")
         return steps
 
@@ -1031,7 +1032,7 @@ class PackagesInstallStrategy:
         """
         if step_name == "rs_initiate":
             return self._rs_initiate(hosts, spec)
-        if step_name == "create_admin_user":
+        if step_name == CREATE_ADMIN_USER_STEP:
             return self._create_user(step_name, hosts, spec, params, ADMIN_USER_ROLES)
         if step_name == "create_pmm_monitoring_user":
             return self._create_user(

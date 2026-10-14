@@ -156,6 +156,10 @@ class MemberConfig(BaseModel):
         return self
 
 
+#: The run step a spec with ``create_admin_user`` plans; PMM checks the planned run steps for it.
+CREATE_ADMIN_USER_STEP = "create_admin_user"
+
+
 class BootstrapSpec(BaseModel):
     """Hold what one host's bootstrap needs to know to plan and build its steps.
 
