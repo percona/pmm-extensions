@@ -439,6 +439,37 @@ async def test_offsets_stay_cumulative_across_a_log_rotation(
     await resumed_past_the_rotation.leave()
 
 
+async def test_a_joiner_keeps_following_after_nomad_evicts_a_rotated_file(
+    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+) -> None:
+    """Hand a joiner off at the frontier once Nomad has deleted the oldest file.
+
+    Eviction shifts Nomad's request offsets down by the deleted file's size, so
+    a catch-up from 0 reaches Nomad's end before the shared follow's frontier,
+    having read everything Nomad still holds. The joiner then follows on live,
+    as its own follow would have.
+    """
+    history = live_history(nomad_stub)
+    first = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, first)
+    await nomad_stub.write(STDOUT, b"evicted\n")
+    await until(lambda: first.offset() == len("evicted\n"))
+    await nomad_stub.rotate(STDOUT)
+    await nomad_stub.write(STDOUT, b"retained\n")
+    await until(lambda: first.offset() == len("evicted\nretained\n"))
+    await nomad_stub.evict_oldest(STDOUT)
+
+    joiner = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, joiner)
+    await nomad_stub.write(STDOUT, b"live\n")
+    await until(lambda: joiner.text().endswith("live\n"))
+
+    assert joiner.text() == "retained\nlive\n"
+    assert first.text() == "evicted\nretained\nlive\n"
+    await first.leave()
+    await joiner.leave()
+
+
 async def test_offsets_are_data_ends_however_nomad_frames_the_log(
     nomad_stub: NomadLogStub, live_executor: NomadExecutor
 ) -> None:

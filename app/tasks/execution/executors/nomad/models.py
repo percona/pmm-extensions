@@ -3423,6 +3423,13 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         bytes from ``start``, so they stay in the cumulative space across
         rotated files.
 
+        Nomad has nothing left before ``end`` once it has deleted an older
+        rotated file, because the deletion shifts every request offset down by
+        that file's size while ``end`` was counted before it. The bytes read up
+        to Nomad's end are then the ones the shared follow already reached, so
+        the read stops there rather than failing, and the viewer rejoins the
+        live follow.
+
         :param alloc_id: The Nomad allocation identifier.
         :param step: The task step name.
         :param log_type: The type of log to read.
@@ -3432,8 +3439,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param drain: Whether a partial line still withheld at ``end`` is
             released; otherwise only whole lines are read.
         :return: The range's log lines, each carrying the raw offset it ends at.
-        :raises LogCatchUpError: When a request fails, times out, or ends
-            before ``end``.
+        :raises LogCatchUpError: When a request fails or times out.
         :raises RuntimeError: When this executor's session is already closed.
         :raises json.JSONDecodeError: When Nomad sends a malformed frame.
         :raises UnicodeDecodeError: When the frame stream, or a non-anonymized
@@ -3452,10 +3458,17 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 self._log_catch_up_failure(alloc_id, step, log_type, start, end, error)
                 raise LogCatchUpError(str(error)) from error
             if not frames:
-                self._log_catch_up_failure(
-                    alloc_id, step, log_type, start, end, "short read"
+                logger.warning(
+                    "Nomad log catch-up reached the log's end at offset=%s before "
+                    "%s alloc_id=%s step=%s log_type=%s; Nomad deleted an older "
+                    "rotated file, so the viewer rejoins the live follow there",
+                    position,
+                    end,
+                    alloc_id,
+                    step,
+                    log_type,
                 )
-                raise LogCatchUpError(f"Nomad log ended at {position} before {end}")
+                break
             for raw in frames:
                 position += len(raw)
                 if anonymized:

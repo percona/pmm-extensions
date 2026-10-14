@@ -47,10 +47,15 @@ FRAME_SIZE = 64 * 1024
 
 
 class _LogFile(bytearray):
-    """Hold one log file's bytes and where each write to it ended."""
+    """Hold one log file's bytes and where each write to it ended.
 
-    def __init__(self) -> None:
+    :param number: The rotation number its name ends with, kept when older
+        files are evicted.
+    """
+
+    def __init__(self, number: int = 0) -> None:
         super().__init__()
+        self.number = number
         self.write_ends: list[int] = []
 
     def record(self, data: bytes) -> None:
@@ -83,6 +88,20 @@ class _LogFile(bytearray):
             framed.append((offset, chunk))
             offset += len(chunk)
         return framed
+
+
+def _following_file(files: list[_LogFile], current: _LogFile) -> _LogFile | None:
+    """Return the file after ``current``, the way a follow moves on to it.
+
+    :param files: The log type's retained files, oldest first.
+    :param current: The file the follow is reading.
+    :return: The next retained file; the oldest one when ``current`` itself
+        was evicted; or ``None`` when ``current`` is the newest.
+    """
+    for index, retained in enumerate(files):
+        if retained is current:
+            return files[index + 1] if index + 1 < len(files) else None
+    return files[0]
 
 
 def _locate(files: list[_LogFile], offset: int) -> tuple[int, int]:
@@ -216,6 +235,16 @@ class NomadLogStub:
         """
         await self._on_stub_loop(self._rotate(log_type))
 
+    async def evict_oldest(self, log_type: TaskLogType) -> None:
+        """Delete the oldest file, as Nomad does past its ``max_files`` limit.
+
+        Request offsets then count from the oldest retained file, so every
+        cumulative offset shifts down by the evicted file's size.
+
+        :param log_type: The log type to evict from.
+        """
+        await self._on_stub_loop(self._evict_oldest(log_type))
+
     async def finish(self) -> None:
         """Mark the step dead without writing anything more."""
         await self._on_stub_loop(self._finish())
@@ -293,7 +322,17 @@ class NomadLogStub:
         :param log_type: The log type to rotate.
         """
         async with self._changed:
-            self._files[log_type.value].append(_LogFile())
+            files = self._files[log_type.value]
+            files.append(_LogFile(files[-1].number + 1))
+            self._changed.notify_all()
+
+    async def _evict_oldest(self, log_type: TaskLogType) -> None:
+        """Drop the log type's oldest file, on the stub's loop.
+
+        :param log_type: The log type to evict from.
+        """
+        async with self._changed:
+            del self._files[log_type.value][0]
             self._changed.notify_all()
 
     async def _finish(self) -> None:
@@ -424,11 +463,14 @@ class NomadLogStub:
         async with self._changed:
             index, position = _locate(files, offset)
             pieces = [
-                (current, files[current].frames(position if current == index else 0))
+                (
+                    files[current].number,
+                    files[current].frames(position if current == index else 0),
+                )
                 for current in range(index, len(files))
             ]
-        for current, frames in pieces:
-            await self._write_frames(response, name, current, frames)
+        for number, frames in pieces:
+            await self._write_frames(response, name, number, frames)
 
     async def _follow(
         self,
@@ -440,7 +482,9 @@ class NomadLogStub:
         """Write frames past ``offset`` until the client goes away.
 
         A follow sends the current file to its end before it moves on to the
-        next one, where frame offsets start again from 0.
+        next one, where frame offsets start again from 0. It holds the file it
+        is reading, as Nomad holds it open, so evicting an older file does not
+        move it.
 
         :param response: The prepared follow response.
         :param name: The ``<task>.<type>`` prefix of the log's file names.
@@ -448,25 +492,22 @@ class NomadLogStub:
         :param offset: The cumulative offset the follow starts from.
         """
         index, position = _locate(files, offset)
+        current = files[index]
         while True:
             async with self._changed:
-                if (
-                    len(files[index]) == position
-                    and index == len(files) - 1
-                    and not self._done
-                ):
+                if len(current) == position and current is files[-1] and not self._done:
                     with suppress(TimeoutError):
                         await asyncio.wait_for(
                             self._changed.wait(), self.heartbeat_interval
                         )
-                frames = files[index].frames(position)
-                rotated = index < len(files) - 1
+                frames = current.frames(position)
+                following = _following_file(files, current)
                 done = self._done
             if frames:
                 position += sum(len(data) for _, data in frames)
-                await self._write_frames(response, name, index, frames)
-            elif rotated:
-                index, position = index + 1, 0
+                await self._write_frames(response, name, current.number, frames)
+            elif following is not None:
+                current, position = following, 0
             else:
                 await response.write(b"{}")
                 if done:
