@@ -67,6 +67,9 @@ LATER_ISO = "2026-08-12T12:06:00+00:00"
 SECOND_EXTERNAL_ID = "0b9c3f5e-6a0f-4c56-9a1d-2f0e3b7c8d41"
 #: An hour: far enough ahead of the build to be past any skew tolerance.
 AN_HOUR = 3600
+#: Half a minute ahead of the build: inside the 60-second skew tolerance, and a literal
+#: rather than derived from it, so dropping the tolerance fails the test.
+WITHIN_SKEW = 30
 
 #: A probe record shaped like the payload's NDJSON, trimmed to the fields asserted.
 RECORD: dict[str, Any] = {
@@ -591,26 +594,23 @@ async def test_records_collected_at_different_times_keep_different_timestamps(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "collected_at",
+    "stamp",
     [
-        pytest.param(None, id="missing"),
-        pytest.param("2026-08-12T12:05:00+00:00", id="non-numeric"),
-        pytest.param(True, id="boolean"),
-        pytest.param(0, id="zero"),
-        pytest.param(-1, id="negative"),
-        pytest.param(float("nan"), id="nan"),
-        pytest.param(time.time() + AN_HOUR, id="beyond-skew"),
+        pytest.param({}, id="missing"),
+        pytest.param({"collected_at": "2026-08-12T12:05:00+00:00"}, id="non-numeric"),
+        pytest.param({"collected_at": True}, id="boolean"),
+        pytest.param({"collected_at": 0}, id="zero"),
+        pytest.param({"collected_at": -1}, id="negative"),
+        pytest.param({"collected_at": float("nan")}, id="nan"),
+        pytest.param({"collected_at": time.time() + AN_HOUR}, id="beyond-skew"),
     ],
 )
 async def test_an_unusable_collected_at_falls_back_to_the_sweep_timestamp(
-    run_sweep: RunSweep, collected_at: object
+    run_sweep: RunSweep, stamp: dict[str, object]
 ) -> None:
     """Fall back to the sweep's own timestamp, and still build both documents."""
-    record = dict(RECORD)
-    host_record: dict[str, Any] = {"system": RECORD["system"]}
-    if collected_at is not None:
-        record["collected_at"] = collected_at
-        host_record["collected_at"] = collected_at
+    record = {**RECORD, **stamp}
+    host_record = {"system": RECORD["system"], **stamp}
 
     outcome = await run_sweep(
         [mapped("svc-a", "node00", NodeResolution.NAME)],
@@ -655,6 +655,30 @@ async def test_a_probe_answering_after_the_sweep_began_is_kept(
     stored = outcome.service_documents[DEFAULT_EXTERNAL_ID]["collected_at"]
     assert stored > OBSERVED_AT
     assert datetime.fromisoformat(stored) == datetime.fromtimestamp(answered, UTC)
+
+
+@pytest.mark.asyncio
+async def test_a_record_stamped_within_the_skew_tolerance_is_kept(
+    run_sweep: RunSweep,
+) -> None:
+    """Keep a timestamp slightly ahead of the build, inside the clock-skew tolerance.
+
+    ``WITHIN_SKEW`` is past "now" yet well inside the 60-second bound, so the record
+    is kept only if the tolerance is actually applied.
+    """
+    ahead = int(time.time()) + WITHIN_SKEW
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00",
+                records={DEFAULT_EXTERNAL_ID: {**RECORD, "collected_at": ahead}},
+            )
+        },
+    )
+
+    stored = outcome.service_documents[DEFAULT_EXTERNAL_ID]["collected_at"]
+    assert datetime.fromisoformat(stored) == datetime.fromtimestamp(ahead, UTC)
 
 
 @pytest.mark.asyncio
