@@ -55,8 +55,8 @@
             </div>
         </aside>
         <h2>
-            <span class="text">381 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">377<span class="text"> run</span></button>
+            <span class="text">378 statements &nbsp;</span>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">374<span class="text"> run</span></button>
             <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">4<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
             <button type="button" class="par run show_par button_toggle_par" value="par" data-shortcut="p" title="Toggle lines partially run">6<span class="text"> partial</span></button>
@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_6cd9b612e247317a_crud_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.2">coverage.py v7.16.2</a>,
-            created at 2026-10-14 15:14 +0000
+            created at 2026-10-14 16:31 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -105,7 +105,7 @@
     <p class="run"><span class="n"><a id="t21" href="#t21">21</a></span><span class="t"><span class="key">from</span> <span class="nam">functools</span> <span class="key">import</span> <span class="nam">cached_property</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t22" href="#t22">22</a></span><span class="t"><span class="key">from</span> <span class="nam">pathlib</span> <span class="key">import</span> <span class="nam">Path</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t23" href="#t23">23</a></span><span class="t"><span class="key">from</span> <span class="nam">statistics</span> <span class="key">import</span> <span class="nam">mean</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t24" href="#t24">24</a></span><span class="t"><span class="key">from</span> <span class="nam">typing</span> <span class="key">import</span> <span class="nam">Annotated</span><span class="op">,</span> <span class="nam">Any</span><span class="op">,</span> <span class="nam">Literal</span><span class="op">,</span> <span class="nam">Self</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t24" href="#t24">24</a></span><span class="t"><span class="key">from</span> <span class="nam">typing</span> <span class="key">import</span> <span class="nam">Annotated</span><span class="op">,</span> <span class="nam">Any</span><span class="op">,</span> <span class="nam">Self</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t25" href="#t25">25</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t"><span class="key">from</span> <span class="nam">pydantic</span> <span class="key">import</span> <span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t27" href="#t27">27</a></span><span class="t">    <span class="nam">BaseModel</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
@@ -1522,37 +1522,14 @@
     <p class="pln"><span class="n"><a id="t1438" href="#t1438">1438</a></span><span class="t">    <span class="nam">status</span><span class="op">:</span> <span class="nam">TaskHistoryStatusEnum</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1439" href="#t1439">1439</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1440" href="#t1440">1440</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1441" href="#t1441">1441</a></span><span class="t"><span class="key">class</span> <span class="nam">TransformPayloadRequest</span><span class="op">(</span><span class="nam">BaseModel</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1442" href="#t1442">1442</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Define the request body for the /transform/ API route.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1441" href="#t1441">1441</a></span><span class="t"><span class="key">class</span> <span class="nam">DispatchLock</span><span class="op">(</span><span class="nam">BaseSQLModel</span><span class="op">,</span> <span class="nam">table</span><span class="op">=</span><span class="key">True</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1442" href="#t1442">1442</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Define a task dispatch lock.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1443" href="#t1443">1443</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1444" href="#t1444">1444</a></span><span class="t"><span class="str">    :param payload: The job specification payload to be parsed.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1445" href="#t1445">1445</a></span><span class="t"><span class="str">    :type payload: str | bytes</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1446" href="#t1446">1446</a></span><span class="t"><span class="str">    :param fmt: The format of the payload, which can be &quot;hcl&quot;, &quot;json&quot;, or &quot;yaml&quot;.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1447" href="#t1447">1447</a></span><span class="t"><span class="str">    :type fmt: Literal[&quot;hcl&quot;, &quot;json&quot;, &quot;yaml&quot;]</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1448" href="#t1448">1448</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1449" href="#t1449">1449</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1450" href="#t1450">1450</a></span><span class="t">    <span class="nam">payload</span><span class="op">:</span> <span class="nam">str</span> <span class="op">|</span> <span class="nam">bytes</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1451" href="#t1451">1451</a></span><span class="t">    <span class="nam">fmt</span><span class="op">:</span> <span class="nam">Literal</span><span class="op">[</span><span class="str">&quot;hcl&quot;</span><span class="op">,</span> <span class="str">&quot;json&quot;</span><span class="op">,</span> <span class="str">&quot;yaml&quot;</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1452" href="#t1452">1452</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1453" href="#t1453">1453</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1454" href="#t1454">1454</a></span><span class="t"><span class="key">class</span> <span class="nam">TransformPayloadResponse</span><span class="op">(</span><span class="nam">BaseModel</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1455" href="#t1455">1455</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Define the parsed job specification returned from ``POST /transform/``.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1456" href="#t1456">1456</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1457" href="#t1457">1457</a></span><span class="t"><span class="str">    The concrete keys depend on the executor backend; clients should treat values as</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1458" href="#t1458">1458</a></span><span class="t"><span class="str">    untyped JSON except where they validate domain-specific job fields themselves.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1459" href="#t1459">1459</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1460" href="#t1460">1460</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1461" href="#t1461">1461</a></span><span class="t">    <span class="nam">model_config</span> <span class="op">=</span> <span class="nam">ConfigDict</span><span class="op">(</span><span class="nam">extra</span><span class="op">=</span><span class="str">&quot;allow&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1462" href="#t1462">1462</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1463" href="#t1463">1463</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1464" href="#t1464">1464</a></span><span class="t"><span class="key">class</span> <span class="nam">DispatchLock</span><span class="op">(</span><span class="nam">BaseSQLModel</span><span class="op">,</span> <span class="nam">table</span><span class="op">=</span><span class="key">True</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1465" href="#t1465">1465</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Define a task dispatch lock.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1466" href="#t1466">1466</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1467" href="#t1467">1467</a></span><span class="t"><span class="str">    :param name: The name of the lock. Must be unique.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1468" href="#t1468">1468</a></span><span class="t"><span class="str">    :type name: str</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1469" href="#t1469">1469</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1470" href="#t1470">1470</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1471" href="#t1471">1471</a></span><span class="t">    <span class="nam">name</span><span class="op">:</span> <span class="nam">str</span> <span class="op">=</span> <span class="nam">SQLField</span><span class="op">(</span><span class="nam">max_length</span><span class="op">=</span><span class="num">255</span><span class="op">,</span> <span class="nam">index</span><span class="op">=</span><span class="key">True</span><span class="op">,</span> <span class="nam">unique</span><span class="op">=</span><span class="key">True</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1444" href="#t1444">1444</a></span><span class="t"><span class="str">    :param name: The name of the lock. Must be unique.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1445" href="#t1445">1445</a></span><span class="t"><span class="str">    :type name: str</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1446" href="#t1446">1446</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1447" href="#t1447">1447</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1448" href="#t1448">1448</a></span><span class="t">    <span class="nam">name</span><span class="op">:</span> <span class="nam">str</span> <span class="op">=</span> <span class="nam">SQLField</span><span class="op">(</span><span class="nam">max_length</span><span class="op">=</span><span class="num">255</span><span class="op">,</span> <span class="nam">index</span><span class="op">=</span><span class="key">True</span><span class="op">,</span> <span class="nam">unique</span><span class="op">=</span><span class="key">True</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -1562,7 +1539,7 @@
             <a class="nav" href="z_6cd9b612e247317a_crud_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.2">coverage.py v7.16.2</a>,
-            created at 2026-10-14 15:14 +0000
+            created at 2026-10-14 16:31 +0000
         </p>
     </div>
 </footer>
