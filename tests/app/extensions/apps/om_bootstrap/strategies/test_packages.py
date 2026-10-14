@@ -681,11 +681,14 @@ class TestBuildRunStep:
         assert "try {" in command
         assert "AlreadyInitialized" in command
 
-    def test_create_pmm_monitoring_user_requires_params(self) -> None:
-        """Reject a missing username/password as a programming error."""
-        with pytest.raises(ValueError, match="username"):
+    @pytest.mark.parametrize(
+        "step_name", ["create_admin_user", "create_pmm_monitoring_user"]
+    )
+    def test_user_steps_require_params(self, step_name: str) -> None:
+        """Reject a missing username/password as a programming error, naming the step."""
+        with pytest.raises(ValueError, match=f"{step_name} requires"):
             PackagesInstallStrategy().build_run_step(
-                "create_pmm_monitoring_user", ["node00"], _spec(OperatingSystem.UBUNTU)
+                step_name, ["node00"], _spec(OperatingSystem.UBUNTU)
             )
 
     def test_create_pmm_monitoring_user_embeds_the_given_credentials(self) -> None:
@@ -836,34 +839,27 @@ class TestBuildRunStep:
         assert "getUser(" in command
         assert "if (!db" in command
 
-    def test_create_admin_user_requires_params(self) -> None:
-        """Name the step whose params are missing."""
-        with pytest.raises(ValueError, match="create_admin_user requires"):
-            PackagesInstallStrategy().build_run_step(
-                "create_admin_user", ["node00"], _spec(OperatingSystem.UBUNTU)
-            )
+    def test_create_admin_user_differs_from_the_monitoring_user_only_in_roles(
+        self,
+    ) -> None:
+        """Build the administrator through the monitoring user's path, granting root."""
+        strategy = PackagesInstallStrategy()
+        hosts = ["node00", "node01", "node02"]
+        spec = _spec(OperatingSystem.UBUNTU)
+        params = {"username": "dba", "password": "chosen-secret"}
 
-    def test_create_admin_user_grants_root_on_the_primary(self) -> None:
-        """Grant root, write through the replica set, and keep the password off argv."""
-        action = PackagesInstallStrategy().build_run_step(
-            "create_admin_user",
-            ["node00", "node01", "node02"],
-            _spec(OperatingSystem.UBUNTU),
-            params={"username": "admin", "password": "chosen-secret"},
+        admin = build_step_script(
+            strategy.build_run_step("create_admin_user", hosts, spec, params)
         )
-        script = build_step_script(action)
+        monitoring = build_step_script(
+            strategy.build_run_step("create_pmm_monitoring_user", hosts, spec, params)
+        )
 
-        heredoc = script.split("<<'OM_BOOTSTRAP_JS'\n")[1].split("\nOM_BOOTSTRAP_JS\n")[
-            0
-        ]
-        assert '"admin"' in heredoc
-        assert "chosen-secret" in heredoc
-        assert '{"role": "root", "db": "admin"}' in heredoc
-        assert "clusterMonitor" not in heredoc
-        assert "getUser(" in heredoc
-        assert "replicaSet=rs-test" in script
-        mongosh_line = next(line for line in script.splitlines() if "mongosh" in line)
-        assert "chosen-secret" not in mongosh_line
+        assert '{"role": "root", "db": "admin"}' in admin
+        assert admin == monitoring.replace(
+            json.dumps(packages.PMM_MONITORING_USER_ROLES),
+            json.dumps(packages.ADMIN_USER_ROLES),
+        )
 
 
 class TestPlanFinalizeSteps:
