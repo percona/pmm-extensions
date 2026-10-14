@@ -68,6 +68,13 @@ AWS_BIN = os.getenv('PERCONA_BACKUP_AWS_BIN', '/usr/bin/aws')
 SSH_ARGS = '-o PasswordAuthentication=no -o StrictHostKeyChecking=no'
 UPLOADME_FILE = '.uploadme'
 FORBIDDEN_SHELL_METACHARS = frozenset("$;|&()`")
+# A restored config file's destination comes from its name inside the backup,
+# which is untrusted, so it may only land in these places.
+MYCNF_DIRS = ('/etc/mysql', '/etc/my.cnf.d', '/etc/percona-server.conf.d', '/etc/percona-xtradb-cluster.conf.d')
+MYCNF_FILES = ('/etc/my.cnf', '/usr/local/etc/my.cnf')
+# MySQL and XtraBackup keep these in the datadir itself, so copy-back already
+# put them where they belong.
+DATADIR_CNF = ('backup-my.cnf', 'auto.cnf', 'mysqld-auto.cnf')
 
 
 def validate_backup_source_for_shell(value: str) -> None:
@@ -2178,19 +2185,12 @@ class Xtrabackup(Restore):
 
     @staticmethod
     def _edit_copy_my_cnf(src, dst, new_server_id):
-        """Edit cnf files and restore"""
-
-        # Open files
-        src_file = open(src)
-        dst_file = open(dst, 'w')
-
-        for line in src_file:
-            # server-id
-            line = re.sub(r'^([\s]*server[_-]id[\s]*=[\s]*)(\d*)', r'\1 %s' % new_server_id, line, flags=re.M)
-            dst_file.write(line)
-
-        src_file.close()
-        dst_file.close()
+        """Copy the cnf file ``src`` to ``dst`` with its server-id replaced."""
+        # O_NOFOLLOW so a symlink swapped in after the destination check is not followed.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        with open(src) as src_file, os.fdopen(os.open(dst, flags, 0o644), 'w') as dst_file:
+            for line in src_file:
+                dst_file.write(re.sub(r'^([\s]*server[_-]id[\s]*=[\s]*)(\d*)', r'\1 %s' % new_server_id, line, flags=re.M))
 
     def _get_new_server_id(self):
         """ try to get the server ip"""
@@ -2234,24 +2234,51 @@ class Xtrabackup(Restore):
 
         return out.decode().rstrip()
 
-    def _restore_cnf_files(self):
-        """Copy back all my.cnf files"""
+    def _cnf_destination(self, ffile, allowed_files, allowed_dirs):
+        """Return the source and resolved destination of the datadir cnf entry ``ffile``.
 
-        # Get config files from restored datadir
-        self.logger.info("Restoring my.cnf files")
+        :raises BackupError: If the entry or its decoded destination fails a check.
+        """
+        src = os.path.join(self.datadir, ffile)
+        dst = ffile.replace('_', '/').strip()
+        resolved = os.path.realpath(dst)
+        if os.path.islink(src) or not os.path.isfile(src):
+            reason = 'source is not a regular file'
+        elif not os.path.isabs(dst):
+            reason = 'no destination encoded'
+        # commonpath rather than a string prefix, so /etc/mysql-x is not inside /etc/mysql.
+        elif resolved not in allowed_files and not any(
+                os.path.commonpath([resolved, d]) == d for d in allowed_dirs):
+            reason = 'outside the allowed config paths'
+        elif not os.path.isdir(os.path.dirname(resolved)):
+            reason = 'parent directory missing'
+        elif os.path.isdir(resolved):
+            reason = 'destination is not a regular file'
+        else:
+            return src, resolved
+        raise BackupError('Refusing to restore %s to %s: %s' % (ffile, dst, reason))
+
+    def _restore_cnf_files(self):
+        """Restore the datadir's cnf files to the paths their names encode.
+
+        Every entry is checked before any is written, so a tampered backup fails
+        the restore without leaving a partial set of config files behind.
+        """
+        self.logger.info('Restoring my.cnf files')
+        allowed_files = [os.path.realpath(f) for f in MYCNF_FILES]
+        allowed_dirs = [os.path.realpath(d) for d in MYCNF_DIRS]
+        restores = [
+            self._cnf_destination(ffile, allowed_files, allowed_dirs)
+            for ffile in sorted(os.listdir(self.datadir))
+            if ffile.endswith('.cnf') and ffile not in DATADIR_CNF
+        ]
+        if not restores:
+            return
         new_server_id = self._get_new_server_id()
-        self.logger.info("New server-id will be: %s", new_server_id)
-        for ffile in os.listdir(self.datadir):
-            if ffile != 'backup-my.cnf' and ffile.endswith(".cnf"):
-                src = os.path.join(self.datadir, ffile)
-                dst = ffile.replace("_", "/").strip()
-                # check if dest dir exist, else create it
-                try:
-                    if not os.path.isdir(os.path.dirname(dst)):
-                        os.mkdir(os.path.dirname(dst))
-                except (OSError) as err:
-                    raise BackupError(str(err))
-                self._edit_copy_my_cnf(src, dst, new_server_id)
+        self.logger.info('New server-id will be: %s', new_server_id)
+        for src, dst in restores:
+            self.logger.info('Restoring %s to %s', src, dst)
+            self._edit_copy_my_cnf(src, dst, new_server_id)
 
 class MyConfigParser(configparser.ConfigParser):
 

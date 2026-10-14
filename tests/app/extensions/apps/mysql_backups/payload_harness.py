@@ -79,6 +79,9 @@ _CONST_NAMES = frozenset(
         "DEFAULT_LOGGING_DIR",
         "DEFAULT_LOGGING_STDOUT",
         "DEFAULT_MYCNF",
+        "MYCNF_DIRS",
+        "MYCNF_FILES",
+        "DATADIR_CNF",
     }
 )
 
