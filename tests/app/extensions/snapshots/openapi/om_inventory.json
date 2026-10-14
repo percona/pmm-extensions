@@ -4361,6 +4361,28 @@
             ],
             "title": "Last Error"
           },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/om_inventory__ScanFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run Id"
+          },
           "last_success_at": {
             "anyOf": [
               {
@@ -4465,11 +4487,16 @@
         "type": "object"
       },
       "om_inventory__ProbeCounts": {
-        "description": "Count what one sweep reached.\n\n``resolved`` versus ``answered`` is the diagnostic split: the first says the\nservice mapped to a live executor host, the second says the node ran the payload.\nA sweep with ``resolved=9, answered=0`` is a healthy mapping and broken executors.\n\n:param services_total: MongoDB services inventory reported.\n:param services_resolved: ...of which mapped to a live executor host.\n:param services_orphaned: ...of which did not. Not an error.\n:param services_answered: Services that returned a usable probe record.\n:param hosts_total: Hosts in scope this sweep, service or no service.\n:param hosts_probeable: ...of which had a usable executor to dispatch to.\n:param hosts_answered: Hosts that returned a usable record.",
+        "description": "Count what one sweep reached.\n\n``resolved`` versus ``answered`` is the diagnostic split: the first says the\nservice mapped to a live executor host, the second says the node ran the payload.\nA sweep with ``resolved=9, answered=0`` is a healthy mapping and broken executors.\n\n:param services_total: MongoDB services inventory reported.\n:param services_resolved: ...of which mapped to a live executor host.\n:param services_orphaned: ...of which did not. Not an error.\n:param services_answered: Services that returned a usable probe record.\n:param hosts_total: Hosts in scope this sweep, service or no service.\n:param hosts_probeable: ...of which had a usable executor to dispatch to.\n:param hosts_answered: Hosts that returned a usable record.\n:param hosts_finished: Hosts whose scan has come back, answered or not, out of\n    ``hosts_probeable``; counted up while the sweep is still running.",
         "properties": {
           "hosts_answered": {
             "default": 0,
             "title": "Hosts Answered",
+            "type": "integer"
+          },
+          "hosts_finished": {
+            "default": 0,
+            "title": "Hosts Finished",
             "type": "integer"
           },
           "hosts_probeable": {
@@ -4696,6 +4723,13 @@
             ],
             "title": "Error"
           },
+          "failing_nodes": {
+            "items": {
+              "$ref": "#/components/schemas/om_inventory__ProbeRunFailingNode"
+            },
+            "title": "Failing Nodes",
+            "type": "array"
+          },
           "finished_at": {
             "anyOf": [
               {
@@ -4753,8 +4787,27 @@
         "title": "ProbeRunDetail",
         "type": "object"
       },
+      "om_inventory__ProbeRunFailingNode": {
+        "description": "Name one node a sweep failed to scan.\n\n:param node_id: PMM's node id.\n:param name: The node's name as the sweep recorded it, or its node id where the\n    sweep recorded none.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "name"
+        ],
+        "title": "ProbeRunFailingNode",
+        "type": "object"
+      },
       "om_inventory__ProbeRunResponse": {
-        "description": "Carry one sweep's record.\n\n:param run_id: The sweep's id.\n:param status: ``running`` / ``success`` / ``partial`` / ``failed``.\n:param started_at: When it began.\n:param finished_at: When it reached a terminal status; ``None`` while running.\n:param counts: What it reached.\n:param scope: The hosts it was asked to refresh, or ``None`` for the whole\n    estate. Without it the counters cannot be read: \"9 of 13 answered\" means\n    something different when the run was only ever asked about one host.\n:param error: The failure detail when the sweep itself raised.",
+        "description": "Carry one sweep's record.\n\n:param run_id: The sweep's id.\n:param status: ``running`` / ``success`` / ``partial`` / ``failed``.\n:param started_at: When it began.\n:param finished_at: When it reached a terminal status; ``None`` while running.\n:param counts: What it reached.\n:param scope: The hosts it was asked to refresh, or ``None`` for the whole\n    estate. Without it the counters cannot be read: \"9 of 13 answered\" means\n    something different when the run was only ever asked about one host.\n:param error: The failure detail when the sweep itself raised.\n:param failing_nodes: The nodes whose scan failed in this sweep, on the node's own\n    dispatch or on any service on it, sorted by name. A node with no automation\n    agent is not one: nothing was dispatched to it.",
         "properties": {
           "counts": {
             "$ref": "#/components/schemas/om_inventory__ProbeCounts"
@@ -4769,6 +4822,13 @@
               }
             ],
             "title": "Error"
+          },
+          "failing_nodes": {
+            "items": {
+              "$ref": "#/components/schemas/om_inventory__ProbeRunFailingNode"
+            },
+            "title": "Failing Nodes",
+            "type": "array"
           },
           "finished_at": {
             "anyOf": [
@@ -4820,6 +4880,25 @@
         "title": "ProbeRunResponse",
         "type": "object"
       },
+      "om_inventory__ScanFailure": {
+        "description": "Enumerate the kinds of scan failure a reader can be told what to do about.\n\nStored beside ``last_error`` rather than parsed back out of it: the message mixes\nthe node's own stderr, exception text and task API detail, and its wording must\nstay free to change without breaking whoever keys a resolution hint off it.\n\nA node with no usable executor has no code here, because it is never dispatched\nto and so never fails; its state is the ``executor`` block every host row\nalready carries.\n\n:cvar DISPATCH_REJECTED: The scan was never queued: the tasks API refused it or\n    could not be reached.\n:cvar NOT_STARTED: The scan was queued but had not started when the wait ran out.\n:cvar TIMED_OUT: The scan started but had not finished when the wait ran out.\n:cvar BLOCKED: A scan given up on could not be stopped, and will block this\n    node's next one until it is.\n:cvar ENVIRONMENT_SETUP_FAILED: The node could not prepare the scan's Python\n    environment: no ``python3``, no ``venv`` module, or ``pip`` could not install\n    the scan's one dependency.\n:cvar SCAN_CRASHED: The scan itself failed on the node.\n:cvar SCAN_LOST: The scan was lost, stopped or went stale before it reported -\n    usually because the node or its agent restarted.\n:cvar NO_OUTPUT: The scan finished but reported nothing for this node or service.\n:cvar DATABASE_UNREACHABLE: The scan ran but could not connect to the database.\n:cvar DATABASE_AUTH_FAILED: The scan ran but the database rejected its\n    credentials.\n:cvar DATABASE_ERROR: The scan ran but the database failed it some other way.\n:cvar UNKNOWN: Anything not recognised. A reader gets the raw detail and no hint,\n    rather than a guessed one.",
+        "enum": [
+          "dispatch_rejected",
+          "not_started",
+          "timed_out",
+          "blocked",
+          "environment_setup_failed",
+          "scan_crashed",
+          "scan_lost",
+          "no_output",
+          "database_unreachable",
+          "database_auth_failed",
+          "database_error",
+          "unknown"
+        ],
+        "title": "ScanFailure",
+        "type": "string"
+      },
       "om_inventory__ServiceResponse": {
         "description": "Report one MongoDB service PMM has registered, as OM currently holds it.\n\nKeyed on **PMM's** service id, which is the whole benefit of storing it that way:\nthe path and the payload carry the id every consumer already has, with nothing to\ntranslate on either side.\n\n:param service_id: PMM's service id.\n:param node_id: The host it runs on.\n:param name: The service name as PMM registered it.\n:param port: The port it listens on.\n:param role: What the probe found it to be, when a probe determined one.",
         "properties": {
@@ -4867,6 +4946,28 @@
               }
             ],
             "title": "Last Error"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/om_inventory__ScanFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run Id"
           },
           "last_success_at": {
             "anyOf": [

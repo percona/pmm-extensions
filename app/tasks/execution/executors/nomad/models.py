@@ -555,7 +555,7 @@ def _append_exit_code_suffix(
         parts.append(f"(exit code {exit_code})")
 
 
-def _failed_step_reason(alloc: dict[str, Any]) -> str | None:
+def failed_step_reason(alloc: dict[str, Any]) -> str | None:
     """Return prose naming the first producing step that failed, if any.
 
     Reads the failing step off the allocation's task states: those carry a
@@ -622,7 +622,7 @@ def _terminal_status_reason(
     :return: The reason to store, or ``None`` when the status carries none.
     """
     if status == TaskHistoryStatusEnum.FAILED:
-        return _failed_step_reason(alloc)
+        return failed_step_reason(alloc)
     summary = status.operator_summary()
     return f"{summary[:1].upper()}{summary[1:]}." if summary else None
 

@@ -629,18 +629,66 @@ class TestTheScheduleRespectsSingleFlight:
 
     @pytest.mark.asyncio
     async def test_the_message_names_the_hosts_that_are_held(
+        self, two_hosts: AsyncSession
+    ) -> None:
+        """Name the held hosts, by name, rather than say "a sweep is already running".
+
+        :param two_hosts: The populated session.
+        """
+        blocking = await ProbeRunManager.save(two_hosts, ProbeRun(scope=[NODE_A]))
+
+        detail = await conflict_detail(two_hosts, blocking, [NODE_A, NODE_B])
+
+        assert detail == "A scan is already running on db00"
+
+    @pytest.mark.asyncio
+    async def test_a_held_host_the_estate_no_longer_has_is_not_named_by_id(
         self, session: AsyncSession
     ) -> None:
-        """Name the held hosts rather than saying "a sweep is already running".
+        """Say "these nodes" rather than show an id that has no name to give.
 
         :param session: The database session.
         """
         blocking = await ProbeRunManager.save(session, ProbeRun(scope=[NODE_A]))
 
-        detail = conflict_detail(blocking, [NODE_A, NODE_B])
+        detail = await conflict_detail(session, blocking, [NODE_A])
 
-        assert NODE_A in detail
-        assert str(blocking.id) in detail
+        assert detail == "A scan is already running on these nodes"
+
+    @pytest.mark.asyncio
+    async def test_a_full_scan_is_said_to_hold_every_node(
+        self, session: AsyncSession
+    ) -> None:
+        """Say "every node" for an unscoped run, in the UI's words.
+
+        :param session: The database session.
+        """
+        blocking = await ProbeRunManager.save(session, ProbeRun(scope=None))
+
+        detail = await conflict_detail(session, blocking, [NODE_A])
+
+        assert detail == "A scan is already running on every node"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", [None, [NODE_A]])
+    async def test_the_message_carries_no_internal_names(
+        self, two_hosts: AsyncSession, scope: list[str] | None
+    ) -> None:
+        """Keep every id and this app's own vocabulary out of what PMM shows.
+
+        :param two_hosts: The populated session.
+        :param scope: The blocking run's scope.
+        """
+        blocking = await ProbeRunManager.save(two_hosts, ProbeRun(scope=scope))
+
+        detail = await conflict_detail(two_hosts, blocking, [NODE_A])
+
+        said = detail.lower()
+        assert said
+        assert str(blocking.id) not in said
+        assert NODE_A not in said
+        assert "probe" not in said
+        assert "estate" not in said
 
 
 class TestTwoRunsRacingForTheSameHosts:
