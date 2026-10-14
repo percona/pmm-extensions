@@ -42,8 +42,9 @@ from app.core.pmm import _background_tasks
 from app.core.utils import utc_now
 from app.core.utils.date_time import make_datetime_utc
 from app.extensions.apps.archives.alerts import ALERT_DETAIL_BUILDER
+from app.extensions.apps.meta_keys import SERVICE_ID_META_KEY
 from app.extensions.apps.mysql_backups.recorder import RUN_RESULT_RECORDER
-from app.tasks import hook_resolver
+from app.tasks import hook_resolver, reference_fence
 from app.tasks.config import PreExecutionCheckMode, tasks_settings
 from app.tasks.connectivity.models import ConnectivityServiceType
 from app.tasks.connectivity.service import _cached_check_connectivity
@@ -77,6 +78,9 @@ from app.tasks.models import (
     TaskLogType,
     TaskWrite,
 )
+from app.tasks.periodic.crud import PeriodicTaskManager
+from app.tasks.reference_fence import hold_reference_collection_fence
+from tests.app.advisory_locks import isolate_reference_fence
 from tests.app.factories import build_task_history, TaskFactory
 from tests.app.tasks.conftest import (
     HOOK_PATH_FIELDS,
@@ -85,6 +89,7 @@ from tests.app.tasks.conftest import (
     stored_execution_request,
     undecryptable_document,
 )
+from tests.app.tasks_api_client import tasks_api_client
 
 MOCK_FILE_SIZE = 1024
 # What ``app.tasks.main.nomad_exception_handler`` answers with. The routes no
@@ -3686,3 +3691,137 @@ class TestExecutionRequestEncryptionOverHTTP:
         stored = await stored_execution_request(session, history.id)
         assert stored["payload"] == document["payload"]
         assert is_encrypted(stored["meta"]["args"])
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+class TestWritersWaitForTheReferenceFence:
+    """Hold each envelope writer behind a running inventory-collection batch.
+
+    The test takes the fence the way a batch does and shortens the bound, so a
+    route that is not fenced writes at once and answers 2xx instead of 503. The
+    fence no-ops on SQLite, which is why these run on real PostgreSQL only.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _short_fence_wait(self, mocker) -> None:
+        """Bound every fence wait at 200 ms so a held fence answers 503 fast."""
+        isolate_reference_fence(mocker)
+        mocker.patch.object(
+            reference_fence, "REFERENCE_FENCE_TIMEOUT", timedelta(milliseconds=200)
+        )
+
+    async def test_create_task_answers_503_and_writes_nothing(
+        self, postgres_session_maker, celery_beat_session, regular_user
+    ):
+        """Refuse a task creation while a batch holds the fence."""
+        payload = TaskWrite.model_validate(
+            TaskFactory.build(
+                name="fenced-task",
+                data={"task": "run-command", "meta": {SERVICE_ID_META_KEY: 42}},
+            )
+        ).model_dump(mode="json")
+
+        async with (
+            postgres_session_maker() as fence_session,
+            hold_reference_collection_fence(fence_session),
+            tasks_api_client(
+                regular_user, postgres_session_maker, celery_beat_session
+            ) as client,
+        ):
+            response = await client.post("/", json=payload)
+
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        async with postgres_session_maker() as session:
+            assert not await TaskManager.exists(session, name="fenced-task")
+
+    async def test_update_task_answers_503_and_changes_nothing(
+        self, postgres_session_maker, celery_beat_session, regular_user
+    ):
+        """Refuse a task update that would add a service reference mid-batch."""
+        original = {"task": "run-command", "meta": {}}
+        async with postgres_session_maker() as session:
+            await TaskManager.create(
+                session,
+                TaskWrite.model_validate(
+                    TaskFactory.build(name="fenced-task", data=original)
+                ),
+            )
+        payload = TaskWrite.model_validate(
+            TaskFactory.build(
+                name="fenced-task",
+                data={"task": "run-command", "meta": {SERVICE_ID_META_KEY: 42}},
+            )
+        ).model_dump(mode="json")
+
+        async with (
+            postgres_session_maker() as fence_session,
+            hold_reference_collection_fence(fence_session),
+            tasks_api_client(
+                regular_user, postgres_session_maker, celery_beat_session
+            ) as client,
+        ):
+            response = await client.put("/fenced-task", json=payload)
+
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        async with postgres_session_maker() as session:
+            stored = await TaskManager.get(session, name="fenced-task")
+            assert stored.data == original
+
+    async def test_create_periodic_task_answers_503_and_writes_nothing(
+        self, postgres_session_maker, celery_beat_session, regular_user
+    ):
+        """Refuse a schedule creation while a batch holds the fence."""
+        async with postgres_session_maker() as session:
+            await TaskManager.create(
+                session, TaskWrite.model_validate(TaskFactory.build(name="my-task"))
+            )
+        payload = {
+            "interval": {"every": 10, "period": "minutes"},
+            "execute_request": {"meta": {SERVICE_ID_META_KEY: 42}},
+        }
+
+        async with (
+            postgres_session_maker() as fence_session,
+            hold_reference_collection_fence(fence_session),
+            tasks_api_client(
+                regular_user, postgres_session_maker, celery_beat_session
+            ) as client,
+        ):
+            response = await client.post("/my-task/periodic/", json=payload)
+
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert not await PeriodicTaskManager.list_by_task_names(
+            celery_beat_session, "my-task"
+        )
+
+    async def test_validation_failure_does_not_wait_for_the_fence(
+        self, postgres_session_maker, celery_beat_session, regular_user
+    ):
+        """Answer a request that fails validation without queuing on a batch.
+
+        Only the write is fenced, so the route's own chain validation answers
+        400 rather than being delayed into a 503 by a batch that has nothing to
+        do with it.
+        """
+        async with postgres_session_maker() as session:
+            await TaskManager.create(
+                session, TaskWrite.model_validate(TaskFactory.build(name="my-task"))
+            )
+
+        async with (
+            postgres_session_maker() as fence_session,
+            hold_reference_collection_fence(fence_session),
+            tasks_api_client(
+                regular_user, postgres_session_maker, celery_beat_session
+            ) as client,
+        ):
+            response = await client.post(
+                "/my-task/periodic/",
+                json={
+                    "interval": {"every": 10, "period": "minutes"},
+                    "execute_request": {"chain_task_names": ["my-task"]},
+                },
+            )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
