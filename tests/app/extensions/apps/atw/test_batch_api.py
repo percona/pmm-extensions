@@ -64,7 +64,11 @@ from app.extensions.snippets.crud import SnippetManager
 from app.extensions.snippets.masking import SENSITIVE_ARG_MASK
 from app.extensions.snippets.models import Snippet
 from app.extensions.snippets.models.meta import META_KEY_TITLE
-from app.tasks.execution_request_secrets import ARGS_LEAF
+from app.tasks.execution_request_secrets import (
+    ARGS_LEAF,
+    MASKED_ARGS_META_KEY,
+    WITHHELD_ARGS_PLACEHOLDER,
+)
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.factories import TaskHistoryResponseFactory
 
@@ -1294,8 +1298,9 @@ class TestAtwIncidentExecutionMaskedArgs:
     """Check the arguments and snippet titles GET .../executions/ reports per row.
 
     Snippet resolution is deliberately left unstubbed so the real
-    ``resolve_snippets`` -> ``get_execution_model`` -> ``mask_snippet_args`` chain
-    runs end to end through the routing and DI stack.
+    ``resolve_snippets`` chain that supplies the title runs end to end through
+    the routing and DI stack. The arguments come from the masked copy the tasks
+    service returns, never from the snippet's current metadata.
     """
 
     @pytest_asyncio.fixture
@@ -1320,15 +1325,16 @@ class TestAtwIncidentExecutionMaskedArgs:
 
     @staticmethod
     def _history(
-        args: str | None, *, md5_checksum: str = _SEEDED_MD5
+        args: str | None, *, masked: Any = None, md5_checksum: str = _SEEDED_MD5
     ) -> dict[str, Any]:
         """Return an upstream task-history payload carrying ``args``.
 
-        The digest is recorded alongside the arguments at execution time, and
-        masking compares it against the snippet's current one, so it has to be
-        present for a row to resolve.
-
-        :param args: The recorded argument string, or ``None`` to record none.
+        :param args: The value the tasks service returns as the arguments, or
+            ``None`` for a run that recorded none. A current service returns the
+            masked copy or its placeholder here; a test passes a raw string to
+            stand for a service predating that.
+        :param masked: The masked copy recorded beside the arguments, or
+            ``None`` for a run recorded without one.
         :param md5_checksum: The snippet digest recorded with the execution;
             override it to simulate a snippet edited since the run.
         :return: The payload shape the history endpoint returns.
@@ -1336,6 +1342,8 @@ class TestAtwIncidentExecutionMaskedArgs:
         meta = {"md5_checksum": md5_checksum}
         if args is not None:
             meta["args"] = args
+        if masked is not None:
+            meta[MASKED_ARGS_META_KEY] = masked
         return {
             "status": TaskHistoryStatusEnum.SUCCESS.value,
             "has_logs": True,
@@ -1399,23 +1407,25 @@ class TestAtwIncidentExecutionMaskedArgs:
         create_snippet: Callable[..., Awaitable[Snippet]],
         seed_execution: Callable[..., Awaitable[AtwIncidentExecution]],
     ) -> None:
-        """Read the current title even when arguments are withheld after a snippet edit."""
+        """Read the current title and keep showing the copy recorded with the run."""
         snippet = await create_snippet("summary.sh", title="Original title")
         await seed_execution("summary.sh")
         snippet.meta = {**snippet.meta, META_KEY_TITLE: "Updated title"}
         await SnippetManager.save(session, snippet)
-        tasks_api.get.return_value = self._history("--port 3306", md5_checksum="b" * 32)
+        tasks_api.get.return_value = self._history(
+            "--port 3306", masked="--port 3306", md5_checksum="b" * 32
+        )
 
         response = api_client.get(executions_url(incident.id))
 
         assert response.status_code == status.HTTP_200_OK
         item = response.json()["items"][0]
         assert item["snippet_title"] == "Updated title"
-        assert item["masked_args"] is None
-        assert item["args_withheld"] is True
+        assert item["masked_args"] == "--port 3306"
+        assert item["args_withheld"] is False
 
     @pytest.mark.asyncio
-    async def test_masked_args_are_returned(
+    async def test_recorded_masked_copy_is_returned(
         self,
         api_client: TestClient,
         incident: AtwIncident,
@@ -1423,29 +1433,26 @@ class TestAtwIncidentExecutionMaskedArgs:
         create_snippet: Callable[..., Awaitable[Snippet]],
         seed_execution: Callable[..., Awaitable[AtwIncidentExecution]],
     ) -> None:
-        """Mask a credential-named parameter's value and never emit the raw secret."""
-        secret = "hunter2SuperSecret"
-        await create_snippet(
-            "mongo-check.sh",
-            parameters=[
-                {"name": "port", "type": "int", "required": True},
-                {"name": "password", "type": "str", "required": True},
-            ],
-        )
+        """Show the masked copy the run recorded, read from its own key.
+
+        The upstream ``args`` value differs from the copy here, which no current
+        tasks service produces, so that reading the wrong key fails the test.
+        """
+        masked = f"--port 27017 --password {SENSITIVE_ARG_MASK}"
+        await create_snippet("mongo-check.sh", parameters=[])
         await seed_execution("mongo-check.sh")
-        tasks_api.get.return_value = self._history(f"--port 27017 --password {secret}")
+        tasks_api.get.return_value = self._history("--not-the-copy", masked=masked)
 
         response = api_client.get(executions_url(incident.id))
 
         assert response.status_code == status.HTTP_200_OK
         item = response.json()["items"][0]
         assert item["args_withheld"] is False
-        assert item["masked_args"] == f"--port 27017 --password {SENSITIVE_ARG_MASK}"
+        assert item["masked_args"] == masked
         assert item["snippet_title"] == "mongo-check.sh"
-        assert secret not in response.text
 
     @pytest.mark.asyncio
-    async def test_credential_uri_password_is_masked(
+    async def test_raw_arguments_from_an_older_tasks_service_are_never_shown(
         self,
         api_client: TestClient,
         incident: AtwIncident,
@@ -1453,35 +1460,16 @@ class TestAtwIncidentExecutionMaskedArgs:
         create_snippet: Callable[..., Awaitable[Snippet]],
         seed_execution: Callable[..., Awaitable[AtwIncidentExecution]],
     ) -> None:
-        """Mask a password embedded in a URI whose name matches no credential word."""
+        """Withhold when the upstream still returns raw arguments and no copy.
+
+        Only the masked copy is read, so a tasks service not yet upgraded, which
+        returns the argument string as submitted, cannot put a credential here.
+        """
         await create_snippet(
-            "pbm-diagnostics.sh",
-            parameters=[{"name": "mongodb-uri", "type": "str", "required": True}],
+            "mongo-check.sh",
+            parameters=[{"name": "password", "type": "str", "required": True}],
         )
-        await seed_execution("pbm-diagnostics.sh")
-        tasks_api.get.return_value = self._history(
-            "--mongodb-uri mongodb://USER:PASSWORD@localhost:27017/?authSource=admin"
-        )
-
-        response = api_client.get(executions_url(incident.id))
-
-        assert response.status_code == status.HTTP_200_OK
-        masked = response.json()["items"][0]["masked_args"]
-        assert SENSITIVE_ARG_MASK in masked
-        assert "USER" in masked
-        assert "localhost:27017" in masked
-        assert "PASSWORD" not in response.text
-
-    @pytest.mark.asyncio
-    async def test_args_withheld_when_snippet_unresolvable(
-        self,
-        api_client: TestClient,
-        incident: AtwIncident,
-        tasks_api: AsyncMock,
-        seed_execution: Callable[..., Awaitable[AtwIncidentExecution]],
-    ) -> None:
-        """Withhold a row whose snippet no longer resolves, so nothing is unmasked."""
-        await seed_execution("deleted-since.sh")
+        await seed_execution("mongo-check.sh")
         tasks_api.get.return_value = self._history("--password s3cr3t")
 
         response = api_client.get(executions_url(incident.id))
@@ -1491,6 +1479,74 @@ class TestAtwIncidentExecutionMaskedArgs:
         assert item["masked_args"] is None
         assert item["args_withheld"] is True
         assert "s3cr3t" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_arguments_recorded_without_a_copy_are_withheld(
+        self,
+        api_client: TestClient,
+        incident: AtwIncident,
+        tasks_api: AsyncMock,
+        create_snippet: Callable[..., Awaitable[Snippet]],
+        seed_execution: Callable[..., Awaitable[AtwIncidentExecution]],
+    ) -> None:
+        """Withhold a run recorded before masked copies existed."""
+        await create_snippet("mongo-check.sh", parameters=[])
+        await seed_execution("mongo-check.sh")
+        tasks_api.get.return_value = self._history(WITHHELD_ARGS_PLACEHOLDER)
+
+        response = api_client.get(executions_url(incident.id))
+
+        assert response.status_code == status.HTTP_200_OK
+        item = response.json()["items"][0]
+        assert item["masked_args"] is None
+        assert item["args_withheld"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("masked", ["", 7, ["--password", "s3cr3t"]])
+    async def test_an_unusable_masked_copy_is_withheld(
+        self,
+        api_client: TestClient,
+        incident: AtwIncident,
+        tasks_api: AsyncMock,
+        create_snippet: Callable[..., Awaitable[Snippet]],
+        seed_execution: Callable[..., Awaitable[AtwIncidentExecution]],
+        masked: Any,
+    ) -> None:
+        """Withhold when the masked copy is empty or not a string.
+
+        :param masked: The value the upstream returns under the masked-copy key.
+        """
+        await create_snippet("mongo-check.sh", parameters=[])
+        await seed_execution("mongo-check.sh")
+        tasks_api.get.return_value = self._history("--password s3cr3t", masked=masked)
+
+        response = api_client.get(executions_url(incident.id))
+
+        assert response.status_code == status.HTTP_200_OK
+        item = response.json()["items"][0]
+        assert item["masked_args"] is None
+        assert item["args_withheld"] is True
+        assert "s3cr3t" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_masked_copy_is_shown_after_the_snippet_was_deleted(
+        self,
+        api_client: TestClient,
+        incident: AtwIncident,
+        tasks_api: AsyncMock,
+        seed_execution: Callable[..., Awaitable[AtwIncidentExecution]],
+    ) -> None:
+        """Show the recorded copy for a run whose snippet no longer resolves."""
+        masked = f"--password {SENSITIVE_ARG_MASK}"
+        await seed_execution("deleted-since.sh")
+        tasks_api.get.return_value = self._history(masked, masked=masked)
+
+        response = api_client.get(executions_url(incident.id))
+
+        assert response.status_code == status.HTTP_200_OK
+        item = response.json()["items"][0]
+        assert item["masked_args"] == masked
+        assert item["args_withheld"] is False
         assert item["snippet_title"] is None
         assert item["snippet_filename"] == "deleted-since.sh"
 
@@ -1559,10 +1615,12 @@ class TestAtwIncidentExecutionMaskedArgs:
         await seed_execution("mongo-check.sh", task_history_id=_FIRST_TASK_ID)
         await seed_execution("mongo-check.sh", task_history_id=_SECOND_TASK_ID)
 
+        masked = f"--password {SENSITIVE_ARG_MASK}"
+
         def history_or_upstream_failure(path: str) -> dict[str, Any]:
             if path.endswith(f"/{_FIRST_TASK_ID}"):
                 raise HTTPBadRequestException(detail="upstream gone")
-            return self._history("--password s3cr3t")
+            return self._history(masked, masked=masked)
 
         tasks_api.get.side_effect = history_or_upstream_failure
 
@@ -1574,10 +1632,7 @@ class TestAtwIncidentExecutionMaskedArgs:
         assert rows[_SECOND_TASK_ID]["snippet_title"] == "mongo-check.sh"
         assert rows[_FIRST_TASK_ID]["masked_args"] is None
         assert rows[_FIRST_TASK_ID]["args_withheld"] is True
-        assert rows[_SECOND_TASK_ID]["masked_args"] == (
-            f"--password {SENSITIVE_ARG_MASK}"
-        )
-        assert "s3cr3t" not in response.text
+        assert rows[_SECOND_TASK_ID]["masked_args"] == masked
 
     @pytest.mark.asyncio
     async def test_unresolvable_snippet_does_not_fail_the_page(
@@ -1595,7 +1650,8 @@ class TestAtwIncidentExecutionMaskedArgs:
         )
         await seed_execution("mongo-check.sh", task_history_id=_FIRST_TASK_ID)
         await seed_execution("deleted-since.sh", task_history_id=_SECOND_TASK_ID)
-        tasks_api.get.return_value = self._history("--password s3cr3t")
+        masked = f"--password {SENSITIVE_ARG_MASK}"
+        tasks_api.get.return_value = self._history(masked, masked=masked)
 
         response = api_client.get(executions_url(incident.id))
 
@@ -1605,12 +1661,11 @@ class TestAtwIncidentExecutionMaskedArgs:
         assert response.json()["total"] == len(rows)
         assert rows[_FIRST_TASK_ID]["snippet_title"] == "mongo-check.sh"
         assert rows[_SECOND_TASK_ID]["snippet_title"] is None
-        assert rows[_FIRST_TASK_ID]["masked_args"] == f"--password {SENSITIVE_ARG_MASK}"
-        assert rows[_SECOND_TASK_ID]["args_withheld"] is True
-        assert "s3cr3t" not in response.text
+        assert rows[_FIRST_TASK_ID]["masked_args"] == masked
+        assert rows[_SECOND_TASK_ID]["masked_args"] == masked
 
     @pytest.mark.asyncio
-    async def test_snippet_edited_since_the_run_withholds_that_row(
+    async def test_snippet_metadata_unusable_since_the_run_still_shows_the_copy(
         self,
         api_client: TestClient,
         incident: AtwIncident,
@@ -1618,67 +1673,12 @@ class TestAtwIncidentExecutionMaskedArgs:
         create_snippet: Callable[..., Awaitable[Snippet]],
         seed_execution: Callable[..., Awaitable[AtwIncidentExecution]],
     ) -> None:
-        """Withhold a row whose snippet changed after the execution was recorded.
+        """Show the recorded copy whatever the snippet's metadata says today.
 
-        Masking reads the snippet's *current* frontmatter, so an edit that dropped
-        or de-sensitised a parameter would leave its recorded value unrecognised
-        and rendered in the clear. A digest that no longer matches is the signal
-        that the metadata may not describe this recording.
+        The copy was masked against the model the run used, so neither a digest
+        that no longer matches nor an ``arg_format`` that no longer tokenises
+        has any bearing on it.
         """
-        await create_snippet(
-            "edited-since.sh",
-            parameters=[{"name": "blob", "type": "str", "required": True}],
-        )
-        await seed_execution("edited-since.sh")
-        tasks_api.get.return_value = self._history(
-            "--blob s3cr3t", md5_checksum="b" * 32
-        )
-
-        response = api_client.get(executions_url(incident.id))
-
-        assert response.status_code == status.HTTP_200_OK
-        item = response.json()["items"][0]
-        assert item["masked_args"] is None
-        assert item["args_withheld"] is True
-        assert "s3cr3t" not in response.text
-
-    @pytest.mark.asyncio
-    async def test_execution_without_a_recorded_digest_withholds_that_row(
-        self,
-        api_client: TestClient,
-        incident: AtwIncident,
-        tasks_api: AsyncMock,
-        create_snippet: Callable[..., Awaitable[Snippet]],
-        seed_execution: Callable[..., Awaitable[AtwIncidentExecution]],
-    ) -> None:
-        """Withhold a row whose payload carries no digest to compare against."""
-        await create_snippet(
-            "no-digest.sh",
-            parameters=[{"name": "password", "type": "str", "required": True}],
-        )
-        await seed_execution("no-digest.sh")
-        history = self._history("--password s3cr3t")
-        del history["execution_request"]["meta"]["md5_checksum"]
-        tasks_api.get.return_value = history
-
-        response = api_client.get(executions_url(incident.id))
-
-        assert response.status_code == status.HTTP_200_OK
-        item = response.json()["items"][0]
-        assert item["masked_args"] is None
-        assert item["args_withheld"] is True
-        assert "s3cr3t" not in response.text
-
-    @pytest.mark.asyncio
-    async def test_unusable_snippet_metadata_withholds_that_row(
-        self,
-        api_client: TestClient,
-        incident: AtwIncident,
-        tasks_api: AsyncMock,
-        create_snippet: Callable[..., Awaitable[Snippet]],
-        seed_execution: Callable[..., Awaitable[AtwIncidentExecution]],
-    ) -> None:
-        """Withhold a row whose stored ``arg_format`` cannot be tokenised."""
         await create_snippet(
             "stale-meta.sh",
             parameters=[
@@ -1691,15 +1691,17 @@ class TestAtwIncidentExecutionMaskedArgs:
             ],
         )
         await seed_execution("stale-meta.sh")
-        tasks_api.get.return_value = self._history("--password s3cr3t")
+        masked = f"--password {SENSITIVE_ARG_MASK}"
+        tasks_api.get.return_value = self._history(
+            masked, masked=masked, md5_checksum="b" * 32
+        )
 
         response = api_client.get(executions_url(incident.id))
 
         assert response.status_code == status.HTTP_200_OK
         item = response.json()["items"][0]
-        assert item["masked_args"] is None
-        assert item["args_withheld"] is True
-        assert "s3cr3t" not in response.text
+        assert item["masked_args"] == masked
+        assert item["args_withheld"] is False
 
     @pytest.mark.asyncio
     async def test_every_snippet_unresolvable_still_returns_the_page(

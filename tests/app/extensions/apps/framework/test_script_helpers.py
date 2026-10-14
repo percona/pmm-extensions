@@ -61,6 +61,7 @@ from app.extensions.snippets.utils import (
     guess_mime_type,
     mime_type_to_highlighter_language,
 )
+from app.tasks.execution_request_secrets import MASKED_ARGS_META_KEY
 from tests.app.extensions.path_unsafe_task_names import PATH_UNSAFE_TASKS
 
 _MD5 = "a" * 32
@@ -209,6 +210,55 @@ class TestBuildExecutionMeta:
 
         dumped = meta.model_dump(by_alias=True, exclude_none=True)
         assert dumped["_snippet_filename"] == "dipper/7/x.sh"
+
+    @staticmethod
+    def _dumped_meta(parameters: list[dict[str, object]], **values: object):
+        """Return the meta posted for a run of a snippet declaring ``parameters``.
+
+        :param parameters: The snippet's frontmatter parameter definitions.
+        :param values: The frontmatter-named parameter values of the run.
+        :return: The meta as ``post_task_execution`` dumps it.
+        """
+        snippet = _snippet()
+        snippet.meta = {**snippet.meta, "parameters": parameters}
+        meta = build_execution_meta(
+            snippet,
+            _execution_args(snippet, values),
+            interpreter="bash",
+            snippet_source="https://x/y",
+            snippet_filename="script.sh",
+        )
+        return meta.model_dump(by_alias=True, exclude_none=True)
+
+    def test_records_a_masked_copy_beside_the_raw_arguments(self) -> None:
+        """Send the executor the real credential and history a masked rendering."""
+        dumped = self._dumped_meta(
+            [
+                {"name": "dest", "type": "str", "required": True},
+                {"name": "password", "type": "str"},
+            ],
+            dest="/tmp",
+            password="hunter2",
+        )
+
+        assert dumped["args"] == "--dest /tmp --password hunter2"
+        assert dumped[MASKED_ARGS_META_KEY] == "--dest /tmp --password ***"
+
+    def test_masked_copy_equals_the_arguments_when_none_is_a_credential(self) -> None:
+        """Keep non-credential arguments readable in history."""
+        dumped = self._dumped_meta(
+            [{"name": "dest", "type": "str", "required": True}], dest="/tmp"
+        )
+
+        assert dumped[MASKED_ARGS_META_KEY] == dumped["args"] == "--dest /tmp"
+
+    def test_a_run_without_arguments_records_no_masked_copy(self) -> None:
+        """Omit the masked copy, like the arguments, when the run renders none."""
+        dumped = self._dumped_meta([])
+
+        assert dumped["target"] == "host1"
+        assert "args" not in dumped
+        assert MASKED_ARGS_META_KEY not in dumped
 
 
 class TestBuildArtifactDownloadUrl:

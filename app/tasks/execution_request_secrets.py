@@ -50,18 +50,26 @@ __all__ = [
     "ARGS_META_KEY",
     "CONFIG_LEAF",
     "CONFIG_META_KEY",
+    "DISPLAY_ONLY_META_KEYS",
     "ENCRYPTED_LEAVES",
     "ENCRYPTED_META_KEYS",
+    "MASKED_ARGS_META_KEY",
     "PAYLOAD_LEAF",
+    "REDACTED_LEAF",
+    "TASKS_CLIENT_LOG_POLICY",
+    "WITHHELD_ARGS_PLACEHOLDER",
     "decrypt_request_leaves",
     "encrypt_request_leaves",
+    "publish_masked_args",
     "redact_request_leaves",
+    "redact_request_leaves_for_log",
     "reencrypt_request_leaves",
 ]
 
 import json
 import logging
 from collections.abc import Collection, Mapping
+from types import MappingProxyType
 from typing import Any, Final
 
 from app.core.encryption import decrypt, DecryptionError, encrypt, is_encrypted
@@ -101,6 +109,36 @@ ENCRYPTED_LEAVES: Final = (ARGS_LEAF, CONFIG_LEAF, PAYLOAD_LEAF)
 #: somewhere inside it never compares equal either, so the whole key has to go.
 ENCRYPTED_META_KEYS: Final = tuple(
     leaf.split(".")[1] for leaf in ENCRYPTED_LEAVES if leaf.startswith("meta.")
+)
+
+#: ``meta`` key holding the rendering of ``meta.args`` with every credential
+#: value masked, recorded by the submitter beside the raw arguments. It is what
+#: a response publishes in their place. Not a protected leaf: it holds nothing
+#: a response may not show.
+MASKED_ARGS_META_KEY: Final = "_masked_args"
+
+#: The ``meta`` keys that carry no run identity: renderings of other leaves kept
+#: for display, which two submissions of one run need not agree on. A copy
+#: recorded by one release and absent from a row an earlier release wrote is the
+#: same run, and the leaf it renders is already compared in its own right, so a
+#: predicate deciding whether two requests are the same run skips these.
+DISPLAY_ONLY_META_KEYS: Final = (MASKED_ARGS_META_KEY,)
+
+#: What a response shows for ``meta.args`` when a run recorded arguments and no
+#: masked copy of them, so nothing can tell which of them are credentials.
+WITHHELD_ARGS_PLACEHOLDER: Final = "<withheld>"
+
+#: What a log line shows in place of a protected leaf's value.
+REDACTED_LEAF: Final = "<redacted>"
+
+#: The log settings every client of the Tasks API is constructed with. A run's
+#: request body carries the protected leaves in clear, as does a schedule's
+#: nested under its ``execute_request``, and history responses return
+#: ``meta.config`` and ``payload`` in clear, so a client logs neither body.
+#: Withholding whole bodies rather than naming the leaves in them keeps the
+#: guarantee independent of the shape a body nests them in.
+TASKS_CLIENT_LOG_POLICY: Final[Mapping[str, Any]] = MappingProxyType(
+    {"withhold_body_log": True}
 )
 
 
@@ -221,6 +259,48 @@ def redact_request_leaves(
     for path, container, name in sites:
         if path in named:
             container[name] = None
+    return result
+
+
+def publish_masked_args(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Return ``document`` with its raw arguments replaced by what may be shown.
+
+    The masked copy the submitter recorded stands in for ``meta.args``. A run
+    that recorded arguments and no usable copy shows a placeholder instead,
+    because nothing here can tell which of its arguments are credentials. A
+    document holding no arguments, an empty value included, is returned as it
+    stands.
+
+    Applying this to its own output changes nothing, which the PMM Extensions
+    gateway relies on when it re-validates a response the Tasks service already
+    published.
+
+    :param document: The dumped execution request about to be serialised.
+    :return: A copy of ``document`` whose ``meta.args`` carries no raw value.
+    """
+    result, sites = _copy_with_leaf_sites(document)
+    for path, container, name in sites:
+        if path == ARGS_LEAF and container[name]:
+            masked = container.get(MASKED_ARGS_META_KEY)
+            container[name] = (
+                masked
+                if isinstance(masked, str) and masked
+                else WITHHELD_ARGS_PLACEHOLDER
+            )
+    return result
+
+
+def redact_request_leaves_for_log(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Return ``document`` with every present protected leaf redacted.
+
+    :param document: The execution request, or the part of one, about to be
+        rendered into a log line.
+    :return: A copy of ``document`` carrying a fixed marker at each protected
+        leaf that held a value.
+    """
+    result, sites = _copy_with_leaf_sites(document)
+    for _, container, name in sites:
+        container[name] = REDACTED_LEAF
     return result
 
 
