@@ -21,9 +21,21 @@ prints the rest. A client can write a notice to stderr on a call that otherwise
 succeeds, so these tests stage such a notice and check that it reaches neither
 parsed value, while a failing call still reports the client's own error and the
 display-only dumps keep showing everything the client wrote.
+
+The script also prints its admin config file, which holds the admin password,
+so these tests stage config files of every shape the script may meet and check
+that no credential value reaches the report.
+
+The admin credentials come from the ``--defaults-file``, which the script reads
+as ``KEY=value`` text and never runs. These tests also check that each value
+shape loads as the shell would read it, and that defaults fill the settings the
+file lacks. A value only shell evaluation could complete is ignored with a
+warning, nothing written in the file ever executes, and an unreadable file
+stops the run before any query.
 """
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -48,6 +60,59 @@ ADMIN_CNF = (
     "PROXYSQL_HOSTNAME='127.0.0.1'\n"
     "PROXYSQL_PORT='6032'\n"
 )
+REDACTED_ADMIN_CNF = (
+    "PROXYSQL_USERNAME='admin'\n"
+    "PROXYSQL_PASSWORD=[REDACTED]\n"
+    "PROXYSQL_HOSTNAME='127.0.0.1'\n"
+    "PROXYSQL_PORT='6032'\n"
+)
+HIDDEN_LINE = "# [REDACTED: line not shown]"
+CNF_START = "............ DUMPING PROXYSQL ADMIN CNF FILE ............"
+CNF_END = "............ END OF DUMPING PROXYSQL ADMIN CNF FILE ............"
+HOST_PRIORITY_START = "............ DUMPING HOST PRIORITY FILE ............"
+DEFAULT_CLIENT = {"user": "", "password": "", "host": "127.0.0.1", "port": "6032"}
+ADMIN_CLIENT = {
+    "user": "admin",
+    "password": PASSWORD,
+    "host": "127.0.0.1",
+    "port": "6032",
+}
+# The shape proxysql-admin ships, with values distinct enough to tell apart the
+# four keys the script reads from the look-alikes it must ignore, and from the
+# defaults.
+SHIPPED_CNF = """\
+# proxysql admin interface credentials.
+export PROXYSQL_DATADIR='/var/lib/proxysql'
+export PROXYSQL_USERNAME='proxy-admin'
+export PROXYSQL_PASSWORD='proxy-pass'
+export PROXYSQL_HOSTNAME='10.0.0.5'
+export PROXYSQL_PORT='16032'
+
+# PXC admin credentials for connecting to pxc-cluster-node.
+export CLUSTER_USERNAME='cluster-admin'
+export CLUSTER_PASSWORD='cluster-pass'
+export CLUSTER_HOSTNAME='localhost'
+export CLUSTER_PORT='3306'
+
+# proxysql monitoring user.
+export MONITOR_USERNAME="monitor"
+export MONITOR_PASSWORD="monit0r"
+
+export WRITER_HOSTGROUP_ID='10'
+export MODE="singlewrite"
+"""
+SHIPPED_CLIENT = {
+    "user": "proxy-admin",
+    "password": "proxy-pass",
+    "host": "10.0.0.5",
+    "port": "16032",
+}
+FIELD_OF = {
+    "PROXYSQL_USERNAME": "user",
+    "PROXYSQL_PASSWORD": "password",
+    "PROXYSQL_HOSTNAME": "host",
+    "PROXYSQL_PORT": "port",
+}
 HOST_PRIORITY = "[node1]\nweight=10\n"
 TABLE_DUMP = "+----+\n| id |\n+----+\n| 1  |\n+----+\n"
 DEFAULT_DATADIR = "/var/lib/proxysql"
@@ -193,6 +258,22 @@ class ProxysqlHarness:
             return []
         return [Path(line) for line in log.read_text(encoding="utf-8").splitlines()]
 
+    @property
+    def credentials(self) -> dict[str, str]:
+        """Return the ``[client]`` settings the script last handed the stub on stdin."""
+        stanza = (self.root / "stdin.log").read_text(encoding="utf-8").splitlines()
+        settings = dict(line.split("=", 1) for line in stanza[1:])
+        # Mirrors mysql_client's printf, which quotes the password alone.
+        settings["password"] = settings["password"].removeprefix('"').removesuffix('"')
+        return settings
+
+    def write_cnf(self, text: str) -> None:
+        """Replace the admin config with ``text``, line endings kept as given.
+
+        :param text: The exact file content.
+        """
+        self.admin_cnf.write_bytes(text.encode())
+
     def answer(self, rule: Rule) -> None:
         """Override the stub's answer to any query containing the rule's pattern.
 
@@ -268,10 +349,14 @@ class ProxysqlHarness:
         else:
             notice_file.write_text(f"{self.notice}\n", encoding="utf-8")
 
-    def run(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run(
+        self, *args: str, env: dict[str, str] | None = None, timeout: float = 60
+    ) -> subprocess.CompletedProcess[str]:
         """Run the shipped script with the staged config and stub.
 
         :param args: Options passed after ``--defaults-file``.
+        :param env: Variables added to the run's environment.
+        :param timeout: Seconds before the run is killed and the test fails.
         :return: The completed process.
         """
         self._write_rules()
@@ -279,9 +364,9 @@ class ProxysqlHarness:
             self._command(args),
             capture_output=True,
             text=True,
-            env=self._env(),
+            env={**self._env(), **(env or {})},
             cwd=self.root,
-            timeout=60,
+            timeout=timeout,
             check=False,
         )
 
@@ -406,13 +491,23 @@ def _full_run(dump: str) -> str:
         )
         + _database("STATS", _section("stats.stats_mysql_global", dump))
         + _database("MONITOR", _section("monitor.mysql_server_ping_log", dump))
-        + "............ DUMPING HOST PRIORITY FILE ............\n"
+        + f"{HOST_PRIORITY_START}\n"
         + HOST_PRIORITY
         + "............ END OF DUMPING HOST PRIORITY FILE ............\n\n"
-        + "............ DUMPING PROXYSQL ADMIN CNF FILE ............\n"
-        + ADMIN_CNF
-        + "............ END OF DUMPING PROXYSQL ADMIN CNF FILE ............\n\n"
+        + f"{CNF_START}\n"
+        + REDACTED_ADMIN_CNF
+        + f"{CNF_END}\n\n"
     )
+
+
+def _cnf_section(report: str) -> list[str]:
+    """Return the lines printed inside the admin config section.
+
+    :param report: The script's report.
+    :return: The lines between the section's start and end banners.
+    """
+    lines = report.splitlines()
+    return lines[lines.index(CNF_START) + 1 : lines.index(CNF_END)]
 
 
 HEALTHY_FULL_RUN = _full_run(TABLE_DUMP)
@@ -794,3 +889,1235 @@ class TestCredentials:
         assert harness.calls
         assert all(PASSWORD not in call for call in harness.calls)
         assert PASSWORD in (harness.root / "stdin.log").read_text(encoding="utf-8")
+
+
+def _ignored(key: str, cnf: Path) -> str:
+    """Return the warning the script prints for a credential it will not read.
+
+    :param key: The setting's name.
+    :param cnf: The config file.
+    :return: The warning line.
+    """
+    return f"Ignoring {key} in {cnf}: its value is not a plain string."
+
+
+def _unread(key: str, cnf: Path) -> str:
+    """Return the warning the script prints for a credential set in a form it does not read.
+
+    :param key: The setting's name.
+    :param cnf: The config file.
+    :return: The warning line.
+    """
+    return f"Ignoring {key} in {cnf}: its line is not a plain KEY=value setting."
+
+
+def _unclosed(cnf: Path) -> str:
+    """Return the notice the script prints for a file that ends inside a quote.
+
+    :param cnf: The config file.
+    :return: The notice line.
+    """
+    return f"A quote in {cnf} is never closed: the settings after it were not read."
+
+
+def _warnings(result: subprocess.CompletedProcess[str]) -> list[str]:
+    """Return the ignored-credential warnings a run printed.
+
+    :param result: The finished run.
+    :return: The warning lines, in order.
+    """
+    assert result.stdout, "the run printed no report"
+    return [line for line in result.stdout.splitlines() if line.startswith("Ignoring ")]
+
+
+class TestCredentialShapes:
+    """Read each value shape proxysql-admin.cnf uses as the shell would."""
+
+    @pytest.mark.parametrize(
+        ("line", "password"),
+        [
+            pytest.param("PROXYSQL_PASSWORD='p w'", "p w", id="single-quoted"),
+            pytest.param('PROXYSQL_PASSWORD="p w"', "p w", id="double-quoted"),
+            pytest.param("PROXYSQL_PASSWORD=pw", "pw", id="bare"),
+            pytest.param("export PROXYSQL_PASSWORD='pw'", "pw", id="export"),
+            pytest.param(
+                "\t export\tPROXYSQL_PASSWORD=pw  ", "pw", id="surrounding-whitespace"
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD='pw' # rotated", "pw", id="quoted-trailing-comment"
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=pw # rotated", "pw", id="bare-trailing-comment"
+            ),
+            pytest.param("PROXYSQL_PASSWORD='p#w'", "p#w", id="hash-single-quoted"),
+            pytest.param('PROXYSQL_PASSWORD="p#w"', "p#w", id="hash-double-quoted"),
+            pytest.param("PROXYSQL_PASSWORD=p#w", "p#w", id="hash-in-bare-word"),
+            pytest.param(
+                r'PROXYSQL_PASSWORD="a\"b\\c\$d\`e"',
+                'a"b\\c$d`e',
+                id="double-quoted-escapes",
+            ),
+            pytest.param(
+                r'PROXYSQL_PASSWORD="a\nb"', r"a\nb", id="double-quoted-other-escape"
+            ),
+            pytest.param(
+                r"PROXYSQL_PASSWORD='a\nb'", r"a\nb", id="single-quoted-backslash"
+            ),
+            pytest.param(r"PROXYSQL_PASSWORD=a\ b\$c", "a b$c", id="bare-escapes"),
+            pytest.param(
+                "PROXYSQL_PASSWORD='$(id)'", "$(id)", id="single-quoted-dollar"
+            ),
+            pytest.param("PROXYSQL_PASSWORD=p*w?[x]", "p*w?[x]", id="glob-characters"),
+            pytest.param("PROXYSQL_PASSWORD=pässwörd", "pässwörd", id="non-ascii"),
+            pytest.param("PROXYSQL_PASSWORD=pa~:w", "pa~:w", id="tilde-mid-word"),
+            pytest.param(
+                r"PROXYSQL_PASSWORD=pa\:~", "pa:~", id="tilde-after-escaped-colon"
+            ),
+            pytest.param(
+                r"PROXYSQL_PASSWORD=pa:\~", "pa:~", id="escaped-tilde-after-colon"
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD='pa:~'", "pa:~", id="tilde-after-quoted-colon"
+            ),
+            pytest.param("PROXYSQL_PASSWORD={a,b}", "{a,b}", id="braces"),
+            pytest.param(
+                r"export PROXYSQL_PASSWORD=\{a,b}", "{a,b}", id="exported-escaped-brace"
+            ),
+            pytest.param(
+                "export PROXYSQL_PASSWORD='{a,b}'", "{a,b}", id="exported-quoted-braces"
+            ),
+        ],
+    )
+    def test_reads_value_shape(self, harness, line, password):
+        """Hand the client the literal value each shape spells."""
+        harness.write_cnf(f"PROXYSQL_USERNAME=admin\n{line}\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == []
+        assert harness.credentials == {
+            **DEFAULT_CLIENT,
+            "user": "admin",
+            "password": password,
+        }
+
+    def test_reads_shipped_cnf(self, harness):
+        """Read the four admin settings and ignore every other key of the shipped file."""
+        harness.write_cnf(SHIPPED_CNF)
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert harness.credentials == SHIPPED_CLIENT
+
+    def test_strips_carriage_returns(self, harness):
+        """Read a file saved with CRLF line endings without a stray carriage return."""
+        harness.write_cnf(ADMIN_CNF.replace("\n", "\r\n"))
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert harness.credentials == ADMIN_CLIENT
+
+    def test_reads_last_line_without_newline(self, harness):
+        """Read a setting on a final line that has no newline."""
+        harness.write_cnf(ADMIN_CNF.rstrip("\n"))
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert harness.credentials == ADMIN_CLIENT
+
+    def test_last_assignment_wins(self, harness):
+        """Take a repeated setting's last value, as sourcing the file did."""
+        harness.write_cnf(ADMIN_CNF + "PROXYSQL_PORT=7032\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert harness.credentials == {**ADMIN_CLIENT, "port": "7032"}
+
+    @pytest.mark.parametrize(
+        "spanning",
+        [
+            pytest.param('NOTE="first\n{setting}\nlast"', id="double-quoted"),
+            pytest.param("NOTE='first\n{setting}\nlast'", id="single-quoted"),
+            pytest.param(
+                'NOTE="first\nescaped \\" quote\n{setting}\nlast"',
+                id="escaped-quote-does-not-close",
+            ),
+            pytest.param("NOTE=it's\n{setting}\n'", id="quote-opened-mid-word"),
+            pytest.param("NOTE=pa#ss'\n{setting}\n'", id="quote-after-hash-in-word"),
+            pytest.param("echo it's\n{setting}\n'", id="quote-in-a-command"),
+            pytest.param("NOTE=first\\\n{setting}", id="line-continuation"),
+            pytest.param(
+                "NOTE=first\\\nsecond\\\n{setting}", id="chained-line-continuation"
+            ),
+            pytest.param(
+                "NOTE=\"first\nlast\"#x'\n{setting}\n'",
+                id="hash-after-closing-double-quote",
+            ),
+            pytest.param(
+                "NOTE='first\nlast'#x\"\n{setting}\n\"",
+                id="hash-after-closing-single-quote",
+            ),
+        ],
+    )
+    def test_lines_of_a_multiline_value_are_not_settings(self, harness, spanning):
+        """Skip the lines a value spans, then resume once it ends."""
+        harness.write_cnf(
+            "PROXYSQL_USERNAME='admin'\n"
+            + spanning.replace("{setting}", "PROXYSQL_PASSWORD=hijacked")
+            + "\nPROXYSQL_PORT=7032\n"
+        )
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == []
+        assert _unclosed(harness.admin_cnf) not in result.stdout
+        assert harness.credentials == {
+            **DEFAULT_CLIENT,
+            "user": "admin",
+            "port": "7032",
+        }
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param("NOTE=a # it's", id="quote-in-a-comment"),
+            pytest.param("NOTE=a;#'", id="quote-in-a-comment-after-a-command"),
+            pytest.param("# it's a comment", id="quote-in-a-comment-line"),
+        ],
+    )
+    def test_quote_in_a_comment_opens_nothing(self, harness, line):
+        """Read the setting after a line whose only quote sits in a comment."""
+        harness.write_cnf(f"{line}\nPROXYSQL_USERNAME=admin\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert harness.credentials == {**DEFAULT_CLIENT, "user": "admin"}
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param("NOTE='PROXYSQL_PASSWORD=x y'", id="single-quoted"),
+            pytest.param('NOTE="see PROXYSQL_PASSWORD=x"', id="double-quoted"),
+            pytest.param("NOTE=a # PROXYSQL_PASSWORD=x", id="comment"),
+            pytest.param("NOTE=a\\ PROXYSQL_PASSWORD=x", id="escaped-space"),
+            pytest.param("echo PROXYSQL_PASSWORD=x", id="command-argument"),
+        ],
+    )
+    def test_mentioned_credential_is_not_a_setting(self, harness, line):
+        """Keep the password when a later line only mentions its setting."""
+        harness.write_cnf(f"PROXYSQL_PASSWORD=kept\n{line}\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == []
+        assert harness.credentials == {**DEFAULT_CLIENT, "password": "kept"}
+
+
+class TestDefaultsWhenAbsent:
+    """Fall back to the documented defaults for settings the file does not give."""
+
+    @pytest.mark.parametrize(
+        "cnf",
+        [
+            pytest.param("", id="empty"),
+            pytest.param("# nothing here\n\n   \n", id="comments-only"),
+            pytest.param(
+                "#export PROXYSQL_PASSWORD='old'\n  # PROXYSQL_PORT=1\n",
+                id="commented-out",
+            ),
+            pytest.param(
+                "proxysql_password=pw\nPROXYSQL_PORT = 7032\nexport PROXYSQL_HOSTNAME\n",
+                id="not-an-assignment",
+            ),
+            pytest.param(
+                "PROXYSQL_USERNAME=''\nPROXYSQL_PASSWORD=\"\"\n"
+                "PROXYSQL_HOSTNAME=\nPROXYSQL_PORT=''\n",
+                id="empty-values",
+            ),
+        ],
+    )
+    def test_uses_defaults(self, harness, cnf):
+        """Connect with the defaults when the file sets no usable credential."""
+        harness.write_cnf(cnf)
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == []
+        assert harness.credentials == DEFAULT_CLIENT
+
+    def test_ignores_environment(self, harness):
+        """Take a missing setting's default, not a same-named environment variable."""
+        harness.write_cnf("PROXYSQL_USERNAME=admin\n")
+
+        result = harness.run(
+            "--main",
+            env={
+                "PROXYSQL_PASSWORD": "from-env",
+                "PROXYSQL_HOSTNAME": "10.9.9.9",
+                "PROXYSQL_PORT": "9999",
+            },
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert harness.credentials == {**DEFAULT_CLIENT, "user": "admin"}
+
+
+# Config lines that run a command when the file is sourced.
+PAYLOADS = [
+    pytest.param("touch {marker}", id="command"),
+    pytest.param('PROXYSQL_PASSWORD="$(touch {marker})"', id="quoted-substitution"),
+    pytest.param("PROXYSQL_PASSWORD=$(touch {marker})", id="bare-substitution"),
+    pytest.param("PROXYSQL_PASSWORD=`touch {marker}`", id="backticks"),
+    pytest.param("PROXYSQL_PORT=6032; touch {marker}", id="semicolon"),
+    pytest.param("PROXYSQL_PORT=6032 && touch {marker}", id="and-list"),
+    pytest.param("PROXYSQL_PORT=6032 | touch {marker}", id="pipe"),
+    pytest.param("PROXYSQL_HOSTNAME=${X:=$(touch {marker})}", id="expansion"),
+    pytest.param("PROXYSQL_USERNAME=admin touch {marker}", id="env-prefix"),
+    pytest.param("cat <<EOF > {marker}\nx\nEOF", id="here-document"),
+    pytest.param("f() { touch {marker}; }\nf", id="function"),
+    pytest.param("trap 'touch {marker}' EXIT", id="exit-trap"),
+]
+
+
+class TestDefaultsFileNeverExecutes:
+    """Read the config file as text, so nothing written in it ever runs."""
+
+    @pytest.mark.parametrize("payload", PAYLOADS)
+    def test_payload_runs_when_sourced(self, harness, payload):
+        """Prove each payload does run under ``source``, so its absence below counts."""
+        marker = harness.root / "executed"
+        harness.write_cnf(payload.replace("{marker}", str(marker)) + "\n")
+
+        subprocess.run(
+            ["bash", "-c", 'source "$1" > /dev/null 2>&1', "bash", harness.admin_cnf],
+            check=False,
+            timeout=10,
+        )
+
+        assert marker.exists()
+
+    @pytest.mark.parametrize("payload", PAYLOADS)
+    def test_does_not_run_payload(self, harness, payload):
+        """Leave no trace of the payload and still read the settings around it."""
+        marker = harness.root / "executed"
+        harness.write_cnf(payload.replace("{marker}", str(marker)) + "\n" + ADMIN_CNF)
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists()
+        assert harness.credentials == ADMIN_CLIENT
+
+    def test_cannot_override_script_state(self, harness):
+        """Keep the file from reassigning the script's own variables."""
+        harness.write_cnf(
+            "USER=evil\nPASSWORD=evil\nHOST=evil\nPORT=1\n"
+            "DEFAULTS_FILE=/nonexistent\nOUTPUT_MODE=file\nPATH=/nonexistent\n"
+            + ADMIN_CNF
+        )
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert "mysql_servers" in result.stdout
+        assert "Output written" not in result.stdout
+        assert harness.credentials == ADMIN_CLIENT
+
+    def test_script_has_no_source_command(self):
+        """Pin that no line of the script sources or dot-includes a file."""
+        script = SCRIPT.read_text(encoding="utf-8")
+
+        assert not re.search(r"^\s*(source|\.)\s", script, re.MULTILINE)
+
+
+class TestNonLiteralCredential:
+    """Ignore, with a warning, a credential only shell evaluation could complete."""
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param('PROXYSQL_PASSWORD="pa${X}ss"', id="braced-expansion"),
+            pytest.param("PROXYSQL_PASSWORD=pa$X", id="bare-expansion"),
+            pytest.param('PROXYSQL_PASSWORD="$(printf leaked)"', id="substitution"),
+            pytest.param("PROXYSQL_PASSWORD=`printf leaked`", id="backticks"),
+            pytest.param("PROXYSQL_PASSWORD='a'b", id="quote-then-word"),
+            pytest.param("PROXYSQL_PASSWORD='a';x", id="quote-then-command"),
+            pytest.param("PROXYSQL_PASSWORD=\"a\"'b'", id="concatenated-quotes"),
+            pytest.param("PROXYSQL_PASSWORD=a b", id="second-word"),
+            pytest.param("PROXYSQL_PASSWORD=~admin", id="tilde"),
+            pytest.param("PROXYSQL_PASSWORD=pa:~", id="tilde-after-colon"),
+            pytest.param("PROXYSQL_PASSWORD=pa::~/x", id="tilde-after-colons"),
+            pytest.param("PROXYSQL_HOSTNAME=$HOSTNAME", id="hostname"),
+            pytest.param("PROXYSQL_PORT=$((6000 + 32))", id="arithmetic"),
+            pytest.param("PROXYSQL_USERNAME=adm'in'", id="quote-mid-word"),
+            pytest.param("export PROXYSQL_PASSWORD={a,b}", id="exported-braces"),
+        ],
+    )
+    def test_warns_and_resets_to_default(self, harness, line):
+        """Name the key, reset it to its default and keep the other settings."""
+        key, raw = line.removeprefix("export ").split("=", 1)
+        harness.write_cnf(f"{SHIPPED_CNF}{line}\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == [_ignored(key, harness.admin_cnf)]
+        field_name = FIELD_OF[key]
+        assert harness.credentials == {
+            **SHIPPED_CLIENT,
+            field_name: DEFAULT_CLIENT[field_name],
+        }
+        assert raw not in result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param(
+                "PROXYSQL_PASSWORD='first\nPROXYSQL_USERNAME=hijacked\nlast'",
+                id="single-quoted",
+            ),
+            pytest.param(
+                'PROXYSQL_PASSWORD="first\nPROXYSQL_USERNAME=hijacked\nlast"',
+                id="double-quoted",
+            ),
+            pytest.param(
+                'PROXYSQL_PASSWORD="first\\"\nPROXYSQL_USERNAME=hijacked\nlast"',
+                id="escaped-quote",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=adm'in\nPROXYSQL_USERNAME=hijacked\n'",
+                id="quote-mid-word",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=first\\\nPROXYSQL_USERNAME=hijacked",
+                id="line-continuation",
+            ),
+        ],
+    )
+    def test_multiline_credential_is_ignored(self, harness, line):
+        """Ignore a credential spanning lines, and every line it spans."""
+        harness.write_cnf(f"{SHIPPED_CNF}{line}\nPROXYSQL_PORT=7032\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == [_ignored("PROXYSQL_PASSWORD", harness.admin_cnf)]
+        assert harness.credentials == {
+            **SHIPPED_CLIENT,
+            "password": "",
+            "port": "7032",
+        }
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param("A=1 PROXYSQL_PASSWORD=leaked", id="after-an-assignment"),
+            pytest.param("export A=1 PROXYSQL_PASSWORD=leaked", id="export-list"),
+            pytest.param("A='x y' PROXYSQL_PASSWORD=leaked", id="after-a-quoted-word"),
+            pytest.param("PROXYSQL_PASSWORD+=leaked", id="append"),
+            pytest.param("declare -x PROXYSQL_PASSWORD=leaked", id="declare"),
+            pytest.param("readonly PROXYSQL_PASSWORD=leaked", id="readonly"),
+            pytest.param(
+                "NOTE=a\\\nexport PROXYSQL_PASSWORD=leaked", id="continued-line"
+            ),
+        ],
+    )
+    def test_warns_on_unread_assignment(self, harness, line):
+        """Warn about, and reset, a credential the shell would set but the plain form misses."""
+        harness.write_cnf(f"{SHIPPED_CNF}{line}\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == [_unread("PROXYSQL_PASSWORD", harness.admin_cnf)]
+        assert harness.credentials == {**SHIPPED_CLIENT, "password": ""}
+        warning_text = "\n".join(_warnings(result))
+        assert warning_text
+        assert "leaked" not in warning_text
+
+    def test_warns_about_each_credential_on_a_line(self, harness):
+        """Name both credentials of a two-assignment line, each with its own reason."""
+        harness.write_cnf(f"{SHIPPED_CNF}PROXYSQL_PORT=7032 PROXYSQL_PASSWORD=leaked\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == [
+            _ignored("PROXYSQL_PORT", harness.admin_cnf),
+            _unread("PROXYSQL_PASSWORD", harness.admin_cnf),
+        ]
+        assert harness.credentials == {
+            **SHIPPED_CLIENT,
+            "password": "",
+            "port": DEFAULT_CLIENT["port"],
+        }
+
+    def test_multiline_warning_omits_the_value(self, harness):
+        """Leave the spanned value's text out of the warning."""
+        harness.write_cnf(f"{SHIPPED_CNF}PROXYSQL_PASSWORD='first\nlast'\n")
+
+        result = harness.run("--main")
+
+        (warning,) = _warnings(result)
+        assert "first" not in warning
+        assert "last" not in warning
+
+    @pytest.mark.parametrize("quote", ["'", '"'])
+    def test_reports_a_quote_never_closed(self, harness, quote):
+        """Say that the settings after a quote the file never closes went unread."""
+        harness.write_cnf(
+            f"PROXYSQL_USERNAME='admin'\nMONITOR_PASSWORD={quote}monit0r\n"
+            "PROXYSQL_PASSWORD=secret\n"
+        )
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _unclosed(harness.admin_cnf) in result.stdout.splitlines()
+        assert "monit0r" not in result.stdout
+        assert harness.credentials == {**DEFAULT_CLIENT, "user": "admin"}
+
+    def test_warning_stays_out_of_the_report_file(self, harness):
+        """Print the warning to the run's output, not into the report file."""
+        harness.write_cnf(f"{SHIPPED_CNF}PROXYSQL_PASSWORD=$X\n")
+
+        result = harness.run("--main", "--output", "file")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == [_ignored("PROXYSQL_PASSWORD", harness.admin_cnf)]
+        (report,) = harness.root.glob("proxysql_status_*.log")
+        report_text = report.read_text(encoding="utf-8")
+        assert report_text
+        assert "Ignoring " not in report_text
+
+
+class TestUnreadableDefaultsFile:
+    """Stop before any query when the config file cannot be read as a file."""
+
+    def _assert_refused(self, harness, result):
+        """Assert the run failed with the config error and never reached the client."""
+        assert result.returncode == 1
+        assert result.stdout == _getopt_probe_output() + (
+            "Cannot find or read the config file (check --defaults-file): "
+            f"{harness.admin_cnf}.\n"
+        )
+        assert harness.calls == []
+
+    def test_missing_file(self, harness):
+        """Refuse a path that does not exist."""
+        harness.admin_cnf.unlink()
+
+        self._assert_refused(harness, harness.run())
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+    def test_unreadable_file(self, harness):
+        """Refuse a file the run has no permission to read."""
+        harness.admin_cnf.chmod(0)
+
+        self._assert_refused(harness, harness.run())
+
+    def test_directory(self, harness):
+        """Refuse a directory instead of connecting with the defaults."""
+        harness.admin_cnf.unlink()
+        harness.admin_cnf.mkdir()
+
+        self._assert_refused(harness, harness.run())
+
+    def test_symlink_to_directory(self, harness):
+        """Refuse a link that resolves to a directory."""
+        target = harness.root / "cnf-dir"
+        target.mkdir()
+        harness.admin_cnf.unlink()
+        harness.admin_cnf.symlink_to(target)
+
+        self._assert_refused(harness, harness.run())
+
+
+class TestLargeDefaultsFile:
+    """Read a big config file well within the run's time limit."""
+
+    def test_reads_credentials_after_many_lines(self, harness):
+        """Find the credentials below thousands of lines that need a quote scan."""
+        filler = "# don't edit\nexport NOTE='it''s' \"a \\\"b\\\"\" c\\ d\n" * 10_000
+        harness.write_cnf(filler + ADMIN_CNF)
+
+        # A parser that forks once per line overruns this budget.
+        result = harness.run("--main", timeout=40)
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == []
+        assert harness.credentials == ADMIN_CLIENT
+
+
+SECRET = "hunter2-cnf-secret"
+PORT_LINE = "PROXYSQL_PORT='6032'"
+REAL_SHAPED_CNF = f"""\
+# proxysql admin interface credentials.
+export PROXYSQL_DATADIR='/var/lib/proxysql'
+export PROXYSQL_USERNAME='admin'
+export PROXYSQL_PASSWORD='{PASSWORD}'
+export PROXYSQL_HOSTNAME='localhost'
+export PROXYSQL_PORT='6032'
+
+# PXC admin credentials for connecting to pxc-cluster-node.
+export CLUSTER_USERNAME='admin'
+export CLUSTER_PASSWORD='cluster-pass-1'
+export CLUSTER_HOSTNAME='localhost'
+export CLUSTER_PORT='3306'
+
+# proxysql monitoring user. The admin script creates this user on the nodes.
+export MONITOR_USERNAME="monitor"
+export MONITOR_PASSWORD="monitor-pass-2"
+
+# Application user to connect to pxc-node through proxysql
+export CLUSTER_APP_USERNAME="proxysql_user"
+export CLUSTER_APP_PASSWORD=app-pass-3
+
+export WRITER_HOSTGROUP_ID='10'
+export READER_HOSTGROUP_ID='11'
+export API_TOKEN='token-4'
+export BACKUP_SECRET='secret-5'
+export REPL_PWD='pwd-6'
+export API_KEY='key-7'
+export AUTH_STRING='auth-8'
+export DB_CREDENTIALS='cred-9'
+export BACKUP_URL='mysql://backup:url-10@db:3306/'
+"""
+REDACTED_REAL_SHAPED_CNF = """\
+# proxysql admin interface credentials.
+export PROXYSQL_DATADIR='/var/lib/proxysql'
+export PROXYSQL_USERNAME='admin'
+export PROXYSQL_PASSWORD=[REDACTED]
+export PROXYSQL_HOSTNAME='localhost'
+export PROXYSQL_PORT='6032'
+
+# PXC admin credentials for connecting to pxc-cluster-node.
+export CLUSTER_USERNAME='admin'
+export CLUSTER_PASSWORD=[REDACTED]
+export CLUSTER_HOSTNAME='localhost'
+export CLUSTER_PORT='3306'
+
+# proxysql monitoring user. The admin script creates this user on the nodes.
+export MONITOR_USERNAME="monitor"
+export MONITOR_PASSWORD=[REDACTED]
+
+# Application user to connect to pxc-node through proxysql
+export CLUSTER_APP_USERNAME="proxysql_user"
+export CLUSTER_APP_PASSWORD=[REDACTED]
+
+export WRITER_HOSTGROUP_ID='10'
+export READER_HOSTGROUP_ID='11'
+export API_TOKEN=[REDACTED]
+export BACKUP_SECRET=[REDACTED]
+export REPL_PWD=[REDACTED]
+export API_KEY=[REDACTED]
+export AUTH_STRING=[REDACTED]
+export DB_CREDENTIALS=[REDACTED]
+export BACKUP_URL=[REDACTED]
+"""
+REAL_SHAPED_SECRETS = (
+    PASSWORD,
+    "cluster-pass-1",
+    "monitor-pass-2",
+    "app-pass-3",
+    "token-4",
+    "secret-5",
+    "pwd-6",
+    "key-7",
+    "auth-8",
+    "cred-9",
+    "url-10",
+)
+
+
+class TestAdminCnfRedaction:
+    """Show the admin config for diagnosis without ever printing a credential."""
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            pytest.param((), id="default"),
+            pytest.param(("--files",), id="files"),
+            pytest.param(("--output", "file"), id="output-file"),
+        ],
+    )
+    def test_password_absent_in_every_run_mode(self, harness, args):
+        """Mask the password on stdout, stderr and the report file alike."""
+        result = harness.run(*args)
+
+        reports = [
+            result.stdout,
+            result.stderr,
+            *(
+                path.read_text(encoding="utf-8")
+                for path in harness.root.glob("proxysql_status_*.log")
+            ),
+        ]
+        assert result.returncode == 0, result.stderr
+        assert all(PASSWORD not in report for report in reports)
+        assert any("PROXYSQL_PASSWORD=[REDACTED]" in report for report in reports)
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            pytest.param(
+                f"export PROXYSQL_PASSWORD='{SECRET}'\n",
+                "export PROXYSQL_PASSWORD=[REDACTED]",
+                id="export-single-quoted",
+            ),
+            pytest.param(
+                f'PROXYSQL_PASSWORD="{SECRET}"\n',
+                "PROXYSQL_PASSWORD=[REDACTED]",
+                id="double-quoted",
+            ),
+            pytest.param(
+                f"PROXYSQL_PASSWORD={SECRET}\n",
+                "PROXYSQL_PASSWORD=[REDACTED]",
+                id="bare",
+            ),
+            pytest.param(
+                f"  PROXYSQL_PASSWORD='{SECRET}'\n",
+                "  PROXYSQL_PASSWORD=[REDACTED]",
+                id="indented",
+            ),
+            pytest.param(
+                f"export\tPROXYSQL_PASSWORD='{SECRET}'\n",
+                "export\tPROXYSQL_PASSWORD=[REDACTED]",
+                id="tab-after-export",
+            ),
+            pytest.param(
+                f"PROXYSQL_PASSWORD='{SECRET}'  # admin\n",
+                "PROXYSQL_PASSWORD=[REDACTED]",
+                id="quoted-trailing-comment",
+            ),
+            pytest.param(
+                f"PROXYSQL_PASSWORD={SECRET} # admin\n",
+                "PROXYSQL_PASSWORD=[REDACTED]",
+                id="bare-trailing-comment",
+            ),
+            pytest.param(
+                f"proxysql_password='{SECRET}'\n",
+                "proxysql_password=[REDACTED]",
+                id="lowercase-key",
+            ),
+            pytest.param(
+                f"PROXYSQL_PASSWORD='{SECRET}'\r\n",
+                "PROXYSQL_PASSWORD=[REDACTED]",
+                id="crlf",
+            ),
+            pytest.param(
+                f"PROXYSQL_PASSWORD='{SECRET}'",
+                "PROXYSQL_PASSWORD=[REDACTED]",
+                id="no-final-newline",
+            ),
+            pytest.param(
+                f"PROXYSQL_PASSWORD='%s\\n -e =#\"{SECRET}'\n",
+                "PROXYSQL_PASSWORD=[REDACTED]",
+                id="special-characters",
+            ),
+            pytest.param(
+                f"PROXYSQL_PW='{SECRET}'\n",
+                "PROXYSQL_PW=[REDACTED]",
+                id="pw-key",
+            ),
+            pytest.param(
+                f"MYSQL_OPTS='--password={SECRET}'\n",
+                "MYSQL_OPTS=[REDACTED]",
+                id="option-in-quoted-value",
+            ),
+            pytest.param(
+                f"MYSQL_OPTS=--password={SECRET} # client flags\n",
+                "MYSQL_OPTS=[REDACTED]",
+                id="option-in-bare-value",
+            ),
+            pytest.param(
+                f"CLUSTER_HOSTNAME=db#PROXYSQL_PASSWORD={SECRET}\n",
+                "CLUSTER_HOSTNAME=[REDACTED]",
+                id="assignment-after-mid-word-hash",
+            ),
+            pytest.param(
+                f"BACKUP_URL='mysql://backup:a/{SECRET}@db/'\n",
+                "BACKUP_URL=[REDACTED]",
+                id="url-password-with-slash",
+            ),
+            pytest.param(
+                f"BACKUP_URL='mysql://backup:a {SECRET}@db/'\n",
+                "BACKUP_URL=[REDACTED]",
+                id="url-password-with-space",
+            ),
+            pytest.param(
+                f"DATA_SOURCE_NAME='admin:{SECRET}@tcp(127.0.0.1:6032)/'\n",
+                "DATA_SOURCE_NAME=[REDACTED]",
+                id="dsn-without-scheme",
+            ),
+        ],
+    )
+    def test_masks_every_value_shape(self, harness, line, expected):
+        """Mask the value whichever quoting, spacing or line ending it uses."""
+        harness.write_cnf(f"PROXYSQL_USERNAME='admin'\n{line}")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert SECRET not in result.stdout
+        assert _cnf_section(result.stdout) == ["PROXYSQL_USERNAME='admin'", expected]
+
+    def test_masks_every_credential_of_a_real_shaped_cnf(self, harness):
+        """Mask each credential, and keep every other line as is."""
+        harness.write_cnf(REAL_SHAPED_CNF)
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert all(secret not in result.stdout for secret in REAL_SHAPED_SECRETS)
+        assert _cnf_section(result.stdout) == REDACTED_REAL_SHAPED_CNF.splitlines()
+
+    def test_keeps_comments_and_blank_lines(self, harness):
+        """Print prose comments, commented-out settings and blank lines in place."""
+        cnf = (
+            "# ProxySQL admin settings, don't edit by hand\n"
+            "\n"
+            "PROXYSQL_USERNAME='admin'\n"
+            "#PROXYSQL_PORT='6033'\n"
+            "PROXYSQL_PORT='6032' # don't change\n"
+            "\n"
+            "  # trailing note\n"
+        )
+        harness.write_cnf(cnf)
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == cnf.splitlines()
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            pytest.param(
+                f"#PROXYSQL_PASSWORD='{SECRET}'",
+                "#PROXYSQL_PASSWORD=[REDACTED]",
+                id="commented-out",
+            ),
+            pytest.param(
+                f"# export PROXYSQL_PASSWORD='{SECRET}'",
+                "# export PROXYSQL_PASSWORD=[REDACTED]",
+                id="commented-out-export",
+            ),
+            pytest.param(
+                f"  ## CLUSTER_PASSWORD={SECRET}",
+                "  ## CLUSTER_PASSWORD=[REDACTED]",
+                id="indented-double-hash",
+            ),
+            pytest.param(
+                f'#PROXYSQL_PASSWORD="{SECRET}$x"',
+                HIDDEN_LINE,
+                id="commented-out-complex-value",
+            ),
+            pytest.param(
+                f"# old: PROXYSQL_PASSWORD={SECRET}",
+                HIDDEN_LINE,
+                id="prose-with-assignment",
+            ),
+            pytest.param(
+                f"# admin password = {SECRET}",
+                HIDDEN_LINE,
+                id="prose-with-spaced-assignment",
+            ),
+            pytest.param(
+                f"# old dsn mysql://admin:{SECRET}@db:3306/",
+                HIDDEN_LINE,
+                id="prose-with-url-credentials",
+            ),
+            pytest.param(
+                f"PROXYSQL_USERNAME=admin # PROXYSQL_PASSWORD={SECRET}",
+                HIDDEN_LINE,
+                id="trailing-comment-assignment",
+            ),
+            pytest.param(
+                f"PROXYSQL_USERNAME=admin # mysql://admin:{SECRET}@db",
+                HIDDEN_LINE,
+                id="trailing-comment-url-credentials",
+            ),
+            pytest.param(
+                f"# PROXYSQL_USERNAME=admin # PROXYSQL_PASSWORD={SECRET}",
+                HIDDEN_LINE,
+                id="commented-out-trailing-comment-assignment",
+            ),
+            pytest.param(
+                f"PROXYSQL_PASSWORD='{SECRET}' # PROXYSQL_PASSWORD={SECRET}",
+                "PROXYSQL_PASSWORD=[REDACTED]",
+                id="credential-with-trailing-comment-assignment",
+            ),
+            pytest.param(
+                f"# PROXYSQL_PASSWORD+='{SECRET}'",
+                HIDDEN_LINE,
+                id="commented-out-append",
+            ),
+            pytest.param(
+                f"# PROXYSQL_PASSWORD[0]='{SECRET}'",
+                HIDDEN_LINE,
+                id="commented-out-subscript",
+            ),
+            pytest.param(
+                f"PROXYSQL_USERNAME=admin # PROXYSQL_PASSWORD+='{SECRET}'",
+                HIDDEN_LINE,
+                id="trailing-comment-append",
+            ),
+            pytest.param(
+                f"PROXYSQL_USERNAME=admin # PROXYSQL_PASSWORD[0]='{SECRET}'",
+                HIDDEN_LINE,
+                id="trailing-comment-subscript",
+            ),
+            pytest.param(
+                f"# old dsn admin:{SECRET}@tcp(db:6032)/",
+                HIDDEN_LINE,
+                id="prose-with-dsn-credentials",
+            ),
+            pytest.param(
+                f"# PROXYSQL_PW={SECRET}",
+                "# PROXYSQL_PW=[REDACTED]",
+                id="commented-out-pw-key",
+            ),
+        ],
+    )
+    def test_masks_credentials_in_comments(self, harness, line, expected):
+        """Mask a credential a comment assigns, or hide the comment if it cannot."""
+        harness.write_cnf(f"{line}\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert SECRET not in result.stdout
+        assert _cnf_section(result.stdout) == [expected]
+
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            pytest.param("PROXYSQL_PASSWORD=''", "PROXYSQL_PASSWORD=''", id="single"),
+            pytest.param('PROXYSQL_PASSWORD=""', 'PROXYSQL_PASSWORD=""', id="double"),
+            pytest.param("PROXYSQL_PASSWORD=", "PROXYSQL_PASSWORD=", id="bare"),
+            pytest.param(
+                "export PROXYSQL_PASSWORD='' # not set",
+                "export PROXYSQL_PASSWORD=''",
+                id="trailing-comment",
+            ),
+            pytest.param(
+                f'PROXYSQL_PASSWORD="" # {SECRET}',
+                'PROXYSQL_PASSWORD=""',
+                id="trailing-comment-secret",
+            ),
+            pytest.param(
+                f"PROXYSQL_PASSWORD= #{SECRET}",
+                "PROXYSQL_PASSWORD=",
+                id="bare-trailing-comment-secret",
+            ),
+        ],
+    )
+    def test_shows_empty_credential(self, harness, line, expected):
+        """Show an empty credential, since it reveals only that none is set.
+
+        The trailing comment is dropped, since it may hold the old value.
+        """
+        harness.write_cnf(f"{line}\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert SECRET not in result.stdout
+        assert _cnf_section(result.stdout) == [expected]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param(
+                f"PROXYSQL_USERNAME='admin' PROXYSQL_PASSWORD='{SECRET}'",
+                id="two-assignments",
+            ),
+            pytest.param(f"readonly PROXYSQL_PASSWORD='{SECRET}'", id="readonly"),
+            pytest.param(f"declare -x PROXYSQL_PASSWORD='{SECRET}'", id="declare"),
+            pytest.param(f"PROXYSQL_PASSWORD+='{SECRET}'", id="append"),
+            pytest.param(
+                f"PROXYSQL_PASSWORD=\"$(printf '%s' {SECRET})\"",
+                id="command-substitution",
+            ),
+            pytest.param(f"PROXYSQL_PASSWORD='{SECRET}'suffix", id="concatenated"),
+            pytest.param(
+                f'PROXYSQL_PASSWORD="{SECRET}\\"quoted"', id="escaped-double-quote"
+            ),
+            pytest.param(f'PROXYSQL_DATADIR="$HOME/{SECRET}"', id="expansion"),
+        ],
+    )
+    def test_hides_lines_it_cannot_read(self, harness, line):
+        """Hide the whole line when it is not one plain assignment."""
+        harness.write_cnf(f"{line}\nPROXYSQL_PORT='6032'\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert SECRET not in result.stdout
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE, "PROXYSQL_PORT='6032'"]
+
+    @pytest.mark.parametrize(
+        ("head", "tail"),
+        [
+            pytest.param("PROXYSQL_PASSWORD='value-head", "value-tail'", id="single"),
+            pytest.param('PROXYSQL_PASSWORD="value-head', 'value-tail"', id="double"),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$'value-head\\'", "value-tail'", id="ansi-c"
+            ),
+            pytest.param(
+                'PROXYSQL_PASSWORD=value-head\\ #"', 'value-tail"', id="escaped-space"
+            ),
+        ],
+    )
+    def test_hides_every_line_of_a_multiline_quoted_value(self, harness, head, tail):
+        """Hide each line of a quoted value, even one shaped like a comment."""
+        harness.write_cnf(f"{head}\n#FOO=value-middle\n{tail}\nPROXYSQL_PORT='6032'\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert "value-" not in result.stdout
+        assert _cnf_section(result.stdout) == [
+            HIDDEN_LINE,
+            HIDDEN_LINE,
+            HIDDEN_LINE,
+            "PROXYSQL_PORT='6032'",
+        ]
+
+    @pytest.mark.parametrize(
+        "cnf",
+        [
+            pytest.param(
+                "PROXYSQL_PASSWORD=${UNSET:-value-head\n#FOO=value-middle\nvalue-tail}",
+                id="expansion",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$(printf '%s' value-head\n"
+                "#FOO=value-middle\n"
+                "printf '%s' value-tail)",
+                id="command-substitution",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=\"$(printf '%s' \"value-head\n"
+                "#FOO=value-middle\n"
+                'value-tail")"',
+                id="nested-quotes",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=`printf '%s' value-head\n"
+                "#FOO=value-middle\n"
+                "printf '%s' value-tail`",
+                id="backticks",
+            ),
+            pytest.param(
+                "PROXYSQL_HOSTS=(value-head\n#FOO=value-middle\nvalue-tail)",
+                id="array",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=value-head\\\nFOO=value-tail", id="continued-line"
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$\\\n{UNSET:-value-head\nVALUE=value-middle\n}",
+                id="opener-split-by-continuation",
+            ),
+            pytest.param(
+                'PROXYSQL_PASSWORD=value-head\\\n#"\nVALUE=value-middle\n"',
+                id="comment-sign-after-continuation",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$(case x in\n"
+                "x)\n"
+                "VALUE=value-middle\n"
+                "printf '%s' \"$VALUE\"\n"
+                ";;\n"
+                "esac)",
+                id="case-pattern",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$(case x in x) printf '%s' value-head\n"
+                "VALUE=value-middle\n"
+                ";; esac)",
+                id="case-pattern-on-one-line",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$(\n"
+                ":;# )\n"
+                "VALUE=value-middle\n"
+                "printf '%s' \"$VALUE\"\n"
+                ")",
+                id="comment-after-operator",
+            ),
+            pytest.param(
+                "PROXYSQL_PASSWORD=$(:;# )\nVALUE=value-middle\n)",
+                id="comment-after-operator-on-one-line",
+            ),
+            pytest.param(
+                "read -r PROXYSQL_PASSWORD <<'EOF'\n#FOO=value-body\nEOF",
+                id="here-document",
+            ),
+        ],
+    )
+    def test_hides_the_rest_after_an_unclosed_construct(self, harness, cnf):
+        """Hide every later line once a hidden line leaves more than a quote open.
+
+        Substitutions, expansions, arrays, continuations and here-documents end
+        by rules too wide to track, so nothing after one is trusted.
+        """
+        harness.write_cnf(f"{cnf}\nPROXYSQL_PORT='6032'\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE] * (cnf.count("\n") + 2)
+
+    def test_hides_the_rest_of_a_never_closed_value(self, harness):
+        """Hide every line after a quote the file never closes."""
+        harness.write_cnf("PROXYSQL_PASSWORD='value-head\nFOO=value-tail\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert "value-" not in result.stdout
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE, HIDDEN_LINE]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param("A=1 B=2 # don't", id="quote-in-comment"),
+            pytest.param("A=1 B=x\\\\", id="escaped-backslash"),
+            pytest.param("A=$'x\\'y' B=1", id="ansi-c-escaped-quote"),
+            pytest.param("A=${B:-x} C=1", id="expansion"),
+            pytest.param("A=$(printf x) B=1", id="command-substitution"),
+            pytest.param("A=$((1 + 2)) B=1", id="arithmetic"),
+            pytest.param("A=`printf x` B=1", id="backticks"),
+            pytest.param("A=(1 2) B=1", id="array"),
+            pytest.param("read -r A <<< x", id="here-string"),
+        ],
+    )
+    def test_hidden_line_that_ends_cleanly_hides_nothing_more(self, harness, line):
+        """Show the next line when a hidden line leaves nothing open."""
+        harness.write_cnf(f"{line}\nPROXYSQL_USERNAME='admin'\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [
+            HIDDEN_LINE,
+            "PROXYSQL_USERNAME='admin'",
+        ]
+
+    @pytest.mark.parametrize(
+        ("cnf", "expected"),
+        [
+            pytest.param(
+                f"X={SECRET}\nPROXYSQL_PASSWORD=$X",
+                ["X=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="plain-reference",
+            ),
+            pytest.param(
+                f"D={SECRET}\nPROXYSQL_PASSWORD=${{UNSET:-$D}}",
+                ["D=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="default-value",
+            ),
+            pytest.param(
+                f"A={SECRET}\nPROXYSQL_PASSWORD=${{A[0]}}",
+                ["A=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="subscript",
+            ),
+            pytest.param(
+                f'X={SECRET}\nread PROXYSQL_PASSWORD <<< "$X"',
+                ["X=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="here-string",
+            ),
+            pytest.param(
+                f"HOME_X=~/{SECRET}\nPROXYSQL_PASSWORD=${{HOME_X##*/}}",
+                ["HOME_X=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="pattern-removal",
+            ),
+            pytest.param(
+                f"{{\nX={SECRET}\nPROXYSQL_PASSWORD=$X\n}}",
+                [HIDDEN_LINE, "X=[REDACTED]", HIDDEN_LINE, HIDDEN_LINE, PORT_LINE],
+                id="group",
+            ),
+            pytest.param(
+                f"export X='{SECRET}' # note\nPROXYSQL_PASSWORD=$X",
+                ["export X=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="exported-with-comment",
+            ),
+            pytest.param(
+                f"X={SECRET}\nN=X\nPROXYSQL_PASSWORD=${{!N}}",
+                [
+                    "X=[REDACTED]",
+                    "N=[REDACTED]",
+                    HIDDEN_LINE,
+                    "PROXYSQL_PORT=[REDACTED]",
+                ],
+                id="indirect",
+            ),
+            pytest.param(
+                f'X1={SECRET}\nS=1\neval "PROXYSQL_PASSWORD=\\$X$S"',
+                [
+                    "X1=[REDACTED]",
+                    "S=[REDACTED]",
+                    HIDDEN_LINE,
+                    "PROXYSQL_PORT=[REDACTED]",
+                ],
+                id="eval",
+            ),
+        ],
+    )
+    def test_masks_a_value_a_hidden_line_reads(self, harness, cnf, expected):
+        """Mask a plain value that a hidden line can turn into the password.
+
+        A hidden line that builds a name, as ``${!N}`` and ``eval`` do, can
+        reach any value, so every plain value is masked after one.
+        """
+        harness.write_cnf(f"{cnf}\n{PORT_LINE}\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert SECRET not in result.stdout
+        assert _cnf_section(result.stdout) == expected
+
+    def test_hides_a_large_file_quickly(self, harness):
+        """Redact thousands of hidden lines within a few seconds."""
+        entry = " probe $(pid 42) ran: \"ok\" {'n': 1} path=/var/lib/proxysql/data"
+        line = f"2026-10-14 12:00:00 [INFO]{entry * 4}\n"
+        harness.write_cnf(line * 5_000)
+
+        # A redactor that forks or walks every character per line runs about
+        # five times slower, past this budget on CI runners, which are about
+        # three times slower than a laptop.
+        result = harness.run("--files", timeout=30)
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE] * 5_000
+
+    def test_empty_cnf_prints_no_section(self, harness):
+        """Leave the section out when the config file has nothing to show."""
+        harness.write_cnf("\n\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert HOST_PRIORITY_START in result.stdout
+        assert CNF_START not in result.stdout
+
+    def test_table_filter_skips_cnf_section(self, harness):
+        """Leave the config out of a run narrowed to tables."""
+        result = harness.run("--files", "--main", "--table", "users")
+
+        assert result.returncode == 0, result.stderr
+        assert _dumped_tables(result.stdout) == ["mysql_users"]
+        assert CNF_START not in result.stdout
