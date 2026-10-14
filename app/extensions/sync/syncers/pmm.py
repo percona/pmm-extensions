@@ -505,9 +505,7 @@ class PMMSyncer(BaseSyncer):
         A service with no node is non-syncable.
 
         :param service: The service instance to check.
-        :type service: CreatedService
         :return: `True` if the service can be synchronized, `False` otherwise.
-        :rtype: bool
         """
         return (
             super().can_sync_service(service)
