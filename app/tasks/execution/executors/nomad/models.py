@@ -1132,6 +1132,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         kwargs.setdefault("timeout", ClientTimeout(total=self.timeout))
         if self.session is None or self.session.closed:
             async with self._private_executor() as private:
+                if self._suppress_request_log.get():
+                    with private.suppress_request_log():
+                        return await private.nomad_json(method, path, **kwargs)
                 return await private.nomad_json(method, path, **kwargs)
         try:
             async with self._request(method, path, **kwargs) as response:
@@ -1195,7 +1198,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :raises NomadRequestError: If Nomad refuses the dispatch.
         """
         task = queue_item.task if task is None else task
-        logger.debug("Dispatching job: %s", queue_item)
+        logger.debug("Dispatching job for task history %s", queue_item.id)
         payload = queue_item.execution_request.payload_content
         if payload is not None:
             if self.minify_payload:
@@ -1239,18 +1242,19 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         if custom_prefix:
             custom_prefix = f"-{slugify(custom_prefix)}"
 
-        job_status = await self.nomad_json(
-            "POST",
-            f"/v1/job/{task.data['ID']}/dispatch",
-            json={
-                "Payload": payload,
-                "Meta": filtered_meta,
-                "IdPrefixTemplate": (
-                    f"{slugify(queue_item.task.name)}-{queue_item.task.id}"
-                    f"{custom_prefix}"
-                ),
-            },
-        )
+        with self.suppress_request_log():
+            job_status = await self.nomad_json(
+                "POST",
+                f"/v1/job/{task.data['ID']}/dispatch",
+                json={
+                    "Payload": payload,
+                    "Meta": filtered_meta,
+                    "IdPrefixTemplate": (
+                        f"{slugify(queue_item.task.name)}-{queue_item.task.id}"
+                        f"{custom_prefix}"
+                    ),
+                },
+            )
         if not job_status:
             logger.error("Unable to dispatch task %s", task.id)
             raise ValueError("The job status could not be determined")

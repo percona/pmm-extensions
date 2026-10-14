@@ -15,6 +15,7 @@
                   "label": "Source Schema",
                   "name": "source.source_db_id",
                   "required": false,
+                  "sensitive": false,
                   "type": "string"
                 }
               ],
@@ -28,6 +29,7 @@
                   "label": "Source Query",
                   "name": "source.source_query",
                   "required": false,
+                  "sensitive": false,
                   "type": "string"
                 }
               ],

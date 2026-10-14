@@ -1147,6 +1147,85 @@ class TestDispatchJob:
         assert _dispatch_body(calls)["Payload"] == expected
 
     @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.TaskHistoryManager")
+    async def test_dispatching_a_run_logs_no_protected_leaf(
+        self,
+        mock_th_manager,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Assert a whole dispatch logs no arguments, config or payload at DEBUG.
+
+        Nomad is stubbed at the HTTP layer, so every request the executor makes
+        for the run, and every log line around them, is emitted as in production.
+        The registration request, which carries no protected leaf, keeps its body
+        in the log, so only the dispatch call is withheld.
+        """
+        mock_th_manager.save = AsyncMock(side_effect=lambda _s, qi, **_kw: qi)
+        executor = _build_executor(stub_nomad=False)
+        task = _build_task(task_id="log-job", parameterized=True)
+        queue_item = _build_queue_item(
+            task=task,
+            status=TaskHistoryStatusEnum.PENDING,
+            payload="payload-secret-document",
+            meta={
+                "target": "node-1",
+                "args": "--password hunter2",
+                "config": "master_password: cfg-secret\n",
+            },
+        )
+
+        with aioresponses() as mock, caplog.at_level(logging.DEBUG, logger="app"):
+            mock.get(
+                re.compile(r".*/v1/job/[^/]+$"),
+                payload={"ID": "log-job", "SubmitTime": 1_700_000_000_000_000_000},
+                repeat=True,
+            )
+            mock.post(re.compile(r".*/v1/job/[^/]+$"), payload={"EvalID": "eval-reg"})
+            mock.post(
+                re.compile(r".*/v1/job/[^/]+/dispatch$"),
+                payload={"DispatchedJobID": "dispatched-1", "EvalID": "eval-1"},
+            )
+            async with executor:
+                result = await executor.dispatch_task(AsyncMock(), queue_item, task)
+
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        assert "Dispatching job for task history" in caplog.text
+        assert "/dispatch with kwargs" in caplog.text
+        assert "'Job'" in caplog.text
+        for leaked in (
+            "'target': 'node-1'",
+            "hunter2",
+            "cfg-secret",
+            "payload-secret-document",
+            "H4sI",
+        ):
+            assert leaked not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_dispatch_through_a_private_executor_logs_no_body(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Assert an un-entered executor, which dispatches on a private copy, still withholds."""
+        executor = _build_executor(stub_nomad=False)
+        task = _build_task(task_id="private-job", parameterized=True)
+        queue_item = _build_queue_item(
+            task=task,
+            payload="payload-secret-document",
+            meta={"target": "node-1", "args": "--password hunter2"},
+        )
+
+        with aioresponses() as mock, caplog.at_level(logging.DEBUG, logger="app"):
+            mock.post(
+                re.compile(r".*/v1/job/[^/]+/dispatch$"),
+                payload={"DispatchedJobID": "dispatched-1"},
+            )
+            await executor.dispatch_job(queue_item, task)
+
+        assert "/dispatch with kwargs" in caplog.text
+        for leaked in ("hunter2", "payload-secret-document", "H4sI"):
+            assert leaked not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_dispatch_job_custom_prefix(self) -> None:
         """Assert dispatch_job uses custom job_id_prefix from meta."""
         executor = _build_executor()
