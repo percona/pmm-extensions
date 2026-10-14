@@ -30,7 +30,6 @@ from app.extensions.clients.pmm import (
 )
 from app.extensions.crud import SyncEntityAbsenceManager, SyncInstanceManager
 from app.extensions.inventory import (
-    CreatedEntity,
     CreatedNode,
     CreatedService,
     Node,
@@ -44,9 +43,10 @@ from app.inventory.models import SourceEnum
 logger = logging.getLogger(__name__)
 
 #: Ties an absent-entity batch to the call that retires it. A plain
-#: ``Callable[[CreatedEntity], ...]`` would reject both retirers, whose parameters
-#: are the narrower subclasses.
-_Retirable = TypeVar("_Retirable", bound=CreatedEntity)
+#: ``Callable[[CreatedNode | CreatedService], ...]`` would reject both retirers,
+#: whose parameters are the narrower subclasses. Schemas and tables are left out:
+#: they carry no ``external_id`` to match against the held set.
+_Retirable = TypeVar("_Retirable", CreatedNode, CreatedService)
 
 
 class PMMSyncer(BaseSyncer):
