@@ -21,10 +21,10 @@ job template has no ``sudo`` branch at all, so a step needing root (installing a
 package, writing ``/etc/mongod.conf``, managing a systemd unit — everything
 :class:`~app.extensions.apps.om_bootstrap.strategies.packages.PackagesInstallStrategy`
 does) would only work by accident, if the Nomad client agent itself happens to
-run as root. ``exec-artifact`` has an explicit sudo path: its job template keys
-off the ``interpreter`` meta literally starting with ``"sudo "``
-(``app/tasks/db/seed.py``) and runs ``env -S "<interpreter>" <task dir>/script``,
-so the script is invoked by its absolute path as ``sudo bash <path>``.
+run as root. ``exec-artifact`` has an explicit sudo path: its job template
+(``app/tasks/db/seed.py``) word-splits the ``interpreter`` meta and execs it
+against ``<task dir>/script``, so an interpreter of ``sudo bash`` invokes the
+script by its absolute path as ``sudo bash <path>``.
 
 ``exec-artifact`` downloads its script as a Nomad artifact rather than a
 dispatch payload (unlike ``run-python``), which means the script has to exist as
@@ -155,7 +155,12 @@ def build_step_script(action: StepAction) -> str:
     wrapping again. ``$0`` is the script's own path because ``exec-artifact``
     invokes it by path (see the module docstring). A step that overruns exits
     124 (137 if it also ignores SIGTERM for :data:`TIMEOUT_KILL_AFTER_S`
-    seconds), which the executor reports as a failed dispatch.
+    seconds), which the executor reports as a failed dispatch - with exit code
+    123, like every other failing step: ``exec-artifact`` launches the script
+    through GNU ``xargs``, which exits 123 for any command status from 1 to 125.
+    The step's own code does not reach the tasks service, so a step has to say
+    why it failed on stderr; see
+    :mod:`~app.extensions.apps.om_bootstrap.reconcile`.
 
     :param action: The step's action.
     :return: The script's full text, including the shebang.
