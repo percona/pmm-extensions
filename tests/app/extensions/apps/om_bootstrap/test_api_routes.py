@@ -221,6 +221,46 @@ class TestTriggerRun:
         reread = client.get(f"{BASE}/runs/{run_id}")
         assert reread.json()["member_configs"] == {"node01": override}
 
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [
+            ({}, ["rs_initiate", "create_pmm_monitoring_user"]),
+            (
+                {"create_admin_user": True},
+                ["rs_initiate", "create_admin_user", "create_pmm_monitoring_user"],
+            ),
+        ],
+    )
+    def test_plans_the_admin_user_step_only_when_asked(
+        self,
+        regular_user: CasdoorUser,
+        session: AsyncSession,
+        extra: dict[str, bool],
+        expected: list[str],
+    ) -> None:
+        """Plan create_admin_user only for a run that asks, and keep it on a re-read.
+
+        PMM reads the planned run steps to tell an older side-car, which ignores
+        the flag, from one that will create the administrator.
+        """
+        client = api_client(regular_user, session, _fake_tasks_api())
+        response = client.post(
+            f"{BASE}/runs",
+            json={
+                "hosts": ["node00"],
+                "install_method": "packages",
+                "os": "ubuntu",
+                "mongodb_version": "8.0",
+                "replica_set_name": "rs-test",
+                **extra,
+            },
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert [step["name"] for step in response.json()["run_steps"]] == expected
+        reread = client.get(f"{BASE}/runs/{response.json()['id']}")
+        assert [step["name"] for step in reread.json()["run_steps"]] == expected
+
     def test_rejects_an_empty_host_list(
         self, regular_user: CasdoorUser, session: AsyncSession
     ) -> None:
