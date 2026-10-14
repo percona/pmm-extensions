@@ -258,9 +258,9 @@ class NodeBase(SQLModel):
 
     address: NonEmptyStr
     name: NonEmptyStr
-    external_id: NonEmptyStr = SQLField(index=True)
+    external_id: NonEmptyStr
     source: SourceEnum = SQLField(
-        sa_column=Column(EnumField(SourceEnum), nullable=False),
+        sa_column=Column(EnumField(SourceEnum, native_enum=False), nullable=False),
     )
     type: NonEmptyStr = SQLField(
         default="generic"
@@ -370,7 +370,7 @@ class ServiceBase(SQLModel):
     :param node_id: The foreign key referencing the node to which the service belongs.
     """
 
-    external_id: NonEmptyStr = SQLField(index=True)
+    external_id: NonEmptyStr
     name: NonEmptyStr
     type: ServiceTypeEnum = SQLField(
         sa_column=Column(EnumField(ServiceTypeEnum, native_enum=False), nullable=False),
