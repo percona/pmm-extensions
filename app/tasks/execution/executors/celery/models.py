@@ -257,33 +257,6 @@ class CeleryExecutor(BaseExecutor):
         :type queue_item: TaskHistory
         """
 
-    async def validate_job(self, job: dict[str, Any]) -> dict[str, Any]:
-        """Validate that the job contains a safe, importable callable path.
-
-        Enforce that the callable path starts with the allowed namespace prefix
-        to prevent arbitrary code execution.
-
-        :param job: The job specification containing a ``callable`` key.
-        :type job: dict[str, Any]
-        :return: The original job specification if validation is successful.
-        :rtype: dict[str, Any]
-        :raises ValueError: If ``callable`` is missing, outside the allowed
-            namespace, or not importable.
-        """
-        callable_path = job.get("callable")
-        if not callable_path:
-            raise ValueError("Job must contain a 'callable' key")
-        _check_allowed_callable(callable_path)
-        try:
-            module_path, func_name = callable_path.rsplit(".", 1)
-            module = importlib.import_module(module_path)
-            func = getattr(module, func_name)
-        except (ImportError, AttributeError, ValueError) as exc:
-            raise ValueError(f"Cannot import callable '{callable_path}'") from exc
-        if not callable(func):
-            raise TypeError(f"'{callable_path}' is not callable")
-        return job
-
     async def get_hosts(self) -> dict[str, str]:
         """Return the local host as the only available executor host.
 

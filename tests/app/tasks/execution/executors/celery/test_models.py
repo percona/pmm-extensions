@@ -128,48 +128,6 @@ class TestCeleryExecutorGetHosts:
         assert states[0].status is None
 
 
-class TestCeleryExecutorValidateJob:
-    """Test CeleryExecutor.validate_job."""
-
-    @pytest.mark.asyncio
-    async def test_valid_callable_path(self, executor) -> None:
-        """Assert a valid callable path within the allowed namespace passes."""
-        job = {
-            "callable": "app.extensions.apps.inventory.sync.run_scheduled_inventory_sync"
-        }
-        result = await executor.validate_job(job)
-        assert result == job
-
-    @pytest.mark.asyncio
-    async def test_missing_callable_raises(self, executor) -> None:
-        """Assert missing callable key raises ValueError."""
-        with pytest.raises(ValueError, match="callable"):
-            await executor.validate_job({})
-
-    @pytest.mark.asyncio
-    async def test_non_importable_callable_raises(self, executor) -> None:
-        """Assert a non-importable callable path raises ValueError."""
-        job = {"callable": "app.nonexistent.module.func"}
-        with pytest.raises(ValueError, match="import"):
-            await executor.validate_job(job)
-
-    @pytest.mark.asyncio
-    async def test_outside_allowed_namespace_raises(self, executor) -> None:
-        """Assert a callable outside the allowed namespace raises ValueError."""
-        job = {"callable": "subprocess.call"}
-        with pytest.raises(ValueError, match="allowed namespace"):
-            await executor.validate_job(job)
-
-    @pytest.mark.asyncio
-    async def test_non_callable_attribute_raises(self, executor) -> None:
-        """Assert a non-callable attribute raises ValueError."""
-        job = {
-            "callable": "app.tasks.execution.executors.celery.models.CELERY_CALLABLE_ALLOWED_PREFIX"
-        }
-        with pytest.raises(TypeError, match="not callable"):
-            await executor.validate_job(job)
-
-
 class TestCeleryExecutorDispatchTask:
     """Test CeleryExecutor.dispatch_task."""
 

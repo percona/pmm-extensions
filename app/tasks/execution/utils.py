@@ -15,12 +15,9 @@
 
 """Define utilities shared across the task executors."""
 
-import json
 from gzip import GzipFile
 from io import BytesIO
-from typing import Any
 
-import yaml
 from python_minifier import minify
 
 
@@ -74,25 +71,3 @@ def gzip_compress(data: str, encoding: str = "utf-8") -> bytes:
     with GzipFile(fileobj=buffer, mode="wb", mtime=0) as gz:
         gz.write(data.encode(encoding))
     return buffer.getvalue()
-
-
-def parse_payload(payload: str | bytes, payload_format: str) -> dict[str, Any]:
-    """Parse a job spec payload based on its format.
-
-    This function parses the payload according to the specified format
-    (JSON, or YAML).
-
-    :param payload: The job specification payload to be parsed.
-    :type payload: str | bytes
-    :param payload_format: The format of the payload, which can be "json" or "yaml".
-    :type payload_format: str
-    :return: The parsed job specification.
-    :rtype: dict[str, Any]
-    :raises ValueError: If the provided payload format is unsupported.
-    """
-    match payload_format:
-        case "json":
-            return json.loads(str(payload))
-        case "yaml":
-            return yaml.safe_load(payload)
-    raise ValueError(f"unsupported format: {payload_format}")

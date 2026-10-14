@@ -66,7 +66,6 @@ from app.tasks.models import (
     TaskResponse,
     TaskStats,
     TaskWrite,
-    TransformPayloadRequest,
 )
 from tests.app.factories import TaskFactory, TaskResponseFactory
 from tests.app.tasks.conftest import HOOK_PATH_FIELDS, REJECTED_HOOK_PATHS
@@ -1641,27 +1640,6 @@ class TestTaskStats:
         assert stats.duration["last_seconds"] is None
         assert stats.duration["total_seconds"] is None
         assert stats.last_finished_at is None
-
-
-class TestTransformPayloadRequest:
-    """Test TransformPayloadRequest validation."""
-
-    def test_valid_construction(self) -> None:
-        """Assert valid payload and fmt are accepted."""
-        req = TransformPayloadRequest(payload="content", fmt="json")
-        assert req.payload == "content"
-        assert req.fmt == "json"
-
-    @pytest.mark.parametrize("fmt", ["hcl", "json", "yaml"])
-    def test_valid_formats(self, fmt: str) -> None:
-        """Assert all allowed format values are accepted."""
-        req = TransformPayloadRequest(payload="data", fmt=fmt)
-        assert req.fmt == fmt
-
-    def test_invalid_format_raises(self) -> None:
-        """Assert invalid fmt raises ValidationError."""
-        with pytest.raises(ValidationError):
-            TransformPayloadRequest(payload="data", fmt="xml")
 
 
 class TestDispatchLock:
