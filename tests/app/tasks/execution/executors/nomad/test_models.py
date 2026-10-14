@@ -330,6 +330,27 @@ def _build_executor(
     return NomadExecutor(**defaults)
 
 
+async def _archive_members(
+    executor: NomadExecutor, queue_item: TaskHistory
+) -> dict[str, tarfile.TarInfo]:
+    """Stream ``/output/mydir`` as an archive and index its members by name.
+
+    :param executor: The executor whose directory stream to drain.
+    :param queue_item: The task history passed through to the stream helper.
+    :return: Archive members keyed by member name.
+    """
+    archive_bytes = b"".join(
+        [
+            chunk
+            async for chunk in executor._stream_directory_as_tar_gz(
+                queue_item, "alloc-1", "/output/mydir"
+            )
+        ]
+    )
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz") as tar:
+        return {member.name: member for member in tar}
+
+
 def _nomad_error(status_code: int) -> NomadRequestError:
     """Build the error ``nomad_json`` raises for ``status_code``.
 
@@ -7157,17 +7178,7 @@ class TestStreamDirectoryAsTarGz:
                 return_value=archive_time,
             ),
         ):
-            archive_bytes = b"".join(
-                [
-                    chunk
-                    async for chunk in executor._stream_directory_as_tar_gz(
-                        queue_item, "alloc-1", "/output/mydir"
-                    )
-                ]
-            )
-
-        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz") as tar:
-            members = {member.name: member for member in tar}
+            members = await _archive_members(executor, queue_item)
 
         assert members["mydir"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
         assert members["mydir/nested"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
@@ -7196,17 +7207,7 @@ class TestStreamDirectoryAsTarGz:
                 return_value=archive_time,
             ),
         ):
-            archive_bytes = b"".join(
-                [
-                    chunk
-                    async for chunk in executor._stream_directory_as_tar_gz(
-                        queue_item, "alloc-1", "/output/mydir"
-                    )
-                ]
-            )
-
-        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz") as tar:
-            members = {member.name: member for member in tar}
+            members = await _archive_members(executor, queue_item)
 
         assert list(members) == ["mydir"]
         assert members["mydir"].isdir()
@@ -7235,17 +7236,7 @@ class TestStreamDirectoryAsTarGz:
             patch.object(executor, "_iter_directory_entries", side_effect=fake_entries),
             patch.object(executor, "_read_file_bytes", side_effect=fake_read),
         ):
-            archive_bytes = b"".join(
-                [
-                    chunk
-                    async for chunk in executor._stream_directory_as_tar_gz(
-                        queue_item, "alloc-1", "/output/mydir"
-                    )
-                ]
-            )
-
-        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz") as tar:
-            members = {member.name: member for member in tar}
+            members = await _archive_members(executor, queue_item)
 
         assert "mydir/bad.txt" not in members
         assert "mydir/good.txt" in members
