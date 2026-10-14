@@ -31,12 +31,6 @@ jobs:
         with:
           python-version: "3.9"
 
-      - name: Setup Python 3.12.3 for the minified-probe PEP 709 check
-        id: py3123
-        uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
-        with:
-          python-version: "3.12.3"
-
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
         with:
@@ -53,7 +47,6 @@ jobs:
       - name: Run tests
         env:
           EXTENSIONS_PAYLOAD_CHECK_PYTHON: ${{ steps.py39.outputs.python-path }}
-          EXTENSIONS_PEP709_CHECK_PYTHON: ${{ steps.py3123.outputs.python-path }}
         run: make test
 
       - name: Store coverage data on data branch
