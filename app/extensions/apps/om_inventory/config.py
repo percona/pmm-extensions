@@ -112,36 +112,22 @@ class OmInventorySettings(BaseYamlSettings):
 
     SETTINGS_PREFIXES: ClassVar[list[str]] = ["EXTENSIONS", "OM_INVENTORY"]
 
-    ENABLED: bool = hot_field(default=False)  # ty: ignore[invalid-assignment]
-    SCHEDULE: IntervalSchedule | None = hot_field(  # ty: ignore[invalid-assignment]
+    ENABLED: bool = hot_field(default=False)
+    SCHEDULE: IntervalSchedule | None = hot_field(
         IntervalSchedule(every=10, period=Period.MINUTES)
     )
-    PROBE_DATABASE: bool = hot_field(default=True)  # ty: ignore[invalid-assignment]
-    REPO_URL: StrHttpUrl = hot_field(  # ty: ignore[invalid-assignment]
+    PROBE_DATABASE: bool = hot_field(default=True)
+    REPO_URL: StrHttpUrl = hot_field(
         "https://repo.percona.com/percona/yum/PERCONA-PACKAGING-KEY", advanced=True
     )
-    REPO_TIMEOUT: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
-        8, advanced=True
-    )
+    REPO_TIMEOUT: PositiveInt = hot_field(8, advanced=True)
     CREDENTIALS_PATH: str | None = None
-    CONNECT_TIMEOUT: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
-        5, advanced=True
-    )
-    TASK_TIMEOUT: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
-        180, advanced=True
-    )
-    POLL_INTERVAL: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
-        3, advanced=True
-    )
-    MAX_CONCURRENT_PROBES: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
-        4, advanced=True
-    )
-    RUN_RETENTION: PositiveInt = hot_field(  # ty: ignore[invalid-assignment]
-        50, advanced=True
-    )
-    STALE_RUN_AFTER: _PositiveSeconds = hot_field(  # ty: ignore[invalid-assignment]
-        timedelta(hours=4), advanced=True
-    )
+    CONNECT_TIMEOUT: PositiveInt = hot_field(5, advanced=True)
+    TASK_TIMEOUT: PositiveInt = hot_field(180, advanced=True)
+    POLL_INTERVAL: PositiveInt = hot_field(3, advanced=True)
+    MAX_CONCURRENT_PROBES: PositiveInt = hot_field(4, advanced=True)
+    RUN_RETENTION: PositiveInt = hot_field(50, advanced=True)
+    STALE_RUN_AFTER: _PositiveSeconds = hot_field(timedelta(hours=4), advanced=True)
 
 
 om_inventory_settings: OmInventorySettings = (  # ty: ignore[invalid-assignment]

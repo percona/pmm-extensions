@@ -17,11 +17,14 @@
 
 import threading
 from dataclasses import dataclass
-from typing import Annotated
+from datetime import timedelta
+from typing import Annotated, Any, assert_type
 
 import pytest
+from annotated_types import Ge
 from pydantic import BaseModel, StringConstraints, ValidationError
 from pydantic.fields import FieldInfo
+from pydantic_core import PydanticUndefined
 
 from app.core.pagination.models import PaginatedDictPage
 from app.core.utils.fields import FilenameExtension, MimeType, StrAsyncDatabaseUrl
@@ -41,6 +44,13 @@ from app.extensions.snippets.config import (
 )
 from app.extensions.snippets.models.meta import SnippetMetaParameterType
 from app.tasks.anonymizer.entities import PIIEntity
+
+_WINDOW = 5
+
+
+def _make_window() -> timedelta:
+    """Return a typed default for the ``default_factory`` typing cases."""
+    return timedelta(minutes=_WINDOW)
 
 
 @dataclass(eq=True)
@@ -149,6 +159,140 @@ class TestFieldWithMetadata:
         assert isinstance(field, FieldInfo)
         custom_meta = [m for m in field.metadata if isinstance(m, CustomFieldMetadata)]
         assert custom_meta == []
+
+    def test_positional_and_keyword_default_build_the_same_field(self):
+        """Accept the default positionally or by keyword, like ``Field``."""
+        positional = field_with_metadata("test")
+        keyword = field_with_metadata(default="test")
+
+        assert isinstance(positional, FieldInfo)
+        assert isinstance(keyword, FieldInfo)
+        assert positional.default == keyword.default == "test"
+        assert not positional.is_required()
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            pytest.param(field_with_metadata(), id="no-default"),
+            pytest.param(field_with_metadata(...), id="ellipsis"),
+            pytest.param(field_with_metadata(metadata={"k": "v"}), id="metadata-only"),
+        ],
+    )
+    def test_omitted_or_ellipsis_default_is_required(self, field):
+        """Leave the field required when no usable default is given."""
+        assert isinstance(field, FieldInfo)
+        assert field.is_required()
+        assert field.default is PydanticUndefined
+
+    def test_default_factory_is_forwarded(self):
+        """Forward ``default_factory`` so the field builds its default lazily."""
+        field = field_with_metadata(default_factory=list, metadata={"k": "v"})
+
+        assert isinstance(field, FieldInfo)
+        assert field.default_factory is list
+        assert field.default is PydanticUndefined
+        assert not field.is_required()
+
+    def test_validate_default_is_forwarded(self):
+        """Forward ``validate_default`` unchanged."""
+        field = field_with_metadata("5", validate_default=True)
+
+        assert isinstance(field, FieldInfo)
+        assert field.validate_default is True
+
+    def test_custom_metadata_follows_field_constraints(self):
+        """Append custom metadata after the constraints ``Field`` itself records."""
+        field = field_with_metadata(1, ge=0, metadata={"k": "v"})
+
+        assert isinstance(field, FieldInfo)
+        assert field.metadata == [Ge(0), CustomFieldMetadata("k", "v")]
+
+    def test_empty_metadata_adds_nothing(self):
+        """Add no custom metadata for an empty mapping."""
+        field = field_with_metadata("test", metadata={})
+
+        assert isinstance(field, FieldInfo)
+        assert field.metadata == []
+
+    def test_fields_do_not_share_metadata(self):
+        """Give every call its own metadata list."""
+        first = field_with_metadata("a", metadata={"k": 1})
+        second = field_with_metadata("b", metadata={"k": 2})
+
+        assert isinstance(first, FieldInfo)
+        assert isinstance(second, FieldInfo)
+        assert first.metadata == [CustomFieldMetadata("k", 1)]
+        assert second.metadata == [CustomFieldMetadata("k", 2)]
+
+    def test_rejects_default_together_with_factory(self):
+        """Raise ``TypeError`` when both a default and a factory are given."""
+        with pytest.raises(TypeError, match="both default and default_factory"):
+            field_with_metadata("a", default_factory=list)
+
+    def test_rejects_a_second_positional_argument(self):
+        """Raise ``TypeError`` for more than one positional argument."""
+        with pytest.raises(TypeError, match="positional argument"):
+            field_with_metadata("a", "b")  # ty: ignore[no-matching-overload]
+
+    def test_rejects_default_given_twice(self):
+        """Raise ``TypeError`` when the default is passed both ways."""
+        with pytest.raises(TypeError, match="multiple values for argument 'default'"):
+            field_with_metadata("a", default="b")  # ty: ignore[no-matching-overload]
+
+    def test_default_reaches_a_model_unchanged(self):
+        """Keep the declared default as the model's default value."""
+
+        class _Model(BaseModel):
+            window: int = field_with_metadata(_WINDOW, ge=1, metadata={"k": "v"})
+
+        assert _Model().window == _WINDOW
+        assert CustomFieldMetadata("k", "v") in _Model.model_fields["window"].metadata
+        with pytest.raises(ValidationError):
+            _Model(window=0)
+
+
+# The invalid-assignment suppressions below are assertions:
+# ``unused-ignore-comment`` is an error, so a helper that stops checking its
+# default against the annotation fails ``make typecheck``. Keep this file out
+# of every ``[[tool.ty.overrides]]`` include list.
+class TestFieldWithMetadataTyping:
+    """Test that field_with_metadata follows pydantic Field's overloads."""
+
+    def test_explicit_default_returns_its_type(self) -> None:
+        """Type an explicit default as the default's own type."""
+        assert_type(field_with_metadata(timedelta(minutes=_WINDOW)), timedelta)
+        assert_type(field_with_metadata(default=timedelta(minutes=_WINDOW)), timedelta)
+
+    def test_extra_arguments_keep_the_default_type(self) -> None:
+        """Keep the default's type when metadata and Field kwargs ride along."""
+        assert_type(
+            field_with_metadata(
+                timedelta(minutes=_WINDOW), metadata={"k": "v"}, description="d"
+            ),
+            timedelta,
+        )
+
+    def test_factory_returns_its_product_type(self) -> None:
+        """Type a ``default_factory`` field as what the factory returns."""
+        assert_type(field_with_metadata(default_factory=_make_window), timedelta)
+
+    def test_unchecked_forms_return_any(self) -> None:
+        """Return ``Any`` wherever pydantic's Field does not check a default."""
+        assert_type(field_with_metadata(...), Any)
+        assert_type(field_with_metadata(), Any)
+        assert_type(field_with_metadata(metadata={"k": "v"}), Any)
+        assert_type(field_with_metadata("5m", validate_default=True), Any)
+        assert_type(
+            field_with_metadata(default_factory=_make_window, validate_default=True),
+            Any,
+        )
+
+    def test_mismatched_default_is_reported(self) -> None:
+        """Report a default whose type contradicts the annotation."""
+        mismatched: int = field_with_metadata(  # ty: ignore[invalid-assignment]
+            timedelta()
+        )
+        assert mismatched is not None
 
 
 class TestRunPydanticTypeValidator:
