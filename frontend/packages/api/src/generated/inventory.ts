@@ -249,6 +249,34 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/nodes/sync-health': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Record Nodes Sync Health
+     * @description Record the outcomes of several syncer attempts, one per Node.
+     *
+     *     Each entry gets the transition ``/{node_id}/sync-health`` gives it, retired
+     *     nodes included; an id naming no node is skipped and returned rather
+     *     than rejecting the rest of the list.
+     *
+     *     :param session: The async database session.
+     *     :param outcomes: What the syncer reported, one entry per node.
+     *     :return: The ids that named no node.
+     */
+    post: operations['nodes_record_nodes_sync_health_nodes_sync_health_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/nodes/system-observations': {
     parameters: {
       query?: never;
@@ -533,6 +561,34 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/schemas/sync-health': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Record Schemas Sync Health
+     * @description Record the outcomes of several syncer attempts, one per Schema.
+     *
+     *     Each entry gets the transition ``/{schema_id}/sync-health`` gives it, retired
+     *     schemas included; an id naming no schema is skipped and returned rather
+     *     than rejecting the rest of the list.
+     *
+     *     :param session: The async database session.
+     *     :param outcomes: What the syncer reported, one entry per schema.
+     *     :return: The ids that named no schema.
+     */
+    post: operations['schemas_record_schemas_sync_health_schemas_sync_health_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/schemas/{schema_id}': {
     parameters: {
       query?: never;
@@ -706,6 +762,34 @@ export interface paths {
     get: operations['services_list_service_identity_candidates_services_identity_candidates_get'];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/services/sync-health': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Record Services Sync Health
+     * @description Record the outcomes of several syncer attempts, one per Service.
+     *
+     *     Each entry gets the transition ``/{service_id}/sync-health`` gives it, retired
+     *     services included; an id naming no service is skipped and returned rather
+     *     than rejecting the rest of the list.
+     *
+     *     :param session: The async database session.
+     *     :param outcomes: What the syncer reported, one entry per service.
+     *     :return: The ids that named no service.
+     */
+    post: operations['services_record_services_sync_health_services_sync_health_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -954,6 +1038,34 @@ export interface paths {
     get: operations['tables_list_tables_tables__get'];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/tables/sync-health': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Record Tables Sync Health
+     * @description Record the outcomes of several syncer attempts, one per Table.
+     *
+     *     Each entry gets the transition ``/{table_id}/sync-health`` gives it, retired
+     *     tables included; an id naming no table is skipped and returned rather
+     *     than rejecting the rest of the list.
+     *
+     *     :param session: The async database session.
+     *     :param outcomes: What the syncer reported, one entry per table.
+     *     :return: The ids that named no table.
+     */
+    post: operations['tables_record_tables_sync_health_tables_sync_health_post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -2409,6 +2521,38 @@ export interface components {
      */
     SourceEnum: 'pmm';
     /**
+     * SyncHealthBulkResult
+     * @description Define the response to a bulk sync-health report.
+     *
+     *     :param unresolved: The ids in the request that named no entity, in request
+     *         order. Their entries were skipped; every other entry was applied.
+     */
+    SyncHealthBulkResult: {
+      /**
+       * Unresolved
+       * @default []
+       */
+      unresolved: number[];
+    };
+    /**
+     * SyncHealthEntityWrite
+     * @description Define one entry of a bulk sync-health report.
+     *
+     *     :param id: The entity the outcome was observed for.
+     */
+    SyncHealthEntityWrite: {
+      /**
+       * Attempted At
+       * Format: date-time
+       */
+      attempted_at: string;
+      /** Error */
+      error?: string | null;
+      /** Id */
+      id: number;
+      outcome: components['schemas']['SyncOutcomeEnum'];
+    };
+    /**
      * SyncHealthWrite
      * @description Define the body reporting one entity's sync outcome.
      *
@@ -2915,6 +3059,39 @@ export interface operations {
       };
     };
   };
+  nodes_record_nodes_sync_health_nodes_sync_health_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SyncHealthEntityWrite'][];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SyncHealthBulkResult'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   nodes_list_host_system_observations_nodes_system_observations_get: {
     parameters: {
       query?: {
@@ -3351,6 +3528,39 @@ export interface operations {
       };
     };
   };
+  schemas_record_schemas_sync_health_schemas_sync_health_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SyncHealthEntityWrite'][];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SyncHealthBulkResult'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
   schemas_retrieve_schema_schemas__schema_id__get: {
     parameters: {
       query?: {
@@ -3642,6 +3852,39 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['PaginatedResponse_ServiceIdentityCandidateResponse_'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  services_record_services_sync_health_services_sync_health_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SyncHealthEntityWrite'][];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SyncHealthBulkResult'];
         };
       };
       /** @description Validation Error */
@@ -4068,6 +4311,39 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['PaginatedResponse_TableResponse_'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+    };
+  };
+  tables_record_tables_sync_health_tables_sync_health_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SyncHealthEntityWrite'][];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['SyncHealthBulkResult'];
         };
       };
       /** @description Validation Error */

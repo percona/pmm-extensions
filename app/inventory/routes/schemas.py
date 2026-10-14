@@ -41,6 +41,8 @@ from app.inventory.models import (
     SchemaDetailResponse,
     SchemaResponse,
     SchemaWrite,
+    SyncHealthBulkResult,
+    SyncHealthBulkWrite,
     SyncHealthWrite,
     Table,
     TableResponse,
@@ -139,6 +141,25 @@ async def revive_schema(session: SessionDep, schema: RetirableSchemaDep) -> None
     """
     logger.debug("Reviving schema %s", schema.id)
     await SchemaManager.revive(session, schema)
+
+
+@router.post("/sync-health", dependencies=[IsServicePrincipalDep])
+async def record_schemas_sync_health(
+    session: SessionDep,
+    outcomes: SyncHealthBulkWrite,
+) -> SyncHealthBulkResult:
+    """Record the outcomes of several syncer attempts, one per Schema.
+
+    Each entry gets the transition ``/{schema_id}/sync-health`` gives it, retired
+    schemas included; an id naming no schema is skipped and returned rather
+    than rejecting the rest of the list.
+
+    :param session: The async database session.
+    :param outcomes: What the syncer reported, one entry per schema.
+    :return: The ids that named no schema.
+    """
+    logger.debug("Recording sync health on %d schemas", len(outcomes))
+    return await SchemaManager.record_sync_health_bulk(session, outcomes)
 
 
 @router.post(

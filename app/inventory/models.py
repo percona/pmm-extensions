@@ -17,11 +17,12 @@
 
 from datetime import datetime
 from enum import auto, StrEnum
-from typing import Any, Self
+from typing import Annotated, Any, Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     field_validator,
     model_validator,
     NonNegativeInt,
@@ -49,6 +50,7 @@ from app.inventory.constants import (
     ACTIVE_RETIREMENT_KEY,
     RetirableEntityName,
     SYNC_ATTEMPT_MAX_CLOCK_SKEW,
+    SYNC_HEALTH_BULK_MAX_ENTRIES,
 )
 
 #: Predicate narrowing the collection-scan indexes to the tombstones alone.
@@ -243,6 +245,34 @@ class SyncHealthWrite(SQLModel):
                 "tolerated clock skew"
             )
         return value
+
+
+class SyncHealthEntityWrite(SyncHealthWrite):
+    """Define one entry of a bulk sync-health report.
+
+    :param id: The entity the outcome was observed for.
+    """
+
+    id: int
+
+
+#: The body of a bulk sync-health report: one entry per entity, each carrying
+#: the body the single-entity route takes. Bounded so one request cannot hold
+#: the session for an arbitrary number of writes.
+SyncHealthBulkWrite = Annotated[
+    list[SyncHealthEntityWrite],
+    Field(min_length=1, max_length=SYNC_HEALTH_BULK_MAX_ENTRIES),
+]
+
+
+class SyncHealthBulkResult(SQLModel):
+    """Define the response to a bulk sync-health report.
+
+    :param unresolved: The ids in the request that named no entity, in request
+        order. Their entries were skipped; every other entry was applied.
+    """
+
+    unresolved: list[int] = []
 
 
 class NodeBase(SQLModel):
