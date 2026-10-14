@@ -2054,11 +2054,8 @@ class Xtrabackup(Backup):
 
         # Backup other files
         if self.host == 'localhost' and not self.incremental:
-            try:
-                self.backup_mycnf(self.last_backup_dir)
-                self.backup_certs(self.last_backup_dir)
-            except BackupError as e:
-                self.logger.warning('%s', e)
+            self.backup_mycnf(self.last_backup_dir)
+            self.backup_certs(self.last_backup_dir)
 
         # Purge changed page tracking
         if self._is_track_changed_pages():
