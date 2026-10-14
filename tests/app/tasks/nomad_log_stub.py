@@ -42,8 +42,50 @@ _SHUTDOWN_TIMEOUT = 1.0
 
 _T = TypeVar("_T")
 
+#: Nomad's ``streamFrameSize``: the most data one frame carries.
+FRAME_SIZE = 64 * 1024
 
-def _locate(files: list[bytearray], offset: int) -> tuple[int, int]:
+
+class _LogFile(bytearray):
+    """Hold one log file's bytes and where each write to it ended."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.write_ends: list[int] = []
+
+    def record(self, data: bytes) -> None:
+        """Append one write.
+
+        :param data: The bytes written.
+        """
+        self.extend(data)
+        self.write_ends.append(len(self))
+
+    def frames(self, start: int) -> list[tuple[int, bytes]]:
+        """Split everything past ``start`` into frames as Nomad's stream framer does.
+
+        Reads merged into one frame keep the end of the **first** read as the
+        frame's ``Offset``, and a frame following a full ``FRAME_SIZE`` one has
+        its ``Offset`` bumped by that frame's length rather than set to its own
+        end, so ``Offset`` is rarely where the frame's data ends.
+
+        :param start: The position within this file to frame from.
+        :return: Each frame's ``Offset`` and data, in order.
+        """
+        data = bytes(self[start:])
+        first_read_end = next(
+            (end for end in self.write_ends if end > start), len(self)
+        )
+        offset = min(first_read_end, start + FRAME_SIZE)
+        framed: list[tuple[int, bytes]] = []
+        for index in range(0, len(data), FRAME_SIZE):
+            chunk = data[index : index + FRAME_SIZE]
+            framed.append((offset, chunk))
+            offset += len(chunk)
+        return framed
+
+
+def _locate(files: list[_LogFile], offset: int) -> tuple[int, int]:
     """Map a cumulative request offset to a file and a position within it.
 
     Nomad walks the request ``offset`` across a step's rotated files, moving on
@@ -64,15 +106,17 @@ class NomadLogStub:
     """Emit one running step's stdout and stderr through Nomad's log API.
 
     Every follow is served from its requested ``offset``: whatever was written
-    past it arrives as one frame, then each new write as its own frame, then
-    ``{}`` heartbeats once emission is done, the way Nomad keeps a finished
-    task's follow open. A ``follow=false`` request sends what was written past
-    its offset and closes. The allocation reports the step ``running`` until
-    :meth:`emit` or :meth:`finish` ends it and ``dead`` afterwards.
+    past it arrives framed as Nomad frames it, then each later batch of writes
+    likewise, then ``{}`` heartbeats once emission is done, the way Nomad keeps
+    a finished task's follow open. A ``follow=false`` request sends what was
+    written past its offset and closes. The allocation reports the step
+    ``running`` until :meth:`emit` or :meth:`finish` ends it and ``dead``
+    afterwards.
 
     Each log type is a list of files, as Nomad rotates them: a request offset is
-    cumulative across the files, while a frame's ``Offset`` is its position
-    within the file its ``File`` names.
+    cumulative across the files, while a frame's ``Offset`` belongs to the file
+    its ``File`` names and is not, in general, where the frame's data ends (see
+    :meth:`_LogFile.frames`).
 
     :param step: The Nomad task the allocation runs and the follows read.
     :param line_count: Lines :meth:`emit` writes to each log type.
@@ -111,7 +155,7 @@ class NomadLogStub:
         self.not_found_served = 0
         self.non_follow_requests = 0
         self.open_non_follows = 0
-        self._files = {log_type.value: [bytearray()] for log_type in TaskLogType}
+        self._files = {log_type.value: [_LogFile()] for log_type in TaskLogType}
         self._follow_transports: set[asyncio.BaseTransport] = set()
         self._done = False
         self._loop = asyncio.new_event_loop()
@@ -154,13 +198,16 @@ class NomadLogStub:
         """Write every line to both log types, then mark the step dead."""
         await self._on_stub_loop(self._emit())
 
-    async def write(self, log_type: TaskLogType, data: bytes) -> None:
-        """Append ``data`` verbatim to one log type's current file.
+    async def write(self, log_type: TaskLogType, *chunks: bytes) -> None:
+        """Append each chunk verbatim to one log type's current file.
+
+        The chunks land at once, so a follow reads them as merged reads in one
+        frame whose ``Offset`` is where the first chunk ends.
 
         :param log_type: The log type to write to.
-        :param data: The raw bytes, which need not end a line.
+        :param chunks: The raw bytes of each write, which need not end a line.
         """
-        await self._on_stub_loop(self._write(log_type, data))
+        await self._on_stub_loop(self._write(log_type, chunks))
 
     async def rotate(self, log_type: TaskLogType) -> None:
         """Start a new file for one log type, as Nomad does at its size limit.
@@ -223,20 +270,21 @@ class NomadLogStub:
             text = f"line-{index}"
             async with self._changed:
                 for log_type, files in self._files.items():
-                    files[-1].extend(f"{text}\n".encode())
+                    files[-1].record(f"{text}\n".encode())
                     self.emitted[(log_type, text)] = time.monotonic()
                 self._changed.notify_all()
             await asyncio.sleep(self.frame_interval)
         await self._finish()
 
-    async def _write(self, log_type: TaskLogType, data: bytes) -> None:
-        """Append ``data`` to the log type's current file, on the stub's loop.
+    async def _write(self, log_type: TaskLogType, chunks: tuple[bytes, ...]) -> None:
+        """Append each chunk to the log type's current file, on the stub's loop.
 
         :param log_type: The log type to write to.
-        :param data: The raw bytes.
+        :param chunks: The raw bytes of each write.
         """
         async with self._changed:
-            self._files[log_type.value][-1].extend(data)
+            for data in chunks:
+                self._files[log_type.value][-1].record(data)
             self._changed.notify_all()
 
     async def _rotate(self, log_type: TaskLogType) -> None:
@@ -245,7 +293,7 @@ class NomadLogStub:
         :param log_type: The log type to rotate.
         """
         async with self._changed:
-            self._files[log_type.value].append(bytearray())
+            self._files[log_type.value].append(_LogFile())
             self._changed.notify_all()
 
     async def _finish(self) -> None:
@@ -338,32 +386,35 @@ class NomadLogStub:
         return response
 
     @staticmethod
-    async def _write_frame(
-        response: web.StreamResponse, name: str, index: int, end: int, data: bytes
+    async def _write_frames(
+        response: web.StreamResponse,
+        name: str,
+        index: int,
+        frames: list[tuple[int, bytes]],
     ) -> None:
-        """Write one data frame the way Nomad frames a file's bytes.
+        """Write one file's frames, each as Nomad sends a data frame.
 
         :param response: The prepared response.
         :param name: The ``<task>.<type>`` prefix of the log's file names.
         :param index: The file the bytes come from.
-        :param end: The position within that file where the bytes end.
-        :param data: The raw bytes.
+        :param frames: Each frame's ``Offset`` and data.
         """
-        frame = {
-            "File": f"{name}.{index}",
-            "Offset": end,
-            "Data": b64encode(data).decode(),
-        }
-        await response.write(json.dumps(frame).encode())
+        for offset, data in frames:
+            frame = {
+                "File": f"{name}.{index}",
+                "Offset": offset,
+                "Data": b64encode(data).decode(),
+            }
+            await response.write(json.dumps(frame).encode())
 
     async def _read(
         self,
         response: web.StreamResponse,
         name: str,
-        files: list[bytearray],
+        files: list[_LogFile],
         offset: int,
     ) -> None:
-        """Write everything past ``offset``, one frame per file, then return.
+        """Write everything past ``offset``, file by file, then return.
 
         :param response: The prepared response.
         :param name: The ``<task>.<type>`` prefix of the log's file names.
@@ -373,21 +424,17 @@ class NomadLogStub:
         async with self._changed:
             index, position = _locate(files, offset)
             pieces = [
-                (current, len(files[current]), bytes(files[current][start:]))
-                for current, start in [
-                    (current, position if current == index else 0)
-                    for current in range(index, len(files))
-                ]
+                (current, files[current].frames(position if current == index else 0))
+                for current in range(index, len(files))
             ]
-        for current, end, data in pieces:
-            if data:
-                await self._write_frame(response, name, current, end, data)
+        for current, frames in pieces:
+            await self._write_frames(response, name, current, frames)
 
     async def _follow(
         self,
         response: web.StreamResponse,
         name: str,
-        files: list[bytearray],
+        files: list[_LogFile],
         offset: int,
     ) -> None:
         """Write frames past ``offset`` until the client goes away.
@@ -412,12 +459,12 @@ class NomadLogStub:
                         await asyncio.wait_for(
                             self._changed.wait(), self.heartbeat_interval
                         )
-                written = bytes(files[index][position:])
+                frames = files[index].frames(position)
                 rotated = index < len(files) - 1
                 done = self._done
-            if written:
-                position += len(written)
-                await self._write_frame(response, name, index, position, written)
+            if frames:
+                position += sum(len(data) for _, data in frames)
+                await self._write_frames(response, name, index, frames)
             elif rotated:
                 index, position = index + 1, 0
             else:

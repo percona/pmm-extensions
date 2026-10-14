@@ -53,8 +53,22 @@ class LogCatchUpError(Exception):
     """Signal that a catch-up read could not deliver its whole range."""
 
 
-#: Reads the raw range ``[start, end)`` as log lines, anonymized afresh.
-RangeReader = Callable[[int, int], AsyncGenerator[TaskLog]]
+class RangeReader(Protocol):
+    """Read a raw range of the log as log lines, anonymized afresh."""
+
+    def __call__(
+        self, start: int, end: int, *, drain: bool = True
+    ) -> AsyncGenerator[TaskLog]:
+        """Read ``[start, end)``.
+
+        :param start: The raw offset to read from.
+        :param end: The raw offset to read up to.
+        :param drain: Whether to release a partial line still withheld at
+            ``end``; otherwise only whole lines are read.
+        :return: The range's log lines.
+        """
+        ...
+
 
 #: Runs the upstream follow into a shared follow from a raw start offset.
 Producer = Callable[["SharedLogFollow", int], Awaitable[None]]
@@ -104,6 +118,7 @@ class SharedLogFollow:
         self.frontier = start_offset
         self.frontier_aligned = start_offset == 0
         self.ended = False
+        self.completed = False
         self.closing = False
         self.members = 0
         self._forced = False
@@ -152,6 +167,7 @@ class SharedLogFollow:
         :param item: The release, or the ``msg=None`` end marker.
         """
         if item.msg is None:
+            self.completed = True
             self._end()
             return
         aligned = not self._forced
@@ -177,7 +193,9 @@ class SharedLogFollow:
     ) -> AsyncGenerator[TaskLog]:
         """Yield one subscriber's text from ``position`` until the follow ends.
 
-        A failed catch-up read ends this subscriber's text and no other's.
+        A catch-up read that fails, however it fails, ends this subscriber's
+        text and no other's. A :exc:`LogCatchUpError` was logged by the reader;
+        anything else is logged here.
 
         :param position: The raw offset the subscriber starts at.
         :param read_range: Reads a raw range the shared feed cannot supply.
@@ -186,9 +204,15 @@ class SharedLogFollow:
         subscriber = _Subscriber(position)
         self._subscribers.add(subscriber)
         try:
-            async for log in self._deliver(subscriber, read_range):
-                yield log
+            async with aclosing(self._deliver(subscriber, read_range)) as logs:
+                async for log in logs:
+                    yield log
         except LogCatchUpError:
+            return
+        except Exception:
+            logger.exception(
+                "Live log catch-up failed at offset=%s", subscriber.position
+            )
             return
         finally:
             self._subscribers.discard(subscriber)
@@ -203,24 +227,29 @@ class SharedLogFollow:
         :param read_range: Reads a raw range the shared feed cannot supply.
         :return: The subscriber's log lines.
         """
-        while True:
+        finished = False
+        while not finished:
             subscriber.wake.clear()
             if subscriber.buffer:
                 emission = subscriber.buffer.popleft()
-                async for log in self._take(subscriber, emission, read_range):
-                    yield log
+                delivered = self._take(subscriber, emission, read_range)
             elif self.ended:
-                async for log in self._catch_up(subscriber, self.frontier, read_range):
-                    yield log
-                return
+                finished = True
+                delivered = self._catch_up(
+                    subscriber, self.frontier, read_range, drain=self.completed
+                )
             elif subscriber not in self._delivering:
                 frontier, aligned = self.frontier, self.frontier_aligned
                 self._delivering.add(subscriber)
-                if aligned:
-                    async for log in self._catch_up(subscriber, frontier, read_range):
-                        yield log
+                if not aligned:
+                    continue
+                delivered = self._catch_up(subscriber, frontier, read_range)
             else:
                 await subscriber.wake.wait()
+                continue
+            async with aclosing(delivered) as logs:
+                async for log in logs:
+                    yield log
 
     async def _take(
         self, subscriber: _Subscriber, emission: _Emission, read_range: RangeReader
@@ -239,23 +268,31 @@ class SharedLogFollow:
             subscriber.position = end
             yield emission.log
         elif emission.aligned:
-            async for log in self._catch_up(subscriber, end, read_range):
-                yield log
+            async with aclosing(self._catch_up(subscriber, end, read_range)) as logs:
+                async for log in logs:
+                    yield log
 
     @staticmethod
     async def _catch_up(
-        subscriber: _Subscriber, end: int, read_range: RangeReader
+        subscriber: _Subscriber,
+        end: int,
+        read_range: RangeReader,
+        *,
+        drain: bool = True,
     ) -> AsyncGenerator[TaskLog]:
         """Read the subscriber's position up to ``end`` and advance it there.
 
         :param subscriber: The subscriber to catch up.
         :param end: The raw offset to read up to.
         :param read_range: Reads a raw range the shared feed cannot supply.
+        :param drain: Whether a partial line still withheld at ``end`` is
+            released, as it is when the follow ended normally; after a
+            producer failure it stays withheld, as it would for a sole viewer.
         :return: The log lines of the range.
         """
         if subscriber.position >= end:
             return
-        async with aclosing(read_range(subscriber.position, end)) as logs:
+        async with aclosing(read_range(subscriber.position, end, drain=drain)) as logs:
             async for log in logs:
                 yield log
         subscriber.position = end

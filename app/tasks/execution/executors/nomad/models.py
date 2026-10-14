@@ -16,6 +16,7 @@
 """Provide task execution management for Nomad jobs."""
 
 import asyncio
+import codecs
 import io
 import json
 import logging
@@ -305,61 +306,6 @@ class LiveRelease(NamedTuple):
     text: str | None
     offset: int
     forced: bool
-
-
-def _rotation_index(file_name: str) -> int:
-    """Return the rotation number a Nomad log file name ends with.
-
-    :param file_name: A frame's ``File``, named ``<task>.<type>.<n>``.
-    :return: ``n``, or ``0`` when the name carries no numeric suffix.
-    """
-    suffix = file_name.rpartition(".")[2]
-    return int(suffix) if suffix.isdigit() else 0
-
-
-class _LiveOffsetCursor:
-    """Turn a follow's per-file frame offsets into Nomad's cumulative offset.
-
-    A request ``offset`` counts across every rotated file of a step's log,
-    while a frame's ``Offset`` is its position in the file its ``File`` names
-    and starts again at 0 in the next one. The two agree until the first
-    rotation, so the cursor changes nothing before one.
-
-    :param start_offset: The cumulative offset the follow was requested from.
-    """
-
-    __slots__ = ("_base", "_file", "_last", "_start_offset")
-
-    def __init__(self, start_offset: int) -> None:
-        self._start_offset = start_offset
-        self._base = 0
-        self._file: str | None = None
-        self._last = 0
-
-    def advance(self, frame: dict[str, Any], data_len: int, current: int) -> int:
-        """Return the cumulative offset at the end of ``frame``.
-
-        When the first frame comes from an already-rotated file, the base is
-        seeded so that the frame's start lands on the requested offset.
-
-        :param frame: One decoded Nomad frame.
-        :param data_len: The raw byte length of the frame's data.
-        :param current: The cumulative offset so far, kept for a frame that
-            carries no ``Offset``, such as a heartbeat.
-        :return: The cumulative offset after the frame.
-        """
-        offset = frame.get("Offset")
-        if offset is None:
-            return current
-        file_name = frame.get("File")
-        if file_name is not None and file_name != self._file:
-            if self._file is not None:
-                self._base += self._last
-            elif _rotation_index(file_name) > 0:
-                self._base = self._start_offset - (offset - data_len)
-            self._file = file_name
-        self._last = offset
-        return self._base + offset
 
 
 def _nomad_event_body_text(ev: dict) -> str:
@@ -3052,7 +2998,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         }
         state = "running"
         pending = WithheldLineBuffer()
-        cursor = _LiveOffsetCursor(start_offset)
         while state == "running":
             alloc_id = alloc["ID"]
             stream_start = None
@@ -3066,7 +3011,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     client_timeout=timeout,
                     anonymize_entities=anonymize_entities,
                     pending=pending,
-                    cursor=cursor,
                     on_forced_flush=on_forced_flush,
                 )
             except asyncio.CancelledError:
@@ -3142,7 +3086,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param pending: The withheld-remainder buffer, mutated in place.
         :param raw: This frame's decoded ``Data`` bytes.
         :param step: The Nomad task name within the allocation.
-        :param offset: The raw Nomad byte offset at the end of this frame.
+        :param offset: The cumulative raw offset at the end of this frame's data.
         :param anonymize_entities: PII entities to redact, or ``None``.
         :param alloc_id: The Nomad allocation identifier (for forced-flush
             diagnostics).
@@ -3227,7 +3171,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         client_timeout: ClientTimeout,
         anonymize_entities: set[PIIEntity] | None,
         pending: WithheldLineBuffer,
-        cursor: _LiveOffsetCursor | None = None,
         on_forced_flush: Callable[[], None] | None = None,
     ) -> tuple[str, dict[str, Any], float | None]:
         """Perform a single Nomad log streaming HTTP request and consume chunks.
@@ -3247,15 +3190,16 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param step: Task step name for the ``task`` query parameter.
         :param log_type: ``stdout`` or ``stderr``.
         :param queue: Sink to push :class:`~app.tasks.models.TaskLog` records into.
-        :param params: Mutable request query parameters (``offset`` is updated).
+        :param params: Mutable request query parameters. ``offset`` advances by
+            the length of each frame's data, which keeps it in Nomad's cumulative
+            request-offset space; a frame's own ``Offset`` is not where its data
+            ends once Nomad merges reads into one frame or splits one at its
+            frame size, and it restarts in each rotated file.
         :param client_timeout: aiohttp client timeout (e.g. socket read timeout).
         :param anonymize_entities: Optional PII entities to redact for specific steps.
         :param pending: Caller-owned buffer holding the trailing partial line
             withheld from anonymization; mutated in place and carried across
             reconnects so a token split at a frame boundary is redacted whole.
-        :param cursor: Caller-owned cursor turning frame offsets into the
-            cumulative offset, carried across reconnects like ``pending``, or
-            ``None`` for a fresh one starting at ``params["offset"]``.
         :param on_forced_flush: Called right before a forced release is pushed.
         :return: Nomad task ``State`` string, ``running`` to continue the outer
             loop, or a ``_NOMAD_LOG_STREAM_*`` sentinel; the allocation dict (possibly
@@ -3264,7 +3208,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         """
         alloc_id = alloc["ID"]
         stream_start = None
-        cursor = cursor or _LiveOffsetCursor(params["offset"])
         logger.debug("Requesting logs for %s with params %s", alloc_id, params)
         try:
             async with self._request(
@@ -3308,12 +3251,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 async for chunk, _ in response.content.iter_chunks():
                     frames, raw_data = _split_nomad_frames(raw_data + chunk)
                     for data in frames:
-                        msg = data.get("Data")
-                        raw = b64decode(msg) if msg else b""
-                        params["offset"] = offset = cursor.advance(
-                            data, len(raw), params["offset"]
-                        )
-                        if msg:
+                        if msg := data.get("Data"):
+                            raw = b64decode(msg)
+                            params["offset"] = offset = params["offset"] + len(raw)
                             logger.debug(
                                 "Nomad log frame alloc_id=%s step=%s log_type=%s "
                                 "offset=%s b64_chars=%s monotonic=%.3f",
@@ -3470,14 +3410,18 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         anonymize_entities: set[PIIEntity] | None,
         start: int,
         end: int,
+        *,
+        drain: bool = True,
     ) -> AsyncGenerator[TaskLog]:
         """Read the raw range ``[start, end)`` of a step's log for one viewer.
 
         A viewer behind its shared follow reads what it missed here, through as
-        many short ``follow=false`` requests as the range takes. The range is
-        decoded and anonymized with a withheld-line buffer of its own, which is
-        drained at ``end``. Positions are counted in bytes from ``start``, so
-        they stay in the cumulative space across rotated files.
+        many short ``follow=false`` requests as the range takes. An anonymized
+        step is decoded and anonymized with a withheld-line buffer of its own;
+        any other step is decoded strictly, carrying a character the request
+        boundaries split over to the next request. Positions are counted in
+        bytes from ``start``, so they stay in the cumulative space across
+        rotated files.
 
         :param alloc_id: The Nomad allocation identifier.
         :param step: The task step name.
@@ -3485,6 +3429,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param anonymize_entities: PII entities to anonymize, or ``None``.
         :param start: The cumulative raw offset to read from.
         :param end: The cumulative raw offset to read up to.
+        :param drain: Whether a partial line still withheld at ``end`` is
+            released; otherwise only whole lines are read.
         :return: The range's log lines, each carrying the raw offset it ends at.
         :raises LogCatchUpError: When a request fails, times out, or ends
             before ``end``.
@@ -3493,7 +3439,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :raises UnicodeDecodeError: When the frame stream, or a non-anonymized
             step's output, is not UTF-8.
         """
+        anonymized = _should_anonymize(step, anonymize_entities)
         pending = WithheldLineBuffer()
+        decoder = codecs.getincrementaldecoder("utf-8")()
         position = start
         while position < end:
             try:
@@ -3510,23 +3458,23 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 raise LogCatchUpError(f"Nomad log ended at {position} before {end}")
             for raw in frames:
                 position += len(raw)
-                release = await self._decode_live_frame(
-                    pending,
-                    raw,
-                    step,
-                    position,
-                    anonymize_entities,
-                    alloc_id=alloc_id,
-                    log_type=log_type,
-                )
-                if release.text is not None:
-                    yield TaskLog(
-                        step=step,
-                        type=log_type,
-                        msg=release.text,
-                        offset=release.offset,
+                if anonymized:
+                    release = await self._decode_live_frame(
+                        pending,
+                        raw,
+                        step,
+                        position,
+                        anonymize_entities,
+                        alloc_id=alloc_id,
+                        log_type=log_type,
                     )
-        if pending:
+                    text, offset = release.text, release.offset
+                else:
+                    text = decoder.decode(raw, final=position == end)
+                    offset = position - len(decoder.getstate()[0])
+                if text:
+                    yield TaskLog(step=step, type=log_type, msg=text, offset=offset)
+        if drain and pending:
             decoded_msg = await asyncio.to_thread(
                 _decode_and_anonymize, pending.drain(), anonymize_entities or None
             )

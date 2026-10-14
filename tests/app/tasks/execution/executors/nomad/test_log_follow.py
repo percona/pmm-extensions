@@ -119,16 +119,21 @@ class RangeReader:
 
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []
-        self.fail = False
+        self.drains: list[bool] = []
+        self.failure: Exception | None = None
 
-    def __call__(self, start: int, end: int) -> AsyncGenerator[TaskLog]:
-        """Record the range, then read it.
+    def __call__(
+        self, start: int, end: int, *, drain: bool = True
+    ) -> AsyncGenerator[TaskLog]:
+        """Record the range and whether it drains, then read it.
 
         :param start: The raw offset the range starts at.
         :param end: The raw offset the range ends at.
+        :param drain: Whether a partial line at ``end`` is released.
         :return: The range's text as one log line.
         """
         self.calls.append((start, end))
+        self.drains.append(drain)
         return self._read(start, end)
 
     async def _read(self, start: int, end: int) -> AsyncGenerator[TaskLog]:
@@ -137,10 +142,10 @@ class RangeReader:
         :param start: The raw offset the range starts at.
         :param end: The raw offset the range ends at.
         :return: The range's text as one log line.
-        :raises LogCatchUpError: When :attr:`fail` is set.
+        :raises Exception: :attr:`failure`, when it is set.
         """
-        if self.fail:
-            raise LogCatchUpError("the catch-up read failed")
+        if self.failure is not None:
+            raise self.failure
         yield _log(RAW[start:end], end)
 
 
@@ -403,14 +408,19 @@ async def test_a_lagging_subscriber_catches_up_to_the_final_frontier_at_the_end(
 
     frontier = (releases + 1) * LINE
     assert reader.calls == [((SUBSCRIBER_BACKLOG + 1) * LINE, frontier)]
+    assert reader.drains == [True]
     assert stalled.text == RAW[:frontier]
     producer.release_end.set()
 
 
-async def test_a_producer_crash_ends_every_subscriber_after_catching_it_up(
+async def test_a_producer_crash_ends_every_subscriber_without_a_withheld_tail(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """End each subscriber once it has the frontier's text, and log the crash."""
+    """Catch each subscriber up to the frontier's whole lines, end it, log the crash.
+
+    A sole subscriber whose producer crashes never receives the line its
+    producer was withholding, so a catch-up after a crash keeps it withheld too.
+    """
     registry, producer, reader = LogFollowRegistry(), ScriptedProducer(), RangeReader()
     first = _subscribe(registry, 4, producer, reader)
     joiner = _subscribe(registry, 0, producer, reader)
@@ -421,7 +431,7 @@ async def test_a_producer_crash_ends_every_subscriber_after_catching_it_up(
         await _until(lambda: first.finished and joiner.finished)
 
     assert reader.calls == [(0, 4)]
-    assert joiner.text == RAW[:4]
+    assert reader.drains == [False]
     assert first.text == ""
     assert "the producer broke" in caplog.text
 
@@ -434,13 +444,36 @@ async def test_a_failed_catch_up_ends_only_that_subscriber() -> None:
     producer.emit(2 * LINE)
     await _until(lambda: first.position == 2 * LINE)
 
-    reader.fail = True
+    reader.failure = LogCatchUpError("the catch-up read failed")
     joiner = _subscribe(registry, 0, producer, reader)
     await _until(lambda: joiner.finished)
     producer.emit(3 * LINE)
     await _until(lambda: first.position == 3 * LINE)
 
     assert joiner.received == []
+    assert first.text == RAW[: 3 * LINE]
+    await first.leave()
+
+
+async def test_an_unexpected_catch_up_error_ends_that_subscriber_and_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """End, rather than strand, a subscriber whose catch-up raised something else."""
+    registry, producer, reader = LogFollowRegistry(), ScriptedProducer(), RangeReader()
+    first = _subscribe(registry, 0, producer, reader)
+    await _settle()
+    producer.emit(2 * LINE)
+    await _until(lambda: first.position == 2 * LINE)
+
+    reader.failure = RuntimeError("the client is closed")
+    with caplog.at_level(logging.ERROR):
+        joiner = _subscribe(registry, 0, producer, reader)
+        await _until(lambda: joiner.finished)
+    producer.emit(3 * LINE)
+    await _until(lambda: first.position == 3 * LINE)
+
+    assert joiner.task.exception() is None
+    assert "the client is closed" in caplog.text
     assert first.text == RAW[: 3 * LINE]
     await first.leave()
 

@@ -43,7 +43,7 @@ from app.tasks.main import tasks_app
 from app.tasks.models import TaskHistory, TaskLogType
 from tests.app.asgi_stream import asgi_stream, ASGIStream
 from tests.app.tasks.live_log_viewer import attach, live_history, LiveViewer, until
-from tests.app.tasks.nomad_log_stub import NomadLogStub
+from tests.app.tasks.nomad_log_stub import FRAME_SIZE, NomadLogStub
 
 pytestmark = pytest.mark.asyncio
 
@@ -437,3 +437,34 @@ async def test_offsets_stay_cumulative_across_a_log_rotation(
     await until(lambda: resumed_past_the_rotation.offset() == len(raw))
     _assert_resumable(resumed_past_the_rotation, raw, 8)
     await resumed_past_the_rotation.leave()
+
+
+async def test_offsets_are_data_ends_however_nomad_frames_the_log(
+    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+) -> None:
+    """Hand a joiner off at true data ends when Nomad merges and splits frames.
+
+    The backlog is many small writes past one frame's size, so Nomad sends it as
+    a full frame whose ``Offset`` is where the first write ends, then a frame
+    whose ``Offset`` was bumped by the first frame's length. The writes after
+    the joiner arrive merged into one frame.
+    """
+    backlog = [f"backlog-{index:05d}\n".encode() for index in range(FRAME_SIZE // 10)]
+    await nomad_stub.write(STDOUT, *backlog)
+    history = live_history(nomad_stub)
+    first = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, first)
+    raw_backlog = b"".join(backlog).decode()
+    await until(lambda: first.offset() == len(raw_backlog))
+
+    joiner = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, joiner)
+    await nomad_stub.write(STDOUT, b"merged-one\n", b"merged-two\n")
+    raw = raw_backlog + "merged-one\nmerged-two\n"
+    await until(lambda: first.offset() == joiner.offset() == len(raw))
+
+    assert len(raw_backlog) > FRAME_SIZE
+    _assert_resumable(first, raw, 0)
+    _assert_resumable(joiner, raw, 0)
+    await first.leave()
+    await joiner.leave()
