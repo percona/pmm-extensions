@@ -65,7 +65,8 @@ CLEAN_OUTCOME = SweepOutcome(resolved=1, answered=1)
 #: The module whose boundaries the sweep tests patch.
 SERVICE = "app.extensions.apps.om_inventory.service"
 
-#: When the sweep :func:`run_sweep` runs began, stamped on every fact it collects.
+#: When the sweep :func:`run_sweep` runs began, the ``collected_at`` a record without its
+#: own falls back to.
 OBSERVED_AT = "2026-08-12T12:00:00+00:00"
 
 
