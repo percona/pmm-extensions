@@ -414,7 +414,7 @@ def _record_collected_at(record: dict[str, Any], fallback: str) -> str:
     # ``bool`` is an ``int``, and ``True`` is not a timestamp.
     if isinstance(value, bool) or not isinstance(value, int | float):
         return fallback
-    latest = datetime.now(UTC) + COLLECTED_AT_SKEW
+    latest = utc_now() + COLLECTED_AT_SKEW
     # Written so NaN, which compares false either way, falls back too.
     if not 0 < value <= latest.timestamp():
         return fallback
