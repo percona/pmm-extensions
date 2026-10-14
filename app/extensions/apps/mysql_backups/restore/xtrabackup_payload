@@ -2186,9 +2186,14 @@ class Xtrabackup(Restore):
     @staticmethod
     def _edit_copy_my_cnf(src, dst, new_server_id):
         """Copy the cnf file ``src`` to ``dst`` with its server-id replaced."""
-        # O_NOFOLLOW so a symlink swapped in after the destination check is not followed.
+        # O_NOFOLLOW on both ends so a symlink swapped in after the checks is not followed.
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
-        with open(src) as src_file, os.fdopen(os.open(dst, flags, 0o644), 'w') as dst_file:
+        created = not os.path.lexists(dst)
+        with os.fdopen(os.open(src, os.O_RDONLY | os.O_NOFOLLOW)) as src_file, \
+                os.fdopen(os.open(dst, flags, 0o644), 'w') as dst_file:
+            # The restore umask would leave a new file unreadable to mysqld.
+            if created:
+                os.fchmod(dst_file.fileno(), 0o644)
             for line in src_file:
                 dst_file.write(re.sub(r'^([\s]*server[_-]id[\s]*=[\s]*)(\d*)', r'\1 %s' % new_server_id, line, flags=re.M))
 

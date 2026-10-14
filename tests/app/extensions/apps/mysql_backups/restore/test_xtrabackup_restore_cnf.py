@@ -49,6 +49,8 @@ if TYPE_CHECKING:
 
 _METHODS = ("_restore_cnf_files", "_cnf_destination", "_edit_copy_my_cnf")
 _NEW_SERVER_ID = 4242
+_NEW_FILE_MODE = 0o644
+_HOST_FILE_MODE = 0o640
 
 
 class _Restorer(Protocol):
@@ -93,6 +95,7 @@ class Layout:
     absent_dir: Path
     outside: Path
     server_id_calls: list[None] = field(default_factory=list)
+    during_server_id: Callable[[], None] | None = None
 
     def plant(self, name: str, content: str = "[mysqld]\nserver-id=1\n") -> Path:
         """Write ``name`` into the datadir as a restored archive entry."""
@@ -126,6 +129,8 @@ class Layout:
 
         def new_server_id(_self: object) -> int:
             self.server_id_calls.append(None)
+            if self.during_server_id:
+                self.during_server_id()
             return _NEW_SERVER_ID
 
         check = cast("FunctionType", methods["_cnf_destination"])
@@ -456,17 +461,51 @@ class TestEditCopyMyCnf:
 
         assert target.read_text() == "keep\n"
 
-    def test_new_file_is_not_group_or_world_writable(self, layout: Layout) -> None:
-        """Create a new config file without group or world write, even at umask 0."""
+    def test_does_not_follow_a_symlink_at_the_source(self, layout: Layout) -> None:
+        """Fail rather than read through a source swapped for a symlink after the check."""
+        secret = layout.outside / "secret"
+        secret.write_text("password=hunter2\n")
+        dst = layout.allowed_file
+        dst.write_text("keep\n")
+        src = layout.plant(_encode(dst))
+
+        def swap_source() -> None:
+            src.unlink()
+            src.symlink_to(secret)
+
+        layout.during_server_id = swap_source
+        restorer = layout.restorer()
+
+        with pytest.raises(OSError, match="symbolic link"):
+            restorer._restore_cnf_files()
+
+        assert dst.read_text() == "keep\n"
+
+    @pytest.mark.parametrize("umask", [0, 0o007, 0o077], ids=["000", "007", "077"])
+    def test_new_file_is_world_readable_whatever_the_umask(
+        self, layout: Layout, umask: int
+    ) -> None:
+        """Create a new config file ``0644`` so mysqld can read it under any umask."""
         src = layout.plant("source.cnf")
         dst = layout.allowed_dir / "fresh.cnf"
-        old_umask = os.umask(0)
+        old_umask = os.umask(umask)
         try:
             layout.restorer()._edit_copy_my_cnf(str(src), str(dst), 1)
         finally:
             os.umask(old_umask)
 
-        assert stat.S_IMODE(dst.stat().st_mode) & 0o022 == 0
+        assert stat.S_IMODE(dst.stat().st_mode) == _NEW_FILE_MODE
+
+    def test_existing_file_keeps_its_mode(self, layout: Layout) -> None:
+        """Leave the mode of a replaced config file as the host had it."""
+        src = layout.plant("source.cnf")
+        dst = layout.allowed_dir / "existing.cnf"
+        dst.write_text("old\n")
+        dst.chmod(_HOST_FILE_MODE)
+
+        layout.restorer()._edit_copy_my_cnf(str(src), str(dst), 1)
+
+        assert stat.S_IMODE(dst.stat().st_mode) == _HOST_FILE_MODE
 
 
 class TestBackupEncoderCompatibility:
