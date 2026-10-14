@@ -39,6 +39,7 @@ from app.extensions.apps.framework.schema import (
     StringField,
 )
 from app.extensions.snippets.config import snippets_settings, SnippetSudoOption
+from app.extensions.snippets.masking import is_credential_parameter
 from app.extensions.snippets.models.meta import (
     SnippetMetaParameter,
     SnippetMetaParameterType,
@@ -204,6 +205,49 @@ async def test_per_snippet_schema_omits_extra_args_field_by_default(create_snipp
 
     all_fields = [field for section in schema.forms for field in section.fields]
     assert not any(field.name == "extra_args" for field in all_fields)
+
+
+@pytest.mark.parametrize(
+    ("parameter", "expected"),
+    [
+        ({"name": "password", "type": "str"}, True),
+        ({"name": "auth-blob", "type": "str", "sensitive": True}, True),
+        ({"name": "dest", "type": "str"}, False),
+    ],
+    ids=["credential-name", "sensitive-flag", "neither"],
+)
+def test_string_parameter_is_sensitive_exactly_when_the_masker_masks_it(
+    parameter, expected
+):
+    """Mark a string field sensitive by the classification history masking uses.
+
+    :param parameter: The frontmatter parameter definition.
+    :param expected: Whether the field must be marked sensitive.
+    """
+    declared = SnippetMetaParameter.model_validate(parameter)
+
+    field = field_for(declared)
+
+    assert isinstance(field, StringField)
+    assert field.sensitive is expected
+    assert field.sensitive is is_credential_parameter(
+        declared.name, sensitive=declared.sensitive
+    )
+
+
+@pytest.mark.asyncio
+async def test_extra_args_field_is_not_sensitive(create_snippet):
+    """Leave the free-form Extra Args field readable as typed."""
+    snippet = await create_snippet("hello.sh", approved=True)
+    snippet.meta = {**snippet.meta, "allow_extra_args": True}
+    snippet.__dict__.pop("allow_extra_args", None)
+
+    schema = build_snippet_schema(snippet)
+
+    extra_args_field = next(
+        f for f in _execution_section(schema).fields if f.name == "extra_args"
+    )
+    assert extra_args_field.sensitive is False
 
 
 #: Every execution field this builder can synthesize, and the widget rendering it.

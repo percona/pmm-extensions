@@ -22,6 +22,7 @@ service with no executor, a host whose probe failed, and a service PMM does not 
 """
 
 import time
+from contextlib import nullcontext
 from datetime import datetime, UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,12 +30,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import ClientConnectionError
 
+from app.core.config import Settings
+from app.core.requests import RemoteAPI
 from app.extensions.apps.om_inventory.dispatch import HostProbeResult, TRUNCATION_MARK
 from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import MappedService
 from app.extensions.apps.om_inventory.models import NodeResolution, ScanFailure
 from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
-from app.extensions.apps.om_inventory.service import enumerate_estate, STARTUP_RETRIES
+from app.extensions.apps.om_inventory.service import (
+    enumerate_estate,
+    STARTUP_RETRIES,
+    sweep,
+)
+from app.extensions.config import extensions_settings
 from tests.app.extensions.apps.om_inventory.conftest import (
     ERROR_DETAIL_CAP,
     FREE_BYTES,
@@ -125,6 +133,39 @@ def mapped(
         executor_host=host,
         resolution=resolution,
     )
+
+
+class _SweepStoppedError(Exception):
+    """Stop a sweep right after it has built its clients."""
+
+
+@pytest.mark.asyncio
+async def test_sweep_requests_its_tasks_client_with_the_log_policy() -> None:
+    """Ask the client registry for a Tasks client that keeps credentials out of its log.
+
+    The registry hands every later caller the client its first caller built, so
+    a sweep that asked without the policy would decide it for the whole process.
+    """
+    client = MagicMock(spec=RemoteAPI)
+    client.auth.return_value = nullcontext()
+    base = "app.extensions.apps.om_inventory.service"
+    with (
+        patch.object(
+            Settings, "get_remote_api", new=AsyncMock(return_value=client)
+        ) as get_remote_api,
+        patch(f"{base}.get_internal_token", return_value="token"),
+        patch(f"{base}.enumerate_estate", AsyncMock(side_effect=_SweepStoppedError)),
+        pytest.raises(_SweepStoppedError),
+    ):
+        await sweep(OBSERVED_AT)
+
+    tasks_calls = [
+        awaited.kwargs
+        for awaited in get_remote_api.await_args_list
+        if awaited.kwargs["endpoint"] == extensions_settings.TASKS_ENDPOINT
+    ]
+    assert len(tasks_calls) == 1
+    assert tasks_calls[0]["withhold_body_log"] is True
 
 
 @pytest.mark.asyncio

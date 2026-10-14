@@ -426,6 +426,7 @@
           "min_length": 1,
           "name": "task_name",
           "required": true,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -472,6 +473,7 @@
           "min_length": 1,
           "name": "alias",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -481,6 +483,7 @@
           "name": "backup_dir",
           "pattern": "\\S",
           "required": true,
+          "sensitive": false,
           "type": "string"
         }
       ],
@@ -562,6 +565,7 @@
           "label": "Extra args",
           "name": "mydumper_extra_args",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -700,6 +704,7 @@
           "name": "xtrabackup_prepare_memory",
           "parent": "xtrabackup_prepare",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -741,6 +746,7 @@
           "min_length": 1,
           "name": "xtrabackup_defaults_file",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -758,6 +764,7 @@
           "min_length": 1,
           "name": "xtrabackup_extra_args",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -855,6 +862,7 @@
           "min_length": 1,
           "name": "xtrabackup_local_ssh_destination",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -944,6 +952,7 @@
           "min_length": 1,
           "name": "binlog_prefix",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -977,6 +986,7 @@
           "min_length": 1,
           "name": "binlog_extra_args",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -994,6 +1004,7 @@
           "min_length": 1,
           "name": "binlog_compress_cmd",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -1011,6 +1022,7 @@
           "min_length": 1,
           "name": "binlog_cmd",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -1036,6 +1048,7 @@
           "min_length": 1,
           "name": "binlog_alternative_host",
           "required": false,
+          "sensitive": false,
           "type": "string"
         }
       ],
@@ -1212,6 +1225,7 @@
           "min_length": 1,
           "name": "logging_dir",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -1220,6 +1234,7 @@
           "min_length": 1,
           "name": "defaults_file",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -1329,6 +1344,7 @@
               }
             }
           ],
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -1398,6 +1414,7 @@
               }
             }
           ],
+          "sensitive": false,
           "type": "string"
         }
       ],
@@ -1447,6 +1464,7 @@
           "min_length": 1,
           "name": "s3_bucket",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -1466,6 +1484,7 @@
           "min_length": 1,
           "name": "s3_storage_class",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -1512,6 +1531,7 @@
           "min_length": 1,
           "name": "awscli_s3_upload_extra_args",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -1531,6 +1551,7 @@
           "min_length": 1,
           "name": "gs_bucket",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -1550,6 +1571,7 @@
           "min_length": 1,
           "name": "rsync_path",
           "required": false,
+          "sensitive": false,
           "type": "string"
         }
       ],

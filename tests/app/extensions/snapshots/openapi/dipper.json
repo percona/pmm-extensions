@@ -3669,7 +3669,7 @@
       },
       "framework__StringField": {
         "additionalProperties": false,
-        "description": "Represent a single-line string input field.\n\n:param field_type: The discriminator literal; always ``\"string\"`` for this\n    class. Serialised as the JSON key ``\"type\"``.\n:type field_type: Literal[\"string\"]\n:param min_length: Optional minimum character length. Defaults to\n    ``None``.\n:type min_length: int | None\n:param max_length: Optional maximum character length. Defaults to\n    ``None``.\n:type max_length: int | None\n:param pattern: Optional regular expression the value must match.\n    Defaults to ``None``.\n:type pattern: NonEmptyStr | None\n:param placeholder: Optional placeholder text displayed when the field is\n    empty. Defaults to ``None``.\n:type placeholder: NonEmptyStr | None",
+        "description": "Represent a single-line string input field.\n\n:param field_type: The discriminator literal; always ``\"string\"`` for this\n    class. Serialised as the JSON key ``\"type\"``.\n:param min_length: Optional minimum character length. Defaults to\n    ``None``.\n:param max_length: Optional maximum character length. Defaults to\n    ``None``.\n:param pattern: Optional regular expression the value must match.\n    Defaults to ``None``.\n:param placeholder: Optional placeholder text displayed when the field is\n    empty. Defaults to ``None``.\n:param sensitive: Whether the value is a credential, which the client must\n    not display as typed. Defaults to ``False``.",
         "properties": {
           "default": {
             "anyOf": [
@@ -3819,6 +3819,11 @@
               }
             ],
             "title": "Requires"
+          },
+          "sensitive": {
+            "default": false,
+            "title": "Sensitive",
+            "type": "boolean"
           },
           "type": {
             "const": "string",
@@ -3996,7 +4001,7 @@
       },
       "framework__TextAreaField": {
         "additionalProperties": false,
-        "description": "Represent a multi-line string input field.\n\n:param field_type: The discriminator literal; always ``\"textarea\"`` for\n    this class. Serialised as the JSON key ``\"type\"``.\n:type field_type: Literal[\"textarea\"]\n:param rows: Optional number of visible text rows. Defaults to ``None``.\n:type rows: int | None\n:param placeholder: Optional placeholder text displayed when the field is\n    empty. Defaults to ``None``.\n:type placeholder: NonEmptyStr | None",
+        "description": "Represent a multi-line string input field.\n\n:param field_type: The discriminator literal; always ``\"textarea\"`` for\n    this class. Serialised as the JSON key ``\"type\"``.\n:param rows: Optional number of visible text rows. Defaults to ``None``.\n:param placeholder: Optional placeholder text displayed when the field is\n    empty. Defaults to ``None``.",
         "properties": {
           "default": {
             "anyOf": [
