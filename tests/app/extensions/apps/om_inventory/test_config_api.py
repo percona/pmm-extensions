@@ -260,6 +260,35 @@ class TestPatchConfig:
         assert [(row.key, row.value) for row in rows] == [("RUN_RETENTION", 5)]
 
     @pytest.mark.asyncio
+    async def test_the_wire_class_name_differs_from_the_stored_token(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Answer with the class ``__name__`` while storing ``setting_class_token``.
+
+        A caller that queries ``settingoverride`` by the ``setting_class`` the
+        response handed back finds nothing; the row is keyed by the token.
+
+        :param api: The authenticated client.
+        :param session: The database session.
+        """
+        token = setting_class_token(OmInventorySettings)
+        assert token != OmInventorySettings.__name__
+
+        response = await api.patch(f"{BASE}/config", json={"RUN_RETENTION": 5})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert [row["setting_class"] for row in response.json()] == [
+            OmInventorySettings.__name__
+        ]
+        stored = await SettingsOverrideManager.list(
+            session, setting_class=token, is_active=True
+        )
+        assert [row.setting_class for row in stored] == [token]
+        assert not await SettingsOverrideManager.list(
+            session, setting_class=OmInventorySettings.__name__
+        )
+
+    @pytest.mark.asyncio
     async def test_a_bad_value_is_refused_by_the_field_constraint(
         self, api: AsyncClient
     ) -> None:
