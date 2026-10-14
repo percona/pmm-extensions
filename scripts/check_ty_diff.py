@@ -62,7 +62,7 @@ TEST_ROOT = "tests/"
 PROMOTED_SEVERITY = "warn"
 _NESTED_BLOCKS = ("body", "orelse", "finalbody", "handlers", "cases")
 
-Block = ast.stmt | ast.ExceptHandler
+Block = ast.stmt | ast.ExceptHandler | ast.match_case
 
 
 class TyInvocationError(RuntimeError):
@@ -129,6 +129,8 @@ class Source:
         :return: The parsed source.
         :raises SyntaxError: When ``text`` does not parse.
         :raises ValueError: When ``text`` holds a null byte, on Python 3.11.
+        :raises RecursionError: When ``text`` nests too deeply to parse.
+        :raises MemoryError: When ``text`` nests too deeply to parse.
         """
         # str.splitlines() also breaks on \x0c and \x1c-\x1e, which the parser
         # treats as ordinary characters, so its line numbers would drift.
@@ -470,16 +472,12 @@ def parse_sources(root: Path, paths: Iterable[str]) -> dict[str, Source]:
 def _children(node: ast.Module | Block) -> Iterator[Block]:
     """Yield the statement-like nodes nested directly inside ``node``.
 
-    :param node: A module, statement, or exception handler.
-    :return: Statements and exception handlers, in source order.
+    :param node: A module, statement, exception handler, or match case.
+    :return: Statements, exception handlers, and match cases, in source order.
     """
     for name in _NESTED_BLOCKS:
         for child in getattr(node, name, ()):
-            # A match case carries no location of its own, so its body is
-            # searched as though it sat directly in the match.
-            if isinstance(child, ast.match_case):
-                yield from child.body
-            elif isinstance(child, (ast.stmt, ast.ExceptHandler)):
+            if isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case)):
                 yield child
 
 
@@ -489,14 +487,29 @@ def _start(node: Block) -> tuple[int, int]:
     Since Python 3.8 a definition's own position is its ``def`` or ``class``
     line, so a diagnostic on a decorator would otherwise fall outside it.
 
-    :param node: A statement or exception handler.
+    :param node: A statement, exception handler, or match case.
     :return: Its 1-indexed start line and 0-indexed UTF-8 byte offset.
     """
+    # A match case carries no location of its own, and its line holds only
+    # the case, so it starts at its pattern's line, before any column.
+    if isinstance(node, ast.match_case):
+        return (node.pattern.lineno, 0)
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and (
         node.decorator_list
     ):
         return (min(item.lineno for item in node.decorator_list), 0)
     return (node.lineno, node.col_offset)
+
+
+def _end_line(node: Block) -> int:
+    """Return the line a statement-like node ends on.
+
+    :param node: A statement, exception handler, or match case.
+    :return: Its 1-indexed last line.
+    """
+    if isinstance(node, ast.match_case):
+        return _end_line(node.body[-1])
+    return node.end_lineno or node.lineno
 
 
 def _enclosing_statement(tree: ast.Module, line: int, byte_column: int) -> Block | None:
@@ -509,18 +522,23 @@ def _enclosing_statement(tree: ast.Module, line: int, byte_column: int) -> Block
     :param tree: The parsed module.
     :param line: 1-indexed line.
     :param byte_column: 0-indexed UTF-8 byte offset into the line.
-    :return: The statement or exception handler, or ``None`` at module level.
+    :return: The statement, exception handler, or match case, or ``None`` at
+        module level.
     """
     node: ast.Module | Block = tree
     while True:
         spanning = [
             child
             for child in _children(node)
-            if _start(child)[0] <= line <= (child.end_lineno or child.lineno)
+            if _start(child)[0] <= line <= _end_line(child)
         ]
         if not spanning:
             return None if isinstance(node, ast.Module) else node
         started = [child for child in spanning if _start(child) <= (line, byte_column)]
+        # Every child starts past the column only on a one-line block such as
+        # ``if bad: use()``, where the diagnostic sits on the header.
+        if not started and not isinstance(node, ast.Module):
+            return node
         node = started[-1] if started else spanning[0]
 
 
@@ -530,7 +548,7 @@ def _header_only(node: Block) -> Block:
     Without this, a diagnostic on a ``def`` or ``if`` line would compare as new
     whenever any line of the block below it changed.
 
-    :param node: A statement or exception handler.
+    :param node: A statement, exception handler, or match case.
     :return: A shallow copy whose nested blocks are empty.
     """
     header = copy.copy(node)
@@ -560,8 +578,11 @@ def delta_key(diagnostic: Diagnostic, source: Source | None) -> DeltaKey:
     text = source.lines[diagnostic.line - 1]
     if not text.strip() or text.lstrip().startswith("#"):
         return fallback
-    # ty counts columns in characters; the AST counts UTF-8 bytes.
-    byte_column = len(text[: max(diagnostic.column - 1, 0)].encode())
+    # ty counts columns in characters; the AST counts UTF-8 bytes. A column
+    # inside the indentation still means the line's first statement, not the
+    # header of the block around it.
+    indent = len(text) - len(text.lstrip())
+    byte_column = len(text[: max(diagnostic.column - 1, indent)].encode())
     node = _enclosing_statement(source.tree, diagnostic.line, byte_column)
     if node is None:
         return fallback

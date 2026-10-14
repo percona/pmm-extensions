@@ -393,13 +393,14 @@ and the enclosing statement's AST with locations stripped. The message is not pa
 of the key: a signature change reprints the types in every pre-existing
 diagnostic at its call sites, and keyed on message text each of those would count
 once as missing and once as new. A compound statement is keyed on its header
-alone (the `def`, `if` or `except` line, decorators included), so editing a body
-does not make the diagnostics on its header look new. Three limits follow and are
-accepted. A diagnostic on a statement the branch edited always compares as new; a
-branch that swaps one diagnostic for another of the same rule within one unchanged
-statement is not reported; and identical statements in one file share a key, so a
-diagnostic moving between them is not reported either. A file that fails to parse
-on either side is compared by message, as is a diagnostic on a line with no code
+alone (the `def`, `if`, `except` or `case` line, decorators included), so
+editing a body does not make the diagnostics on its header look new. Three
+limits follow and are accepted. A diagnostic on a statement the branch edited
+always compares as new; a branch that swaps one diagnostic for another of the
+same rule within one unchanged statement is not reported; and identical
+statements in one file share a key, so a diagnostic moving between them is not
+reported either. A file that fails to parse on either side is compared by
+message, as is a diagnostic on a line with no code
 or no enclosing statement; those comparisons still report anything new, at the
 cost of reporting a rewritten message as new. `Diagnostic.fingerprint` itself is
 unchanged, because `classify` and the corpus reconciliation read it.

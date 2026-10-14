@@ -134,12 +134,28 @@ OTHER_RULE = "unresolved-attribute"
 
 
 def _row(path, line, column, message, rule=RULE):
-    """Render one ty concise output row."""
+    """Render one ty concise output row.
+
+    :param path: The repo-relative path the row points into.
+    :param line: 1-indexed line.
+    :param column: 1-indexed character column.
+    :param message: The diagnostic's message.
+    :param rule: The ty rule that fired.
+    :return: The row, as ty prints it.
+    """
     return f"{path}:{line}:{column}: error[{rule}] {message}"
 
 
 def _diagnostic(line, column=1, *, path="app/x.py", rule=RULE, message="m"):
-    """Build a diagnostic with only the fields the delta key reads varying."""
+    """Build a diagnostic with only the fields the delta key reads varying.
+
+    :param line: 1-indexed line.
+    :param column: 1-indexed character column.
+    :param path: The repo-relative path the diagnostic points into.
+    :param rule: The ty rule that fired.
+    :param message: The diagnostic's message.
+    :return: The diagnostic.
+    """
     return check_ty_diff.Diagnostic(
         path=path,
         line=line,
@@ -151,17 +167,32 @@ def _diagnostic(line, column=1, *, path="app/x.py", rule=RULE, message="m"):
 
 
 def _source(text):
-    """Parse dedented ``text`` the way the runner parses a checked file."""
+    """Parse dedented ``text`` the way the runner parses a checked file.
+
+    :param text: Python source, possibly indented as a test literal.
+    :return: The parsed source.
+    """
     return check_ty_diff.Source.parse(textwrap.dedent(text))
 
 
 def _key(text, line, column=1, **fields):
-    """Return the delta key of a diagnostic at ``line``/``column`` in ``text``."""
+    """Return the delta key of a diagnostic at ``line``/``column`` in ``text``.
+
+    :param text: Python source, possibly indented as a test literal.
+    :param line: 1-indexed line.
+    :param column: 1-indexed character column.
+    :param fields: Overrides for :func:`_diagnostic`'s keyword fields.
+    :return: The diagnostic's key.
+    """
     return check_ty_diff.delta_key(_diagnostic(line, column, **fields), _source(text))
 
 
 def _write_tree(root, files):
-    """Write ``files`` (repo-relative path to dedented text) under ``root``."""
+    """Write ``files`` under ``root``, dedenting each one.
+
+    :param root: The directory the paths are relative to.
+    :param files: Repo-relative path to Python source.
+    """
     for name, text in files.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +207,13 @@ def _run_main_with_sources(
     The base tree is removed when its block exits, as the real worktree is, so a
     runner that read base sources after the block would see none of them.
 
+    :param monkeypatch: pytest's monkeypatch fixture.
+    :param tmp_path: The repository root, holding the head sources.
+    :param name_status: Canned ``git diff --name-status`` output.
+    :param head_files: Repo-relative path to head-side source.
+    :param base_files: Repo-relative path to base-side source.
+    :param outputs: Canned ty stdout, head pass first.
+    :param argv: CLI arguments; defaults to ``--base-sha <BASE_SHA>``.
     :return: A ``(exit_code, spy, base_root)`` triple.
     """
     _write_tree(tmp_path, head_files)
@@ -839,6 +877,68 @@ class TestDeltaKey:
         after = TRY_EXCEPT.replace("Missing", "Other")
 
         assert _key(TRY_EXCEPT, 3) != _key(after, 3)
+
+    @pytest.mark.parametrize(
+        ("edit", "same"),
+        [
+            (("Point(x)", "Point(y)"), False),
+            (("if x > 0", "if x > 1"), False),
+            (("handle(x)", "handle(x, now=True)"), True),
+            (("drop()", "drop(all=True)"), True),
+        ],
+        ids=["pattern", "guard", "own-body", "other-case"],
+    )
+    def test_a_case_line_keys_on_its_own_pattern_and_guard(self, edit, same):
+        """Anchor a ``case``-line diagnostic to that case's header alone."""
+        before = """\
+        match value:
+            case Point(x) if x > 0:
+                handle(x)
+            case _:
+                drop()
+        """
+
+        assert (
+            _key(before, 2, column=10) == _key(before.replace(*edit), 2, column=10)
+        ) is same
+
+    def test_a_case_body_statement_ignores_other_cases(self):
+        """Anchor a diagnostic in a case body to its own statement."""
+        before = "match v:\n    case 1:\n        go(v)\n    case _:\n        stop()\n"
+        after = before.replace("stop()", "stop(now=True)")
+
+        assert _key(before, 3, column=9) == _key(after, 3, column=9)
+
+    @pytest.mark.parametrize(
+        ("before", "after", "column"),
+        [
+            ("if bad: use()\n", "if worse: use()\n", 4),
+            ("while bad: use()\n", "while worse: use()\n", 7),
+            (
+                "try: run()\nexcept Missing: pass\n",
+                "try: run()\nexcept Other: pass\n",
+                8,
+            ),
+        ],
+        ids=["if", "while", "except"],
+    )
+    def test_a_one_line_header_keys_on_the_header_not_its_body(
+        self, before, after, column
+    ):
+        """Separate a header diagnostic on a one-line block once the header changes."""
+        line = before.count("\n")
+
+        assert _key(before, line, column=column) != _key(after, line, column=column)
+
+    def test_a_column_inside_the_indentation_keys_on_the_line_statement(self):
+        """Anchor a column before an indented statement to that statement."""
+        body = "if ok:\n    use(bad)\n"
+
+        assert _key(body, 2, column=1) == _key(body, 2, column=5)
+
+    def test_a_one_line_body_diagnostic_keys_on_the_body(self):
+        """Anchor a diagnostic after a one-line header's colon to the body."""
+        assert _key("if ok: use(bad)\n", 1, column=8) == _key("use(bad)\n", 1)
 
     def test_an_elif_condition_keys_on_its_own_branch(self):
         """Anchor an ``elif``-line diagnostic to that branch's condition."""
