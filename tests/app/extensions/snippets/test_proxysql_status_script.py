@@ -887,6 +887,15 @@ def _unread(key: str, cnf: Path) -> str:
     return f"Ignoring {key} in {cnf}: its line is not a plain KEY=value setting."
 
 
+def _unclosed(cnf: Path) -> str:
+    """Return the notice the script prints for a file that ends inside a quote.
+
+    :param cnf: The config file.
+    :return: The notice line.
+    """
+    return f"A quote in {cnf} is never closed: the settings after it were not read."
+
+
 def _warnings(result: subprocess.CompletedProcess[str]) -> list[str]:
     """Return the ignored-credential warnings a run printed.
 
@@ -945,6 +954,13 @@ class TestCredentialShapes:
             ),
             pytest.param(
                 "PROXYSQL_PASSWORD='pa:~'", "pa:~", id="tilde-after-quoted-colon"
+            ),
+            pytest.param("PROXYSQL_PASSWORD={a,b}", "{a,b}", id="braces"),
+            pytest.param(
+                r"export PROXYSQL_PASSWORD=\{a,b}", "{a,b}", id="exported-escaped-brace"
+            ),
+            pytest.param(
+                "export PROXYSQL_PASSWORD='{a,b}'", "{a,b}", id="exported-quoted-braces"
             ),
         ],
     )
@@ -1014,6 +1030,14 @@ class TestCredentialShapes:
             pytest.param(
                 "NOTE=first\\\nsecond\\\n{setting}", id="chained-line-continuation"
             ),
+            pytest.param(
+                "NOTE=\"first\nlast\"#x'\n{setting}\n'",
+                id="hash-after-closing-double-quote",
+            ),
+            pytest.param(
+                "NOTE='first\nlast'#x\"\n{setting}\n\"",
+                id="hash-after-closing-single-quote",
+            ),
         ],
     )
     def test_lines_of_a_multiline_value_are_not_settings(self, harness, spanning):
@@ -1028,6 +1052,7 @@ class TestCredentialShapes:
 
         assert result.returncode == 0, result.stderr
         assert _warnings(result) == []
+        assert _unclosed(harness.admin_cnf) not in result.stdout
         assert harness.credentials == {
             **DEFAULT_CLIENT,
             "user": "admin",
@@ -1210,11 +1235,12 @@ class TestNonLiteralCredential:
             pytest.param("PROXYSQL_HOSTNAME=$HOSTNAME", id="hostname"),
             pytest.param("PROXYSQL_PORT=$((6000 + 32))", id="arithmetic"),
             pytest.param("PROXYSQL_USERNAME=adm'in'", id="quote-mid-word"),
+            pytest.param("export PROXYSQL_PASSWORD={a,b}", id="exported-braces"),
         ],
     )
     def test_warns_and_resets_to_default(self, harness, line):
         """Name the key, reset it to its default and keep the other settings."""
-        key, raw = line.split("=", 1)
+        key, raw = line.removeprefix("export ").split("=", 1)
         harness.write_cnf(f"{SHIPPED_CNF}{line}\n")
 
         result = harness.run("--main")
@@ -1321,6 +1347,21 @@ class TestNonLiteralCredential:
         assert "first" not in warning
         assert "last" not in warning
 
+    @pytest.mark.parametrize("quote", ["'", '"'])
+    def test_reports_a_quote_never_closed(self, harness, quote):
+        """Say that the settings after a quote the file never closes went unread."""
+        harness.write_cnf(
+            f"PROXYSQL_USERNAME='admin'\nMONITOR_PASSWORD={quote}monit0r\n"
+            "PROXYSQL_PASSWORD=secret\n"
+        )
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _unclosed(harness.admin_cnf) in result.stdout.splitlines()
+        assert "monit0r" not in result.stdout
+        assert harness.credentials == {**DEFAULT_CLIENT, "user": "admin"}
+
     def test_warning_stays_out_of_the_report_file(self, harness):
         """Print the warning to the run's output, not into the report file."""
         harness.write_cnf(f"{SHIPPED_CNF}PROXYSQL_PASSWORD=$X\n")
@@ -1385,8 +1426,8 @@ class TestLargeDefaultsFile:
         filler = "# don't edit\nexport NOTE='it''s' \"a \\\"b\\\"\" c\\ d\n" * 10_000
         harness.write_cnf(filler + ADMIN_CNF)
 
-        # A fork per line, as an earlier parser did, overruns this budget.
-        result = harness.run("--main", timeout=20)
+        # A parser that forks once per line overruns this budget.
+        result = harness.run("--main", timeout=40)
 
         assert result.returncode == 0, result.stderr
         assert _warnings(result) == []

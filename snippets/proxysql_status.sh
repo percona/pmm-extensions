@@ -206,9 +206,11 @@ function mysql_stdout() {
 #
 # Arguments:
 #   1: the text after the "="
+#   2: non-empty when the assignment follows "export"
 #
 function cnf_unquote() {
     local raw=$1
+    local exported=$2
     local value=""
     local rest=""
     local char
@@ -244,7 +246,8 @@ function cnf_unquote() {
             ;;
         *)
             # The shell expands a tilde that starts an assignment value or
-            # follows an unquoted colon in it.
+            # follows an unquoted colon in it. It also brace-expands the
+            # arguments of export, though not a plain assignment.
             prev=":"
             for ((i = 0; i < ${#raw}; i++)); do
                 char=${raw:i:1}
@@ -256,7 +259,7 @@ function cnf_unquote() {
                     value+=${raw:i+1:1}
                     prev=""
                     ((i++))
-                elif [[ $char == [\$\`\'\"\;\&\|\<\>\(\)] || ($char == '~' && $prev == ':') ]]; then
+                elif [[ $char == [\$\`\'\"\;\&\|\<\>\(\)] || ($char == '~' && $prev == ':') || ($char == '{' && -n $exported) ]]; then
                     return 1
                 else
                     value+=$char
@@ -300,6 +303,7 @@ function cnf_open_quote() {
                 [[ $line =~ $in_single ]] || break
                 line=${BASH_REMATCH[1]}
                 open=""
+                word_start=0
                 ;;
             '"')
                 [[ $line =~ $in_double ]]
@@ -307,6 +311,7 @@ function cnf_open_quote() {
                 [[ -n $line ]] || break
                 if [[ ${line:0:1} == '"' ]]; then
                     open=""
+                    word_start=0
                     line=${line:1}
                 else
                     line=${line:2}
@@ -425,7 +430,7 @@ function load_credentials() {
     local credential='^PROXYSQL_(USERNAME|PASSWORD|HOSTNAME|PORT)$'
     # Spares most lines the character scan, which is slow in bash.
     local closed="^([^${q}\"\\\\]|${q}[^${q}]*${q}|\"[^\"\\\\]*\")*\$"
-    local line key raw value status
+    local line key raw exported value status
     local logical=""
     local continued=0
 
@@ -455,6 +460,7 @@ function load_credentials() {
         [[ $CNF_OPEN == $'\\' || $logical != *PROXYSQL_* ]] && continue
 
         if [[ $logical =~ $assignment ]]; then
+            exported=${BASH_REMATCH[1]}
             key=${BASH_REMATCH[2]}
             raw=${BASH_REMATCH[3]}
             if [[ $key =~ $credential ]]; then
@@ -463,7 +469,7 @@ function load_credentials() {
                 # Joining hides the line break, but a value that ran on past
                 # it is no plain string.
                 if ((!continued)); then
-                    value=$(cnf_unquote "$raw")
+                    value=$(cnf_unquote "$raw" "$exported")
                     status=$?
                 fi
                 # A rejected value still overrides an earlier one, as the
@@ -479,6 +485,11 @@ function load_credentials() {
             echo "Ignoring ${key} in ${cnf}: its line is not a plain KEY=value setting."
         done
     done < "$cnf"
+    # Sourcing such a file failed with a syntax error; without one the
+    # settings it swallowed would go missing unnoticed.
+    if [[ $CNF_OPEN == "'" || $CNF_OPEN == '"' ]]; then
+        echo "A quote in ${cnf} is never closed: the settings after it were not read."
+    fi
 
     HOST=${HOST:-127.0.0.1}
     PORT=${PORT:-6032}
