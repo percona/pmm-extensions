@@ -470,13 +470,25 @@ async def test_a_joiner_keeps_following_after_nomad_evicts_a_rotated_file(
     await joiner.leave()
 
 
+@pytest.mark.parametrize(
+    ("unfinished", "rest"),
+    [
+        pytest.param(b"alice@", b"example.com\n", id="catch-up-reaches-nomad-end"),
+        pytest.param(b"alice@example", b".com\n", id="catch-up-ends-mid-line"),
+    ],
+)
 async def test_an_eviction_never_releases_a_withheld_partial_line(
-    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+    nomad_stub: NomadLogStub,
+    live_executor: NomadExecutor,
+    unfinished: bytes,
+    rest: bytes,
 ) -> None:
     """Redact an address whose line was unfinished when Nomad deleted an older file.
 
-    The joiner's catch-up reaches Nomad's end in the middle of that line; it
-    must keep the fragment withheld rather than release it there.
+    The joiner's catch-up is counted from before the deletion, so it stops in
+    the middle of that line: at Nomad's end when the unfinished part is shorter
+    than the deleted file, otherwise at the shared follow's frontier. Either
+    way it must keep the fragment withheld rather than release it there.
     """
     history = live_history(nomad_stub, EMAIL)
     first = LiveViewer(live_executor, history, nomad_stub.step)
@@ -484,13 +496,13 @@ async def test_an_eviction_never_releases_a_withheld_partial_line(
     await nomad_stub.write(STDOUT, b"evicted\n")
     await until(lambda: first.offset() == len("evicted\n"))
     await nomad_stub.rotate(STDOUT)
-    await nomad_stub.write(STDOUT, b"ok\nalice@")
+    await nomad_stub.write(STDOUT, b"ok\n" + unfinished)
     await until(lambda: first.offset() == len("evicted\nok\n"))
     await nomad_stub.evict_oldest(STDOUT)
 
     joiner = LiveViewer(live_executor, history, nomad_stub.step)
     await attach(nomad_stub, joiner)
-    await nomad_stub.write(STDOUT, b"example.com\n")
+    await nomad_stub.write(STDOUT, rest)
     await until(lambda: joiner.text().endswith("<EMAIL_ADDRESS>\n"))
 
     assert joiner.text() == "ok\n<EMAIL_ADDRESS>\n"

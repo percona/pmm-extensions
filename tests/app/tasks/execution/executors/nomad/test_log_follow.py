@@ -119,21 +119,16 @@ class RangeReader:
 
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []
-        self.drains: list[bool] = []
         self.failure: Exception | None = None
 
-    def __call__(
-        self, start: int, end: int, *, drain: bool = True
-    ) -> AsyncGenerator[TaskLog]:
-        """Record the range and whether it drains, then read it.
+    def __call__(self, start: int, end: int) -> AsyncGenerator[TaskLog]:
+        """Record the range, then read it.
 
         :param start: The raw offset the range starts at.
         :param end: The raw offset the range ends at.
-        :param drain: Whether a partial line at ``end`` is released.
         :return: The range's text as one log line.
         """
         self.calls.append((start, end))
-        self.drains.append(drain)
         return self._read(start, end)
 
     async def _read(self, start: int, end: int) -> AsyncGenerator[TaskLog]:
@@ -410,7 +405,12 @@ async def test_a_stalled_subscriber_neither_delays_others_nor_loses_text() -> No
 async def test_a_lagging_subscriber_catches_up_to_the_final_frontier_at_the_end() -> (
     None
 ):
-    """Read what a dropped subscriber missed once the follow has ended, then end it."""
+    """Read what a dropped subscriber missed once the follow has ended, then end it.
+
+    The catch-up stops where the follow's last release starts, and that release,
+    which may be a remainder the producer withheld to the end, is delivered as
+    the producer anonymized it rather than drained by the catch-up.
+    """
     registry, producer, reader = LogFollowRegistry(), ScriptedProducer(), RangeReader()
     stalled = _subscribe(registry, 0, producer, reader)
     await _settle()
@@ -427,20 +427,15 @@ async def test_a_lagging_subscriber_catches_up_to_the_final_frontier_at_the_end(
     await _until(lambda: stalled.finished)
 
     frontier = (releases + 1) * LINE
-    assert reader.calls == [((SUBSCRIBER_BACKLOG + 1) * LINE, frontier)]
-    assert reader.drains == [True]
+    assert reader.calls == [((SUBSCRIBER_BACKLOG + 1) * LINE, frontier - LINE)]
     assert stalled.text == RAW[:frontier]
     producer.release_end.set()
 
 
-async def test_a_producer_crash_ends_every_subscriber_without_a_withheld_tail(
+async def test_a_producer_crash_ends_every_subscriber_after_catching_it_up(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Catch each subscriber up to the frontier's whole lines, end it, log the crash.
-
-    A sole subscriber whose producer crashes never receives the line its
-    producer was withholding, so a catch-up after a crash keeps it withheld too.
-    """
+    """Catch each subscriber up to the frontier, end it, and log the crash."""
     registry, producer, reader = LogFollowRegistry(), ScriptedProducer(), RangeReader()
     first = _subscribe(registry, 4, producer, reader)
     joiner = _subscribe(registry, 0, producer, reader)
@@ -451,7 +446,6 @@ async def test_a_producer_crash_ends_every_subscriber_without_a_withheld_tail(
         await _until(lambda: first.finished and joiner.finished)
 
     assert reader.calls == [(0, 4)]
-    assert reader.drains == [False]
     assert first.text == ""
     assert "the producer broke" in caplog.text
 

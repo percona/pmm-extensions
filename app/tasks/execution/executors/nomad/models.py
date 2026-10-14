@@ -3410,8 +3410,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         anonymize_entities: set[PIIEntity] | None,
         start: int,
         end: int,
-        *,
-        drain: bool = True,
     ) -> AsyncGenerator[TaskLog]:
         """Read the raw range ``[start, end)`` of a step's log for one viewer.
 
@@ -3423,16 +3421,21 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         bytes from ``start``, so they stay in the cumulative space across
         rotated files.
 
+        Only whole lines and whole characters are read: what is still withheld
+        at ``end`` is never released here. A ``end`` the shared follow handed
+        over is a line boundary, so nothing is withheld there; a remainder the
+        stream ended on reaches the viewer as the follow's own last release.
+
         Nomad has nothing left before ``end`` once it has deleted an older
         rotated file, because the deletion shifts every request offset down by
         that file's size while ``start`` and ``end`` were counted before it.
         The read then stops at Nomad's end rather than failing, so the viewer
-        rejoins the live follow instead of losing it. That end is no line
-        boundary, so a partial line withheld there is never drained, whatever
-        ``drain`` says, and stays redacted whole. A ``start`` counted before
+        rejoins the live follow instead of losing it. A ``start`` counted before
         the deletion also lands that many bytes too far into the retained
-        files, so the viewer can miss text it had not yet been sent; only a
-        read from offset 0 is unaffected.
+        files, so the viewer can miss text it had not yet been sent, or receive
+        some twice; only a read from offset 0 is unaffected. Neither ``start``
+        nor ``end`` is then a line boundary, which is why nothing withheld is
+        released.
 
         :param alloc_id: The Nomad allocation identifier.
         :param step: The task step name.
@@ -3440,9 +3443,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param anonymize_entities: PII entities to anonymize, or ``None``.
         :param start: The cumulative raw offset to read from.
         :param end: The cumulative raw offset to read up to.
-        :param drain: Whether a partial line still withheld at ``end`` is
-            released; otherwise only whole lines are read.
-        :return: The range's log lines, each carrying the raw offset it ends at.
+        :return: The range's whole log lines, each carrying the raw offset it
+            ends at.
         :raises LogCatchUpError: When a request fails or times out.
         :raises RuntimeError: When this executor's session is already closed.
         :raises json.JSONDecodeError: When Nomad sends a malformed frame.
@@ -3473,7 +3475,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     step,
                     log_type,
                 )
-                drain = False
                 break
             for raw in frames:
                 position += len(raw)
@@ -3489,15 +3490,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     )
                     text, offset = release.text, release.offset
                 else:
-                    text = decoder.decode(raw, final=position == end)
+                    text = decoder.decode(raw)
                     offset = position - len(decoder.getstate()[0])
                 if text:
                     yield TaskLog(step=step, type=log_type, msg=text, offset=offset)
-        if drain and pending:
-            decoded_msg = await asyncio.to_thread(
-                _decode_and_anonymize, pending.drain(), anonymize_entities or None
-            )
-            yield TaskLog(step=step, type=log_type, msg=decoded_msg, offset=end)
 
     @staticmethod
     def _log_catch_up_failure(
