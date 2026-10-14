@@ -53,9 +53,20 @@ class LogCatchUpError(Exception):
     """Signal that a catch-up read could not deliver its whole range."""
 
 
-#: Reads the raw range ``[start, end)`` as whole log lines, anonymized afresh;
-#: a partial line at ``end`` stays withheld.
-RangeReader = Callable[[int, int], AsyncGenerator[TaskLog]]
+class RangeReader(Protocol):
+    """Read a raw range of the followed log for one subscriber."""
+
+    def __call__(
+        self, start: int, end: int, *, flush: bool = False
+    ) -> AsyncGenerator[TaskLog]:
+        """Read the raw range ``[start, end)`` as log lines, anonymized afresh.
+
+        :param start: The raw offset to read from.
+        :param end: The raw offset to read up to.
+        :param flush: Whether ``end`` is where the stream ended, so a partial
+            line there is released whole rather than withheld.
+        :return: The range's log lines, each carrying the raw offset it ends at.
+        """
 
 
 #: Runs the upstream follow into a shared follow from a raw start offset.
@@ -112,8 +123,9 @@ class SharedLogFollow:
         self.completed = False
         self.closing = False
         self.members = 0
-        self._forced = False
+        self._mid_line = False
         self._last: _Emission | None = None
+        self._last_start_aligned = False
         self._delivering: set[_Subscriber] = set()
         self._subscribers: set[_Subscriber] = set()
         self._task: asyncio.Task[None] | None = None
@@ -149,9 +161,12 @@ class SharedLogFollow:
         finally:
             self._end()
 
-    def mark_forced(self) -> None:
-        """Flag the next release as a forced flush, never a handoff point."""
-        self._forced = True
+    def mark_mid_line(self) -> None:
+        """Flag the next release as ending mid-line, never a handoff point.
+
+        That is a forced flush, or the remainder the stream ended on.
+        """
+        self._mid_line = True
 
     async def put(self, item: TaskLog) -> None:
         """Record one release and hand it to every delivering subscriber.
@@ -162,8 +177,9 @@ class SharedLogFollow:
             self.completed = True
             self._end()
             return
-        aligned = not self._forced
-        self._forced = False
+        aligned = not self._mid_line
+        self._mid_line = False
+        self._last_start_aligned = self.frontier_aligned
         emission = self._last = _Emission(self.frontier, item, aligned)
         self.frontier = item.offset
         self.frontier_aligned = aligned
@@ -267,44 +283,61 @@ class SharedLogFollow:
     ) -> AsyncGenerator[TaskLog]:
         """Catch a subscriber up to the end of a follow that has ended.
 
-        A catch-up never releases a partial line it is still withholding at its
-        end, so a remainder the producer withheld to the end of the stream is
-        delivered as the producer's last release, which it anonymized whole:
-        the catch-up stops where that release starts. After a producer failure
-        there is no such remainder, and the catch-up runs to the frontier.
+        The producer's last release, which may be a remainder it withheld to
+        the end of the stream, is delivered as the producer anonymized it when
+        the subscriber is at its start or behind a start that is a line
+        boundary. A subscriber inside that release, or behind a start that is
+        not a line boundary, is caught up to the frontier with the remainder
+        released whole, as a sole subscriber starting at its offset receives
+        it. After a producer failure there is no such remainder, and the
+        catch-up runs to the frontier.
 
         :param subscriber: The subscriber to catch up.
         :param read_range: Reads a raw range the shared feed cannot supply.
         :return: The log lines the subscriber is still missing.
         """
         last = self._last if self.completed else None
-        if last is None or subscriber.position > last.start:
+        if last is None:
+            delivered = self._catch_up(subscriber, self.frontier, read_range)
+        elif subscriber.position == last.start or (
+            subscriber.position < last.start and self._last_start_aligned
+        ):
             async with aclosing(
-                self._catch_up(subscriber, self.frontier, read_range)
+                self._catch_up(subscriber, last.start, read_range)
             ) as logs:
                 async for log in logs:
                     yield log
+            subscriber.position = last.log.offset
+            yield last.log
             return
-        async with aclosing(self._catch_up(subscriber, last.start, read_range)) as logs:
+        else:
+            delivered = self._catch_up(
+                subscriber, self.frontier, read_range, flush=True
+            )
+        async with aclosing(delivered) as logs:
             async for log in logs:
                 yield log
-        subscriber.position = last.log.offset
-        yield last.log
 
     @staticmethod
     async def _catch_up(
-        subscriber: _Subscriber, end: int, read_range: RangeReader
+        subscriber: _Subscriber,
+        end: int,
+        read_range: RangeReader,
+        *,
+        flush: bool = False,
     ) -> AsyncGenerator[TaskLog]:
         """Read the subscriber's position up to ``end`` and advance it there.
 
         :param subscriber: The subscriber to catch up.
         :param end: The raw offset to read up to.
         :param read_range: Reads a raw range the shared feed cannot supply.
-        :return: The whole log lines of the range.
+        :param flush: Whether ``end`` is where the stream ended, so a partial
+            line there is released rather than withheld.
+        :return: The log lines of the range.
         """
         if subscriber.position >= end:
             return
-        async with aclosing(read_range(subscriber.position, end)) as logs:
+        async with aclosing(read_range(subscriber.position, end, flush=flush)) as logs:
             async for log in logs:
                 yield log
         subscriber.position = end

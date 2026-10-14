@@ -2968,6 +2968,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         anonymize_entities: set[PIIEntity] | None = None,
         *,
         on_forced_flush: Callable[[], None] | None = None,
+        on_remainder: Callable[[], None] | None = None,
     ) -> None:
         """Push logs to the asynchronous queue for processing.
 
@@ -2988,6 +2989,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             step1 output. When ``None``, no anonymization is performed.
         :param on_forced_flush: Called right before a line the withheld-bytes
             ceiling forced out is pushed, or ``None`` when nothing listens.
+        :param on_remainder: Called right before the remainder the stream ended
+            on is pushed, or ``None`` when nothing listens.
         """
         timeout = ClientTimeout(sock_read=self.log_socket_read_timeout)
         params = {
@@ -3048,6 +3051,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             decoded_msg = await asyncio.to_thread(
                 _decode_and_anonymize, pending.drain(), anonymize_entities or None
             )
+            if on_remainder is not None:
+                on_remainder()
             await queue.put(
                 TaskLog(
                     step=step,
@@ -3350,7 +3355,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 sink,
                 start_offset,
                 anonymize_entities,
-                on_forced_flush=sink.mark_forced,
+                on_forced_flush=sink.mark_mid_line,
+                on_remainder=sink.mark_mid_line,
             )
 
     async def _read_log_frames(
@@ -3410,6 +3416,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         anonymize_entities: set[PIIEntity] | None,
         start: int,
         end: int,
+        *,
+        flush: bool = False,
     ) -> AsyncGenerator[TaskLog]:
         """Read the raw range ``[start, end)`` of a step's log for one viewer.
 
@@ -3422,9 +3430,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         rotated files.
 
         Only whole lines and whole characters are read: what is still withheld
-        at ``end`` is never released here. A ``end`` the shared follow handed
-        over is a line boundary, so nothing is withheld there; a remainder the
-        stream ended on reaches the viewer as the follow's own last release.
+        at ``end`` is released only with ``flush``, which the shared follow
+        passes once the stream has ended there. Any other ``end`` it hands over
+        is a line boundary, so nothing is withheld there.
 
         Nomad has nothing left before ``end`` once it has deleted an older
         rotated file, because the deletion shifts every request offset down by
@@ -3443,6 +3451,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param anonymize_entities: PII entities to anonymize, or ``None``.
         :param start: The cumulative raw offset to read from.
         :param end: The cumulative raw offset to read up to.
+        :param flush: Whether the stream ended at ``end``, so the partial line
+            withheld there is anonymized whole and released.
         :return: The range's whole log lines, each carrying the raw offset it
             ends at.
         :raises LogCatchUpError: When a request fails or times out.
@@ -3494,6 +3504,11 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     offset = position - len(decoder.getstate()[0])
                 if text:
                     yield TaskLog(step=step, type=log_type, msg=text, offset=offset)
+        if flush and pending:
+            text = await asyncio.to_thread(
+                _decode_and_anonymize, pending.drain(), anonymize_entities
+            )
+            yield TaskLog(step=step, type=log_type, msg=text, offset=position)
 
     @staticmethod
     def _log_catch_up_failure(

@@ -81,6 +81,10 @@ class ScriptedProducer:
         """Send the end marker, then wait for :attr:`release_end` to return."""
         self._commands.put_nowait(("end", 0))
 
+    def remainder(self, end: int) -> None:
+        """Release the raw text up to ``end`` as the remainder the stream ended on."""
+        self._commands.put_nowait(("remainder", end))
+
     def fail(self) -> None:
         """Raise an unexpected error."""
         self._commands.put_nowait(("raise", 0))
@@ -103,8 +107,8 @@ class ScriptedProducer:
                     self.ended.set()
                     await self.release_end.wait()
                     return
-                if kind == "forced":
-                    sink.mark_forced()
+                if kind in {"forced", "remainder"}:
+                    sink.mark_mid_line()
                 await sink.put(_log(RAW[position:end], end))
                 position = end
         except asyncio.CancelledError:
@@ -117,31 +121,48 @@ class ScriptedProducer:
 class RangeReader:
     """Serve catch-up reads of :data:`RAW` and record every range asked for."""
 
-    def __init__(self) -> None:
-        self.calls: list[tuple[int, int]] = []
-        self.failure: Exception | None = None
+    def __init__(self, *, withhold: bool = False) -> None:
+        """Start with no ranges read.
 
-    def __call__(self, start: int, end: int) -> AsyncGenerator[TaskLog]:
+        :param withhold: Whether a partial line at a range's end is withheld
+            unless the read flushes, as an anonymized read does.
+        """
+        self.calls: list[tuple[int, int]] = []
+        self.flushed: list[bool] = []
+        self.failure: Exception | None = None
+        self._withhold = withhold
+
+    def __call__(
+        self, start: int, end: int, *, flush: bool = False
+    ) -> AsyncGenerator[TaskLog]:
         """Record the range, then read it.
 
         :param start: The raw offset the range starts at.
         :param end: The raw offset the range ends at.
+        :param flush: Whether a partial line at ``end`` is released.
         :return: The range's text as one log line.
         """
         self.calls.append((start, end))
-        return self._read(start, end)
+        self.flushed.append(flush)
+        return self._read(start, end, flush=flush)
 
-    async def _read(self, start: int, end: int) -> AsyncGenerator[TaskLog]:
+    async def _read(
+        self, start: int, end: int, *, flush: bool
+    ) -> AsyncGenerator[TaskLog]:
         """Yield the range, or fail when told to.
 
         :param start: The raw offset the range starts at.
         :param end: The raw offset the range ends at.
+        :param flush: Whether a partial line at ``end`` is released.
         :return: The range's text as one log line.
         :raises Exception: :attr:`failure`, when it is set.
         """
         if self.failure is not None:
             raise self.failure
-        yield _log(RAW[start:end], end)
+        if self._withhold and not flush:
+            end = start + RAW[start:end].rfind("\n") + 1
+        if end > start:
+            yield _log(RAW[start:end], end)
 
 
 class Subscriber:
@@ -429,6 +450,54 @@ async def test_a_lagging_subscriber_catches_up_to_the_final_frontier_at_the_end(
     frontier = (releases + 1) * LINE
     assert reader.calls == [((SUBSCRIBER_BACKLOG + 1) * LINE, frontier - LINE)]
     assert stalled.text == RAW[:frontier]
+    producer.release_end.set()
+
+
+async def test_a_joiner_behind_a_mid_line_start_gets_the_final_remainder_whole() -> (
+    None
+):
+    """Flush the catch-up of a joiner whose follow started inside the last line."""
+    tail_start, stream_end = LINE + 3, 2 * LINE - 2
+    registry, producer = LogFollowRegistry(), ScriptedProducer()
+    reader = RangeReader(withhold=True)
+    first = _subscribe(registry, tail_start, producer, reader)
+    joiner = _subscribe(registry, 0, producer, reader)
+    await _settle()
+
+    producer.remainder(stream_end)
+    producer.finish()
+    await _until(lambda: first.finished and joiner.finished)
+
+    assert first.text == RAW[tail_start:stream_end]
+    assert joiner.text == RAW[:stream_end]
+    assert joiner.position == stream_end
+    assert list(zip(reader.calls, reader.flushed, strict=True)) == [
+        ((0, stream_end), True)
+    ]
+    producer.release_end.set()
+
+
+async def test_a_resume_inside_the_final_remainder_gets_the_rest_of_it() -> None:
+    """Flush the catch-up of a subscriber resuming inside the last release."""
+    stream_end = 2 * LINE - 2
+    registry, producer = LogFollowRegistry(), ScriptedProducer()
+    reader = RangeReader(withhold=True)
+    first = _subscribe(registry, 0, producer, reader)
+    await _settle()
+    producer.emit(LINE)
+    await _until(lambda: first.position == LINE)
+    resumed = _subscribe(registry, LINE + 2, producer, reader)
+    await _settle()
+
+    producer.remainder(stream_end)
+    producer.finish()
+    await _until(lambda: first.finished and resumed.finished)
+
+    assert first.text == RAW[:stream_end]
+    assert resumed.text == RAW[LINE + 2 : stream_end]
+    assert list(zip(reader.calls, reader.flushed, strict=True)) == [
+        ((LINE + 2, stream_end), True)
+    ]
     producer.release_end.set()
 
 
