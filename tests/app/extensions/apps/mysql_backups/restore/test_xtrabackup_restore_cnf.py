@@ -30,12 +30,13 @@ import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast, Protocol, TYPE_CHECKING
+from typing import cast, Protocol
 
 import pytest
 
 from tests.app.extensions.apps.mysql_backups.payload_harness import (
     load_constant,
+    load_function,
     payload_method,
     Recorder,
 )
@@ -43,9 +44,6 @@ from tests.app.extensions.apps.mysql_backups.restore.conftest import (
     RESTORE_PAYLOAD_PATH,
     restore_payload_tree,
 )
-
-if TYPE_CHECKING:
-    from types import FunctionType
 
 _METHODS = ("_restore_cnf_files", "_cnf_destination", "_edit_copy_my_cnf")
 _NEW_SERVER_ID = 4242
@@ -113,9 +111,15 @@ class Layout:
 
     def restorer(self) -> _Restorer:
         """Return an object carrying the payload's real cnf-restore methods."""
+        # One shared error class, so a refusal from any lifted method matches it.
+        backup_error = type("BackupError", (Exception,), {})
         namespace: dict[str, object] = {
+            "BackupError": backup_error,
             "MYCNF_DIRS": (str(self.allowed_dir), str(self.absent_dir)),
             "MYCNF_FILES": (str(self.allowed_file),),
+            "is_lone_file": load_function(
+                "is_lone_file", payload_path=RESTORE_PAYLOAD_PATH
+            ),
         }
         methods = {
             name: payload_method(
@@ -133,14 +137,13 @@ class Layout:
                 self.during_server_id()
             return _NEW_SERVER_ID
 
-        check = cast("FunctionType", methods["_cnf_destination"])
         restorer = type(
             "Restorer",
             (),
             {
                 **methods,
                 "_get_new_server_id": new_server_id,
-                "BackupError": check.__globals__["BackupError"],
+                "BackupError": backup_error,
                 "datadir": str(self.datadir),
                 "logger": Recorder(),
             },
@@ -245,6 +248,24 @@ class TestAllowedDestination:
         assert link.is_symlink()
         assert target.read_text() == "[mysqld]\n"
 
+    def test_symlink_chain_through_an_outside_dir_writes_its_final_target(
+        self, layout: Layout
+    ) -> None:
+        """Write to where a link chain ends, like Debian's alternatives layout."""
+        target = layout.allowed_dir / "mysql.cnf"
+        target.write_text("old\n")
+        alternative = layout.outside / "my.cnf"
+        alternative.symlink_to(target)
+        link = layout.allowed_dir / "my.cnf"
+        link.symlink_to(alternative)
+        layout.plant(_encode(link), "[mysqld]\n")
+
+        layout.restorer()._restore_cnf_files()
+
+        assert link.readlink() == alternative
+        assert alternative.readlink() == target
+        assert target.read_text() == "[mysqld]\n"
+
     def test_logs_each_restored_destination(self, layout: Layout) -> None:
         """Log the resolved path every restored file is written to."""
         dst = layout.allowed_dir / "my.cnf"
@@ -312,6 +333,14 @@ def _plant_symlinked_source(layout: Layout) -> str:
     return name
 
 
+def _plant_hardlinked_source(layout: Layout) -> str:
+    secret = layout.datadir.parent / "secret"
+    secret.write_text("password=hunter2\n")
+    name = _encode(layout.allowed_dir / "leak.cnf")
+    (layout.datadir / name).hardlink_to(secret)
+    return name
+
+
 def _plant_directory_source(layout: Layout) -> str:
     name = _encode(layout.allowed_dir / "dir.cnf")
     (layout.datadir / name).mkdir()
@@ -342,6 +371,7 @@ class TestRefusedDestination:
             pytest.param(_plant_absent_allowed_dir, _MISSING, id="absent-allowed-dir"),
             pytest.param(_plant_directory_destination, _NOT_FILE, id="dst-is-dir"),
             pytest.param(_plant_symlinked_source, _NOT_FILE, id="src-is-symlink"),
+            pytest.param(_plant_hardlinked_source, _NOT_FILE, id="src-is-hardlink"),
             pytest.param(_plant_directory_source, _NOT_FILE, id="src-is-dir"),
         ],
     )
@@ -378,6 +408,47 @@ class TestFailClosed:
 
         assert layout.snapshot() == before
         assert good.read_text() == "original\n"
+
+    def test_server_id_lookup_failure_writes_nothing(self, layout: Layout) -> None:
+        """Leave every destination untouched when the new server-id cannot be had."""
+        good = layout.allowed_dir / "my.cnf"
+        good.write_text("original\n")
+        layout.plant(_encode(good))
+        before = layout.snapshot()
+        restorer = layout.restorer()
+
+        def fail() -> None:
+            raise restorer.BackupError("no master")
+
+        layout.during_server_id = fail
+
+        with pytest.raises(restorer.BackupError, match="no master"):
+            restorer._restore_cnf_files()
+
+        assert layout.snapshot() == before
+
+    def test_write_failure_keeps_the_files_already_written(
+        self, layout: Layout
+    ) -> None:
+        """Pin that a failed write does not roll back the entries written before it."""
+        first = layout.allowed_dir / "a.cnf"
+        second = layout.allowed_dir / "b.cnf"
+        layout.plant(_encode(first), "[mysqld]\n")
+        late = layout.plant(_encode(second), "[mysqld]\n")
+        secret = layout.outside / "secret"
+        secret.write_text("password=hunter2\n")
+
+        def swap_late_source() -> None:
+            late.unlink()
+            late.symlink_to(secret)
+
+        layout.during_server_id = swap_late_source
+
+        with pytest.raises(OSError, match="symbolic link"):
+            layout.restorer()._restore_cnf_files()
+
+        assert first.read_text() == "[mysqld]\n"
+        assert not second.exists()
 
 
 class TestSkippedEntries:
@@ -477,6 +548,28 @@ class TestEditCopyMyCnf:
         restorer = layout.restorer()
 
         with pytest.raises(OSError, match="symbolic link"):
+            restorer._restore_cnf_files()
+
+        assert dst.read_text() == "keep\n"
+
+    def test_does_not_read_a_source_hardlinked_after_the_check(
+        self, layout: Layout
+    ) -> None:
+        """Fail rather than copy out a file hard-linked in after the check."""
+        secret = layout.datadir.parent / "secret"
+        secret.write_text("password=hunter2\n")
+        dst = layout.allowed_file
+        dst.write_text("keep\n")
+        src = layout.plant(_encode(dst))
+
+        def swap_source() -> None:
+            src.unlink()
+            src.hardlink_to(secret)
+
+        layout.during_server_id = swap_source
+        restorer = layout.restorer()
+
+        with pytest.raises(restorer.BackupError, match=_NOT_FILE):
             restorer._restore_cnf_files()
 
         assert dst.read_text() == "keep\n"

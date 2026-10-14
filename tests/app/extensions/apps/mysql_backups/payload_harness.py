@@ -31,6 +31,7 @@ import multiprocessing.pool
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import types
 from collections.abc import Callable
@@ -111,6 +112,7 @@ def base_namespace() -> dict:
         "subprocess": subprocess,
         "logging": logging,
         "re": re,
+        "stat": stat,
         "datetime": datetime,
         "Path": pathlib.Path,
         "Any": object,

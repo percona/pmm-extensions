@@ -9,6 +9,7 @@ import pwd
 import re
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -75,6 +76,12 @@ MYCNF_FILES = ('/etc/my.cnf', '/usr/local/etc/my.cnf')
 # MySQL and XtraBackup keep these in the datadir itself, so copy-back already
 # put them where they belong.
 DATADIR_CNF = ('backup-my.cnf', 'auto.cnf', 'mysqld-auto.cnf')
+
+
+def is_lone_file(st):
+    """Return whether ``st`` describes a regular file with a single link."""
+    # A hard link would let whoever owns the datadir copy out a file only root can read.
+    return stat.S_ISREG(st.st_mode) and st.st_nlink == 1
 
 
 def validate_backup_source_for_shell(value: str) -> None:
@@ -2188,14 +2195,16 @@ class Xtrabackup(Restore):
         """Copy the cnf file ``src`` to ``dst`` with its server-id replaced."""
         # O_NOFOLLOW on both ends so a symlink swapped in after the checks is not followed.
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
-        created = not os.path.lexists(dst)
-        with os.fdopen(os.open(src, os.O_RDONLY | os.O_NOFOLLOW)) as src_file, \
-                os.fdopen(os.open(dst, flags, 0o644), 'w') as dst_file:
-            # The restore umask would leave a new file unreadable to mysqld.
-            if created:
-                os.fchmod(dst_file.fileno(), 0o644)
-            for line in src_file:
-                dst_file.write(re.sub(r'^([\s]*server[_-]id[\s]*=[\s]*)(\d*)', r'\1 %s' % new_server_id, line, flags=re.M))
+        with os.fdopen(os.open(src, os.O_RDONLY | os.O_NOFOLLOW)) as src_file:
+            if not is_lone_file(os.fstat(src_file.fileno())):
+                raise BackupError('Refusing to restore %s: source is not a regular file with one link' % src)
+            created = not os.path.lexists(dst)
+            with os.fdopen(os.open(dst, flags, 0o644), 'w') as dst_file:
+                # The restore umask would leave a new file unreadable to mysqld.
+                if created:
+                    os.fchmod(dst_file.fileno(), 0o644)
+                for line in src_file:
+                    dst_file.write(re.sub(r'^([\s]*server[_-]id[\s]*=[\s]*)(\d*)', r'\1 %s' % new_server_id, line, flags=re.M))
 
     def _get_new_server_id(self):
         """ try to get the server ip"""
@@ -2247,8 +2256,8 @@ class Xtrabackup(Restore):
         src = os.path.join(self.datadir, ffile)
         dst = ffile.replace('_', '/').strip()
         resolved = os.path.realpath(dst)
-        if os.path.islink(src) or not os.path.isfile(src):
-            reason = 'source is not a regular file'
+        if not is_lone_file(os.lstat(src)):
+            reason = 'source is not a regular file with one link'
         elif not os.path.isabs(dst):
             reason = 'no destination encoded'
         # commonpath rather than a string prefix, so /etc/mysql-x is not inside /etc/mysql.
