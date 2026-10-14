@@ -736,7 +736,7 @@ class TestCanSyncService:
     """Test PMMSyncer.can_sync_service."""
 
     def test_service_without_node_is_not_syncable(self, created_service):
-        """A service whose node is None is non-syncable, not an AttributeError."""
+        """Return False for a service with no node instead of raising AttributeError."""
         created_service.node = None
 
         assert PMMSyncer.can_sync_service(created_service) is False
