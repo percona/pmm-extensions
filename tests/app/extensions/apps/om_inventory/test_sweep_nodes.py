@@ -21,7 +21,9 @@ it probed, so what it claims has to survive the cases that make it interesting: 
 service with no executor, a host whose probe failed, and a service PMM does not know.
 """
 
+import time
 from contextlib import nullcontext
+from datetime import datetime, UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -62,6 +64,20 @@ SHARED_HOST_SECONDS = 8.25
 TASK_HISTORY_ID = 4711
 #: One refused connection then an answer: the cold start this workspace measured.
 RETRIED_ONCE = 2
+#: When a probe answered, as the payload stamps it: epoch seconds, five minutes after
+#: the sweep in ``OBSERVED_AT`` began, and the same instant as ISO 8601 UTC.
+COLLECTED_EPOCH = 1786536300
+COLLECTED_ISO = "2026-08-12T12:05:00+00:00"
+#: A second probe on the same sweep, answering a minute after the first.
+LATER_EPOCH = 1786536360
+LATER_ISO = "2026-08-12T12:06:00+00:00"
+#: A PMM service UUID for a second service on the same host.
+SECOND_EXTERNAL_ID = "0b9c3f5e-6a0f-4c56-9a1d-2f0e3b7c8d41"
+#: An hour: far enough ahead of the build to be past any skew tolerance.
+AN_HOUR = 3600
+#: Half a minute ahead of the build: inside the 60-second skew tolerance, and a literal
+#: rather than derived from it, so dropping the tolerance fails the test.
+WITHIN_SKEW = 30
 
 #: A probe record shaped like the payload's NDJSON, trimmed to the fields asserted.
 RECORD: dict[str, Any] = {
@@ -546,6 +562,164 @@ async def test_the_host_document_carries_the_installed_binary(
     # Install-readiness facts, collected for a host with nothing on it yet.
     assert document["package_manager"] == "apt"
     assert document["data_dir_free_bytes"] == FREE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_a_service_document_keeps_its_record_s_own_collected_at(
+    run_sweep: RunSweep,
+) -> None:
+    """Store when the probe answered, as ISO 8601, not when the sweep began."""
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00",
+                records={
+                    DEFAULT_EXTERNAL_ID: {**RECORD, "collected_at": COLLECTED_EPOCH}
+                },
+            )
+        },
+    )
+
+    assert outcome.service_documents[DEFAULT_EXTERNAL_ID]["collected_at"] == (
+        COLLECTED_ISO
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_host_document_keeps_its_record_s_own_collected_at(
+    run_sweep: RunSweep,
+) -> None:
+    """Store when the host answered, read off the host record itself."""
+    outcome = await run_sweep(
+        [],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00",
+                host_record={
+                    "system": RECORD["system"],
+                    "collected_at": COLLECTED_EPOCH,
+                },
+            )
+        },
+    )
+
+    assert outcome.host_documents["node00"]["collected_at"] == COLLECTED_ISO
+
+
+@pytest.mark.asyncio
+async def test_records_collected_at_different_times_keep_different_timestamps(
+    run_sweep: RunSweep,
+) -> None:
+    """Keep each record's own time rather than one shared by the whole sweep."""
+    outcome = await run_sweep(
+        [
+            mapped("svc-a", "node00", NodeResolution.NAME),
+            mapped("svc-b", "node00", NodeResolution.NAME, SECOND_EXTERNAL_ID),
+        ],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00",
+                records={
+                    DEFAULT_EXTERNAL_ID: {**RECORD, "collected_at": COLLECTED_EPOCH},
+                    SECOND_EXTERNAL_ID: {**RECORD, "collected_at": LATER_EPOCH},
+                },
+            )
+        },
+    )
+
+    documents = outcome.service_documents
+    assert documents[DEFAULT_EXTERNAL_ID]["collected_at"] == COLLECTED_ISO
+    assert documents[SECOND_EXTERNAL_ID]["collected_at"] == LATER_ISO
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        pytest.param({}, id="missing"),
+        pytest.param({"collected_at": "2026-08-12T12:05:00+00:00"}, id="non-numeric"),
+        pytest.param({"collected_at": True}, id="boolean"),
+        pytest.param({"collected_at": 0}, id="zero"),
+        pytest.param({"collected_at": -1}, id="negative"),
+        pytest.param({"collected_at": float("nan")}, id="nan"),
+        pytest.param({"collected_at": time.time() + AN_HOUR}, id="beyond-skew"),
+    ],
+)
+async def test_an_unusable_collected_at_falls_back_to_the_sweep_timestamp(
+    run_sweep: RunSweep, stamp: dict[str, object]
+) -> None:
+    """Fall back to the sweep's own timestamp, and still build both documents."""
+    record = {**RECORD, **stamp}
+    host_record = {"system": RECORD["system"], **stamp}
+
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00",
+                host_record=host_record,
+                records={DEFAULT_EXTERNAL_ID: record},
+            )
+        },
+    )
+
+    service_document = outcome.service_documents[DEFAULT_EXTERNAL_ID]
+    assert service_document["collected_at"] == OBSERVED_AT
+    assert service_document["installed_version"] == RECORD["binary_version"]
+    host_document = outcome.host_documents["node00"]
+    assert host_document["collected_at"] == OBSERVED_AT
+    assert host_document["os"] == RECORD["system"]["os_name"]
+
+
+@pytest.mark.asyncio
+async def test_a_probe_answering_after_the_sweep_began_is_kept(
+    run_sweep: RunSweep,
+) -> None:
+    """Bound a record's timestamp by when it is stored, not by the sweep start.
+
+    ``OBSERVED_AT`` is a fixed instant in the past, so a record stamped a moment ago
+    is later than the sweep start and earlier than the build: the legitimate late
+    answer this rule exists to keep.
+    """
+    answered = int(time.time()) - 1
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00",
+                records={DEFAULT_EXTERNAL_ID: {**RECORD, "collected_at": answered}},
+            )
+        },
+    )
+
+    stored = outcome.service_documents[DEFAULT_EXTERNAL_ID]["collected_at"]
+    assert stored > OBSERVED_AT
+    assert datetime.fromisoformat(stored) == datetime.fromtimestamp(answered, UTC)
+
+
+@pytest.mark.asyncio
+async def test_a_record_stamped_within_the_skew_tolerance_is_kept(
+    run_sweep: RunSweep,
+) -> None:
+    """Keep a timestamp slightly ahead of the build, inside the clock-skew tolerance.
+
+    ``WITHIN_SKEW`` is past "now" yet well inside the 60-second bound, so the record
+    is kept only if the tolerance is actually applied.
+    """
+    ahead = int(time.time()) + WITHIN_SKEW
+    outcome = await run_sweep(
+        [mapped("svc-a", "node00", NodeResolution.NAME)],
+        {
+            "node00": HostProbeResult(
+                executor_host="node00",
+                records={DEFAULT_EXTERNAL_ID: {**RECORD, "collected_at": ahead}},
+            )
+        },
+    )
+
+    stored = outcome.service_documents[DEFAULT_EXTERNAL_ID]["collected_at"]
+    assert datetime.fromisoformat(stored) == datetime.fromtimestamp(ahead, UTC)
 
 
 @pytest.mark.asyncio
