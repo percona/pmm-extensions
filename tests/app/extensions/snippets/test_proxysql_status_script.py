@@ -289,10 +289,11 @@ class ProxysqlHarness:
         else:
             notice_file.write_text(f"{self.notice}\n", encoding="utf-8")
 
-    def run(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run(self, *args: str, timeout: float = 60) -> subprocess.CompletedProcess[str]:
         """Run the shipped script with the staged config and stub.
 
         :param args: Options passed after ``--defaults-file``.
+        :param timeout: Seconds the run may take before it is killed.
         :return: The completed process.
         """
         self._write_rules()
@@ -302,7 +303,7 @@ class ProxysqlHarness:
             text=True,
             env=self._env(),
             cwd=self.root,
-            timeout=60,
+            timeout=timeout,
             check=False,
         )
 
@@ -828,6 +829,7 @@ class TestCredentials:
 
 
 SECRET = "hunter2-cnf-secret"
+PORT_LINE = "PROXYSQL_PORT='6032'"
 REAL_SHAPED_CNF = f"""\
 # proxysql admin interface credentials.
 export PROXYSQL_DATADIR='/var/lib/proxysql'
@@ -1386,6 +1388,95 @@ class TestAdminCnfRedaction:
             HIDDEN_LINE,
             "PROXYSQL_USERNAME='admin'",
         ]
+
+    @pytest.mark.parametrize(
+        ("cnf", "expected"),
+        [
+            pytest.param(
+                f"X={SECRET}\nPROXYSQL_PASSWORD=$X",
+                ["X=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="plain-reference",
+            ),
+            pytest.param(
+                f"D={SECRET}\nPROXYSQL_PASSWORD=${{UNSET:-$D}}",
+                ["D=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="default-value",
+            ),
+            pytest.param(
+                f"A={SECRET}\nPROXYSQL_PASSWORD=${{A[0]}}",
+                ["A=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="subscript",
+            ),
+            pytest.param(
+                f'X={SECRET}\nread PROXYSQL_PASSWORD <<< "$X"',
+                ["X=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="here-string",
+            ),
+            pytest.param(
+                f"HOME_X=~/{SECRET}\nPROXYSQL_PASSWORD=${{HOME_X##*/}}",
+                ["HOME_X=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="pattern-removal",
+            ),
+            pytest.param(
+                f"{{\nX={SECRET}\nPROXYSQL_PASSWORD=$X\n}}",
+                [HIDDEN_LINE, "X=[REDACTED]", HIDDEN_LINE, HIDDEN_LINE, PORT_LINE],
+                id="group",
+            ),
+            pytest.param(
+                f"export X='{SECRET}' # note\nPROXYSQL_PASSWORD=$X",
+                ["export X=[REDACTED]", HIDDEN_LINE, PORT_LINE],
+                id="exported-with-comment",
+            ),
+            pytest.param(
+                f"X={SECRET}\nN=X\nPROXYSQL_PASSWORD=${{!N}}",
+                [
+                    "X=[REDACTED]",
+                    "N=[REDACTED]",
+                    HIDDEN_LINE,
+                    "PROXYSQL_PORT=[REDACTED]",
+                ],
+                id="indirect",
+            ),
+            pytest.param(
+                f'X1={SECRET}\nS=1\neval "PROXYSQL_PASSWORD=\\$X$S"',
+                [
+                    "X1=[REDACTED]",
+                    "S=[REDACTED]",
+                    HIDDEN_LINE,
+                    "PROXYSQL_PORT=[REDACTED]",
+                ],
+                id="eval",
+            ),
+        ],
+    )
+    def test_masks_a_value_a_hidden_line_reads(self, harness, cnf, expected):
+        """Mask a plain value that a hidden line can turn into the password.
+
+        A hidden line that builds a name, as ``${!N}`` and ``eval`` do, can
+        reach any value, so every plain value is masked after one.
+        """
+        harness.write_cnf(f"{cnf}\n{PORT_LINE}\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert SECRET not in result.stdout
+        assert _cnf_section(result.stdout) == expected
+
+    def test_hides_a_large_file_quickly(self, harness):
+        """Redact thousands of hidden lines within a few seconds."""
+        # ``:`` and no glob keep sourcing the file cheap, so the budget
+        # measures the redactor alone.
+        entry = " probe ${PID:-42} ran: \"ok\" {'n': 1} path=/var/lib/proxysql/data"
+        line = f": 2026-10-14 12:00:00 INFO{entry * 4}\n"
+        harness.write_cnf(line * 10_000)
+
+        # A redactor that forks or walks every character per line overruns
+        # this budget.
+        result = harness.run("--files", timeout=25)
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE] * 10_000
 
     def test_empty_cnf_prints_no_section(self, harness):
         """Leave the section out when the config file has nothing to show."""
