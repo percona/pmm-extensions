@@ -7129,7 +7129,7 @@ class TestStreamDirectoryAsTarGz:
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_directory_entries_have_executable_mode(self, mock_nomad_cls):
-        """Assert root and nested directories extract with mode 0o755."""
+        """Assert root and nested directory members carry mode ``0o755``."""
         mock_nomad_cls.return_value = MagicMock()
         executor = _build_executor()
         queue_item = _build_queue_item()
