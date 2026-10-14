@@ -83,6 +83,7 @@ NOMAD_TEMPLATES_WITH_LAUNCH_CHECK = [
 # is what makes stripping a redundant ``sudo`` prefix observable.
 ARTIFACT_TEMPLATES_WITH_STRIP = [NOMAD_EXEC_ARTIFACT, NOMAD_EXEC_PYTHON_ARTIFACT]
 STALE_EXIT_CODE = 75
+COMMAND_NOT_FOUND_EXIT_CODE = 127
 # Generous next to the sub-second release measured against live Nomad, but far
 # below the 30 s deadline these tests spawn the hold with.
 SIGNAL_RESPONSE_BUDGET_SECONDS = 5
@@ -630,8 +631,8 @@ class TestArtifactLauncher:
     ) -> None:
         """Assert a missing handoff file leaves behaviour exactly as it was.
 
-        Without the fallback an absent or empty file would make ``env -S ""``
-        exec the *script* as the interpreter.
+        Without the fallback an absent or empty file would split to no words,
+        and ``xargs`` would exec the *script* as the interpreter.
         """
         task_dir = tmp_path / "local"
         task_dir.mkdir()
@@ -671,6 +672,74 @@ class TestArtifactLauncher:
 
         assert result.returncode == 0, result.stderr
         assert result.stdout.decode().split() == ["alpha", "beta", "gamma"]
+
+    def test_launcher_execs_a_leading_dash_word(
+        self, tmp_path: Path, shell: list[str]
+    ) -> None:
+        """Assert a leading ``-u`` is exec'd as the command, not parsed as an option.
+
+        Without the ``--``, ``xargs`` would take it as its own option, and the
+        launcher would disagree with the check, which resolves ``-u`` as a word.
+        """
+        task_dir = tmp_path / "local"
+        task_dir.mkdir()
+        alloc_dir = tmp_path / "alloc"
+        alloc_dir.mkdir()
+        self._payload(task_dir)
+
+        result = self._run(
+            self._launcher(NOMAD_EXEC_ARTIFACT),
+            shell=shell,
+            task_dir=task_dir,
+            alloc_dir=alloc_dir,
+            env={"NOMAD_META_interpreter": "-u FOO sh"},
+        )
+
+        assert result.returncode == COMMAND_NOT_FOUND_EXIT_CODE, result.stderr
+        assert b"-u" in result.stderr
+
+    @pytest.mark.parametrize(
+        "interpreter",
+        ["sh", "sh -x", "-u FOO sh", "-p sh", "FOO=1 sh", "'sh'", "nosuchinterp"],
+    )
+    def test_check_and_launcher_agree(
+        self, tmp_path: Path, shell: list[str], interpreter: str
+    ) -> None:
+        """Assert the check aborts when, and only when, the launcher cannot run.
+
+        The check and the launcher split the interpreter with the same
+        ``set -f`` word-split, so the check resolves the word the launcher
+        execs. A shell builtin such as ``exec`` is the known exception and is
+        not among these rows. A check that passes an interpreter the launcher
+        cannot run lands the execution in ``FAILED`` rather than Unlaunchable;
+        one that aborts a runnable interpreter fails a working configuration.
+        """
+        task_dir = tmp_path / "local"
+        task_dir.mkdir()
+        alloc_dir = tmp_path / "alloc"
+        alloc_dir.mkdir()
+        self._payload(task_dir)
+        check = _build_check(**LAUNCH_CHECK_VARIANTS["artifact"])
+
+        checked = self._run(
+            check,
+            shell=shell,
+            task_dir=task_dir,
+            alloc_dir=alloc_dir,
+            env={"NOMAD_META_interpreter": interpreter, "NOMAD_META_target": "n"},
+        )
+        launched = self._run(
+            self._launcher(NOMAD_EXEC_ARTIFACT),
+            shell=shell,
+            task_dir=task_dir,
+            alloc_dir=alloc_dir,
+            env={"NOMAD_META_interpreter": interpreter},
+        )
+
+        assert checked.returncode in (0, LAUNCH_CHECK_EXIT_CODE), checked.stderr
+        assert (checked.returncode == LAUNCH_CHECK_EXIT_CODE) is (
+            launched.returncode != 0
+        ), (checked.stdout, launched.stderr)
 
     @pytest.mark.parametrize(
         ("effective", "sudo_expected"),
@@ -918,7 +987,7 @@ class TestLaunchCheckShell:
             ("user-sudo", "sudo -u postgres psql", 0, "sudo -u postgres psql"),
             ("user-no-sudo", "bash", 0, "bash"),
             ("user-no-sudo", "nosuchinterp", LAUNCH_CHECK_EXIT_CODE, None),
-            ("user-no-sudo", "FOO=1 bash", 0, "FOO=1 bash"),
+            ("user-no-sudo", "FOO=1 bash", LAUNCH_CHECK_EXIT_CODE, None),
             ("user-no-sudo", "bash -x", 0, "bash -x"),
             ("user-no-sudo", "'/tmp/x/true2'", 0, "'/tmp/x/true2'"),
             ("root-no-sudo", "'/tmp/x/true2'", 0, "'/tmp/x/true2'"),
@@ -929,8 +998,8 @@ class TestLaunchCheckShell:
                 "env FOO=1 nosuchinterp",
             ),
             ("user-no-sudo", "/tmp/g/ba*", LAUNCH_CHECK_EXIT_CODE, None),
-            ("user-no-sudo", "-u FOO bash", 0, "-u FOO bash"),
-            ("user-no-sudo", "-i bash", 0, "-i bash"),
+            ("user-no-sudo", "-u FOO bash", LAUNCH_CHECK_EXIT_CODE, None),
+            ("user-no-sudo", "-i bash", LAUNCH_CHECK_EXIT_CODE, None),
             ("user-sudo", "sudo -x dbuser bash", 0, "sudo -x dbuser bash"),
             (
                 "user-sudo",
@@ -979,6 +1048,10 @@ class TestLaunchCheckShell:
             ("user-no-sudo", "/tmp/g/ba*", "/tmp/g/ba*"),
             ("user-sudo", "sudo -n nosuchinterp", "nosuchinterp"),
             ("user-sudo", "sudo --non-interactive nosuchinterp", "nosuchinterp"),
+            ("user-no-sudo", "-u FOO bash", "-u"),
+            ("user-no-sudo", "-p bash", "-p"),
+            ("user-no-sudo", "FOO=1 bash", "FOO=1"),
+            ("user-no-sudo", "'bash'", "'bash'"),
         ],
     )
     def test_abort_line_names_the_unresolvable_command_and_node(
@@ -1059,22 +1132,16 @@ class TestLaunchCheckShell:
 
     @pytest.mark.parametrize(
         "meta",
-        [
-            "'/tmp/x/true2'",
-            '"/tmp/x/true2"',
-            "$HOME/bin/python3",
-            "`which bash`",
-            "/tmp/a\\ b/bash",
-        ],
+        ["'/tmp/x/true2'", '"/tmp/x/true2"', "$HOME/bin/python3"],
     )
-    def test_declines_every_metacharacter_form(
+    def test_declines_a_quoted_or_expanded_relative_path(
         self, tmp_path: Path, shell: list[str], meta: str
     ) -> None:
-        """Assert each alternative of the metachar guard passes its meta through.
+        """Assert a quoted or ``$``-prefixed path is passed through, not resolved.
 
-        The guard is a raw string of five ``case`` alternatives, and ``sh -n``
-        cannot catch a mistyped one — only executing each form can, and the
-        failure it would cause is a false abort on a working configuration.
+        Neither the check nor the launcher expands or unquotes the word, so it
+        is a path that holds a slash without starting with one, and the
+        relative-path rule declines it like any other.
         """
         result, handoff = self._run(
             tmp_path, shell=shell, node="user-no-sudo", meta=meta
@@ -1083,16 +1150,31 @@ class TestLaunchCheckShell:
         assert result.returncode == 0, result.stderr
         assert handoff.read_text() == meta
 
-    def test_declines_an_assignment_that_changes_where_the_command_resolves(
+    @pytest.mark.parametrize("meta", ["`which bash`", "/tmp/a\\ b/bash"])
+    def test_resolves_a_metacharacter_word_literally(
+        self, tmp_path: Path, shell: list[str], meta: str
+    ) -> None:
+        """Assert a backtick or backslash word is resolved as written and aborts.
+
+        The launcher execs the word unexpanded, so it names no command there
+        either. Only the exit code is asserted: dash's ``echo`` interprets
+        backslashes in the abort line's ``command=`` field, and the exit code is
+        what classifies the run.
+        """
+        result, handoff = self._run(
+            tmp_path, shell=shell, node="user-no-sudo", meta=meta
+        )
+
+        assert result.returncode == LAUNCH_CHECK_EXIT_CODE, result.stdout
+        assert not handoff.exists()
+
+    def test_declines_an_assignment_whose_value_holds_a_relative_path(
         self, tmp_path: Path, shell: list[str]
     ) -> None:
-        """Assert a ``PATH=`` prefix is passed through rather than resolved.
+        """Assert a ``PATH=<dir>`` first word is passed through rather than resolved.
 
-        ``env -S`` applies a leading ``NAME=VALUE`` *before* locating the
-        command, so ``PATH=/opt/toolchain bash`` finds a ``bash`` that exists
-        only under that toolchain. Skipping the assignment and resolving
-        against the step's own ``PATH`` would abort an execution the launcher
-        runs.
+        The word holds a slash without starting with one, so the relative-path
+        rule declines it before resolution is reached.
         """
         toolchain = tmp_path / "toolchain"
         toolchain.mkdir()
@@ -1210,6 +1292,7 @@ class TestLaunchCheckShell:
             ("user-no-sudo", "sudo python3.12", LAUNCH_CHECK_EXIT_CODE, None),
             # ... and on a root node with no sudo it is stripped instead.
             ("root-no-sudo", "sudo python3.12", 0, "python3.12"),
+            ("root-no-sudo", "sudo 'python3.12'", 0, "'python3.12'"),
         ],
     )
     def test_python_variant_resolves_the_venv_builder_not_the_meta(
@@ -1256,6 +1339,38 @@ class TestLaunchCheckShell:
 
         assert result.returncode == 0
         assert handoff.read_text() == "sudo -nu postgres nosuchinterp"
+
+    @pytest.mark.parametrize("meta", ["-u", "-p", "FOO=1", "'psql'"])
+    def test_run_command_check_aborts_on_a_word_it_cannot_exec(
+        self, tmp_path: Path, shell: list[str], meta: str
+    ) -> None:
+        """Assert ``run-command`` aborts on a single word that names no command.
+
+        Its launcher passes the meta to ``xargs`` as one argv element with no
+        ``--`` ahead of it, so a leading dash is taken as an ``xargs`` option and
+        an assignment or a quoted name is exec'd as written. None of them runs
+        a command.
+        """
+        result, _ = self._run(
+            tmp_path, shell=shell, node="user-no-sudo", meta=meta, variant="command"
+        )
+
+        assert result.returncode == LAUNCH_CHECK_EXIT_CODE, result.stdout
+
+    def test_sudo_walk_declines_an_assignment(
+        self, tmp_path: Path, shell: list[str]
+    ) -> None:
+        """Assert ``sudo FOO=1 <cmd>`` is passed through rather than resolved.
+
+        ``sudo`` applies a ``VAR=value`` operand before locating the command, so
+        an assignment there can change where the command resolves.
+        """
+        meta = "sudo FOO=1 nosuchinterp"
+
+        result, handoff = self._run(tmp_path, shell=shell, node="user-sudo", meta=meta)
+
+        assert result.returncode == 0, result.stdout
+        assert handoff.read_text() == meta
 
     def test_run_command_variant_neither_strips_nor_writes(
         self, tmp_path: Path, shell: list[str]

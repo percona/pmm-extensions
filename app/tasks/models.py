@@ -21,7 +21,7 @@ from enum import auto, StrEnum
 from functools import cached_property
 from pathlib import Path
 from statistics import mean
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Self
 
 from pydantic import (
     BaseModel,
@@ -1436,29 +1436,6 @@ class TaskHistoryStatusPoint(BaseModel):
 
     created_at: UTCDatetime
     status: TaskHistoryStatusEnum
-
-
-class TransformPayloadRequest(BaseModel):
-    """Define the request body for the /transform/ API route.
-
-    :param payload: The job specification payload to be parsed.
-    :type payload: str | bytes
-    :param fmt: The format of the payload, which can be "hcl", "json", or "yaml".
-    :type fmt: Literal["hcl", "json", "yaml"]
-    """
-
-    payload: str | bytes
-    fmt: Literal["hcl", "json", "yaml"]
-
-
-class TransformPayloadResponse(BaseModel):
-    """Define the parsed job specification returned from ``POST /transform/``.
-
-    The concrete keys depend on the executor backend; clients should treat values as
-    untyped JSON except where they validate domain-specific job fields themselves.
-    """
-
-    model_config = ConfigDict(extra="allow")
 
 
 class DispatchLock(BaseSQLModel, table=True):

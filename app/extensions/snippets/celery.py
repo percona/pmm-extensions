@@ -55,9 +55,7 @@ BUILTIN_APPROVAL_REASON = "Auto-approved: matches built-in checksum manifest"
 @celery.task
 def sync_snippets() -> None:
     """Define Celery task to sync snippets from `extensions_setting.SNIPPETS.SNIPPETS_DIR`."""
-    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-        update_snippets()
-    )
+    celery.loop.run_until_complete(update_snippets())
 
 
 async def update_snippets() -> None:

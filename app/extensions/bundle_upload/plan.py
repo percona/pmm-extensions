@@ -1362,14 +1362,18 @@ class DeliveryPlanExecutor:
     ) -> UploadResult:
         """Build the upload result from the receiver's response.
 
-        A response that is not a JSON object -- a non-JSON ``2xx`` body or a
-        list -- yields an empty result and a warning rather than an error, as
-        does a reference pointer that fails to address a scalar: the bundle has
-        already landed, so failing here would only invite a duplicate re-send.
+        A response that is not a JSON object, such as a non-JSON ``2xx`` body or
+        a list, yields an empty result and a warning rather than an error, as
+        does a reference pointer that fails to address a scalar. A pointer that
+        addresses an empty string is treated as missing too: it is logged with
+        the same warning and reported as ``None``, with the response detail
+        kept. The bundle has already landed, so failing here would only invite
+        a duplicate re-send.
 
         :param response: The parsed upload response.
         :return: The extracted reference and the response detail, both ``None``
-            when the response is not a JSON object.
+            when the response is not a JSON object. The reference alone is
+            ``None`` when it is missing or an empty string.
         """
         if not isinstance(response, Mapping):
             logger.warning(
@@ -1385,7 +1389,8 @@ class DeliveryPlanExecutor:
             reference = _as_scalar(resolve_json_pointer(response, pointer))
         except JsonPointerResolutionError:
             reference = None
-        if reference is None:
+        if not reference:
+            reference = None
             logger.warning(
                 "Delivery plan: upload reference pointer %r addressed no scalar "
                 "value in the response.",

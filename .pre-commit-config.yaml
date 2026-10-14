@@ -113,6 +113,11 @@ repos:
         args: ["--diff", "--write", "--indent=4", "--case-indent", "--space-redirects", "--simplify"]
         types: [shell]
 
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # v8.30.1
+    hooks:
+      - id: gitleaks
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: cef0300fd0fc4d2a87a85fa2093c6b283ea36f4b  # v5.0.0
     hooks:

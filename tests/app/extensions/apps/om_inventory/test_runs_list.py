@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Test ``GET /runs`` date-range filtering.
+"""Test reading runs: the date filter, failing nodes, bad entries, and the 404.
 
 The window is applied before ``limit``: a week of twenty-one runs is twenty-one
 runs, not the twenty newest overall with the older-than-a-week ones dropped. That
@@ -21,15 +21,25 @@ is the difference between a real history filter and a cosmetic one over a capped
 page.
 """
 
+import logging
 from datetime import datetime, timedelta, UTC
+from typing import Any
+from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 from fastapi import status
 from httpx import AsyncClient
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.extensions.apps.om_inventory.crud import ProbeRunManager
-from app.extensions.apps.om_inventory.models import ProbeRun, ProbeRunStatus
+from app.extensions.apps.om_inventory.models import (
+    NodeResolution,
+    ProbeNode,
+    ProbeNodeService,
+    ProbeRun,
+    ProbeRunStatus,
+)
 from tests.app.extensions.apps.om_inventory.conftest import BASE
 
 #: Three stamps, a day apart, so a window can include the middle one and exclude
@@ -38,6 +48,8 @@ DAY = timedelta(days=1)
 T0 = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
 T1 = T0 + DAY
 T2 = T1 + DAY
+
+ROUTES_LOGGER = "app.extensions.apps.om_inventory.api_routes"
 
 
 async def record_run(session: AsyncSession, started_at: datetime) -> ProbeRun:
@@ -134,6 +146,226 @@ class TestRunsListDateRangeFilter:
             str(newest.id),
             str(oldest.id),
         ]
+
+
+class TestRunsListProgress:
+    """Pin the progress counter the list carries."""
+
+    @pytest.mark.asyncio
+    async def test_a_running_sweep_says_how_many_hosts_have_come_back(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Carry hosts_finished beside the totals, for a run still going."""
+        run = await ProbeRunManager.save(session, ProbeRun())
+        run.hosts_total, run.hosts_probeable, run.hosts_finished = 5, 4, 3
+        await ProbeRunManager.save(session, run)
+
+        response = await api.get(f"{BASE}/runs")
+
+        counts = response.json()[0]["counts"]
+        assert (counts["hosts_probeable"], counts["hosts_finished"]) == (4, 3)
+
+
+class TestGetRun:
+    """Pin what ``GET /runs/{run_id}`` says about a run that does not exist."""
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_run_is_a_404_in_the_ui_s_words(
+        self, api: AsyncClient
+    ) -> None:
+        """Call it a scan, as PMM's UI does, naming the id asked for."""
+        run_id = uuid4()
+
+        response = await api.get(f"{BASE}/runs/{run_id}")
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert response.json()["detail"] == f"Scan {run_id} not found"
+
+
+def receipt_node(
+    node_id: str,
+    name: str,
+    *,
+    error: str | None = None,
+    service_error: str | None = None,
+    has_agent: bool = True,
+) -> dict[str, Any]:
+    """Build one host's receipt entry, dumped to JSON as a run row stores it.
+
+    :param node_id: PMM's node id.
+    :param name: The node's name.
+    :param error: The host's own failure, if any.
+    :param service_error: A failure on its one service, if any.
+    :param has_agent: Whether an automation agent serves the host. Without one
+        nothing is dispatched, so neither the host nor its service answers.
+    :return: The receipt entry.
+    """
+    return ProbeNode(
+        node_id=node_id,
+        host_name=name,
+        executor_host=name if has_agent else None,
+        resolution=NodeResolution.NAME if has_agent else NodeResolution.ORPHANED,
+        answered=has_agent and error is None,
+        error=error,
+        services=[
+            ProbeNodeService(
+                service_id=f"{node_id}-svc",
+                service_name=f"{name}-mongodb",
+                answered=has_agent and service_error is None,
+                error=service_error,
+            )
+        ],
+    ).model_dump(mode="json")
+
+
+class TestRunsListFailingNodes:
+    """Pin the failing nodes each run in the list names."""
+
+    @pytest.mark.asyncio
+    async def test_names_the_nodes_that_failed_their_own_or_a_service_s_scan(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Name a node whose dispatch failed and one whose service did, by name."""
+        run = await record_run(session, T0)
+        run.nodes = [
+            receipt_node("n-3", "node03", service_error="could not query the database"),
+            receipt_node("n-1", "node01"),
+            receipt_node("n-2", "node02", error="the scan did not finish within 180s"),
+        ]
+        await ProbeRunManager.save(session, run)
+
+        response = await api.get(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()[0]["failing_nodes"] == [
+            {"node_id": "n-2", "name": "node02"},
+            {"node_id": "n-3", "name": "node03"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_node_with_no_automation_agent_is_not_named(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Leave out a node nothing was dispatched to, beside one that did fail."""
+        run = await record_run(session, T0)
+        run.nodes = [
+            receipt_node("n-1", "node01", has_agent=False),
+            receipt_node("n-2", "node02", error="the scan did not finish within 180s"),
+        ]
+        await ProbeRunManager.save(session, run)
+
+        response = await api.get(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()[0]["failing_nodes"] == [
+            {"node_id": "n-2", "name": "node02"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_node_with_no_recorded_name_is_named_by_its_node_id(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Name a failing node by its node id where its entry recorded no name."""
+        run = await record_run(session, T0)
+        run.nodes = [
+            {
+                **receipt_node("n-2", "node02", error="the scan did not finish"),
+                "host_name": None,
+            }
+        ]
+        await ProbeRunManager.save(session, run)
+
+        response = await api.get(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()[0]["failing_nodes"] == [
+            {"node_id": "n-2", "name": "n-2"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_an_empty_receipt_names_none(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Answer an empty list for a run whose receipt records no host."""
+        await record_run(session, T0)
+
+        response = await api.get(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()[0]["failing_nodes"] == []
+
+
+class TestRunReadsSkipAnEntryThatDoesNotParse:
+    """Pin both run reads skipping, and logging, receipt entries that are not hosts."""
+
+    @pytest_asyncio.fixture
+    async def run(self, session: AsyncSession) -> ProbeRun:
+        """Write a run whose receipt holds two bare service entries and a failing host.
+
+        :param session: The database session.
+        :return: The saved run.
+        """
+        run = await record_run(session, T0)
+        run.nodes = [
+            ProbeNodeService(
+                service_id=f"s-{index}",
+                service_name=f"node0{index}-mongodb",
+                error="could not query the database",
+            ).model_dump(mode="json")
+            for index in (1, 3)
+        ] + [
+            receipt_node("n-2", "node02", error="the scan did not finish within 180s"),
+        ]
+        return await ProbeRunManager.save(session, run)
+
+    @staticmethod
+    def skip_levels(caplog: pytest.LogCaptureFixture, run: ProbeRun) -> list[int]:
+        """Return the level of each skip line logged for ``run``.
+
+        :param caplog: The captured log.
+        :param run: The run.
+        :return: One level per line, in order.
+        """
+        return [
+            record.levelno
+            for record in caplog.records
+            if f"skipped 2 of 3 entries in run {run.id}'s receipt"
+            in record.getMessage()
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_list_names_the_host_beside_it(
+        self, api: AsyncClient, run: ProbeRun, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Answer the list, naming the failing host, with one debug line for the skips.
+
+        A history that refreshes rereads the same old receipts each time, so a
+        warning there would repeat for as long as such a run is in the list.
+        """
+        caplog.set_level(logging.DEBUG, logger=ROUTES_LOGGER)
+
+        response = await api.get(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()[0]["failing_nodes"] == [
+            {"node_id": "n-2", "name": "node02"}
+        ]
+        assert self.skip_levels(caplog, run) == [logging.DEBUG]
+
+    @pytest.mark.asyncio
+    async def test_the_detail_answers_with_the_host_beside_it(
+        self, api: AsyncClient, run: ProbeRun, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Answer the run's detail with only the host, warning once about the skips."""
+        caplog.set_level(logging.DEBUG, logger=ROUTES_LOGGER)
+
+        response = await api.get(f"{BASE}/runs/{run.id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert [node["node_id"] for node in body["nodes"]] == ["n-2"]
+        assert body["failing_nodes"] == [{"node_id": "n-2", "name": "node02"}]
+        assert self.skip_levels(caplog, run) == [logging.WARNING]
 
 
 class TestRunsListLimitBounds:
