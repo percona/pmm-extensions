@@ -9,7 +9,7 @@
 | app/api/routes/config.py                                                                                                            |        9 |        0 |        0 |        0 |    100% |           |
 | app/api/routes/oauth.py                                                                                                             |       77 |        0 |       14 |        0 |    100% |           |
 | app/api/routes/users.py                                                                                                             |       23 |        0 |        4 |        0 |    100% |           |
-| app/celery.py                                                                                                                       |       34 |        4 |        2 |        0 |     89% | 51, 57-59 |
+| app/celery.py                                                                                                                       |       35 |        1 |        2 |        0 |     97% |        65 |
 | app/core/alerts/config.py                                                                                                           |       42 |        0 |        4 |        0 |    100% |           |
 | app/core/alerts/models.py                                                                                                           |       57 |        0 |       10 |        0 |    100% |           |
 | app/core/alerts/providers/pagerduty.py                                                                                              |       36 |        1 |        2 |        1 |     95% |110, 127-\>129 |
@@ -33,7 +33,7 @@
 | app/core/celery/models.py                                                                                                           |       68 |        1 |        8 |        1 |     97% |       107 |
 | app/core/celery/schedules.py                                                                                                        |       44 |        1 |       16 |        1 |     97% |       178 |
 | app/core/celery/utils.py                                                                                                            |       35 |        0 |       12 |        0 |    100% |           |
-| app/core/config.py                                                                                                                  |      289 |        7 |       54 |        6 |     96% |259-\>exit, 336, 621, 847, 927, 1001, 1014, 1053-\>1055, 1058 |
+| app/core/config.py                                                                                                                  |      289 |        7 |       54 |        6 |     96% |259-\>exit, 336, 609, 835, 915, 989, 1002, 1041-\>1043, 1046 |
 | app/core/db/config.py                                                                                                               |       46 |        0 |       10 |        0 |    100% |           |
 | app/core/db/crud.py                                                                                                                 |      293 |        8 |       76 |        7 |     96% |250, 343-\>345, 345-\>347, 347-\>349, 356-\>372, 442, 589-592, 1036-1039, 1285-1286 |
 | app/core/db/deps.py                                                                                                                 |        8 |        0 |        0 |        0 |    100% |           |
@@ -68,7 +68,7 @@
 | app/core/settings\_override/models.py                                                                                               |       43 |        0 |        6 |        1 |     98% |147-\>exit |
 | app/core/settings\_override/policy.py                                                                                               |       29 |        0 |        6 |        0 |    100% |           |
 | app/core/settings\_override/proxy.py                                                                                                |       20 |        0 |        2 |        0 |    100% |           |
-| app/core/settings\_override/registry.py                                                                                             |      312 |        2 |      122 |        2 |     99% |1200, 1243 |
+| app/core/settings\_override/registry.py                                                                                             |      317 |        2 |      122 |        2 |     99% |1285, 1328 |
 | app/core/settings\_override/resolution.py                                                                                           |      116 |        0 |       62 |        0 |    100% |           |
 | app/core/settings\_override/secret\_preservation.py                                                                                 |      267 |        0 |      154 |        0 |    100% |           |
 | app/core/settings\_override/secret\_storage.py                                                                                      |      154 |        4 |       50 |        5 |     96% |575, 577-\>579, 603, 757, 787 |
@@ -85,7 +85,7 @@
 | app/core/utils/lazy.py                                                                                                              |       31 |        0 |        4 |        0 |    100% |           |
 | app/core/utils/openapi.py                                                                                                           |      246 |        5 |      120 |        7 |     96% |141, 513, 515-\>514, 520-521, 564-\>566, 583-\>582, 600 |
 | app/core/utils/path.py                                                                                                              |       40 |        0 |       14 |        0 |    100% |           |
-| app/core/utils/pydantic.py                                                                                                          |       74 |        0 |       22 |        0 |    100% |           |
+| app/core/utils/pydantic.py                                                                                                          |       75 |        0 |       22 |        0 |    100% |           |
 | app/core/utils/serialization.py                                                                                                     |        7 |        0 |        0 |        0 |    100% |           |
 | app/core/utils/strings.py                                                                                                           |       29 |        1 |        6 |        1 |     94% |        67 |
 | app/extensions/api/constants.py                                                                                                     |        2 |        0 |        0 |        0 |    100% |           |
@@ -110,7 +110,7 @@
 | app/extensions/api/routes/task\_stats.py                                                                                            |       15 |        0 |        0 |        0 |    100% |           |
 | app/extensions/api/task\_history\_actors.py                                                                                         |       54 |        0 |       22 |        0 |    100% |           |
 | app/extensions/api/task\_history\_merge.py                                                                                          |       70 |        3 |       24 |        1 |     96% | 61, 65-66 |
-| app/extensions/app\_drain.py                                                                                                        |       83 |        2 |       14 |        2 |     96% |137-\>139, 208, 216 |
+| app/extensions/app\_drain.py                                                                                                        |       83 |        2 |       14 |        2 |     96% |137-\>139, 206, 212 |
 | app/extensions/apps/alert\_troubleshooting/api\_routes.py                                                                           |       23 |        4 |        2 |        0 |     76% |64-65, 73-80 |
 | app/extensions/apps/alert\_troubleshooting/app.py                                                                                   |        4 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/alert\_troubleshooting/deps.py                                                                                  |      109 |        4 |       44 |        3 |     95% |108, 110-\>112, 223, 236, 320 |
@@ -322,7 +322,7 @@
 | app/extensions/bundle\_upload/resolver.py                                                                                           |       56 |        0 |       14 |        0 |    100% |           |
 | app/extensions/bundle\_upload/seam.py                                                                                               |       12 |        0 |        0 |        0 |    100% |           |
 | app/extensions/clients/pmm.py                                                                                                       |      286 |        2 |       74 |        3 |     99% |558, 560, 926-\>928 |
-| app/extensions/config.py                                                                                                            |      249 |        3 |       60 |        3 |     98% |184, 444, 753 |
+| app/extensions/config.py                                                                                                            |      249 |        3 |       60 |        3 |     98% |184, 444, 737 |
 | app/extensions/connectivity.py                                                                                                      |       39 |        4 |        2 |        1 |     88% |84, 163-169 |
 | app/extensions/crud.py                                                                                                              |      169 |        0 |       32 |        0 |    100% |           |
 | app/extensions/db/engine.py                                                                                                         |        7 |        0 |        0 |        0 |    100% |           |
@@ -367,9 +367,9 @@
 | app/extensions/routes/stream\_logs.py                                                                                               |      101 |       26 |       24 |        4 |     74% |89-101, 110, 114-130, 132-137, 177-\>172, 272-277, 279-283, 288-293 |
 | app/extensions/settings\_override.py                                                                                                |       49 |        0 |        2 |        0 |    100% |           |
 | app/extensions/snippets/builtin\_manifest.py                                                                                        |       26 |        0 |        6 |        0 |    100% |           |
-| app/extensions/snippets/celery.py                                                                                                   |       99 |        5 |       40 |        5 |     93% |85, 93-94, 203-\>210, 239, 265 |
+| app/extensions/snippets/celery.py                                                                                                   |       99 |        5 |       40 |        5 |     93% |83, 91-92, 201-\>208, 237, 263 |
 | app/extensions/snippets/checksums.py                                                                                                |       16 |        0 |        2 |        0 |    100% |           |
-| app/extensions/snippets/config.py                                                                                                   |      141 |       19 |       24 |        7 |     82% |147-149, 223-229, 242, 292, 374-379, 459-\>478, 466, 477, 493-496 |
+| app/extensions/snippets/config.py                                                                                                   |      141 |       19 |       24 |        7 |     82% |147-149, 223-229, 242, 292, 374-379, 453-\>472, 460, 471, 487-490 |
 | app/extensions/snippets/constants.py                                                                                                |        1 |        0 |        0 |        0 |    100% |           |
 | app/extensions/snippets/crud.py                                                                                                     |       54 |        0 |       12 |        1 |     98% | 177-\>179 |
 | app/extensions/snippets/deps.py                                                                                                     |       88 |        2 |       26 |        2 |     96% |   60, 230 |
@@ -443,9 +443,9 @@
 | app/tasks/alembic\_ops.py                                                                                                           |       42 |        1 |        8 |        1 |     96% |       153 |
 | app/tasks/alert\_hooks.py                                                                                                           |       23 |        0 |        2 |        0 |    100% |           |
 | app/tasks/anonymizer/anonymize.py                                                                                                   |       56 |        0 |       18 |        2 |     97% |75-\>84, 120-\>124 |
-| app/tasks/anonymizer/config.py                                                                                                      |       29 |        1 |        6 |        1 |     94% |        78 |
+| app/tasks/anonymizer/config.py                                                                                                      |       29 |        1 |        6 |        1 |     94% |        76 |
 | app/tasks/anonymizer/entities.py                                                                                                    |       28 |        0 |        2 |        0 |    100% |           |
-| app/tasks/celery.py                                                                                                                 |      431 |       11 |      102 |        9 |     96% |322-\>336, 331-\>333, 548, 556, 629-633, 831, 838-\>842, 897, 1100-\>exit, 1193, 1262, 1285-1286, 1385-\>1400 |
+| app/tasks/celery.py                                                                                                                 |      431 |       11 |      102 |        9 |     96% |316-\>328, 325-\>327, 540, 546, 615-617, 815, 822-\>826, 881, 1084-\>exit, 1177, 1246, 1269-1270, 1367-\>1382 |
 | app/tasks/config.py                                                                                                                 |       66 |        0 |       12 |        0 |    100% |           |
 | app/tasks/connectivity/constants.py                                                                                                 |        5 |        0 |        0 |        0 |    100% |           |
 | app/tasks/connectivity/models.py                                                                                                    |       11 |        0 |        0 |        0 |    100% |           |
@@ -460,7 +460,7 @@
 | app/tasks/execution/executors/celery/models.py                                                                                      |       90 |        0 |       16 |        0 |    100% |           |
 | app/tasks/execution/executors/nomad/constants.py                                                                                    |        2 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/executors/nomad/exceptions.py                                                                                   |        8 |        0 |        0 |        0 |    100% |           |
-| app/tasks/execution/executors/nomad/models.py                                                                                       |     1095 |       26 |      360 |       19 |     97% |227, 234, 288, 480, 550-553, 554-\>exit, 594, 596-\>590, 645, 688, 973, 1104, 1240-\>1242, 1562-\>1560, 1600-\>1605, 1609, 1615, 1650-1651, 2384, 2479, 2909-2910, 3426, 3525-3526, 3601-3602 |
+| app/tasks/execution/executors/nomad/models.py                                                                                       |     1095 |       27 |      360 |       19 |     97% |227, 234, 288, 480, 550-553, 554-\>exit, 594, 596-\>590, 645, 688, 957, 1088, 1224-\>1226, 1546-\>1544, 1584-\>1589, 1593, 1599, 1634-1639, 2368, 2463, 2893-2894, 3410, 3509-3510, 3585-3586 |
 | app/tasks/execution/executors/nomad/steps.py                                                                                        |       20 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/models.py                                                                                                       |       73 |        2 |       14 |        0 |     98% |  233, 299 |
 | app/tasks/execution/nomad\_lifecycle.py                                                                                             |       91 |        0 |       20 |        3 |     97% |176-\>182, 233-\>237, 237-\>exit |
@@ -539,7 +539,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34620** | **1770** | **8346** |  **700** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34627** | **1768** | **8346** |  **700** | **93%** |           |
 
 
 ## Setup coverage badge
