@@ -48,6 +48,10 @@ logger = logging.getLogger(__name__)
 #: they carry no ``external_id`` to match against the held set.
 _Retirable = TypeVar("_Retirable", CreatedNode, CreatedService)
 
+#: Bounds the warning an empty PMM answer logs every generation; each held node
+#: is still logged by ID at info level.
+_HELD_NODE_LOG_LIMIT = 20
+
 
 class PMMSyncer(BaseSyncer):
     """Manage synchronization of PMM inventory entities.
@@ -441,11 +445,14 @@ class PMMSyncer(BaseSyncer):
                 not snapshot.nodes and not snapshot.diagnostics.filtered_node_ids
             )
             if pmm_reported_nothing and active_absent_ids:
+                unnamed = len(active_absent_ids) - _HELD_NODE_LOG_LIMIT
                 logger.warning(
-                    "PMM reported no nodes; holding %d local node(s) instead of "
-                    "counting them absent: %s",
+                    "PMM reported no %snodes; holding %d local node(s) instead of "
+                    "counting them absent: %s%s",
+                    "valid " if snapshot.diagnostics.invalid_nodes else "",
                     len(active_absent_ids),
-                    active_absent_ids,
+                    active_absent_ids[:_HELD_NODE_LOG_LIMIT],
+                    f" and {unnamed} more" if unnamed > 0 else "",
                 )
             owns_run = await self._owns_run()
             if owns_run:

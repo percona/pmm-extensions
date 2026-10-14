@@ -1701,8 +1701,26 @@ class TestEmptyGenerationHold:
             await owned_pmmsyncer.perform_inventory_sync()
 
         [message] = self._syncer_warnings(caplog)
-        assert str(local_node.id) in message
-        assert str(witness.id) in message
+        assert message.startswith("PMM reported no nodes;")
+        assert message.endswith(f": [{local_node.id}, {witness.id}]")
+
+    @pytest.mark.asyncio
+    async def test_warning_caps_named_nodes(
+        self, local_node, witness, owned_pmmsyncer, mocker, caplog
+    ):
+        """Name only the first held nodes and count the rest."""
+        mocker.patch("app.extensions.sync.syncers.pmm._HELD_NODE_LOG_LIMIT", 1)
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot()
+        )
+
+        with caplog.at_level("WARNING"):
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        [message] = self._syncer_warnings(caplog)
+        assert "holding 2 local node(s)" in message
+        assert message.endswith(f": [{local_node.id}] and 1 more")
 
     @pytest.mark.asyncio
     async def test_empty_local_inventory_is_noop(
@@ -1823,7 +1841,8 @@ class TestEmptyGenerationHold:
         owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
         assert await _absence_rows(session) == []
         [message] = self._syncer_warnings(caplog)
-        assert str(local_node.id) in message
+        assert message.startswith("PMM reported no valid nodes;")
+        assert message.endswith(f": [{local_node.id}]")
 
     @pytest.mark.asyncio
     async def test_reappearance_after_empty_generations_syncs_in_place(
