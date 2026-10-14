@@ -2984,7 +2984,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param step: The task step name.
         :param log_type: The type of log to stream ('stdout' or 'stderr').
         :param queue: The sink to push log lines into.
-        :param start_offset: The offset to start reading logs from. Defaults to 0.
+        :param start_offset: The offset to start reading logs from. Defaults to ``0``.
         :param anonymize_entities: PII entities to anonymize in run-script /
             step1 output. When ``None``, no anonymization is performed.
         :param on_forced_flush: Called right before a line the withheld-bytes

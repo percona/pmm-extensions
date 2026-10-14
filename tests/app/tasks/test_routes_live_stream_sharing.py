@@ -373,6 +373,24 @@ async def test_a_joiner_behind_a_mid_line_start_gets_the_withheld_tail_whole(
     _assert_resumable(joiner, "prefix tail", 0)
 
 
+async def test_a_joiner_behind_a_follow_that_released_nothing_gets_the_tail(
+    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+) -> None:
+    """Give a joiner from 0 the unfinished line a follow started at the end of."""
+    history = live_history(nomad_stub, EMAIL)
+    await nomad_stub.write(STDOUT, b"prefix ")
+    first = LiveViewer(live_executor, history, nomad_stub.step, {STDOUT: 7})
+    await attach(nomad_stub, first)
+    joiner = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, joiner)
+
+    await nomad_stub.finish()
+    await until(lambda: first.finished and joiner.finished)
+
+    assert first.text() == ""
+    _assert_resumable(joiner, "prefix ", 0)
+
+
 async def test_a_resume_inside_the_withheld_tail_gets_the_rest_of_it(
     nomad_stub: NomadLogStub, live_executor: NomadExecutor
 ) -> None:

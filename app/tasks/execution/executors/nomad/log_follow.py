@@ -152,8 +152,6 @@ class SharedLogFollow:
         """
         try:
             await produce(self, self.start_offset)
-        except asyncio.CancelledError:
-            raise
         except Exception:
             logger.exception(
                 "Shared live log follow failed at offset=%s", self.frontier
@@ -286,21 +284,21 @@ class SharedLogFollow:
         The producer's last release, which may be a remainder it withheld to
         the end of the stream, is delivered as the producer anonymized it when
         the subscriber is at its start or behind a start that is a line
-        boundary. A subscriber inside that release, or behind a start that is
-        not a line boundary, is caught up to the frontier with the remainder
-        released whole, as a sole subscriber starting at its offset receives
-        it. After a producer failure there is no such remainder, and the
-        catch-up runs to the frontier.
+        boundary. Any other subscriber of a stream that ended, whether inside
+        that release, behind a start that is not a line boundary, or behind a
+        follow that released nothing, is caught up to the frontier with the
+        remainder released whole, as a sole subscriber starting at its offset
+        receives it. After a producer failure there is no such remainder, and
+        the catch-up runs to the frontier withholding as usual.
 
         :param subscriber: The subscriber to catch up.
         :param read_range: Reads a raw range the shared feed cannot supply.
         :return: The log lines the subscriber is still missing.
         """
         last = self._last if self.completed else None
-        if last is None:
-            delivered = self._catch_up(subscriber, self.frontier, read_range)
-        elif subscriber.position == last.start or (
-            subscriber.position < last.start and self._last_start_aligned
+        if last is not None and (
+            subscriber.position == last.start
+            or (subscriber.position < last.start and self._last_start_aligned)
         ):
             async with aclosing(
                 self._catch_up(subscriber, last.start, read_range)
@@ -310,11 +308,9 @@ class SharedLogFollow:
             subscriber.position = last.log.offset
             yield last.log
             return
-        else:
-            delivered = self._catch_up(
-                subscriber, self.frontier, read_range, flush=True
-            )
-        async with aclosing(delivered) as logs:
+        async with aclosing(
+            self._catch_up(subscriber, self.frontier, read_range, flush=self.completed)
+        ) as logs:
             async for log in logs:
                 yield log
 
