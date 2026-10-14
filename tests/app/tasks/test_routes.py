@@ -60,7 +60,6 @@ from app.tasks.execution.executors.nomad.steps import (
 )
 from app.tasks.execution.models import BaseExecutor
 from app.tasks.execution_request_secrets import (
-    ENCRYPTED_META_KEYS,
     MASKED_ARGS_META_KEY,
     PAYLOAD_LEAF,
     WITHHELD_ARGS_PLACEHOLDER,
@@ -71,7 +70,6 @@ from app.tasks.models import (
     ExecutionEvent,
     ExecutorHostState,
     LogCaptureStatusEnum,
-    MAX_FAILURE_REASON_LENGTH,
     SYSTEM_USER,
     Task,
     TaskBackendEnum,
@@ -463,99 +461,6 @@ async def test_task_history_serializes_a_recorded_failure_reason(
     assert retrieved.status_code == status.HTTP_200_OK
     assert listed.json()["items"][0]["failure_reason"] == "Step 'run-script' failed."
     assert retrieved.json()["failure_reason"] == "Step 'run-script' failed."
-
-
-@pytest.mark.asyncio
-async def test_create_task_history_normalizes_failure_reason(
-    test_client, created_task_with_history
-):
-    """Assert a caller-supplied reason is collapsed to one line and bounded.
-
-    The create route takes the ``TaskHistory`` table model as its body, so the
-    field is settable over HTTP; the bound is a property of the column, not just
-    of the reasons PMM Extensions composes. Driven as a real request because only an actual
-    POST delivers the body to the handler the way FastAPI does.
-
-    The posted row carries ``failed`` so the fixture models a pair PMM Extensions' own
-    writers can produce.
-    """
-    response = test_client.post(
-        "/history/",
-        json={
-            "task_id": created_task_with_history.task.id,
-            "execution_request": {
-                "task": created_task_with_history.task.name,
-                "target": "node-1",
-            },
-            "status": "failed",
-            "failure_reason": "line one\n  line   two " + ("x" * 900),
-        },
-    )
-
-    assert response.status_code == status.HTTP_201_CREATED
-    reason = response.json()["failure_reason"]
-    assert "\n" not in reason
-    assert reason.startswith("line one line two ")
-    assert len(reason) == MAX_FAILURE_REASON_LENGTH
-
-
-@pytest.mark.parametrize(
-    "task_status",
-    [
-        task_status
-        for task_status in TaskHistoryStatusEnum
-        if task_status.operator_summary() is None
-    ],
-)
-@pytest.mark.asyncio
-async def test_create_task_history_rejects_failure_reason_without_summary(
-    test_client, created_task_with_history, task_status
-):
-    """Assert a reason conflicts with a status carrying no operator summary."""
-    response = test_client.post(
-        "/history/",
-        json={
-            "task_id": created_task_with_history.task.id,
-            "execution_request": {
-                "task": created_task_with_history.task.name,
-                "target": "node-1",
-            },
-            "status": task_status.value,
-            "failure_reason": "Task execution failed.",
-        },
-    )
-
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
-    error = response.json()["detail"][0]
-    assert "failure_reason" in error["loc"]
-    assert "status" in error["msg"]
-
-
-@pytest.mark.asyncio
-async def test_create_task_history_returns_a_serializable_row(
-    test_client, created_task_with_history
-):
-    """Assert the create response carries the joined task and execution request.
-
-    ``save`` re-defers ``execution_request``, so returning its result directly
-    made the response model attempt lazy IO from the async context.
-    """
-    response = test_client.post(
-        "/history/",
-        json={
-            "task_id": created_task_with_history.task.id,
-            "execution_request": {
-                "task": created_task_with_history.task.name,
-                "target": "node-1",
-            },
-        },
-    )
-
-    assert response.status_code == status.HTTP_201_CREATED
-    body = response.json()
-    assert body["task"]["name"] == created_task_with_history.task.name
-    assert body["execution_request"]["target"] == "node-1"
-    assert body["failure_reason"] is None
 
 
 @pytest.mark.asyncio
@@ -1976,35 +1881,6 @@ async def test_get_executor_hosts_nomad_unreachable(test_client, mock_executor):
     assert response.status_code == status.HTTP_502_BAD_GATEWAY
     assert response.headers["content-type"].startswith("application/json")
     assert response.json()["detail"] == NOMAD_UNREACHABLE_DETAIL
-
-
-@pytest.mark.asyncio
-async def test_transform_payload_proxy_backend(test_client):
-    """Assert transforming a payload with PROXY backend calls parse_payload."""
-    with patch(
-        "app.tasks.routes.parse_payload", return_value={"key": "value"}
-    ) as mock_parse:
-        response = test_client.post(
-            "/transform/",
-            json={"payload": '{"key": "value"}', "fmt": "json"},
-            params={"backend": "proxy"},
-        )
-    assert response.status_code == status.HTTP_200_OK
-    assert response.json() == {"key": "value"}
-    mock_parse.assert_called_once_with('{"key": "value"}', "json")
-
-
-@pytest.mark.asyncio
-async def test_transform_payload_nomad_backend(test_client, mock_executor):
-    """Assert transforming a payload with NOMAD backend calls executor."""
-    with patch("app.tasks.routes.get_executor", return_value=mock_executor):
-        mock_executor.transform_payload.return_value = {"parsed": True}
-        response = test_client.post(
-            "/transform/",
-            json={"payload": '{"job": {}}', "fmt": "json"},
-            params={"backend": "nomad"},
-        )
-    assert response.status_code == status.HTTP_200_OK
 
 
 @pytest.mark.asyncio
@@ -3727,37 +3603,6 @@ class TestExecutionRequestEncryptionOverHTTP:
         assert body["execution_request"]["payload"] == self._PAYLOAD
         assert body["execution_request"]["meta"]["args"] == WITHHELD_ARGS_PLACEHOLDER
         assert body["execution_request"]["meta"]["config"] == self._CONFIG
-
-    @pytest.mark.asyncio
-    async def test_create_route_stores_the_submitted_leaves_encrypted(
-        self, test_client, session, created_task_with_history
-    ):
-        """Assert ``POST /history/`` encrypts at rest and withholds the arguments."""
-        response = test_client.post(
-            "/history/",
-            json={
-                "task_id": created_task_with_history.task.id,
-                "execution_request": {
-                    "task": created_task_with_history.task.name,
-                    "target": "node-1",
-                    "meta": {"args": self._ARGS, "config": self._CONFIG},
-                    "payload": self._PAYLOAD,
-                },
-            },
-        )
-
-        assert response.status_code == status.HTTP_201_CREATED
-        body = response.json()
-        assert body["execution_request"]["meta"]["args"] == WITHHELD_ARGS_PLACEHOLDER
-        assert body["execution_request"]["meta"]["config"] == self._CONFIG
-        assert body["execution_request"]["payload"] == self._PAYLOAD
-        stored = await stored_execution_request(session, body["id"])
-        for key in ENCRYPTED_META_KEYS:
-            assert is_encrypted(stored["meta"][key])
-        assert is_encrypted(stored["payload"])
-        serialised = json_lib.dumps(stored)
-        assert "hunter2" not in serialised
-        assert created_task_with_history.task.name in serialised
 
     @pytest.mark.asyncio
     async def test_execute_route_stores_the_submitted_leaves_encrypted(

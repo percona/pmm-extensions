@@ -1211,6 +1211,19 @@
             "title": "Created At",
             "type": "string"
           },
+          "duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Return the duration of the task execution in seconds.\n\n:return: The duration in seconds, or None if not available.\n:rtype: float | None",
+            "readOnly": true,
+            "title": "Duration"
+          },
           "executed_by": {
             "anyOf": [
               {
@@ -1312,7 +1325,8 @@
           "id",
           "execution_request",
           "task_id",
-          "log_producer_epoch"
+          "log_producer_epoch",
+          "duration"
         ],
         "title": "TaskHistory",
         "type": "object"
@@ -1828,45 +1842,6 @@
           "data"
         ],
         "title": "TaskWrite",
-        "type": "object"
-      },
-      "TransformPayloadRequest": {
-        "description": "Define the request body for the /transform/ API route.\n\n:param payload: The job specification payload to be parsed.\n:type payload: str | bytes\n:param fmt: The format of the payload, which can be \"hcl\", \"json\", or \"yaml\".\n:type fmt: Literal[\"hcl\", \"json\", \"yaml\"]",
-        "properties": {
-          "fmt": {
-            "enum": [
-              "hcl",
-              "json",
-              "yaml"
-            ],
-            "title": "Fmt",
-            "type": "string"
-          },
-          "payload": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "contentMediaType": "application/octet-stream",
-                "type": "string"
-              }
-            ],
-            "title": "Payload"
-          }
-        },
-        "required": [
-          "payload",
-          "fmt"
-        ],
-        "title": "TransformPayloadRequest",
-        "type": "object"
-      },
-      "TransformPayloadResponse": {
-        "additionalProperties": true,
-        "description": "Define the parsed job specification returned from ``POST /transform/``.\n\nThe concrete keys depend on the executor backend; clients should treat values as\nuntyped JSON except where they validate domain-specific job fields themselves.",
-        "properties": {},
-        "title": "TransformPayloadResponse",
         "type": "object"
       },
       "ValidationError": {
@@ -2589,51 +2564,6 @@
           }
         ],
         "summary": "List Task History",
-        "tags": [
-          "tasks"
-        ]
-      },
-      "post": {
-        "description": "Create a new task history.\n\nNeither ``has_logs`` nor ``log_capture`` is populated on this response — a\nrow that was just created has no chunk-store entry, legacy tracking blob or\ncapture verdict yet, so both fall back to their serialization defaults.\n\nA caller-supplied ``failure_reason`` is routed back through\n:meth:`TaskHistory.set_failure_reason` so the single-line and length bounds\nhold on every write path, not only on the reasons PMM Extensions composes itself.\n\nThe saved row is re-read with ``task`` joined and ``execution_request``\nundeferred: ``save`` re-defers that column, and the response model requires\nboth, so serializing the save's own return value attempts lazy IO from an\nasync context.\n\n:param session: The SQLAlchemy asynchronous session.\n:param task: The task history to persist.\n:return: The saved task history record.\n:raises HTTPUnprocessableEntityException: If ``failure_reason`` conflicts\n    with a status that carries no operator-facing summary.",
-        "operationId": "tasks_create_task_history_history__post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TaskHistory"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TaskHistoryResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "summary": "Create Task History",
         "tags": [
           "tasks"
         ]
@@ -3574,64 +3504,6 @@
           }
         ],
         "summary": "Get Task Stats",
-        "tags": [
-          "tasks"
-        ]
-      }
-    },
-    "/transform/": {
-      "post": {
-        "description": "Transform a payload string into a dictionary.",
-        "operationId": "tasks_transform_payload_transform__post",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "backend",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/TaskBackendEnum",
-              "default": "nomad"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TransformPayloadRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TransformPayloadResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "summary": "Transform Payload",
         "tags": [
           "tasks"
         ]
