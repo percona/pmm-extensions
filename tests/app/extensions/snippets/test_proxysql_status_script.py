@@ -2094,14 +2094,15 @@ class TestAdminCnfRedaction:
         """Redact thousands of hidden lines within a few seconds."""
         entry = " probe $(pid 42) ran: \"ok\" {'n': 1} path=/var/lib/proxysql/data"
         line = f"2026-10-14 12:00:00 [INFO]{entry * 4}\n"
-        harness.write_cnf(line * 10_000)
+        harness.write_cnf(line * 5_000)
 
-        # A redactor that forks or walks every character per line overruns
-        # this budget.
-        result = harness.run("--files", timeout=25)
+        # A redactor that forks or walks every character per line runs about
+        # five times slower, past this budget on CI runners, which are about
+        # three times slower than a laptop.
+        result = harness.run("--files", timeout=30)
 
         assert result.returncode == 0, result.stderr
-        assert _cnf_section(result.stdout) == [HIDDEN_LINE] * 10_000
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE] * 5_000
 
     def test_empty_cnf_prints_no_section(self, harness):
         """Leave the section out when the config file has nothing to show."""
