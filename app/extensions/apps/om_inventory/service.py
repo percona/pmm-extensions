@@ -712,9 +712,9 @@ async def sweep(
     run did not attempt keeps every timestamp it had, so refreshing one host cannot
     make the rest of the estate look failed.
 
-    :param observed_at: When the sweep began, ISO 8601. Stamped on the run and on the
-        entity freshness columns; a document's ``collected_at`` is its record's own
-        timestamp, and falls back to this only when the record carries no usable one.
+    :param observed_at: When the sweep began, ISO 8601. It lands only in a document's
+        ``collected_at``, and only when the record carries no usable timestamp of its
+        own; the run row and the entity freshness columns are stamped separately.
     :param node_ids: The hosts to refresh, or ``None`` for the whole estate.
     :param progress: Where to report how far the sweep has got, if anywhere.
     :return: What the sweep reached, collected and saw per service.
