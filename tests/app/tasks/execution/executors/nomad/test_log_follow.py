@@ -209,6 +209,8 @@ def _subscribe(
     start: int,
     producer: ScriptedProducer,
     reader: RangeReader,
+    *,
+    anonymized: bool = True,
 ) -> Subscriber:
     """Start a subscriber of :data:`KEY` from ``start``.
 
@@ -216,9 +218,12 @@ def _subscribe(
     :param start: The subscriber's own start offset.
     :param producer: The producer a new follow runs.
     :param reader: The catch-up reader.
+    :param anonymized: Whether the followed text is anonymized.
     :return: The running subscriber.
     """
-    return Subscriber(registry.subscribe(KEY, start, producer, reader))
+    return Subscriber(
+        registry.subscribe(KEY, start, producer, reader, anonymized=anonymized)
+    )
 
 
 async def test_subscribers_attached_before_the_first_release_need_no_catch_up() -> None:
@@ -333,6 +338,21 @@ async def test_a_mid_line_producer_start_is_never_a_handoff_point() -> None:
     assert reader.calls == [(0, 2 * LINE)]
     assert first.text == RAW[7 : 3 * LINE]
     assert joiner.text == RAW[: 3 * LINE]
+    await first.leave()
+    await joiner.leave()
+
+
+async def test_any_start_is_a_handoff_point_when_nothing_is_anonymized() -> None:
+    """Catch a joiner up at once to a mid-line start that withholds nothing."""
+    mid_line = LINE - 1
+    registry, producer, reader = LogFollowRegistry(), ScriptedProducer(), RangeReader()
+    first = _subscribe(registry, mid_line, producer, reader, anonymized=False)
+    joiner = _subscribe(registry, 0, producer, reader, anonymized=False)
+    await _until(lambda: joiner.position == mid_line)
+
+    assert reader.calls == [(0, mid_line)]
+    assert joiner.text == RAW[:mid_line]
+    assert first.text == ""
     await first.leave()
     await joiner.leave()
 

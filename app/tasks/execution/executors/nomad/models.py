@@ -3427,7 +3427,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         rotated file, because the deletion shifts every request offset down by
         that file's size while ``start`` and ``end`` were counted before it.
         The read then stops at Nomad's end rather than failing, so the viewer
-        rejoins the live follow instead of losing it. A ``start`` counted before
+        rejoins the live follow instead of losing it. That end is no line
+        boundary, so a partial line withheld there is never drained, whatever
+        ``drain`` says, and stays redacted whole. A ``start`` counted before
         the deletion also lands that many bytes too far into the retained
         files, so the viewer can miss text it had not yet been sent; only a
         read from offset 0 is unaffected.
@@ -3471,6 +3473,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     step,
                     log_type,
                 )
+                drain = False
                 break
             for raw in frames:
                 position += len(raw)
@@ -3553,13 +3556,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :raises UnicodeDecodeError: When a catch-up read's frame stream, or a
             non-anonymized step's output, is not UTF-8.
         """
+        anonymized = _should_anonymize(step, anonymize_entities)
         key = (
             alloc["ID"],
             step,
             log_type,
-            frozenset(anonymize_entities)
-            if _should_anonymize(step, anonymize_entities)
-            else frozenset(),
+            frozenset(anonymize_entities) if anonymized else frozenset(),
         )
         logs = self._log_follows.subscribe(
             key,
@@ -3570,6 +3572,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             partial(
                 self._read_log_range, alloc["ID"], step, log_type, anonymize_entities
             ),
+            anonymized=anonymized,
         )
         async with aclosing(logs) as stream:
             async for log in stream:

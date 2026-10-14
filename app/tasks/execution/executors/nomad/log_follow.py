@@ -111,12 +111,15 @@ class SharedLogFollow:
     read of the range it missed when it reads again.
 
     :param start_offset: The raw offset the producer starts reading at.
+    :param anonymized: Whether the text is anonymized. Text that is not holds
+        nothing back, so any offset is a handoff point, including a mid-line
+        start; anonymized text is safe to hand off only at a line boundary.
     """
 
-    def __init__(self, start_offset: int) -> None:
+    def __init__(self, start_offset: int, *, anonymized: bool = True) -> None:
         self.start_offset = start_offset
         self.frontier = start_offset
-        self.frontier_aligned = start_offset == 0
+        self.frontier_aligned = start_offset == 0 or not anonymized
         self.ended = False
         self.completed = False
         self.closing = False
@@ -310,6 +313,8 @@ class LogFollowRegistry:
         start_offset: int,
         produce: Producer,
         read_range: RangeReader,
+        *,
+        anonymized: bool = True,
     ) -> AsyncGenerator[TaskLog]:
         """Yield the text of the follow for ``key`` from ``start_offset``.
 
@@ -321,11 +326,13 @@ class LogFollowRegistry:
         :param start_offset: The raw offset this subscriber starts at.
         :param produce: The upstream follow a new shared follow runs.
         :param read_range: Reads a raw range for this subscriber's catch-up.
+        :param anonymized: Whether the text is anonymized, which a new shared
+            follow needs to know where it may hand subscribers off.
         :return: This subscriber's log lines, ending when the follow does.
         """
         follow = self._follows.get(key)
         if follow is None or follow.ended or follow.closing:
-            follow = SharedLogFollow(start_offset)
+            follow = SharedLogFollow(start_offset, anonymized=anonymized)
             self._follows[key] = follow
             follow.start(produce, lambda: self._forget(key, follow))
         follow.members += 1

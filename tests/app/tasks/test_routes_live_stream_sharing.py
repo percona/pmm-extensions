@@ -470,6 +470,34 @@ async def test_a_joiner_keeps_following_after_nomad_evicts_a_rotated_file(
     await joiner.leave()
 
 
+async def test_an_eviction_never_releases_a_withheld_partial_line(
+    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+) -> None:
+    """Redact an address whose line was unfinished when Nomad deleted an older file.
+
+    The joiner's catch-up reaches Nomad's end in the middle of that line; it
+    must keep the fragment withheld rather than release it there.
+    """
+    history = live_history(nomad_stub, EMAIL)
+    first = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, first)
+    await nomad_stub.write(STDOUT, b"evicted\n")
+    await until(lambda: first.offset() == len("evicted\n"))
+    await nomad_stub.rotate(STDOUT)
+    await nomad_stub.write(STDOUT, b"ok\nalice@")
+    await until(lambda: first.offset() == len("evicted\nok\n"))
+    await nomad_stub.evict_oldest(STDOUT)
+
+    joiner = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, joiner)
+    await nomad_stub.write(STDOUT, b"example.com\n")
+    await until(lambda: joiner.text().endswith("<EMAIL_ADDRESS>\n"))
+
+    assert joiner.text() == "ok\n<EMAIL_ADDRESS>\n"
+    await first.leave()
+    await joiner.leave()
+
+
 async def test_offsets_are_data_ends_however_nomad_frames_the_log(
     nomad_stub: NomadLogStub, live_executor: NomadExecutor
 ) -> None:
