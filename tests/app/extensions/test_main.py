@@ -19,12 +19,14 @@ import importlib
 import logging
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
+from pytest_mock import MockerFixture
 from starlette.datastructures import URL
 
 import app.extensions.main as main_module
@@ -58,7 +60,11 @@ from app.extensions.apps.report.config import (
     HealthReportSettings,
 )
 from app.extensions.artifact_constants import ARTIFACT_DOWNLOAD_SALT
-from app.extensions.config import App, extensions_settings, ExtensionsSettings
+from app.extensions.config import (
+    App,
+    extensions_settings,
+    ExtensionsSettings,
+)
 from app.extensions.deps import get_session, PROTECTED_APP_KEYS
 from app.extensions.main import (
     _close_app_state_remote_apis,
@@ -71,6 +77,10 @@ from app.extensions.main import lifespan as extensions_module_lifespan
 from app.extensions.models import AppLifecycleEnum, AppState
 from app.extensions.snippets.config import snippets_settings
 from app.extensions.snippets.constants import ARTIFACT_TYPE_SNIPPET
+from app.extensions.sync.syncers.mysql.syncer import MySQLSyncer
+from app.extensions.sync.syncers.pmm import PMMSyncer
+from app.tasks.config import tasks_settings
+from tests.app.conftest import daily_inventory_sync_schedules
 from tests.app.extensions.conftest import REDUCED_ACTIVATION
 
 _ORIGINAL_EXTENSIONS_APP = main_module.extensions_app
@@ -171,6 +181,91 @@ async def _rebind_inventory_under_hold(app: FastAPI):
     assert id(old) in app.state.retired_remote_apis._clients
     assert old._session is not None
     return old, new, hold
+
+
+@pytest.mark.usefixtures("pmm_is_the_only_syncer")
+class TestScheduledSyncerStartupCheck:
+    """Cover rejecting an unconfigured scheduled syncer on standalone startup."""
+
+    @pytest.fixture(name="overrides_lifespan")
+    def overrides_lifespan_fixture(self, mocker: MockerFixture) -> Mock:
+        """Stub the override lifespan so its entry can be observed."""
+        return mocker.patch.object(main_module, "extensions_overrides_lifespan")
+
+    @pytest.fixture(name="startup")
+    def startup_fixture(self, mocker: MockerFixture) -> AsyncMock:
+        """Stub the startup hook so its await can be observed."""
+        return mocker.patch.object(
+            main_module, "extensions_startup", new_callable=AsyncMock
+        )
+
+    @pytest.mark.asyncio
+    async def test_rejects_unmatched_pinned_syncer_before_startup(
+        self, overrides_lifespan: Mock, startup: AsyncMock, mocker: MockerFixture
+    ) -> None:
+        """Fail before any lifespan, startup hook or client is entered."""
+        mocker.patch.object(
+            tasks_settings, "INVENTORY_SYNC_SYNCER", f"{PMMSyncer.get_name()}X"
+        )
+        app = FastAPI()
+
+        with pytest.raises(ValueError, match="INVENTORY_SYNC_SYNCER"):
+            async with extensions_lifespan(app):
+                pass
+
+        overrides_lifespan.assert_not_called()
+        startup.assert_not_awaited()
+        assert not hasattr(app.state, "inventory_api")
+
+    @pytest.mark.asyncio
+    async def test_rejects_unmatched_schedule_entry_before_startup(
+        self, overrides_lifespan: Mock, startup: AsyncMock, mocker: MockerFixture
+    ) -> None:
+        """Fail on a bad per-syncer schedule as well."""
+        mocker.patch.object(
+            tasks_settings,
+            "INVENTORY_SYNC_SCHEDULES",
+            daily_inventory_sync_schedules(MySQLSyncer.get_name()),
+        )
+
+        with pytest.raises(ValueError, match="INVENTORY_SYNC_SCHEDULES"):
+            async with extensions_lifespan(FastAPI()):
+                pass
+
+        overrides_lifespan.assert_not_called()
+        startup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_starts_when_nothing_is_pinned_or_scheduled(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Start unchanged on the sync-all default with no schedules."""
+        overrides_lifespan = mocker.spy(main_module, "extensions_overrides_lifespan")
+
+        async with _stubbed_extensions_lifespan(mocker, FastAPI()):
+            pass
+
+        overrides_lifespan.assert_called_once()
+        cast("AsyncMock", main_module.extensions_startup).assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_starts_when_every_named_syncer_is_configured(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Start when the pin and every schedule entry are configured."""
+        mocker.patch.object(
+            tasks_settings, "INVENTORY_SYNC_SYNCER", PMMSyncer.get_name()
+        )
+        mocker.patch.object(
+            tasks_settings,
+            "INVENTORY_SYNC_SCHEDULES",
+            daily_inventory_sync_schedules(PMMSyncer.get_name()),
+        )
+
+        async with _stubbed_extensions_lifespan(mocker, FastAPI()):
+            pass
+
+        cast("AsyncMock", main_module.extensions_startup).assert_awaited_once()
 
 
 @pytest.mark.asyncio

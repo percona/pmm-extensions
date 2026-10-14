@@ -183,10 +183,11 @@ class TasksSettings(BaseYamlAppSettings):
         (``"module.ClassName"``, matching ``BaseSyncer.get_name()``) the seeded
         schedule targets; ``None`` runs every configured syncer. Must be a
         dotted path, so a blank value is rejected rather than read as the
-        sync-all default. A well-formed name that no configured syncer matches
-        is still not rejected at seed time — the tasks service does not import
-        the extensions syncers — so every firing of the schedule fails instead. Read at
-        startup. Defaults to ``None``.
+        sync-all default. A name that matches no ``EXTENSIONS.SYNCERS`` entry
+        stops the combined app before it seeds the schedule, and stops the
+        standalone extensions app; the standalone tasks service, which does not
+        import the extensions syncers, checks the format only and still seeds
+        it. Read at startup. Defaults to ``None``.
     :param INVENTORY_SYNC_SCHEDULES: Per-syncer schedules seeded beside the
         scalar default, for a syncer whose useful cadence differs from it. Each
         entry names a syncer in ``BaseSyncer.get_name()`` form and its own
@@ -194,8 +195,9 @@ class TasksSettings(BaseYamlAppSettings):
         ``INVENTORY_SYNC_SYNCER`` default is seeded, its runs also start each
         seeded entry that has not run since that syncer's first completed
         inventory sync, so the entry's next run reads that inventory; an entry an
-        operator-managed schedule already covers is not seeded. Read at
-        startup. Defaults to no extra schedules.
+        operator-managed schedule already covers is not seeded. An entry naming
+        no ``EXTENSIONS.SYNCERS`` entry stops startup as for
+        ``INVENTORY_SYNC_SYNCER``. Read at startup. Defaults to no extra schedules.
     :param LOG_STREAM_CAP_BYTES: The maximum captured-log bytes retained per
         ``(task_history_id, source, stream)``. As a stream grows past the cap
         the writer drops the oldest chunks, keeping a bounded recent tail so a

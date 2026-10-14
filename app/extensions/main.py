@@ -55,7 +55,11 @@ from app.extensions.apps.framework.registry import (
     collect_app_owned_settings_classes,
     get_app_registry,
 )
-from app.extensions.config import extensions_settings, warn_if_base_url_lacks_root_path
+from app.extensions.config import (
+    extensions_settings,
+    validate_scheduled_syncers,
+    warn_if_base_url_lacks_root_path,
+)
 from app.extensions.db import get_async_session_maker
 from app.extensions.db.seed import get_system_periodic_tasks, init_extensions_db
 from app.extensions.periodic_tasks import sync_app_periodic_task_gating
@@ -355,6 +359,23 @@ async def _close_app_state_remote_apis(app: FastAPI) -> None:
             await app.state.retired_remote_apis.force_close()
 
 
+def validate_inventory_sync_syncers() -> None:
+    """Run :func:`validate_scheduled_syncers` over the live settings.
+
+    Read here because the check needs both settings objects and neither settings
+    module may import the other.
+
+    :raises ValueError: When a scheduled name matches no configured syncer.
+    :raises ImportError: When a configured syncer's module cannot be imported.
+    :raises AttributeError: When a configured syncer's module has no such attribute.
+    """
+    validate_scheduled_syncers(
+        extensions_settings.SYNCERS,
+        tasks_settings.INVENTORY_SYNC_SYNCER,
+        tasks_settings.INVENTORY_SYNC_SCHEDULES,
+    )
+
+
 @asynccontextmanager
 async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage PMM Extensions' lifespan.
@@ -392,9 +413,16 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     seals ``retired_remote_apis`` before any await. Discarded sealed-path
     replacements stay owner-tracked until their close succeeds.
 
+    A schedule naming a syncer absent from ``SYNCERS`` is rejected before
+    anything is entered.
+
     :param app: The FastAPI application instance.
     :return: ``None``, once the lifespans have been entered.
+    :raises ValueError: When an inventory-sync schedule names an unconfigured syncer.
+    :raises ImportError: When a configured syncer's module cannot be imported.
+    :raises AttributeError: When a configured syncer's module has no such attribute.
     """
+    validate_inventory_sync_syncers()
     clients_opened = False
     try:
         async with extensions_overrides_lifespan(app):
