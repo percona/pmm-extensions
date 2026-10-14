@@ -1182,15 +1182,22 @@ class TestDeliveryPlanExecutor:
         assert result.detail is None
         assert any("list" in record.getMessage() for record in caplog.records)
 
+    @pytest.mark.parametrize(
+        "response",
+        [{"other": "x"}, {"result": {"sys_id": ""}}],
+        ids=["unresolvable", "empty"],
+    )
     async def test_unresolvable_reference_pointer_keeps_the_detail(
-        self, api: RemoteAPI, bundle: BundleSource, caplog
+        self,
+        api: RemoteAPI,
+        bundle: BundleSource,
+        caplog,
+        response: dict[str, Any],
     ):
         """Preserve the response detail while reporting no reference, with a warning."""
         executor = DeliveryPlanExecutor(DeliveryPlan(**_upload_only_plan()), api)
         with aioresponses() as mock:
-            mock.post(
-                _UPLOAD_URL, status=status.HTTP_201_CREATED, payload={"other": "x"}
-            )
+            mock.post(_UPLOAD_URL, status=status.HTTP_201_CREATED, payload=response)
             with caplog.at_level("WARNING", logger=_PLAN_LOGGER):
                 async with api:
                     result = await executor.upload_bundle(
@@ -1201,8 +1208,12 @@ class TestDeliveryPlanExecutor:
                     )
 
         assert result.reference is None
-        assert result.detail == {"other": "x"}
-        assert any("/result/sys_id" in record.getMessage() for record in caplog.records)
+        assert result.detail == response
+        assert any(
+            "addressed no scalar value" in record.getMessage()
+            and "/result/sys_id" in record.getMessage()
+            for record in caplog.records
+        )
 
     async def test_manifest_key_field_resolves_from_the_send_manifest(
         self, api: RemoteAPI, bundle: BundleSource

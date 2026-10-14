@@ -1,4 +1,4 @@
-python:
+language:python:
 - any:
   - changed-files:
     - any-glob-to-any-file:
@@ -6,12 +6,39 @@ python:
       - 'pyproject.toml'
       - 'poetry.lock'
 
+language:shell:
+- any:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '**/*.sh'
+
+language:typescript:
+- any:
+  - changed-files:
+    - any-glob-to-any-file:
+      - '**/*.ts'
+      - '**/*.tsx'
+      - 'frontend/package.json'
+      - 'frontend/pnpm-lock.yaml'
+
 frontend:
 - any:
   - changed-files:
     - any-glob-to-any-file:
       - 'frontend/**'
       - 'package.json'
+
+builtin-snippets:
+- any:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'snippets/**'
+
+snippets-core:
+- any:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'app/extensions/snippets/**'
 
 # svc:* labels track the mounted services, which share a name with PMM Extensions apps but
 # are different code. The prefix keeps app/tasks/ (the service) distinct from

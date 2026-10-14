@@ -52,6 +52,7 @@ from app.core.settings_override.registry import ReloadClassification
 from app.core.settings_override.resolution import resolve_nested_field_metadata
 from app.core.utils import slugify, utc_now
 from app.core.utils.fields import PRESERVE_CREDENTIALS_CONTEXT
+from app.extensions.apps.shared.om.task_failure import failed_step
 from app.tasks.anonymizer.entities import PIIEntity
 from app.tasks.config import tasks_settings, TasksSettings
 from app.tasks.crud import (
@@ -75,7 +76,6 @@ from app.tasks.execution.executors.nomad.models import (
     _detect_capture_hold_ready,
     _detect_stale_skip,
     _detect_unlaunchable,
-    _failed_step_reason,
     _LAUNCH_CHECK_TASK_NAME,
     _NOMAD_LOG_STREAM_CLIENT_ERROR,
     _NOMAD_LOG_STREAM_SOCK_TIMEOUT,
@@ -83,6 +83,7 @@ from app.tasks.execution.executors.nomad.models import (
     _split_nomad_frames,
     _STALE_SKIP_TASK_NAME,
     _status_from_step_states,
+    failed_step_reason,
     NODE_STATUS_READY,
     NOMAD_DEAD_JOB_STATUS,
     nomad_task_states_to_execution_events,
@@ -1294,7 +1295,7 @@ class TestAllocStepState:
 
 
 class TestFailedStepReason:
-    """Test _failed_step_reason's composition and shape tolerance."""
+    """Test failed_step_reason's composition and shape tolerance."""
 
     def test_names_the_failed_step_and_exit_code(self):
         """Assert the reason names the failing producing step and its exit code."""
@@ -1306,12 +1307,34 @@ class TestFailedStepReason:
                 },
             },
         }
-        assert _failed_step_reason(alloc) == "Step 'run-script' failed (exit code 1)."
+        assert failed_step_reason(alloc) == "Step 'run-script' failed (exit code 1)."
+
+    @pytest.mark.parametrize("step", ["prepare-env", "run-script", "check-launchable"])
+    def test_writes_the_sentence_om_apps_read_back(self, step):
+        """Pin the sentence OM apps read the failed step and its exit code from.
+
+        They parse the step back out of it with ``failed_step``, and match the
+        ``run-script`` exit code 123 sentence word for word, so a change to the
+        wording has to change them too.
+        """
+        alloc = {
+            "TaskStates": {
+                step: {
+                    "Failed": True,
+                    "Events": [{"Type": "Terminated", "ExitCode": 123}],
+                },
+            },
+        }
+
+        reason = failed_step_reason(alloc)
+
+        assert reason == f"Step '{step}' failed (exit code 123)."
+        assert failed_step(reason) == step
 
     def test_omits_exit_code_when_no_terminated_event(self):
         """Assert a failed step with no Terminated event still names the step."""
         alloc = {"TaskStates": {"run-script": {"Failed": True, "Events": []}}}
-        assert _failed_step_reason(alloc) == "Step 'run-script' failed."
+        assert failed_step_reason(alloc) == "Step 'run-script' failed."
 
     def test_ignores_the_non_producing_hold_step(self):
         """Assert a failed log-capture hold does not become the reason.
@@ -1327,7 +1350,7 @@ class TestFailedStepReason:
                 },
             },
         }
-        assert _failed_step_reason(alloc) is None
+        assert failed_step_reason(alloc) is None
 
     def test_reports_the_earliest_failed_step_not_the_first_serialized(self):
         """Assert the failing step is chosen by execution order, not key order.
@@ -1350,12 +1373,12 @@ class TestFailedStepReason:
                 },
             },
         }
-        assert _failed_step_reason(alloc) == "Step 'run-script' failed (exit code 2)."
+        assert failed_step_reason(alloc) == "Step 'run-script' failed (exit code 2)."
 
     def test_returns_none_when_no_step_failed(self):
         """Assert an allocation whose producing steps all succeeded has no reason."""
         alloc = {"TaskStates": {"run-script": {"Failed": False, "Events": []}}}
-        assert _failed_step_reason(alloc) is None
+        assert failed_step_reason(alloc) is None
 
     def test_reports_the_last_termination_of_a_restarted_step(self):
         """Assert a restarted step reports the code that decided its outcome.
@@ -1375,7 +1398,7 @@ class TestFailedStepReason:
                 },
             },
         }
-        assert _failed_step_reason(alloc) == "Step 'run-script' failed (exit code 137)."
+        assert failed_step_reason(alloc) == "Step 'run-script' failed (exit code 137)."
 
     @pytest.mark.parametrize(
         ("alloc", "expected"),
@@ -1405,7 +1428,7 @@ class TestFailedStepReason:
     )
     def test_tolerates_malformed_allocations(self, alloc, expected):
         """Assert shape drift costs the exit code, not the reason or the sync."""
-        assert _failed_step_reason(alloc) == expected
+        assert failed_step_reason(alloc) == expected
 
 
 class TestDetectUnlaunchable:
