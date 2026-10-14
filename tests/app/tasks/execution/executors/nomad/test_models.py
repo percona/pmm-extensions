@@ -6062,10 +6062,22 @@ class TestNomadLogStreaming:
         forwarded_offsets = {}
 
         async def fake_push(
-            _self, _alloc, step, log_type, queue, start_offset, _anonymize_entities
+            _self,
+            _alloc,
+            step,
+            log_type,
+            queue,
+            start_offset,
+            _anonymize_entities,
+            **_kwargs,
         ):
             forwarded_offsets[(step, log_type)] = start_offset
-            await queue.put(TaskLog(step=step, type=log_type, msg=f"{step}:{log_type}"))
+            msg = f"{step}:{log_type}"
+            await queue.put(
+                TaskLog(
+                    step=step, type=log_type, msg=msg, offset=start_offset + len(msg)
+                )
+            )
             await queue.put(TaskLog(step=step, type=log_type, msg=None))
 
         with (
