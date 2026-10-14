@@ -302,6 +302,21 @@ class PMMSyncer(BaseSyncer):
         rehomed.node = node
         return rehomed
 
+    async def _is_live_elsewhere(self, external_id: str, node: CreatedNode) -> bool:
+        """Check whether another local node holds a live row for a service.
+
+        :param external_id: The external id PMM reports the service under.
+        :param node: The node PMM reports it under.
+        :return: ``True`` if a node other than ``node`` holds a live service with
+            ``external_id``.
+        """
+        return any(
+            service.external_id == external_id and not service.is_retired
+            for other in await self.get_inventory_nodes()
+            if other.id != node.id
+            for service in other.services
+        )
+
     async def _retire_absent(
         self,
         entity_type: SyncInventoryEntityTypeEnum,
@@ -391,7 +406,11 @@ class PMMSyncer(BaseSyncer):
                     self._session,
                     self.get_name(),
                     SyncInventoryEntityTypeEnum.SERVICE,
-                    *(moved.id for moved in self._service_moves.values()),
+                    *(
+                        moved.id
+                        for moved in self._service_moves.values()
+                        if moved.id is not None
+                    ),
                 )
             present_ids: list[int | None] = []
             for node in snapshot.nodes:
@@ -487,6 +506,9 @@ class PMMSyncer(BaseSyncer):
         rather than created twice: a report under a new node is a positive
         observation, so it needs no grace. Like retirement, the move waits for a
         complete generation; until then the row stays where it is and is held.
+        A call outside a generation does not create such a service here either:
+        a copy under this node would leave the original row, with its sync
+        history, for the next generation to age out instead of moving.
 
         :param created_node: The local node instance to synchronize.
         :param updated_node: The updated node data fetched from the PMM API.
@@ -521,6 +543,15 @@ class PMMSyncer(BaseSyncer):
                 )
                 self._rehomed_ids |= {moved.id}
             elif (created_service := syncable_services.pop(matched_id, None)) is None:
+                if self._generation is None and await self._is_live_elsewhere(
+                    service.external_id, created_node
+                ):
+                    logger.info(
+                        "Leaving service %s for a complete generation to move: "
+                        "its live row is under another node",
+                        service.external_id,
+                    )
+                    continue
                 logger.info("Creating new service: %r", service)
                 created_service = CreatedService.model_validate(
                     await self.inventory_api.post(

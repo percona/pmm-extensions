@@ -2550,16 +2550,57 @@ class TestServiceMovedBetweenNodes:
     async def test_single_node_refresh_never_moves(
         self, owned_pmmsyncer, node_a, node_b, moved
     ):
-        """Keep a refresh outside a generation upsert-only, as it was."""
+        """Neither move nor copy a service whose live row is under another node."""
         self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
 
         await owned_pmmsyncer.perform_node_sync(node_b, self._reporting(node_b, moved))
 
         assert self._rehomes(owned_pmmsyncer.inventory_api, moved) == []
+        assert self._creates(owned_pmmsyncer.inventory_api) == []
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_next_generation_rehomes_after_a_single_node_refresh(
+        self,
+        session,
+        mock_pmm_api,
+        mock_remote_api,
+        owned_pmmsyncer,
+        node_a,
+        node_b,
+        moved,
+    ):
+        """Keep the original row through a refresh of the node it moved to."""
+        self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
+        await owned_pmmsyncer.perform_node_sync(node_b, self._reporting(node_b, moved))
+
+        await self._run(
+            session,
+            mock_pmm_api,
+            mock_remote_api,
+            [node_a, node_b],
+            _snapshot(self._reporting(node_a), self._reporting(node_b, moved)),
+        )
+
+        assert self._rehomes(mock_remote_api, moved) == [
+            (f"/services/{moved.id}", node_b.id)
+        ]
+        assert self._creates(mock_remote_api) == []
+        mock_remote_api.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_single_node_refresh_creates_past_a_tombstone_elsewhere(
+        self, owned_pmmsyncer, node_a, node_b, moved
+    ):
+        """Create the service when the only row under another node is retired."""
+        moved.retired_at = utc_now()
+        self._serve(owned_pmmsyncer.inventory_api, node_a, node_b)
+
+        await owned_pmmsyncer.perform_node_sync(node_b, self._reporting(node_b, moved))
+
         assert self._creates(owned_pmmsyncer.inventory_api) == [
             f"/nodes/{node_b.id}/services/"
         ]
-        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_single_service_refresh_never_moves(
@@ -2836,9 +2877,6 @@ class TestServiceMovedBetweenNodes:
         await owned_pmmsyncer.perform_node_sync(node_b, self._reporting(node_b, moved))
 
         assert self._rehomes(owned_pmmsyncer.inventory_api, moved) == []
-        assert self._creates(owned_pmmsyncer.inventory_api) == [
-            f"/nodes/{node_b.id}/services/"
-        ]
 
     @pytest.mark.asyncio
     async def test_generation_is_dropped_when_planning_fails(
