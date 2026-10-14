@@ -111,6 +111,9 @@ from app.tasks.models import (
 logger = logging.getLogger(__name__)
 
 _ONE_MEBIBYTE = 1024 * 1024
+#: Fixed mode for directory members in streamed allocation archives. Allocation
+#: modes are not preserved.
+_ARCHIVE_DIRECTORY_MODE = 0o755
 NOMAD_DEAD_JOB_STATUS = "dead"
 NOMAD_DEAD_TASK_STATE = "dead"
 NOMAD_RUNNING_TASK_STATE = "running"
@@ -3620,6 +3623,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 with tarfile.open(mode="w|gz", fileobj=writer) as tar:
                     root_info = tarfile.TarInfo(name=f"{root_name}/")
                     root_info.type = tarfile.DIRTYPE
+                    root_info.mode = _ARCHIVE_DIRECTORY_MODE
+                    root_info.mtime = int(utc_now().timestamp())
                     tar.addfile(root_info)
                     async for (
                         abs_path,
@@ -3632,6 +3637,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                             tarinfo.mtime = int(utc_now().timestamp())
                             if is_dir:
                                 tarinfo.type = tarfile.DIRTYPE
+                                tarinfo.mode = _ARCHIVE_DIRECTORY_MODE
                                 tar.addfile(tarinfo)
                                 continue
                             file_bytes = await self._read_file_bytes(
