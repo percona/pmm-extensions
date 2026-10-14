@@ -42,7 +42,7 @@
 | app/core/db/list\_query.py                                                                                                          |       87 |        0 |       24 |        0 |    100% |           |
 | app/core/db/models.py                                                                                                               |       14 |        0 |        0 |        0 |    100% |           |
 | app/core/db/sql\_types.py                                                                                                           |       37 |        0 |       12 |        0 |    100% |           |
-| app/core/db/utils.py                                                                                                                |      172 |       10 |       56 |        5 |     92% |206, 305-316, 334, 355, 424, 453 |
+| app/core/db/utils.py                                                                                                                |      218 |       27 |       68 |        7 |     85% |212, 311-322, 340, 361, 430, 459, 550-558, 724-744 |
 | app/core/encryption.py                                                                                                              |       43 |        0 |        2 |        0 |    100% |           |
 | app/core/exceptions.py                                                                                                              |       26 |        0 |        0 |        0 |    100% |           |
 | app/core/health.py                                                                                                                  |       79 |        0 |       12 |        0 |    100% |           |
@@ -224,7 +224,7 @@
 | app/extensions/apps/inventory/api\_routes.py                                                                                        |       39 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/app.py                                                                                                |       10 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/app\_owned\_settings.py                                                                               |        3 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/inventory/collection.py                                                                                         |      100 |        3 |       24 |        0 |     98% |   323-325 |
+| app/extensions/apps/inventory/collection.py                                                                                         |      104 |        6 |       24 |        0 |     95% |332-334, 363-365 |
 | app/extensions/apps/inventory/config.py                                                                                             |       17 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/connectivity.py                                                                                       |       42 |        0 |        6 |        0 |    100% |           |
 | app/extensions/apps/inventory/constants.py                                                                                          |        2 |        0 |        0 |        0 |    100% |           |
@@ -532,13 +532,14 @@
 | app/tasks/periodic/crud.py                                                                                                          |       31 |        0 |        0 |        0 |    100% |           |
 | app/tasks/periodic/deps.py                                                                                                          |       11 |        0 |        0 |        0 |    100% |           |
 | app/tasks/periodic/models.py                                                                                                        |      124 |        4 |       26 |        4 |     95% |299, 346, 360, 407 |
-| app/tasks/periodic/routes.py                                                                                                        |       69 |        4 |       12 |        2 |     93% |95, 169-\>171, 191-194, 207 |
+| app/tasks/periodic/routes.py                                                                                                        |       71 |        4 |       12 |        2 |     93% |96, 170-\>172, 192-195, 209 |
 | app/tasks/periodic/utils.py                                                                                                         |       33 |        0 |        8 |        1 |     98% | 125-\>126 |
-| app/tasks/routes.py                                                                                                                 |      237 |       18 |       46 |        5 |     92% |153-157, 242-\>246, 279, 329-338, 345, 458, 501, 516, 580-582, 659, 720, 734, 737, 764, 767-\>769 |
+| app/tasks/reference\_fence.py                                                                                                       |       47 |        2 |        2 |        0 |     96% |   157-158 |
+| app/tasks/routes.py                                                                                                                 |      241 |       18 |       46 |        5 |     92% |154-158, 245-\>249, 283, 333-342, 349, 462, 505, 520, 584-586, 663, 724, 738, 741, 768, 771-\>773 |
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34547** | **1768** | **8328** |  **700** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34650** | **1790** | **8342** |  **702** | **93%** |           |
 
 
 ## Setup coverage badge
