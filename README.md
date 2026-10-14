@@ -287,7 +287,7 @@
 | app/extensions/apps/om\_inventory/models.py                                                                                         |      132 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/payload/probe.py                                                                                  |      337 |       73 |      134 |       18 |     76% |106-114, 137-139, 147-157, 267-\>269, 271-\>265, 275, 285-\>278, 287-\>278, 291, 311-335, 352-\>350, 424-429, 462, 466-468, 470, 473, 476, 499-\>513, 578-\>580, 623, 771-772, 936, 967-1022, 1026 |
 | app/extensions/apps/om\_inventory/schema.py                                                                                         |        2 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/om\_inventory/service.py                                                                                        |      341 |       17 |       88 |        6 |     94% |104-116, 197, 558, 693, 894, 944-956, 1214-1219 |
+| app/extensions/apps/om\_inventory/service.py                                                                                        |      351 |       16 |       92 |        6 |     95% |105-117, 198, 603, 740, 941, 992, 999-1004, 1262-1267 |
 | app/extensions/apps/report/api\_routes.py                                                                                           |       68 |        2 |       18 |        3 |     94% |80, 86-\>90, 195-\>197, 231 |
 | app/extensions/apps/report/app.py                                                                                                   |       26 |        3 |       14 |        6 |     78% |47-\>49, 50, 51-\>53, 54, 56, 57-\>59 |
 | app/extensions/apps/report/app\_owned\_settings.py                                                                                  |        3 |        0 |        0 |        0 |    100% |           |
@@ -539,7 +539,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **34650** | **1790** | **8342** |  **702** | **93%** |           |
+| **TOTAL**                                                                                                                           | **34660** | **1789** | **8346** |  **702** | **93%** |           |
 
 
 ## Setup coverage badge
