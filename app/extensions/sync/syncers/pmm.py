@@ -373,7 +373,9 @@ class PMMSyncer(BaseSyncer):
         creating or updating corresponding nodes in the local inventory. A node that
         the fetch did not report is retired only once a complete generation has
         reported it absent ``missing_grace_generations`` times in a row. A partial
-        read is not evidence that anything disappeared from PMM.
+        read is not evidence that anything disappeared from PMM, and neither is an
+        empty node list: every active local node is held through it, so an estate
+        genuinely emptied in PMM has its last nodes retired by hand.
 
         :raises ValidationError: If an entity fails validation and ``break_on_error``
             is set.
@@ -430,6 +432,21 @@ class PMMSyncer(BaseSyncer):
                 present_ids.append(created_node.id)
                 await self.sync_node(created_node, node)
             logger.debug("Nodes absent from PMM: %s", syncable_nodes)
+            # A PMM reset, lost credential scope or wrong endpoint all answer
+            # with an empty list, which says nothing about any one node.
+            active_absent_ids = [
+                node.id for node in syncable_nodes.values() if not node.is_retired
+            ]
+            pmm_reported_nothing = (
+                not snapshot.nodes and not snapshot.diagnostics.filtered_node_ids
+            )
+            if pmm_reported_nothing and active_absent_ids:
+                logger.warning(
+                    "PMM reported no nodes; holding %d local node(s) instead of "
+                    "counting them absent: %s",
+                    len(active_absent_ids),
+                    active_absent_ids,
+                )
             owns_run = await self._owns_run()
             if owns_run:
                 await SyncEntityAbsenceManager.clear(
@@ -449,7 +466,9 @@ class PMMSyncer(BaseSyncer):
                 SyncInventoryEntityTypeEnum.NODE,
                 syncable_nodes.values(),
                 self.retire_node,
-                permitted=owns_run and self._generation_is_complete(),
+                permitted=owns_run
+                and self._generation_is_complete()
+                and not pmm_reported_nothing,
                 held_external_ids=snapshot.diagnostics.filtered_node_ids
                 | {
                     node.external_id
