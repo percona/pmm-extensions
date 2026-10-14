@@ -3425,10 +3425,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
 
         Nomad has nothing left before ``end`` once it has deleted an older
         rotated file, because the deletion shifts every request offset down by
-        that file's size while ``end`` was counted before it. The bytes read up
-        to Nomad's end are then the ones the shared follow already reached, so
-        the read stops there rather than failing, and the viewer rejoins the
-        live follow.
+        that file's size while ``start`` and ``end`` were counted before it.
+        The read then stops at Nomad's end rather than failing, so the viewer
+        rejoins the live follow instead of losing it. A ``start`` counted before
+        the deletion also lands that many bytes too far into the retained
+        files, so the viewer can miss text it had not yet been sent; only a
+        read from offset 0 is unaffected.
 
         :param alloc_id: The Nomad allocation identifier.
         :param step: The task step name.
@@ -3461,7 +3463,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 logger.warning(
                     "Nomad log catch-up reached the log's end at offset=%s before "
                     "%s alloc_id=%s step=%s log_type=%s; Nomad deleted an older "
-                    "rotated file, so the viewer rejoins the live follow there",
+                    "rotated file, so the viewer rejoins the live follow there and "
+                    "may be missing text it had not yet been sent",
                     position,
                     end,
                     alloc_id,
