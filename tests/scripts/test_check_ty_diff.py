@@ -15,8 +15,12 @@
 
 """Tests for the ``scripts/check_ty_diff.py`` CLI."""
 
+import ast
+import shutil
 import subprocess
 import sys
+import textwrap
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import pytest
@@ -123,6 +127,110 @@ def _run_main(monkeypatch, tmp_path, name_status, *outputs, argv=None):
     monkeypatch.setattr(check_ty_diff, "_ty_stdout", spy)
     code = check_ty_diff.main(argv if argv is not None else ["--base-sha", BASE_SHA])
     return code, spy
+
+
+RULE = "invalid-argument-type"
+OTHER_RULE = "unresolved-attribute"
+
+
+def _row(path, line, column, message, rule=RULE):
+    """Render one ty concise output row."""
+    return f"{path}:{line}:{column}: error[{rule}] {message}"
+
+
+def _diagnostic(line, column=1, *, path="app/x.py", rule=RULE, message="m"):
+    """Build a diagnostic with only the fields the delta key reads varying."""
+    return check_ty_diff.Diagnostic(
+        path=path,
+        line=line,
+        column=column,
+        severity="error",
+        rule=rule,
+        message=message,
+    )
+
+
+def _source(text):
+    """Parse dedented ``text`` the way the runner parses a checked file."""
+    return check_ty_diff.Source.parse(textwrap.dedent(text))
+
+
+def _key(text, line, column=1, **fields):
+    """Return the delta key of a diagnostic at ``line``/``column`` in ``text``."""
+    return check_ty_diff.delta_key(_diagnostic(line, column, **fields), _source(text))
+
+
+def _write_tree(root, files):
+    """Write ``files`` (repo-relative path to dedented text) under ``root``."""
+    for name, text in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(text), encoding="utf-8")
+
+
+def _run_main_with_sources(
+    monkeypatch, tmp_path, name_status, head_files, base_files, *outputs, argv=None
+):
+    """Drive ``main`` with real source files on both sides of the comparison.
+
+    The base tree is removed when its block exits, as the real worktree is, so a
+    runner that read base sources after the block would see none of them.
+
+    :return: A ``(exit_code, spy, base_root)`` triple.
+    """
+    _write_tree(tmp_path, head_files)
+    base_root = tmp_path / "base-tree"
+
+    @contextmanager
+    def fake_base_tree(merge_base):
+        _write_tree(base_root, base_files)
+        try:
+            yield base_root
+        finally:
+            shutil.rmtree(base_root)
+
+    monkeypatch.setattr(check_ty_diff, "base_tree", fake_base_tree)
+    code, spy = _run_main(monkeypatch, tmp_path, name_status, *outputs, argv=argv)
+    return code, spy, base_root
+
+
+CALL_SITE = """\
+from app.core import create_app
+
+
+def build():
+    return create_app(settings=None)
+"""
+# The same call site two lines lower, below an unrelated import.
+CALL_SITE_SHIFTED = """\
+from app.core import create_app
+from app.core import settings_for
+
+
+def build():
+
+    return create_app(settings=None)
+"""
+CALL_SITE_EDITED = """\
+from app.core import create_app
+
+
+def build():
+    return create_app(settings=None, debug=True)
+"""
+DECORATED = """\
+@route("/a")
+def build():
+    return 1
+"""
+TRY_EXCEPT = """\
+try:
+    run()
+except Missing as exc:
+    pass
+"""
+BASE_MESSAGE = "Expected `int | str`, found `None`"
+HEAD_MESSAGE = "Expected `str | int`, found `None`"
 
 
 def test_surplus_at_head_fails_and_prints_the_diagnostic(monkeypatch, tmp_path, capsys):
@@ -597,3 +705,461 @@ def test_annotation_cap_holds_while_the_summary_stays_complete(
     assert out.count("::warning file=") == check_ty_diff.ANNOTATION_CAP
     assert "+3 more" in out
     assert summary.read_text(encoding="utf-8").count("app/inventory/crud.py") == surplus
+
+
+class TestDeltaKey:
+    """Key a diagnostic on its rule and enclosing statement, never its message."""
+
+    def test_message_text_is_not_part_of_the_key(self):
+        """Match two diagnostics on one statement whatever their messages say."""
+        assert _key(CALL_SITE, 5, message=BASE_MESSAGE) == _key(
+            CALL_SITE, 5, message=HEAD_MESSAGE
+        )
+
+    def test_rule_is_part_of_the_key(self):
+        """Keep diagnostics of different rules on one statement apart."""
+        assert _key(CALL_SITE, 5) != _key(CALL_SITE, 5, rule=OTHER_RULE)
+
+    def test_path_is_part_of_the_key(self):
+        """Keep identical statements in different files apart."""
+        assert _key(CALL_SITE, 5) != _key(CALL_SITE, 5, path="app/y.py")
+
+    def test_lines_inserted_above_do_not_change_the_key(self):
+        """Match a statement that only moved down the file."""
+        assert _key(CALL_SITE, 5) == _key(CALL_SITE_SHIFTED, 7)
+
+    def test_editing_the_statement_changes_the_key(self):
+        """Separate a statement from its edited form."""
+        assert _key(CALL_SITE, 5) != _key(CALL_SITE_EDITED, 5)
+
+    def test_comments_and_formatting_do_not_change_the_key(self):
+        """Match a statement that was only reformatted or commented."""
+        reformatted = """\
+        from app.core import create_app
+
+
+        def build():
+            return create_app(  # the factory
+                settings=None,
+            )
+        """
+
+        assert _key(CALL_SITE, 5) == _key(reformatted, 6)
+
+    def test_a_continuation_line_keys_on_the_whole_statement(self):
+        """Anchor a diagnostic on a continuation line to its whole statement."""
+        multi_line = """\
+        value = compute(
+            first,
+            second,
+        )
+        """
+
+        assert _key(multi_line, 3) == _key("value = compute(first, second)\n", 1)
+
+    def test_a_body_statement_ignores_its_siblings(self):
+        """Anchor a body diagnostic to its own statement, not the function."""
+        before = """\
+        def build():
+            prepare()
+            return create_app(settings=None)
+        """
+        after = """\
+        def build():
+            prepare(verbose=True)
+            return create_app(settings=None)
+        """
+
+        assert _key(before, 3) == _key(after, 3)
+
+    def test_a_header_diagnostic_ignores_the_body(self):
+        """Match a ``def``-line diagnostic across edits to the body below it."""
+        before = """\
+        def build(settings: int = None):
+            return 1
+        """
+        after = """\
+        def build(settings: int = None):
+            log()
+            return 2
+        """
+
+        assert _key(before, 1) == _key(after, 1)
+
+    def test_a_header_diagnostic_follows_the_signature(self):
+        """Separate a ``def``-line diagnostic once the signature changes."""
+        before = "def build(settings: int = None):\n    return 1\n"
+        after = "def build(settings: str = None):\n    return 1\n"
+
+        assert _key(before, 1) != _key(after, 1)
+
+    def test_a_decorator_line_belongs_to_the_decorated_definition(self):
+        """Anchor a decorator-line diagnostic to the decorated definition."""
+        assert _key(DECORATED, 1) == _key(DECORATED, 2)
+
+    def test_changing_a_decorator_changes_the_key(self):
+        """Separate a decorator-line diagnostic once the decorator changes."""
+        redecorated = DECORATED.replace('"/a"', '"/b"')
+
+        assert _key(DECORATED, 1) != _key(redecorated, 1)
+
+    @pytest.mark.parametrize(
+        ("column", "statement"),
+        [(1, "first = f(a)\n"), (15, "second = g(b)\n")],
+        ids=["first", "second"],
+    )
+    def test_the_column_selects_between_statements_on_one_line(self, column, statement):
+        """Pick the statement the column points at when a line holds two."""
+        line = "first = f(a); second = g(b)\n"
+
+        assert _key(line, 1, column=column) == _key(statement, 1)
+
+    def test_the_column_counts_characters_not_bytes(self):
+        """Convert ty's character column to the parser's byte offset."""
+        # "é" is one character but two UTF-8 bytes: ty puts `t` at column 10,
+        # the AST at byte offset 10, so an uncorrected count lands on `s = "é"`.
+        line = 's = "é"; t = f(s)\n'
+
+        assert _key(line, 1, column=10) == _key("t = f(s)\n", 1)
+
+    def test_a_diagnostic_past_the_end_of_a_statement_stays_on_its_line(self):
+        """Anchor a diagnostic on a trailing comment to its line's statement."""
+        line = "value = f(a)  # ty: ignore[invalid-argument-type]\n"
+
+        assert _key(line, 1, column=20) == _key("value = f(a)\n", 1)
+
+    def test_an_except_clause_keys_on_the_handler_not_the_try(self):
+        """Match an ``except``-line diagnostic across edits to the ``try`` body."""
+        after = TRY_EXCEPT.replace("run()", "run(retries=3)")
+
+        assert _key(TRY_EXCEPT, 3) == _key(after, 3)
+
+    def test_an_except_clause_follows_its_exception_type(self):
+        """Separate an ``except``-line diagnostic once the caught type changes."""
+        after = TRY_EXCEPT.replace("Missing", "Other")
+
+        assert _key(TRY_EXCEPT, 3) != _key(after, 3)
+
+    def test_an_elif_condition_keys_on_its_own_branch(self):
+        """Anchor an ``elif``-line diagnostic to that branch's condition."""
+        before = """\
+        if ready:
+            go()
+        elif check(x):
+            wait()
+        """
+        after = before.replace("go()", "go(now=True)")
+
+        assert _key(before, 3) == _key(after, 3)
+
+    def test_a_form_feed_does_not_shift_the_line_count(self):
+        """Number lines as the parser does, not as ``str.splitlines`` does."""
+        # str.splitlines() treats \x0c as a line break; the parser does not.
+        text = "x = 1  # \x0c\ny = f(x)\n"
+
+        assert _key(text, 2) == _key("y = f(x)\n", 1)
+
+    def test_a_missing_source_falls_back_to_the_message(self):
+        """Key on the message when the file could not be parsed."""
+        key = check_ty_diff.delta_key(_diagnostic(5, message=BASE_MESSAGE), None)
+
+        assert key == check_ty_diff.DeltaKey(
+            "app/x.py", RULE, check_ty_diff.AnchorKind.MESSAGE, BASE_MESSAGE
+        )
+
+    @pytest.mark.parametrize("line", [0, -1, 99])
+    def test_a_line_outside_the_file_falls_back_to_the_message(self, line):
+        """Key on the message when the line is not in the file."""
+        assert _key(CALL_SITE, line).kind == check_ty_diff.AnchorKind.MESSAGE
+
+    @pytest.mark.parametrize("line", [2, 3, 5, 6])
+    def test_a_blank_or_comment_line_falls_back_to_the_message(self, line):
+        """Key on the message when the line holds no code."""
+        # Lines 5 and 6 sit inside a function, which would otherwise claim them.
+        text = "x = 1\n\n# a comment\ndef build():\n\n    # inner\n    return 1\n"
+
+        assert _key(text, line).kind == check_ty_diff.AnchorKind.MESSAGE
+
+    def test_a_line_outside_every_statement_falls_back_to_the_message(self):
+        """Key on the message when no statement spans a line that holds code."""
+        # A lone continuation backslash joins the next line, but the statement
+        # it joins starts on that next line, so nothing spans this one.
+        text = "x = 1\n\\\ny = 2\n"
+
+        assert _key(text, 2).kind == check_ty_diff.AnchorKind.MESSAGE
+
+    def test_a_fallback_key_never_equals_a_statement_key(self):
+        """Tag the anchor kind so a message can never pose as a statement."""
+        statement = _key("m\n", 1, message="m")
+        fallback = check_ty_diff.delta_key(_diagnostic(1, message="m"), None)
+
+        assert statement.kind == check_ty_diff.AnchorKind.STATEMENT
+        assert statement != fallback
+
+
+class TestParseSources:
+    """Read the checked files, leaving out any that cannot be keyed."""
+
+    def test_a_valid_file_is_parsed(self, tmp_path):
+        """Return the parsed tree and lines of a readable file."""
+        _write_tree(tmp_path, {"app/x.py": "x = 1\n"})
+
+        sources = check_ty_diff.parse_sources(tmp_path, ["app/x.py"])
+
+        assert isinstance(sources["app/x.py"].tree, ast.Module)
+        assert sources["app/x.py"].lines[0] == "x = 1"
+
+    def test_a_missing_file_is_left_out(self, tmp_path):
+        """Leave out a path that does not exist on that side."""
+        assert check_ty_diff.parse_sources(tmp_path, ["app/gone.py"]) == {}
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b"def broken(:\n",
+            b"x = '\xff'\n",
+            b"x = 1\x00\n",
+        ],
+        ids=["syntax-error", "not-utf8", "null-byte"],
+    )
+    def test_an_unparseable_file_is_left_out(self, tmp_path, content):
+        """Leave out a file that cannot be decoded or parsed."""
+        (tmp_path / "x.py").write_bytes(content)
+
+        assert check_ty_diff.parse_sources(tmp_path, ["x.py"]) == {}
+
+    def test_a_parser_recursion_failure_is_left_out(self, tmp_path, monkeypatch):
+        """Leave out a file nested too deeply for the parser."""
+        (tmp_path / "x.py").write_text("x = 1\n", encoding="utf-8")
+
+        def explode(*args, **kwargs):
+            raise RecursionError
+
+        monkeypatch.setattr(check_ty_diff.Source, "parse", explode)
+
+        assert check_ty_diff.parse_sources(tmp_path, ["x.py"]) == {}
+
+    def test_a_path_outside_the_root_is_not_read(self, tmp_path):
+        """Refuse a path that resolves outside the tree being read."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        (tmp_path / "outside.py").write_text("x = 1\n", encoding="utf-8")
+
+        assert check_ty_diff.parse_sources(root, ["../outside.py"]) == {}
+
+
+class TestMessageRewriteIsNotSurplus:
+    """Stay green when the branch only changes what a pre-existing diagnostic says."""
+
+    @pytest.mark.parametrize(
+        ("head_rows", "base_rows", "extra_argv"),
+        [
+            pytest.param(
+                [_row("app/x.py", 7, 12, HEAD_MESSAGE)],
+                [_row("app/x.py", 5, 12, BASE_MESSAGE)],
+                [],
+                id="rewritten-message",
+            ),
+            pytest.param(
+                [_row("app/x.py", 7, 12, HEAD_MESSAGE)],
+                [_row("app/x.py", 5, 12, BASE_MESSAGE)],
+                ["--per-file"],
+                id="rewritten-message-per-file",
+            ),
+            # Accepted limit: a same-rule swap at unchanged multiplicity cancels.
+            pytest.param(
+                [_row("app/x.py", 7, 12, "c"), _row("app/x.py", 7, 30, "d")],
+                [_row("app/x.py", 5, 12, "a"), _row("app/x.py", 5, 30, "b")],
+                [],
+                id="same-statement-swap",
+            ),
+        ],
+    )
+    def test_a_rewritten_message_on_an_unchanged_statement_passes(
+        self, monkeypatch, tmp_path, head_rows, base_rows, extra_argv
+    ):
+        """Exit clean when only the messages on an unchanged statement changed."""
+        code, _, _ = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "M\tapp/x.py\n",
+            {"app/x.py": CALL_SITE_SHIFTED},
+            {"app/x.py": CALL_SITE},
+            _output(*head_rows),
+            _output(*base_rows),
+            argv=["--base-sha", BASE_SHA, *extra_argv],
+        )
+
+        assert code == 0
+
+    def test_a_renamed_file_with_rewritten_messages_passes(self, monkeypatch, tmp_path):
+        """Match a moved file's statements under the name the branch gives it."""
+        code, _, _ = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "R091\tapp/old.py\tapp/new.py\n",
+            {"app/new.py": CALL_SITE_SHIFTED},
+            {"app/old.py": CALL_SITE},
+            _output(_row("app/new.py", 7, 12, HEAD_MESSAGE)),
+            _output(_row("app/old.py", 5, 12, BASE_MESSAGE)),
+        )
+
+        assert code == 0
+
+    def test_base_sources_are_read_before_the_worktree_is_removed(
+        self, monkeypatch, tmp_path
+    ):
+        """Parse the base files while the merge-base worktree still exists."""
+        code, _, base_root = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "M\tapp/x.py\n",
+            {"app/x.py": CALL_SITE},
+            {"app/x.py": CALL_SITE},
+            _output(_row("app/x.py", 5, 12, HEAD_MESSAGE)),
+            _output(_row("app/x.py", 5, 12, BASE_MESSAGE)),
+        )
+
+        assert not base_root.exists()
+        assert code == 0
+
+
+class TestChangedStatementIsSurplus:
+    """Compare a diagnostic on a statement the branch edited as new."""
+
+    def test_an_edited_statement_reports_even_with_an_identical_message(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Report an edited statement's diagnostic even with an unchanged message."""
+        code, _, _ = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "M\tapp/x.py\n",
+            {"app/x.py": CALL_SITE_EDITED},
+            {"app/x.py": CALL_SITE},
+            _output(_row("app/x.py", 5, 12, BASE_MESSAGE)),
+            _output(_row("app/x.py", 5, 12, BASE_MESSAGE)),
+        )
+
+        assert code == 1
+        assert "app/x.py:5:12" in capsys.readouterr().out
+
+
+class TestAddedDiagnosticsStillReport:
+    """Report what the branch adds, rendered as the branch reports it."""
+
+    def test_a_diagnostic_on_a_new_statement_reports(self, monkeypatch, tmp_path):
+        """Report a diagnostic on a statement the branch added."""
+        head = CALL_SITE + "\n\nextra = create_app(None)\n"
+        code, _, _ = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "M\tapp/x.py\n",
+            {"app/x.py": head},
+            {"app/x.py": CALL_SITE},
+            _output(
+                _row("app/x.py", 5, 12, HEAD_MESSAGE),
+                _row("app/x.py", 8, 20, HEAD_MESSAGE),
+            ),
+            _output(_row("app/x.py", 5, 12, BASE_MESSAGE)),
+        )
+
+        assert code == 1
+
+    def test_a_second_copy_on_an_unchanged_statement_reports_once(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Report exactly the extra copy, since keys form a multiset."""
+        code, _, _ = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "M\tapp/x.py\n",
+            {"app/x.py": CALL_SITE},
+            {"app/x.py": CALL_SITE},
+            _output(
+                _row("app/x.py", 5, 12, BASE_MESSAGE),
+                _row("app/x.py", 5, 30, BASE_MESSAGE),
+            ),
+            _output(_row("app/x.py", 5, 12, BASE_MESSAGE)),
+        )
+
+        assert code == 1
+        assert "1 ty diagnostic(s) absent" in capsys.readouterr().out
+
+    def test_a_diagnostic_in_an_added_file_reports(self, monkeypatch, tmp_path):
+        """Report every diagnostic in a file absent at the merge-base."""
+        code, _, _ = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "A\tapp/x.py\n",
+            {"app/x.py": CALL_SITE},
+            {},
+            _output(_row("app/x.py", 5, 12, BASE_MESSAGE)),
+        )
+
+        assert code == 1
+
+    def test_the_report_carries_the_head_message_and_line(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Render surplus with the branch's message and line, not the base's."""
+        summary = tmp_path / "summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+        head = CALL_SITE_SHIFTED.replace("settings=None", "settings=None, debug=True")
+
+        code, _, _ = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "M\tapp/x.py\n",
+            {"app/x.py": head},
+            {"app/x.py": CALL_SITE},
+            _output(_row("app/x.py", 7, 12, HEAD_MESSAGE)),
+            _output(_row("app/x.py", 5, 12, BASE_MESSAGE)),
+        )
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert f"::warning file=app/x.py,line=7,title={RULE}::{HEAD_MESSAGE}" in out
+        assert BASE_MESSAGE not in out
+        assert "| `app/x.py` | 7 |" in summary.read_text(encoding="utf-8")
+
+
+class TestUnparseableSourceDegrades:
+    """Compare a file by message when either side cannot be keyed by statement."""
+
+    @pytest.mark.parametrize(
+        ("head_message", "expected"),
+        [(BASE_MESSAGE, 0), (HEAD_MESSAGE, 1)],
+        ids=["same-message-matches", "changed-message-reports"],
+    )
+    def test_an_unparseable_base_compares_by_message(
+        self, monkeypatch, tmp_path, head_message, expected
+    ):
+        """Fall back to message identity, reporting what it cannot match."""
+        code, _, _ = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "M\tapp/x.py\n",
+            {"app/x.py": CALL_SITE},
+            {"app/x.py": "def build(:\n"},
+            _output(_row("app/x.py", 5, 12, head_message)),
+            _output(_row("app/x.py", 1, 1, BASE_MESSAGE)),
+        )
+
+        assert code == expected
+
+    def test_a_diagnostic_past_the_end_of_the_file_still_reports(
+        self, monkeypatch, tmp_path
+    ):
+        """Report a diagnostic whose line the parsed file does not have."""
+        code, _, _ = _run_main_with_sources(
+            monkeypatch,
+            tmp_path,
+            "M\tapp/x.py\n",
+            {"app/x.py": CALL_SITE},
+            {"app/x.py": CALL_SITE},
+            _output(_row("app/x.py", 99, 1, BASE_MESSAGE)),
+            _output(_row("app/x.py", 5, 12, BASE_MESSAGE)),
+        )
+
+        assert code == 1
