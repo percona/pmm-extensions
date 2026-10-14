@@ -168,15 +168,15 @@ From here the `typecheck` job re-measures the exit status on every PR, so the
 figure that needs maintaining by hand is the count, not the status.
 
 Re-measured after the settings field helpers and the Celery event loop were
-typed at the source, on `cb8370a7d` plus that change, with the pinned
-`ty 0.0.49` from the local `venv`: **4,464 — 0 error, 4,464 warning**,
-`make typecheck` exit **0**. The parent alone reads **4,467** in the same
+typed at the source, on `3312f611f` plus that change, with the pinned
+`ty 0.0.49` from the local `venv`: **4,433 — 0 error, 4,433 warning**,
+`make typecheck` exit **0**. The parent alone reads **4,436** in the same
 environment, so the change itself removes three reporting diagnostics. It also
 deletes 97 `# ty: ignore` comments and two `[[tool.ty.overrides]]` blocks, and
 those were silencing their diagnostics already. The rise from 3,287 happened
 across the merges in between. The `typecheck` job confirms the figure on the
-pull request's merge tree `097516dd4` (that change merged with `88f9f74e6`):
-**4,464**, exit **0**, so the local and CI readings agree for this tree.
+pull request's merge tree `232e93f` (that change merged with `3312f611f`):
+**4,433**, exit **0**, so the local and CI readings agree for this tree.
 
 The error count reaching zero is what SEP-1908 was for; the warning fleet is
 unchanged by design, because the nine rules at `warn` mix first-party defects
