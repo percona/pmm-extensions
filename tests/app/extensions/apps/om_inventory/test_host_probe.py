@@ -28,7 +28,9 @@ are reported once.
 
 import asyncio
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -45,6 +47,7 @@ from app.extensions.apps.om_inventory.mapping import MappedService
 from app.extensions.apps.om_inventory.models import NodeResolution
 from app.extensions.apps.om_inventory.payload import probe
 from app.tasks.execution.utils import minify_file_content
+from tests.app.host_payloads import missing_interpreter_is_fatal
 
 HOST_LINE = (
     '{"service": null, "collected_at": 1, "status": "ok", '
@@ -298,43 +301,132 @@ class TestThePayloadRunsOnOldPython:
         own comment the collision raises ``UnboundLocalError``, which is why that
         function is written with loops.
 
-        The minified function runs in *this* interpreter, so the coverage follows
-        the test matrix: ``.github/workflows/python.yaml`` runs this suite on
-        3.11.9, 3.12.3 and 3.13, and 3.12.3 is inside the affected range, so a
-        revert to the comprehension form fails that leg rather than reaching a
-        monitored host. That leg is load-bearing for this test — a bump past
-        3.12.3 takes the coverage with it.
-
-        The renamed top-level name is found by signature (``rename_globals``
-        renames it away, unpredictably across minifier versions) rather than by
-        executing the module, since ``main()`` runs for real under
-        ``if __name__ == "__main__"`` and this only wants one function from it.
+        This runs the minified function in *this* interpreter, which is outside the
+        affected range; :meth:`test_find_unregistered_survives_minification_on_3_12_3`
+        is the one that fails on a revert to the comprehension form.
         """
-        source = Path(probe.__file__).read_text(encoding="utf-8")
-        minified = minify_file_content(source, "py")
-
-        match = re.search(
-            r"def (\w+)\(processes,targets,matched_pids=frozenset\(\)\)", minified
-        )
-        assert match is not None, (
-            f"find_unregistered's signature is not recognisable post-minification: "
-            f"{minified}"
-        )
+        source, name = _minified_find_unregistered()
 
         namespace: dict[str, object] = {"__name__": "<minified probe.py>"}
-        exec(compile(minified, "<minified probe.py>", "exec"), namespace)
-        find_unregistered = namespace[match.group(1)]
+        exec(compile(source, "<minified probe.py>", "exec"), namespace)
+        find_unregistered = namespace[name]
 
-        matched = {"pid": 1, "port": None}
-        unmatched = {"pid": 2, "port": None}
-        registered = {"pid": 3, "port": 27017}
-        stranger = {"pid": 4, "port": 27018}
-        targets = [{"port": 27017}]
+        for processes, matched_pids, expected in _FIND_UNREGISTERED_CASES:
+            assert find_unregistered(processes, _TARGETS, matched_pids) == expected
 
-        assert find_unregistered([matched], targets, frozenset({1})) == []
-        assert find_unregistered([unmatched], targets, frozenset()) == [unmatched]
-        assert find_unregistered([registered], targets, frozenset()) == []
-        assert find_unregistered([stranger], targets, frozenset()) == [stranger]
-        assert find_unregistered(
-            [matched, unmatched, registered, stranger], targets, frozenset({1})
-        ) == [unmatched, stranger]
+    def test_find_unregistered_survives_minification_on_3_12_3(self) -> None:
+        """Return the same answer from minified ``find_unregistered`` under 3.12.3.
+
+        3.12.3 is inside the affected range and is what Ubuntu 24.04 hosts run, but
+        it is not an interpreter the suite itself runs under, so the minified
+        function is executed in a subprocess on one CI provisions through
+        ``$EXTENSIONS_PEP709_CHECK_PYTHON``. Outside CI a missing interpreter skips.
+        """
+        python = _resolve_pep709_interpreter()
+        source, name = _minified_find_unregistered()
+        payload = {
+            "source": source,
+            "name": name,
+            "targets": _TARGETS,
+            "cases": [
+                [processes, sorted(matched_pids)]
+                for processes, matched_pids, _ in _FIND_UNREGISTERED_CASES
+            ],
+        }
+
+        result = subprocess.run(
+            [python, "-I", "-c", _PEP709_RUNNER],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == [
+            expected for _, _, expected in _FIND_UNREGISTERED_CASES
+        ]
+
+
+#: The interpreter the 3.12.3 minification check must run under.
+_PEP709_PYTHON = (3, 12, 3)
+#: The environment variable naming that interpreter.
+_PEP709_PYTHON_ENV = "EXTENSIONS_PEP709_CHECK_PYTHON"
+
+_TARGETS = [{"port": 27017}]
+_MATCHED = {"pid": 1, "port": None}
+_UNMATCHED = {"pid": 2, "port": None}
+_REGISTERED = {"pid": 3, "port": 27017}
+_STRANGER = {"pid": 4, "port": 27018}
+#: ``(processes, matched_pids, expected)`` against :data:`_TARGETS`.
+_FIND_UNREGISTERED_CASES: list[tuple[list[dict], frozenset[int], list[dict]]] = [
+    ([_MATCHED], frozenset({1}), []),
+    ([_UNMATCHED], frozenset(), [_UNMATCHED]),
+    ([_REGISTERED], frozenset(), []),
+    ([_STRANGER], frozenset(), [_STRANGER]),
+    (
+        [_MATCHED, _UNMATCHED, _REGISTERED, _STRANGER],
+        frozenset({1}),
+        [_UNMATCHED, _STRANGER],
+    ),
+]
+
+#: Execs the minified probe read from stdin and prints ``find_unregistered``'s answers.
+_PEP709_RUNNER = """
+import json, sys
+data = json.load(sys.stdin)
+namespace = {"__name__": "<minified probe.py>"}
+exec(compile(data["source"], "<minified probe.py>", "exec"), namespace)
+find_unregistered = namespace[data["name"]]
+print(json.dumps([
+    find_unregistered(processes, data["targets"], frozenset(matched_pids))
+    for processes, matched_pids in data["cases"]
+]))
+"""
+
+
+def _minified_find_unregistered() -> tuple[str, str]:
+    """Return the whole-file minified probe and ``find_unregistered``'s name in it.
+
+    The renamed top-level name is found by signature (``rename_globals`` renames it
+    away, unpredictably across minifier versions) rather than by executing the
+    module, since ``main()`` runs for real under ``if __name__ == "__main__"`` and
+    this only wants one function from it.
+
+    :return: The minified source and the function's minified name.
+    """
+    source = Path(probe.__file__).read_text(encoding="utf-8")
+    minified = minify_file_content(source, "py")
+
+    match = re.search(
+        r"def (\w+)\(processes,targets,matched_pids=frozenset\(\)\)", minified
+    )
+    assert match is not None, (
+        f"find_unregistered's signature is not recognisable post-minification: "
+        f"{minified}"
+    )
+    return minified, match.group(1)
+
+
+def _resolve_pep709_interpreter() -> str:
+    """Return the 3.12.3 interpreter, failing in CI and skipping elsewhere if absent.
+
+    :return: The interpreter path.
+    """
+    python = os.environ.get(_PEP709_PYTHON_ENV)
+    if python is None:
+        if missing_interpreter_is_fatal():
+            pytest.fail(f"CI must provide Python 3.12.3: set {_PEP709_PYTHON_ENV}")
+        pytest.skip(f"{_PEP709_PYTHON_ENV} unset")
+    reported = subprocess.run(
+        [python, "-c", "import sys; print(*sys.version_info[:3])"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    version = tuple(map(int, reported))
+    assert version == _PEP709_PYTHON, (
+        f"{_PEP709_PYTHON_ENV}={python} is Python {'.'.join(reported)}, not 3.12.3"
+    )
+    return python
