@@ -185,8 +185,8 @@ def field_with_metadata(
     omitted default return ``Any``. At runtime the result is always a
     :class:`~pydantic.fields.FieldInfo`.
 
-    :param default: The field's default value, forwarded to ``Field``. Omitted, the
-        field is required.
+    :param default: The field's default value, forwarded to ``Field``. Omitted
+        with no ``default_factory``, the field is required.
     :type default: Any
     :param metadata: A dictionary containing key-value pairs to be added as custom
         metadata to the field. Defaults to ``None``.

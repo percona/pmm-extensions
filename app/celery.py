@@ -48,7 +48,6 @@ class ExtensionsCelery(Celery):
     inherited from the parent.
 
     :ivar loop: The event loop the current process drives task coroutines on.
-    :vartype loop: asyncio.AbstractEventLoop
     """
 
     loop: asyncio.AbstractEventLoop

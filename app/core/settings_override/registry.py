@@ -231,9 +231,7 @@ def _field_contract(helper: _ClassifiedFieldHelper) -> _ClassifiedFieldHelper:
 
     :param helper: A reload-classification helper whose implementation
         signature accepts every overload of :class:`_ClassifiedFieldHelper`.
-    :type helper: _ClassifiedFieldHelper
     :return: The same function object, so runtime behavior is untouched.
-    :rtype: _ClassifiedFieldHelper
     """
     return helper
 
