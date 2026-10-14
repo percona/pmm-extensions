@@ -39,7 +39,6 @@ from collections.abc import (
     AsyncIterator,
     Awaitable,
     Callable,
-    Collection,
     Generator,
     Iterable,
     Mapping,
@@ -128,8 +127,8 @@ _SENSITIVE_HEADERS = frozenset(
 # logs. Compared case-insensitively against JSON/form body keys.
 _SENSITIVE_BODY_FIELDS = frozenset({"password", "secret", "token"})
 _REDACTED_VALUE = "****"
-# Stands in for a response body a caller withheld from the log, so the line
-# keeps naming the request that produced it.
+# Stands in for a request or response body a caller withheld from the log, so
+# the line keeps naming the request that produced it.
 _WITHHELD_BODY = "<withheld>"
 # Bounds the decoded body reaching the exception log: the upstream answering
 # HTML rather than JSON decides that body's size, so a large error page would
@@ -289,7 +288,7 @@ def _sanitize_request_kwargs(
     *,
     extra_sensitive_headers: frozenset[str] = frozenset(),
     extra_sensitive_body_fields: frozenset[str] = frozenset(),
-    sensitive_body_paths: Collection[str] = (),
+    withhold_body: bool = False,
 ) -> dict[str, Any]:
     """Return a copy of request kwargs with credentials redacted.
 
@@ -305,9 +304,9 @@ def _sanitize_request_kwargs(
         beyond the always-masked credential headers.
     :param extra_sensitive_body_fields: Additional lowercase body field names to
         mask, beyond the always-masked credential fields.
-    :param sensitive_body_paths: Dotted paths of nested body values to mask,
-        each segment compared case-insensitively. A path whose parent is absent
-        or is not a mapping masks nothing.
+    :param withhold_body: Whether to replace the request body outright, rather
+        than mask fields inside it, for a caller whose body carries credentials
+        under shapes no list of field names can anticipate.
     :return: A copy safe to log, with sensitive header and body values masked.
     """
     sensitive_headers = _SENSITIVE_HEADERS | extra_sensitive_headers
@@ -321,46 +320,17 @@ def _sanitize_request_kwargs(
         }
     for body_key in ("json", "data"):
         body = kwargs.get(body_key)
-        if isinstance(body, dict):
+        if withhold_body and body is not None:
+            safe[body_key] = _WITHHELD_BODY
+        elif isinstance(body, dict):
             redacted = {
                 key: (
                     _REDACTED_VALUE if key.lower() in sensitive_body_fields else value
                 )
                 for key, value in body.items()
             }
-            for path in sensitive_body_paths:
-                redacted = _redact_body_path(redacted, path.lower().split("."))
             safe[body_key] = redacted
     return safe
-
-
-def _redact_body_path(body: dict[str, Any], segments: list[str]) -> dict[str, Any]:
-    """Return ``body`` with the value its path names replaced by the redaction mark.
-
-    Only the containers on the path are copied, and only when the path resolves,
-    so the body the request is sent with is never touched.
-
-    :param body: The mapping the first segment is looked up in.
-    :param segments: The lowercase path segments still to resolve.
-    :return: A copy of ``body`` with the named value masked, or ``body`` itself
-        when the path names nothing in it.
-    """
-    head, *rest = segments
-    result = body
-    for key, value in body.items():
-        if not isinstance(key, str) or key.lower() != head:
-            continue
-        if not rest:
-            replacement: Any = _REDACTED_VALUE
-        elif isinstance(value, dict):
-            replacement = _redact_body_path(value, rest)
-        else:
-            continue
-        if replacement is not value:
-            if result is body:
-                result = {**body}
-            result[key] = replacement
-    return result
 
 
 def _raise_stream_line_too_big(size: int, path: str) -> NoReturn:
@@ -616,37 +586,26 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     :param ssl_keyfile: Path to the SSL key file. Defaults to None.
     :param ssl_certfile: Path to the SSL certificate file. Defaults to None.
     :param logger_name: Name to use for the logger. Defaults to ``__name__``.
-    :param sensitive_body_paths: Dotted paths of nested request-body values this
-        client never writes to its request log, such as ``meta.args``. Segments
-        match case-insensitively. Applies to every call, on top of the body
-        fields always masked by name and of :attr:`SENSITIVE_BODY_PATHS`, which
-        it can add to but never remove from. Defaults to none.
-    :param withhold_response_log: Whether this client keeps every response body
-        out of its log, for an upstream whose responses carry credentials. The
-        status, method and path are still logged. Defaults to ``False``.
+    :param withhold_body_log: Whether this client keeps every request and
+        response body out of its log, for an upstream whose bodies carry
+        credentials. The method, path, sanitized headers and status are still
+        logged. Defaults to ``False``.
     :cvar CONNECTIVITY_CHECK_PATH: Lightweight route hit by
         :meth:`RemoteAPI.check_connectivity` for a reachability probe. Never
         enters the client-registry key or model serialization. Override per
         client, or pass an explicit ``path`` to ``check_connectivity``.
     :cvar STREAM_CONNECTION_LIMIT: Default for :attr:`stream_connection_limit`.
-    :cvar SENSITIVE_BODY_PATHS: Dotted paths of nested request-body values every
-        instance of the client class keeps out of its request log, whatever its
-        ``sensitive_body_paths`` holds. A class variable rather than a field
-        default, so a client that is also a settings model carries its redaction
-        policy out of reach of an operator override.
     """
 
     CONNECTIVITY_CHECK_PATH: ClassVar[str] = "/"
     STREAM_CONNECTION_LIMIT: ClassVar[int] = 64
-    SENSITIVE_BODY_PATHS: ClassVar[tuple[str, ...]] = ()
     endpoint: CredentialHttpUrl = Field(..., frozen=True)
     verify_ssl: bool = Field(default=True, frozen=True)
     ssl_cafile: RelativeFilePathField | None = Field(None, frozen=True)
     ssl_keyfile: RelativeFilePathField | None = Field(None, frozen=True)
     ssl_certfile: RelativeFilePathField | None = Field(None, frozen=True)
     logger_name: str = __name__
-    sensitive_body_paths: tuple[str, ...] = ()
-    withhold_response_log: bool = False
+    withhold_body_log: bool = False
     _session: ClientSession | None = None
     _stream_session: ClientSession | None = None
     _in_flight: int = 0
@@ -673,6 +632,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     )
     _suppress_response_log: ContextVar[bool] = PrivateAttr(
         default_factory=lambda: ContextVar("api_suppress_response_log", default=False)
+    )
+    _suppress_request_log: ContextVar[bool] = PrivateAttr(
+        default_factory=lambda: ContextVar("api_suppress_request_log", default=False)
     )
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -1160,6 +1122,30 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         finally:
             self._suppress_response_log.reset(token)
 
+    @contextmanager
+    def suppress_request_log(self) -> Generator[Self]:
+        """Withhold the request body from the transport's own log record for the call.
+
+        Register that the ``json`` and ``data`` bodies of requests sent inside
+        the block must not reach the log. Use this where one call's body carries
+        data that must not outlive the request in a log line while the client's
+        other request bodies stay logged. The method, path and sanitized headers
+        are still logged.
+
+        Guards the request-logging site in :meth:`request` and nothing else.
+
+        Like :meth:`suppress_response_log` and unlike :meth:`redact_headers`,
+        this flag has nothing to union; an enclosing suppression survives an
+        inner block's exit unchanged.
+
+        :return: The instance with request body logging withheld.
+        """
+        token = self._suppress_request_log.set(True)
+        try:
+            yield self
+        finally:
+            self._suppress_request_log.reset(token)
+
     @cached_property
     def logger(self) -> logging.Logger:
         """Return logger object to use.
@@ -1416,9 +1402,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                 kwargs,
                 extra_sensitive_headers=self._extra_sensitive_headers.get(),
                 extra_sensitive_body_fields=self._extra_sensitive_body_fields.get(),
-                sensitive_body_paths=(
-                    *self.SENSITIVE_BODY_PATHS,
-                    *self.sensitive_body_paths,
+                withhold_body=(
+                    self._suppress_request_log.get() or self.withhold_body_log
                 ),
             ),
         )
@@ -1828,9 +1813,7 @@ class RemoteAPI(BaseRemoteAPI):
                     response.status,
                     detail="The server answered with an unfollowed redirect.",
                 )
-            withhold_body = (
-                self._suppress_response_log.get() or self.withhold_response_log
-            )
+            withhold_body = self._suppress_response_log.get() or self.withhold_body_log
             response_data: JSONBody = None
             try:
                 response_data = await response.json()

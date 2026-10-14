@@ -90,7 +90,6 @@ from app.tasks.execution.executors.nomad.steps import (
 )
 from app.tasks.execution.models import BaseExecutor
 from app.tasks.execution.utils import gzip_compress, minify_file_content
-from app.tasks.execution_request_secrets import ENCRYPTED_LEAVES
 from app.tasks.logs.line_split import split_complete_lines, WithheldLineBuffer
 from app.tasks.logs.log_reader import decompress_legacy_logs
 from app.tasks.logs.log_writer import (
@@ -831,16 +830,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     :cvar INHERITED_MARKERS: Overlay marking the inherited ``BaseRemoteAPI`` TLS
         fields (``verify_ssl`` and the ``ssl_*`` paths) HOT and ``advanced``
         without redeclaring them; set to the shared :data:`REMOTE_API_TLS_MARKERS`.
-    :cvar SENSITIVE_BODY_PATHS: The protected execution-request leaves, which a
-        dispatch body carries in clear, so no settings override can put them back
-        in the request log.
     """
 
     # Overlay, not redeclaration: redeclaring would drop the inherited frozen
     # ``FieldInfo`` and force ``frozen=True`` repeated. ``endpoint`` left unmarked.
     # Reuses the shared TLS overlay so every remote-api model marks these the same.
     INHERITED_MARKERS: ClassVar[InheritedMarkers] = REMOTE_API_TLS_MARKERS
-    SENSITIVE_BODY_PATHS: ClassVar[tuple[str, ...]] = ENCRYPTED_LEAVES
     secure: bool = hot_field(default=False, advanced=True)
     timeout: int = hot_field(10, advanced=True)
     minify_payload: bool = hot_field(default=True, advanced=True)
@@ -1160,6 +1155,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         kwargs.setdefault("timeout", ClientTimeout(total=self.timeout))
         if self.session is None or self.session.closed:
             async with self._private_executor() as private:
+                if self._suppress_request_log.get():
+                    with private.suppress_request_log():
+                        return await private.nomad_json(method, path, **kwargs)
                 return await private.nomad_json(method, path, **kwargs)
         try:
             async with self._request(method, path, **kwargs) as response:
@@ -1267,18 +1265,19 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         if custom_prefix:
             custom_prefix = f"-{slugify(custom_prefix)}"
 
-        job_status = await self.nomad_json(
-            "POST",
-            f"/v1/job/{task.data['ID']}/dispatch",
-            json={
-                "Payload": payload,
-                "Meta": filtered_meta,
-                "IdPrefixTemplate": (
-                    f"{slugify(queue_item.task.name)}-{queue_item.task.id}"
-                    f"{custom_prefix}"
-                ),
-            },
-        )
+        with self.suppress_request_log():
+            job_status = await self.nomad_json(
+                "POST",
+                f"/v1/job/{task.data['ID']}/dispatch",
+                json={
+                    "Payload": payload,
+                    "Meta": filtered_meta,
+                    "IdPrefixTemplate": (
+                        f"{slugify(queue_item.task.name)}-{queue_item.task.id}"
+                        f"{custom_prefix}"
+                    ),
+                },
+            )
         if not job_status:
             logger.error("Unable to dispatch task %s", task.id)
             raise ValueError("The job status could not be determined")

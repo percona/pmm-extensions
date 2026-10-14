@@ -93,7 +93,6 @@ from app.extensions.models import (
     AppState,
     SyncInventoryEntityTypeEnum,
 )
-from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 from app.tasks.models import Task
 from tests.app.conftest import make_request
 from tests.app.extensions.path_unsafe_task_names import (
@@ -747,11 +746,7 @@ class TestTasksClientLogPolicy:
         (awaited,) = get_remote_api.await_args_list
         requested = awaited.kwargs
         assert requested["endpoint"] == extensions_settings.TASKS_ENDPOINT
-        assert (
-            requested["sensitive_body_paths"]
-            == TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]
-        )
-        assert requested["withhold_response_log"] is True
+        assert requested["withhold_body_log"] is True
 
 
 class TestResolvePmmApi:

@@ -66,7 +66,6 @@ from app.extensions.bundle_upload.plan import (
 from app.extensions.bundle_upload.resolver import DRIFTED_INPUTS_REASON
 from app.extensions.bundle_upload.seam import BundleSource, UploadResult
 from app.extensions.config import DeliveryPlanInputs, extensions_settings
-from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 from app.tasks.models import TaskHistoryStatusEnum, TaskLogType
 from tests.app.core.settings_override.conftest import EXTENSIONS_SETTINGS_TOKEN
 from tests.app.db_schema import apply_schema
@@ -1759,8 +1758,4 @@ async def test_get_tasks_api_requests_the_tasks_client_log_policy(
         if awaited.kwargs["endpoint"] == extensions_settings.TASKS_ENDPOINT
     ]
     assert len(tasks_calls) == 1
-    assert (
-        tasks_calls[0]["sensitive_body_paths"]
-        == TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]
-    )
-    assert tasks_calls[0]["withhold_response_log"] is True
+    assert tasks_calls[0]["withhold_body_log"] is True

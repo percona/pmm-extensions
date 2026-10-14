@@ -41,7 +41,6 @@ from app.extensions.apps.om_inventory.service import (
     sweep,
 )
 from app.extensions.config import extensions_settings
-from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 from tests.app.extensions.apps.om_inventory.conftest import (
     ERROR_DETAIL_CAP,
     FREE_BYTES,
@@ -150,11 +149,7 @@ async def test_sweep_requests_its_tasks_client_with_the_log_policy() -> None:
         if awaited.kwargs["endpoint"] == extensions_settings.TASKS_ENDPOINT
     ]
     assert len(tasks_calls) == 1
-    assert (
-        tasks_calls[0]["sensitive_body_paths"]
-        == TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]
-    )
-    assert tasks_calls[0]["withhold_response_log"] is True
+    assert tasks_calls[0]["withhold_body_log"] is True
 
 
 @pytest.mark.asyncio

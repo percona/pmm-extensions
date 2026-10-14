@@ -998,7 +998,7 @@ class TestSnippetsApiExecute:
 
         assert response.status_code == status.HTTP_201_CREATED
         assert "Sending POST request to /execute/" in caplog.text
-        assert "host1" in caplog.text
+        assert "<withheld>" in caplog.text
         for leaked in ("hunter2Secret", "cfg-secret", "payload-secret"):
             assert leaked not in caplog.text
 

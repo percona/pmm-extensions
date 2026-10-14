@@ -40,7 +40,6 @@ from app.extensions.config import extensions_settings, SyncOptions
 from app.extensions.sync.exceptions import SyncerConfigurationError
 from app.extensions.sync.models import BaseSyncer
 from app.extensions.sync.syncers.pmm import PMMSyncer
-from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 
 _EXPECTED_DISAMBIGUATED_DISPLAY_NAMES = 2
 
@@ -340,8 +339,4 @@ async def test_get_syncers_standalone_requests_the_tasks_client_log_policy(
         if awaited.kwargs["endpoint"] == extensions_settings.TASKS_ENDPOINT
     ]
     assert len(tasks_calls) == 1
-    assert (
-        tasks_calls[0]["sensitive_body_paths"]
-        == TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]
-    )
-    assert tasks_calls[0]["withhold_response_log"] is True
+    assert tasks_calls[0]["withhold_body_log"] is True

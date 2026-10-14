@@ -37,7 +37,6 @@ from app.tasks.execution_request_secrets import (
     ENCRYPTED_META_KEYS,
     MASKED_ARGS_META_KEY,
     PAYLOAD_LEAF,
-    PERIODIC_REQUEST_LEAVES,
     publish_masked_args,
     redact_request_leaves,
     redact_request_leaves_for_log,
@@ -494,13 +493,6 @@ class TestRedactRequestLeavesForLog:
 class TestTasksClientLogPolicy:
     """Cover the log settings every Tasks API client is constructed with."""
 
-    def test_names_every_protected_leaf_as_a_request_body_path(self):
-        """Assert a leaf added to the inventory is redacted from request logs."""
-        assert set(TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]) == {
-            *ENCRYPTED_LEAVES,
-            *PERIODIC_REQUEST_LEAVES,
-        }
-
     @pytest.mark.asyncio
     async def test_a_schedule_body_logs_no_protected_leaf(self, caplog):
         """Keep a periodic-task body's nested leaves out of the request log line."""
@@ -527,7 +519,8 @@ class TestTasksClientLogPolicy:
             r.getMessage() for r in caplog.records if "Sending" in r.getMessage()
         ]
         assert len(sending) == 1
-        assert "nightly" in sending[0]
+        assert "backup/periodic/" in sending[0]
+        assert "nightly" not in sending[0]
         for secret in (
             EXECUTION_REQUEST_ARGS,
             EXECUTION_REQUEST_CONFIG,
@@ -535,6 +528,6 @@ class TestTasksClientLogPolicy:
         ):
             assert secret not in sending[0]
 
-    def test_withholds_response_bodies(self):
-        """Assert history responses, which carry two leaves raw, are not logged."""
-        assert TASKS_CLIENT_LOG_POLICY["withhold_response_log"] is True
+    def test_withholds_request_and_response_bodies(self):
+        """Assert the policy sets the one flag that keeps both bodies unlogged."""
+        assert TASKS_CLIENT_LOG_POLICY == {"withhold_body_log": True}

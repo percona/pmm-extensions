@@ -46,7 +46,6 @@ from app.extensions.settings_override import (
     invalidate_pmm_clients,
 )
 from app.extensions.snippets.config import snippets_settings
-from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 from tests.app.core.requests.pending_close_helpers import patch_paused_close_when_idle
 
 
@@ -743,11 +742,7 @@ async def test_rebound_tasks_client_keeps_the_log_policy(
 
             replacement = app.state.tasks_api
             assert str(replacement.endpoint).startswith("https://new-tasks.example.org")
-            assert (
-                replacement.sensitive_body_paths
-                == TASKS_CLIENT_LOG_POLICY["sensitive_body_paths"]
-            )
-            assert replacement.withhold_response_log is True
+            assert replacement.withhold_body_log is True
             with (
                 aioresponses() as mock,
                 caplog.at_level("DEBUG", logger=replacement.logger.name),
@@ -761,7 +756,8 @@ async def test_rebound_tasks_client_keeps_the_log_policy(
                     json={"meta": {"args": "--password hunter2", "target": "node-1"}},
                 )
         assert "Sending POST request" in caplog.text
-        assert "node-1" in caplog.text
+        assert "/execute/run-python" in caplog.text
+        assert "node-1" not in caplog.text
         assert "hunter2" not in caplog.text
         assert "response-secret" not in caplog.text
     finally:
