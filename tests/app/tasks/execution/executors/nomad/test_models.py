@@ -16,9 +16,11 @@
 """Define tests for the app.tasks.execution.executors.nomad.models module."""
 
 import asyncio
+import io
 import json
 import logging
 import re
+import tarfile
 import threading
 import time
 from base64 import b64encode
@@ -47,7 +49,6 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from yarl import URL
 
-from app.core.exceptions import HTTPBadRequestException
 from app.core.settings_override.registry import ReloadClassification
 from app.core.settings_override.resolution import resolve_nested_field_metadata
 from app.core.utils import slugify, utc_now
@@ -327,6 +328,27 @@ def _build_executor(
         # on the session rather than on its own subject.
         _stub_nomad_calls()
     return NomadExecutor(**defaults)
+
+
+async def _archive_members(
+    executor: NomadExecutor, queue_item: TaskHistory
+) -> dict[str, tarfile.TarInfo]:
+    """Stream ``/output/mydir`` as an archive and index its members by name.
+
+    :param executor: The executor whose directory stream to drain.
+    :param queue_item: The task history passed through to the stream helper.
+    :return: Archive members keyed by member name.
+    """
+    archive_bytes = b"".join(
+        [
+            chunk
+            async for chunk in executor._stream_directory_as_tar_gz(
+                queue_item, "alloc-1", "/output/mydir"
+            )
+        ]
+    )
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r|gz") as tar:
+        return {member.name: member for member in tar}
 
 
 def _nomad_error(status_code: int) -> NomadRequestError:
@@ -4563,54 +4585,6 @@ class TestTaskNeedsJobRegister:
         assert await executor.task_needs_job_register(task) is True
 
 
-class TestValidateJob:
-    """Test NomadExecutor.validate_job."""
-
-    @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.async_run")
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_validate_job_success(self, mock_nomad_cls, mock_async_run):
-        """Assert validate_job returns job when validation passes."""
-        mock_response = MagicMock()
-        mock_response.status_code = status.HTTP_200_OK
-        mock_response.text = json.dumps({"ValidationErrors": []})
-        mock_async_run.return_value = mock_response
-
-        executor = _build_executor()
-        job = {"ID": "test-job", "Type": "batch"}
-        result = await executor.validate_job(job)
-        assert result == job
-
-    @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.async_run")
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_validate_job_validation_errors(self, mock_nomad_cls, mock_async_run):
-        """Assert validate_job raises HTTPBadRequestException on validation errors."""
-        mock_response = MagicMock()
-        mock_response.status_code = status.HTTP_200_OK
-        mock_response.text = json.dumps(
-            {"ValidationErrors": ["missing required field"]}
-        )
-        mock_async_run.return_value = mock_response
-
-        executor = _build_executor()
-        with pytest.raises(HTTPBadRequestException):
-            await executor.validate_job({"ID": "bad-job"})
-
-    @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.async_run")
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_validate_job_non_200_raises(self, mock_nomad_cls, mock_async_run):
-        """Assert validate_job raises HTTPBadRequestException on non-200 status."""
-        mock_response = MagicMock()
-        mock_response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        mock_async_run.return_value = mock_response
-
-        executor = _build_executor()
-        with pytest.raises(HTTPBadRequestException):
-            await executor.validate_job({"ID": "error-job"})
-
-
 class TestGetLogsForAllocation:
     """Test NomadExecutor.get_logs_for_allocation."""
 
@@ -6634,37 +6608,6 @@ class TestListFiles:
             await executor.list_files(queue_item, "/alloc/data")
 
 
-class TestParsePayload:
-    """Test NomadExecutor.parse_payload."""
-
-    @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.async_run")
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_parse_payload_hcl(self, mock_nomad_cls, mock_async_run):
-        """Assert parse_payload delegates HCL to backend.jobs.parse."""
-        mock_backend = MagicMock()
-        mock_nomad_cls.return_value = mock_backend
-        mock_async_run.return_value = {"Job": {"ID": "parsed"}}
-
-        executor = _build_executor()
-        result = await executor.parse_payload("job {}", "hcl")
-
-        mock_async_run.assert_called_once_with(mock_backend.jobs.parse, "job {}")
-        assert result == {"Job": {"ID": "parsed"}}
-
-    @pytest.mark.asyncio
-    @patch("app.tasks.execution.executors.nomad.models.Nomad")
-    async def test_parse_payload_json(self, mock_nomad_cls):
-        """Assert parse_payload delegates JSON to parent class."""
-        mock_nomad_cls.return_value = MagicMock()
-        executor = _build_executor()
-
-        json_payload = json.dumps({"Job": {"ID": "test"}})
-        result = await executor.parse_payload(json_payload, "json")
-
-        assert result == {"Job": {"ID": "test"}}
-
-
 class TestBackendFromWorkerThreads:
     """Cover the Nomad client being first reached from several worker threads."""
 
@@ -7136,6 +7079,111 @@ class TestStreamFile:
 
         assert tar_gz.call_args.kwargs is not None
         assert tar_gz.call_args.kwargs["anonymize"] is False
+
+
+class TestStreamDirectoryAsTarGz:
+    """Test NomadExecutor._stream_directory_as_tar_gz.
+
+    :cvar EXPECTED_DIRECTORY_MODE: Contract for directory members in streamed
+        archives, independent of production.
+    """
+
+    EXPECTED_DIRECTORY_MODE = 0o755
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_directory_entries_have_executable_mode(self, mock_nomad_cls):
+        """Assert root and nested directory members carry mode ``0o755``."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        queue_item = _build_queue_item()
+        file_content = b"hello world"
+        default_file_mode = tarfile.TarInfo().mode & 0o777
+        archive_time = datetime(2026, 10, 8, 12, 0, 0, tzinfo=UTC)
+        expected_mtime = int(archive_time.timestamp())
+
+        async def fake_entries(*_args, **_kwargs):
+            yield "/output/mydir/nested", "mydir/nested/", True, 0
+            yield (
+                "/output/mydir/nested/file.txt",
+                "mydir/nested/file.txt",
+                False,
+                len(file_content),
+            )
+
+        with (
+            patch.object(executor, "_iter_directory_entries", side_effect=fake_entries),
+            patch.object(
+                executor, "_read_file_bytes", AsyncMock(return_value=file_content)
+            ),
+            patch(
+                "app.tasks.execution.executors.nomad.models.utc_now",
+                return_value=archive_time,
+            ),
+        ):
+            members = await _archive_members(executor, queue_item)
+
+        assert members["mydir"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
+        assert members["mydir/nested"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
+        assert members["mydir/nested/file.txt"].mode & 0o777 == default_file_mode
+        assert members["mydir"].mtime == expected_mtime
+        assert members["mydir/nested"].mtime == expected_mtime
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_root_only_directory_archive(self, mock_nomad_cls):
+        """Assert an empty directory archive still carries a traversable root."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        queue_item = _build_queue_item()
+        archive_time = datetime(2026, 10, 8, 12, 0, 0, tzinfo=UTC)
+        expected_mtime = int(archive_time.timestamp())
+
+        async def fake_entries(*_args, **_kwargs):
+            for _entry in ():
+                yield _entry
+
+        with (
+            patch.object(executor, "_iter_directory_entries", side_effect=fake_entries),
+            patch(
+                "app.tasks.execution.executors.nomad.models.utc_now",
+                return_value=archive_time,
+            ),
+        ):
+            members = await _archive_members(executor, queue_item)
+
+        assert list(members) == ["mydir"]
+        assert members["mydir"].isdir()
+        assert members["mydir"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
+        assert members["mydir"].mtime == expected_mtime
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_skips_entry_when_read_file_bytes_raises(self, mock_nomad_cls):
+        """Assert a failed file read is skipped and later entries are still archived."""
+        mock_nomad_cls.return_value = MagicMock()
+        executor = _build_executor()
+        queue_item = _build_queue_item()
+        good_content = b"kept"
+
+        async def fake_entries(*_args, **_kwargs):
+            yield "/output/mydir/bad.txt", "mydir/bad.txt", False, 3
+            yield "/output/mydir/good.txt", "mydir/good.txt", False, len(good_content)
+
+        async def fake_read(_queue_item, _alloc_id, path, *_args, **_kwargs):
+            if path.endswith("bad.txt"):
+                raise OSError("read failed")
+            return good_content
+
+        with (
+            patch.object(executor, "_iter_directory_entries", side_effect=fake_entries),
+            patch.object(executor, "_read_file_bytes", side_effect=fake_read),
+        ):
+            members = await _archive_members(executor, queue_item)
+
+        assert "mydir/bad.txt" not in members
+        assert "mydir/good.txt" in members
+        assert members["mydir"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
 
 
 class TestReadFileBytes:

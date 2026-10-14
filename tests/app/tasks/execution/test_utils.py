@@ -16,12 +16,9 @@
 """Define tests for the app.tasks.execution.utils module."""
 
 import gzip
-import json
 from unittest.mock import patch
 
-import pytest
-
-from app.tasks.execution.utils import gzip_compress, minify_file_content, parse_payload
+from app.tasks.execution.utils import gzip_compress, minify_file_content
 
 
 def test_minify_valid_python_code():
@@ -51,49 +48,6 @@ def test_minify_with_syntax_error():
     broken_python_code = "def baz()\n    print('missing colon')"
     result = minify_file_content(broken_python_code, file_ext="py")
     assert result == broken_python_code
-
-
-class TestParsePayload:
-    """Test the parse_payload function."""
-
-    def test_parse_valid_json(self):
-        """Assert valid JSON string is parsed to a dict."""
-        payload = '{"key": "value", "number": 42}'
-        result = parse_payload(payload, "json")
-        assert result == {"key": "value", "number": 42}
-
-    def test_parse_valid_yaml(self):
-        """Assert valid YAML string is parsed to a dict."""
-        payload = "key: value\nnumber: 42"
-        result = parse_payload(payload, "yaml")
-        assert result == {"key": "value", "number": 42}
-
-    def test_unsupported_format_raises_value_error(self):
-        """Assert unsupported format raises ValueError."""
-        with pytest.raises(ValueError, match="unsupported format: hcl"):
-            parse_payload("{}", "hcl")
-
-    def test_invalid_json_raises_json_decode_error(self):
-        """Assert invalid JSON raises JSONDecodeError."""
-        with pytest.raises(json.JSONDecodeError):
-            parse_payload("{invalid json", "json")
-
-    def test_yaml_with_invalid_content_returns_string(self):
-        """Assert YAML parser returns a string for non-mapping content."""
-        result = parse_payload("just a plain string", "yaml")
-        assert result == "just a plain string"
-
-    def test_parse_json_nested_structure(self):
-        """Assert nested JSON structures are parsed correctly."""
-        payload = '{"outer": {"inner": [1, 2, 3]}}'
-        result = parse_payload(payload, "json")
-        assert result == {"outer": {"inner": [1, 2, 3]}}
-
-    def test_parse_yaml_nested_structure(self):
-        """Assert nested YAML structures are parsed correctly."""
-        payload = "outer:\n  inner:\n    - 1\n    - 2\n    - 3"
-        result = parse_payload(payload, "yaml")
-        assert result == {"outer": {"inner": [1, 2, 3]}}
 
 
 class TestGzipCompress:

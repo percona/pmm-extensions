@@ -13,7 +13,6 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-from app.core.utils.async_run import async_run
 from app.core.utils.cache import ttl_cache
 from app.core.utils.date_time import make_datetime_utc, utc_now
 from app.core.utils.dict import (
