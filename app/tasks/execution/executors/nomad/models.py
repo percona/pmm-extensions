@@ -112,6 +112,9 @@ from app.tasks.models import (
 logger = logging.getLogger(__name__)
 
 _ONE_MEBIBYTE = 1024 * 1024
+#: Fixed mode for directory members in streamed allocation archives. Allocation
+#: modes are not preserved.
+_ARCHIVE_DIRECTORY_MODE = 0o755
 NOMAD_DEAD_JOB_STATUS = "dead"
 NOMAD_DEAD_TASK_STATE = "dead"
 NOMAD_RUNNING_TASK_STATE = "running"
@@ -838,47 +841,31 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     # Reuses the shared TLS overlay so every remote-api model marks these the same.
     INHERITED_MARKERS: ClassVar[InheritedMarkers] = REMOTE_API_TLS_MARKERS
     SENSITIVE_BODY_PATHS: ClassVar[tuple[str, ...]] = ENCRYPTED_LEAVES
-    secure: bool = hot_field(  # ty: ignore[invalid-assignment]
-        default=False, advanced=True
-    )
-    timeout: int = hot_field(10, advanced=True)  # ty: ignore[invalid-assignment]
-    minify_payload: bool = hot_field(  # ty: ignore[invalid-assignment]
-        default=True, advanced=True
-    )
-    log_socket_read_timeout: int = hot_field(  # ty: ignore[invalid-assignment]
-        10, advanced=True
-    )
-    log_stream_max_connections: int = hot_field(  # ty: ignore[invalid-assignment]
+    secure: bool = hot_field(default=False, advanced=True)
+    timeout: int = hot_field(10, advanced=True)
+    minify_payload: bool = hot_field(default=True, advanced=True)
+    log_socket_read_timeout: int = hot_field(10, advanced=True)
+    log_stream_max_connections: int = hot_field(
         BaseRemoteAPI.STREAM_CONNECTION_LIMIT, ge=1, advanced=True
     )
-    cert_expiry_warn_days: int = hot_field(  # ty: ignore[invalid-assignment]
-        7, ge=1, advanced=True
+    cert_expiry_warn_days: int = hot_field(7, ge=1, advanced=True)
+    terminal_log_drain_max_attempts: int = hot_field(5, ge=0, advanced=True)
+    terminal_log_drain_interval: float = hot_field(0.5, gt=0, advanced=True)
+    log_anonymization_max_withheld_bytes: int = hot_field(
+        _ONE_MEBIBYTE, gt=0, advanced=True
     )
-    terminal_log_drain_max_attempts: int = hot_field(  # ty: ignore[invalid-assignment]
-        5, ge=0, advanced=True
-    )
-    terminal_log_drain_interval: float = hot_field(  # ty: ignore[invalid-assignment]
-        0.5, gt=0, advanced=True
-    )
-    log_anonymization_max_withheld_bytes: int = (  # ty: ignore[invalid-assignment]
-        hot_field(_ONE_MEBIBYTE, gt=0, advanced=True)
-    )
-    log_capture_hold_seconds: int = hot_field(  # ty: ignore[invalid-assignment]
+    log_capture_hold_seconds: int = hot_field(
         LOG_CAPTURE_HOLD_DEFAULT_SECONDS, ge=1, advanced=True
     )
-    check_cert_expiry_interval: IntervalSchedule | None = (  # ty: ignore[invalid-assignment]
-        field_with_metadata(
-            metadata={"reload": ReloadClassification.HOT, "advanced": True},
-            default_factory=lambda: IntervalSchedule(every=1, period=Period.DAYS),
-        )
+    check_cert_expiry_interval: IntervalSchedule | None = field_with_metadata(
+        metadata={"reload": ReloadClassification.HOT, "advanced": True},
+        default_factory=lambda: IntervalSchedule(every=1, period=Period.DAYS),
     )
-    finishing_sync_interval_seconds: int | None = (  # ty: ignore[invalid-assignment]
-        not_overridable_field(1, ge=1, advanced=True)
+    finishing_sync_interval_seconds: int | None = not_overridable_field(
+        1, ge=1, advanced=True
     )
     api_key: AuthCredentialSecretStr | None = None
-    auth_scheme: AuthSchemeStr = hot_field(  # ty: ignore[invalid-assignment]
-        "Bearer", advanced=True
-    )
+    auth_scheme: AuthSchemeStr = hot_field("Bearer", advanced=True)
 
     _sync_session: requests.Session | None = None
     _backend_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
@@ -3641,6 +3628,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 with tarfile.open(mode="w|gz", fileobj=writer) as tar:
                     root_info = tarfile.TarInfo(name=f"{root_name}/")
                     root_info.type = tarfile.DIRTYPE
+                    root_info.mode = _ARCHIVE_DIRECTORY_MODE
+                    root_info.mtime = int(utc_now().timestamp())
                     tar.addfile(root_info)
                     async for (
                         abs_path,
@@ -3653,6 +3642,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                             tarinfo.mtime = int(utc_now().timestamp())
                             if is_dir:
                                 tarinfo.type = tarfile.DIRTYPE
+                                tarinfo.mode = _ARCHIVE_DIRECTORY_MODE
                                 tar.addfile(tarinfo)
                                 continue
                             file_bytes = await self._read_file_bytes(

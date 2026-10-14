@@ -16,12 +16,13 @@
 
 """Compute and sync the pull-request labels ``actions/labeler`` cannot express.
 
-The action matches path globs only, so three labels need code: ``large-diff``
+The action matches path globs only, so these labels need code: ``large-diff``
 (a changed-line count), ``app-isolated`` (every file inside one app slice, bar
-changelog fragments and generated OpenAPI artifacts), and
-``qa not required`` (a Dependabot or doc-only PR). This script reads ``app:<name>``
-globs from the default-branch ``.github/labeler.yml``, fetches the PR file list via
-the GitHub REST API, and adds or removes those labels.
+changelog fragments and generated OpenAPI artifacts), ``tests-only`` (every
+changed path is a test file), and ``qa not required`` (a Dependabot PR, or one
+whose every changed path is a test file or documentation). This script reads
+``app:<name>`` globs from the default-branch ``.github/labeler.yml``, fetches the
+PR file list via the GitHub REST API, and adds or removes those labels.
 
 ``qa not required`` is computed here rather than declared in ``.github/labeler.yml``
 because the action's ``sync-labels`` loop removes any label it holds a rule for,
@@ -97,6 +98,8 @@ CHANGELOG_FRAGMENT_RE = re.compile(
 
 QA_NOT_REQUIRED_LABEL = "qa not required"
 QA_NOT_REQUIRED_GLOBS = (".github/CODEOWNERS", "README.md", ".gitignore", "dist/**")
+TEST_FILE_PREFIXES = ("tests/", "frontend/packages/e2e/")
+FRONTEND_TEST_FILE_RE = re.compile(r"^frontend/.*\.(?:test|spec)\.tsx?$")
 DEPENDABOT_LOGIN = "dependabot[bot]"
 BOT_ACTOR_TYPE = "Bot"
 
@@ -107,33 +110,67 @@ _REGEX_ESCAPE = re.compile(r"[.*+?^${}()|[\]\\]")
 
 @dataclass(frozen=True, slots=True)
 class PrFile:
-    """Represent one changed file entry from the pulls list-files API."""
+    """Represent one changed file entry from the pulls list-files API.
+
+    :param filename: Path of the file after the change.
+    :param additions: Number of lines added.
+    :param deletions: Number of lines deleted.
+    :param previous_filename: Path before a rename, or ``None`` when the entry is
+        not a rename.
+    """
 
     filename: str
     additions: int = 0
     deletions: int = 0
+    previous_filename: str | None = None
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        """Return every path this entry names: the new one, and the old one on a rename.
+
+        :return: ``filename``, followed by ``previous_filename`` when the entry is
+            a rename.
+        """
+        if self.previous_filename is None:
+            return (self.filename,)
+        return (self.filename, self.previous_filename)
 
 
 @dataclass(frozen=True, slots=True)
 class PullRequest:
-    """Carry the pull-request identity fields the ``qa not required`` predicate reads.
+    """Carry the pull-request fields the ``qa not required`` predicate reads.
 
-    Both come from the pulls API rather than the head branch name, which the
-    pull-request author chooses and so proves nothing about who opened it.
+    The identity fields come from the pulls API rather than the head branch name,
+    which the pull-request author chooses and so proves nothing about who opened
+    it.
+
+    :param author_login: Login of the account that opened the pull request.
+    :param head_repository: Full name of the repository the head branch lives in.
+    :param changed_files: The API's own changed-file count, which the list-files
+        endpoint stops short of past its 3000-file cap.
     """
 
     author_login: str
     head_repository: str
+    changed_files: int
 
 
 @dataclass(frozen=True, slots=True)
 class BlastRadiusResult:
-    """Carry the blast-radius signals derived from a PR file list."""
+    """Carry the blast-radius signals derived from a PR file list.
+
+    :param changed_lines: Added plus deleted lines, excluding generated files.
+    :param large_diff: Whether ``changed_lines`` exceeds the large-diff threshold.
+    :param app_isolated: Whether the PR is confined to a single app slice.
+    :param touched_apps: Sorted names of the apps the PR touches.
+    :param tests_only: Whether every path the PR names is a test file.
+    """
 
     changed_lines: int
     large_diff: bool
     app_isolated: bool
     touched_apps: tuple[str, ...]
+    tests_only: bool
 
 
 class LabelEventKind(StrEnum):
@@ -148,7 +185,15 @@ LABEL_EVENT_TYPES = frozenset(LabelEventKind)
 
 @dataclass(frozen=True, slots=True)
 class LabelEvent:
-    """Represent one ``labeled`` / ``unlabeled`` entry from the issue-events API."""
+    """Represent one ``labeled`` / ``unlabeled`` entry from the issue-events API.
+
+    :param event: Whether the label was added or removed.
+    :param label: Name of the label that changed.
+    :param actor_type: GitHub account type of whoever made the change.
+    :param created_at: ISO 8601 timestamp of the event.
+    :param event_id: Numeric id of the event, which breaks ties between events
+        sharing a timestamp.
+    """
 
     event: LabelEventKind
     label: str
@@ -172,12 +217,12 @@ class GitHubClient(Protocol):
     """Describe the subset of the GitHub REST API used by this script."""
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> PullRequest:
-        """Return the author and head repository of a pull request.
+        """Return the author, head repository and file count of a pull request.
 
         :param owner: Repository owner.
         :param repo: Repository name without owner.
         :param pr_number: Pull request number.
-        :return: The pull request's identity fields.
+        :return: The pull request's fields.
         """
 
     def list_pr_files(self, owner: str, repo: str, pr_number: int) -> list[PrFile]:
@@ -259,6 +304,42 @@ def is_isolation_neutral(filename: str) -> bool:
     )
 
 
+def is_test_file(filename: str) -> bool:
+    """Return whether ``filename`` is a test file.
+
+    Outside the e2e package, frontend test-support modules (setup files, MSW
+    servers, fixtures) are not test files, so a pull request touching one still
+    needs QA.
+
+    :param filename: Path relative to the repository root.
+    :return: ``True`` under root ``tests/`` or the e2e package, and for a
+        frontend ``*.test.ts(x)`` or ``*.spec.ts(x)`` file.
+    """
+    return (
+        filename.startswith(TEST_FILE_PREFIXES)
+        or FRONTEND_TEST_FILE_RE.match(filename) is not None
+    )
+
+
+def is_tests_only(files: list[PrFile], changed_files: int) -> bool:
+    """Return whether every path a pull request names is a test file.
+
+    A rename is judged by both of its paths, so moving source into ``tests/``
+    does not count.
+
+    :param files: Changed files from the pulls list-files API.
+    :param changed_files: The pull request's own changed-file count.
+    :return: ``True`` for a non-empty diff whose every path is a test file.
+        ``False`` when ``files`` holds fewer entries than ``changed_files``,
+        since the unseen ones may be code.
+    """
+    if len(files) < changed_files:
+        return False
+    return bool(files) and all(
+        is_test_file(path) for file in files for path in file.paths
+    )
+
+
 def parse_app_globs(labeler_text: str) -> dict[str, list[str]]:
     """Build a map of ``app:<name>`` label to its path globs.
 
@@ -314,13 +395,19 @@ def app_of(filename: str, app_globs: dict[str, list[str]]) -> str | None:
 
 
 def compute_blast_radius(
-    files: list[PrFile], app_globs: dict[str, list[str]]
+    files: list[PrFile], app_globs: dict[str, list[str]], *, changed_files: int
 ) -> BlastRadiusResult:
     """Derive blast-radius labels from a PR file list.
 
+    ``app_isolated`` and ``tests_only`` judge a rename by both of its paths, so
+    moving a file across an app boundary is not isolated to either side.
+
     :param files: Changed files from the pulls list-files API.
     :param app_globs: Parsed ``app:<name>`` globs from ``labeler.yml``.
-    :return: Changed-line count and label predicates.
+    :param changed_files: The pull request's own changed-file count.
+    :return: Changed-line count and label predicates. ``app_isolated`` and
+        ``tests_only`` are ``False`` when ``files`` holds fewer entries than
+        ``changed_files``, since the unseen ones may be outside the app or code.
     """
     changed_lines = sum(
         file.additions + file.deletions
@@ -332,20 +419,24 @@ def compute_blast_radius(
     touched_apps: set[str] = set()
     has_non_app_file = False
     for file in files:
-        if is_isolation_neutral(file.filename):
-            continue
-        app = app_of(file.filename, app_globs)
-        if app is None:
-            has_non_app_file = True
-        else:
-            touched_apps.add(app)
+        for path in file.paths:
+            if is_isolation_neutral(path):
+                continue
+            app = app_of(path, app_globs)
+            if app is None:
+                has_non_app_file = True
+            else:
+                touched_apps.add(app)
 
-    app_isolated = not has_non_app_file and len(touched_apps) == 1
+    app_isolated = (
+        len(files) >= changed_files and not has_non_app_file and len(touched_apps) == 1
+    )
     return BlastRadiusResult(
         changed_lines=changed_lines,
         large_diff=large_diff,
         app_isolated=app_isolated,
         touched_apps=tuple(sorted(touched_apps)),
+        tests_only=is_tests_only(files, changed_files),
     )
 
 
@@ -367,7 +458,11 @@ def sync_blast_radius_labels(
     :param result: Computed blast-radius signals.
     :param log: Callable for informational messages.
     """
-    desired = {"large-diff": result.large_diff, "app-isolated": result.app_isolated}
+    desired = {
+        "large-diff": result.large_diff,
+        "app-isolated": result.app_isolated,
+        "tests-only": result.tests_only,
+    }
     present = client.list_issue_labels(owner, repo, pr_number)
 
     for name, want in desired.items():
@@ -392,6 +487,17 @@ def is_dependabot_pull_request(pull: PullRequest, repository: str) -> bool:
     )
 
 
+def _is_qa_exempt(filename: str) -> bool:
+    """Return whether a change to ``filename`` alone needs no QA sign-off.
+
+    :param filename: Path relative to the repository root.
+    :return: ``True`` for a test file or a documentation path.
+    """
+    return is_test_file(filename) or any(
+        match_glob(glob, filename) for glob in QA_NOT_REQUIRED_GLOBS
+    )
+
+
 def qa_not_required_eligible(
     files: list[PrFile], pull: PullRequest, repository: str
 ) -> bool:
@@ -400,13 +506,16 @@ def qa_not_required_eligible(
     :param files: Changed files from the pulls list-files API.
     :param pull: Identity fields of the pull request.
     :param repository: ``owner/name`` of the base repository.
-    :return: ``True`` for a Dependabot pull request or an all-documentation diff.
+    :return: ``True`` for a Dependabot pull request, or a diff whose every path
+        is a test file or documentation. ``False`` when ``files`` holds fewer
+        entries than the pull request changed, since the unseen ones may be code.
     """
     if is_dependabot_pull_request(pull, repository):
         return True
+    if len(files) < pull.changed_files:
+        return False
     return bool(files) and all(
-        any(match_glob(glob, file.filename) for glob in QA_NOT_REQUIRED_GLOBS)
-        for file in files
+        _is_qa_exempt(path) for file in files for path in file.paths
     )
 
 
@@ -534,7 +643,7 @@ class UrllibGitHubClient:
             raise
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int) -> PullRequest:
-        """Return the author and head repository of a pull request.
+        """Return the author, head repository and file count of a pull request.
 
         A deleted head repository yields an empty name, which matches no base
         repository.
@@ -542,12 +651,13 @@ class UrllibGitHubClient:
         :param owner: Repository owner.
         :param repo: Repository name without owner.
         :param pr_number: Pull request number.
-        :return: The pull request's identity fields.
+        :return: The pull request's fields.
         """
         item = self._request("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}")
         return PullRequest(
             author_login=(item.get("user") or {}).get("login", ""),
             head_repository=(item["head"].get("repo") or {}).get("full_name", ""),
+            changed_files=item["changed_files"],
         )
 
     def list_pr_files(self, owner: str, repo: str, pr_number: int) -> list[PrFile]:
@@ -571,6 +681,7 @@ class UrllibGitHubClient:
                     filename=item["filename"],
                     additions=item.get("additions", 0),
                     deletions=item.get("deletions", 0),
+                    previous_filename=item.get("previous_filename"),
                 )
                 for item in batch
             )
@@ -677,6 +788,7 @@ def apply_blast_radius_labels(
     files: list[PrFile],
     labeler_path: Path,
     *,
+    changed_files: int,
     log: Callable[[str], None] = print,
 ) -> BlastRadiusResult:
     """Compute blast-radius signals from a PR file list and sync the labels.
@@ -687,15 +799,17 @@ def apply_blast_radius_labels(
     :param pr_number: Pull request number.
     :param files: Changed files from the pulls list-files API.
     :param labeler_path: Path to the default-branch ``.github/labeler.yml``.
+    :param changed_files: The pull request's own changed-file count.
     :param log: Callable for informational messages.
     :return: Computed blast-radius signals.
     """
     labeler_text = labeler_path.read_text(encoding="utf-8")
     app_globs = parse_app_globs(labeler_text)
-    result = compute_blast_radius(files, app_globs)
+    result = compute_blast_radius(files, app_globs, changed_files=changed_files)
     log(
         f"changedLines={result.changed_lines} largeDiff={result.large_diff} "
-        f"appIsolated={result.app_isolated} apps=[{', '.join(result.touched_apps)}]"
+        f"appIsolated={result.app_isolated} apps=[{', '.join(result.touched_apps)}] "
+        f"testsOnly={result.tests_only}"
     )
     sync_blast_radius_labels(client, owner, repo, pr_number, result, log=log)
     return result
@@ -763,7 +877,14 @@ def main(argv: list[str] | None = None) -> int:
             print("true" if bypass else "false")
             return 0
         apply_blast_radius_labels(
-            client, args.owner, args.repo, args.pr_number, files, args.labeler, log=log
+            client,
+            args.owner,
+            args.repo,
+            args.pr_number,
+            files,
+            args.labeler,
+            changed_files=pull.changed_files,
+            log=log,
         )
         sync_qa_not_required_label(
             client,

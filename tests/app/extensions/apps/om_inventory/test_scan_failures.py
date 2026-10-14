@@ -54,6 +54,7 @@ from app.extensions.apps.om_inventory.service import (
     persist_estate,
     SweepOutcome,
 )
+from app.extensions.apps.shared.om.task_failure import STEP_LOG_TAIL
 from app.tasks.execution.executors.nomad.models import failed_step_reason
 from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.extensions.apps.om_inventory.conftest import (
@@ -332,6 +333,24 @@ class TestTheDetailIsBounded:
             "block this node's next scan: RuntimeError: stop refused yyy"
         ) in error
         assert error.endswith(TRUNCATION_MARK)
+
+
+class TestTheRecordsAreReadWhole:
+    """Keep the payload's records whole, though every other stream keeps its end."""
+
+    @pytest.mark.asyncio
+    async def test_a_record_ahead_of_long_output_is_still_read(self) -> None:
+        """Read the host record that opens a stream longer than the kept tail."""
+        noise = "Requirement already satisfied: pymongo\n" * (3 * STEP_LOG_TAIL // 39)
+        api = make_api(
+            {"status": TaskHistoryStatusEnum.SUCCESS.value},
+            [log_line("run-script", "stdout", json.dumps(HOST_RECORD) + "\n" + noise)],
+        )
+
+        result = await probe_host(api, HOST, entries())
+
+        assert result.error is None
+        assert result.host_record == HOST_RECORD
 
 
 class TestTheFailedStepIsReadFromTheTasksService:
