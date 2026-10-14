@@ -44,6 +44,7 @@ from app.tasks.periodic.models import (
     SchedulePreviewWrite,
 )
 from app.tasks.periodic.utils import attach_last_run_status
+from app.tasks.reference_fence import hold_reference_write_fence
 
 router = APIRouter(prefix="/periodic", tags=["periodic", "schedule", "tasks"])
 
@@ -202,7 +203,8 @@ async def update_periodic_task(
         )
 
     logger.debug("Updating periodic task %s", existing_task.id)
-    updated = await PeriodicTaskManager.update(session, existing_task, updated_task)
+    async with hold_reference_write_fence(tasks_session):
+        updated = await PeriodicTaskManager.update(session, existing_task, updated_task)
     await attach_last_run_status(tasks_session, [updated])
     return updated
 
