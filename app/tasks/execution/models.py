@@ -18,7 +18,6 @@
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
-from typing import Any
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -26,7 +25,6 @@ from app.core.models import BaseCaseInsensitiveModel
 from app.core.pmm import await_annotation, schedule_annotation
 from app.core.utils import utc_now
 from app.tasks.crud import TaskHistoryManager
-from app.tasks.execution.utils import parse_payload
 from app.tasks.models import (
     ExecutionEvent,
     ExecutorHostState,
@@ -58,48 +56,6 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
     """
 
     wait_interval: int = 5
-
-    async def transform_payload(
-        self,
-        payload: str | bytes,
-        payload_format: str,
-    ) -> dict[str, Any]:
-        """Parse and validate a job spec payload based on its format.
-
-        This function parses the payload according to the specified format
-        (HCL, JSON, or YAML) and validates it using the backend.
-
-        :param payload: The job specification payload to be parsed.
-        :type payload: str | bytes
-        :param payload_format: The format of the payload, which can be "hcl", "json",
-            or "yaml".
-        :type payload_format: str
-        :return: The parsed and validated job specification.
-        :rtype: dict[str, Any]
-        :raises ValueError: If the provided payload format is unsupported.
-        :raises HTTPException: If validation of the job specification fails.
-        """
-        parsed = await self.parse_payload(payload, payload_format)
-        logger.debug("Parsed payload: %s", parsed)
-        return await self.validate_job(parsed)
-
-    async def parse_payload(
-        self, payload: str | bytes, payload_format: str
-    ) -> dict[str, Any]:
-        """Parse a job spec payload based on its format.
-
-        This function parses the payload according to the specified format
-        (JSON, or YAML).
-
-        :param payload: The job specification payload to be parsed.
-        :type payload: str | bytes
-        :param payload_format: The format of the payload, which can be "json" or "yaml".
-        :type payload_format: str
-        :return: The parsed job specification.
-        :rtype: dict[str, Any]
-        :raises ValueError: If the provided payload format is unsupported.
-        """
-        return parse_payload(payload, payload_format)
 
     @abstractmethod
     async def dispatch_task(
@@ -166,17 +122,6 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
 
         :param queue_item: The task history record for tracking this execution.
         :type queue_item: TaskHistory
-        """
-
-    # TODO: Use pydantic models instead of dict for job validation  # noqa: TD002, TD003
-    @abstractmethod
-    async def validate_job(self, job: dict[str, Any]) -> dict[str, Any]:
-        """Validate a job specification.
-
-        :param job: The job specification to validate.
-        :type job: dict[str, Any]
-        :return: The original job specification if validation is successful.
-        :rtype: dict[str, Any]
         """
 
     @abstractmethod

@@ -495,6 +495,233 @@ function load_credentials() {
     PORT=${PORT:-6032}
 }
 
+#
+# Set CNF_STATE to what a config line leaves open for the next one, given what
+# the previous line left open: the closers of its unclosed quotes, innermost
+# last; '<' once it leaves anything else open, after which no line is shown; or
+# nothing
+#
+# Globals:
+#   CNF_STATE
+# Arguments:
+#   1: the line
+#
+function cnf_open_state() {
+    local line=$1
+    local state=$CNF_STATE
+    local rest="<"
+    local quotes_only="^[\"'\$]*\$"
+    local case_word='(^|[^A-Za-z0-9_])case([[:space:]]|$)'
+    local q="'"
+    local in_single="^[^${q}]*${q}(.*)\$"
+    local in_ansi_c="^([^\\\\${q}]*)(.*)\$"
+    local in_double='^([^\\$`"]*)(.*)$'
+    local in_code="^([^\\\\\$\`${q}\"()}<#]*)(.*)\$"
+    local prev=""
+    local prev_escaped=0
+    local char next top pattern plain
+
+    # Substitutions, expansions, arrays, continuations and here-documents end
+    # by rules too wide to track (a case pattern's ")" closes nothing, a
+    # continuation can split an opener), so nothing after one is trusted.
+    if [[ $state == "$rest" || $line =~ $case_word ]]; then
+        CNF_STATE=$rest
+        return
+    fi
+
+    # Jumps from one character the scan acts on to the next: a
+    # character-by-character scan takes quadratic time on a long line.
+    while [[ -n $line ]]; do
+        top=${state#"${state%?}"}
+        case $top in
+            "'")
+                [[ $line =~ $in_single ]] || break
+                line=${BASH_REMATCH[1]}
+                state=${state%?}
+                prev="'"
+                prev_escaped=0
+                continue
+                ;;
+            '$') pattern=$in_ansi_c ;;
+            '"') pattern=$in_double ;;
+            *) pattern=$in_code ;;
+        esac
+        # A byte the locale cannot decode fails the match; hiding the rest
+        # beats guessing what it leaves open.
+        if [[ ! $line =~ $pattern ]]; then
+            CNF_STATE=$rest
+            return
+        fi
+        plain=${BASH_REMATCH[1]}
+        line=${BASH_REMATCH[2]}
+        if [[ -n $plain ]]; then
+            prev=${plain#"${plain%?}"}
+            prev_escaped=0
+        fi
+        [[ -n $line ]] || break
+
+        char=${line:0:1}
+        next=${line:1:1}
+        line=${line:1}
+        if [[ $char == $'\\' ]]; then
+            if [[ -z $line ]]; then
+                CNF_STATE=$rest
+                return
+            fi
+            prev=$next
+            prev_escaped=1
+            line=${line:1}
+            continue
+        fi
+
+        if [[ $top == '$' ]]; then
+            [[ $char == "'" ]] && state=${state%?}
+        elif [[ $char == '$' && $next == '(' ]]; then
+            state+=")"
+            char=$next
+            line=${line:1}
+        elif [[ $char == '$' && $next == '{' ]]; then
+            state+="}"
+            char=$next
+            line=${line:1}
+        elif [[ $char == '`' && $top == '`' ]]; then
+            state=${state%?}
+        elif [[ $char == '`' ]]; then
+            state+='`'
+        elif [[ $top == '"' ]]; then
+            [[ $char == '"' ]] && state=${state%?}
+        elif [[ $char == '$' && $next == "'" ]]; then
+            state+='$'
+            char=$next
+            line=${line:1}
+        elif [[ $char == "'" || $char == '"' ]]; then
+            state+=$char
+        elif [[ $char == '(' ]]; then
+            state+=")"
+        elif [[ -n $top && $char == "$top" ]]; then
+            state=${state%?}
+        elif [[ $char == '<' && $next == '<' ]]; then
+            if [[ ${line:1:1} != '<' ]]; then
+                CNF_STATE=$rest
+                return
+            fi
+            line=${line:2}
+        elif [[ $char == '#' ]] && { [[ -z $prev ]] || { [[ $prev == [[:space:]\;\&\|\(\)\<\>] ]] && ((!prev_escaped)); }; }; then
+            break
+        fi
+        prev=$char
+        prev_escaped=0
+    done
+    [[ $state =~ $quotes_only ]] || state=$rest
+    CNF_STATE=$state
+}
+
+#
+# Print a shell-style config file with every credential masked
+#
+# The file is free-form shell, so only blank lines, comments and plain
+# single KEY=value assignments are shown: any other line could hold a secret
+# the masking cannot find, and is replaced by a marker instead. A hidden line
+# can also copy a plain value into a credential, so a plain value is masked
+# too once a hidden line names it. The body runs in a subshell so nocasematch
+# does not leak into the rest of the script.
+#
+# Arguments:
+#   1: the config file
+#
+function print_redacted_cnf() (
+    local cnf=$1
+    local line
+    local CNF_STATE=""
+    local hidden="# [REDACTED: line not shown]"
+    local assignment='^([[:space:]]*(export[[:space:]]+)?)([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
+    local single_quoted="'[^']*'"
+    local double_quoted='"[^"\\$`]*"'
+    local bare=$'[^[:space:]\'"\\\\$`;&|<>()]*'
+    local plain_value="^(${single_quoted}|${double_quoted}|${bare})([[:space:]]+#.*)?[[:space:]]*\$"
+    local empty_value="^(''|\"\")?\$"
+    local secret_key='PASS|PW|SECRET|TOKEN|KEY|AUTH|CRED'
+    # A password may hold "/" or a space, and a DSN such as
+    # "user:pass@tcp(host)" has no scheme, so any "user:...@" counts.
+    local url_credentials='[^[:space:]@:/]+:[^@]*@'
+    local credential_text="(${secret_key})[A-Za-z0-9_]*(\\[[^]]*])?[[:space:]]*\\+?=|${url_credentials}"
+    local comment='^([[:space:]]*#+[[:space:]]*)(.*)$'
+    local name_builder='(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)|\$\{!'
+    local comment_lead export_lead key value token trailing shown masked word
+    local mask_every=0
+    local i
+    local -a shown_lines=() plain_keys=() masked_lines=()
+    local -A read_names=()
+
+    shopt -s nocasematch
+    while IFS= read -r line || [[ -n $line ]]; do
+        comment_lead=""
+        key=""
+        shown=$hidden
+        masked=""
+        # A line after one left open is part of that value, however much it
+        # looks like its own assignment or comment.
+        if [[ -n $CNF_STATE ]]; then
+            cnf_open_state "$line"
+        else
+            if [[ $line =~ $comment ]]; then
+                comment_lead=${BASH_REMATCH[1]}
+                line=${BASH_REMATCH[2]}
+            fi
+
+            if [[ $line =~ $assignment ]]; then
+                export_lead=${BASH_REMATCH[1]}
+                key=${BASH_REMATCH[3]}
+                value=${BASH_REMATCH[4]}
+            fi
+
+            if [[ -z $comment_lead && $line =~ ^[[:space:]]*$ ]]; then
+                shown=$line
+            elif [[ -n $key && $value =~ $plain_value ]]; then
+                token=${BASH_REMATCH[1]}
+                trailing=${BASH_REMATCH[2]}
+                # A credential's trailing comment is dropped, since it may
+                # note the old value.
+                if [[ $key =~ $secret_key || $token =~ $credential_text ]]; then
+                    [[ $token =~ $empty_value ]] || token="[REDACTED]"
+                    shown="${comment_lead}${export_lead}${key}=${token}"
+                elif [[ ! $trailing =~ $credential_text ]]; then
+                    shown="${comment_lead}${line}"
+                    [[ -n $comment_lead || $token =~ $empty_value ]] || masked="${export_lead}${key}=[REDACTED]"
+                fi
+            elif [[ -n $comment_lead ]]; then
+                [[ $line =~ $credential_text ]] || shown="${comment_lead}${line}"
+            else
+                cnf_open_state "$line"
+            fi
+        fi
+
+        # Any word on a hidden line may name a variable it reads, and a word
+        # that is not one only costs a masked value.
+        if [[ $shown == "$hidden" && -z $comment_lead ]] && ((!mask_every)); then
+            if [[ $line =~ $name_builder ]]; then
+                mask_every=1
+            else
+                for word in ${line//[^A-Za-z0-9_]/ }; do
+                    read_names[$word]=1
+                done
+            fi
+        fi
+        shown_lines+=("$shown")
+        plain_keys+=("${masked:+$key}")
+        masked_lines+=("$masked")
+    done < "$cnf"
+
+    for i in "${!shown_lines[@]}"; do
+        key=${plain_keys[i]}
+        if [[ -n $key ]] && { ((mask_every)) || [[ -n ${read_names[$key]} ]]; }; then
+            printf '%s\n' "${masked_lines[i]}"
+        else
+            printf '%s\n' "${shown_lines[i]}"
+        fi
+    done
+)
+
 function parse_args() {
     local go_out=""
 
@@ -687,7 +914,7 @@ function run_dumps() {
                 echo ""
             fi
 
-            ADMIN_CNF_CONTENT=$(cat "$DEFAULTS_FILE" 2> /dev/null)
+            ADMIN_CNF_CONTENT=$(print_redacted_cnf "$DEFAULTS_FILE" 2> /dev/null)
             if [[ -n $ADMIN_CNF_CONTENT ]]; then
                 echo "............ DUMPING PROXYSQL ADMIN CNF FILE ............"
                 echo "$ADMIN_CNF_CONTENT"
