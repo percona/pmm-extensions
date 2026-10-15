@@ -68,6 +68,7 @@ from app.inventory.models import (
     Service,
     ServiceSystemObservation,
     SourceEnum,
+    SyncHealthEntityWrite,
     SyncHealthWrite,
     SyncOutcomeEnum,
     Table,
@@ -3060,6 +3061,103 @@ class TestRecordSyncHealth:
 
         await session.refresh(entity)
         assert _as_utc(entity.newest_attempt_at) == failed_at
+
+
+#: An id no fixture ever persists, so a bulk entry carrying it names no row.
+UNKNOWN_ENTITY_ID = 99999
+
+
+def _entry(entity_id: int, outcome: SyncHealthWrite) -> SyncHealthEntityWrite:
+    """Address ``outcome`` to ``entity_id`` as one bulk-report entry."""
+    return SyncHealthEntityWrite(id=entity_id, **outcome.model_dump())
+
+
+class TestRecordSyncHealthBulk:
+    """Test that a bulk report lands as the equivalent single reports would."""
+
+    @pytest.mark.asyncio
+    async def test_a_success_entry_records_a_clean_state(
+        self, session: AsyncSession, sync_health_target: SyncHealthTarget
+    ) -> None:
+        """Give a bulk success the transition a single success gets."""
+        manager, entity = sync_health_target
+        failed_at = utc_now() - timedelta(minutes=5)
+        await manager.record_sync_health(session, entity, _failure(failed_at))
+        attempted_at = utc_now()
+
+        result = await manager.record_sync_health_bulk(
+            session, [_entry(entity.id, _success(attempted_at))]
+        )
+
+        assert result.unresolved == []
+        await session.refresh(entity)
+        assert _as_utc(entity.last_synced_at) == attempted_at
+        assert entity.last_sync_error is None
+        assert entity.sync_failing_since is None
+        assert entity.consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_entries_keep_the_attempt_ordering_guards(
+        self, session: AsyncSession, sync_health_target: SyncHealthTarget
+    ) -> None:
+        """Refuse a success older than a failure earlier in the same list.
+
+        Mirrors ``test_success_behind_a_newer_failure_is_rejected`` through
+        the bulk path: entries apply in list order, each through the guarded
+        statement the single-entity route runs.
+        """
+        manager, entity = sync_health_target
+        failed_at = utc_now()
+
+        await manager.record_sync_health_bulk(
+            session,
+            [
+                _entry(entity.id, _failure(failed_at)),
+                _entry(entity.id, _success(failed_at - timedelta(minutes=5))),
+            ],
+        )
+
+        await session.refresh(entity)
+        assert _as_utc(entity.sync_failing_since) == failed_at
+        assert entity.consecutive_failures == 1
+        assert entity.last_sync_error == "boom"
+        assert entity.last_synced_at is None
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_id_does_not_reject_the_rest(
+        self, session: AsyncSession, sync_health_target: SyncHealthTarget
+    ) -> None:
+        """Skip and report an id naming no row, applying the entries around it."""
+        manager, entity = sync_health_target
+        attempted_at = utc_now()
+
+        result = await manager.record_sync_health_bulk(
+            session,
+            [
+                _entry(UNKNOWN_ENTITY_ID, _success(attempted_at)),
+                _entry(entity.id, _success(attempted_at)),
+            ],
+        )
+
+        assert result.unresolved == [UNKNOWN_ENTITY_ID]
+        await session.refresh(entity)
+        assert _as_utc(entity.last_synced_at) == attempted_at
+
+    @pytest.mark.asyncio
+    async def test_a_retired_entity_still_records_the_outcome(
+        self, session: AsyncSession, sync_health_target: SyncHealthTarget
+    ) -> None:
+        """Resolve a tombstone, as the single-entity route's dependency does."""
+        manager, entity = sync_health_target
+        await retire_in_place(session, entity)
+
+        result = await manager.record_sync_health_bulk(
+            session, [_entry(entity.id, _failure(utc_now()))]
+        )
+
+        assert result.unresolved == []
+        await session.refresh(entity)
+        assert entity.consecutive_failures == 1
 
 
 class TestRecordSyncHealthOnPostgreSQL:
