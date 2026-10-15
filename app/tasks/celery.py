@@ -88,7 +88,10 @@ from app.tasks.execution.nomad_lifecycle import (
     normalize_nomad_config_value,
     WorkerNomadClient,
 )
-from app.tasks.execution_request_secrets import ENCRYPTED_META_KEYS
+from app.tasks.execution_request_secrets import (
+    DISPLAY_ONLY_META_KEYS,
+    ENCRYPTED_META_KEYS,
+)
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
     DispatchLock,
@@ -124,9 +127,7 @@ def task_revoked_handler(*, request: Context, expired: bool, **kwargs: Any) -> N
         and expired
     ):
         logger.info("Deleting expired TaskHistory %s", queue_id)
-        celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-            delete_task_history(queue_id)
-        )
+        celery.loop.run_until_complete(delete_task_history(queue_id))
 
 
 def build_tasks_override_proxies() -> ProxyRegistry:
@@ -152,7 +153,7 @@ def _session_maker() -> async_sessionmaker:
 
 
 _refresher = WorkerRefresher(
-    lambda: celery.loop,  # ty: ignore[unresolved-attribute]
+    lambda: celery.loop,
     _session_maker,
     build_tasks_override_proxies,
 )
@@ -234,9 +235,7 @@ def close_finishing_probe_client(**kwargs: Any) -> None:
         (unused).
     """
     if _finishing_probe_client.is_open:
-        celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-            _finishing_probe_client.close()
-        )
+        celery.loop.run_until_complete(_finishing_probe_client.close())
 
 
 @celery.task(
@@ -256,11 +255,9 @@ def execute_task_queue(self: CeleryTask, queue_id: int) -> dict[str, Any]:
     :rtype: dict[str, Any]
     """
     logger.info("Executing task with queue_id: %s", queue_id)
-    queue_item = celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-        get_task_history(queue_id)
-    )
+    queue_item = celery.loop.run_until_complete(get_task_history(queue_id))
     return jsonable_encoder(
-        celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
+        celery.loop.run_until_complete(
             dispatch_queue_item(queue_item, await_annotations=True)
         )
     )
@@ -291,21 +288,21 @@ def execute_task_by_name(
     :return: The data of the processed TaskHistory.
     :rtype: dict[str, Any]
     """
-    task_history = celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
+    task_history = celery.loop.run_until_complete(
         prepare_periodic_task_history(task_name, execution_data)
     )
     try:
-        failed = celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
+        failed = celery.loop.run_until_complete(
             _pre_dispatch_payload_check(task_history, task_name, periodic_task_name)
         )
         if failed is not None:
             return jsonable_encoder(failed)
-        skipped = celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
+        skipped = celery.loop.run_until_complete(
             _pre_dispatch_health_check(task_history, task_name, periodic_task_name)
         )
         if skipped is not None:
             return jsonable_encoder(skipped)
-        task_history = celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
+        task_history = celery.loop.run_until_complete(
             dispatch_queue_item(
                 task_history,
                 await_annotations=True,
@@ -330,9 +327,7 @@ def execute_task_by_name(
             }
             if periodic_task_name:
                 alert_data["source"] = f"{periodic_task_name}:{alert_data['source']}"
-            celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-                alert_service.trigger(alert_data)
-            )
+            celery.loop.run_until_complete(alert_service.trigger(alert_data))
     return jsonable_encoder(task_history)
 
 
@@ -545,25 +540,19 @@ async def _pre_dispatch_payload_check(
 @celery.task
 def sync_running_tasks() -> None:
     """Define Celery task to sync running tasks."""
-    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-        sync_running_items()
-    )
+    celery.loop.run_until_complete(sync_running_items())
 
 
 @celery.task(ignore_result=True)
 def sync_finishing_tasks() -> None:
     """Define Celery task to sync running tasks whose steps have finished."""
-    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-        sync_finishing_items()
-    )
+    celery.loop.run_until_complete(sync_finishing_items())
 
 
 @celery.task
 def purge_task_history_logs() -> None:
     """Define Celery task to purge aged task-execution logs."""
-    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-        _purge_task_history_logs()
-    )
+    celery.loop.run_until_complete(_purge_task_history_logs())
 
 
 async def _purge_task_history_logs() -> None:
@@ -627,9 +616,7 @@ def sync_task_history(task_history_id: int) -> None:
     :type task_history_id: int
     """
     logger.info("Syncing task history %s", task_history_id)
-    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-        sync_queue_item(task_history_id)
-    )
+    celery.loop.run_until_complete(sync_queue_item(task_history_id))
     logger.info("Finished syncing task history %s", task_history_id)
 
 
@@ -816,7 +803,10 @@ def _postgresql_meta_clauses(queued: TaskExecutionRequest) -> list[ColumnElement
 
     A key in :data:`ENCRYPTED_META_KEYS` carries no predicate: it is ciphertext
     at rest and encryption is non-deterministic, so no SQL comparison can match
-    it. Every other key keeps its containment or per-key equality, which is what
+    it. A key in :data:`DISPLAY_ONLY_META_KEYS` carries none either: it renders a
+    leaf compared in its own right, and a row written before the key existed
+    lacks it, so requiring it would stop an identical request from matching that
+    row. Every other key keeps its containment or per-key equality, which is what
     lets the GIN index on ``execution_request->'meta'`` still serve the query.
 
     :param queued: The execution request being dispatched.
@@ -825,7 +815,7 @@ def _postgresql_meta_clauses(queued: TaskExecutionRequest) -> list[ColumnElement
     scalar_subset: dict[str, Any] = {}
     container_items: list[tuple[str, Any]] = []
     for field, raw_value in (queued.meta or {}).items():
-        if field in ENCRYPTED_META_KEYS:
+        if field in ENCRYPTED_META_KEYS or field in DISPLAY_ONLY_META_KEYS:
             continue
         if isinstance(raw_value, list | dict):
             container_items.append((field, raw_value))
@@ -852,7 +842,8 @@ def _json_extract_meta_clauses(
 ) -> list[ColumnElement[bool]]:
     """Return the per-key text-equality predicates for a non-PostgreSQL engine.
 
-    An encrypted key is skipped for the same reason as in the ``jsonb`` branch.
+    An encrypted or display-only key is skipped for the same reasons as in the
+    ``jsonb`` branch.
 
     :param engine_name: The bound engine's dialect name.
     :param queued: The execution request being dispatched.
@@ -860,7 +851,7 @@ def _json_extract_meta_clauses(
     """
     clauses: list[ColumnElement[bool]] = []
     for field, raw_value in (queued.meta or {}).items():
-        if field in ENCRYPTED_META_KEYS:
+        if field in ENCRYPTED_META_KEYS or field in DISPLAY_ONLY_META_KEYS:
             continue
         extracted = func_json_extract(
             engine_name, TaskHistory.execution_request, "meta", field
@@ -1339,9 +1330,7 @@ def check_nomad_cert_expiry() -> None:
     Celery beat registration uses ``TASKS.NOMAD.CHECK_CERT_EXPIRY_INTERVAL``; when
     it is ``None`` the periodic task is not seeded (see :mod:`app.tasks.db.seed`).
     """
-    celery.loop.run_until_complete(  # ty: ignore[unresolved-attribute]
-        _check_nomad_cert_expiry()
-    )
+    celery.loop.run_until_complete(_check_nomad_cert_expiry())
 
 
 async def _check_nomad_cert_expiry() -> None:

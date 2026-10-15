@@ -41,6 +41,7 @@ from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.auth.providers.casdoor.sdk import CasdoorSDK
 from app.core.auth.providers.grafana.models import GrafanaUser
 from app.core.auth.providers.grafana.sdk import GrafanaException
+from app.core.config import Settings
 from app.core.exceptions import (
     HTTPConflictException,
     HTTPNotFoundException,
@@ -71,6 +72,7 @@ from app.extensions.deps import (
     get_task_by_name,
     get_task_history,
     get_tasks_api,
+    get_tasks_client,
     get_toggleable_app_key,
     get_username_mapping,
     PROTECTED_APP_KEYS,
@@ -711,6 +713,40 @@ class TestGetTasksApi:
         result = await gen.__anext__()
         assert result is mock_authenticated
         mock_client.auth.assert_called_once_with("test-token")
+
+
+class TestTasksClientLogPolicy:
+    """Cover the log policy of the Tasks client the request dependency resolves.
+
+    The registry keys a client on its endpoint and SSL settings alone, so the
+    first site to ask decides the log policy every later site receives. One site
+    omitting it is enough to log request bodies and history responses in full.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_request_dependency_requests_the_policy(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Assert the Tasks client is requested with both log settings.
+
+        :param mocker: The patching fixture standing in for the client registry.
+        """
+        get_remote_api = mocker.patch.object(
+            Settings,
+            "get_remote_api",
+            new=AsyncMock(return_value=MagicMock(spec=RemoteAPI)),
+        )
+        request = MagicMock(spec=Request)
+        request.app.state = MagicMock(spec=[])
+        dependency = get_tasks_client(request)
+
+        await dependency.__anext__()
+        await dependency.aclose()
+
+        (awaited,) = get_remote_api.await_args_list
+        requested = awaited.kwargs
+        assert requested["endpoint"] == extensions_settings.TASKS_ENDPOINT
+        assert requested["withhold_body_log"] is True
 
 
 class TestResolvePmmApi:

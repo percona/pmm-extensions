@@ -56,10 +56,6 @@ class ConcreteExecutor(BaseExecutor):
     async def _stop_task(self, queue_item: TaskHistory) -> None:
         """Do nothing."""
 
-    async def validate_job(self, job: dict[str, Any]) -> dict[str, Any]:
-        """Return the job unchanged."""
-        return job
-
     async def get_hosts(self) -> dict[str, str]:
         """Return an empty host map."""
         return {}
@@ -104,90 +100,6 @@ class ConcreteExecutor(BaseExecutor):
 def executor() -> ConcreteExecutor:
     """Create a ConcreteExecutor instance."""
     return ConcreteExecutor()
-
-
-class TestTransformPayload:
-    """Test BaseExecutor.transform_payload."""
-
-    @pytest.mark.asyncio
-    async def test_calls_parse_then_validate(self, executor: ConcreteExecutor):
-        """Assert transform_payload calls parse_payload then validate_job."""
-        parsed = {"key": "value"}
-        validated = {"key": "value", "validated": True}
-        mock_parse = AsyncMock(return_value=parsed)
-        mock_validate = AsyncMock(return_value=validated)
-
-        with (
-            patch.object(ConcreteExecutor, "parse_payload", mock_parse),
-            patch.object(ConcreteExecutor, "validate_job", mock_validate),
-        ):
-            result = await executor.transform_payload('{"key": "value"}', "json")
-
-        mock_parse.assert_awaited_once_with('{"key": "value"}', "json")
-        mock_validate.assert_awaited_once_with(parsed)
-        assert result == validated
-
-    @pytest.mark.asyncio
-    async def test_returns_validate_job_result(self, executor: ConcreteExecutor):
-        """Assert transform_payload returns the result of validate_job."""
-        expected = {"result": "validated"}
-
-        with (
-            patch.object(ConcreteExecutor, "parse_payload", AsyncMock(return_value={})),
-            patch.object(
-                ConcreteExecutor, "validate_job", AsyncMock(return_value=expected)
-            ),
-        ):
-            result = await executor.transform_payload("{}", "json")
-
-        assert result == expected
-
-    @pytest.mark.asyncio
-    async def test_propagates_parse_error(self, executor: ConcreteExecutor):
-        """Assert transform_payload propagates a parse failure without validating."""
-        mock_validate = AsyncMock()
-        with (
-            patch.object(ConcreteExecutor, "validate_job", mock_validate),
-            pytest.raises(ValueError, match="unsupported format"),
-        ):
-            await executor.transform_payload("{}", "xml")
-
-        mock_validate.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_propagates_validate_error(self, executor: ConcreteExecutor):
-        """Assert transform_payload propagates a validate_job failure."""
-        with (
-            patch.object(
-                ConcreteExecutor,
-                "validate_job",
-                AsyncMock(side_effect=ValueError("invalid job")),
-            ),
-            pytest.raises(ValueError, match="invalid job"),
-        ):
-            await executor.transform_payload("{}", "json")
-
-
-class TestParsePayload:
-    """Test BaseExecutor.parse_payload."""
-
-    @pytest.mark.asyncio
-    async def test_delegates_to_utils_parse_payload(self, executor: ConcreteExecutor):
-        """Assert parse_payload delegates to utils.parse_payload."""
-        with patch(
-            "app.tasks.execution.models.parse_payload",
-            return_value={"parsed": True},
-        ) as mock_parse:
-            result = await executor.parse_payload('{"parsed": true}', "json")
-
-        mock_parse.assert_called_once_with('{"parsed": true}', "json")
-        assert result == {"parsed": True}
-
-    @pytest.mark.asyncio
-    async def test_raises_on_unsupported_format(self, executor: ConcreteExecutor):
-        """Assert parse_payload raises ValueError for an unsupported format."""
-        with pytest.raises(ValueError, match="unsupported format"):
-            await executor.parse_payload("{}", "xml")
 
 
 class StopStubExecutor(ConcreteExecutor):

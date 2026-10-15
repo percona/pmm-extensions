@@ -39,6 +39,7 @@ from app.extensions.apps.om_inventory.models import (
     OmService,
     ProbeRun,
     ProbeRunStatus,
+    ScanFailure,
 )
 
 
@@ -124,6 +125,7 @@ def _apply_attempt(
     observed: dict[str, Any] | None,
     error: str | None,
     run_id: UUID | None,
+    error_code: ScanFailure | None = None,
 ) -> None:
     """Fold one attempt's outcome into an entity's freshness columns.
 
@@ -133,9 +135,10 @@ def _apply_attempt(
     * ``failing_since`` is only set when it is unset. Overwriting it on every failure
       turns "since" into "most recent failure", so the duration is always about one
       schedule interval and the column stops being worth reading.
-    * A failure does **not** touch ``observed``. The last known good document stays,
+    * A failure does **not** replace ``observed``. The last known good document stays,
       with its own ``collected_at``, because what a host was running when it was last
-      reachable is exactly what is wanted while it is not.
+      reachable is exactly what is wanted while it is not. :func:`upsert_service`
+      merges in only what the failed attempt read off the host, and its status.
     * ``last_attempt_at`` moves on every attempt, ``last_success_at`` only on success.
       The gap between them is the answer to "how stale is this".
     * The caller decides what counts as an attempt. An entity a run did not target
@@ -146,6 +149,7 @@ def _apply_attempt(
     :param observed: The collected document on success; ``None`` on failure.
     :param error: The failure detail; ``None`` on success.
     :param run_id: The run this attempt belongs to.
+    :param error_code: What kind of failure it is; ``None`` on success.
     """
     now = utc_now()
     entity.last_attempt_at = now
@@ -158,11 +162,13 @@ def _apply_attempt(
         entity.failing_since = None
         entity.consecutive_failures = 0
         entity.last_error = None
+        entity.last_error_code = None
         return
 
     entity.failing_since = entity.failing_since or now
     entity.consecutive_failures += 1
     entity.last_error = error
+    entity.last_error_code = error_code
 
 
 async def upsert_host(
@@ -175,6 +181,7 @@ async def upsert_host(
     observed: dict[str, Any] | None = None,
     executor: dict[str, Any] | None = None,
     error: str | None = None,
+    error_code: ScanFailure | None = None,
     run_id: UUID | None = None,
     attempted: bool = True,
 ) -> OmHost:
@@ -202,6 +209,7 @@ async def upsert_host(
         anything — and the hosts it cannot run anything on are exactly the ones whose
         document would otherwise be empty with no explanation for it.
     :param error: The failure detail.
+    :param error_code: What kind of failure it is.
     :param run_id: The run this attempt belongs to.
     :param attempted: Whether this run actually probed the host.
     :return: The stored row.
@@ -224,7 +232,13 @@ async def upsert_host(
     host.updated_at = utc_now()
 
     if attempted:
-        _apply_attempt(host, observed=observed, error=error, run_id=run_id)
+        _apply_attempt(
+            host,
+            observed=observed,
+            error=error,
+            run_id=run_id,
+            error_code=error_code,
+        )
 
     # After the attempt, not before: a successful probe replaces ``observed``
     # wholesale, which would drop these on exactly the hosts that did answer.
@@ -243,6 +257,8 @@ async def upsert_service(
     role: str | None,
     observed: dict[str, Any] | None = None,
     error: str | None = None,
+    error_code: ScanFailure | None = None,
+    process_facts: dict[str, Any] | None = None,
     run_id: UUID | None = None,
     attempted: bool = True,
 ) -> OmService:
@@ -257,6 +273,11 @@ async def upsert_service(
     not blank out what the last good one saw, for the same reason it must not blank
     out ``observed``.
 
+    What a failed attempt did read off the host is not discarded with the rest, nor is
+    its status: a stopped mongod must stop reading as running, and as probed ``ok``,
+    even while its database facts stay those of the last scan that could query it.
+    ``collected_at`` stays the time of that scan, the one the database facts are from.
+
     :param session: The database session.
     :param service_id: PMM's service id.
     :param node_id: The host it runs on; its ``om.om_host`` row must exist.
@@ -265,6 +286,11 @@ async def upsert_service(
     :param role: The observed role, or ``None`` when this attempt did not see one.
     :param observed: The collected document, or ``None`` when the attempt failed.
     :param error: The failure detail.
+    :param error_code: What kind of failure it is.
+    :param process_facts: What a failed attempt refreshes: its probe status and what
+        it saw of the binary and the process, merged into the stored ``observed``. A
+        ``None`` value removes that key. Ignored unless the attempt failed, and while
+        nothing is stored, since there are no database facts to keep.
     :param run_id: The run this attempt belongs to.
     :param attempted: Whether this run actually probed the service.
     :return: The stored row.
@@ -284,7 +310,26 @@ async def upsert_service(
         service.role = role
 
     if attempted:
-        _apply_attempt(service, observed=observed, error=error, run_id=run_id)
+        _apply_attempt(
+            service,
+            observed=observed,
+            error=error,
+            run_id=run_id,
+            error_code=error_code,
+        )
+
+    # Only a failed attempt merges: success has just replaced ``observed``, and an
+    # unattempted service read nothing off the host.
+    if (
+        attempted
+        and observed is None
+        and process_facts is not None
+        and service.observed
+    ):
+        merged = {**service.observed, **process_facts}
+        service.observed = {
+            key: value for key, value in merged.items() if value is not None
+        }
     return service
 
 
@@ -554,19 +599,31 @@ def _claimed_first(one: ProbeRun, other: ProbeRun) -> bool:
     return str(one.id) < str(other.id)
 
 
-def conflict_detail(blocking: ProbeRun, node_ids: list[str] | None) -> str:
-    """Say which hosts are held, and by which run.
+async def conflict_detail(
+    session: AsyncSession, blocking: ProbeRun, node_ids: list[str] | None
+) -> str:
+    """Say which hosts are held by a scan already in flight.
 
     Names them rather than saying "a sweep is already running", which was true of
     anything and useful for nothing once conflict became per-host.
 
+    Written for the operator who reads it in PMM's UI, so it uses that UI's words:
+    a "scan" on "nodes", each by its registered name. The blocking run's id, the
+    nodes' ids and this app's internal names ("probe", "estate") mean nothing
+    there, and PMM shows the message as it is.
+
+    :param session: The database session.
     :param blocking: The run already holding them.
     :param node_ids: The hosts that were asked for.
     :return: The message.
     """
     if not blocking.scope:
-        held = "the whole estate"
-    else:
-        overlap = sorted(set(blocking.scope) & set(node_ids or []))
-        held = ", ".join(overlap) or "these hosts"
-    return f"Probe run {blocking.id} is already refreshing {held}"
+        return "A scan is already running on every node"
+    overlap = set(blocking.scope) & set(node_ids or [])
+    result = await session.exec(
+        select(OmHost.name)
+        .where(col(OmHost.node_id).in_(overlap))
+        .order_by(col(OmHost.name))
+    )
+    held = ", ".join(result.all()) or "these nodes"
+    return f"A scan is already running on {held}"
