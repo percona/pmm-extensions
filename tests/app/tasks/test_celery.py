@@ -2212,9 +2212,9 @@ class TestSyncFinishingItems:
             item: TaskHistory,
             *,
             writer_session=None,
-            await_annotations: bool = False,
+            defer_terminal_annotation: bool = False,
         ) -> tuple[TaskHistory, str | None]:
-            del writer_session, await_annotations
+            del writer_session, defer_terminal_annotation
             item.status = TaskHistoryStatusEnum.SUCCESS
             return item, None
 
@@ -2918,9 +2918,9 @@ class TestSyncQueueItemChainDispatch:
             queue_item: TaskHistory,
             writer_session=None,
             *,
-            await_annotations: bool = False,
+            defer_terminal_annotation: bool = False,
         ) -> tuple[TaskHistory, str | None]:
-            del writer_session, await_annotations
+            del writer_session, defer_terminal_annotation
             queue_item.status = TaskHistoryStatusEnum.FAILED
             queue_item.started_at = datetime(2026, 4, 1, 10, 1, 0, tzinfo=UTC)
             queue_item.finished_at = datetime(2026, 4, 1, 10, 2, 0, tzinfo=UTC)
@@ -3358,10 +3358,8 @@ class TestSyncQueueItemAnnotationOrdering:
         assert save_done_when_annotation_started
 
     @pytest.mark.asyncio
-    async def test_awaits_terminal_annotation_only_for_running_transition(
-        self,
-    ) -> None:
-        """Assert terminal annotation is awaited only on RUNNING to terminal."""
+    async def test_awaits_terminal_annotation_on_running_to_terminal(self) -> None:
+        """Assert terminal annotation is awaited on RUNNING to terminal."""
         main_task = _make_chain_task("main-task")
         running_history = _make_chain_history(
             main_task,
@@ -3371,11 +3369,6 @@ class TestSyncQueueItemAnnotationOrdering:
         done_history = _make_chain_history(
             main_task,
             TaskHistoryStatusEnum.SUCCESS,
-            {},
-        )
-        still_running = _make_chain_history(
-            main_task,
-            TaskHistoryStatusEnum.RUNNING,
             {},
         )
 
@@ -3417,7 +3410,23 @@ class TestSyncQueueItemAnnotationOrdering:
 
         mock_await.assert_awaited_once_with(done_history, "COMPLETED")
 
-        mock_await.reset_mock()
+    @pytest.mark.asyncio
+    async def test_does_not_await_annotation_when_still_running(self) -> None:
+        """Assert await_annotation is skipped when sync leaves the run RUNNING."""
+        main_task = _make_chain_task("main-task")
+        running_history = _make_chain_history(
+            main_task,
+            TaskHistoryStatusEnum.RUNNING,
+            {},
+        )
+        still_running = _make_chain_history(
+            main_task,
+            TaskHistoryStatusEnum.RUNNING,
+            {},
+        )
+
+        session_maker, _ = _make_chain_session_mock()
+
         with (
             patch(
                 "app.tasks.celery.get_async_session_maker", return_value=session_maker
@@ -3440,7 +3449,7 @@ class TestSyncQueueItemAnnotationOrdering:
             ),
             patch(
                 "app.tasks.celery.await_annotation", new_callable=AsyncMock
-            ) as mock_await_still_running,
+            ) as mock_await,
             patch("app.tasks.celery.maybe_dispatch_chain", new_callable=AsyncMock),
             patch("app.tasks.celery.maybe_record_run", new_callable=AsyncMock),
         ):
@@ -3450,7 +3459,7 @@ class TestSyncQueueItemAnnotationOrdering:
 
             await sync_queue_item(1)
 
-        mock_await_still_running.assert_not_awaited()
+        mock_await.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_terminal_annotation_precedes_chain_dispatch(self) -> None:
@@ -4367,9 +4376,9 @@ class TestSyncQueueItemRegression:
             item: TaskHistory,
             *,
             writer_session=None,
-            await_annotations: bool = False,
+            defer_terminal_annotation: bool = False,
         ) -> tuple[TaskHistory, str | None]:
-            del writer_session, await_annotations
+            del writer_session, defer_terminal_annotation
             item.status = TaskHistoryStatusEnum.SUCCESS
             return item, None
 
@@ -4420,9 +4429,9 @@ class TestSyncQueueItemRegression:
                 item: TaskHistory,
                 *,
                 writer_session=None,
-                await_annotations: bool = False,
+                defer_terminal_annotation: bool = False,
             ) -> tuple[TaskHistory, str | None]:
-                del writer_session, await_annotations
+                del writer_session, defer_terminal_annotation
                 item.status = TaskHistoryStatusEnum.FAILED
                 item.set_failure_reason("Step 'run-script' failed (exit code 1).")
                 return item, None

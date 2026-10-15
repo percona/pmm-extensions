@@ -284,7 +284,7 @@ class TestSyncTaskHistoryPmmRegressionSep1021:
         ``TaskHistory`` with ``undefer(TaskHistory.execution_request)`` in a
         reader session, closes that session, then calls
         ``executor.sync_task_history(queue_item, writer_session=...)`` inside
-        a fresh writer session. With ``await_annotations=True`` the sync
+        a fresh writer session. With ``defer_terminal_annotation=True`` the sync
         returns a pending event and the caller awaits ``await_annotation``,
         which must snapshot the request primitives via
         ``execution_request_for_pmm_snapshot`` rather than touching the
@@ -333,7 +333,9 @@ class TestSyncTaskHistoryPmmRegressionSep1021:
                 "app.core.pmm.create_pmm_annotation", new_callable=AsyncMock
             ) as mock_create:
                 loaded, pending_event = await executor.sync_task_history(
-                    loaded, writer_session=writer_session, await_annotations=True
+                    loaded,
+                    writer_session=writer_session,
+                    defer_terminal_annotation=True,
                 )
                 assert pending_event == "COMPLETED"
                 await await_annotation(loaded, pending_event)
@@ -391,7 +393,9 @@ class TestSyncTaskHistoryPmmRegressionSep1021:
                 "app.core.pmm.create_pmm_annotation", new_callable=AsyncMock
             ) as mock_create:
                 loaded, pending_event = await executor.sync_task_history(
-                    loaded, writer_session=writer_session, await_annotations=True
+                    loaded,
+                    writer_session=writer_session,
+                    defer_terminal_annotation=True,
                 )
                 assert pending_event == "COMPLETED"
                 await await_annotation(loaded, pending_event)
@@ -432,7 +436,7 @@ class TestSyncTaskHistoryPmmRegressionSep1021:
             "app.core.pmm.create_pmm_annotation", new_callable=AsyncMock
         ) as mock_create:
             result, pending_event = await executor.sync_task_history(
-                saved, writer_session=session, await_annotations=True
+                saved, writer_session=session, defer_terminal_annotation=True
             )
 
         assert result.status == TaskHistoryStatusEnum.RUNNING

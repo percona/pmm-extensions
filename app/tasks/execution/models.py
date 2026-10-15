@@ -266,7 +266,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         queue_item: TaskHistory,
         writer_session: AsyncSession | None = None,
         *,
-        await_annotations: bool = False,
+        defer_terminal_annotation: bool = False,
     ) -> tuple[TaskHistory, str | None]:
         """Sync the task history with the backend and trigger the configured alerts.
 
@@ -275,13 +275,14 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
             for side-effect writes such as append-only log persistence. When
             ``None``, the executor falls back to whatever session management it
             has available.
-        :param await_annotations: When ``True``, do not schedule or await the
-            terminal PMM annotation here; return its event label for the
-            caller to handle after persisting the row. When ``False`` (default),
-            schedule it as a fire-and-forget background task.
-        :return: The updated task history and, when ``await_annotations`` is
-            ``True`` and a RUNNING-to-terminal transition occurred, the PMM event
-            label to await after save; otherwise ``None``.
+        :param defer_terminal_annotation: When ``True``, do not schedule or
+            await the terminal PMM annotation here; return its event label for
+            the caller to handle after persisting the row. When ``False``
+            (default), schedule it as a fire-and-forget background task.
+        :return: The updated task history and, when
+            ``defer_terminal_annotation`` is ``True`` and a RUNNING-to-terminal
+            transition occurred, the PMM event label to await after save;
+            otherwise ``None``.
         """
         was_running = queue_item.status == TaskHistoryStatusEnum.RUNNING
         queue_item = await self._sync_task_history(
@@ -293,7 +294,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         if was_running:
             event = _TERMINAL_STATUS_EVENT_MAP.get(queue_item.status)
             if event:
-                if await_annotations:
+                if defer_terminal_annotation:
                     pending_event = event
                 else:
                     schedule_annotation(queue_item, event)
