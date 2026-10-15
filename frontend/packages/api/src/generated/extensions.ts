@@ -10968,6 +10968,9 @@ export interface components {
      *         empty — gets
      *         :class:`~app.extensions.apps.om_bootstrap.strategy.MemberConfig`'s own
      *         defaults.
+     *     :param create_admin_user: Whether to plan a ``create_admin_user`` run step,
+     *         creating the customer's own administrator with the ``root`` role. Its
+     *         credentials arrive with that step's dispatch, like every other secret.
      */
     om_bootstrap__TriggerRunRequest: {
       /**
@@ -10975,6 +10978,11 @@ export interface components {
        * @default 127.0.0.1
        */
       bind_ip: string;
+      /**
+       * Create Admin User
+       * @default false
+       */
+      create_admin_user: boolean;
       /**
        * Data Path
        * @default /var/lib/mongo
