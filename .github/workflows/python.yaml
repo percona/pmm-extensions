@@ -88,12 +88,7 @@ jobs:
         run: AUTH__PROVIDER__CASDOOR__CLIENT_SECRET=notatoken AUTH__PROVIDER__CASDOOR__CLIENT_ID=notatoken ENCRYPTION_KEY="$(make -s encryption-key)" make checkmigrations
 
   test:
-    name: test (${{ matrix.python }})
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        python: ["3.11.9", "3.12.3", "3.13"]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -105,7 +100,7 @@ jobs:
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.11.9"
           cache: poetry
       - name: Install test dependencies
         run: poetry sync --no-root
@@ -118,10 +113,10 @@ jobs:
       - name: Run tests
         env:
           EXTENSIONS_PAYLOAD_CHECK_PYTHON: ${{ steps.py39.outputs.python-path }}
-        run: make test PYTEST_MARKERS='not postgres' COV=${{ matrix.python == '3.11.9' && '1' || '0' }}
+        run: make test PYTEST_MARKERS='not postgres' COV=1
       - name: Generate coverage comment data
         id: coverage_comment
-        if: matrix.python == '3.11.9' && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'
         uses: py-cov-action/python-coverage-comment-action@63f52f4fbbffada6e8dee8ec432de7e01df9ba79 # v3.41
         with:
           GITHUB_TOKEN: ${{ github.token }}

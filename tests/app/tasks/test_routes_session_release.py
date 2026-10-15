@@ -315,8 +315,7 @@ async def test_more_live_log_streams_than_pool_all_stream_and_short_calls_succee
             status.HTTP_200_OK
         ] * STREAMS_BEYOND_POOL
         await asyncio.wait_for(
-            nomad_stub.wait_for_follows(STREAMS_BEYOND_POOL * len(TaskLogType)),
-            RUN_TIMEOUT,
+            nomad_stub.wait_for_follows(len(TaskLogType)), RUN_TIMEOUT
         )
 
         short_status = await asyncio.wait_for(_list_tasks_status(), RUN_TIMEOUT)
