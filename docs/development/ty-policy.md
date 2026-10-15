@@ -663,11 +663,10 @@ warning, and all 366 errors are untouched.
 `scripts/classify_ty_diagnostics.py` holds these as executable predicates; the
 table is its `report` output at `8ab18007e`, not a parallel record, so groups
 added since are absent and retired ones are folded into one row. The
-discriminant column is
-the load-bearing one, because most groups share a rule with genuine defects —
-under `unknown-argument`, the pydantic-settings `_secrets_dir` kwarg and a
-first-party `PMM` kwarg differ only in the symbol the message names, and
-`tests/app/extensions/test_config.py` holds both.
+discriminant column is the load-bearing one, because most groups share a rule
+with genuine defects — under `unknown-argument`, the pydantic-settings
+`_secrets_dir` kwarg and a first-party `PMM` kwarg differ only in the symbol the
+message names, and `tests/app/extensions/test_config.py` holds both.
 
 | Group | Rule(s) | Hits | via override | via comment |
 |---|---|---:|---:|---:|
@@ -686,7 +685,7 @@ first-party `PMM` kwarg differ only in the symbol the message names, and
 The retired row held two groups: a `Field(...)` default ty read as `FieldInfo`
 (87 hits) and the `loop` attribute installed on the `Celery` instance at runtime
 (31). Once the settings field helpers and `ExtensionsCelery.loop` were typed at
-the source ty stopped reporting either shape, so both groups were removed from
+the source, ty stopped reporting either shape, so both groups were removed from
 the classifier; either message reappearing is now a first-party regression.
 
 One group is additionally confined to a set of paths. `Cannot resolve imported

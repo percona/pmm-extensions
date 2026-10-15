@@ -407,14 +407,8 @@ class TestRetiredArtifactShapes:
 
     def test_check_rejects_suppressing_a_retired_shape(self, tmp_path, capsys):
         """Fail ``check`` when a run hides either shape, as it would a first-party defect."""
-        fieldinfo = (
-            "app/extensions/config.py:474:5: warning[invalid-assignment] "
-            "Object of type `FieldInfo` is not assignable to `int`"
-        )
-        celery = (
-            "app/celery.py:58:5: warning[unresolved-attribute] "
-            "Object of type `Celery` has no attribute `loop`"
-        )
+        fieldinfo = f"app/extensions/config.py:474:5: warning[invalid-assignment] {FIELDINFO_DEFAULT}"
+        celery = f"app/celery.py:58:5: warning[unresolved-attribute] {CELERY_LOOP}"
         manifest = _manifest(tmp_path, _output(fieldinfo, celery, FIRST_PARTY_ROW))
 
         assert _check(tmp_path, manifest, _output(FIRST_PARTY_ROW)) == 1
@@ -508,8 +502,8 @@ def test_group_constraint_audit_rejects_a_pattern_quoting_only_a_wildcard():
     """Report a group whose backticks quote a wildcard rather than a symbol.
 
     Backticks alone are not the discriminant. This pattern claims every
-    ``unresolved-attribute`` diagnostic in the tree — including the
-    ``*Settings`` and ``Celery`` typos the tests above pin as first-party — so accepting it
+    ``unresolved-attribute`` diagnostic in the tree — including the ``*Settings``
+    and ``Celery`` typos the tests above pin as first-party — so accepting it
     would let the table launder a genuine defect into a suppressible artifact,
     which is the whole failure the audit exists to catch.
     """
@@ -691,10 +685,11 @@ def test_corpus_read_treats_an_undecodable_module_as_absent(tmp_path):
 
 
 class TestCorpusReadOfAssembledRows:
-    """Read only rows written out whole, never the pieces of an assembled string.
+    """Skip the literal pieces of a row assembled at runtime.
 
-    A piece of an f-string or a ``+`` concatenation looks like a row cut off where
-    the dynamic part begins. Read as a fingerprint, it names a message no
+    A piece of an f-string, a ``+`` or ``+=`` concatenation, a ``%`` or
+    ``str.format`` template, or a ``str.join`` sequence looks like a row cut off
+    where the dynamic part begins. Read as a fingerprint, it names a message no
     diagnostic carries, and because no group claims it, the audit counts it as
     evidence that its rule is safe.
 
@@ -711,12 +706,37 @@ class TestCorpusReadOfAssembledRows:
             f'ROW = f"{ROW_PREFIX}Object of type {{NAME}}"',
             f'ROW = "{ROW_PREFIX}" + NAME',
             f'ROW = "{ROW_PREFIX}Object of type " + NAME + " is unknown"',
+            f'ROW = "{ROW_PREFIX}Object of type " \nROW += NAME',
+            f'ROW = "{ROW_PREFIX}Object of type %s" % NAME',
+            f'ROW = "{ROW_PREFIX}Object of type {{}}".format(NAME)',
+            f'ROW = "".join(["{ROW_PREFIX}Object of type ", NAME])',
         ],
-        ids=["fstring-empty", "fstring-partial", "concat-empty", "concat-partial"],
+        ids=[
+            "fstring-empty",
+            "fstring-partial",
+            "concat-empty",
+            "concat-partial",
+            "augmented-concat",
+            "percent-format",
+            "str-format",
+            "str-join",
+        ],
     )
     def test_skips_a_row_assembled_at_runtime(self, tmp_path, assignment):
         """Pin nothing for a row whose message is only known at runtime."""
         source = write_file(tmp_path, "corpus.py", f'NAME = "x"\n{assignment}\n')
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
+
+    def test_skips_a_whole_row_that_gains_a_suffix(self, tmp_path):
+        """Skip a complete row concatenated with more text, erring toward a stricter audit.
+
+        The parser cannot tell a trailing newline from the rest of the message,
+        and dropping a genuine pin only makes a group carry its own discriminant.
+        """
+        source = write_file(
+            tmp_path, "corpus.py", f'ROW = "{self.ROW_PREFIX}a message" + "\\n"\n'
+        )
 
         assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
 
@@ -850,12 +870,12 @@ def test_a_symbol_only_group_claims_its_artifact_and_declines_its_rule(
 ):
     """Pin what the symbol in each unconfined group's message actually separates.
 
-    These groups carry no path constraint, so the symbol their pattern
-    quotes is the whole of their evidence, and ``group_constraint_failures``
-    accepts that symbol without checking it separates anything. A rule that
-    reads its own regex cannot: the pattern is the claim under test. Only a
-    same-rule diagnostic the group declines shows the discriminant working,
-    which is why the audit counts one of these as evidence in its own right.
+    These groups carry no path constraint, so the symbol their pattern quotes is
+    the whole of their evidence, and ``group_constraint_failures`` accepts that
+    symbol without checking it separates anything. A rule that reads its own
+    regex cannot: the pattern is the claim under test. Only a same-rule
+    diagnostic the group declines shows the discriminant working, which is why
+    the audit counts one of these as evidence in its own right.
     """
     assert name in _claiming_groups(artifact)
     assert _claiming_groups(first_party) == []

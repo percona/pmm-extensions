@@ -443,27 +443,48 @@ def _tuple_fingerprint(node: ast.Tuple, bindings: dict[str, str]) -> Fingerprint
     return (path, rule, message)
 
 
-def _fragment_ids(tree: ast.Module) -> set[int]:
-    """Return the ids of string constants that are only a piece of a larger string.
+def _fragments(tree: ast.Module) -> set[ast.Constant]:
+    """Return the string constants that are only a piece of a larger string.
 
-    An f-string's literal pieces and the operands of a ``+`` concatenation each
-    read like a row cut off where the dynamic part begins. Taken as a row, one
-    pins a message no diagnostic carries, and because no group claims it,
-    :func:`group_constraint_failures` would count it as evidence for its rule.
+    The literal pieces of an f-string, a ``+`` or ``+=`` concatenation, a ``%``
+    or ``str.format`` template and a ``str.join`` sequence each read like a row
+    cut off where the dynamic part begins. Taken as a row, one pins a message no
+    diagnostic carries, and because no group claims it,
+    :func:`group_constraint_failures` would count it as evidence for its rule. A
+    complete row that gains a suffix is skipped too: the parser cannot tell the
+    suffix from the rest of the message, and a dropped pin only makes the audit
+    stricter.
 
     :param tree: The parsed corpus module.
-    :return: The ``id`` of every constant that is a fragment.
+    :return: Every constant that is a fragment.
     """
-    fragments: set[int] = set()
+    extended: set[str] = set()
+    parts: list[ast.expr] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.JoinedStr):
-            parts = node.values
-        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            parts = [node.left, node.right]
-        else:
-            continue
-        fragments.update(id(part) for part in parts if isinstance(part, ast.Constant))
-    return fragments
+        match node:
+            case ast.JoinedStr(values=values):
+                parts.extend(values)
+            case ast.BinOp(op=ast.Add() | ast.Mod(), left=left, right=right):
+                parts.extend((left, right))
+            case ast.AugAssign(target=ast.Name(id=name), op=ast.Add(), value=value):
+                extended.add(name)
+                parts.append(value)
+            case ast.Call(func=ast.Attribute(attr="format", value=template)):
+                parts.append(template)
+            case ast.Call(
+                func=ast.Attribute(attr="join"), args=[ast.List() | ast.Tuple() as seq]
+            ):
+                parts.extend(seq.elts)
+
+    # A name extended with ``+=`` is bound to a fragment in a separate statement.
+    for node in ast.walk(tree):
+        match node:
+            case ast.Assign(targets=[ast.Name(id=name)], value=value) if (
+                name in extended
+            ):
+                parts.append(value)
+
+    return {part for part in parts if isinstance(part, ast.Constant)}
 
 
 def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
@@ -475,7 +496,7 @@ def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
     :func:`group_constraint_failures` accepts in place of a path constraint. Both
     spellings the suite uses are resolved — a whole ty row, and a bare
     three-string tuple whose message may arrive through a module constant. A row
-    assembled at runtime is not read, per :func:`_fragment_ids`.
+    assembled at runtime is not read, per :func:`_fragments`.
 
     An unreadable or absent corpus yields the empty set, which can only make the
     audit stricter: every group then has to carry its own discriminant. Three
@@ -492,7 +513,7 @@ def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
         return frozenset()
 
     bindings = _module_strings(tree)
-    fragments = _fragment_ids(tree)
+    fragments = _fragments(tree)
     found: set[Fingerprint] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Tuple):
@@ -502,7 +523,7 @@ def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
         elif (
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
-            and id(node) not in fragments
+            and node not in fragments
         ):
             row = DIAGNOSTIC_RE.match(node.value)
             if row is not None:
