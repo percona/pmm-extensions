@@ -2289,7 +2289,13 @@ export interface components {
      * SettingResponse
      * @description Represent a single setting's metadata and current value.
      *
-     *     :param setting_class: The Pydantic class ``__name__`` the field belongs to.
+     *     :param setting_class: The in-process identifier of the class the field
+     *         belongs to: the Pydantic class ``__name__`` (e.g. ``ExtensionsSettings``),
+     *         the same value the settings router takes as its ``{setting_class}`` path
+     *         segment. It is not the value stored in ``settingoverride.setting_class``;
+     *         that column holds the storage token ``setting_class_token`` derives from
+     *         the class (e.g. ``EXTENSIONS_SETTINGS``), so a query against the table
+     *         must filter on the token, not on this value.
      *     :param key: The field name on the settings class.
      *     :param key_path: Carry the canonical key segments for ``key`` such that
      *         ``"__".join(key_path) == key``.

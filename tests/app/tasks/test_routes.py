@@ -36,7 +36,7 @@ from app.api.deps import (
 )
 from app.core.celery.deps import get_session as get_celery_beat_session
 from app.core.db.utils import get_async_session_maker_from_engine
-from app.core.encryption import is_encrypted
+from app.core.encryption import decrypt, is_encrypted
 from app.core.pagination import DEFAULT_PAGINATION_LIMIT
 from app.core.pmm import _background_tasks
 from app.core.utils import utc_now
@@ -61,7 +61,9 @@ from app.tasks.execution.executors.nomad.steps import (
 )
 from app.tasks.execution.models import BaseExecutor
 from app.tasks.execution_request_secrets import (
+    MASKED_ARGS_META_KEY,
     PAYLOAD_LEAF,
+    WITHHELD_ARGS_PLACEHOLDER,
 )
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.main import tasks_app
@@ -3500,20 +3502,26 @@ class TestExecutionRequestEncryptionOverHTTP:
     """
 
     _ARGS = "restore --password hunter2"
+    _MASKED_ARGS = "restore --password ***"
     _CONFIG = "master_password: hunter2\n"
     _PAYLOAD = "secret document"
 
     @classmethod
-    async def _seed(cls, session, *, name: str) -> TaskHistory:
+    async def _seed(
+        cls, session, *, name: str, masked_args: str | None = None
+    ) -> TaskHistory:
         """Persist a task and one history row carrying every protected leaf.
 
         :param session: The session to persist through.
         :param name: The parent task's name.
+        :param masked_args: The masked copy to record beside the arguments, or
+            ``None`` for a row recorded without one.
         :return: The saved history row.
         """
         task = await TaskManager.create(
             session, TaskWrite.model_validate(TaskFactory.build(name=name))
         )
+        masked = {} if masked_args is None else {MASKED_ARGS_META_KEY: masked_args}
         return await TaskHistoryManager.save(
             session,
             TaskHistory(
@@ -3526,6 +3534,7 @@ class TestExecutionRequestEncryptionOverHTTP:
                         "target": "node-1",
                         "args": cls._ARGS,
                         "config": cls._CONFIG,
+                        **masked,
                     },
                     payload=cls._PAYLOAD,
                 ),
@@ -3588,7 +3597,7 @@ class TestExecutionRequestEncryptionOverHTTP:
     async def test_read_route_reports_no_leaves_for_a_readable_row(
         self, test_client, session
     ):
-        """Assert an ordinary row still serialises its request in full."""
+        """Assert an ordinary row serialises every leaf but its raw arguments."""
         history = await self._seed(session, name="crypto-readable")
 
         response = test_client.get(f"/history/{history.id}")
@@ -3597,7 +3606,7 @@ class TestExecutionRequestEncryptionOverHTTP:
         body = response.json()
         assert body["unreadable_request_leaves"] == []
         assert body["execution_request"]["payload"] == self._PAYLOAD
-        assert body["execution_request"]["meta"]["args"] == self._ARGS
+        assert body["execution_request"]["meta"]["args"] == WITHHELD_ARGS_PLACEHOLDER
         assert body["execution_request"]["meta"]["config"] == self._CONFIG
 
     @pytest.mark.asyncio
@@ -3640,9 +3649,60 @@ class TestExecutionRequestEncryptionOverHTTP:
 
         assert response.status_code == status.HTTP_200_OK
         body = response.json()
-        assert body["execution_request"]["meta"]["args"] == self._ARGS
+        assert body["execution_request"]["meta"]["args"] == WITHHELD_ARGS_PLACEHOLDER
         stored = await stored_execution_request(session, body["id"])
         assert is_encrypted(stored["meta"]["args"])
+
+    @pytest.mark.asyncio
+    async def test_execute_route_publishes_the_submitted_masked_copy(
+        self, test_client, session, mocker
+    ):
+        """Assert ``POST /execute/{task_name}`` answers masked and stores raw.
+
+        :param mocker: The patching fixture standing in for the executor edge.
+        """
+        task = await TaskManager.create(
+            session,
+            TaskWrite.model_validate(
+                TaskFactory.build(name="masked-execute", anonymize_mask=0)
+            ),
+        )
+
+        async def fake_dispatch_queue_item(queue_item, passed_session):
+            queue_item.status = TaskHistoryStatusEnum.RUNNING
+            return await TaskHistoryManager.save(
+                passed_session,
+                queue_item,
+                flag_modified_fields=["execution_request"],
+            )
+
+        fake_executor = MagicMock(spec=BaseExecutor)
+        fake_executor.get_hosts.return_value = {"node-1": "10.0.0.1"}
+        mocker.patch(
+            "app.tasks.routes.get_executor_for_task", return_value=fake_executor
+        )
+        mocker.patch(
+            "app.tasks.routes.dispatch_queue_item",
+            side_effect=fake_dispatch_queue_item,
+        )
+
+        response = test_client.post(
+            f"/execute/{task.name}",
+            json={
+                "meta": {
+                    "target": "node-1",
+                    "args": self._ARGS,
+                    MASKED_ARGS_META_KEY: self._MASKED_ARGS,
+                }
+            },
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert body["execution_request"]["meta"]["args"] == self._MASKED_ARGS
+        assert "hunter2" not in response.text
+        stored = await stored_execution_request(session, body["id"])
+        assert json_lib.loads(decrypt(stored["meta"]["args"])) == self._ARGS
 
     @pytest.mark.asyncio
     async def test_stop_route_keeps_the_response_shape(
@@ -3691,6 +3751,86 @@ class TestExecutionRequestEncryptionOverHTTP:
         stored = await stored_execution_request(session, history.id)
         assert stored["payload"] == document["payload"]
         assert is_encrypted(stored["meta"]["args"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("masked", "expected"),
+        [(_MASKED_ARGS, _MASKED_ARGS), (None, WITHHELD_ARGS_PLACEHOLDER)],
+        ids=["masked-copy", "no-masked-copy"],
+    )
+    @pytest.mark.parametrize(
+        "path",
+        ["/history/", "/{task}/history/", "/history/{id}"],
+    )
+    async def test_read_routes_never_return_the_raw_arguments(
+        self, test_client, session, path, masked, expected
+    ):
+        """Assert each read route shows the masked copy, or withholds without one.
+
+        :param path: The route template under test.
+        :param masked: The masked copy recorded beside the arguments, if any.
+        :param expected: The arguments the route publishes.
+        """
+        history = await self._seed(session, name="masked-read", masked_args=masked)
+
+        response = test_client.get(path.format(task="masked-read", id=history.id))
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        item = body["items"][0] if "items" in body else body
+        assert item["execution_request"]["meta"]["args"] == expected
+        assert self._ARGS not in response.text
+
+    @pytest.mark.asyncio
+    async def test_stop_route_never_returns_the_raw_arguments(
+        self, test_client, session, mock_executor
+    ):
+        """Assert ``POST /history/{id}/stop/`` answers with the masked copy."""
+        history = await self._seed(
+            session, name="masked-stop", masked_args=self._MASKED_ARGS
+        )
+        history.status = TaskHistoryStatusEnum.RUNNING
+        await TaskHistoryManager.save(session, history)
+        mock_executor.stop_task.return_value = history
+
+        response = test_client.post(f"/history/{history.id}/stop/")
+
+        assert response.status_code == status.HTTP_200_OK
+        meta = response.json()["execution_request"]["meta"]
+        assert meta["args"] == self._MASKED_ARGS
+        assert self._ARGS not in response.text
+
+    @pytest.mark.asyncio
+    async def test_sync_route_never_returns_the_raw_arguments(
+        self, test_client, session, mock_executor
+    ):
+        """Assert the sync save-back answers masked and keeps the raw value stored.
+
+        The route re-saves the row it loaded, so this is also where a masked
+        string written into the row's own request would be persisted.
+        """
+        history = await self._seed(
+            session, name="masked-sync", masked_args=self._MASKED_ARGS
+        )
+        await TaskHistoryManager.update_where(
+            session, {"status": TaskHistoryStatusEnum.RUNNING}, id=history.id
+        )
+
+        async def fake_sync(item, writer_session=None):
+            item.status = TaskHistoryStatusEnum.SUCCESS
+            item.finished_at = utc_now()
+            return item
+
+        mock_executor.sync_task_history = AsyncMock(side_effect=fake_sync)
+
+        response = test_client.post(f"/history/{history.id}/sync/")
+
+        assert response.status_code == status.HTTP_200_OK
+        meta = response.json()["execution_request"]["meta"]
+        assert meta["args"] == self._MASKED_ARGS
+        assert self._ARGS not in response.text
+        stored = await stored_execution_request(session, history.id)
+        assert json_lib.loads(decrypt(stored["meta"]["args"])) == self._ARGS
 
 
 @pytest.mark.postgres

@@ -40,6 +40,7 @@
           "label": "String",
           "name": "a_string",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -189,6 +190,7 @@
           "label": "Destructive String",
           "name": "a_destructive_string",
           "required": false,
+          "sensitive": false,
           "type": "string"
         }
       ],
@@ -212,6 +214,7 @@
           "label": "Gated",
           "name": "gated_field",
           "required": false,
+          "sensitive": false,
           "type": "string"
         }
       ],

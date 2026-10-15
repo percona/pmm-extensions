@@ -69,6 +69,7 @@ from app.extensions.config import extensions_settings
 from app.extensions.db import get_async_session_maker
 from app.extensions.settings_override import republish_extensions_settings_snapshot
 from app.tasks.config import tasks_settings
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 from app.tasks.models import TaskHistoryStatusEnum
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,7 @@ async def get_tasks_api() -> RemoteAPI:
         ssl_keyfile=tasks_settings.SSL_KEYFILE,
         ssl_certfile=tasks_settings.SSL_CERTFILE,
         logger_name="tasks_api",
+        **TASKS_CLIENT_LOG_POLICY,
     )
 
 

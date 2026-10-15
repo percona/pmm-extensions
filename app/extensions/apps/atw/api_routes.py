@@ -95,7 +95,6 @@ from app.extensions.bundle_upload.resolver import resolve_delivery_plan
 from app.extensions.deps import ApiCurrentUser, IsApiAdmin, SessionDep, TaskAPI
 from app.extensions.snippets.config import SnippetSudoRequirement
 from app.extensions.snippets.crud import SnippetManager
-from app.extensions.snippets.masking import mask_snippet_args
 from app.extensions.snippets.models import Snippet
 from app.extensions.snippets.models.meta import (
     META_KEY_ATW,
@@ -106,7 +105,11 @@ from app.extensions.snippets.script_source import (
     snippet_not_found_detail,
     SnippetScript,
 )
-from app.tasks.execution_request_secrets import ARGS_LEAF
+from app.tasks.execution_request_secrets import (
+    ARGS_LEAF,
+    ARGS_META_KEY,
+    MASKED_ARGS_META_KEY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +117,9 @@ ATW_META_WARNING = "Ignoring meta[%r] for snippet %s: expected list, got %s"
 ATW_META_ELEMENT_WARNING = (
     "Ignoring meta[%r] for snippet %s: expected list[str], got %s element"
 )
-ATW_ARG_MASKING_WARNING = (
-    "Withholding recorded arguments for snippet %s: masking them failed"
-)
 ATW_SNIPPET_RESOLUTION_WARNING = (
     "Snippets could not be resolved for the ATW incident page; "
-    "every row withholds its arguments"
+    "every row reports no snippet title"
 )
 NO_TASK_ID_ERROR = "Dispatched, but the Tasks API returned no task id; not recorded."
 UNRECORDED_EXECUTION_ERROR = "Dispatched, but the execution row could not be recorded"
@@ -708,7 +708,7 @@ async def _resolve_page_snippets(
     """Resolve the page's snippets in one query, degrading a failure to no metadata.
 
     Mirrors :func:`fetch_task_history`'s policy for the same route: a lookup that
-    cannot answer blanks the affected rows' arguments rather than failing the
+    cannot answer blanks the affected rows' titles rather than failing the
     listing.
 
     :param executions: The page's recorded execution rows.
@@ -758,9 +758,7 @@ def _args_unreadable_upstream(history: Mapping[str, Any]) -> bool:
     return isinstance(unreadable, list) and ARGS_LEAF in unreadable
 
 
-def _execution_args(
-    history: dict[str, Any], script: SnippetScript | None
-) -> tuple[str | None, bool]:
+def _execution_args(history: dict[str, Any]) -> tuple[str | None, bool]:
     """Return an execution's masked argument string and whether it was withheld.
 
     An empty ``history`` is what an upstream lookup failure degrades to, so it
@@ -768,21 +766,12 @@ def _execution_args(
     just could not be read. A payload whose nesting is not shaped as expected
     withholds for the same reason (see :func:`_execution_meta`).
 
-    Masking derives what is sensitive from the snippet's *current* frontmatter,
-    while the arguments were rendered from whatever it said at execution time. The
-    two only coincide while the file is unchanged, so the digest recorded alongside
-    the arguments is compared against the snippet's current one first: an edit that
-    dropped, renamed, or de-sensitised a parameter would otherwise leave its value
-    unrecognised and rendered in the clear. A digest mismatch withholds, which also
-    means a snippet edit blanks the arguments of executions recorded before it --
-    the price of not persisting the metadata each run was masked against.
-
-    Deriving that metadata can also fail outright on a malformed or stale ``meta``
-    column -- an ``arg_format`` that does not tokenise, a parameter definition the
-    model rejects, a value that will not serialise. Any of those withholds this row
-    alone, never the page. ``ValidationError`` and ``PydanticUserError`` need no
-    separate arm: they arrive as the ``ValueError`` and ``TypeError`` they
-    respectively subclass.
+    The string shown is the masked copy recorded beside the arguments when the
+    run was submitted, so it does not depend on the snippet still existing or on
+    what its frontmatter says today. A run that recorded arguments and no usable
+    copy withholds. The copy is read from its own key and never from ``args``,
+    which keeps this fail-closed against a tasks service that predates masked
+    copies and still returns the arguments as submitted.
 
     A row the tasks service stored encrypted and could not read back also
     withholds. It is recognised from the documented ``unreadable_request_leaves``
@@ -791,8 +780,6 @@ def _execution_args(
     recorded no arguments.
 
     :param history: The upstream task-history payload, empty when unavailable.
-    :param script: The resolved snippet, or ``None`` when its filename no longer
-        resolves and the parameter metadata masking needs is unavailable.
     :return: The masked argument string paired with the withheld flag; a ``None``
         string and a false flag mean the execution recorded no arguments.
     """
@@ -800,16 +787,12 @@ def _execution_args(
         return None, True
     if (meta := _execution_meta(history)) is None:
         return None, True
-    if not (raw := meta.get("args")):
+    if not meta.get(ARGS_META_KEY):
         return None, False
-    if script is None or meta.get("md5_checksum") != script.snippet.md5_digest:
-        return None, True
-    try:
-        masked = mask_snippet_args(raw, script.get_execution_model())
-    except (TypeError, ValueError, KeyError, AttributeError):
-        logger.warning(ATW_ARG_MASKING_WARNING, script.filename, exc_info=True)
-        return None, True
-    return masked, masked is None
+    masked = meta.get(MASKED_ARGS_META_KEY)
+    if isinstance(masked, str) and masked:
+        return masked, False
+    return None, True
 
 
 def _build_execution_response(
@@ -821,11 +804,11 @@ def _build_execution_response(
 
     :param execution: The locally-recorded execution row.
     :param history: The upstream task-history payload, empty when unavailable.
-    :param script: The resolved snippet supplying the title and parameter metadata
-        for argument masking, or ``None`` when its filename no longer resolves.
+    :param script: The resolved snippet supplying the title, or ``None`` when its
+        filename no longer resolves.
     :return: The combined execution response.
     """
-    masked_args, args_withheld = _execution_args(history, script)
+    masked_args, args_withheld = _execution_args(history)
     return ATWIncidentExecutionResponse(
         id=execution.id,
         snippet_filename=execution.snippet_filename,
@@ -1052,8 +1035,9 @@ async def atw_list_incident_executions(
     """List one incident's snippet executions, newest first, with live task status.
 
     Each row also reports the command line its snippet ran with, credential values
-    masked. A row whose snippet or upstream payload cannot supply what masking
-    needs reports its arguments as withheld; the page still returns.
+    masked. A row whose upstream payload is unavailable, or whose run recorded
+    arguments without a masked copy of them, reports its arguments as withheld;
+    the page still returns.
 
     :param session: The database session.
     :param incident: The incident resolved from the ``incident_id`` path parameter.
