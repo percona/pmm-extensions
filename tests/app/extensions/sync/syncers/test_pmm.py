@@ -1033,6 +1033,20 @@ def witness() -> CreatedNode:
 
 
 @pytest.fixture
+def server_node() -> CreatedNode:
+    """Return the PMM server's own node, which every PMM reports."""
+    node = CreatedNodeFactory.build(
+        id=MOCK_CREATED_NODE_ID + 2,
+        external_id="pmm-server",
+        source=SourceEnum.PMM,
+        address="localhost",
+        retired_at=None,
+    )
+    node.services = []
+    return node
+
+
+@pytest.fixture
 def retire_node(mocker) -> AsyncMock:
     """Replace the node retirement so the retire decision is seen in isolation."""
     return mocker.patch(
@@ -1608,7 +1622,7 @@ class TestEmptyGenerationHold:
     """Test that an empty PMM node list is no evidence that any node went away.
 
     A PMM reset, lost credential scope or wrong endpoint all answer with an
-    empty, otherwise faithful node list, so counting it would retire the whole
+    empty, otherwise faithful node list, or one holding only PMM's own node, so counting it would retire the whole
     inventory once grace is spent.
     """
 
@@ -1794,6 +1808,50 @@ class TestEmptyGenerationHold:
         _serve_local_nodes(owned_pmmsyncer, local_node, witness)
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             return_value=_snapshot(filtered_node_ids={witness.external_id})
+        )
+
+        with caplog.at_level("WARNING"):
+            await owned_pmmsyncer.perform_inventory_sync()
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_awaited_once_with(
+            f"/nodes/{local_node.id}"
+        )
+        assert self._syncer_warnings(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_server_only_response_holds(
+        self, local_node, server_node, owned_pmmsyncer, session, caplog
+    ):
+        """Hold every other node when PMM reports only its own server node.
+
+        PMM registers its own node even on a freshly reset instance, so that
+        answer is as empty as an empty list.
+        """
+        _serve_local_nodes(owned_pmmsyncer, local_node, server_node)
+        grace = owned_pmmsyncer.missing_grace_generations
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(_remote_node(server_node))
+        )
+
+        with caplog.at_level("WARNING"):
+            for _ in range(grace + 1):
+                await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+        assert await _absence_rows(session) == []
+        messages = self._syncer_warnings(caplog)
+        assert len(messages) == grace + 1
+        assert all(message.endswith(f": [{local_node.id}]") for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_server_and_another_node_keep_grace(
+        self, local_node, server_node, witness, owned_pmmsyncer, caplog
+    ):
+        """Count absence normally when PMM reports a node besides its own."""
+        _serve_local_nodes(owned_pmmsyncer, local_node, server_node, witness)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(_remote_node(server_node), _remote_node(witness))
         )
 
         with caplog.at_level("WARNING"):

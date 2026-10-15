@@ -52,6 +52,10 @@ _Retirable = TypeVar("_Retirable", CreatedNode, CreatedService)
 #: is still logged by ID at info level.
 _HELD_NODE_LOG_LIMIT = 20
 
+#: PMM registers its own node under this ID in every deployment, a freshly reset
+#: one included, so reporting it alone says nothing about the rest of the estate.
+_PMM_SERVER_NODE_ID = "pmm-server"
+
 
 class PMMSyncer(BaseSyncer):
     """Manage synchronization of PMM inventory entities.
@@ -377,9 +381,10 @@ class PMMSyncer(BaseSyncer):
         creating or updating corresponding nodes in the local inventory. A node that
         the fetch did not report is retired only once a complete generation has
         reported it absent ``missing_grace_generations`` times in a row. A partial
-        read is not evidence that anything disappeared from PMM, and neither is an
-        empty node list: every active local node is held through it, so an estate
-        genuinely emptied in PMM has its last nodes retired by hand.
+        read is not evidence that anything disappeared from PMM, and neither is a
+        node list that is empty or holds only PMM's own node: every active local
+        node is held through it, so an estate genuinely emptied in PMM has its last
+        nodes retired by hand.
 
         :raises ValidationError: If an entity fails validation and ``break_on_error``
             is set.
@@ -437,12 +442,13 @@ class PMMSyncer(BaseSyncer):
                 await self.sync_node(created_node, node)
             logger.debug("Nodes absent from PMM: %s", syncable_nodes)
             # A PMM reset, lost credential scope or wrong endpoint all answer
-            # with an empty list, which says nothing about any one node.
+            # with an empty list, or just PMM's own node, which says nothing
+            # about any one node.
             active_absent_ids = [
                 node.id for node in syncable_nodes.values() if not node.is_retired
             ]
-            pmm_reported_nothing = (
-                not snapshot.nodes and not snapshot.diagnostics.filtered_node_ids
+            pmm_reported_nothing = not snapshot.diagnostics.filtered_node_ids and all(
+                node.external_id == _PMM_SERVER_NODE_ID for node in snapshot.nodes
             )
             if pmm_reported_nothing and active_absent_ids:
                 unnamed = len(active_absent_ids) - _HELD_NODE_LOG_LIMIT
