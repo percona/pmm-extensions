@@ -20,7 +20,6 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, UTC
-from itertools import batched
 from typing import Any, Final
 
 from fastapi import HTTPException
@@ -267,11 +266,12 @@ class SyncHealthReporter:
         :param buffer: The successes to post.
         """
         for entity_type, outcomes in buffer.items():
-            for chunk in batched(outcomes, SYNC_HEALTH_BULK_MAX_ENTRIES):
+            for start in range(0, len(outcomes), SYNC_HEALTH_BULK_MAX_ENTRIES):
+                chunk = outcomes[start : start + SYNC_HEALTH_BULK_MAX_ENTRIES]
                 try:
                     await self._inventory_api.post(
                         f"/{INVENTORY_PATH_SEGMENTS[entity_type]}/sync-health",
-                        json=list(chunk),
+                        json=chunk,
                     )
                 except Exception:
                     logger.exception(
