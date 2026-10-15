@@ -109,7 +109,7 @@ def _outcome_payload(attempted_at: datetime, error: Exception | None) -> dict[st
     """Build the body the single-entity ``sync-health`` route takes.
 
     :param attempted_at: When the attempt began.
-    :param error: The exception that ended the attempt, or None on success.
+    :param error: The exception that ended the attempt, or ``None`` on success.
     :return: The JSON-ready body.
     """
     outcome = (
