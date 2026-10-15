@@ -260,7 +260,10 @@ class NodeBase(SQLModel):
     name: NonEmptyStr
     external_id: NonEmptyStr
     source: SourceEnum = SQLField(
-        sa_column=Column(EnumField(SourceEnum, native_enum=False), nullable=False),
+        sa_column=Column(
+            EnumField(SourceEnum, native_enum=False, create_constraint=True),
+            nullable=False,
+        ),
     )
     type: NonEmptyStr = SQLField(
         default="generic"

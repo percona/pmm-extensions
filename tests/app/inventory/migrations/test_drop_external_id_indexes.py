@@ -15,9 +15,11 @@
 
 """Test the Inventory-track migration dropping redundant ``external_id`` indexes."""
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
+from sqlalchemy.exc import IntegrityError
 
 _PRE_REVISION = "13204e7e1043"
 _REVISION = "a7d3f1c95b26"
@@ -43,7 +45,7 @@ def _index_names(sync_url: str, table_name: str) -> set[str]:
 def test_upgrade_drops_indexes_and_keeps_source(
     inventory_alembic_config: tuple[Config, str],
 ) -> None:
-    """The redundant indexes go, the composite ones stay, source survives."""
+    """Drop the redundant indexes, keep the composite ones and the source value."""
     cfg, sync_url = inventory_alembic_config
     command.upgrade(cfg, _PRE_REVISION)
     engine = create_engine(sync_url)
@@ -65,10 +67,25 @@ def test_upgrade_drops_indexes_and_keeps_source(
     engine.dispose()
 
 
+def test_upgrade_rejects_a_source_outside_the_enum(
+    inventory_alembic_config: tuple[Config, str],
+) -> None:
+    """Refuse a ``source`` label the enum does not define once it is non-native."""
+    cfg, sync_url = inventory_alembic_config
+    command.upgrade(cfg, _REVISION)
+
+    engine = create_engine(sync_url)
+    try:
+        with pytest.raises(IntegrityError), engine.begin() as conn:
+            conn.exec_driver_sql(_INSERT_NODE.replace("'PMM'", "'XYZ'"))
+    finally:
+        engine.dispose()
+
+
 def test_downgrade_restores_indexes(
     inventory_alembic_config: tuple[Config, str],
 ) -> None:
-    """Downgrading recreates the standalone indexes and keeps source."""
+    """Restore the standalone indexes on downgrade and keep the source value."""
     cfg, sync_url = inventory_alembic_config
     command.upgrade(cfg, _REVISION)
     engine = create_engine(sync_url)
