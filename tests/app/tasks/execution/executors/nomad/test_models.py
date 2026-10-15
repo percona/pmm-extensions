@@ -68,6 +68,7 @@ from app.tasks.execution.executors.nomad.exceptions import (
     JobNotFoundError,
     NomadRequestError,
 )
+from app.tasks.execution.executors.nomad.log_follow import LogCatchUpError
 from app.tasks.execution.executors.nomad.models import (
     _alloc_step_state,
     _alloc_task_states,
@@ -7930,6 +7931,160 @@ class TestStreamDirectoryAsTarGz:
         assert "mydir/bad.txt" not in members
         assert "mydir/good.txt" in members
         assert members["mydir"].mode & 0o777 == self.EXPECTED_DIRECTORY_MODE
+
+
+class TestLogCatchUpReads:
+    """Cover NomadExecutor catch-up log reads used by shared live follows."""
+
+    @staticmethod
+    def _frame_bytes(msg: bytes, offset: int) -> bytes:
+        return json.dumps({"Offset": offset, "Data": b64encode(msg).decode()}).encode()
+
+    @staticmethod
+    def _request_yielding(chunks: list[bytes]) -> AsyncMock:
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+
+        async def iter_chunks():
+            for chunk in chunks:
+                yield chunk, None
+
+        mock_response.content.iter_chunks = iter_chunks
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        return mock_ctx
+
+    @pytest.mark.asyncio
+    async def test_read_log_frames_returns_decoded_data(self) -> None:
+        """Assert ``_read_log_frames`` decodes Nomad frame Data within the range."""
+        executor = _build_executor()
+        payload = b"hello\n"
+        with patch.object(
+            executor,
+            "_request",
+            return_value=self._request_yielding(
+                [self._frame_bytes(payload, offset=len(payload))]
+            ),
+        ):
+            frames = await executor._read_log_frames(
+                "alloc-1", "setup", TaskLogType.STDOUT, start=0, end=len(payload)
+            )
+
+        assert frames == [payload]
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_yields_plain_text(self) -> None:
+        """Assert a non-anonymized catch-up range yields decoded TaskLog lines."""
+        executor = _build_executor()
+        payload = b"plain\n"
+        with patch.object(
+            executor,
+            "_request",
+            return_value=self._request_yielding(
+                [self._frame_bytes(payload, offset=len(payload))]
+            ),
+        ):
+            logs = [
+                log
+                async for log in executor._read_log_range(
+                    "alloc-1",
+                    "setup",
+                    TaskLogType.STDOUT,
+                    anonymize_entities=None,
+                    start=0,
+                    end=len(payload),
+                )
+            ]
+
+        assert len(logs) == 1
+        assert logs[0].msg == "plain\n"
+        assert logs[0].step == "setup"
+        assert logs[0].type == TaskLogType.STDOUT
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_raises_on_client_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Assert TimeoutError/ClientError become LogCatchUpError and are logged."""
+        executor = _build_executor()
+        with (
+            patch.object(
+                executor,
+                "_read_log_frames",
+                AsyncMock(side_effect=TimeoutError("timed out")),
+            ),
+            caplog.at_level(logging.ERROR, logger=NOMAD_MODELS_LOGGER),
+            pytest.raises(LogCatchUpError, match="timed out"),
+        ):
+            async for _ in executor._read_log_range(
+                "alloc-1",
+                "setup",
+                TaskLogType.STDERR,
+                anonymize_entities=None,
+                start=0,
+                end=10,
+            ):
+                pass
+
+        assert "Error catching up Nomad logs" in caplog.text
+        assert "alloc-1" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_stops_when_nomad_ends_early(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Assert an empty catch-up read warns and rejoins without raising."""
+        executor = _build_executor()
+        with (
+            patch.object(executor, "_read_log_frames", AsyncMock(return_value=[])),
+            caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
+        ):
+            logs = [
+                log
+                async for log in executor._read_log_range(
+                    "alloc-1",
+                    "setup",
+                    TaskLogType.STDOUT,
+                    anonymize_entities=None,
+                    start=4,
+                    end=20,
+                )
+            ]
+
+        assert logs == []
+        assert "reached the log's end" in caplog.text
+        assert "alloc-1" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_flushes_withheld_anonymized_line(self) -> None:
+        """Assert flush releases a withheld anonymized remainder at range end."""
+        executor = _build_executor()
+        # No trailing newline, so the anonymizer withholds until flush.
+        payload = b"partial"
+        with patch.object(
+            executor,
+            "_request",
+            return_value=self._request_yielding(
+                [self._frame_bytes(payload, offset=len(payload))]
+            ),
+        ):
+            logs = [
+                log
+                async for log in executor._read_log_range(
+                    "alloc-1",
+                    "run-script",
+                    TaskLogType.STDOUT,
+                    anonymize_entities={PIIEntity.PERSON},
+                    start=0,
+                    end=len(payload),
+                    flush=True,
+                )
+            ]
+
+        assert len(logs) == 1
+        assert logs[0].msg == "partial"
+        assert logs[0].offset == len(payload)
 
 
 class TestIsDirectory:
