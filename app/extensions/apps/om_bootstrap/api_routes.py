@@ -82,6 +82,7 @@ from app.extensions.apps.om_bootstrap.schema import om_bootstrap_schema
 from app.extensions.apps.om_bootstrap.strategies import strategy_for
 from app.extensions.apps.om_bootstrap.strategy import (
     BootstrapSpec,
+    CREATE_ADMIN_USER_STEP,
     HostBootstrapState,
     InstallMethod,
     InstallStrategy,
@@ -159,6 +160,9 @@ class TriggerRunRequest(BaseModel):
         empty — gets
         :class:`~app.extensions.apps.om_bootstrap.strategy.MemberConfig`'s own
         defaults.
+    :param create_admin_user: Whether to plan a ``create_admin_user`` run step,
+        creating the customer's own administrator with the ``root`` role. Its
+        credentials arrive with that step's dispatch, like every other secret.
     """
 
     hosts: list[HostName]
@@ -173,6 +177,7 @@ class TriggerRunRequest(BaseModel):
     port: int = Field(default=27017, gt=0, le=65535)
     bind_ip: str = Field(default="127.0.0.1", pattern=NO_CONTROL_CHARS_PATTERN)
     member_configs: dict[str, MemberConfig] = {}
+    create_admin_user: bool = False
 
 
 class DispatchStepRequest(BaseModel):
@@ -504,6 +509,7 @@ async def trigger_run(session: SessionDep, request: TriggerRunRequest) -> RunRes
         port=request.port,
         bind_ip=request.bind_ip,
         member_configs=request.member_configs,
+        create_admin_user=request.create_admin_user,
     )
     strategy = _strategy_for(request.install_method)
 
@@ -658,6 +664,9 @@ def _spec_for(run: BootstrapRun) -> tuple[InstallStrategy, BootstrapSpec]:
         member_configs={
             host: MemberConfig(**config) for host, config in run.member_configs.items()
         },
+        create_admin_user=any(
+            step.name == CREATE_ADMIN_USER_STEP for step in parse_run_steps(run)
+        ),
     )
     return _strategy_for(install_method), spec
 

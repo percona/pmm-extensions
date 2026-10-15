@@ -156,6 +156,10 @@ class MemberConfig(BaseModel):
         return self
 
 
+#: The run step a spec with ``create_admin_user`` plans; PMM checks the planned run steps for it.
+CREATE_ADMIN_USER_STEP = "create_admin_user"
+
+
 class BootstrapSpec(BaseModel):
     """Hold what one host's bootstrap needs to know to plan and build its steps.
 
@@ -186,6 +190,8 @@ class BootstrapSpec(BaseModel):
         A host missing from this mapping — including every host, for a run
         that never sets it at all — gets :class:`MemberConfig`'s own
         defaults.
+    :param create_admin_user: Whether the run also creates the customer's own
+        administrator, alongside PMM's monitoring user.
     """
 
     install_method: InstallMethod
@@ -198,6 +204,7 @@ class BootstrapSpec(BaseModel):
     port: int
     bind_ip: str
     member_configs: dict[str, MemberConfig] = {}
+    create_admin_user: bool = False
 
 
 class StepAction(BaseModel):
