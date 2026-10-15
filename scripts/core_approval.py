@@ -69,14 +69,14 @@ NOT_FOUNDATION_DESCRIPTION = "Not a backend-foundation change"
 
 
 class StatusState(StrEnum):
-    """Commit-status states this check reports."""
+    """Name the commit-status states this check reports."""
 
     SUCCESS = "success"
     PENDING = "pending"
 
 
 class ReviewState(StrEnum):
-    """Pull-request review states returned by the GitHub API."""
+    """Name the pull-request review states the GitHub API returns."""
 
     APPROVED = "APPROVED"
     CHANGES_REQUESTED = "CHANGES_REQUESTED"
@@ -91,83 +91,125 @@ DECISIVE_REVIEW_STATES = frozenset(
 
 
 class GitHubApiError(Exception):
-    """A GitHub REST API call returned a non-success status."""
+    """Signal a GitHub REST API call that returned a non-success status."""
 
     def __init__(self, method: str, path: str, status: int, body: str) -> None:
         super().__init__(f"{method} {path} returned HTTP {status}: {body}")
         self.status = status
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PathRule:
-    """One line of the paths file: a compiled glob and whether it excludes."""
+    """Hold one paths-file line: a compiled glob and whether it excludes."""
 
     pattern: re.Pattern[str]
     exclude: bool
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PullRequest:
-    """The pull-request fields the check needs."""
+    """Carry the pull-request fields the check needs."""
 
     number: int
     author: str
     head_sha: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Review:
-    """One submitted review on a pull request."""
+    """Record one submitted review on a pull request."""
 
     reviewer: str
     state: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Verdict:
-    """The commit status to report for a pull request."""
+    """Describe the commit status to report for a pull request."""
 
     state: StatusState
     description: str
 
 
 class GitHubClient(Protocol):
-    """The repository reads and writes the check performs."""
+    """Read and write the repository data the check uses."""
 
     def list_open_pull_requests(self, owner: str, repo: str) -> list[PullRequest]:
-        """Return every open pull request."""
+        """Return every open pull request.
+
+        :param owner: Repository owner.
+        :param repo: Repository name without owner.
+        :return: The open pull requests.
+        """
         ...
 
     def get_pull_request(self, owner: str, repo: str, number: int) -> PullRequest:
-        """Return one pull request."""
+        """Return one pull request.
+
+        :param owner: Repository owner.
+        :param repo: Repository name without owner.
+        :param number: Pull request number.
+        :return: The pull request.
+        """
         ...
 
     def list_changed_paths(self, owner: str, repo: str, number: int) -> list[str]:
-        """Return every path a pull request changes, including rename sources."""
+        """Return every path a pull request changes, including rename sources.
+
+        :param owner: Repository owner.
+        :param repo: Repository name without owner.
+        :param number: Pull request number.
+        :return: The changed paths.
+        """
         ...
 
     def list_reviews(self, owner: str, repo: str, number: int) -> list[Review]:
-        """Return a pull request's submitted reviews in submission order."""
+        """Return a pull request's submitted reviews in submission order.
+
+        :param owner: Repository owner.
+        :param repo: Repository name without owner.
+        :param number: Pull request number.
+        :return: The reviews.
+        """
         ...
 
     def get_status(
         self, owner: str, repo: str, sha: str, context: str
     ) -> tuple[str, str] | None:
-        """Return the latest ``(state, description)`` for a status context."""
+        """Return the latest ``(state, description)`` for a status context.
+
+        :param owner: Repository owner.
+        :param repo: Repository name without owner.
+        :param sha: Commit SHA.
+        :param context: Status context name.
+        :return: The latest state and description, or ``None`` when unset.
+        """
         ...
 
     def create_status(
         self, owner: str, repo: str, sha: str, verdict: Verdict, target_url: str
     ) -> None:
-        """Post a commit status."""
+        """Post a commit status.
+
+        :param owner: Repository owner.
+        :param repo: Repository name without owner.
+        :param sha: Commit SHA.
+        :param verdict: The state and description to report.
+        :param target_url: Link shown on the status; omitted when empty.
+        """
         ...
 
 
 class TeamDirectory(Protocol):
-    """Resolves organization team membership."""
+    """Resolve organization team membership."""
 
     def list_team_members(self, org: str, team: str) -> set[str]:
-        """Return the logins in a team, including its child teams."""
+        """Return the logins in a team, including its child teams.
+
+        :param org: Organization owning the team.
+        :param team: Team slug.
+        :return: Member logins.
+        """
         ...
 
 
