@@ -158,8 +158,9 @@ LEGACY_SEED_PRODUCER_OFFSET = 5
 # Line-split anonymization fixtures: a 16-digit card token straddling frames.
 SPLIT_TOKEN_FIRST_FRAME_OFFSET = 13  # raw EOF after "card=41111111"
 SPLIT_TOKEN_LINE_EOF_OFFSET = 22  # raw EOF after the completed "card=...\n" line
-WITHHELD_PARTIAL_FRAME_EOF_OFFSET = 12  # raw EOF of "ok\ncard=41"
-WITHHELD_PARTIAL_RESUME_OFFSET = 5  # cursor rolled back over the withheld "card=41"
+WITHHELD_PARTIAL_FRAME_EOF_OFFSET = (
+    12  # reported Offset, past the 10 data bytes of "ok\ncard=41"
+)
 MULTIBYTE_LINE_EOF_OFFSET = 12  # raw EOF of "café\n€uro" (6 + 6 UTF-8 bytes)
 MULTIBYTE_WITHHELD_BYTES = 6  # raw byte length of the withheld "€uro"
 NEWLINELESS_TAIL_FRAME_EOF_OFFSET = 21  # raw EOF of "card=4111111111111111"
@@ -1145,6 +1146,85 @@ class TestDispatchJob:
             "utf-8"
         )
         assert _dispatch_body(calls)["Payload"] == expected
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.TaskHistoryManager")
+    async def test_dispatching_a_run_logs_no_protected_leaf(
+        self,
+        mock_th_manager,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Assert a whole dispatch logs no arguments, config or payload at DEBUG.
+
+        Nomad is stubbed at the HTTP layer, so every request the executor makes
+        for the run, and every log line around them, is emitted as in production.
+        The registration request, which carries no protected leaf, keeps its body
+        in the log, so only the dispatch call is withheld.
+        """
+        mock_th_manager.save = AsyncMock(side_effect=lambda _s, qi, **_kw: qi)
+        executor = _build_executor(stub_nomad=False)
+        task = _build_task(task_id="log-job", parameterized=True)
+        queue_item = _build_queue_item(
+            task=task,
+            status=TaskHistoryStatusEnum.PENDING,
+            payload="payload-secret-document",
+            meta={
+                "target": "node-1",
+                "args": "--password hunter2",
+                "config": "master_password: cfg-secret\n",
+            },
+        )
+
+        with aioresponses() as mock, caplog.at_level(logging.DEBUG, logger="app"):
+            mock.get(
+                re.compile(r".*/v1/job/[^/]+$"),
+                payload={"ID": "log-job", "SubmitTime": 1_700_000_000_000_000_000},
+                repeat=True,
+            )
+            mock.post(re.compile(r".*/v1/job/[^/]+$"), payload={"EvalID": "eval-reg"})
+            mock.post(
+                re.compile(r".*/v1/job/[^/]+/dispatch$"),
+                payload={"DispatchedJobID": "dispatched-1", "EvalID": "eval-1"},
+            )
+            async with executor:
+                result = await executor.dispatch_task(AsyncMock(), queue_item, task)
+
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        assert "Dispatching job for task history" in caplog.text
+        assert "/dispatch with kwargs" in caplog.text
+        assert "'Job'" in caplog.text
+        for leaked in (
+            "'target': 'node-1'",
+            "hunter2",
+            "cfg-secret",
+            "payload-secret-document",
+            "H4sI",
+        ):
+            assert leaked not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_dispatch_through_a_private_executor_logs_no_body(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Assert an un-entered executor, which dispatches on a private copy, still withholds."""
+        executor = _build_executor(stub_nomad=False)
+        task = _build_task(task_id="private-job", parameterized=True)
+        queue_item = _build_queue_item(
+            task=task,
+            payload="payload-secret-document",
+            meta={"target": "node-1", "args": "--password hunter2"},
+        )
+
+        with aioresponses() as mock, caplog.at_level(logging.DEBUG, logger="app"):
+            mock.post(
+                re.compile(r".*/v1/job/[^/]+/dispatch$"),
+                payload={"DispatchedJobID": "dispatched-1"},
+            )
+            await executor.dispatch_job(queue_item, task)
+
+        assert "/dispatch with kwargs" in caplog.text
+        for leaked in ("hunter2", "payload-secret-document", "H4sI"):
+            assert leaked not in caplog.text
 
     @pytest.mark.asyncio
     async def test_dispatch_job_custom_prefix(self) -> None:
@@ -5343,7 +5423,13 @@ class TestNomadLogStreaming:
 
     @pytest.mark.asyncio
     async def test_consume_nomad_log_stream_advances_offset_across_chunks(self):
-        """Two data frames advance params offset and enqueue TaskLogs in order (step2)."""
+        """Advance params offset by each frame's data length, whatever Offset it reports.
+
+        Both frames enqueue a TaskLog in order (step2), each ending at the
+        counted position rather than at the frame's own ``Offset``.
+        """
+        first_end = len("line-one")
+        second_end = first_end + len("line-two")
         chunks = [
             self._nomad_log_frame(msg="line-one", offset=MULTI_CHUNK_LOG_FIRST_OFFSET),
             self._nomad_log_frame(msg="line-two", offset=MULTI_CHUNK_LOG_SECOND_OFFSET),
@@ -5373,13 +5459,10 @@ class TestNomadLogStreaming:
         assert state == "running"
         assert out_alloc is alloc
         assert stream_start is not None
-        assert params["offset"] == MULTI_CHUNK_LOG_SECOND_OFFSET
+        assert params["offset"] == second_end
         assert len(logs) == EXPECTED_MULTI_CHUNK_LOG_COUNT
         assert [log.msg for log in logs] == ["line-one", "line-two"]
-        assert [log.offset for log in logs] == [
-            MULTI_CHUNK_LOG_FIRST_OFFSET,
-            MULTI_CHUNK_LOG_SECOND_OFFSET,
-        ]
+        assert [log.offset for log in logs] == [first_end, second_end]
         assert all(log.step == "step2" for log in logs)
         assert all(log.type == TaskLogType.STDOUT for log in logs)
         offsets = [log.offset for log in logs]
@@ -5458,12 +5541,9 @@ class TestNomadLogStreaming:
 
         logs = await self._drain_task_logs(queue)
         assert [log.msg for log in logs] == ["ok\n"]
-        # raw EOF (12) minus the 7 withheld bytes of "card=41"
-        assert logs[0].offset == WITHHELD_PARTIAL_RESUME_OFFSET
+        assert logs[0].offset == len("ok\n")
         assert pending.drain() == b"card=41"
-        assert (
-            params["offset"] == WITHHELD_PARTIAL_FRAME_EOF_OFFSET
-        )  # raw resume cursor
+        assert params["offset"] == len("ok\ncard=41")
 
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.anonymize_text")
@@ -5595,10 +5675,10 @@ class TestNomadLogStreaming:
         assert state == "running"
         assert out_alloc is alloc
         assert stream_start is not None
-        assert params["offset"] == SPLIT_FRAME_LOG_OFFSET
+        assert params["offset"] == len("split-msg")
         assert len(logs) == EXPECTED_SINGLE_TASK_LOG_COUNT
         assert logs[0].msg == "split-msg"
-        assert logs[0].offset == SPLIT_FRAME_LOG_OFFSET
+        assert logs[0].offset == len("split-msg")
         assert logs[0].step == "step2"
         assert logs[0].type == TaskLogType.STDOUT
 
@@ -5849,11 +5929,11 @@ class TestNomadLogStreaming:
         assert state == "running"
         assert out_alloc is alloc
         assert stream_start is not None
-        assert params["offset"] == EMPTY_DATA_FRAME_OFFSET_ONLY
+        assert params["offset"] == len("has-data")
         mock_get_last_allocation.assert_not_called()
         assert len(logs) == EXPECTED_SINGLE_TASK_LOG_COUNT
         assert logs[0].msg == "has-data"
-        assert logs[0].offset == EMPTY_DATA_FRAME_DATA_OFFSET
+        assert logs[0].offset == len("has-data")
 
     @pytest.mark.asyncio
     async def test_consume_nomad_log_stream_empty_data_triggers_recheck(self):
@@ -6062,10 +6142,22 @@ class TestNomadLogStreaming:
         forwarded_offsets = {}
 
         async def fake_push(
-            _self, _alloc, step, log_type, queue, start_offset, _anonymize_entities
+            _self,
+            _alloc,
+            step,
+            log_type,
+            queue,
+            start_offset,
+            _anonymize_entities,
+            **_kwargs,
         ):
             forwarded_offsets[(step, log_type)] = start_offset
-            await queue.put(TaskLog(step=step, type=log_type, msg=f"{step}:{log_type}"))
+            msg = f"{step}:{log_type}"
+            await queue.put(
+                TaskLog(
+                    step=step, type=log_type, msg=msg, offset=start_offset + len(msg)
+                )
+            )
             await queue.put(TaskLog(step=step, type=log_type, msg=None))
 
         with (

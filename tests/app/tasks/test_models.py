@@ -42,7 +42,9 @@ from app.tasks.crud import TaskManager
 from app.tasks.execution_request_secrets import (
     ARGS_LEAF,
     ENCRYPTED_META_KEYS,
+    MASKED_ARGS_META_KEY,
     PAYLOAD_LEAF,
+    WITHHELD_ARGS_PLACEHOLDER,
 )
 from app.tasks.models import (
     _encode_anonymize_mask,
@@ -68,7 +70,12 @@ from app.tasks.models import (
     TaskWrite,
 )
 from tests.app.factories import TaskFactory, TaskResponseFactory
-from tests.app.tasks.conftest import HOOK_PATH_FIELDS, REJECTED_HOOK_PATHS
+from tests.app.tasks.conftest import (
+    EXECUTION_REQUEST_ARGS,
+    EXECUTION_REQUEST_MASKED_ARGS,
+    HOOK_PATH_FIELDS,
+    REJECTED_HOOK_PATHS,
+)
 
 ENCODE_MASK_INT_INPUT = 42
 FILE_METADATA_TEST_SIZE = 100
@@ -1848,7 +1855,7 @@ class TestTaskHistoryResponseUnreadableLeaves:
         return TaskHistoryResponse.model_validate(history)
 
     def test_readable_row_reports_no_leaves(self) -> None:
-        """Assert an ordinary row serialises its execution request unchanged."""
+        """Assert an ordinary row names no leaf as unreadable."""
         request = TaskExecutionRequest(
             task="backup-task", target="node-1", meta={"args": "--fast"}
         )
@@ -1856,7 +1863,7 @@ class TestTaskHistoryResponseUnreadableLeaves:
         dumped = self._response(request).model_dump(mode="json")
 
         assert dumped["unreadable_request_leaves"] == []
-        assert dumped["execution_request"]["meta"]["args"] == "--fast"
+        assert dumped["execution_request"]["meta"]["args"] == WITHHELD_ARGS_PLACEHOLDER
 
     def test_unreadable_leaf_serialises_as_null_and_is_listed(self) -> None:
         """Assert the token is replaced by ``None`` and the leaf is named."""
@@ -1938,3 +1945,188 @@ class TestTaskHistoryResponseUnreadableLeaves:
 
         assert display_name == "run-python on node-1"
         assert token not in display_name
+
+
+RAW_ARGS = EXECUTION_REQUEST_ARGS
+MASKED_ARGS = EXECUTION_REQUEST_MASKED_ARGS
+
+
+def _history_row(request: TaskExecutionRequest) -> TaskHistory:
+    """Return a history row carrying ``request``.
+
+    :param request: The execution request the row carries.
+    :return: The unsaved row.
+    """
+    task = TaskFactory.build(id=1, name="backup-task", data={"key": "val"})
+    return TaskHistory(
+        id=1,
+        task_id=task.id,
+        task=task,
+        execution_request=request,
+        status=TaskHistoryStatusEnum.SUCCESS,
+    )
+
+
+class TestTaskHistoryResponseMaskedArgs:
+    """Cover which rendering of a run's arguments the response publishes."""
+
+    @staticmethod
+    def _request(**meta: Any) -> TaskExecutionRequest:
+        """Return a request whose ``meta`` carries raw arguments and ``meta``.
+
+        :param meta: Further ``meta`` keys.
+        :return: The execution request.
+        """
+        return TaskExecutionRequest(
+            task="backup-task", target="node-1", meta={"args": RAW_ARGS, **meta}
+        )
+
+    def test_publishes_the_masked_copy(self) -> None:
+        """Assert a row recorded with a masked copy shows it as its arguments."""
+        response = TaskHistoryResponse.model_validate(
+            _history_row(self._request(**{MASKED_ARGS_META_KEY: MASKED_ARGS}))
+        )
+
+        meta = response.model_dump(mode="json")["execution_request"]["meta"]
+        assert meta["args"] == MASKED_ARGS
+
+    def test_withholds_arguments_recorded_without_a_masked_copy(self) -> None:
+        """Assert a row with arguments and no masked copy shows the placeholder."""
+        response = TaskHistoryResponse.model_validate(_history_row(self._request()))
+
+        meta = response.model_dump(mode="json")["execution_request"]["meta"]
+        assert meta["args"] == WITHHELD_ARGS_PLACEHOLDER
+
+    def test_unreadable_arguments_stay_null_despite_a_masked_copy(self) -> None:
+        """Assert a leaf this key could not read is reported as that, not masked.
+
+        The masked copy is not encrypted, so it survives a key rotation the raw
+        arguments did not. Publishing it would hide from the operator that the
+        run can no longer be re-dispatched.
+        """
+        request = TaskExecutionRequest(
+            task="backup-task",
+            target="node-1",
+            meta={"args": "gAAAAAtoken", MASKED_ARGS_META_KEY: MASKED_ARGS},
+        )
+        request.mark_unreadable_leaves((ARGS_LEAF,))
+
+        dumped = TaskHistoryResponse.model_validate(_history_row(request)).model_dump(
+            mode="json"
+        )
+
+        assert dumped["execution_request"]["meta"]["args"] is None
+        assert dumped["unreadable_request_leaves"] == [ARGS_LEAF]
+
+    def test_publishing_leaves_the_row_s_request_untouched(self) -> None:
+        """Assert a later save of the row cannot persist the masked string."""
+        request = self._request(**{MASKED_ARGS_META_KEY: MASKED_ARGS})
+
+        response = TaskHistoryResponse.model_validate(_history_row(request))
+
+        assert (request.meta or {})["args"] == RAW_ARGS
+        assert response.execution_request is not request
+
+    @pytest.mark.parametrize(
+        ("meta", "expected"),
+        [
+            ({MASKED_ARGS_META_KEY: MASKED_ARGS}, MASKED_ARGS),
+            ({}, WITHHELD_ARGS_PLACEHOLDER),
+        ],
+        ids=["masked-copy", "withheld"],
+    )
+    def test_revalidating_a_published_body_keeps_the_arguments(
+        self, meta: dict[str, Any], expected: str
+    ) -> None:
+        """Assert the gateway's second validation publishes the same value.
+
+        :param meta: The ``meta`` keys recorded beside the raw arguments.
+        :param expected: The arguments both validations publish.
+        """
+        upstream = TaskHistoryResponse.model_validate(
+            _history_row(self._request(**meta))
+        ).model_dump(mode="json")
+
+        revalidated = TaskHistoryResponse.model_validate(upstream)
+
+        assert upstream["execution_request"]["meta"]["args"] == expected
+        assert (revalidated.execution_request.meta or {})["args"] == expected
+
+    def test_execution_request_keeps_its_declared_schema(self) -> None:
+        """Assert publishing the masked copy leaves the field's published type."""
+        schema = TaskHistoryResponse.model_json_schema()
+
+        assert schema["properties"]["execution_request"] == {
+            "$ref": "#/$defs/TaskExecutionRequest"
+        }
+
+
+class TestTaskExecutionRequestRepr:
+    """Cover how an execution request renders into a log line."""
+
+    _SECRETS = ("hunter2", "s3cret-config", "payload-token")
+
+    @staticmethod
+    def _request() -> TaskExecutionRequest:
+        """Return a request carrying a distinct secret in each protected leaf.
+
+        :return: The execution request.
+        """
+        return TaskExecutionRequest(
+            task="backup-task",
+            target="node-1",
+            meta={
+                "args": RAW_ARGS,
+                "config": "master_password: s3cret-config\n",
+                "_service_name": "mysql-1",
+            },
+            payload='{"token": "payload-token"}',
+        )
+
+    @pytest.mark.parametrize("render", [repr, str], ids=["repr", "str"])
+    def test_rendering_carries_no_protected_leaf_value(self, render: Any) -> None:
+        """Assert neither rendering of a request prints a credential.
+
+        :param render: The builtin that renders the request.
+        """
+        rendered = render(self._request())
+
+        for secret in self._SECRETS:
+            assert secret not in rendered
+        assert "backup-task" in rendered
+        assert "node-1" in rendered
+        assert "mysql-1" in rendered
+
+    def test_rendering_does_not_change_what_is_dumped(self) -> None:
+        """Assert the executor still reads the real values after a log call."""
+        request = self._request()
+
+        repr(request)
+
+        dumped = request.model_dump()
+        assert dumped["meta"]["args"] == RAW_ARGS
+        assert dumped["payload"] == '{"token": "payload-token"}'
+
+    def test_a_request_without_meta_still_renders(self) -> None:
+        """Assert a request whose ``meta`` is ``None`` renders without error."""
+        request = TaskExecutionRequest(task="backup-task", target="node-1", meta=None)
+
+        assert "backup-task" in repr(request)
+
+    def test_a_history_row_interpolated_into_a_log_line_is_masked(self) -> None:
+        """Assert formatting a whole row, as a save-error log does, prints no leaf."""
+        rendered = str(_history_row(self._request()))
+
+        for secret in self._SECRETS:
+            assert secret not in rendered
+        assert "backup-task" in rendered
+
+    def test_a_history_response_interpolated_into_a_log_line_is_masked(self) -> None:
+        """Assert formatting a whole response prints no protected leaf value."""
+        response = TaskHistoryResponse.model_validate(_history_row(self._request()))
+
+        rendered = str(response)
+
+        assert "backup-task" in rendered
+        for secret in self._SECRETS:
+            assert secret not in rendered

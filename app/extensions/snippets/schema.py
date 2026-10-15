@@ -69,6 +69,7 @@ from app.extensions.apps.framework.schema import (
     StringField,
 )
 from app.extensions.snippets.config import SnippetSudoOption
+from app.extensions.snippets.masking import is_credential_parameter
 from app.extensions.snippets.models.meta import (
     SnippetMetaParameter,
     SnippetMetaParameterType,
@@ -130,6 +131,9 @@ def _string_field_for(parameter: SnippetMetaParameter) -> StringField:
         max_length=parameter.max_length,
         pattern=parameter.pattern,
         placeholder=parameter.placeholder,
+        sensitive=is_credential_parameter(
+            parameter.name, sensitive=parameter.sensitive
+        ),
     )
 
 

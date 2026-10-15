@@ -88,6 +88,7 @@ from app.extensions.snippets.models.meta import (
     SnippetMetaParametersValidationResult,
 )
 from app.extensions.snippets.utils import generate_unique_identifiers, guess_mime_type
+from app.tasks.execution_request_secrets import MASKED_ARGS_META_KEY
 
 _ONE_HOUR = 60 * 60
 _SEVEN_DAYS = 7 * 24 * _ONE_HOUR
@@ -948,25 +949,22 @@ class Snippet(BaseSnippet, BaseSQLModel, table=True):
 
 
 class SnippetExecutionMeta(BaseModel):
-    """Metadata required for executing a snippet.
+    """Carry the metadata required for executing a snippet.
 
     :param target: The target hostname where the snippet will be executed.
-    :type target: NonEmptyStr
     :param interpreter: The interpreter to use for executing the snippet (e.g., bash,
         python).
-    :type interpreter: NonEmptyStr
     :param snippet_source: The URL to the snippet source file.
-    :type snippet_source: StrAnyUrl
     :param md5_checksum: The MD5 checksum of the snippet file to verify integrity.
-    :type md5_checksum: str
     :param snippet_filename: The filename of the snippet.
-    :type snippet_filename: NonEmptyStr
     :param args: Additional command-line arguments to pass to the snippet during
         execution.
-    :type args: NonEmptyStr | None
     :param requirements: Optional requirements list to install when executing python
         snippets.
-    :type requirements: NonEmptyStr | None
+    :param masked_args: The rendering of ``args`` with every credential value
+        masked, which task history shows in their place. ``None`` when the run
+        has no arguments or they could not be masked, in which case history
+        withholds them.
     """
 
     target: NonEmptyStr
@@ -976,6 +974,9 @@ class SnippetExecutionMeta(BaseModel):
     md5_checksum: str = Field(min_length=32, max_length=32)
     args: NonEmptyStr | EmptyStrToNone = None
     requirements: NonEmptyStr | EmptyStrToNone = None
+    masked_args: NonEmptyStr | None = Field(
+        default=None, serialization_alias=MASKED_ARGS_META_KEY
+    )
 
     @computed_field
     @property
@@ -983,6 +984,5 @@ class SnippetExecutionMeta(BaseModel):
         """Get a prefix for job IDs based on the snippet filename.
 
         :return: A string prefix for job IDs.
-        :rtype: str
         """
         return self.snippet_filename

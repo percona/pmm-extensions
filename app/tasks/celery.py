@@ -88,7 +88,10 @@ from app.tasks.execution.nomad_lifecycle import (
     normalize_nomad_config_value,
     WorkerNomadClient,
 )
-from app.tasks.execution_request_secrets import ENCRYPTED_META_KEYS
+from app.tasks.execution_request_secrets import (
+    DISPLAY_ONLY_META_KEYS,
+    ENCRYPTED_META_KEYS,
+)
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
     DispatchLock,
@@ -800,7 +803,10 @@ def _postgresql_meta_clauses(queued: TaskExecutionRequest) -> list[ColumnElement
 
     A key in :data:`ENCRYPTED_META_KEYS` carries no predicate: it is ciphertext
     at rest and encryption is non-deterministic, so no SQL comparison can match
-    it. Every other key keeps its containment or per-key equality, which is what
+    it. A key in :data:`DISPLAY_ONLY_META_KEYS` carries none either: it renders a
+    leaf compared in its own right, and a row written before the key existed
+    lacks it, so requiring it would stop an identical request from matching that
+    row. Every other key keeps its containment or per-key equality, which is what
     lets the GIN index on ``execution_request->'meta'`` still serve the query.
 
     :param queued: The execution request being dispatched.
@@ -809,7 +815,7 @@ def _postgresql_meta_clauses(queued: TaskExecutionRequest) -> list[ColumnElement
     scalar_subset: dict[str, Any] = {}
     container_items: list[tuple[str, Any]] = []
     for field, raw_value in (queued.meta or {}).items():
-        if field in ENCRYPTED_META_KEYS:
+        if field in ENCRYPTED_META_KEYS or field in DISPLAY_ONLY_META_KEYS:
             continue
         if isinstance(raw_value, list | dict):
             container_items.append((field, raw_value))
@@ -836,7 +842,8 @@ def _json_extract_meta_clauses(
 ) -> list[ColumnElement[bool]]:
     """Return the per-key text-equality predicates for a non-PostgreSQL engine.
 
-    An encrypted key is skipped for the same reason as in the ``jsonb`` branch.
+    An encrypted or display-only key is skipped for the same reasons as in the
+    ``jsonb`` branch.
 
     :param engine_name: The bound engine's dialect name.
     :param queued: The execution request being dispatched.
@@ -844,7 +851,7 @@ def _json_extract_meta_clauses(
     """
     clauses: list[ColumnElement[bool]] = []
     for field, raw_value in (queued.meta or {}).items():
-        if field in ENCRYPTED_META_KEYS:
+        if field in ENCRYPTED_META_KEYS or field in DISPLAY_ONLY_META_KEYS:
             continue
         extracted = func_json_extract(
             engine_name, TaskHistory.execution_request, "meta", field
