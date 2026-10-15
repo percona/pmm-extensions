@@ -17,11 +17,13 @@
 
 import hashlib
 import logging
+import math
 import re
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from itertools import chain
-from typing import Any
+from typing import Any, Final
 
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import (
@@ -45,11 +47,12 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Connection
 from sqlalchemy.engine.interfaces import ReflectedCheckConstraint
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     AsyncConnection,
     AsyncEngine,
+    AsyncTransaction,
     create_async_engine,
 )
 from sqlalchemy.ext.compiler import compiles
@@ -76,6 +79,9 @@ SQLAlchemyColumn = ColumnClause | Column | InstrumentedAttribute
 # SQLite carries no structured diagnostics, so the violated key is only recoverable
 # from the message text.
 SQLITE_UNIQUE_VIOLATION_RE = re.compile(r"UNIQUE constraint failed:\s*(?P<columns>.+)")
+
+#: The SQLSTATE PostgreSQL raises when ``lock_timeout`` ends a lock wait.
+LOCK_NOT_AVAILABLE_SQLSTATE: Final = "55P03"
 
 
 def get_async_session_maker_from_engine(engine: AsyncEngine) -> async_sessionmaker:
@@ -490,6 +496,112 @@ def advisory_lock_key(name: str) -> int:
     return int.from_bytes(digest, "big", signed=True)
 
 
+class AdvisoryLockTimeoutError(Exception):
+    """Report that an advisory lock was not granted within its wait bound."""
+
+
+class AdvisoryLockLostError(Exception):
+    """Report that a held advisory lock's connection or transaction is gone."""
+
+
+class AdvisoryLockHandle:
+    """Let the holder of an advisory lock check it still holds it.
+
+    Being inside the lock's block is not the same as holding the lock: the
+    server can end the lock's backend while the block runs, which releases a
+    transaction-scoped lock without anything in the holder's own coroutine
+    failing.
+
+    :ivar transaction: The transaction holding the lock, or ``None`` where no
+        lock was taken because the dialect has none.
+    """
+
+    def __init__(self, transaction: AsyncTransaction | None) -> None:
+        """Wrap the lock's transaction.
+
+        :param transaction: The transaction holding the lock, or ``None`` where
+            no lock was taken.
+        """
+        self.transaction = transaction
+
+    @property
+    def connection(self) -> AsyncConnection | None:
+        """Return the connection the lock's transaction runs on.
+
+        :return: The lock's connection, or ``None`` where no lock was taken.
+        """
+        return None if self.transaction is None else self.transaction.connection
+
+    async def verify(self) -> None:
+        """Confirm the lock's own transaction is still alive, and so still holds it.
+
+        A transaction-scoped advisory lock is released only when its
+        transaction ends, so two things are checked: that the transaction the
+        lock was taken in has not ended client-side, and that a statement
+        succeeds inside it. The first is needed because the second alone would
+        pass on a transaction begun afresh after the lock's one was committed or
+        rolled back on the same live connection. A no-op where no lock was taken.
+
+        :raises AdvisoryLockLostError: If the lock's transaction has ended, its
+            backend is gone, or it has aborted.
+        """
+        if self.transaction is None:
+            return
+        if not self.transaction.is_active:
+            raise AdvisoryLockLostError(
+                "The advisory lock's transaction has ended, so the lock is no "
+                "longer held."
+            )
+        try:
+            await self.transaction.connection.execute(text("SELECT 1"))
+        except SQLAlchemyError as exc:
+            raise AdvisoryLockLostError(
+                "The advisory lock's connection or transaction is gone, so the "
+                "lock is no longer held."
+            ) from exc
+
+
+@asynccontextmanager
+async def _advisory_lock_transaction(
+    session: AsyncSession,
+    namespace: int,
+    key: int,
+) -> AsyncIterator[AsyncTransaction | None]:
+    """Begin the transaction an advisory lock on ``session``'s database is taken in.
+
+    See :func:`try_pg_advisory_xact_lock` for why its connection is the helper's
+    own, on a throwaway ``NullPool`` engine.
+
+    :param session: The session whose engine the lock connection is drawn from.
+    :param namespace: The lock-space classifier, named in the warning only.
+    :param key: The key within ``namespace``, named in the warning only.
+    :return: The begun transaction on a connection of its own, or ``None`` on a
+        dialect without advisory locks or a bind that cannot be introspected.
+    :raises SQLAlchemyError: If the lock connection cannot be opened.
+    """
+    bind = session.bind
+    engine = bind.engine if isinstance(bind, AsyncConnection) else bind
+    if not isinstance(engine, AsyncEngine):
+        logger.warning(
+            "Advisory lock %s/%s not taken: bind %s cannot be introspected as an "
+            "asynchronous engine, so concurrent callers are not fenced.",
+            namespace,
+            key,
+            type(bind).__name__,
+        )
+        yield None
+        return
+    if engine.dialect.name != DatabaseDialect.POSTGRESQL:
+        yield None
+        return
+    lock_engine = create_async_engine(engine.url, poolclass=NullPool)
+    try:
+        async with lock_engine.connect() as connection:
+            yield await connection.begin()
+    finally:
+        await lock_engine.dispose()
+
+
 @asynccontextmanager
 async def try_pg_advisory_xact_lock(
     session: AsyncSession,
@@ -540,32 +652,96 @@ async def try_pg_advisory_xact_lock(
         refuse the connection or drop it. Raised before the block is entered, so
         the guarded sequence does not run under a lock it does not hold.
     """
-    bind = session.bind
-    engine = bind.engine if isinstance(bind, AsyncConnection) else bind
-    if not isinstance(engine, AsyncEngine):
-        logger.warning(
-            "Advisory lock %s/%s not taken: bind %s cannot be introspected as an "
-            "asynchronous engine, so concurrent callers are not fenced.",
-            namespace,
-            key,
-            type(bind).__name__,
+    async with _advisory_lock_transaction(session, namespace, key) as transaction:
+        if transaction is None:
+            yield True
+            return
+        acquired = await transaction.connection.scalar(
+            text("SELECT pg_try_advisory_xact_lock(:namespace, :key)"),
+            {"namespace": namespace, "key": key},
         )
-        yield True
-        return
-    if engine.dialect.name != DatabaseDialect.POSTGRESQL:
-        yield True
-        return
-    lock_engine = create_async_engine(engine.url, poolclass=NullPool)
-    try:
-        async with lock_engine.connect() as connection:
-            await connection.begin()
-            acquired = await connection.scalar(
-                text("SELECT pg_try_advisory_xact_lock(:namespace, :key)"),
+        yield bool(acquired)
+
+
+@asynccontextmanager
+async def pg_advisory_xact_lock(
+    session: AsyncSession,
+    namespace: int,
+    key: int,
+    *,
+    shared: bool = False,
+    max_wait: timedelta,
+) -> AsyncIterator[AdvisoryLockHandle]:
+    """Hold a shared or exclusive advisory lock, waiting at most ``max_wait``.
+
+    The waiting sibling of :func:`try_pg_advisory_xact_lock`, on the same kind
+    of connection for the same reasons. That one refuses on contention because
+    its caller would refuse anyway; this one waits, because here the wait *is*
+    the point — a caller queued behind a conflicting holder runs only once that
+    holder's whole block has finished. Shared holders never wait for each other,
+    only for an exclusive request, held or queued — PostgreSQL queues a new
+    request behind a waiting one it conflicts with, so a stream of shared
+    holders cannot starve an exclusive one. An exclusive request waits for
+    every holder.
+
+    The lock connection sits idle in its transaction while the guarded work runs
+    elsewhere, so the server's ``idle_in_transaction_session_timeout`` is turned
+    off on it: that timeout would end the transaction and release the lock with
+    nothing in the holder failing. Other causes remain — an operator terminating
+    the backend, a lost network — which is what the yielded handle's
+    :meth:`AdvisoryLockHandle.verify` detects.
+
+    No-op on a dialect without advisory locks and on a bind that cannot be
+    introspected, exactly as :func:`try_pg_advisory_xact_lock` grants there: the
+    block runs at once, and the handle's ``verify`` passes.
+
+    The lock function's name is interpolated into the statement because the
+    shared and exclusive forms are distinct functions; it is one of two
+    literals chosen by ``shared``, never input.
+
+    :param session: The session whose engine the lock connection is drawn from.
+    :param namespace: The lock-space classifier, shared by every caller racing on
+        the same class of object.
+    :param key: The key identifying the locked object within ``namespace``.
+    :param shared: Whether to take the lock shared rather than exclusive.
+    :param max_wait: The longest to wait for the lock to be granted, rounded up
+        to whole milliseconds, the server's resolution.
+    :return: A handle for checking the lock is still held.
+    :raises ValueError: If ``max_wait`` is not positive, since the server reads a
+        zero bound as no bound at all.
+    :raises AdvisoryLockTimeoutError: If the lock is not granted within
+        ``max_wait``. Raised before the block is entered.
+    :raises SQLAlchemyError: If the lock connection cannot be opened or a lock
+        statement fails for any other reason. Raised before the block is entered.
+    """
+    if max_wait <= timedelta(0):
+        raise ValueError(f"max_wait must be positive, got {max_wait}")
+    max_wait_ms = math.ceil(max_wait / timedelta(milliseconds=1))
+    async with _advisory_lock_transaction(session, namespace, key) as transaction:
+        if transaction is None:
+            yield AdvisoryLockHandle(None)
+            return
+        connection = transaction.connection
+        await connection.execute(
+            text("SELECT set_config('idle_in_transaction_session_timeout', '0', true)")
+        )
+        await connection.execute(
+            text("SELECT set_config('lock_timeout', :timeout, true)"),
+            {"timeout": f"{max_wait_ms}ms"},
+        )
+        function = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+        try:
+            await connection.execute(
+                text(f"SELECT {function}(:namespace, :key)"),
                 {"namespace": namespace, "key": key},
             )
-            yield bool(acquired)
-    finally:
-        await lock_engine.dispose()
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) == LOCK_NOT_AVAILABLE_SQLSTATE:
+                raise AdvisoryLockTimeoutError(
+                    f"Advisory lock {namespace}/{key} not granted within {max_wait}."
+                ) from exc
+            raise
+        yield AdvisoryLockHandle(transaction)
 
 
 def table_exists(bind: Connection, table_name: str) -> bool:

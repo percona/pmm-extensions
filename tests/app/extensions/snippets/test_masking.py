@@ -15,6 +15,7 @@
 
 """Cover credential masking of a recorded snippet argument string."""
 
+import logging
 import shlex
 from typing import Any
 
@@ -26,18 +27,21 @@ from app.extensions.snippets.masking import (
     _is_credential_name,
     _MASK_PLACEHOLDER,
     _masking_spec,
+    is_credential_parameter,
     mask_snippet_args,
+    masked_args_for,
     SENSITIVE_ARG_MASK,
 )
 from app.extensions.snippets.models.snippet import (
     BaseSnippet,
+    BaseSnippetArgs,
     EXECUTOR_HOSTS_INPUT_NAME,
 )
 
 REPEATED_MASK_CALLS = 5
 
 
-def _model(parameters: list[dict[str, Any]]) -> type:
+def _model(parameters: list[dict[str, Any]]) -> type[BaseSnippetArgs]:
     """Return the execution model a snippet with ``parameters`` would validate against.
 
     :param parameters: The frontmatter parameter definitions.
@@ -753,3 +757,121 @@ class TestMaskingFailureIsWithheld:
         args = _args(model, password=_MASK_PLACEHOLDER)
 
         assert mask_snippet_args(args, model) is None
+
+
+class TestIsCredentialParameter:
+    """Cover the one classification the form and the masker both apply."""
+
+    @pytest.mark.parametrize(
+        ("name", "sensitive", "expected"),
+        [
+            ("auth-blob", True, True),
+            ("password", False, True),
+            ("api_key", False, True),
+            ("dest", False, False),
+            ("keyspace", False, False),
+        ],
+        ids=["flag-only", "name-only", "name-segment", "neither", "lookalike"],
+    )
+    def test_classifies_by_flag_or_by_name(self, name, sensitive, expected):
+        """Assert either signal alone marks a parameter as a credential.
+
+        :param name: The parameter's frontmatter name.
+        :param sensitive: The parameter's frontmatter ``sensitive`` flag.
+        :param expected: Whether the parameter carries a credential.
+        """
+        assert is_credential_parameter(name, sensitive=sensitive) is expected
+
+    def test_masker_agrees_with_the_classifier(self):
+        """Assert the masker treats as sensitive exactly what the classifier does."""
+        parameters = [
+            {"name": "auth-blob", "type": "str", "sensitive": True},
+            {"name": "password", "type": "str"},
+            {"name": "dest", "type": "str"},
+        ]
+
+        specs = _masking_spec(_model(parameters))
+
+        assert {spec.name: spec.sensitive for spec in specs} == {
+            parameter["name"]: is_credential_parameter(
+                parameter["name"], sensitive=parameter.get("sensitive", False)
+            )
+            for parameter in parameters
+        }
+
+
+class TestMaskedArgsFor:
+    """Cover the masked copy recorded beside a run's arguments at submit time."""
+
+    @staticmethod
+    def _execution_args(parameters: list[dict[str, Any]], **values: Any) -> Any:
+        """Return validated execution arguments for a snippet with ``parameters``.
+
+        :param parameters: The frontmatter parameter definitions.
+        :param values: The frontmatter-named parameter values.
+        :return: The validated arguments of one run.
+        """
+        return _model(parameters).model_validate(
+            {EXECUTOR_HOSTS_INPUT_NAME: "host1", **values}
+        )
+
+    def test_masks_a_credential_and_keeps_its_neighbours(self):
+        """Assert the copy hides the credential and nothing else."""
+        execution_args = self._execution_args(
+            [
+                {"name": "dest", "type": "str", "required": True},
+                {"name": "password", "type": "str"},
+            ],
+            dest="/tmp",
+            password="s3cr3t",
+        )
+
+        assert (
+            masked_args_for(execution_args)
+            == f"--dest /tmp --password {SENSITIVE_ARG_MASK}"
+        )
+
+    def test_a_run_without_credentials_is_copied_unchanged(self):
+        """Assert non-credential arguments stay readable in the copy."""
+        execution_args = self._execution_args(
+            [{"name": "dest", "type": "str", "required": True}], dest="/tmp"
+        )
+
+        assert masked_args_for(execution_args) == execution_args.to_args_string()
+
+    def test_a_run_rendering_no_arguments_has_no_copy(self):
+        """Assert there is no copy to record where there are no arguments."""
+        assert masked_args_for(self._execution_args([])) is None
+
+    def test_arguments_that_cannot_be_masked_safely_have_no_copy(self):
+        """Assert a walk the masker cannot trust records nothing, so history withholds."""
+        execution_args = self._execution_args(
+            [{"name": "password", "type": "str", "required": True}],
+            password=_MASK_PLACEHOLDER,
+        )
+
+        assert masked_args_for(execution_args) is None
+
+    def test_a_masking_error_records_no_copy_and_does_not_fail_the_run(self, caplog):
+        """Assert arguments no parameter metadata describes are logged without a value.
+
+        :param caplog: The log-capture fixture.
+        """
+
+        class _UndescribedArgs:
+            """Stand in for arguments whose type is not a snippet execution model."""
+
+            def to_args_string(self) -> str:
+                """Return a rendered line carrying a credential.
+
+                :return: The argument string.
+                """
+                return "--password s3cr3t-value"
+
+        with caplog.at_level(logging.WARNING):
+            masked = masked_args_for(_UndescribedArgs())
+
+        assert masked is None
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "s3cr3t-value" not in caplog.text

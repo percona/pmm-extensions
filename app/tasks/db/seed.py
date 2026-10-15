@@ -137,12 +137,6 @@ _SUDO_FLAG_OPTIONS = (
 #: this -- not the meta's own token -- is what its check resolves.
 _VENV_BUILDER_COMMAND = "python3"
 
-#: ``case`` pattern matching any meta value whose quoting, expansion or escaping
-#: ``env -S`` parses differently from ``sh`` word-splitting. The check declines
-#: those rather than guessing, because guessing wrong aborts an execution the
-#: launcher would have run.
-_META_METACHAR_PATTERN = r"""*\'*|*\"*|*\$*|*\`*|*\\*"""
-
 
 def _launch_check_shell(
     meta_key: str, *, allow_strip: bool, launches: str | None = None
@@ -152,12 +146,14 @@ def _launch_check_shell(
     The preamble word-splits the spec's launch-command meta, resolves the
     commands the node would actually exec, and aborts with
     :data:`~app.tasks.execution.executors.nomad.steps.LAUNCH_CHECK_EXIT_CODE`
-    when one of them is absent. It recognizes a deliberately small grammar —
-    plain words, optionally behind a bare ``sudo`` — and declines anything
-    else, leaving that invocation to behave exactly as it does today: ``sh``
-    word-splitting and ``env -S`` (what the launcher tokenizes with) are
-    different grammars, so aborting on a form only one of them understands would
-    fail an execution that runs.
+    when one of them is absent. It splits the meta with ``set -f`` exactly as
+    ``exec-artifact``'s ``run-script`` does, so for that spec it resolves the
+    same first word the launcher execs. The one gap is a word the shell knows
+    only as a builtin or keyword (``exec``, ``cd``): ``command -v`` reports it
+    found, the exec fails, and the run lands in ``FAILED``. What it declines —
+    ``env``, a non-absolute path holding a slash, a ``sudo`` option the walk
+    does not recognize, and an assignment after ``sudo`` — it declines for
+    reasons of its own, given below.
 
     Under ``allow_strip`` it also drops a redundant ``sudo`` prefix when the
     node's tasks already run as uid 0 and the prefix's *own* token does not
@@ -179,15 +175,18 @@ def _launch_check_shell(
     only when the effective interpreter carries the literal prefix the launcher
     tests for, then resolves ``launches``.
 
-    A leading ``NAME=VALUE`` is declined rather than skipped: ``env -S`` applies
-    it before locating the command, so an assignment that changes ``PATH``
-    decides where the command resolves, and resolving against the step's own
-    environment instead would report a runnable execution as unlaunchable.
+    With ``launches`` unset, a first word other than ``env`` that holds no
+    slash is resolved by name whatever its shape — a ``NAME=VALUE``
+    assignment, a leading ``-``, quotes — because that word is what
+    ``exec-artifact``'s launcher execs. One that names no command fails there,
+    and the check aborts ahead of it.
 
-    A first token beginning with ``-`` is declined for the same reason ``env``
-    is: ``env -S`` parses leading options itself, so ``-u FOO bash`` unsets
-    ``FOO`` and runs ``bash``, and resolving ``-u`` as a command name would
-    abort an execution the node would have completed.
+    ``env`` is declined because resolving it says nothing about the command it
+    would run, which its own options and assignments decide. An assignment
+    after ``sudo`` is declined for the same reason: ``sudo`` applies it before
+    running the command, so one that changes ``PATH`` can decide where the
+    command resolves. A ``sudo`` option outside the walk's tables is declined
+    for the reason given at :data:`_SUDO_FLAG_OPTIONS`.
 
     A non-absolute path holding a slash is declined because it resolves against
     this step's cwd, which is not the launcher's — ``run-script`` pins a
@@ -237,7 +236,10 @@ def _launch_check_shell(
         interpreter — or a directory — would pass and the run would land in
         ``FAILED``, the outcome this step exists to separate out. Only bash
         checks the mode. Bare names keep ``command -v``, which does search
-        ``PATH`` for an executable and is right for them.
+        ``PATH`` for an executable and is right for them. The ``--`` keeps a
+        word such as ``-p`` from being taken as an option of ``command``
+        itself: dash, busybox sh and bash all report ``command -v -p`` as
+        found.
 
         :param token: The already-quoted shell word to resolve.
         :param name: The command to name in the abort diagnostic.
@@ -246,7 +248,7 @@ def _launch_check_shell(
         return (
             f"case {token} in "
             f"*/*) [ -x {token} ] && [ ! -d {token} ];; "
-            f"*) command -v {token} > /dev/null 2>&1;; "
+            f"*) command -v -- {token} > /dev/null 2>&1;; "
             f"esac || {{ {abort(name)}; }}; "
         )
 
@@ -280,12 +282,7 @@ def _launch_check_shell(
         + "fi;; esac; "
     )
     if launches is None:
-        resolution = (
-            decline_assignment
-            + "[ $# -gt 0 ] || exit 0; "
-            + resolve_or_abort('"$1"', "$1")
-            + sudo_walk
-        )
+        resolution = resolve_or_abort('"$1"', "$1") + sudo_walk
     else:
         # Mirrors the launcher's own test byte for byte: it prefixes the venv
         # python with sudo for exactly this pattern and ignores the meta
@@ -304,11 +301,10 @@ def _launch_check_shell(
     return (
         f"m=$NOMAD_META_{meta_key}; "
         '[ -n "$m" ] || exit 0; '
-        f'case "$m" in {_META_METACHAR_PATTERN}) {decline};; esac; '
         "set -f; "
         "set -- $m; "
         "[ $# -gt 0 ] || exit 0; "
-        f'case "$1" in env|*/env|-*) {decline};; esac; '
+        f'case "$1" in env|*/env) {decline};; esac; '
         f'case "$1" in /*) ;; */*) {decline};; esac; '
         + ("eff=$m; " + strip if allow_strip else "")
         + resolution
@@ -597,8 +593,9 @@ NOMAD_EXEC_ARTIFACT = {
                             (
                                 f"i=$(cat {EFFECTIVE_INTERPRETER_PATH} 2>/dev/null); "
                                 '[ -n "$i" ] || i=$NOMAD_META_interpreter; '
-                                "xargs --arg-file ${NOMAD_TASK_DIR}/args_file "
-                                'env -S "$i" ${NOMAD_TASK_DIR}/script'
+                                "set -f; set -- $i; "
+                                "xargs --arg-file ${NOMAD_TASK_DIR}/args_file -- "
+                                '"$@" ${NOMAD_TASK_DIR}/script'
                             ),
                         ],
                         "work_dir": "${NOMAD_TASK_DIR}/output_files",

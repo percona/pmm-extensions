@@ -37,7 +37,6 @@ from app.core.config import settings
 from app.core.exceptions import (
     HTTPBadRequestException,
     HTTPConflictException,
-    HTTPUnprocessableEntityException,
 )
 from app.core.pagination import PaginatedResponse
 from app.core.pagination.deps import PaginationDep
@@ -68,7 +67,6 @@ from app.tasks.crud import (
 from app.tasks.db import get_async_session_maker
 from app.tasks.deps import (
     ExecutableTaskDep,
-    get_executor,
     LogsOffsetsDep,
     PreparedTaskHistory,
     SessionDep,
@@ -80,7 +78,6 @@ from app.tasks.deps import (
     validate_chain_task_names,
 )
 from app.tasks.execution.exceptions import TaskNotStartedInExecutorError
-from app.tasks.execution.utils import parse_payload
 from app.tasks.logs.log_reader import has_legacy_logs, iter_task_history_logs
 from app.tasks.models import (
     ExecutionEvent,
@@ -88,7 +85,6 @@ from app.tasks.models import (
     FileMetadata,
     LogCaptureStatusEnum,
     Task,
-    TaskBackendEnum,
     TaskHistory,
     TaskHistoryLatestStatus,
     TaskHistoryLatestStatusRequest,
@@ -97,8 +93,6 @@ from app.tasks.models import (
     TaskResponse,
     TaskStats,
     TaskWrite,
-    TransformPayloadRequest,
-    TransformPayloadResponse,
 )
 from app.tasks.periodic.crud import PeriodicTaskManager
 from app.tasks.periodic.models import PeriodicTaskCreate, PeriodicTaskResponse
@@ -106,6 +100,7 @@ from app.tasks.periodic.utils import (
     attach_last_run_status,
     generate_periodic_task_name,
 )
+from app.tasks.reference_fence import hold_reference_write_fence
 from app.tasks.run_result import maybe_record_run
 
 logger = logging.getLogger(__name__)
@@ -182,11 +177,12 @@ async def create_task(
 ) -> Task:
     """Create a new task."""
     logger.debug("Creating task %s", task.name)
-    return await TaskManager.create(
-        session,
-        task,
-        created_by=current_user_id,
-    )
+    async with hold_reference_write_fence(session):
+        return await TaskManager.create(
+            session,
+            task,
+            created_by=current_user_id,
+        )
 
 
 @router.put(
@@ -203,9 +199,10 @@ async def update_task(
 ) -> Task:
     """Update an existing task."""
     logger.debug("Updating task %s", existing_task.name)
-    return await TaskManager.update(
-        session, existing_task, updated_task, last_updated_by=current_user_id
-    )
+    async with hold_reference_write_fence(session):
+        return await TaskManager.update(
+            session, existing_task, updated_task, last_updated_by=current_user_id
+        )
 
 
 @router.get(
@@ -250,9 +247,10 @@ async def create_periodic_task_for_task_name(
             task.name, periodic_task.period, periodic_task.kwargs
         )
     kwargs["periodic_task_name"] = periodic_task.name
-    return await PeriodicTaskManager.create(
-        celery_beat_session, periodic_task, kwargs=json.dumps(kwargs)
-    )
+    async with hold_reference_write_fence(session):
+        return await PeriodicTaskManager.create(
+            celery_beat_session, periodic_task, kwargs=json.dumps(kwargs)
+        )
 
 
 @router.post(
@@ -776,56 +774,6 @@ async def sync_task_history(
     return synced
 
 
-@router.post(
-    "/history/",
-    dependencies=[IsAuthenticatedDep],
-    status_code=status.HTTP_201_CREATED,
-    response_model=TaskHistoryResponse,
-)
-async def create_task_history(session: SessionDep, task: TaskHistory) -> TaskHistory:
-    """Create a new task history.
-
-    Neither ``has_logs`` nor ``log_capture`` is populated on this response — a
-    row that was just created has no chunk-store entry, legacy tracking blob or
-    capture verdict yet, so both fall back to their serialization defaults.
-
-    A caller-supplied ``failure_reason`` is routed back through
-    :meth:`TaskHistory.set_failure_reason` so the single-line and length bounds
-    hold on every write path, not only on the reasons PMM Extensions composes itself.
-
-    The saved row is re-read with ``task`` joined and ``execution_request``
-    undeferred: ``save`` re-defers that column, and the response model requires
-    both, so serializing the save's own return value attempts lazy IO from an
-    async context.
-
-    :param session: The SQLAlchemy asynchronous session.
-    :param task: The task history to persist.
-    :return: The saved task history record.
-    :raises HTTPUnprocessableEntityException: If ``failure_reason`` conflicts
-        with a status that carries no operator-facing summary.
-    """
-    logger.debug("Creating task history for task %s", task.task_id)
-    if (
-        task.failure_reason is not None
-        and TaskHistoryStatusEnum(task.status).operator_summary() is None
-    ):
-        raise HTTPUnprocessableEntityException(
-            detail=[
-                {
-                    "loc": ["body", "failure_reason"],
-                    "msg": (
-                        "failure_reason must be null when status carries no "
-                        "operator-facing summary."
-                    ),
-                    "type": "value_error",
-                }
-            ]
-        )
-    task.set_failure_reason(task.failure_reason)
-    saved = await TaskHistoryManager.save(session, task)
-    return await _get_history_for_response(session, saved)
-
-
 @router.get("/stats/{task}", dependencies=[IsAuthenticatedDep])
 async def get_task_stats(session: SessionDep, task: str) -> TaskStats:
     """Calculate the statistics for the task."""
@@ -875,21 +823,3 @@ async def get_executor_host_states(executor: TaskExecutor) -> list[ExecutorHostS
     :return: One entry per host the backend knows about.
     """
     return await executor.get_host_states()
-
-
-@router.post(
-    "/transform/",
-    dependencies=[IsAuthenticatedDep],
-)
-async def transform_payload(
-    data: TransformPayloadRequest,
-    backend: TaskBackendEnum = TaskBackendEnum.NOMAD,
-) -> TransformPayloadResponse:
-    """Transform a payload string into a dictionary."""
-    if backend == TaskBackendEnum.PROXY:
-        return TransformPayloadResponse.model_validate(
-            parse_payload(data.payload, data.fmt)
-        )
-    executor = get_executor(backend)
-    raw = await executor.transform_payload(data.payload, data.fmt)
-    return TransformPayloadResponse.model_validate(raw)

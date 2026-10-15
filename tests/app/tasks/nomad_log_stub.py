@@ -30,8 +30,9 @@ import json
 import threading
 import time
 from base64 import b64encode
+from collections.abc import Callable, Coroutine
 from contextlib import suppress
-from typing import Any
+from typing import Any, TypeVar
 
 from aiohttp import web
 
@@ -39,15 +40,102 @@ from app.tasks.models import TaskLogType
 
 _SHUTDOWN_TIMEOUT = 1.0
 
+_T = TypeVar("_T")
+
+#: Nomad's ``streamFrameSize``: the most data one frame carries.
+FRAME_SIZE = 64 * 1024
+
+
+class _LogFile(bytearray):
+    """Hold one log file's bytes and where each write to it ended.
+
+    :param number: The rotation number its name ends with, kept when older
+        files are evicted.
+    """
+
+    def __init__(self, number: int = 0) -> None:
+        super().__init__()
+        self.number = number
+        self.write_ends: list[int] = []
+
+    def record(self, data: bytes) -> None:
+        """Append one write.
+
+        :param data: The bytes written.
+        """
+        self.extend(data)
+        self.write_ends.append(len(self))
+
+    def frames(self, start: int) -> list[tuple[int, bytes]]:
+        """Split everything past ``start`` into frames as Nomad's stream framer does.
+
+        Reads merged into one frame keep the end of the **first** read as the
+        frame's ``Offset``, and a frame following a full ``FRAME_SIZE`` one has
+        its ``Offset`` bumped by that frame's length rather than set to its own
+        end, so ``Offset`` is rarely where the frame's data ends.
+
+        :param start: The position within this file to frame from.
+        :return: Each frame's ``Offset`` and data, in order.
+        """
+        data = bytes(self[start:])
+        first_read_end = next(
+            (end for end in self.write_ends if end > start), len(self)
+        )
+        offset = min(first_read_end, start + FRAME_SIZE)
+        framed: list[tuple[int, bytes]] = []
+        for index in range(0, len(data), FRAME_SIZE):
+            chunk = data[index : index + FRAME_SIZE]
+            framed.append((offset, chunk))
+            offset += len(chunk)
+        return framed
+
+
+def _following_file(files: list[_LogFile], current: _LogFile) -> _LogFile | None:
+    """Return the file after ``current``, the way a follow moves on to it.
+
+    :param files: The log type's retained files, oldest first.
+    :param current: The file the follow is reading.
+    :return: The next retained file; the oldest one when ``current`` itself
+        was evicted; or ``None`` when ``current`` is the newest.
+    """
+    for index, retained in enumerate(files):
+        if retained is current:
+            return files[index + 1] if index + 1 < len(files) else None
+    return files[0]
+
+
+def _locate(files: list[_LogFile], offset: int) -> tuple[int, int]:
+    """Map a cumulative request offset to a file and a position within it.
+
+    Nomad walks the request ``offset`` across a step's rotated files, moving on
+    to the next file while the offset reaches past the current one.
+
+    :param files: The log type's files, oldest first.
+    :param offset: The cumulative offset the request asked for.
+    :return: The file index and the position within that file.
+    """
+    index = 0
+    while index < len(files) - 1 and offset >= len(files[index]):
+        offset -= len(files[index])
+        index += 1
+    return index, min(offset, len(files[index]))
+
 
 class NomadLogStub:
-    """Emit one running step's stdout and stderr through Nomad's follow API.
+    """Emit one running step's stdout and stderr through Nomad's log API.
 
     Every follow is served from its requested ``offset``: whatever was written
-    past it arrives as one frame, then each new write as its own frame, then
-    ``{}`` heartbeats once emission is done, the way Nomad keeps a finished
-    task's follow open. The allocation reports the step ``running`` until
-    :meth:`emit` finishes and ``dead`` afterwards.
+    past it arrives framed as Nomad frames it, then each later batch of writes
+    likewise, then ``{}`` heartbeats once emission is done, the way Nomad keeps
+    a finished task's follow open. A ``follow=false`` request sends what was
+    written past its offset and closes. The allocation reports the step
+    ``running`` until :meth:`emit` or :meth:`finish` ends it and ``dead``
+    afterwards.
+
+    Each log type is a list of files, as Nomad rotates them: a request offset is
+    cumulative across the files, while a frame's ``Offset`` belongs to the file
+    its ``File`` names and is not, in general, where the frame's data ends (see
+    :meth:`_LogFile.frames`).
 
     :param step: The Nomad task the allocation runs and the follows read.
     :param line_count: Lines :meth:`emit` writes to each log type.
@@ -82,8 +170,12 @@ class NomadLogStub:
         self.not_started_steps: set[str] = set()
         self.emitted: dict[tuple[str, str], float] = {}
         self.open_follows = 0
+        self.peak_follows = 0
         self.not_found_served = 0
-        self._data = {log_type.value: bytearray() for log_type in TaskLogType}
+        self.non_follow_requests = 0
+        self.open_non_follows = 0
+        self._files = {log_type.value: [_LogFile()] for log_type in TaskLogType}
+        self._follow_transports: set[asyncio.BaseTransport] = set()
         self._done = False
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
@@ -111,51 +203,79 @@ class NomadLogStub:
         self._thread.join()
         self._loop.close()
 
-    async def emit(self) -> None:
-        """Write every line to both log types, then mark the step dead.
+    async def _on_stub_loop(self, coroutine: Coroutine[Any, Any, _T]) -> _T:
+        """Run ``coroutine`` on the stub's loop and await it from the caller's.
 
-        Awaitable from the loop under test; the writes themselves run on the
-        stub's loop.
+        :param coroutine: The coroutine to run.
+        :return: What the coroutine returns.
         """
-        await asyncio.wrap_future(
-            asyncio.run_coroutine_threadsafe(self._emit(), self._loop)
+        return await asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(coroutine, self._loop)
         )
+
+    async def emit(self) -> None:
+        """Write every line to both log types, then mark the step dead."""
+        await self._on_stub_loop(self._emit())
+
+    async def write(self, log_type: TaskLogType, *chunks: bytes) -> None:
+        """Append each chunk verbatim to one log type's current file.
+
+        The chunks land at once, so a follow reads them as merged reads in one
+        frame whose ``Offset`` is where the first chunk ends.
+
+        :param log_type: The log type to write to.
+        :param chunks: The raw bytes of each write, which need not end a line.
+        """
+        await self._on_stub_loop(self._write(log_type, chunks))
+
+    async def rotate(self, log_type: TaskLogType) -> None:
+        """Start a new file for one log type, as Nomad does at its size limit.
+
+        :param log_type: The log type to rotate.
+        """
+        await self._on_stub_loop(self._rotate(log_type))
+
+    async def evict_oldest(self, log_type: TaskLogType) -> None:
+        """Delete the oldest file, as Nomad does past its ``max_files`` limit.
+
+        Request offsets then count from the oldest retained file, so every
+        cumulative offset shifts down by the evicted file's size.
+
+        :param log_type: The log type to evict from.
+        """
+        await self._on_stub_loop(self._evict_oldest(log_type))
+
+    async def finish(self) -> None:
+        """Mark the step dead without writing anything more."""
+        await self._on_stub_loop(self._finish())
+
+    async def drop_follows(self) -> None:
+        """Close every open follow's connection abruptly."""
+        await self._on_stub_loop(self._drop_follows())
 
     async def wait_for_follows(self, count: int) -> None:
         """Wait until ``count`` follows are open at once.
 
         :param count: The number of concurrently open follows to wait for.
         """
-        await asyncio.wrap_future(
-            asyncio.run_coroutine_threadsafe(self._wait_for_follows(count), self._loop)
-        )
+        await self._on_stub_loop(self._wait_until(lambda: self.open_follows >= count))
 
     async def wait_for_not_found(self, count: int) -> None:
         """Wait until ``count`` not-started 404s have been answered in total.
 
         :param count: The number of 404 answers to wait for.
         """
-        await asyncio.wrap_future(
-            asyncio.run_coroutine_threadsafe(
-                self._wait_for_not_found(count), self._loop
-            )
+        await self._on_stub_loop(
+            self._wait_until(lambda: self.not_found_served >= count)
         )
 
-    async def _wait_for_follows(self, count: int) -> None:
-        """Block on the stub's loop until ``count`` follows are open at once.
+    async def _wait_until(self, predicate: Callable[[], bool]) -> None:
+        """Block on the stub's loop until ``predicate`` holds.
 
-        :param count: The number of concurrently open follows to wait for.
+        :param predicate: The condition over the stub's counters to wait for.
         """
         async with self._changed:
-            await self._changed.wait_for(lambda: self.open_follows >= count)
-
-    async def _wait_for_not_found(self, count: int) -> None:
-        """Block on the stub's loop until ``count`` 404s have been answered.
-
-        :param count: The number of 404 answers to wait for.
-        """
-        async with self._changed:
-            await self._changed.wait_for(lambda: self.not_found_served >= count)
+            await self._changed.wait_for(predicate)
 
     async def _start(self) -> None:
         """Build the application and bind it, on the stub's loop."""
@@ -178,14 +298,53 @@ class NomadLogStub:
         for index in range(self.line_count):
             text = f"line-{index}"
             async with self._changed:
-                for log_type, data in self._data.items():
-                    data.extend(f"{text}\n".encode())
+                for log_type, files in self._files.items():
+                    files[-1].record(f"{text}\n".encode())
                     self.emitted[(log_type, text)] = time.monotonic()
                 self._changed.notify_all()
             await asyncio.sleep(self.frame_interval)
+        await self._finish()
+
+    async def _write(self, log_type: TaskLogType, chunks: tuple[bytes, ...]) -> None:
+        """Append each chunk to the log type's current file, on the stub's loop.
+
+        :param log_type: The log type to write to.
+        :param chunks: The raw bytes of each write.
+        """
+        async with self._changed:
+            for data in chunks:
+                self._files[log_type.value][-1].record(data)
+            self._changed.notify_all()
+
+    async def _rotate(self, log_type: TaskLogType) -> None:
+        """Start a new file for the log type, on the stub's loop.
+
+        :param log_type: The log type to rotate.
+        """
+        async with self._changed:
+            files = self._files[log_type.value]
+            files.append(_LogFile(files[-1].number + 1))
+            self._changed.notify_all()
+
+    async def _evict_oldest(self, log_type: TaskLogType) -> None:
+        """Drop the log type's oldest file, on the stub's loop.
+
+        :param log_type: The log type to evict from.
+        """
+        async with self._changed:
+            del self._files[log_type.value][0]
+            self._changed.notify_all()
+
+    async def _finish(self) -> None:
+        """Mark the step dead, on the stub's loop."""
         async with self._changed:
             self._done = True
             self._changed.notify_all()
+
+    async def _drop_follows(self) -> None:
+        """Close every open follow's transport, on the stub's loop."""
+        for transport in list(self._follow_transports):
+            transport.close()
 
     def allocation(self) -> dict[str, Any]:
         """Return the allocation as Nomad's allocation list reports it.
@@ -218,56 +377,137 @@ class NomadLogStub:
         return web.json_response([self.allocation()])
 
     async def _logs(self, request: web.Request) -> web.StreamResponse:
-        """Follow one log type of one step from the requested offset.
+        """Serve one log type of one step from the requested offset.
 
         A step listed in :attr:`not_started_steps` answers a complete 404, as
         Nomad does before the task has started.
 
-        :param request: The follow request.
-        :return: The streamed follow, or the 404.
+        :param request: The log request.
+        :return: The streamed log, or the 404.
         """
         if request.query["task"] in self.not_started_steps:
             async with self._changed:
                 self.not_found_served += 1
                 self._changed.notify_all()
             return web.json_response({"error": "task not started"}, status=404)
-        data = self._data[request.query["type"]]
+        name = f"{request.query['task']}.{request.query['type']}"
+        files = self._files[request.query["type"]]
         offset = int(request.query.get("offset", 0))
+        follow = request.query.get("follow") == "true"
+        transport = request.transport
         response = web.StreamResponse(headers={"Content-Type": "application/json"})
         await response.prepare(request)
         async with self._changed:
-            self.open_follows += 1
+            if follow:
+                self.open_follows += 1
+                self.peak_follows = max(self.peak_follows, self.open_follows)
+                if transport is not None:
+                    self._follow_transports.add(transport)
+            else:
+                self.non_follow_requests += 1
+                self.open_non_follows += 1
             self._changed.notify_all()
         try:
-            await self._follow(response, data, offset)
+            if follow:
+                await self._follow(response, name, files, offset)
+            else:
+                await self._read(response, name, files, offset)
         except ConnectionResetError:
             pass
         finally:
-            self.open_follows -= 1
+            async with self._changed:
+                if follow:
+                    self.open_follows -= 1
+                    self._follow_transports.discard(transport)
+                else:
+                    self.open_non_follows -= 1
+                self._changed.notify_all()
         return response
 
-    async def _follow(
-        self, response: web.StreamResponse, data: bytearray, offset: int
+    @staticmethod
+    async def _write_frames(
+        response: web.StreamResponse,
+        name: str,
+        index: int,
+        frames: list[tuple[int, bytes]],
     ) -> None:
-        """Write frames for ``data`` past ``offset`` until the client goes away.
+        """Write one file's frames, each as Nomad sends a data frame.
+
+        :param response: The prepared response.
+        :param name: The ``<task>.<type>`` prefix of the log's file names.
+        :param index: The file the bytes come from.
+        :param frames: Each frame's ``Offset`` and data.
+        """
+        for offset, data in frames:
+            frame = {
+                "File": f"{name}.{index}",
+                "Offset": offset,
+                "Data": b64encode(data).decode(),
+            }
+            await response.write(json.dumps(frame).encode())
+
+    async def _read(
+        self,
+        response: web.StreamResponse,
+        name: str,
+        files: list[_LogFile],
+        offset: int,
+    ) -> None:
+        """Write everything past ``offset``, file by file, then return.
+
+        :param response: The prepared response.
+        :param name: The ``<task>.<type>`` prefix of the log's file names.
+        :param files: The log type's files.
+        :param offset: The cumulative offset the request starts from.
+        """
+        async with self._changed:
+            index, position = _locate(files, offset)
+            pieces = [
+                (
+                    files[current].number,
+                    files[current].frames(position if current == index else 0),
+                )
+                for current in range(index, len(files))
+            ]
+        for number, frames in pieces:
+            await self._write_frames(response, name, number, frames)
+
+    async def _follow(
+        self,
+        response: web.StreamResponse,
+        name: str,
+        files: list[_LogFile],
+        offset: int,
+    ) -> None:
+        """Write frames past ``offset`` until the client goes away.
+
+        A follow sends the current file to its end before it moves on to the
+        next one, where frame offsets start again from 0. It holds the file it
+        is reading, as Nomad holds it open, so evicting an older file does not
+        move it.
 
         :param response: The prepared follow response.
-        :param data: The log type's buffer, appended to by :meth:`_emit`.
-        :param offset: The byte offset the follow starts from.
+        :param name: The ``<task>.<type>`` prefix of the log's file names.
+        :param files: The log type's files, appended to by the writers.
+        :param offset: The cumulative offset the follow starts from.
         """
+        index, position = _locate(files, offset)
+        current = files[index]
         while True:
             async with self._changed:
-                if len(data) == offset and not self._done:
+                if len(current) == position and current is files[-1] and not self._done:
                     with suppress(TimeoutError):
                         await asyncio.wait_for(
                             self._changed.wait(), self.heartbeat_interval
                         )
-                written = bytes(data[offset:])
+                frames = current.frames(position)
+                following = _following_file(files, current)
                 done = self._done
-            if written:
-                offset += len(written)
-                frame = {"Offset": offset, "Data": b64encode(written).decode()}
-                await response.write(json.dumps(frame).encode())
+            if frames:
+                position += sum(len(data) for _, data in frames)
+                await self._write_frames(response, name, current.number, frames)
+            elif following is not None:
+                current, position = following, 0
             else:
                 await response.write(b"{}")
                 if done:
