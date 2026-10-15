@@ -1515,14 +1515,22 @@ def _line_of(length: int, head: str = "NOTE=") -> str:
     return head + "x" * (length - len(head))
 
 
-def _continued(joined: int) -> str:
-    """Return a credential continued onto a second line, ``joined`` characters once joined.
+def _continued(joined: int, lines: int) -> str:
+    """Return a credential continued over ``lines`` lines, ``joined`` characters once joined.
 
-    :param joined: The joined line's length, its backslash dropped.
-    :return: The two lines, each ending in a line break.
+    :param joined: The joined line's length, its backslashes dropped.
+    :param lines: How many lines; any past the second are empty.
+    :return: The lines, each ending in a line break.
     """
-    head = "PROXYSQL_PASSWORD=pw "
-    return f"{head}\\\n{_line_of(joined - len(head))}\n"
+    text = _line_of(joined, "PROXYSQL_PASSWORD=pw ")
+    cut = len(text) // 2
+    return "\\\n".join([text[:cut], text[cut:], *[""] * (lines - 2)]) + "\n"
+
+
+JOINED_LINES = [
+    pytest.param(2, id="two-lines"),
+    pytest.param(3, id="three-lines"),
+]
 
 
 class TestOverlongLineCredentials:
@@ -1616,13 +1624,16 @@ class TestOverlongLineCredentials:
         assert _too_long(harness.admin_cnf) in result.stdout.splitlines()
         assert harness.credentials == DEFAULT_CLIENT
 
-    def test_reads_lines_joined_up_to_the_cap(self, harness):
-        """Read a continued line whose joined length, backslash dropped, is the cap.
+    @pytest.mark.parametrize("lines", JOINED_LINES)
+    def test_reads_lines_joined_up_to_the_cap(self, harness, lines):
+        """Read a continued line whose joined length, backslashes dropped, is the cap.
 
         Each physical line stays under the cap, but the joined line is what
         the loader goes on to scan.
         """
-        harness.write_cnf(f"PROXYSQL_USERNAME='admin'\n{_continued(CNF_MAX_LINE)}")
+        harness.write_cnf(
+            f"PROXYSQL_USERNAME='admin'\n{_continued(CNF_MAX_LINE, lines)}"
+        )
 
         result = harness.run("--main")
 
@@ -1630,9 +1641,12 @@ class TestOverlongLineCredentials:
         assert _warnings(result) == [_ignored("PROXYSQL_PASSWORD", harness.admin_cnf)]
         assert harness.credentials == {**DEFAULT_CLIENT, "user": "admin"}
 
-    def test_skips_lines_joined_past_the_cap(self, harness):
+    @pytest.mark.parametrize("lines", JOINED_LINES)
+    def test_skips_lines_joined_past_the_cap(self, harness, lines):
         """Fall back on a continued line one character over the cap once joined."""
-        harness.write_cnf(f"PROXYSQL_USERNAME='admin'\n{_continued(CNF_MAX_LINE + 1)}")
+        harness.write_cnf(
+            f"PROXYSQL_USERNAME='admin'\n{_continued(CNF_MAX_LINE + 1, lines)}"
+        )
 
         result = harness.run("--main")
 
@@ -2499,7 +2513,7 @@ FORKING_SYNTAX = re.compile(
 TEST_EXPRESSION = re.compile(r"\[\[\s.*?\s\]\]|\(\(.*?\)\)")
 COMMAND_SEPARATOR = re.compile(r"\n|;|&&|\|\||\|")
 COMMAND_PREFIX = frozenset(
-    {"if", "then", "elif", "else", "while", "until", "do", "!", "{", "("}
+    {"if", "then", "elif", "else", "while", "until", "do", "!", "{"}
 )
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
 PER_LINE_READERS = ("cnf_open_quote", "cnf_open_state", "print_redacted_cnf")
@@ -2526,9 +2540,9 @@ def _in_process_commands() -> frozenset[str]:
 def _forks(body: str) -> list[str]:
     """Return what in a function body would start a process.
 
-    A substitution, pipeline, process substitution or background job forks,
-    and so does any command that is not a builtin or a reader this module
-    checks.
+    A substitution, pipeline, process substitution, subshell or background
+    job forks, and so does any command that is not a builtin or a reader
+    this module checks.
 
     :param body: The function body.
     :return: The offending syntax and command names, in order of appearance.
@@ -2565,6 +2579,9 @@ class TestNoProcessPerLine:
             pytest.param("    '$') tr a b ;;\n", id="external-in-case-branch"),
             pytest.param("LC_ALL=C head -n 1\n", id="external-after-assignment"),
             pytest.param("[[ -n $x ]] && wc -c\n", id="external-after-test"),
+            pytest.param("( printf x )\n", id="subshell"),
+            pytest.param("(\n    printf x\n)\n", id="multiline-subshell"),
+            pytest.param("x=1 (printf x)\n", id="subshell-after-assignment"),
             pytest.param("command sed q\n", id="command-builtin"),
             pytest.param('eval "$x"\n', id="eval"),
             pytest.param("coproc cat\n", id="coproc"),
@@ -2586,6 +2603,7 @@ class TestNoProcessPerLine:
             pytest.param("((n++)) && x=$((n + 1))\n", id="arithmetic"),
             pytest.param("# $(x) | y\nprintf '%s' \"${#x}\"\n", id="comment"),
             pytest.param("    '#') break ;;\n    *) continue ;;\n", id="case"),
+            pytest.param("local -a x=(a b) y=()\nz=(c)\n", id="array"),
             pytest.param('while IFS= read -r line; do\ndone < "$cnf"\n', id="read"),
             pytest.param("unset x; : noop\ndeclare -a y\n", id="other-builtins"),
             pytest.param('read -r x <<< "$y"\n', id="here-string"),

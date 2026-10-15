@@ -438,6 +438,7 @@ function load_credentials() {
     local line key raw exported value status length
     local logical=""
     local continued=0
+    local too_long=0
 
     CNF_OPEN=""
 
@@ -445,14 +446,8 @@ function load_credentials() {
         # ${line%$'\r'} tries every suffix of a line without one, which takes
         # seconds on a line long enough to fail the cap below.
         [[ $line == *$'\r' ]] && line=${line%?}
-        length=${#line}
-        [[ $CNF_OPEN == $'\\' ]] && ((length += ${#logical} - 1))
-        if ((length > CNF_MAX_LINE)); then
-            # The unread line may override or reopen anything, so no setting
-            # in the file is trusted: each takes its default, as a rejected
-            # value does.
-            USER="" PASSWORD="" HOST="" PORT="" CNF_OPEN=""
-            echo "A line in ${cnf}, counting any continuation lines, is longer than ${CNF_MAX_LINE} characters: every setting in the file was ignored."
+        if ((${#line} > CNF_MAX_LINE)); then
+            too_long=1
             break
         fi
         case $CNF_OPEN in
@@ -473,6 +468,14 @@ function load_credentials() {
         esac
         if [[ -n $CNF_OPEN || ! $line =~ $closed ]]; then
             cnf_open_quote "$line"
+        fi
+        # Only once the line is scanned is it known whether its last
+        # backslash continues it, and so is not part of the joined line.
+        length=${#logical}
+        [[ $CNF_OPEN == $'\\' ]] && ((length--))
+        if ((length > CNF_MAX_LINE)); then
+            too_long=1
+            break
         fi
         [[ $CNF_OPEN == $'\\' || $logical != *PROXYSQL_* ]] && continue
 
@@ -502,6 +505,13 @@ function load_credentials() {
             echo "Ignoring ${key} in ${cnf}: its line is not a plain KEY=value setting."
         done
     done < "$cnf"
+    if ((too_long)); then
+        # The unread line may override or reopen anything, so no setting in
+        # the file is trusted: each takes its default, as a rejected value
+        # does.
+        USER="" PASSWORD="" HOST="" PORT="" CNF_OPEN=""
+        echo "A line in ${cnf}, counting any continuation lines, is longer than ${CNF_MAX_LINE} characters: every setting in the file was ignored."
+    fi
     # Sourcing such a file failed with a syntax error; without one the
     # settings it swallowed would go missing unnoticed.
     if [[ $CNF_OPEN == "'" || $CNF_OPEN == '"' ]]; then
