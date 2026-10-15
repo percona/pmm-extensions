@@ -3824,10 +3824,12 @@ class TestExecutionRequestEncryptionOverHTTP:
             session, {"status": TaskHistoryStatusEnum.RUNNING}, id=history.id
         )
 
-        async def fake_sync(item, writer_session=None):
+        async def fake_sync(
+            item: TaskHistory, writer_session=None
+        ) -> tuple[TaskHistory, str | None]:
             item.status = TaskHistoryStatusEnum.SUCCESS
             item.finished_at = utc_now()
-            return item
+            return item, None
 
         mock_executor.sync_task_history = AsyncMock(side_effect=fake_sync)
 
