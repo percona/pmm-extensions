@@ -22,22 +22,13 @@
 /alembic.ini                            @percona/pmm-extensions-review-be
 /settings.yaml                          @percona/pmm-extensions-review-be
 
-# Per-app owners
-/app/extensions/apps/om_bootstrap/      @plebioda @percona/pmm-extensions-review-be
-/app/extensions/apps/om_inventory/      @plebioda @percona/pmm-extensions-review-be
-/tests/app/extensions/apps/om_bootstrap/  @plebioda @percona/pmm-extensions-review-be
-/tests/app/extensions/apps/om_inventory/  @plebioda @percona/pmm-extensions-review-be
-
-# ── Frontend ────────────────────────────────────────────────────────
+# ── Frontend (including its dependencies) ───────────────────────────
 /frontend/                              @percona/pmm-extensions-review-fe
 
-# ── Sensitive: dependencies ─────────────────────────────────────────
-/pyproject.toml                         @peter-o-addo @percona/pmm-extensions-review-core
-/poetry.lock                            @peter-o-addo @percona/pmm-extensions-review-core
-/poetry.toml                            @peter-o-addo @percona/pmm-extensions-review-core
-/frontend/package.json                  @nachodd @peter-o-addo @percona/pmm-extensions-review-core
-/frontend/pnpm-lock.yaml                @nachodd @peter-o-addo @percona/pmm-extensions-review-core
-/frontend/pnpm-workspace.yaml           @nachodd @peter-o-addo @percona/pmm-extensions-review-core
+# ── Sensitive: Python dependencies ──────────────────────────────────
+/pyproject.toml                         @percona/pmm-extensions-review-core
+/poetry.lock                            @percona/pmm-extensions-review-core
+/poetry.toml                            @percona/pmm-extensions-review-core
 
 # ── Sensitive: build / release / runtime image ──────────────────────
 /Makefile                               @percona/pmm-extensions-review-core
