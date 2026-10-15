@@ -35,6 +35,7 @@ import logging
 from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field as dc_field
+from datetime import datetime, timedelta, UTC
 from typing import Any
 from uuid import UUID
 
@@ -89,6 +90,7 @@ from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
 from app.extensions.config import extensions_settings
 from app.extensions.db import get_async_session_maker
 from app.inventory.config import inventory_settings
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,7 @@ async def _build_clients() -> tuple[RemoteAPI, RemoteAPI]:
         endpoint=extensions_settings.TASKS_ENDPOINT,
         ssl_cafile=settings.SSL_CAFILE,
         logger_name="tasks_api",
+        **TASKS_CLIENT_LOG_POLICY,
     )
     return inventory_api, tasks_api
 
@@ -351,6 +354,11 @@ FAILED_ATTEMPT_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     *PROCESS_FIELDS,
 )
 
+#: How far past the moment a document is built a record's own ``collected_at`` may
+#: lie and still be kept: the executor host's clock supplies it, and a clock this
+#: close is trusted rather than corrected.
+COLLECTED_AT_SKEW = timedelta(seconds=60)
+
 
 def _lift(
     record: dict[str, Any], fields: tuple[tuple[str, tuple[str, ...]], ...]
@@ -385,10 +393,40 @@ def _process_facts(record: dict[str, Any]) -> dict[str, Any]:
     return {key: lifted.get(key) for key, _ in FAILED_ATTEMPT_FIELDS}
 
 
+def _record_collected_at(record: dict[str, Any], fallback: str) -> str:
+    """Read when a probe record was collected, as ISO 8601 UTC.
+
+    The payload stamps each record with the epoch seconds it was collected at, which
+    can be minutes after the sweep began: enumeration retries, and probes queued
+    behind one another, all come between the two. That value is kept, normalised to
+    the ISO 8601 string ``observed`` has always carried, whenever it is usable: a
+    positive count of seconds no later than now plus :data:`COLLECTED_AT_SKEW`.
+    Anything else is not clamped but replaced by ``fallback`` whole, because a value
+    the executor's clock got that wrong says nothing about when the probe ran.
+
+    "Now" rather than the sweep start bounds it, since a probe answering after the
+    sweep began is exactly the observation worth keeping.
+
+    :param record: One probe record.
+    :param fallback: The sweep timestamp, ISO 8601, used when the record carries no
+        usable ``collected_at``.
+    :return: The record's own ``collected_at`` as ISO 8601 UTC, or ``fallback``.
+    """
+    value = record.get("collected_at")
+    # ``bool`` is an ``int``, and ``True`` is not a timestamp.
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return fallback
+    latest = utc_now() + COLLECTED_AT_SKEW
+    # Written so NaN, which compares false either way, falls back too.
+    if not 0 < value <= latest.timestamp():
+        return fallback
+    return datetime.fromtimestamp(value, UTC).replace(microsecond=0).isoformat()
+
+
 def build_document(
     record: dict[str, Any],
     fields: tuple[tuple[str, tuple[str, ...]], ...],
-    collected_at: str,
+    fallback_collected_at: str,
 ) -> dict[str, Any]:
     """Build one ``observed`` document out of a probe record.
 
@@ -397,12 +435,21 @@ def build_document(
     differ is the row — a host can be reachable while a mongod on it is not, and those
     are already two rows.
 
+    It is when *this record* was collected, read off the record itself, so two records
+    in one sweep collected at different times keep different values. The sweep
+    timestamp lands here only when the record carries no usable one of its own; see
+    :func:`_record_collected_at`.
+
     :param record: One probe record.
     :param fields: The ``(key, path)`` pairs to lift out of it.
-    :param collected_at: When the probe ran, ISO 8601.
+    :param fallback_collected_at: When the sweep began, ISO 8601, stored in place of a
+        missing or unusable record timestamp.
     :return: The document, always carrying at least ``collected_at``.
     """
-    return {"collected_at": collected_at, **_lift(record, fields)}
+    return {
+        "collected_at": _record_collected_at(record, fallback_collected_at),
+        **_lift(record, fields),
+    }
 
 
 @dataclass
@@ -667,7 +714,9 @@ async def sweep(
     run did not attempt keeps every timestamp it had, so refreshing one host cannot
     make the rest of the estate look failed.
 
-    :param observed_at: When the sweep began, ISO 8601, stamped on every fact.
+    :param observed_at: When the sweep began, ISO 8601. It lands only in a document's
+        ``collected_at``, and only when the record carries no usable timestamp of its
+        own; the run row and the entity freshness columns are stamped separately.
     :param node_ids: The hosts to refresh, or ``None`` for the whole estate.
     :param progress: Where to report how far the sweep has got, if anywhere.
     :return: What the sweep reached, collected and saw per service.
@@ -915,7 +964,8 @@ def _record_entity(
     :param record: Its probe record, or ``None`` when it did not answer.
     :param host_result: The dispatch result for its executor host.
     :param node_ids: Node ids keyed by host name and address.
-    :param observed_at: When the sweep began, ISO 8601.
+    :param observed_at: When the sweep began, ISO 8601: the ``collected_at`` fallback
+        for a record carrying no usable timestamp of its own.
     """
     if entry.service.external_id is None:
         # No PMM service id, no row: the key is what the consumer joins on, and an

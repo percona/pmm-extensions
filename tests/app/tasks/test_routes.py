@@ -36,14 +36,15 @@ from app.api.deps import (
 )
 from app.core.celery.deps import get_session as get_celery_beat_session
 from app.core.db.utils import get_async_session_maker_from_engine
-from app.core.encryption import is_encrypted
+from app.core.encryption import decrypt, is_encrypted
 from app.core.pagination import DEFAULT_PAGINATION_LIMIT
 from app.core.pmm import _background_tasks
 from app.core.utils import utc_now
 from app.core.utils.date_time import make_datetime_utc
 from app.extensions.apps.archives.alerts import ALERT_DETAIL_BUILDER
+from app.extensions.apps.meta_keys import SERVICE_ID_META_KEY
 from app.extensions.apps.mysql_backups.recorder import RUN_RESULT_RECORDER
-from app.tasks import hook_resolver
+from app.tasks import hook_resolver, reference_fence
 from app.tasks.config import PreExecutionCheckMode, tasks_settings
 from app.tasks.connectivity.models import ConnectivityServiceType
 from app.tasks.connectivity.service import _cached_check_connectivity
@@ -60,8 +61,9 @@ from app.tasks.execution.executors.nomad.steps import (
 )
 from app.tasks.execution.models import BaseExecutor
 from app.tasks.execution_request_secrets import (
-    ENCRYPTED_META_KEYS,
+    MASKED_ARGS_META_KEY,
     PAYLOAD_LEAF,
+    WITHHELD_ARGS_PLACEHOLDER,
 )
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.main import tasks_app
@@ -69,7 +71,6 @@ from app.tasks.models import (
     ExecutionEvent,
     ExecutorHostState,
     LogCaptureStatusEnum,
-    MAX_FAILURE_REASON_LENGTH,
     SYSTEM_USER,
     Task,
     TaskBackendEnum,
@@ -79,6 +80,9 @@ from app.tasks.models import (
     TaskLogType,
     TaskWrite,
 )
+from app.tasks.periodic.crud import PeriodicTaskManager
+from app.tasks.reference_fence import hold_reference_collection_fence
+from tests.app.advisory_locks import isolate_reference_fence
 from tests.app.factories import build_task_history, TaskFactory
 from tests.app.tasks.conftest import (
     HOOK_PATH_FIELDS,
@@ -87,6 +91,7 @@ from tests.app.tasks.conftest import (
     stored_execution_request,
     undecryptable_document,
 )
+from tests.app.tasks_api_client import tasks_api_client
 
 MOCK_FILE_SIZE = 1024
 # What ``app.tasks.main.nomad_exception_handler`` answers with. The routes no
@@ -461,99 +466,6 @@ async def test_task_history_serializes_a_recorded_failure_reason(
     assert retrieved.status_code == status.HTTP_200_OK
     assert listed.json()["items"][0]["failure_reason"] == "Step 'run-script' failed."
     assert retrieved.json()["failure_reason"] == "Step 'run-script' failed."
-
-
-@pytest.mark.asyncio
-async def test_create_task_history_normalizes_failure_reason(
-    test_client, created_task_with_history
-):
-    """Assert a caller-supplied reason is collapsed to one line and bounded.
-
-    The create route takes the ``TaskHistory`` table model as its body, so the
-    field is settable over HTTP; the bound is a property of the column, not just
-    of the reasons PMM Extensions composes. Driven as a real request because only an actual
-    POST delivers the body to the handler the way FastAPI does.
-
-    The posted row carries ``failed`` so the fixture models a pair PMM Extensions' own
-    writers can produce.
-    """
-    response = test_client.post(
-        "/history/",
-        json={
-            "task_id": created_task_with_history.task.id,
-            "execution_request": {
-                "task": created_task_with_history.task.name,
-                "target": "node-1",
-            },
-            "status": "failed",
-            "failure_reason": "line one\n  line   two " + ("x" * 900),
-        },
-    )
-
-    assert response.status_code == status.HTTP_201_CREATED
-    reason = response.json()["failure_reason"]
-    assert "\n" not in reason
-    assert reason.startswith("line one line two ")
-    assert len(reason) == MAX_FAILURE_REASON_LENGTH
-
-
-@pytest.mark.parametrize(
-    "task_status",
-    [
-        task_status
-        for task_status in TaskHistoryStatusEnum
-        if task_status.operator_summary() is None
-    ],
-)
-@pytest.mark.asyncio
-async def test_create_task_history_rejects_failure_reason_without_summary(
-    test_client, created_task_with_history, task_status
-):
-    """Assert a reason conflicts with a status carrying no operator summary."""
-    response = test_client.post(
-        "/history/",
-        json={
-            "task_id": created_task_with_history.task.id,
-            "execution_request": {
-                "task": created_task_with_history.task.name,
-                "target": "node-1",
-            },
-            "status": task_status.value,
-            "failure_reason": "Task execution failed.",
-        },
-    )
-
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
-    error = response.json()["detail"][0]
-    assert "failure_reason" in error["loc"]
-    assert "status" in error["msg"]
-
-
-@pytest.mark.asyncio
-async def test_create_task_history_returns_a_serializable_row(
-    test_client, created_task_with_history
-):
-    """Assert the create response carries the joined task and execution request.
-
-    ``save`` re-defers ``execution_request``, so returning its result directly
-    made the response model attempt lazy IO from the async context.
-    """
-    response = test_client.post(
-        "/history/",
-        json={
-            "task_id": created_task_with_history.task.id,
-            "execution_request": {
-                "task": created_task_with_history.task.name,
-                "target": "node-1",
-            },
-        },
-    )
-
-    assert response.status_code == status.HTTP_201_CREATED
-    body = response.json()
-    assert body["task"]["name"] == created_task_with_history.task.name
-    assert body["execution_request"]["target"] == "node-1"
-    assert body["failure_reason"] is None
 
 
 @pytest.mark.asyncio
@@ -1974,35 +1886,6 @@ async def test_get_executor_hosts_nomad_unreachable(test_client, mock_executor):
     assert response.status_code == status.HTTP_502_BAD_GATEWAY
     assert response.headers["content-type"].startswith("application/json")
     assert response.json()["detail"] == NOMAD_UNREACHABLE_DETAIL
-
-
-@pytest.mark.asyncio
-async def test_transform_payload_proxy_backend(test_client):
-    """Assert transforming a payload with PROXY backend calls parse_payload."""
-    with patch(
-        "app.tasks.routes.parse_payload", return_value={"key": "value"}
-    ) as mock_parse:
-        response = test_client.post(
-            "/transform/",
-            json={"payload": '{"key": "value"}', "fmt": "json"},
-            params={"backend": "proxy"},
-        )
-    assert response.status_code == status.HTTP_200_OK
-    assert response.json() == {"key": "value"}
-    mock_parse.assert_called_once_with('{"key": "value"}', "json")
-
-
-@pytest.mark.asyncio
-async def test_transform_payload_nomad_backend(test_client, mock_executor):
-    """Assert transforming a payload with NOMAD backend calls executor."""
-    with patch("app.tasks.routes.get_executor", return_value=mock_executor):
-        mock_executor.transform_payload.return_value = {"parsed": True}
-        response = test_client.post(
-            "/transform/",
-            json={"payload": '{"job": {}}', "fmt": "json"},
-            params={"backend": "nomad"},
-        )
-    assert response.status_code == status.HTTP_200_OK
 
 
 @pytest.mark.asyncio
@@ -3619,20 +3502,26 @@ class TestExecutionRequestEncryptionOverHTTP:
     """
 
     _ARGS = "restore --password hunter2"
+    _MASKED_ARGS = "restore --password ***"
     _CONFIG = "master_password: hunter2\n"
     _PAYLOAD = "secret document"
 
     @classmethod
-    async def _seed(cls, session, *, name: str) -> TaskHistory:
+    async def _seed(
+        cls, session, *, name: str, masked_args: str | None = None
+    ) -> TaskHistory:
         """Persist a task and one history row carrying every protected leaf.
 
         :param session: The session to persist through.
         :param name: The parent task's name.
+        :param masked_args: The masked copy to record beside the arguments, or
+            ``None`` for a row recorded without one.
         :return: The saved history row.
         """
         task = await TaskManager.create(
             session, TaskWrite.model_validate(TaskFactory.build(name=name))
         )
+        masked = {} if masked_args is None else {MASKED_ARGS_META_KEY: masked_args}
         return await TaskHistoryManager.save(
             session,
             TaskHistory(
@@ -3645,6 +3534,7 @@ class TestExecutionRequestEncryptionOverHTTP:
                         "target": "node-1",
                         "args": cls._ARGS,
                         "config": cls._CONFIG,
+                        **masked,
                     },
                     payload=cls._PAYLOAD,
                 ),
@@ -3707,7 +3597,7 @@ class TestExecutionRequestEncryptionOverHTTP:
     async def test_read_route_reports_no_leaves_for_a_readable_row(
         self, test_client, session
     ):
-        """Assert an ordinary row still serialises its request in full."""
+        """Assert an ordinary row serialises every leaf but its raw arguments."""
         history = await self._seed(session, name="crypto-readable")
 
         response = test_client.get(f"/history/{history.id}")
@@ -3716,39 +3606,8 @@ class TestExecutionRequestEncryptionOverHTTP:
         body = response.json()
         assert body["unreadable_request_leaves"] == []
         assert body["execution_request"]["payload"] == self._PAYLOAD
-        assert body["execution_request"]["meta"]["args"] == self._ARGS
+        assert body["execution_request"]["meta"]["args"] == WITHHELD_ARGS_PLACEHOLDER
         assert body["execution_request"]["meta"]["config"] == self._CONFIG
-
-    @pytest.mark.asyncio
-    async def test_create_route_stores_the_submitted_leaves_encrypted(
-        self, test_client, session, created_task_with_history
-    ):
-        """Assert ``POST /history/`` encrypts at rest and answers in plaintext."""
-        response = test_client.post(
-            "/history/",
-            json={
-                "task_id": created_task_with_history.task.id,
-                "execution_request": {
-                    "task": created_task_with_history.task.name,
-                    "target": "node-1",
-                    "meta": {"args": self._ARGS, "config": self._CONFIG},
-                    "payload": self._PAYLOAD,
-                },
-            },
-        )
-
-        assert response.status_code == status.HTTP_201_CREATED
-        body = response.json()
-        assert body["execution_request"]["meta"]["args"] == self._ARGS
-        assert body["execution_request"]["meta"]["config"] == self._CONFIG
-        assert body["execution_request"]["payload"] == self._PAYLOAD
-        stored = await stored_execution_request(session, body["id"])
-        for key in ENCRYPTED_META_KEYS:
-            assert is_encrypted(stored["meta"][key])
-        assert is_encrypted(stored["payload"])
-        serialised = json_lib.dumps(stored)
-        assert "hunter2" not in serialised
-        assert created_task_with_history.task.name in serialised
 
     @pytest.mark.asyncio
     async def test_execute_route_stores_the_submitted_leaves_encrypted(
@@ -3790,9 +3649,60 @@ class TestExecutionRequestEncryptionOverHTTP:
 
         assert response.status_code == status.HTTP_200_OK
         body = response.json()
-        assert body["execution_request"]["meta"]["args"] == self._ARGS
+        assert body["execution_request"]["meta"]["args"] == WITHHELD_ARGS_PLACEHOLDER
         stored = await stored_execution_request(session, body["id"])
         assert is_encrypted(stored["meta"]["args"])
+
+    @pytest.mark.asyncio
+    async def test_execute_route_publishes_the_submitted_masked_copy(
+        self, test_client, session, mocker
+    ):
+        """Assert ``POST /execute/{task_name}`` answers masked and stores raw.
+
+        :param mocker: The patching fixture standing in for the executor edge.
+        """
+        task = await TaskManager.create(
+            session,
+            TaskWrite.model_validate(
+                TaskFactory.build(name="masked-execute", anonymize_mask=0)
+            ),
+        )
+
+        async def fake_dispatch_queue_item(queue_item, passed_session):
+            queue_item.status = TaskHistoryStatusEnum.RUNNING
+            return await TaskHistoryManager.save(
+                passed_session,
+                queue_item,
+                flag_modified_fields=["execution_request"],
+            )
+
+        fake_executor = MagicMock(spec=BaseExecutor)
+        fake_executor.get_hosts.return_value = {"node-1": "10.0.0.1"}
+        mocker.patch(
+            "app.tasks.routes.get_executor_for_task", return_value=fake_executor
+        )
+        mocker.patch(
+            "app.tasks.routes.dispatch_queue_item",
+            side_effect=fake_dispatch_queue_item,
+        )
+
+        response = test_client.post(
+            f"/execute/{task.name}",
+            json={
+                "meta": {
+                    "target": "node-1",
+                    "args": self._ARGS,
+                    MASKED_ARGS_META_KEY: self._MASKED_ARGS,
+                }
+            },
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert body["execution_request"]["meta"]["args"] == self._MASKED_ARGS
+        assert "hunter2" not in response.text
+        stored = await stored_execution_request(session, body["id"])
+        assert json_lib.loads(decrypt(stored["meta"]["args"])) == self._ARGS
 
     @pytest.mark.asyncio
     async def test_stop_route_keeps_the_response_shape(
@@ -3841,3 +3751,217 @@ class TestExecutionRequestEncryptionOverHTTP:
         stored = await stored_execution_request(session, history.id)
         assert stored["payload"] == document["payload"]
         assert is_encrypted(stored["meta"]["args"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("masked", "expected"),
+        [(_MASKED_ARGS, _MASKED_ARGS), (None, WITHHELD_ARGS_PLACEHOLDER)],
+        ids=["masked-copy", "no-masked-copy"],
+    )
+    @pytest.mark.parametrize(
+        "path",
+        ["/history/", "/{task}/history/", "/history/{id}"],
+    )
+    async def test_read_routes_never_return_the_raw_arguments(
+        self, test_client, session, path, masked, expected
+    ):
+        """Assert each read route shows the masked copy, or withholds without one.
+
+        :param path: The route template under test.
+        :param masked: The masked copy recorded beside the arguments, if any.
+        :param expected: The arguments the route publishes.
+        """
+        history = await self._seed(session, name="masked-read", masked_args=masked)
+
+        response = test_client.get(path.format(task="masked-read", id=history.id))
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        item = body["items"][0] if "items" in body else body
+        assert item["execution_request"]["meta"]["args"] == expected
+        assert self._ARGS not in response.text
+
+    @pytest.mark.asyncio
+    async def test_stop_route_never_returns_the_raw_arguments(
+        self, test_client, session, mock_executor
+    ):
+        """Assert ``POST /history/{id}/stop/`` answers with the masked copy."""
+        history = await self._seed(
+            session, name="masked-stop", masked_args=self._MASKED_ARGS
+        )
+        history.status = TaskHistoryStatusEnum.RUNNING
+        await TaskHistoryManager.save(session, history)
+        mock_executor.stop_task.return_value = history
+
+        response = test_client.post(f"/history/{history.id}/stop/")
+
+        assert response.status_code == status.HTTP_200_OK
+        meta = response.json()["execution_request"]["meta"]
+        assert meta["args"] == self._MASKED_ARGS
+        assert self._ARGS not in response.text
+
+    @pytest.mark.asyncio
+    async def test_sync_route_never_returns_the_raw_arguments(
+        self, test_client, session, mock_executor
+    ):
+        """Assert the sync save-back answers masked and keeps the raw value stored.
+
+        The route re-saves the row it loaded, so this is also where a masked
+        string written into the row's own request would be persisted.
+        """
+        history = await self._seed(
+            session, name="masked-sync", masked_args=self._MASKED_ARGS
+        )
+        await TaskHistoryManager.update_where(
+            session, {"status": TaskHistoryStatusEnum.RUNNING}, id=history.id
+        )
+
+        async def fake_sync(item, writer_session=None):
+            item.status = TaskHistoryStatusEnum.SUCCESS
+            item.finished_at = utc_now()
+            return item
+
+        mock_executor.sync_task_history = AsyncMock(side_effect=fake_sync)
+
+        response = test_client.post(f"/history/{history.id}/sync/")
+
+        assert response.status_code == status.HTTP_200_OK
+        meta = response.json()["execution_request"]["meta"]
+        assert meta["args"] == self._MASKED_ARGS
+        assert self._ARGS not in response.text
+        stored = await stored_execution_request(session, history.id)
+        assert json_lib.loads(decrypt(stored["meta"]["args"])) == self._ARGS
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+class TestWritersWaitForTheReferenceFence:
+    """Hold each envelope writer behind a running inventory-collection batch.
+
+    The test takes the fence the way a batch does and shortens the bound, so a
+    route that is not fenced writes at once and answers 2xx instead of 503. The
+    fence no-ops on SQLite, which is why these run on real PostgreSQL only.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _short_fence_wait(self, mocker) -> None:
+        """Bound every fence wait at 200 ms so a held fence answers 503 fast."""
+        isolate_reference_fence(mocker)
+        mocker.patch.object(
+            reference_fence, "REFERENCE_FENCE_TIMEOUT", timedelta(milliseconds=200)
+        )
+
+    async def test_create_task_answers_503_and_writes_nothing(
+        self, postgres_session_maker, celery_beat_session, regular_user
+    ):
+        """Refuse a task creation while a batch holds the fence."""
+        payload = TaskWrite.model_validate(
+            TaskFactory.build(
+                name="fenced-task",
+                data={"task": "run-command", "meta": {SERVICE_ID_META_KEY: 42}},
+            )
+        ).model_dump(mode="json")
+
+        async with (
+            postgres_session_maker() as fence_session,
+            hold_reference_collection_fence(fence_session),
+            tasks_api_client(
+                regular_user, postgres_session_maker, celery_beat_session
+            ) as client,
+        ):
+            response = await client.post("/", json=payload)
+
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        async with postgres_session_maker() as session:
+            assert not await TaskManager.exists(session, name="fenced-task")
+
+    async def test_update_task_answers_503_and_changes_nothing(
+        self, postgres_session_maker, celery_beat_session, regular_user
+    ):
+        """Refuse a task update that would add a service reference mid-batch."""
+        original = {"task": "run-command", "meta": {}}
+        async with postgres_session_maker() as session:
+            await TaskManager.create(
+                session,
+                TaskWrite.model_validate(
+                    TaskFactory.build(name="fenced-task", data=original)
+                ),
+            )
+        payload = TaskWrite.model_validate(
+            TaskFactory.build(
+                name="fenced-task",
+                data={"task": "run-command", "meta": {SERVICE_ID_META_KEY: 42}},
+            )
+        ).model_dump(mode="json")
+
+        async with (
+            postgres_session_maker() as fence_session,
+            hold_reference_collection_fence(fence_session),
+            tasks_api_client(
+                regular_user, postgres_session_maker, celery_beat_session
+            ) as client,
+        ):
+            response = await client.put("/fenced-task", json=payload)
+
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        async with postgres_session_maker() as session:
+            stored = await TaskManager.get(session, name="fenced-task")
+            assert stored.data == original
+
+    async def test_create_periodic_task_answers_503_and_writes_nothing(
+        self, postgres_session_maker, celery_beat_session, regular_user
+    ):
+        """Refuse a schedule creation while a batch holds the fence."""
+        async with postgres_session_maker() as session:
+            await TaskManager.create(
+                session, TaskWrite.model_validate(TaskFactory.build(name="my-task"))
+            )
+        payload = {
+            "interval": {"every": 10, "period": "minutes"},
+            "execute_request": {"meta": {SERVICE_ID_META_KEY: 42}},
+        }
+
+        async with (
+            postgres_session_maker() as fence_session,
+            hold_reference_collection_fence(fence_session),
+            tasks_api_client(
+                regular_user, postgres_session_maker, celery_beat_session
+            ) as client,
+        ):
+            response = await client.post("/my-task/periodic/", json=payload)
+
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert not await PeriodicTaskManager.list_by_task_names(
+            celery_beat_session, "my-task"
+        )
+
+    async def test_validation_failure_does_not_wait_for_the_fence(
+        self, postgres_session_maker, celery_beat_session, regular_user
+    ):
+        """Answer a request that fails validation without queuing on a batch.
+
+        Only the write is fenced, so the route's own chain validation answers
+        400 rather than being delayed into a 503 by a batch that has nothing to
+        do with it.
+        """
+        async with postgres_session_maker() as session:
+            await TaskManager.create(
+                session, TaskWrite.model_validate(TaskFactory.build(name="my-task"))
+            )
+
+        async with (
+            postgres_session_maker() as fence_session,
+            hold_reference_collection_fence(fence_session),
+            tasks_api_client(
+                regular_user, postgres_session_maker, celery_beat_session
+            ) as client,
+        ):
+            response = await client.post(
+                "/my-task/periodic/",
+                json={
+                    "interval": {"every": 10, "period": "minutes"},
+                    "execute_request": {"chain_task_names": ["my-task"]},
+                },
+            )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST

@@ -34,6 +34,7 @@ from app.extensions.sync.exceptions import SyncerConfigurationError
 from app.extensions.sync.models import BaseSyncer
 from app.inventory.config import inventory_settings
 from app.tasks.config import tasks_settings
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +316,7 @@ async def get_syncers_standalone() -> list[BaseSyncer]:
         ssl_keyfile=tasks_settings.SSL_KEYFILE,
         ssl_certfile=tasks_settings.SSL_CERTFILE,
         logger_name="tasks_api",
+        **TASKS_CLIENT_LOG_POLICY,
     )
     return _build_syncers(inventory_api, tasks_api)
 

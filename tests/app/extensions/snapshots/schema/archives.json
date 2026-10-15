@@ -49,6 +49,7 @@
           "min_length": 1,
           "name": "task_name",
           "required": true,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -140,6 +141,7 @@
                   "min_length": 1,
                   "name": "source.source_query",
                   "required": true,
+                  "sensitive": false,
                   "type": "string"
                 }
               ],
@@ -196,6 +198,7 @@
                   "min_length": 1,
                   "name": "destination.dest_file",
                   "required": true,
+                  "sensitive": false,
                   "type": "string"
                 }
               ],
@@ -251,6 +254,7 @@
                   "min_length": 1,
                   "name": "host.dest_host",
                   "required": true,
+                  "sensitive": false,
                   "type": "string"
                 },
                 {
@@ -312,6 +316,7 @@
               }
             }
           ],
+          "sensitive": false,
           "type": "string"
         }
       ],
@@ -328,6 +333,7 @@
           "min_length": 1,
           "name": "use_index",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -335,6 +341,7 @@
           "min_length": 1,
           "name": "extra_args",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {

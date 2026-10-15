@@ -19,6 +19,7 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
+from aioresponses import aioresponses
 from fastapi import FastAPI
 from pydantic import SecretStr
 from pytest_mock import MockerFixture
@@ -709,6 +710,60 @@ async def test_logging_and_app_drain_callbacks_registered() -> None:
             is extensions_main._reseed_system_periodic_tasks
         )
     finally:
+        extensions_main.extensions_app.state.override_callbacks = original
+
+
+@pytest.mark.asyncio
+async def test_rebound_tasks_client_keeps_the_log_policy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Assert a hot ``TASKS_ENDPOINT`` change cannot bring credentials back to the log.
+
+    The rebinder builds the replacement itself, and ``get_tasks_client`` prefers
+    it over the registry, so a replacement built without the policy would log
+    every later request body and history response in full.
+    """
+    app = FastAPI()
+    original = getattr(extensions_main.extensions_app.state, "override_callbacks", None)
+    extensions_settings._set_snapshot(  # ty: ignore[unresolved-attribute]
+        {"TASKS_ENDPOINT": "https://new-tasks.example.org"}
+    )
+    replacement = None
+    try:
+        async with extensions_main.extensions_overrides_lifespan(app):
+            callbacks = extensions_main.extensions_app.state.override_callbacks
+            app.state.tasks_api = await RemoteAPI(
+                endpoint="https://old-tasks.example.org"
+            ).open()
+
+            await callbacks[(EXTENSIONS_SETTINGS, "TASKS_ENDPOINT")](
+                SnapshotChange({}, {})
+            )
+
+            replacement = app.state.tasks_api
+            assert str(replacement.endpoint).startswith("https://new-tasks.example.org")
+            assert replacement.withhold_body_log is True
+            with (
+                aioresponses() as mock,
+                caplog.at_level("DEBUG", logger=replacement.logger.name),
+            ):
+                mock.post(
+                    "https://new-tasks.example.org/execute/run-python",
+                    payload={"execution_request": {"payload": "response-secret"}},
+                )
+                await replacement.post(
+                    "/execute/run-python",
+                    json={"meta": {"args": "--password hunter2", "target": "node-1"}},
+                )
+        assert "Sending POST request" in caplog.text
+        assert "/execute/run-python" in caplog.text
+        assert "node-1" not in caplog.text
+        assert "hunter2" not in caplog.text
+        assert "response-secret" not in caplog.text
+    finally:
+        if replacement is not None:
+            await replacement.close()
+        extensions_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
         extensions_main.extensions_app.state.override_callbacks = original
 
 

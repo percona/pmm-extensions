@@ -38,8 +38,10 @@ from app.tasks.execution.nomad_lifecycle import (
     normalize_nomad_config_value,
     WorkerNomadClient,
 )
-from app.tasks.models import TaskBackendEnum
+from app.tasks.models import TaskBackendEnum, TaskLogType
 from tests.app.core.requests.pending_close_helpers import patch_paused_close_when_idle
+from tests.app.tasks.live_log_viewer import attach, live_history, LiveViewer, until
+from tests.app.tasks.nomad_log_stub import NomadLogStub
 
 _NOMAD_A = {"endpoint": "https://nomad-a.example.org"}
 _NOMAD_B = {"endpoint": "https://nomad-b.example.org"}
@@ -49,6 +51,10 @@ _NOMAD_WITH_CREDS = {
 _NOMAD_WITH_KEY = {**_NOMAD_A, "api_key": "glsa_realtoken"}
 _NOMAD_WITH_ROTATED_KEY = {**_NOMAD_A, "api_key": "glsa_rotated"}
 _STREAM_LIMIT = 3
+#: A changed hot field that rebinds the executor without moving its endpoint.
+_REBOUND_TIMEOUT = 11
+#: The retired executor and its successor, each running its own follows.
+_FOLLOWING_EXECUTORS = 2
 
 
 def _override_nomad(config: dict[str, object]) -> None:
@@ -429,6 +435,45 @@ async def test_reconcile_applies_a_changed_stream_connection_limit() -> None:
         await holder.reconcile()
 
         assert holder.current._long_lived_session().connector.limit == _STREAM_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_a_rebind_keeps_shared_log_follows_on_the_retired_executor(
+    nomad_stub: NomadLogStub,
+) -> None:
+    """Serve attached viewers from the retired executor to the end, new ones anew.
+
+    The shared follows hold the executor running them, so its retirement waits
+    for the last of their viewers, while a viewer arriving after the rebind gets
+    follows of the new executor's own.
+    """
+    stub_config = {"endpoint": nomad_stub.endpoint, "verify_ssl": False}
+    _override_nomad(stub_config)
+    async with NomadLifecycle(FastAPI()) as holder:
+        old = holder.current
+        history = live_history(nomad_stub)
+        attached = [LiveViewer(old, history, nomad_stub.step) for _ in range(2)]
+        await attach(nomad_stub, *attached)
+
+        _override_nomad({**stub_config, "timeout": _REBOUND_TIMEOUT})
+        await holder.reconcile()
+        arriving = LiveViewer(holder.current, history, nomad_stub.step)
+        await attach(nomad_stub, *attached, arriving)
+        await nomad_stub.write(TaskLogType.STDOUT, b"after-rebind\n")
+        await until(
+            lambda: all(
+                viewer.text() == "after-rebind\n" for viewer in [*attached, arriving]
+            )
+        )
+
+        assert holder.current is not old
+        assert nomad_stub.open_follows == _FOLLOWING_EXECUTORS * len(TaskLogType)
+        await attached[0].leave()
+        assert old._stream_session is not None
+        await attached[1].leave()
+        await until(lambda: old._session is None)
+        assert holder.current._session is not None
+        await arriving.leave()
 
 
 @pytest.mark.asyncio

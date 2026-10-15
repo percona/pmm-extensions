@@ -124,16 +124,23 @@ default:
   #   inventory    1 x 5                                    5
   #   tasks        2 x 5 + celery-DB 15                    25
   #   worker       parent 2 x 5, plus 4 children x 25     110
+  #   worker inventory  1 per child running collection      4
   #   beat         2 x 5 + NullPool scheduler              11
   #   sync locks   one held per configured syncer           2
-  #                                                total  178 of 200
+  #   fence writes REFERENCE_FENCE_MAX_WRITERS in tasks     5
+  #   fence batches  1 per child running collection         4
+  #                                                total  191 of 200
   # Both extensions and beat reach a service-DB engine they do not own: extensions imports the
   # tasks one through periodic_tasks, and beat loads the worker's task modules
   # because celery beat runs init_worker() before starting the scheduler.
+  # Inventory collection opens one inventory session at a time, so a child's
+  # inventory pool never grows past one connection.
+  # A fenced task write holds its fence connection beside its pooled one, and
+  # the tasks process admits at most REFERENCE_FENCE_MAX_WRITERS of them at once.
   # Not in the total: the four schema one-shots add 4 at boot, and every sync
   # claim that arrives while another holds the lock briefly opens one more.
-  # Each worker child above WORKER_CONCURRENCY: 4 costs another 25, so a fifth
-  # child (203) would not fit and 4 is the most the 10% policy allows.
+  # Each worker child above WORKER_CONCURRENCY: 4 costs another 27, so a fifth
+  # child (218) would not fit and 4 is the most the 10% policy allows.
   DATABASE: &shared_database
     ENGINE: postgresql
     HOST: pmm-server

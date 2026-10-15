@@ -41,7 +41,12 @@ from app.tasks.deps import get_request_executor, get_session
 from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.models import BaseExecutor
 from app.tasks.main import tasks_app
-from app.tasks.models import TaskHistory, TaskWrite
+from app.tasks.models import (
+    TaskExecutionRequest,
+    TaskHistory,
+    TaskHistoryStatusEnum,
+    TaskWrite,
+)
 from tests.app.conftest import postgres_worker_schema
 from tests.app.db_schema import apply_schema
 from tests.app.factories import build_task_history, TaskFactory
@@ -119,6 +124,58 @@ async def live_executor(nomad_stub: NomadLogStub) -> AsyncGenerator[NomadExecuto
     ).open()
     yield executor
     await executor.close()
+
+
+@pytest_asyncio.fixture
+async def running_history(
+    session: AsyncSession, nomad_stub: NomadLogStub
+) -> TaskHistory:
+    """Persist a RUNNING, non-anonymized history tracking the stub's allocation.
+
+    Anonymization is off so every line reaches the viewer verbatim and the
+    timing measures delivery alone; its concurrency has a test of its own.
+
+    :return: The saved history.
+    """
+    task = await TaskManager.create(
+        session, TaskWrite.model_validate(TaskFactory.build(name="live-log-task"))
+    )
+    history = build_task_history(task, TaskHistoryStatusEnum.RUNNING)
+    history.execution_request = TaskExecutionRequest(
+        task=task.name,
+        target="node1",
+        meta={"target": "node1"},
+        tracking={"job_id": nomad_stub.job_id, "evaluation_id": nomad_stub.eval_id},
+    )
+    history.anonymize_mask = 0
+    saved = await TaskHistoryManager.save(session, history)
+    assert saved.anonymized_entities == set()
+    return saved
+
+
+@pytest.fixture
+def live_route_overrides(
+    regular_user: CasdoorUser, session: AsyncSession, live_executor: NomadExecutor
+) -> Iterator[None]:
+    """Override auth and the session, and resolve the real entered executor.
+
+    The executor dependency is replaced only because no lifecycle runs here; it
+    holds the executor for the response the way ``get_request_executor`` does.
+    Nothing on the body or stream path is overridden.
+    """
+
+    async def held_executor() -> AsyncGenerator[NomadExecutor]:
+        async with live_executor.hold():
+            yield live_executor
+
+    tasks_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = lambda: (
+        None
+    )
+    tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
+    tasks_app.dependency_overrides[get_session] = lambda: session
+    tasks_app.dependency_overrides[get_request_executor] = held_executor
+    yield
+    tasks_app.dependency_overrides = {}
 
 
 @pytest.fixture
@@ -239,6 +296,7 @@ async def overwrite_execution_request(
 #: as a command-line flag, ``config`` as a plain-string form field an app
 #: serialised, ``payload`` as the submitted document's reference.
 EXECUTION_REQUEST_ARGS = "restore --password hunter2"
+EXECUTION_REQUEST_MASKED_ARGS = "restore --password ***"
 EXECUTION_REQUEST_CONFIG = "master_password: hunter2\nmaster_host: db-1\n"
 EXECUTION_REQUEST_PAYLOAD = "file://snippets/foo.py"
 

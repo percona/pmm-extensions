@@ -174,6 +174,23 @@ async def _rebind_inventory_under_hold(app: FastAPI):
 
 
 @pytest.mark.asyncio
+async def test_startup_tasks_client_keeps_credentials_out_of_its_log(mocker) -> None:
+    """Build the startup Tasks client with both log settings.
+
+    Requests prefer this client over the registry's, so it is the one that logs
+    every run submission and history read of a standalone deployment.
+    """
+    app = FastAPI()
+
+    async with _stubbed_extensions_lifespan(mocker, app):
+        tasks_api = app.state.tasks_api
+        inventory_api = app.state.inventory_api
+
+        assert tasks_api.withhold_body_log is True
+        assert inventory_api.withhold_body_log is False
+
+
+@pytest.mark.asyncio
 class TestAppStateShutdownSweep:
     """Cover ``extensions_lifespan`` teardown of active and deferred RemoteAPI clients."""
 
