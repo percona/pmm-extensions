@@ -18,7 +18,7 @@
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, ClassVar, Final, TYPE_CHECKING
+from typing import Any, cast, ClassVar, Final, TYPE_CHECKING
 
 from fastapi import HTTPException
 from sqlalchemy import and_, case, func, literal, Update, update
@@ -411,15 +411,16 @@ class SyncHealthManagerMixin(BaseSQLModelManager):
             would. Failing loudly beats routing it to the failure branch, where
             the body model does not require an ``error``.
         """
+        model = cast("type[SyncHealthBase]", cls.Model)
         if outcome.outcome is SyncOutcomeEnum.SUCCESS:
             return _record_sync_success(
-                cls.Model,
+                model,
                 col(cls.Model.id) == entity_id,
                 synced_at=outcome.attempted_at,
             )
         if outcome.error is not None:
             return _record_sync_failure(
-                cls.Model,
+                model,
                 col(cls.Model.id) == entity_id,
                 error=shorten_text(outcome.error, SYNC_ERROR_MAX_LENGTH),
                 failed_at=outcome.attempted_at,
