@@ -41,6 +41,12 @@ SEED_TIMESTAMPS = "'2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00'"
 #: point for their seeded rows to mean the same thing.
 HOST_OBSERVATION_PRE_CONSTRAINT_REVISION = "b351dd0aaed8"
 
+#: The revision dropping the redundant ``external_id`` indexes and making
+#: ``node.source`` non-native, and the head it upgrades from. Shared by its
+#: SQLite and real-PostgreSQL tests.
+EXTERNAL_ID_INDEXES_PRE_REVISION = "13204e7e1043"
+EXTERNAL_ID_INDEXES_REVISION = "a7d3f1c95b26"
+
 
 @pytest.fixture
 def inventory_alembic_config(

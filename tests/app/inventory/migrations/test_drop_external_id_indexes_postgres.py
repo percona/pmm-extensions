@@ -25,11 +25,12 @@ from alembic import command
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from tests.app.inventory.migrations.conftest import SEED_TIMESTAMPS
+from tests.app.inventory.migrations.conftest import (
+    EXTERNAL_ID_INDEXES_PRE_REVISION,
+    EXTERNAL_ID_INDEXES_REVISION,
+    SEED_TIMESTAMPS,
+)
 from tests.app.inventory.migrations.postgres_support import run_on_postgres
-
-_PRE_REVISION = "13204e7e1043"
-_REVISION = "a7d3f1c95b26"
 
 pytestmark = pytest.mark.postgres
 
@@ -73,10 +74,10 @@ async def _stored_source(conn):
 def test_upgrade_replaces_the_type_with_a_check(inventory_postgres_config):
     """Drop ``sourceenum``, keep the stored label, and reject a foreign one."""
     cfg, url = inventory_postgres_config
-    command.upgrade(cfg, _PRE_REVISION)
+    command.upgrade(cfg, EXTERNAL_ID_INDEXES_PRE_REVISION)
     run_on_postgres(url, lambda conn: _insert_node(conn, "PMM"))
 
-    command.upgrade(cfg, _REVISION)
+    command.upgrade(cfg, EXTERNAL_ID_INDEXES_REVISION)
 
     assert run_on_postgres(url, _type_exists) is False
     assert run_on_postgres(url, _source_column_type) == "character varying"
@@ -88,10 +89,10 @@ def test_upgrade_replaces_the_type_with_a_check(inventory_postgres_config):
 def test_downgrade_restores_the_native_type(inventory_postgres_config):
     """Recreate ``sourceenum`` and cast the stored label back into it."""
     cfg, url = inventory_postgres_config
-    command.upgrade(cfg, _REVISION)
+    command.upgrade(cfg, EXTERNAL_ID_INDEXES_REVISION)
     run_on_postgres(url, lambda conn: _insert_node(conn, "PMM"))
 
-    command.downgrade(cfg, _PRE_REVISION)
+    command.downgrade(cfg, EXTERNAL_ID_INDEXES_PRE_REVISION)
 
     assert run_on_postgres(url, _type_exists) is True
     assert run_on_postgres(url, _source_column_type) == "USER-DEFINED"

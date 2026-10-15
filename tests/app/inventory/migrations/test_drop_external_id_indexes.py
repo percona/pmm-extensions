@@ -21,8 +21,10 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.exc import IntegrityError
 
-_PRE_REVISION = "13204e7e1043"
-_REVISION = "a7d3f1c95b26"
+from tests.app.inventory.migrations.conftest import (
+    EXTERNAL_ID_INDEXES_PRE_REVISION,
+    EXTERNAL_ID_INDEXES_REVISION,
+)
 
 _INSERT_NODE = (
     "INSERT INTO node "
@@ -47,13 +49,13 @@ def test_upgrade_drops_indexes_and_keeps_source(
 ) -> None:
     """Drop the redundant indexes, keep the composite ones and the source value."""
     cfg, sync_url = inventory_alembic_config
-    command.upgrade(cfg, _PRE_REVISION)
+    command.upgrade(cfg, EXTERNAL_ID_INDEXES_PRE_REVISION)
     engine = create_engine(sync_url)
     with engine.begin() as conn:
         conn.exec_driver_sql(_INSERT_NODE)
     engine.dispose()
 
-    command.upgrade(cfg, _REVISION)
+    command.upgrade(cfg, EXTERNAL_ID_INDEXES_REVISION)
 
     node_indexes = _index_names(sync_url, "node")
     service_indexes = _index_names(sync_url, "service")
@@ -72,7 +74,7 @@ def test_upgrade_rejects_a_source_outside_the_enum(
 ) -> None:
     """Refuse a ``source`` label the enum does not define once it is non-native."""
     cfg, sync_url = inventory_alembic_config
-    command.upgrade(cfg, _REVISION)
+    command.upgrade(cfg, EXTERNAL_ID_INDEXES_REVISION)
 
     engine = create_engine(sync_url)
     try:
@@ -87,13 +89,13 @@ def test_downgrade_restores_indexes(
 ) -> None:
     """Restore the standalone indexes on downgrade and keep the source value."""
     cfg, sync_url = inventory_alembic_config
-    command.upgrade(cfg, _REVISION)
+    command.upgrade(cfg, EXTERNAL_ID_INDEXES_REVISION)
     engine = create_engine(sync_url)
     with engine.begin() as conn:
         conn.exec_driver_sql(_INSERT_NODE)
     engine.dispose()
 
-    command.downgrade(cfg, _PRE_REVISION)
+    command.downgrade(cfg, EXTERNAL_ID_INDEXES_PRE_REVISION)
 
     assert "ix_node_external_id" in _index_names(sync_url, "node")
     assert "ix_service_external_id" in _index_names(sync_url, "service")
