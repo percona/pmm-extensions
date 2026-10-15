@@ -60,11 +60,7 @@ from app.extensions.apps.report.config import (
     HealthReportSettings,
 )
 from app.extensions.artifact_constants import ARTIFACT_DOWNLOAD_SALT
-from app.extensions.config import (
-    App,
-    extensions_settings,
-    ExtensionsSettings,
-)
+from app.extensions.config import App, extensions_settings, ExtensionsSettings
 from app.extensions.deps import get_session, PROTECTED_APP_KEYS
 from app.extensions.main import (
     _close_app_state_remote_apis,
