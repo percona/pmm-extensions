@@ -15,8 +15,11 @@
 
 """Define tests for the app.extensions.sync.health module."""
 
+import asyncio
+import contextlib
 from datetime import datetime, UTC
-from unittest.mock import AsyncMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException, status
@@ -25,17 +28,33 @@ from starlette.routing import Match
 
 from app.core.exceptions import HTTPNotFoundException
 from app.core.requests import RemoteAPI
-from app.extensions.inventory import CreatedNode
-from app.extensions.models import SyncInventoryEntityTypeEnum
+from app.extensions.inventory import (
+    CreatedNode,
+    CreatedSchema,
+    CreatedService,
+    CreatedTable,
+)
+from app.extensions.models import SyncInventoryEntityTypeEnum, SyncItem
 from app.extensions.sync.constants import INVENTORY_PATH_SEGMENTS
 from app.extensions.sync.exceptions import (
     ExecutorHostNotFoundError,
+    SyncFailError,
     SyncInstanceAlreadyInProgressError,
 )
 from app.extensions.sync.health import _describe_sync_error, SyncHealthReporter
+from app.inventory.constants import SYNC_HEALTH_BULK_MAX_ENTRIES
 from app.inventory.main import inventory_app
-from app.inventory.models import SyncHealthWrite, SyncOutcomeEnum
-from tests.app.factories import CreatedNodeFactory
+from app.inventory.models import (
+    SyncHealthEntityWrite,
+    SyncHealthWrite,
+    SyncOutcomeEnum,
+)
+from tests.app.factories import (
+    CreatedNodeFactory,
+    CreatedSchemaFactory,
+    CreatedServiceFactory,
+    CreatedTableFactory,
+)
 
 #: A credential-bearing DSN, so a test can assert the secret never reaches the
 #: payload rather than only that the message was dropped.
@@ -44,6 +63,13 @@ SECRET = "hunter2"
 
 NODE = SyncInventoryEntityTypeEnum.NODE
 MIRRORED = frozenset({NODE})
+SERVICE = SyncInventoryEntityTypeEnum.SERVICE
+SCHEMA = SyncInventoryEntityTypeEnum.SCHEMA
+TABLE = SyncInventoryEntityTypeEnum.TABLE
+#: The levels ``MySQLSyncer`` mirrors.
+SCHEMA_AND_TABLE = frozenset({SCHEMA, TABLE})
+#: How many tables the buffering tests walk under one schema.
+TABLE_COUNT = 3
 
 
 @pytest.fixture
@@ -411,6 +437,289 @@ class TestErrorTextReachesThePayload:
         assert SECRET not in str(body)
 
 
+@pytest.fixture
+def created_service() -> CreatedService:
+    """Return the service whose schemas the buffering tests walk."""
+    return CreatedServiceFactory.build()
+
+
+@pytest.fixture
+def created_schema() -> CreatedSchema:
+    """Return the schema whose tables the buffering tests walk."""
+    return CreatedSchemaFactory.build()
+
+
+@pytest.fixture
+def created_tables(created_schema: CreatedSchema) -> list[CreatedTable]:
+    """Return distinct tables of ``created_schema``."""
+    return [
+        CreatedTableFactory.build(id=table_id, schema_id=created_schema.id)
+        for table_id in range(1, TABLE_COUNT + 1)
+    ]
+
+
+@pytest.fixture
+def schema_reporter(inventory_api: AsyncMock) -> SyncHealthReporter:
+    """Return a reporter that owns the schema and table levels."""
+    return SyncHealthReporter(inventory_api, SCHEMA_AND_TABLE)
+
+
+def _posted_paths(inventory_api: AsyncMock) -> list[str]:
+    """Return the path of every POST the reporter issued, in order."""
+    return [call.args[0] for call in inventory_api.post.await_args_list]
+
+
+def _body_posted_to(inventory_api: AsyncMock, path: str) -> Any:
+    """Return the body of the single POST the reporter issued to ``path``."""
+    bodies = [
+        call.kwargs["json"]
+        for call in inventory_api.post.await_args_list
+        if call.args[0] == path
+    ]
+    assert len(bodies) == 1, f"expected one POST to {path}, got {len(bodies)}"
+    return bodies[0]
+
+
+async def _record_table(
+    reporter: SyncHealthReporter, table: CreatedTable, *, fail: bool
+) -> None:
+    """Record one compared attempt on ``table``, raising inside it when ``fail``."""
+    async with reporter.record(TABLE, table) as attempt:
+        attempt.mark_compared()
+        if fail:
+            raise RuntimeError("boom")
+
+
+async def _sync_tables(
+    reporter: SyncHealthReporter,
+    tables: list[CreatedTable],
+    failing_ids: frozenset[int] = frozenset(),
+) -> None:
+    """Record one attempt per table, failing those in ``failing_ids``.
+
+    The raise is swallowed here as ``manage_sync_item`` swallows it outside
+    ``break_on_error``.
+    """
+    for table in tables:
+        with contextlib.suppress(RuntimeError):
+            await _record_table(reporter, table, fail=table.id in failing_ids)
+
+
+class TestBufferedSuccesses:
+    """Test that successes reach inventory in one bulk call per parent block."""
+
+    @pytest.mark.asyncio
+    async def test_a_schemas_tables_flush_in_one_bulk_call(
+        self,
+        schema_reporter: SyncHealthReporter,
+        inventory_api: AsyncMock,
+        created_schema: CreatedSchema,
+        created_tables: list[CreatedTable],
+    ) -> None:
+        """Send every table's success in one call, plus one for the schema."""
+        async with schema_reporter.record(SCHEMA, created_schema) as attempt:
+            attempt.mark_compared()
+            await _sync_tables(schema_reporter, created_tables)
+            inventory_api.post.assert_not_awaited()
+
+        assert _posted_paths(inventory_api) == [
+            "/tables/sync-health",
+            f"/schemas/{created_schema.id}/sync-health",
+        ]
+        entries = [
+            SyncHealthEntityWrite.model_validate(entry)
+            for entry in _body_posted_to(inventory_api, "/tables/sync-health")
+        ]
+        assert [entry.id for entry in entries] == [t.id for t in created_tables]
+        assert {entry.outcome for entry in entries} == {SyncOutcomeEnum.SUCCESS}
+
+    @pytest.mark.asyncio
+    async def test_an_unmirrored_parent_still_groups_its_children(
+        self,
+        schema_reporter: SyncHealthReporter,
+        inventory_api: AsyncMock,
+        created_service: CreatedService,
+    ) -> None:
+        """Group a service's schemas although the service level is not recorded."""
+        schemas = [CreatedSchemaFactory.build(id=schema_id) for schema_id in (1, 2)]
+
+        async with schema_reporter.record(SERVICE, created_service) as attempt:
+            attempt.mark_compared()
+            for schema in schemas:
+                async with schema_reporter.record(SCHEMA, schema) as child:
+                    child.mark_compared()
+
+        assert _posted_paths(inventory_api) == ["/schemas/sync-health"]
+        assert [
+            entry["id"]
+            for entry in _body_posted_to(inventory_api, "/schemas/sync-health")
+        ] == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_an_early_return_still_flushes_the_children(
+        self,
+        schema_reporter: SyncHealthReporter,
+        inventory_api: AsyncMock,
+        created_schema: CreatedSchema,
+        created_tables: list[CreatedTable],
+    ) -> None:
+        """Flush the buffered tables when the parent block exits uncompared."""
+        async with schema_reporter.record(SCHEMA, created_schema):
+            await _sync_tables(schema_reporter, created_tables)
+
+        assert _posted_paths(inventory_api) == ["/tables/sync-health"]
+
+    @pytest.mark.asyncio
+    async def test_a_level_beyond_one_request_is_split(
+        self,
+        schema_reporter: SyncHealthReporter,
+        inventory_api: AsyncMock,
+        created_schema: CreatedSchema,
+    ) -> None:
+        """Split a buffer the bulk route would refuse whole into bounded calls."""
+        tables = [
+            CreatedTableFactory.build(id=table_id)
+            for table_id in range(1, SYNC_HEALTH_BULK_MAX_ENTRIES + 2)
+        ]
+
+        async with schema_reporter.record(SCHEMA, created_schema):
+            await _sync_tables(schema_reporter, tables)
+
+        sizes = [
+            len(call.kwargs["json"]) for call in inventory_api.post.await_args_list
+        ]
+        assert sizes == [SYNC_HEALTH_BULK_MAX_ENTRIES, 1]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_flush_is_logged_and_swallowed(
+        self,
+        schema_reporter: SyncHealthReporter,
+        inventory_api: AsyncMock,
+        created_schema: CreatedSchema,
+        created_tables: list[CreatedTable],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Leave a healthy sync healthy when the bulk write cannot land."""
+        inventory_api.post.side_effect = HTTPNotFoundException("gone")
+
+        with caplog.at_level("ERROR"):
+            async with schema_reporter.record(SCHEMA, created_schema) as attempt:
+                attempt.mark_compared()
+                await _sync_tables(schema_reporter, created_tables)
+
+        assert f"Failed to record sync health for {TABLE_COUNT} TABLE" in caplog.text
+
+
+class TestFailuresBypassTheBuffer:
+    """Test that a failure is written at once and never waits for its parent."""
+
+    @pytest.mark.asyncio
+    async def test_a_failing_table_posts_before_its_schema_exits(
+        self,
+        schema_reporter: SyncHealthReporter,
+        inventory_api: AsyncMock,
+        created_schema: CreatedSchema,
+        created_tables: list[CreatedTable],
+    ) -> None:
+        """Post the failure through the single-entity route while the walk runs."""
+        failing = created_tables[1]
+
+        async with schema_reporter.record(SCHEMA, created_schema) as attempt:
+            attempt.mark_compared()
+            await _sync_tables(schema_reporter, created_tables, frozenset({failing.id}))
+            path, body = _posted(inventory_api)
+            assert path == f"/tables/{failing.id}/sync-health"
+            assert body["outcome"] == SyncOutcomeEnum.FAILURE
+
+        assert [
+            entry["id"]
+            for entry in _body_posted_to(inventory_api, "/tables/sync-health")
+        ] == [created_tables[0].id, created_tables[2].id]
+
+    @pytest.mark.asyncio
+    async def test_a_raising_parent_flushes_the_successes_before_it(
+        self,
+        schema_reporter: SyncHealthReporter,
+        inventory_api: AsyncMock,
+        created_schema: CreatedSchema,
+        created_tables: list[CreatedTable],
+    ) -> None:
+        """Write the tables that completed, then the schema's own failure."""
+
+        async def sync_tables_then_fail() -> None:
+            async with schema_reporter.record(SCHEMA, created_schema) as attempt:
+                attempt.mark_compared()
+                await _sync_tables(schema_reporter, created_tables)
+                raise RuntimeError("schema boom")
+
+        with pytest.raises(RuntimeError, match="schema boom"):
+            await sync_tables_then_fail()
+
+        assert _posted_paths(inventory_api) == [
+            "/tables/sync-health",
+            f"/schemas/{created_schema.id}/sync-health",
+        ]
+        assert len(_body_posted_to(inventory_api, "/tables/sync-health")) == TABLE_COUNT
+        schema_body = _body_posted_to(
+            inventory_api, f"/schemas/{created_schema.id}/sync-health"
+        )
+        assert schema_body["outcome"] == SyncOutcomeEnum.FAILURE
+
+    @pytest.mark.asyncio
+    async def test_a_child_sync_fail_error_buffers_the_compared_parent(
+        self,
+        inventory_api: AsyncMock,
+        created_service: CreatedService,
+        created_schema: CreatedSchema,
+    ) -> None:
+        """Hand a compared parent's success up even as a child aborts the run."""
+        reporter = SyncHealthReporter(
+            inventory_api, frozenset({SERVICE, SCHEMA, TABLE})
+        )
+
+        async def compare_then_abort_in_a_child() -> None:
+            async with reporter.record(SERVICE, created_service) as service:
+                service.mark_compared()
+                async with reporter.record(SCHEMA, created_schema) as attempt:
+                    attempt.mark_compared()
+                    raise SyncFailError(TABLE, MagicMock(spec=SyncItem))
+
+        with pytest.raises(SyncFailError):
+            await compare_then_abort_in_a_child()
+
+        assert [
+            entry["id"]
+            for entry in _body_posted_to(inventory_api, "/schemas/sync-health")
+        ] == [created_schema.id]
+        service_body = _body_posted_to(
+            inventory_api, f"/services/{created_service.id}/sync-health"
+        )
+        assert service_body["outcome"] == SyncOutcomeEnum.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_walk_drops_its_buffer(
+        self,
+        schema_reporter: SyncHealthReporter,
+        inventory_api: AsyncMock,
+        created_schema: CreatedSchema,
+        created_tables: list[CreatedTable],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Drop the buffered tables, leaving them stale, when the run is cancelled."""
+
+        async def sync_tables_then_cancel() -> None:
+            async with schema_reporter.record(SCHEMA, created_schema) as attempt:
+                attempt.mark_compared()
+                await _sync_tables(schema_reporter, created_tables)
+                raise asyncio.CancelledError
+
+        with caplog.at_level("WARNING"), pytest.raises(asyncio.CancelledError):
+            await sync_tables_then_cancel()
+
+        inventory_api.post.assert_not_awaited()
+        assert f"Dropped sync health for {TABLE_COUNT} TABLE" in caplog.text
+
+
 class TestReportedPathsAreRegisteredRoutes:
     """Test that ``INVENTORY_PATH_SEGMENTS`` still names a route the inventory app serves.
 
@@ -428,6 +737,18 @@ class TestReportedPathsAreRegisteredRoutes:
         best-effort ``except Exception`` would swallow it.
         """
         path = f"/{INVENTORY_PATH_SEGMENTS[entity_type]}/1/sync-health"
+        scope = {"type": "http", "method": "POST", "path": path}
+
+        assert any(
+            route.matches(scope)[0] == Match.FULL for route in inventory_app.routes
+        )
+
+    @pytest.mark.parametrize("entity_type", list(INVENTORY_PATH_SEGMENTS))
+    def test_the_flushed_path_resolves_to_a_registered_route(
+        self, entity_type: SyncInventoryEntityTypeEnum
+    ) -> None:
+        """Match the path ``_flush`` builds against the inventory app's routes."""
+        path = f"/{INVENTORY_PATH_SEGMENTS[entity_type]}/sync-health"
         scope = {"type": "http", "method": "POST", "path": path}
 
         assert any(

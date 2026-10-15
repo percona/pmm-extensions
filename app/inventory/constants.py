@@ -54,6 +54,11 @@ SYNC_ERROR_MAX_LENGTH: Final = 1000
 #: containers of one deployment without absorbing a misconfigured clock.
 SYNC_ATTEMPT_MAX_CLOCK_SKEW: Final = timedelta(minutes=5)
 
+#: Most outcomes one bulk ``sync-health`` request may carry. Bounds the work a
+#: single request holds the session for; a reporter with more to send splits
+#: them across requests.
+SYNC_HEALTH_BULK_MAX_ENTRIES: Final = 1000
+
 
 class RetirableEntityName(StrEnum):
     """Name the inventory entity types that carry a retirement tombstone.

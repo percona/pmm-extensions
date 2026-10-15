@@ -31,6 +31,8 @@ from app.inventory.deps import (
     TableScopeDep,
 )
 from app.inventory.models import (
+    SyncHealthBulkResult,
+    SyncHealthBulkWrite,
     SyncHealthWrite,
     Table,
     TableDetailResponse,
@@ -122,6 +124,25 @@ async def revive_table(session: SessionDep, table: RetirableTableDep) -> None:
     """
     logger.debug("Reviving table %s", table.id)
     await TableManager.revive(session, table)
+
+
+@router.post("/sync-health", dependencies=[IsServicePrincipalDep])
+async def record_tables_sync_health(
+    session: SessionDep,
+    outcomes: SyncHealthBulkWrite,
+) -> SyncHealthBulkResult:
+    """Record the outcomes of several syncer attempts, one per Table.
+
+    Each entry gets the transition ``/{table_id}/sync-health`` gives it, retired
+    tables included; an id naming no table is skipped and returned rather
+    than rejecting the rest of the list.
+
+    :param session: The async database session.
+    :param outcomes: What the syncer reported, one entry per table.
+    :return: The ids that named no table.
+    """
+    logger.debug("Recording sync health on %d tables", len(outcomes))
+    return await TableManager.record_sync_health_bulk(session, outcomes)
 
 
 @router.post(
