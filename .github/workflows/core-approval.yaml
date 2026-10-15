@@ -12,14 +12,13 @@ on:
   schedule:
     - cron: "*/10 * * * *"
   workflow_dispatch:
-    inputs:
-      pr-number:
-        description: Pull request to evaluate (every open pull request when empty)
-        required: false
 
+# Runs are serialized so a slower run cannot overwrite a newer verdict, and every
+# run evaluates every open pull request, so a queued run that a newer one replaces
+# loses nothing.
 concurrency:
-  group: core-approval-${{ github.event.workflow_run.head_sha || github.event_name }}
-  cancel-in-progress: true
+  group: core-approval
+  cancel-in-progress: false
 
 jobs:
   evaluate:
@@ -44,13 +43,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CORE_APPROVAL_READ_ORG_TOKEN: ${{ secrets.CORE_APPROVAL_READ_ORG_TOKEN }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          PR_NUMBER: ${{ inputs.pr-number }}
           TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 scripts/core_approval.py \
             --owner "${GITHUB_REPOSITORY_OWNER}" \
             --repo "${GITHUB_REPOSITORY#*/}" \
-            --head-sha "${HEAD_SHA}" \
-            --pr-number "${PR_NUMBER}" \
             --target-url "${TARGET_URL}"

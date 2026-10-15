@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.scripts import load_script, PROJECT_ROOT
+from tests.scripts import ci_filter_globs, load_script, PROJECT_ROOT
 
 core_approval = load_script("core_approval")
 
@@ -27,6 +27,8 @@ _RULES = core_approval.parse_path_rules(
     core_approval.DEFAULT_PATHS_FILE.read_text(encoding="utf-8")
 )
 _CODEOWNERS = PROJECT_ROOT / ".github" / "CODEOWNERS"
+_PATHS_FILE_GLOB = ".github/core-approval-paths"
+_CODEOWNERS_GLOB = ".github/CODEOWNERS"
 _CORE_OWNER = f"@percona/{core_approval.CORE_TEAM}"
 
 _LEAD = "lead"
@@ -38,6 +40,10 @@ _MEMBERS = {
     core_approval.CORE_TEAM: {_LEAD, _CORE_A, _CORE_B},
 }
 _FOUNDATION_PATH = "app/core/auth/base.py"
+
+
+def _changed(*paths: str, complete: bool = True):
+    return core_approval.ChangedFiles(paths=list(paths), complete=complete)
 
 
 def _review(reviewer: str, state: str):
@@ -110,6 +116,18 @@ def test_paths_file_mirrors_codeowners_backend_foundation():
     assert not mismatched
 
 
+def test_ci_python_filter_covers_the_drift_test_inputs():
+    """Run the drift test on a PR that changes only the paths file or CODEOWNERS.
+
+    A skipped Python job counts as green in ci-success, so without these entries
+    the test comparing the two files never executes on the PR that desyncs them.
+    """
+    globs = ci_filter_globs("python")
+
+    assert _PATHS_FILE_GLOB in globs
+    assert _CODEOWNERS_GLOB in globs
+
+
 def test_glob_star_stays_within_a_segment():
     """Match ``*`` within one path segment only."""
     pattern = core_approval.glob_to_regex("app/*.py")
@@ -166,7 +184,7 @@ def test_member_weights_take_the_heaviest_team():
 def test_evaluate_weights_foundation_approvals(author, approvers, expected):
     """Pass a foundation change at one lead approval or two core approvals."""
     verdict = core_approval.evaluate(
-        [_FOUNDATION_PATH],
+        _changed(_FOUNDATION_PATH),
         _RULES,
         [_approve(login) for login in approvers],
         author,
@@ -179,7 +197,9 @@ def test_evaluate_weights_foundation_approvals(author, approvers, expected):
 
 def test_evaluate_credits_a_lead_author_in_the_description():
     """Count a lead author's own weight and name them as the author."""
-    verdict = core_approval.evaluate([_FOUNDATION_PATH], _RULES, [], _LEAD, _MEMBERS)
+    verdict = core_approval.evaluate(
+        _changed(_FOUNDATION_PATH), _RULES, [], _LEAD, _MEMBERS
+    )
 
     assert verdict.description == f"Weight 2/2: {_LEAD} (author)"
 
@@ -187,7 +207,7 @@ def test_evaluate_credits_a_lead_author_in_the_description():
 def test_evaluate_passes_changes_outside_the_foundation_without_reviews():
     """Pass a change outside the foundation with no reviews at all."""
     verdict = core_approval.evaluate(
-        ["app/extensions/apps/atw/app.py", "tests/app/test_x.py"],
+        _changed("app/extensions/apps/atw/app.py", "tests/app/test_x.py"),
         _RULES,
         [],
         _OUTSIDER,
@@ -197,6 +217,27 @@ def test_evaluate_passes_changes_outside_the_foundation_without_reviews():
     assert verdict == core_approval.Verdict(
         core_approval.StatusState.SUCCESS, core_approval.NOT_FOUNDATION_DESCRIPTION
     )
+
+
+def test_evaluate_treats_an_incomplete_listing_as_foundation():
+    """Withhold the pass for a capped file listing, whose missing paths may be foundation."""
+    changed = _changed("tests/app/test_x.py", complete=False)
+
+    verdict = core_approval.evaluate(changed, _RULES, [], _OUTSIDER, _MEMBERS)
+
+    assert verdict.state == core_approval.StatusState.PENDING
+
+
+def test_evaluate_passes_an_incomplete_listing_once_approved():
+    """Fall through to the weighted rule for a capped listing, so a lead approval passes it."""
+    changed = _changed("tests/app/test_x.py", complete=False)
+
+    verdict = core_approval.evaluate(
+        changed, _RULES, [_approve(_LEAD)], _OUTSIDER, _MEMBERS
+    )
+
+    assert verdict.state == core_approval.StatusState.SUCCESS
+    assert verdict.description != core_approval.NOT_FOUNDATION_DESCRIPTION
 
 
 class _FakeClient:
@@ -216,9 +257,6 @@ class _FakeClient:
     def list_open_pull_requests(self, owner, repo):
         return self.pulls
 
-    def get_pull_request(self, owner, repo, number):
-        return next(pull for pull in self.pulls if pull.number == number)
-
     def get_status(self, owner, repo, sha, context):
         return self.status
 
@@ -232,17 +270,49 @@ _PULLS = [
 ]
 
 
-@pytest.mark.parametrize(
-    ("pr_number", "head_sha", "expected"),
-    [(2, "", [2]), (None, "bbb", [2]), (None, "zzz", []), (None, "", [1, 2])],
-)
-def test_select_pull_requests(pr_number, head_sha, expected):
-    """Select one pull request, those at a head commit, or every open one."""
-    pulls = core_approval.select_pull_requests(
-        _FakeClient(_PULLS), "o", "r", pr_number=pr_number, head_sha=head_sha
+_PENDING = core_approval.Verdict(core_approval.StatusState.PENDING, "waiting")
+_SUCCESS = core_approval.Verdict(core_approval.StatusState.SUCCESS, "done")
+
+
+def test_combine_verdicts_keeps_a_single_verdict_unchanged():
+    """Return a lone pull request's verdict without a number prefix."""
+    assert core_approval.combine_verdicts({7: _PENDING}) == _PENDING
+
+
+def test_combine_verdicts_reports_the_pending_pull_request():
+    """Let a pending pull request decide, naming it, when another at the commit passes."""
+    combined = core_approval.combine_verdicts({3: _SUCCESS, 5: _PENDING})
+
+    assert combined == core_approval.Verdict(
+        core_approval.StatusState.PENDING, "#5: waiting"
     )
 
-    assert [pull.number for pull in pulls] == expected
+
+def test_combine_verdicts_picks_the_lowest_numbered_pending_pull_request():
+    """Report the lowest-numbered of several pending pull requests."""
+    combined = core_approval.combine_verdicts({9: _PENDING, 4: _PENDING, 6: _SUCCESS})
+
+    assert combined.description == "#4: waiting"
+
+
+def test_combine_verdicts_passes_when_every_pull_request_passes():
+    """Pass only when all pull requests at the commit pass, naming the lowest number."""
+    combined = core_approval.combine_verdicts({8: _SUCCESS, 2: _SUCCESS})
+
+    assert combined == core_approval.Verdict(
+        core_approval.StatusState.SUCCESS, "#2: done"
+    )
+
+
+def test_combine_verdicts_keeps_a_prefixed_description_within_the_limit():
+    """Truncate a prefixed description to the status description limit."""
+    long = core_approval.Verdict(
+        core_approval.StatusState.PENDING, "x" * core_approval.STATUS_DESCRIPTION_LIMIT
+    )
+
+    combined = core_approval.combine_verdicts({1: long, 2: _SUCCESS})
+
+    assert len(combined.description) == core_approval.STATUS_DESCRIPTION_LIMIT
 
 
 def test_sync_status_skips_an_unchanged_verdict():
@@ -251,7 +321,7 @@ def test_sync_status_skips_an_unchanged_verdict():
     client = _FakeClient(_PULLS, status=(verdict.state, verdict.description))
 
     posted = core_approval.sync_status(
-        client, "o", "r", _PULLS[0], verdict, "", lambda _: None
+        client, "o", "r", "aaa", [1], verdict, "", lambda _: None
     )
 
     assert not posted
@@ -264,7 +334,7 @@ def test_sync_status_posts_a_changed_verdict():
     client = _FakeClient(_PULLS, status=("pending", "waiting"))
 
     posted = core_approval.sync_status(
-        client, "o", "r", _PULLS[0], verdict, "https://run", lambda _: None
+        client, "o", "r", "aaa", [1], verdict, "https://run", lambda _: None
     )
 
     assert posted
