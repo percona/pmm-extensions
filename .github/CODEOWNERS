@@ -65,6 +65,7 @@
 /CHANGELOG.md                           @percona/pmm-extensions-review-core
 /scripts/release.py                     @percona/pmm-extensions-review-core
 /scripts/changelog.py                   @percona/pmm-extensions-review-core
+/scripts/core_approval.py               @percona/pmm-extensions-review-core
 
 # ── CI / repo automation ────────────────────────────────────────────
 /.github/                               @percona/pmm-extensions-review-core

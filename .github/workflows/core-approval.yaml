@@ -1,0 +1,55 @@
+name: Core approval
+
+permissions:
+  contents: read
+
+on:
+  workflow_run:
+    workflows: [Core approval trigger]
+    types: [completed]
+  # Catches pull requests whose trigger never reached this workflow, such as
+  # Dependabot's, whose runs get no secrets.
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Pull request to evaluate (every open pull request when empty)
+        required: false
+
+concurrency:
+  group: core-approval-${{ github.event.workflow_run.head_sha || github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.actor.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    # The environment only admits the default branch, so the read:org token never
+    # reaches a workflow a branch could have edited.
+    environment: core-approval
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          sparse-checkout: |
+            .github
+            scripts
+      - name: Evaluate core approvals
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CORE_APPROVAL_READ_ORG_TOKEN: ${{ secrets.CORE_APPROVAL_READ_ORG_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/core_approval.py \
+            --owner "${GITHUB_REPOSITORY_OWNER}" \
+            --repo "${GITHUB_REPOSITORY#*/}" \
+            --head-sha "${HEAD_SHA}" \
+            --pr-number "${PR_NUMBER}" \
+            --target-url "${TARGET_URL}"
