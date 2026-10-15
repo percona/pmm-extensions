@@ -1816,6 +1816,62 @@ class TestSyncHealthWiring:
             f"/tables/{created_table.id}/sync-health",
         ]
 
+    @pytest.mark.parametrize(
+        "failing_ids",
+        [frozenset(), frozenset({2})],
+        ids=["all_succeed", "one_fails"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_schemas_tables_report_in_one_bulk_call(
+        self,
+        session: AsyncSession,
+        created_schema,
+        mock_remote_api,
+        failing_ids: frozenset[int],
+    ) -> None:
+        """Report N tables with one bulk call and each failure on its own.
+
+        The MySQL-shaped walk syncs a schema's tables from inside the schema's
+        own boundary, which is the flush point the tables' successes wait for.
+        """
+        tables = [
+            CreatedTableFactory.build(id=table_id, schema_id=created_schema.id)
+            for table_id in (1, 2, 3)
+        ]
+
+        class SchemaWalkingSyncer(TableMirroringSyncer):
+            async def perform_schema_sync(self, created_schema, updated_schema):
+                """Walk to every table, as ``MySQLSyncer`` does."""
+                for table in tables:
+                    await self.sync_table(table, None)
+
+            async def perform_table_sync(self, created_table, updated_table):
+                """Fail the tables this case names."""
+                if created_table.id in failing_ids:
+                    raise RuntimeError("table write rejected")
+
+        sync_instance = await _create_sync_instance(session, SchemaWalkingSyncer)
+        syncer = _build_syncer(
+            SchemaWalkingSyncer,
+            session,
+            inventory_api=mock_remote_api,
+            sync_instance=sync_instance,
+        )
+        created_schema.tables = []
+
+        await syncer.sync_schema(created_schema, None)
+
+        posts = sync_health_posts(mock_remote_api)
+        assert [path for path, _ in posts] == [
+            *(f"/tables/{table_id}/sync-health" for table_id in sorted(failing_ids)),
+            "/tables/sync-health",
+            f"/schemas/{created_schema.id}/sync-health",
+        ]
+        bulk = dict(posts)["/tables/sync-health"]
+        assert [entry["id"] for entry in bulk] == [
+            table.id for table in tables if table.id not in failing_ids
+        ]
+
     @pytest.mark.asyncio
     async def test_holding_an_entity_reports_nothing(
         self, session: AsyncSession, created_node, mock_remote_api

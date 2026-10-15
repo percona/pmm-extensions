@@ -18,7 +18,7 @@
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, ClassVar, Final, TYPE_CHECKING
+from typing import Any, cast, ClassVar, Final, TYPE_CHECKING
 
 from fastapi import HTTPException
 from sqlalchemy import and_, case, func, literal, Update, update
@@ -58,6 +58,8 @@ from app.inventory.models import (
     ServiceSystemObservation,
     SourceEnum,
     SyncHealthBase,
+    SyncHealthBulkResult,
+    SyncHealthEntityWrite,
     SyncHealthWrite,
     SyncOutcomeEnum,
     Table,
@@ -348,23 +350,82 @@ class SyncHealthManagerMixin(BaseSQLModelManager):
             would. Failing loudly beats routing it to the failure branch, where
             the body model does not require an ``error``.
         """
+        await cls._exec(  # call-shape-dup-ok: the manager idiom
+            session, cls._sync_health_statement(instance.id, outcome)
+        )
+        await session.commit()
+
+    @classmethod
+    async def record_sync_health_bulk(
+        cls,
+        session: AsyncSession,
+        outcomes: Sequence[SyncHealthEntityWrite],
+    ) -> SyncHealthBulkResult:
+        """Apply a list of sync outcomes, each to the entity its ``id`` names.
+
+        Each entry gets exactly the transition :meth:`record_sync_health` gives
+        it, applied in list order and committed on its own as the single-entity
+        route commits, so an entry cannot fail the ones already applied. Ids are
+        resolved retired-inclusive in one read up front, for the reason the
+        single-entity route addresses a retired entity; an id naming no row is
+        skipped and reported rather than rejecting the rest of the list.
+
+        :param session: The asynchronous database session to use.
+        :param outcomes: What the syncer reported, one entry per entity.
+        :return: The result naming the ids that named no entity.
+        :raises ValueError: If an outcome names no transition, as
+            :meth:`record_sync_health` does.
+        """
+        resolved = set(
+            (
+                await cls._exec(
+                    session,
+                    select(col(cls.Model.id)).where(
+                        col(cls.Model.id).in_({outcome.id for outcome in outcomes})
+                    ),
+                )
+            ).all()
+        )
+        unresolved: list[int] = []
+        for outcome in outcomes:
+            if outcome.id not in resolved:
+                unresolved.append(outcome.id)
+                continue
+            await cls._exec(  # call-shape-dup-ok: the manager idiom
+                session, cls._sync_health_statement(outcome.id, outcome)
+            )
+            await session.commit()
+        return SyncHealthBulkResult(unresolved=unresolved)
+
+    @classmethod
+    def _sync_health_statement(
+        cls, entity_id: int | None, outcome: SyncHealthWrite
+    ) -> Update:
+        """Build the UPDATE applying one sync outcome to one entity.
+
+        :param entity_id: The id of the entity the outcome was observed for.
+        :param outcome: What the syncer reported.
+        :return: The UPDATE statement.
+        :raises ValueError: If the outcome names no branch here, which an
+            outcome added to :class:`SyncOutcomeEnum` without a transition
+            would. Failing loudly beats routing it to the failure branch, where
+            the body model does not require an ``error``.
+        """
+        model = cast("type[SyncHealthBase]", cls.Model)
         if outcome.outcome is SyncOutcomeEnum.SUCCESS:
-            statement = _record_sync_success(
-                cls.Model,
-                col(cls.Model.id) == instance.id,
+            return _record_sync_success(
+                model,
+                col(cls.Model.id) == entity_id,
                 synced_at=outcome.attempted_at,
             )
-        elif outcome.error is not None:
-            statement = _record_sync_failure(
-                cls.Model,
-                col(cls.Model.id) == instance.id,
+        if outcome.error is not None:
+            return _record_sync_failure(
+                model,
+                col(cls.Model.id) == entity_id,
                 error=shorten_text(outcome.error, SYNC_ERROR_MAX_LENGTH),
                 failed_at=outcome.attempted_at,
             )
-        else:
-            raise ValueError(f"No sync-health transition for {outcome.outcome!r}")
-        await cls._exec(session, statement)  # call-shape-dup-ok: the manager idiom
-        await session.commit()
+        raise ValueError(f"No sync-health transition for {outcome.outcome!r}")
 
 
 class RetirableManagerMixin(BaseSQLModelManager):
