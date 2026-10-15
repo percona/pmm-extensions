@@ -40,6 +40,8 @@ export function StringField({ field }: StringFieldProps) {
         helperText: help.inline,
         placeholder: field.placeholder,
         fullWidth: true,
+        type: field.sensitive ? 'password' : undefined,
+        autoComplete: field.sensitive ? 'new-password' : undefined,
       }}
       controllerProps={{ rules: buildValidationRules(field) }}
     />

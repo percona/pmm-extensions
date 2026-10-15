@@ -66,6 +66,7 @@
           "min_length": 1,
           "name": "task_name",
           "required": true,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -90,6 +91,7 @@
           "label": "Credentials Path",
           "name": "credentials_path",
           "required": false,
+          "sensitive": false,
           "type": "string"
         }
       ],
@@ -141,6 +143,7 @@
               }
             }
           ],
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -166,6 +169,7 @@
               }
             }
           ],
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -181,6 +185,7 @@
           "label": "S3 Prefix",
           "name": "storage_s3_prefix",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -196,6 +201,7 @@
           "label": "S3 Endpoint URL",
           "name": "storage_s3_endpoint_url",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -211,6 +217,7 @@
           "label": "Filesystem Path",
           "name": "storage_filesystem_path",
           "required": true,
+          "sensitive": false,
           "type": "string"
         }
       ],
@@ -356,6 +363,7 @@
               }
             }
           ],
+          "sensitive": false,
           "type": "string"
         },
         {

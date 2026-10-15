@@ -40,6 +40,7 @@
           "min_length": 1,
           "name": "task_name",
           "required": true,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -129,6 +130,7 @@
           "label": "DSN Table",
           "name": "dsn_table",
           "required": false,
+          "sensitive": false,
           "type": "string"
         }
       ],
@@ -186,6 +188,7 @@
           "label": "Pause File",
           "name": "pause_file",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -194,6 +197,7 @@
           "label": "Progress",
           "name": "progress",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -202,6 +206,7 @@
           "label": "Set Vars",
           "name": "set_vars",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -210,6 +215,7 @@
           "label": "Max Load",
           "name": "max_load",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -218,6 +224,7 @@
           "label": "Chunk Time",
           "name": "chunk_time",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -226,6 +233,7 @@
           "label": "Max Lag",
           "name": "max_lag",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -234,6 +242,7 @@
           "label": "Defaults File",
           "name": "defaults_file",
           "required": false,
+          "sensitive": false,
           "type": "string"
         }
       ],

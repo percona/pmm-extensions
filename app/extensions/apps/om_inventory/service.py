@@ -90,6 +90,7 @@ from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
 from app.extensions.config import extensions_settings
 from app.extensions.db import get_async_session_maker
 from app.inventory.config import inventory_settings
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,7 @@ async def _build_clients() -> tuple[RemoteAPI, RemoteAPI]:
         endpoint=extensions_settings.TASKS_ENDPOINT,
         ssl_cafile=settings.SSL_CAFILE,
         logger_name="tasks_api",
+        **TASKS_CLIENT_LOG_POLICY,
     )
     return inventory_api, tasks_api
 

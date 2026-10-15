@@ -873,8 +873,9 @@ export interface paths {
      * @description List one incident's snippet executions, newest first, with live task status.
      *
      *     Each row also reports the command line its snippet ran with, credential values
-     *     masked. A row whose snippet or upstream payload cannot supply what masking
-     *     needs reports its arguments as withheld; the page still returns.
+     *     masked. A row whose upstream payload is unavailable, or whose run recorded
+     *     arguments without a masked copy of them, reports its arguments as withheld;
+     *     the page still returns.
      *
      *     :param session: The database session.
      *     :param incident: The incident resolved from the ``incident_id`` path parameter.
@@ -5054,7 +5055,13 @@ export interface components {
      * SettingResponse
      * @description Represent a single setting's metadata and current value.
      *
-     *     :param setting_class: The Pydantic class ``__name__`` the field belongs to.
+     *     :param setting_class: The in-process identifier of the class the field
+     *         belongs to: the Pydantic class ``__name__`` (e.g. ``ExtensionsSettings``),
+     *         the same value the settings router takes as its ``{setting_class}`` path
+     *         segment. It is not the value stored in ``settingoverride.setting_class``;
+     *         that column holds the storage token ``setting_class_token`` derives from
+     *         the class (e.g. ``EXTENSIONS_SETTINGS``), so a query against the table
+     *         must filter on the token, not on this value.
      *     :param key: The field name on the settings class.
      *     :param key_path: Carry the canonical key segments for ``key`` such that
      *         ``"__".join(key_path) == key``.
@@ -9619,19 +9626,16 @@ export interface components {
      *
      *     :param field_type: The discriminator literal; always ``"string"`` for this
      *         class. Serialised as the JSON key ``"type"``.
-     *     :type field_type: Literal["string"]
      *     :param min_length: Optional minimum character length. Defaults to
      *         ``None``.
-     *     :type min_length: int | None
      *     :param max_length: Optional maximum character length. Defaults to
      *         ``None``.
-     *     :type max_length: int | None
      *     :param pattern: Optional regular expression the value must match.
      *         Defaults to ``None``.
-     *     :type pattern: NonEmptyStr | None
      *     :param placeholder: Optional placeholder text displayed when the field is
      *         empty. Defaults to ``None``.
-     *     :type placeholder: NonEmptyStr | None
+     *     :param sensitive: Whether the value is a credential, which the client must
+     *         not display as typed. Defaults to ``False``.
      */
     framework__StringField: {
       /** Default */
@@ -9664,6 +9668,11 @@ export interface components {
       required: boolean;
       /** Requires */
       requires?: components['schemas']['framework__FieldGate'][] | null;
+      /**
+       * Sensitive
+       * @default false
+       */
+      sensitive: boolean;
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
@@ -9796,12 +9805,9 @@ export interface components {
      *
      *     :param field_type: The discriminator literal; always ``"textarea"`` for
      *         this class. Serialised as the JSON key ``"type"``.
-     *     :type field_type: Literal["textarea"]
      *     :param rows: Optional number of visible text rows. Defaults to ``None``.
-     *     :type rows: int | None
      *     :param placeholder: Optional placeholder text displayed when the field is
      *         empty. Defaults to ``None``.
-     *     :type placeholder: NonEmptyStr | None
      */
     framework__TextAreaField: {
       /** Default */
@@ -10962,6 +10968,9 @@ export interface components {
      *         empty — gets
      *         :class:`~app.extensions.apps.om_bootstrap.strategy.MemberConfig`'s own
      *         defaults.
+     *     :param create_admin_user: Whether to plan a ``create_admin_user`` run step,
+     *         creating the customer's own administrator with the ``root`` role. Its
+     *         credentials arrive with that step's dispatch, like every other secret.
      */
     om_bootstrap__TriggerRunRequest: {
       /**
@@ -10969,6 +10978,11 @@ export interface components {
        * @default 127.0.0.1
        */
       bind_ip: string;
+      /**
+       * Create Admin User
+       * @default false
+       */
+      create_admin_user: boolean;
       /**
        * Data Path
        * @default /var/lib/mongo
