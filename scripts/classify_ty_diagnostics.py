@@ -479,7 +479,12 @@ def _fragments(tree: ast.Module) -> set[ast.Constant]:
     # A name extended with ``+=`` is bound to a fragment in a separate statement.
     for node in ast.walk(tree):
         match node:
-            case ast.Assign(targets=[ast.Name(id=name)], value=value) if (
+            case ast.Assign(targets=targets, value=value) if any(
+                isinstance(target, ast.Name) and target.id in extended
+                for target in targets
+            ):
+                parts.append(value)
+            case ast.AnnAssign(target=ast.Name(id=name), value=value) if (
                 name in extended
             ):
                 parts.append(value)

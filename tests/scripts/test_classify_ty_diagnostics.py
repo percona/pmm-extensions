@@ -707,6 +707,8 @@ class TestCorpusReadOfAssembledRows:
             f'ROW = "{ROW_PREFIX}" + NAME',
             f'ROW = "{ROW_PREFIX}Object of type " + NAME + " is unknown"',
             f'ROW = "{ROW_PREFIX}Object of type " \nROW += NAME',
+            f'ROW: str = "{ROW_PREFIX}Object of type " \nROW += NAME',
+            f'ROW = OTHER = "{ROW_PREFIX}Object of type " \nROW += NAME',
             f'ROW = "{ROW_PREFIX}Object of type %s" % NAME',
             f'ROW = "{ROW_PREFIX}Object of type {{}}".format(NAME)',
             f'ROW = "".join(["{ROW_PREFIX}Object of type ", NAME])',
@@ -717,6 +719,8 @@ class TestCorpusReadOfAssembledRows:
             "concat-empty",
             "concat-partial",
             "augmented-concat",
+            "augmented-concat-annotated",
+            "augmented-concat-chained",
             "percent-format",
             "str-format",
             "str-join",
@@ -725,6 +729,17 @@ class TestCorpusReadOfAssembledRows:
     def test_skips_a_row_assembled_at_runtime(self, tmp_path, assignment):
         """Pin nothing for a row whose message is only known at runtime."""
         source = write_file(tmp_path, "corpus.py", f'NAME = "x"\n{assignment}\n')
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
+
+    def test_reads_a_bare_annotation_of_an_extended_name(self, tmp_path):
+        """Tolerate a ``+=`` target declared without a value."""
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            f'NAME = "x"\nROW: str\nROW = "{self.ROW_PREFIX}Object of type "\n'
+            "ROW += NAME\n",
+        )
 
         assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
 
