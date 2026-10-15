@@ -71,6 +71,8 @@ from app.inventory.models import (
     ServiceTypeEnum,
     ServiceWrite,
     SourceEnum,
+    SyncHealthBulkResult,
+    SyncHealthBulkWrite,
     SyncHealthWrite,
 )
 
@@ -281,6 +283,25 @@ async def revive_node(session: SessionDep, node: RetirableNodeDep) -> None:
     """
     logger.debug("Reviving node %s", node.id)
     await NodeManager.revive(session, node)
+
+
+@router.post("/sync-health")
+async def record_nodes_sync_health(
+    session: SessionDep,
+    outcomes: SyncHealthBulkWrite,
+) -> SyncHealthBulkResult:
+    """Record the outcomes of several syncer attempts, one per Node.
+
+    Each entry gets the transition ``/{node_id}/sync-health`` gives it, retired
+    nodes included; an id naming no node is skipped and returned rather
+    than rejecting the rest of the list.
+
+    :param session: The async database session.
+    :param outcomes: What the syncer reported, one entry per node.
+    :return: The ids that named no node.
+    """
+    logger.debug("Recording sync health on %d nodes", len(outcomes))
+    return await NodeManager.record_sync_health_bulk(session, outcomes)
 
 
 @router.post(
