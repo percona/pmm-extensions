@@ -47,6 +47,10 @@
 # ── Frontend (including its dependencies) ───────────────────────────
 /frontend/                              @percona/pmm-extensions-review-fe
 
+# OpenAPI specs and the client generated from them follow backend changes
+/frontend/packages/api/specs/           @percona/pmm-extensions-devs
+/frontend/packages/api/src/generated/   @percona/pmm-extensions-devs
+
 # ── Sensitive: Python dependencies ──────────────────────────────────
 /pyproject.toml                         @percona/pmm-extensions-review-core
 /poetry.lock                            @percona/pmm-extensions-review-core
