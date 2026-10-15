@@ -50,6 +50,7 @@ import shlex
 
 from app.extensions.apps.om_bootstrap.strategy import (
     BootstrapSpec,
+    CREATE_ADMIN_USER_STEP,
     HostBootstrapState,
     MemberConfig,
     OperatingSystem,
@@ -167,6 +168,10 @@ PMM_MONITORING_USER_ROLES = [
     {"role": "clusterMonitor", "db": "admin"},
     {"role": "read", "db": "local"},
 ]
+
+#: Roles granted to the customer's own administrator, which ``create_admin_user``
+#: creates when the run asks for one.
+ADMIN_USER_ROLES = [{"role": "root", "db": "admin"}]
 
 #: How long ``create_pmm_monitoring_user``'s driver waits for a primary to exist
 #: before giving up, in milliseconds.
@@ -548,7 +553,7 @@ def _replica_set_uri(hosts: list[str], spec: BootstrapSpec) -> str:
     driver discovers the topology and sends a write to the primary rather than
     to whichever member it happened to connect to. ``serverSelectionTimeoutMS``
     makes it *wait* for that primary to exist, which is the other half of the
-    same problem - see :meth:`PackagesInstallStrategy._create_pmm_monitoring_user`.
+    same problem - see :meth:`PackagesInstallStrategy._create_user`.
 
     Unauthenticated on purpose, like every other mongosh call here: these steps
     all run before ``enable_auth``.
@@ -988,17 +993,21 @@ class PackagesInstallStrategy:
             return "dnf"
         raise ValueError(f"unsupported OperatingSystem: {os_!r}")
 
-    def plan_run_steps(self, spec: BootstrapSpec) -> list[str]:  # noqa: ARG002
-        """Return this strategy's fixed run-level step names.
+    def plan_run_steps(self, spec: BootstrapSpec) -> list[str]:
+        """Return this strategy's run-level step names.
 
-        Both need every member's mongod already running (every host's
+        All of them need every member's mongod already running (every host's
         :meth:`plan_steps` succeeded) — the stepper's job to wait for, not this
         method's.
 
-        :param spec: The run's bootstrap spec.
+        :param spec: The run's bootstrap spec; ``create_admin_user`` adds that step.
         :return: Step names, in execution order.
         """
-        return ["rs_initiate", "create_pmm_monitoring_user"]
+        steps = ["rs_initiate"]
+        if spec.create_admin_user:
+            steps.append(CREATE_ADMIN_USER_STEP)
+        steps.append("create_pmm_monitoring_user")
+        return steps
 
     def build_run_step(
         self,
@@ -1015,16 +1024,20 @@ class PackagesInstallStrategy:
             own docstring for why index 0 is where this action actually runs.
         :param spec: The run's bootstrap spec.
         :param params: ``{"username": ..., "password": ...}`` for
-            ``create_pmm_monitoring_user``; ignored by ``rs_initiate``.
+            ``create_admin_user`` and ``create_pmm_monitoring_user``; ignored by
+            ``rs_initiate``.
         :return: What the execution layer needs to run this step.
         :raises ValueError: If ``step_name`` is not one of :meth:`plan_run_steps`'
-            names, or ``create_pmm_monitoring_user`` is built without both
-            ``params`` entries.
+            names, or a user-creating step is built without both ``params`` entries.
         """
         if step_name == "rs_initiate":
             return self._rs_initiate(hosts, spec)
+        if step_name == CREATE_ADMIN_USER_STEP:
+            return self._create_user(step_name, hosts, spec, params, ADMIN_USER_ROLES)
         if step_name == "create_pmm_monitoring_user":
-            return self._create_pmm_monitoring_user(hosts, spec, params)
+            return self._create_user(
+                step_name, hosts, spec, params, PMM_MONITORING_USER_ROLES
+            )
         raise ValueError(
             f"{step_name!r} is not a PackagesInstallStrategy run step; "
             f"expected one of {self.plan_run_steps(spec)}"
@@ -1070,10 +1083,15 @@ class PackagesInstallStrategy:
         )
         return _mongosh_eval(js, spec.port)
 
-    def _create_pmm_monitoring_user(
-        self, hosts: list[str], spec: BootstrapSpec, params: dict[str, str] | None
+    def _create_user(
+        self,
+        step_name: str,
+        hosts: list[str],
+        spec: BootstrapSpec,
+        params: dict[str, str] | None,
+        roles: list[dict[str, str]],
     ) -> StepAction:
-        """Create the MongoDB user PMM's ``mongodb_exporter`` authenticates as.
+        """Create one MongoDB user in ``admin``: the customer's administrator or PMM's monitoring user.
 
         Created once for the whole set — MongoDB replicates ``admin.system.users``
         to every other member automatically, so this never needs to run per host.
@@ -1108,27 +1126,28 @@ class PackagesInstallStrategy:
         ``UserAlreadyExists`` (51003) and, retries exhausted, rolls the whole
         run back over a user that was actually created successfully.
 
+        :param step_name: The step being built, named in the missing-params error.
         :param hosts: Every member of the set, used to build the connection
             string. Not an execution target: index 0 is still where this action
             runs, it just no longer has to be the primary.
         :param spec: The run's bootstrap spec; its port and replica set name are
             read.
         :param params: Must contain ``"username"`` and ``"password"``.
+        :param roles: The roles to grant.
         :return: The step action.
         :raises ValueError: If ``params`` is missing ``"username"`` or
             ``"password"``.
         """
         if not params or "username" not in params or "password" not in params:
             raise ValueError(
-                "create_pmm_monitoring_user requires params['username'] and "
-                "params['password']"
+                f"{step_name} requires params['username'] and params['password']"
             )
         username = json.dumps(params["username"])
         create = (
             f"db.getSiblingDB('admin').createUser({{"
             f"user: {username}, "
             f"pwd: {json.dumps(params['password'])}, "
-            f"roles: {json.dumps(PMM_MONITORING_USER_ROLES)}"
+            f"roles: {json.dumps(roles)}"
             f"}})"
         )
         js = f"if (!db.getSiblingDB('admin').getUser({username})) {{ {create} }}"

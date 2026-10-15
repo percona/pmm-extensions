@@ -39,6 +39,7 @@ from app.api.deps import minimum_role_for
 from app.core.auth.models import UserRole
 from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.extensions.apps.om_bootstrap.api_routes import (
+    _spec_for,
     cancel_run,
     dispatch_finalize_step,
     dispatch_rollback_step,
@@ -220,6 +221,46 @@ class TestTriggerRun:
         run_id = response.json()["id"]
         reread = client.get(f"{BASE}/runs/{run_id}")
         assert reread.json()["member_configs"] == {"node01": override}
+
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [
+            ({}, ["rs_initiate", "create_pmm_monitoring_user"]),
+            (
+                {"create_admin_user": True},
+                ["rs_initiate", "create_admin_user", "create_pmm_monitoring_user"],
+            ),
+        ],
+    )
+    def test_plans_the_admin_user_step_only_when_asked(
+        self,
+        regular_user: CasdoorUser,
+        session: AsyncSession,
+        extra: dict[str, bool],
+        expected: list[str],
+    ) -> None:
+        """Plan create_admin_user only for a run that asks, and keep it on a re-read.
+
+        PMM reads the planned run steps to tell an older side-car, which ignores
+        the flag, from one that will create the administrator.
+        """
+        client = api_client(regular_user, session, _fake_tasks_api())
+        response = client.post(
+            f"{BASE}/runs",
+            json={
+                "hosts": ["node00"],
+                "install_method": "packages",
+                "os": "ubuntu",
+                "mongodb_version": "8.0",
+                "replica_set_name": "rs-test",
+                **extra,
+            },
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert [step["name"] for step in response.json()["run_steps"]] == expected
+        reread = client.get(f"{BASE}/runs/{response.json()['id']}")
+        assert [step["name"] for step in reread.json()["run_steps"]] == expected
 
     def test_rejects_an_empty_host_list(
         self, regular_user: CasdoorUser, session: AsyncSession
@@ -904,6 +945,49 @@ class TestDispatchRunRunStep:
         assert dispatch_step_mock.call_args.args[3] == "node00"
         run_step = response.json()["run_steps"][0]
         assert run_step["status"] == "running"
+
+    @pytest.mark.asyncio
+    async def test_dispatches_a_planned_admin_user_with_its_params(
+        self, regular_user: CasdoorUser, session: AsyncSession
+    ) -> None:
+        """Build create_admin_user from the persisted plan, granting root to PMM's user."""
+        run = await BootstrapRunManager.save(
+            session,
+            BootstrapRunFactory.build(
+                hosts=dump_host_states(
+                    [
+                        HostBootstrapState(
+                            host="node00",
+                            steps=[
+                                StepRecord(name="verify", status=StepStatus.SUCCEEDED)
+                            ],
+                        )
+                    ]
+                ),
+                run_steps=[
+                    {"name": "rs_initiate", "status": "succeeded", "attempt_count": 1},
+                    {
+                        "name": "create_admin_user",
+                        "status": "pending",
+                        "attempt_count": 0,
+                    },
+                ],
+            ),
+        )
+        dispatch_step_mock = AsyncMock(return_value=FAKE_TASK_HISTORY_ID)
+
+        with patch(
+            "app.extensions.apps.om_bootstrap.api_routes.dispatch_step",
+            dispatch_step_mock,
+        ):
+            response = api_client(regular_user, session, _fake_tasks_api()).post(
+                f"{BASE}/runs/{run.id}/run-steps/create_admin_user:dispatch",
+                json={"params": {"username": "dba", "password": "chosen-secret"}},
+            )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        assert '"root"' in " ".join(dispatch_step_mock.call_args.args[5].command)
+        assert _spec_for(run)[1].create_admin_user
 
     @pytest.mark.asyncio
     async def test_404s_for_an_unplanned_run_step(
