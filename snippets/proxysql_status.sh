@@ -73,6 +73,10 @@ declare OUTPUT_MODE="stdout"
 declare OUTPUT_FILE=""
 declare ERR_FILE=""
 declare CNF_OPEN=""
+# Both config scanners are quadratic in a line's length, measured at up to
+# 0.28 s for 4096 characters and so about 17 ms at this cap. Real admin config
+# lines stay under 200.
+declare -r CNF_MAX_LINE=1024
 
 function usage() {
     cat << EOF
@@ -295,8 +299,9 @@ function cnf_open_quote() {
         open=""
         word_start=0
     fi
-    # Jumps from one quoting character to the next: a character-by-character
-    # scan takes quadratic time on a long line.
+    # Jumps from one quoting character to the next, as a character-by-character
+    # scan is far slower. Each jump still copies the rest of the line, so the
+    # cost stays quadratic in its length, which CNF_MAX_LINE bounds.
     while [[ -n $line ]]; do
         case $open in
             "'")
@@ -430,14 +435,26 @@ function load_credentials() {
     local credential='^PROXYSQL_(USERNAME|PASSWORD|HOSTNAME|PORT)$'
     # Spares most lines the character scan, which is slow in bash.
     local closed="^([^${q}\"\\\\]|${q}[^${q}]*${q}|\"[^\"\\\\]*\")*\$"
-    local line key raw exported value status
+    local line key raw exported value status length
     local logical=""
     local continued=0
 
     CNF_OPEN=""
 
     while IFS= read -r line || [[ -n $line ]]; do
-        line=${line%$'\r'}
+        # ${line%$'\r'} tries every suffix of a line without one, which takes
+        # seconds on a line long enough to fail the cap below.
+        [[ $line == *$'\r' ]] && line=${line%?}
+        length=${#line}
+        [[ $CNF_OPEN == $'\\' ]] && ((length += ${#logical} - 1))
+        if ((length > CNF_MAX_LINE)); then
+            # The unread line may override or reopen anything, so no setting
+            # in the file is trusted: each takes its default, as a rejected
+            # value does.
+            USER="" PASSWORD="" HOST="" PORT="" CNF_OPEN=""
+            echo "A line in ${cnf}, counting any continuation lines, is longer than ${CNF_MAX_LINE} characters: every setting in the file was ignored."
+            break
+        fi
         case $CNF_OPEN in
             "'" | '"')
                 # A line inside a quoted value belongs to that value, however
@@ -529,8 +546,10 @@ function cnf_open_state() {
         return
     fi
 
-    # Jumps from one character the scan acts on to the next: a
-    # character-by-character scan takes quadratic time on a long line.
+    # Jumps from one character the scan acts on to the next, as a
+    # character-by-character scan is far slower. Each jump still copies the
+    # rest of the line, so the cost stays quadratic in its length, which
+    # CNF_MAX_LINE bounds.
     while [[ -n $line ]]; do
         top=${state#"${state%?}"}
         case $top in
@@ -647,7 +666,7 @@ function print_redacted_cnf() (
     local credential_text="(${secret_key})[A-Za-z0-9_]*(\\[[^]]*])?[[:space:]]*\\+?=|${url_credentials}"
     local comment='^([[:space:]]*#+[[:space:]]*)(.*)$'
     local name_builder='(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)|\$\{!'
-    local comment_lead export_lead key value token trailing shown masked word
+    local comment_lead export_lead key value token trailing shown masked word length
     local mask_every=0
     local i
     local -a shown_lines=() plain_keys=() masked_lines=()
@@ -659,9 +678,18 @@ function print_redacted_cnf() (
         key=""
         shown=$hidden
         masked=""
-        # A line after one left open is part of that value, however much it
-        # looks like its own assignment or comment.
-        if [[ -n $CNF_STATE ]]; then
+        # Measured as the loader does, so both readers cap the same lines.
+        length=${#line}
+        [[ $line == *$'\r' ]] && ((length--))
+        if ((length > CNF_MAX_LINE)); then
+            # What the line leaves open, and which names it reads, is unknown,
+            # so every plain value is masked and, by cnf_open_state's "<"
+            # state, every later line hidden.
+            CNF_STATE="<"
+            mask_every=1
+        elif [[ -n $CNF_STATE ]]; then
+            # A line after one left open is part of that value, however much
+            # it looks like its own assignment or comment.
             cnf_open_state "$line"
         else
             if [[ $line =~ $comment ]]; then
