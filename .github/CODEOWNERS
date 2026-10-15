@@ -3,8 +3,8 @@
 # never need an edit here:
 #   pmm-extensions-devs         everyone working on the repo (default)
 #   pmm-extensions-review-be    backend: app code, tests, scripts, snippets
-#   pmm-extensions-review-fe    frontend
-#   pmm-extensions-review-core  shared backend core, deps, build, release, CI
+#   pmm-extensions-review-fe    frontend, including its dependencies
+#   pmm-extensions-review-core  backend core, Python deps, build, release, CI
 
 # Default
 *                                       @percona/pmm-extensions-devs
