@@ -711,6 +711,7 @@ class TestCorpusReadOfAssembledRows:
             f'ROW = OTHER = "{ROW_PREFIX}Object of type " \nROW += NAME',
             f'ROW = "{ROW_PREFIX}Object of type %s" % NAME',
             f'ROW = "{ROW_PREFIX}Object of type {{}}".format(NAME)',
+            f'ROW = str.format("{ROW_PREFIX}Object of type {{}}", NAME)',
             f'ROW = "".join(["{ROW_PREFIX}Object of type ", NAME])',
         ],
         ids=[
@@ -723,6 +724,7 @@ class TestCorpusReadOfAssembledRows:
             "augmented-concat-chained",
             "percent-format",
             "str-format",
+            "str-format-unbound",
             "str-join",
         ],
     )
@@ -731,6 +733,70 @@ class TestCorpusReadOfAssembledRows:
         source = write_file(tmp_path, "corpus.py", f'NAME = "x"\n{assignment}\n')
 
         assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
+
+    @pytest.mark.parametrize(
+        "assembly",
+        [
+            "ROW = ROW + NAME",
+            'OUT = f"{ROW}tail"',
+            'OUT = "".join([ROW, NAME])',
+            'PIECES = [ROW, NAME]\nOUT = "".join(PIECES)',
+            "OUT = ROW.format(NAME)",
+            "OUT = ROW % NAME",
+        ],
+        ids=[
+            "rebind-concat",
+            "fstring-on-name",
+            "join-on-name",
+            "join-on-bound-list",
+            "format-on-name",
+            "percent-on-name",
+        ],
+    )
+    def test_skips_a_row_assembled_through_a_name(self, tmp_path, assembly):
+        """Pin nothing for a row bound to a name that is only a piece of a larger string."""
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            f'NAME = "x"\nROW = "{self.ROW_PREFIX}Object of type "\n{assembly}\n',
+        )
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
+
+    @pytest.mark.parametrize(
+        "extension",
+        ["MESSAGE += NAME", "MESSAGE = MESSAGE + NAME"],
+        ids=["augmented-concat", "rebind-concat"],
+    )
+    def test_skips_a_tuple_message_assembled_at_runtime(self, tmp_path, extension):
+        """Leave a tuple unread when its message constant is only a piece of the message."""
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            f'NAME = "x"\nMESSAGE = "Object of type "\n{extension}\n'
+            f'ROW = ("app/extensions/config.py", "{RULE_CLAIMED_BY_NO_GROUP}", '
+            "MESSAGE)\n",
+        )
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
+
+    def test_reads_a_tuple_message_constant_used_whole(self, tmp_path):
+        """Keep resolving a message constant whose own value never changes.
+
+        Quoting it inside a larger string elsewhere, such as a group pattern,
+        leaves the constant itself whole.
+        """
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            'MESSAGE = "a message"\n'
+            f'ROW = ("app/extensions/config.py", "{RULE_CLAIMED_BY_NO_GROUP}", '
+            'MESSAGE)\nPATTERN = f"^{MESSAGE}$"\nTOTAL = COUNT + 1\n',
+        )
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset(
+            {("app/extensions/config.py", RULE_CLAIMED_BY_NO_GROUP, "a message")}
+        )
 
     def test_reads_a_bare_annotation_of_an_extended_name(self, tmp_path):
         """Tolerate a ``+=`` target declared without a value."""
@@ -774,6 +840,30 @@ class TestCorpusReadOfAssembledRows:
             tmp_path,
             "corpus.py",
             f'NAME = "x"\nROW = f"{self.ROW_PREFIX}{{NAME}}"\n',
+        )
+        corpus = classify_ty_diagnostics.corpus_fingerprints(source)
+
+        (failure,) = classify_ty_diagnostics.group_constraint_failures(
+            groups=(unconfined,), corpus=corpus
+        )
+        assert "unconfined" in failure
+
+    def test_a_tuple_assembled_through_a_name_does_not_clear_an_unconfined_group(
+        self, tmp_path
+    ):
+        """Keep reporting a symbol-less group when its only declined pin is a cut-off tuple."""
+        unconfined = classify_ty_diagnostics._group(
+            "unconfined",
+            RULE_CLAIMED_BY_NO_GROUP,
+            "^Object of type .+ is unknown$",
+            "nothing",
+        )
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            'NAME = "x"\nMESSAGE = "Object of type "\nMESSAGE += NAME\n'
+            f'ROW = ("app/extensions/config.py", "{RULE_CLAIMED_BY_NO_GROUP}", '
+            "MESSAGE)\n",
         )
         corpus = classify_ty_diagnostics.corpus_fingerprints(source)
 

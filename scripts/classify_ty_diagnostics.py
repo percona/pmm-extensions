@@ -55,7 +55,7 @@ import shutil
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -392,27 +392,45 @@ def _module_strings(tree: ast.Module) -> dict[str, str]:
     (``CALL_IN_TYPE_EXPRESSION``), so a literal-only read of the tuples below
     would silently miss whichever spelling the author preferred. Annotated
     bindings count for the same reason: adding a ``: str`` to a constant the
-    corpus already has must not drop the fingerprint it feeds.
+    corpus already has must not drop the fingerprint it feeds. A name whose value
+    changes after its string binding (an augmented assignment, or a rebinding to
+    anything but a string) is left out: its tuple would pin a message cut off
+    where the rest is appended.
 
     :param tree: The parsed corpus module.
-    :return: Every module-level name bound directly to a string.
+    :return: Every module-level name that only ever holds a string literal.
     """
+    changed = {
+        node.target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name)
+    }
     bindings: dict[str, str] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-        else:
-            continue
-        if not isinstance(node.value, ast.Constant):
-            continue
-        if not isinstance(node.value.value, str):
-            continue
-        for target in targets:
-            if isinstance(target, ast.Name):
-                bindings[target.id] = node.value.value
-    return bindings
+    for targets, value in _bound_values(tree.body):
+        for name in targets:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                bindings[name] = value.value
+            else:
+                changed.add(name)
+    return {name: text for name, text in bindings.items() if name not in changed}
+
+
+def _bound_values(nodes: Iterable[ast.AST]) -> Iterator[tuple[set[str], ast.expr]]:
+    """Yield the names each plain or annotated assignment binds, with its value.
+
+    :param nodes: The statements to scan; a bare annotation binds nothing.
+    :return: ``(names, value)`` per assignment, ``names`` empty when no target
+        is a plain name.
+    """
+    for node in nodes:
+        match node:
+            case ast.Assign(targets=targets, value=value):
+                pass
+            case ast.AnnAssign(target=target, value=ast.expr() as value):
+                targets = [target]
+            case _:
+                continue
+        yield {target.id for target in targets if isinstance(target, ast.Name)}, value
 
 
 def _tuple_fingerprint(node: ast.Tuple, bindings: dict[str, str]) -> Fingerprint | None:
@@ -453,41 +471,56 @@ def _fragments(tree: ast.Module) -> set[ast.Constant]:
     :func:`group_constraint_failures` would count it as evidence for its rule. A
     complete row that gains a suffix is skipped too: the parser cannot tell the
     suffix from the rest of the message, and a dropped pin only makes the audit
-    stricter.
+    stricter. A piece that arrives through a name is a fragment the same way, so
+    the literal that name is bound to counts too.
 
     :param tree: The parsed corpus module.
     :return: Every constant that is a fragment.
     """
-    extended: set[str] = set()
     parts: list[ast.expr] = []
     for node in ast.walk(tree):
         match node:
             case ast.JoinedStr(values=values):
-                parts.extend(values)
+                parts.extend(
+                    value.value if isinstance(value, ast.FormattedValue) else value
+                    for value in values
+                )
             case ast.BinOp(op=ast.Add() | ast.Mod(), left=left, right=right):
                 parts.extend((left, right))
-            case ast.AugAssign(target=ast.Name(id=name), op=ast.Add(), value=value):
-                extended.add(name)
-                parts.append(value)
+            case ast.AugAssign(target=ast.Name() as target, op=ast.Add(), value=value):
+                parts.extend((target, value))
+            case ast.Call(
+                func=ast.Attribute(attr="format", value=ast.Name(id="str")),
+                args=[template, *_],
+            ):
+                parts.append(template)
             case ast.Call(func=ast.Attribute(attr="format", value=template)):
                 parts.append(template)
             case ast.Call(
                 func=ast.Attribute(attr="join"), args=[ast.List() | ast.Tuple() as seq]
             ):
                 parts.extend(seq.elts)
+            case ast.Call(func=ast.Attribute(attr="join"), args=[ast.Name() as seq]):
+                parts.append(seq)
 
-    # A name extended with ``+=`` is bound to a fragment in a separate statement.
-    for node in ast.walk(tree):
-        match node:
-            case ast.Assign(targets=targets, value=value) if any(
-                isinstance(target, ast.Name) and target.id in extended
-                for target in targets
-            ):
-                parts.append(value)
-            case ast.AnnAssign(target=ast.Name(id=name), value=value) if (
-                name in extended
-            ):
-                parts.append(value)
+    # A bound sequence hands the assembly on to the names it holds, so names are
+    # followed until no new one turns up.
+    bound = list(_bound_values(ast.walk(tree)))
+    assembled: set[str] = set()
+    pending = {part.id for part in parts if isinstance(part, ast.Name)}
+    while pending:
+        assembled |= pending
+        pieces = [
+            piece
+            for names, value in bound
+            if names & pending
+            for piece in (
+                value.elts if isinstance(value, ast.List | ast.Tuple) else [value]
+            )
+        ]
+        parts.extend(pieces)
+        pending = {piece.id for piece in pieces if isinstance(piece, ast.Name)}
+        pending -= assembled
 
     return {part for part in parts if isinstance(part, ast.Constant)}
 
