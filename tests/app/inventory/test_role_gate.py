@@ -211,6 +211,8 @@ RESTRICTED_WRITES: Final = [
     *PRINCIPAL_ROUTER_WRITES,
     pytest.param("POST", "/schemas/1/sync-health", id="record_schema_sync_health"),
     pytest.param("POST", "/tables/1/sync-health", id="record_table_sync_health"),
+    pytest.param("POST", "/schemas/sync-health", id="record_schemas_sync_health"),
+    pytest.param("POST", "/tables/sync-health", id="record_tables_sync_health"),
 ]
 
 MUTATIONS: Final = [*RESTRICTED_WRITES, *OPEN_MUTATIONS]
@@ -439,6 +441,39 @@ def test_the_service_principal_can_record_sync_health(
     )
 
     assert response.status_code == status.HTTP_204_NO_CONTENT
+
+
+@pytest.mark.parametrize(
+    ("plural", "fixture_name"),
+    [
+        ("nodes", "node"),
+        ("services", "service"),
+        ("schemas", "schema"),
+        ("tables", "table"),
+    ],
+)
+def test_the_service_principal_can_record_bulk_sync_health(
+    bearer_client: TestClient,
+    request: pytest.FixtureRequest,
+    internal_token: str,
+    plural: str,
+    fixture_name: str,
+) -> None:
+    """Record a list of sync outcomes as the principal, at every mirrored level.
+
+    The write is the one the syncer flushes its buffered successes through, so
+    a gate that refused it would leave every buffered entity looking stale.
+    """
+    entity = request.getfixturevalue(fixture_name)
+
+    response = bearer_client.post(
+        f"/{plural}/sync-health",
+        json=[{"id": entity.id, **sync_health_payload(SyncOutcomeEnum.SUCCESS)}],
+        headers={"Authorization": f"Bearer {internal_token}"},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"unresolved": []}
 
 
 def test_the_service_principal_can_create_a_service_for_a_node(
