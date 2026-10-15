@@ -661,7 +661,9 @@ warning, and all 366 errors are untouched.
 ### The groups, and the discriminant each is classified on
 
 `scripts/classify_ty_diagnostics.py` holds these as executable predicates; the
-table is its `report` output, not a parallel record. The discriminant column is
+table is its `report` output at `8ab18007e`, not a parallel record, so groups
+added since are absent and retired ones are folded into one row. The
+discriminant column is
 the load-bearing one, because most groups share a rule with genuine defects —
 under `unknown-argument`, the pydantic-settings `_secrets_dir` kwarg and a
 first-party `PMM` kwarg differ only in the symbol the message names, and
@@ -670,17 +672,22 @@ first-party `PMM` kwarg differ only in the symbol the message names, and
 | Group | Rule(s) | Hits | via override | via comment |
 |---|---|---:|---:|---:|
 | `settings-subclass-attributes` | `unresolved-attribute` | 137 | 51 | 86 |
-| `pydantic-fieldinfo` | `invalid-argument-type` / `invalid-assignment` | 87 | 29 | 58 |
 | `env-populated-required-params` | `missing-argument` | 70 | 63 | 7 |
 | `pydantic-settings-private-kwargs` | `unknown-argument` | 63 | 58 | 5 |
-| `celery-app-attributes` | `unresolved-attribute` | 31 | 10 | 21 |
 | `third-party-overload-sets` | `no-matching-overload` | 18 | 18 | 0 |
 | `sa-type-typedecorator` | `invalid-argument-type` | 16 | 11 | 5 |
 | `absent-modules` | `unresolved-import` | 9 | 9 | 0 |
 | `subscripted-generics-called` | `call-non-callable` | 9 | 9 | 0 |
 | `fastapi-query-default` | `invalid-parameter-default` | 4 | 4 | 0 |
 | `pygments-textlexer` | `unresolved-import` | 2 | 2 | 0 |
+| *retired — typed at the source since* | `invalid-argument-type` / `invalid-assignment` / `unresolved-attribute` | 118 | 39 | 79 |
 | **Total** | | **446** | **264** | **182** |
+
+The retired row held two groups: a `Field(...)` default ty read as `FieldInfo`
+(87 hits) and the `loop` attribute installed on the `Celery` instance at runtime
+(31). Once the settings field helpers and `ExtensionsCelery.loop` were typed at
+the source ty stopped reporting either shape, so both groups were removed from
+the classifier; either message reappearing is now a first-party regression.
 
 One group is additionally confined to a set of paths. `Cannot resolve imported
 module` reads identically for a golden-app module scaffolded at test time and for

@@ -18,8 +18,8 @@
 ``make typecheck`` reports thousands of diagnostics and nothing in the output says
 which of them describe a defect in this repository. Each group in :data:`GROUPS`
 is a shape ty reports because of how a *dependency* is typed — a pydantic-settings
-private constructor kwarg, a ``Field(...)`` default that stays a ``FieldInfo``
-until the model is built, a Celery attribute installed at runtime. Those are the
+private constructor kwarg, a FastAPI ``Query(...)`` default replaced during
+request handling, a subscripted generic called at runtime. Those are the
 ones neutralized by ``[[tool.ty.overrides]]`` entries and per-site
 ``# ty: ignore[rule]`` comments; everything else is first-party and stays
 reportable. ``docs/development/ty-policy.md`` carries the narrative.
@@ -234,12 +234,6 @@ GROUPS: tuple[Group, ...] = (
         "ordinary misspelled attribute on the same receiver first-party",
     ),
     _group(
-        "pydantic-fieldinfo",
-        "invalid-argument-type invalid-assignment",
-        r"^Object of type `FieldInfo` is not assignable to ",
-        "the assigned type is `FieldInfo`, the pre-build type of a `Field(...)` default",
-    ),
-    _group(
         "env-populated-required-params",
         "missing-argument",
         r"^No argument provided for required parameter `(CELERY|_session)`",
@@ -254,14 +248,6 @@ GROUPS: tuple[Group, ...] = (
         r"does not match any known parameter",
         "the argument is a pydantic-settings private kwarg, absent from the "
         "generated `__init__`",
-    ),
-    _group(
-        "celery-app-attributes",
-        "unresolved-attribute",
-        r"^Object of type `Celery` has no attribute `loop`$",
-        "the attribute is `loop`, which this project installs on the `Celery` "
-        "instance at runtime; naming it is what keeps an ordinary misspelled "
-        "attribute on the same receiver first-party",
     ),
     _group(
         "third-party-overload-sets",
@@ -457,6 +443,29 @@ def _tuple_fingerprint(node: ast.Tuple, bindings: dict[str, str]) -> Fingerprint
     return (path, rule, message)
 
 
+def _fragment_ids(tree: ast.Module) -> set[int]:
+    """Return the ids of string constants that are only a piece of a larger string.
+
+    An f-string's literal pieces and the operands of a ``+`` concatenation each
+    read like a row cut off where the dynamic part begins. Taken as a row, one
+    pins a message no diagnostic carries, and because no group claims it,
+    :func:`group_constraint_failures` would count it as evidence for its rule.
+
+    :param tree: The parsed corpus module.
+    :return: The ``id`` of every constant that is a fragment.
+    """
+    fragments: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            parts = node.values
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            parts = [node.left, node.right]
+        else:
+            continue
+        fragments.update(id(part) for part in parts if isinstance(part, ast.Constant))
+    return fragments
+
+
 def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
     """Return every ``(path, rule, message)`` identity the classifier's tests name.
 
@@ -465,7 +474,8 @@ def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
     discriminates within that rule, which is what
     :func:`group_constraint_failures` accepts in place of a path constraint. Both
     spellings the suite uses are resolved — a whole ty row, and a bare
-    three-string tuple whose message may arrive through a module constant.
+    three-string tuple whose message may arrive through a module constant. A row
+    assembled at runtime is not read, per :func:`_fragment_ids`.
 
     An unreadable or absent corpus yields the empty set, which can only make the
     audit stricter: every group then has to carry its own discriminant. Three
@@ -482,13 +492,18 @@ def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
         return frozenset()
 
     bindings = _module_strings(tree)
+    fragments = _fragment_ids(tree)
     found: set[Fingerprint] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Tuple):
             fingerprint = _tuple_fingerprint(node, bindings)
             if fingerprint is not None:
                 found.add(fingerprint)
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in fragments
+        ):
             row = DIAGNOSTIC_RE.match(node.value)
             if row is not None:
                 found.add((row["path"], row["rule"], row["message"]))
@@ -711,7 +726,7 @@ def _print_rule_split(diagnostics: Sequence[Diagnostic]) -> None:
         total[diagnostic.rule] += 1
         if _is_artifact(diagnostic):
             artifact[diagnostic.rule] += 1
-    print("\nPer-rule split (residual is SEP-1908's baseline)")
+    print("\nPer-rule split (residual is the first-party baseline)")
     print(f"  {'rule':32s} {'total':>6s} {'artifact':>9s} {'residual':>9s}")
     for rule in sorted(total, key=lambda name: (-total[name], name)):
         residual = total[rule] - artifact[rule]
