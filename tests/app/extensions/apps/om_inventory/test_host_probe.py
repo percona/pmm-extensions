@@ -298,12 +298,9 @@ class TestThePayloadRunsOnOldPython:
         own comment the collision raises ``UnboundLocalError``, which is why that
         function is written with loops.
 
-        The minified function runs in *this* interpreter, so the coverage follows
-        the test matrix: ``.github/workflows/python.yaml`` runs this suite on
-        3.11.9, 3.12.3 and 3.13, and 3.12.3 is inside the affected range, so a
-        revert to the comprehension form fails that leg rather than reaching a
-        monitored host. That leg is load-bearing for this test — a bump past
-        3.12.3 takes the coverage with it.
+        The minified function runs in *this* interpreter, which is outside the
+        affected range, so this catches a minifier upgrade that breaks the shipped
+        form here, not a payload that breaks only on an affected host build.
 
         The renamed top-level name is found by signature (``rename_globals``
         renames it away, unpredictably across minifier versions) rather than by
