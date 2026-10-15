@@ -27,6 +27,9 @@ request passes once the total reaches ``REQUIRED_WEIGHT``. A lead who authored t
 pull request also contributes their own weight, so a lead's change needs one core
 approval rather than two.
 
+Each run also deletes this check's own runs that a Copilot review left waiting for
+approval, which would otherwise prompt for approval on every pull request.
+
 ``.github/workflows/core-approval.yaml`` runs this from a default-branch checkout
 in the ``core-approval`` environment, whose read:org token resolves team
 membership; ``GITHUB_TOKEN`` reads the pull request and posts the status. Uses the
@@ -66,6 +69,9 @@ REQUIRED_WEIGHT = 2
 STATUS_CONTEXT = "core-approval"
 STATUS_DESCRIPTION_LIMIT = 140
 NOT_FOUNDATION_DESCRIPTION = "Not a backend-foundation change"
+
+HELD_RUN_WORKFLOWS = ("core-approval-trigger.yaml", "core-approval.yaml")
+COPILOT_ACTOR = "Copilot"
 
 
 class StatusState(StrEnum):
@@ -121,6 +127,14 @@ class Review:
 
     reviewer: str
     state: str
+
+
+@dataclass(frozen=True, slots=True)
+class HeldRun:
+    """Identify a workflow run waiting for approval and who started it."""
+
+    run_id: int
+    actor: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +210,25 @@ class GitHubClient(Protocol):
         :param sha: Commit SHA.
         :param verdict: The state and description to report.
         :param target_url: Link shown on the status; omitted when empty.
+        """
+        ...
+
+    def list_held_runs(self, owner: str, repo: str, workflow: str) -> list[HeldRun]:
+        """Return a workflow's runs that are waiting for approval.
+
+        :param owner: Repository owner.
+        :param repo: Repository name without owner.
+        :param workflow: Workflow file name.
+        :return: The held runs.
+        """
+        ...
+
+    def delete_run(self, owner: str, repo: str, run_id: int) -> None:
+        """Delete a workflow run.
+
+        :param owner: Repository owner.
+        :param repo: Repository name without owner.
+        :param run_id: Workflow run ID.
         """
         ...
 
@@ -410,6 +443,32 @@ def sync_status(
     return True
 
 
+def delete_held_copilot_runs(
+    client: GitHubClient, owner: str, repo: str, log: Callable[[str], None]
+) -> int:
+    """Delete this check's runs that a Copilot review left waiting for approval.
+
+    GitHub holds every run whose actor is Copilot, and a Copilot review fires the
+    trigger workflow on every pull request, which would leave an approval prompt
+    on each one. Copilot never approves, so those runs carry no weight to lose.
+
+    :param client: Repository API client.
+    :param owner: Repository owner.
+    :param repo: Repository name without owner.
+    :param log: Progress logger.
+    :return: The number of runs deleted.
+    """
+    deleted = 0
+    for workflow in HELD_RUN_WORKFLOWS:
+        for run in client.list_held_runs(owner, repo, workflow):
+            if run.actor != COPILOT_ACTOR:
+                continue
+            client.delete_run(owner, repo, run.run_id)
+            log(f"Deleted held {workflow} run {run.run_id}")
+            deleted += 1
+    return deleted
+
+
 class HttpGitHubClient:
     """Call the GitHub REST API with stdlib ``http.client``."""
 
@@ -562,6 +621,33 @@ class HttpGitHubClient:
         items = self._paginate(f"/orgs/{org}/teams/{team}/members")
         return {item["login"] for item in items}
 
+    def list_held_runs(self, owner: str, repo: str, workflow: str) -> list[HeldRun]:
+        """Return a workflow's runs that are waiting for approval.
+
+        :param owner: Repository owner.
+        :param repo: Repository name without owner.
+        :param workflow: Workflow file name.
+        :return: The held runs.
+        """
+        query = urllib.parse.urlencode(
+            {"status": "action_required", "per_page": GITHUB_PAGE_SIZE}
+        )
+        path = f"/repos/{owner}/{repo}/actions/workflows/{workflow}/runs?{query}"
+        payload = self._request("GET", path)
+        return [
+            HeldRun(run_id=run["id"], actor=(run.get("actor") or {}).get("login", ""))
+            for run in payload.get("workflow_runs", [])
+        ]
+
+    def delete_run(self, owner: str, repo: str, run_id: int) -> None:
+        """Delete a workflow run.
+
+        :param owner: Repository owner.
+        :param repo: Repository name without owner.
+        :param run_id: Workflow run ID.
+        """
+        self._request("DELETE", f"/repos/{owner}/{repo}/actions/runs/{run_id}")
+
 
 def main(argv: list[str] | None = None) -> int:
     """Evaluate one pull request, those at a head commit, or every open one.
@@ -623,6 +709,7 @@ def main(argv: list[str] | None = None) -> int:
         print(message, flush=True)
 
     try:
+        delete_held_copilot_runs(client, args.owner, args.repo, log)
         members = load_team_members(directory, args.owner)
         pulls = select_pull_requests(
             client, args.owner, args.repo, pr_number=pr_number, head_sha=args.head_sha

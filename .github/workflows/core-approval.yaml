@@ -7,10 +7,10 @@ on:
   workflow_run:
     workflows: [Core approval trigger]
     types: [completed]
-  # Catches pull requests whose trigger never reached this workflow, such as
-  # Dependabot's, whose runs get no secrets.
+  # Catches pull requests whose trigger never reached this workflow (Dependabot's
+  # runs get no secrets; Copilot's are held for approval) and clears the held runs.
   schedule:
-    - cron: "17 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       pr-number:
@@ -29,6 +29,7 @@ jobs:
     # reaches a workflow a branch could have edited.
     environment: core-approval
     permissions:
+      actions: write
       contents: read
       pull-requests: read
       statuses: write

@@ -200,10 +200,18 @@ def test_evaluate_passes_changes_outside_the_foundation_without_reviews():
 
 
 class _FakeClient:
-    def __init__(self, pulls, status=None):
+    def __init__(self, pulls, status=None, held=None):
         self.pulls = pulls
         self.status = status
         self.posted = []
+        self.held = held or {}
+        self.deleted = []
+
+    def list_held_runs(self, owner, repo, workflow):
+        return self.held.get(workflow, [])
+
+    def delete_run(self, owner, repo, run_id):
+        self.deleted.append(run_id)
 
     def list_open_pull_requests(self, owner, repo):
         return self.pulls
@@ -261,6 +269,27 @@ def test_sync_status_posts_a_changed_verdict():
 
     assert posted
     assert client.posted == [("aaa", verdict, "https://run")]
+
+
+def test_delete_held_copilot_runs_spares_runs_others_started():
+    """Delete held runs Copilot started in either workflow, and only those."""
+    trigger, evaluation = core_approval.HELD_RUN_WORKFLOWS
+    copilot = core_approval.COPILOT_ACTOR
+    client = _FakeClient(
+        _PULLS,
+        held={
+            trigger: [
+                core_approval.HeldRun(run_id=1, actor=copilot),
+                core_approval.HeldRun(run_id=2, actor="first-time-contributor"),
+            ],
+            evaluation: [core_approval.HeldRun(run_id=3, actor=copilot)],
+        },
+    )
+
+    deleted = core_approval.delete_held_copilot_runs(client, "o", "r", lambda _: None)
+
+    assert client.deleted == [1, 3]
+    assert deleted == len(client.deleted)
 
 
 def test_main_refuses_to_run_without_the_org_token(monkeypatch, capsys):
