@@ -493,7 +493,6 @@ class TestEdgeNames:
     @pytest.mark.parametrize(
         "name",
         [
-            # The decode always stripped surrounding whitespace.
             pytest.param(
                 lambda lay: " " + _encode(lay.allowed_dir / "my.cnf"),
                 id="leading-whitespace",
