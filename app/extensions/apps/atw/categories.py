@@ -37,7 +37,6 @@ CATEGORY_ROOT_LABELS: dict[str, str] = {
     ServiceTypeEnum.POSTGRESQL: "PostgreSQL",
     ServiceTypeEnum.PROXYSQL: "ProxySQL",
     ServiceTypeEnum.HAPROXY: "HAProxy",
-    ServiceTypeEnum.EXTERNAL: "External",
     _GENERIC_SERVICE_TYPE: "Generic",
 }
 
