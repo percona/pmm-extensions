@@ -390,6 +390,24 @@ class TestAtwListEndpoint:
         assert payload[0]["category_root"] == _GENERIC_ROOT
         assert payload[0]["category"] == "GALERA"
 
+    def test_atw_list_external_service_type_falls_back_to_generic(
+        self, test_client: TestClient
+    ) -> None:
+        """Ensure ``service_type: external`` snippets remain listed under Generic."""
+        snippet = _mock_atw_snippet(
+            filename="external/engine.sh",
+            diagnostic_categories=["GALERA"],
+            service_type="external",
+        )
+
+        response = _get_listing(test_client, [snippet])
+
+        assert response.status_code == status.HTTP_200_OK
+        payload = response.json()
+        assert len(payload) == 1
+        assert payload[0]["category_root"] == _GENERIC_ROOT
+        assert payload[0]["category"] == "GALERA"
+
     def test_atw_list_omits_empty_root_category_cells(
         self, test_client: TestClient
     ) -> None:

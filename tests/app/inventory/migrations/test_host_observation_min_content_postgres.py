@@ -63,7 +63,7 @@ async def _insert_node(conn, address, name, external_id):
         text(
             "INSERT INTO node (created_at, updated_at, address, name, external_id, "
             f"source, type, retirement_key) VALUES ({SEED_TIMESTAMPS}, :address, "
-            ":name, :external_id, CAST('PMM' AS sourceenum), 'generic', -1) "
+            ":name, :external_id, 'PMM', 'generic', -1) "
             "RETURNING id"
         ),
         {"address": address, "name": name, "external_id": external_id},
