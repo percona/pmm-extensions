@@ -197,6 +197,190 @@ def test_extra_sensitive_body_fields_keeps_built_in_masking():
     assert safe["json"]["client_token"] == _REDACTED_VALUE
 
 
+class TestWithholdRequestBody:
+    """Cover withholding a request body from the transport's debug log."""
+
+    _REQUEST_SENTINEL = "sentinel-request-value"
+
+    @pytest.mark.parametrize("body_key", ["json", "data"])
+    @pytest.mark.parametrize(
+        "body",
+        [{"meta": {"args": _REQUEST_SENTINEL}}, {"execute_request": {"payload": "x"}}],
+        ids=["nested-leaf", "wrapped-body"],
+    )
+    def test_the_body_is_replaced_by_the_placeholder(self, body_key, body):
+        """Replace the whole body whatever shape it nests its values in.
+
+        :param body_key: The request keyword carrying the body.
+        :param body: The request body.
+        """
+        safe = _sanitize_request_kwargs({body_key: body}, withhold_body=True)
+
+        assert safe[body_key] == _WITHHELD_BODY
+
+    def test_a_request_without_a_body_gains_none(self):
+        """Add no body key to a request that carries none."""
+        safe = _sanitize_request_kwargs({"headers": {"X-A": "1"}}, withhold_body=True)
+
+        assert safe == {"headers": {"X-A": "1"}}
+
+    def test_does_not_mutate_the_outgoing_body(self):
+        """Keep the real body in the request that is actually sent."""
+        kwargs = {"json": {"meta": {"args": self._REQUEST_SENTINEL}}}
+
+        _sanitize_request_kwargs(kwargs, withhold_body=True)
+
+        assert kwargs["json"]["meta"]["args"] == self._REQUEST_SENTINEL
+
+    def test_the_body_is_kept_by_default(self):
+        """Keep a non-sensitive body readable when nothing withholds it."""
+        safe = _sanitize_request_kwargs({"json": {"meta": {"args": "--fast"}}})
+
+        assert safe["json"]["meta"]["args"] == "--fast"
+
+    @pytest.mark.asyncio
+    async def test_a_withholding_client_logs_the_call_but_not_its_body(self, caplog):
+        """Log method, path and sanitized headers while omitting the body value."""
+        client = RemoteAPI(endpoint="http://localhost:8000/", withhold_body_log=True)
+        with aioresponses() as mock:
+            mock.post(_RESPONSE_URL, payload={})
+            with caplog.at_level("DEBUG", logger=client.logger.name):
+                async with client:
+                    await client.post(
+                        "body",
+                        json={"meta": {"args": self._REQUEST_SENTINEL}},
+                        headers={"Authorization": "Bearer hunter2", "X-Trace": "t-1"},
+                    )
+
+        sending = [
+            r.getMessage() for r in caplog.records if "Sending" in r.getMessage()
+        ]
+        assert len(sending) == 1
+        assert self._REQUEST_SENTINEL not in sending[0]
+        assert "hunter2" not in sending[0]
+        assert "POST" in sending[0]
+        assert "body" in sending[0]
+        assert "t-1" in sending[0]
+        assert _WITHHELD_BODY in sending[0]
+
+    @pytest.mark.asyncio
+    async def test_the_body_is_logged_by_default(self, remote_api, caplog):
+        """Log the request body when nothing withholds it."""
+        with aioresponses() as mock:
+            mock.post(_RESPONSE_URL, payload={})
+            with caplog.at_level("DEBUG", logger=remote_api.logger.name):
+                async with remote_api:
+                    await remote_api.post("body", json={"note": self._REQUEST_SENTINEL})
+
+        assert any(
+            self._REQUEST_SENTINEL in record.getMessage() for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_suppress_request_log_withholds_inside_the_block_only(
+        self, remote_api, caplog
+    ):
+        """Withhold the body inside the block and log the next call's again."""
+        with aioresponses() as mock:
+            mock.post(_RESPONSE_URL, payload={})
+            mock.post(_RESPONSE_URL, payload={})
+            with caplog.at_level("DEBUG", logger=remote_api.logger.name):
+                async with remote_api:
+                    with remote_api.suppress_request_log():
+                        await remote_api.post("body", json={"note": "inside-value"})
+                    await remote_api.post("body", json={"note": "after-value"})
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert all("inside-value" not in message for message in messages)
+        assert any("after-value" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_suppress_request_log_leaves_the_response_body_logged(
+        self, remote_api, caplog
+    ):
+        """Keep the two suppressions independent of one another."""
+        with aioresponses() as mock:
+            mock.post(_RESPONSE_URL, payload={"token": _BODY_SENTINEL})
+            with caplog.at_level("DEBUG", logger=remote_api.logger.name):
+                async with remote_api:
+                    with remote_api.suppress_request_log():
+                        await remote_api.post("body", json={"note": "inside-value"})
+
+        assert any(_BODY_SENTINEL in record.getMessage() for record in caplog.records)
+
+    def test_nesting_restores_the_outer_suppression(self, remote_api):
+        """Leave an outer block's suppression standing when an inner one exits."""
+        with remote_api.suppress_request_log():
+            with remote_api.suppress_request_log():
+                pass
+            nested = remote_api._suppress_request_log.get()
+        after = remote_api._suppress_request_log.get()
+
+        assert nested is True
+        assert after is False
+
+
+class TestWithholdBodyLogResponse:
+    """Cover a client constructed to never log its response bodies."""
+
+    _HISTORY = {
+        "id": 7,
+        "execution_request": {
+            "meta": {"args": "<withheld>", "config": "master_password: cfg-secret\n"},
+            "payload": "payload-secret",
+        },
+    }
+
+    @pytest.mark.asyncio
+    async def test_the_response_body_is_withheld_and_still_returned(self, caplog):
+        """Log the placeholder while handing the caller the full body."""
+        client = RemoteAPI(endpoint="http://localhost:8000/", withhold_body_log=True)
+        with aioresponses() as mock:
+            mock.get(_RESPONSE_URL, payload=self._HISTORY)
+            with caplog.at_level("DEBUG", logger=client.logger.name):
+                async with client:
+                    returned = await client.get("body")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert returned == self._HISTORY
+        assert any(_WITHHELD_BODY in message for message in messages)
+        assert all("cfg-secret" not in message for message in messages)
+        assert all("payload-secret" not in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_non_json_response_content_is_withheld(self, caplog):
+        """Render the placeholder on the non-JSON exception line as well."""
+        client = RemoteAPI(endpoint="http://localhost:8000/", withhold_body_log=True)
+        with aioresponses() as mock:
+            mock.get(
+                _RESPONSE_URL,
+                status=status.HTTP_200_OK,
+                body=_BODY_SENTINEL,
+                content_type="text/plain",
+            )
+            with caplog.at_level("DEBUG", logger=client.logger.name):
+                async with client:
+                    with pytest.raises(HTTPException):
+                        await client.get("body")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert all(_BODY_SENTINEL not in message for message in messages)
+        assert any(_WITHHELD_BODY in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_a_client_built_without_it_still_logs_the_body(
+        self, remote_api, caplog
+    ):
+        """Keep body logging for every client that does not ask to withhold."""
+        with aioresponses() as mock:
+            mock.get(_RESPONSE_URL, payload=self._HISTORY)
+            with caplog.at_level("DEBUG", logger=remote_api.logger.name):
+                async with remote_api:
+                    await remote_api.get("body")
+
+        assert any("payload-secret" in record.getMessage() for record in caplog.records)
+
+
 def test_redact_headers_masks_within_context_only(remote_api):
     """Mask extra header names only for the duration of the ``redact_headers`` block."""
     with remote_api.redact_headers(["X-Custom-Token"]):

@@ -167,6 +167,17 @@ produced a 3,730 reading when the environment was wrong outright (see
 From here the `typecheck` job re-measures the exit status on every PR, so the
 figure that needs maintaining by hand is the count, not the status.
 
+Re-measured after the settings field helpers and the Celery event loop were
+typed at the source, on `3312f611f` plus that change, with the pinned
+`ty 0.0.49` from the local `venv`: **4,433 — 0 error, 4,433 warning**,
+`make typecheck` exit **0**. The parent alone reads **4,436** in the same
+environment, so the change itself removes three reporting diagnostics. It also
+deletes 97 `# ty: ignore` comments and two `[[tool.ty.overrides]]` blocks, and
+those were silencing their diagnostics already. The rise from 3,287 happened
+across the merges in between. The `typecheck` job confirms the figure on the
+pull request's merge tree `232e93f` (that change merged with `3312f611f`):
+**4,433**, exit **0**, so the local and CI readings agree for this tree.
+
 The error count reaching zero is what SEP-1908 was for; the warning fleet is
 unchanged by design, because the nine rules at `warn` mix first-party defects
 with dependency-typing artifacts and clearing them is separate work.
@@ -388,7 +399,22 @@ the next subsection.
 
 **Attribution is a baseline delta, not the lines a change adds.** The runner
 checks the changed files twice — once at `HEAD`, once in a detached worktree at
-the merge-base — and reports the multiset difference over `Diagnostic.fingerprint`.
+the merge-base — and reports the multiset difference over a key of path, rule,
+and the enclosing statement's AST with locations stripped. The message is not part
+of the key: a signature change reprints the types in every pre-existing
+diagnostic at its call sites, and keyed on message text each of those would count
+once as missing and once as new. A compound statement is keyed on its header
+alone (the `def`, `if`, `except` or `case` line, decorators included), so
+editing a body does not make the diagnostics on its header look new. Three
+limits follow and are accepted. A diagnostic on a statement the branch edited
+always compares as new; a branch that swaps one diagnostic for another of the
+same rule within one unchanged statement is not reported; and identical
+statements in one file share a key, so a diagnostic moving between them is not
+reported either. A file that fails to parse on either side is compared by
+message, as is a diagnostic on a line with no code
+or no enclosing statement; those comparisons still report anything new, at the
+cost of reporting a rewritten message as new. `Diagnostic.fingerprint` itself is
+unchanged, because `classify` and the corpus reconciliation read it.
 Added-line attribution was measured and cannot work: reverting the
 `record_sync_health` annotation at `app/inventory/crud.py:301` reports two
 `unresolved-attribute` diagnostics at **:327 and :333**, so a rule keyed on the
@@ -811,6 +837,15 @@ diagnostics sharing one always share a verdict; folding the line and column away
 costs the check no precision and lets it survive the reformatting the comments
 provoke, which would otherwise report every diagnostic below an edited line as
 newly suppressed.
+
+`check` cannot tell a suppression from a fix: a first-party diagnostic that
+stops reporting because the code was corrected drops out of the run exactly as
+one an ignore comment hides, so a change that types something at the source
+fails with `suppressed a first-party diagnostic` for each fingerprint it fixed.
+For such a change, read those lines against the diff instead: a dropped
+fingerprint is a fix when no ignore comment or `[[tool.ty.overrides]]` entry the
+change adds covers its path and rule. Typing the Celery app's `loop` produced two
+such lines for `app/celery.py`.
 
 `report` prints the same tables from a live run and names any line holding both
 an artifact and a first-party diagnostic of the same rule. It does not flag a

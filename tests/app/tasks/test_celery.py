@@ -74,6 +74,7 @@ from app.tasks.execution.nomad_lifecycle import WorkerNomadClient
 from app.tasks.execution_request_secrets import (
     CONFIG_META_KEY,
     ENCRYPTED_META_KEYS,
+    MASKED_ARGS_META_KEY,
     PAYLOAD_LEAF,
 )
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
@@ -962,6 +963,76 @@ class TestFollowerStartDeduplication:
         """Assert the same refusal through the ``jsonb`` containment path."""
         assert await _refused_behind(
             postgres_session, _FOLLOWER_START_META, _FOLLOWER_BEAT_META
+        )
+
+
+_UNMASKED_META = {"target": "node-1", "args": "--password hunter2"}
+_MASKED_META = {**_UNMASKED_META, MASKED_ARGS_META_KEY: "--password ***"}
+
+
+class TestIdenticalTaskConflictDisplayOnlyMeta:
+    """Pin that the masked copy of the arguments plays no part in deduplication.
+
+    A row written before the masked copy existed lacks it, and an upgraded
+    submitter adds it to the same request, so across the rollout one side of an
+    identical pair carries the key and the other does not. Both directions have
+    to match, on both meta predicate builders, while a difference in the raw
+    arguments the copy renders still keeps two requests apart.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("in_flight_meta", "incoming_meta"),
+        [(_UNMASKED_META, _MASKED_META), (_MASKED_META, _UNMASKED_META)],
+        ids=["queued-carries-copy", "in-flight-carries-copy"],
+    )
+    async def test_masked_copy_on_one_side_still_conflicts(
+        self,
+        session: AsyncSession,
+        in_flight_meta: dict[str, object],
+        incoming_meta: dict[str, object],
+    ) -> None:
+        """Assert an identical request conflicts whichever side carries the copy.
+
+        :param session: The async session fixture the guard queries.
+        :param in_flight_meta: The meta of the run already in flight.
+        :param incoming_meta: The meta of the dispatch being checked.
+        """
+        assert await _refused_behind(session, in_flight_meta, incoming_meta)
+
+    @pytest.mark.postgres
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("in_flight_meta", "incoming_meta"),
+        [(_UNMASKED_META, _MASKED_META), (_MASKED_META, _UNMASKED_META)],
+        ids=["queued-carries-copy", "in-flight-carries-copy"],
+    )
+    async def test_masked_copy_on_one_side_still_conflicts_on_postgres(
+        self,
+        postgres_session: AsyncSession,
+        in_flight_meta: dict[str, object],
+        incoming_meta: dict[str, object],
+    ) -> None:
+        """Assert the same match through the ``jsonb`` containment path.
+
+        :param postgres_session: A session bound to a real PostgreSQL engine.
+        :param in_flight_meta: The meta of the run already in flight.
+        :param incoming_meta: The meta of the dispatch being checked.
+        """
+        assert await _refused_behind(postgres_session, in_flight_meta, incoming_meta)
+
+    @pytest.mark.asyncio
+    async def test_differing_args_with_equal_copies_does_not_conflict(
+        self, session: AsyncSession
+    ) -> None:
+        """Assert equal masked copies do not make different arguments a duplicate.
+
+        :param session: The async session fixture the guard queries.
+        """
+        assert not await _refused_behind(
+            session,
+            _MASKED_META,
+            {**_MASKED_META, "args": "--password hunter3"},
         )
 
 
@@ -4368,16 +4439,14 @@ class TestCheckNomadCertExpiry:
         coro = MagicMock()
         mock_check = MagicMock(return_value=coro)
         mocker.patch(f"{MODULE}._check_nomad_cert_expiry", mock_check)
-        mocker.patch.object(
-            app_celery.loop,  # ty: ignore[unresolved-attribute]
+        mock_run = mocker.patch.object(
+            app_celery.loop,
             "run_until_complete",
             autospec=True,
         )
 
         check_nomad_cert_expiry()
-        app_celery.loop.run_until_complete.assert_called_once_with(  # ty: ignore[unresolved-attribute]
-            coro
-        )
+        mock_run.assert_called_once_with(coro)
 
 
 class TestPreDispatchUnreadableRequest:

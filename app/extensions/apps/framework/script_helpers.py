@@ -53,6 +53,7 @@ from app.extensions.artifact_constants import ARTIFACT_DOWNLOAD_SALT
 from app.extensions.config import warn_if_base_url_lacks_root_path
 from app.extensions.deps import get_base_url, task_path
 from app.extensions.snippets.config import snippets_settings, SnippetSudoOption
+from app.extensions.snippets.masking import masked_args_for
 from app.extensions.snippets.models.snippet import (
     BaseSnippet,
     BaseSnippetArgs,
@@ -124,6 +125,7 @@ def build_execution_meta(
         md5_checksum=script.md5_digest,
         args=execution_args.to_args_string(),
         requirements=script.requirements,
+        masked_args=masked_args_for(execution_args),
     )
 
 

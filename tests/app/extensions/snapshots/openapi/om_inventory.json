@@ -58,7 +58,7 @@
         "type": "object"
       },
       "SettingResponse": {
-        "description": "Represent a single setting's metadata and current value.\n\n:param setting_class: The Pydantic class ``__name__`` the field belongs to.\n:param key: The field name on the settings class.\n:param key_path: Carry the canonical key segments for ``key`` such that\n    ``\"__\".join(key_path) == key``.\n:param value: The current value visible through the proxy, dumped to a\n    JSON-safe shape via the field's annotation. ``SecretStr`` fields are\n    redacted to ``\"**********\"``.\n:param default_value: The field's declared default value, dumped via the\n    same JSON serialiser. ``None`` when no default exists.\n:param type: A human-readable representation of the field's declared\n    annotation (for operator visibility; validation uses the actual\n    ``FieldInfo``).\n:param reload: The reload classification (HOT or NOT_OVERRIDABLE).\n:param description: The field's free-text description, or ``None``.\n:param is_secret: Whether the field's annotation contains a Pydantic secret\n    (``SecretStr`` / ``SecretBytes``) at any depth.\n:param is_complex: Whether the field's annotation is or contains a Pydantic\n    ``BaseModel`` subclass (true for nested submodels).\n:param has_override: Whether an **active** row in the ``settingoverride``\n    table applies to this ``(setting_class, key)`` pair. An inactive row is\n    skipped by the cache loader, so the served value falls back to the\n    declared default and reporting it as overridden would tell the UI a\n    field is overridden while showing it that default. A nested row also\n    marks every canonical prefix of its chain, so a parent reports ``True``\n    when only a deeper leaf carries a row.\n:param is_advanced: Whether the setting is flagged ``advanced`` so the UI can\n    present it separately from everyday settings. Display-only:\n    it does not affect PATCH/DELETE eligibility.\n:param is_applicable: Whether the setting applies under current runtime state\n    (e.g. the active auth provider). ``False`` lets the UI present the field\n    as inert. Display-only, like ``is_advanced``: it does not block\n    PATCH/DELETE server-side; the runtime gate is the real enforcement.\n:param options: Selectable enum members for dropdown UIs, or ``None`` when\n    the field is not an ``Enum`` annotation. Aliased members are excluded.\n:param updated_at: When the override applying to this key was last saved,\n    falling back to the row's creation time for a row written before the\n    stamp was recorded. ``None`` when ``has_override`` is ``False``.\n    Timestamps carry second granularity.\n:param updated_by: The username that last saved that override, or ``None``\n    both when no override applies and when the row predates the actor\n    column. A key can draw on several rows (a nested parent reporting on its\n    leaves), in which case the pair comes from the row carrying the latest\n    timestamp. Two writes landing within the same second are\n    indistinguishable by timestamp, and the pair reported is then whichever\n    contributing row was created later, which need not be the one written\n    later.",
+        "description": "Represent a single setting's metadata and current value.\n\n:param setting_class: The in-process identifier of the class the field\n    belongs to: the Pydantic class ``__name__`` (e.g. ``ExtensionsSettings``),\n    the same value the settings router takes as its ``{setting_class}`` path\n    segment. It is not the value stored in ``settingoverride.setting_class``;\n    that column holds the storage token ``setting_class_token`` derives from\n    the class (e.g. ``EXTENSIONS_SETTINGS``), so a query against the table\n    must filter on the token, not on this value.\n:param key: The field name on the settings class.\n:param key_path: Carry the canonical key segments for ``key`` such that\n    ``\"__\".join(key_path) == key``.\n:param value: The current value visible through the proxy, dumped to a\n    JSON-safe shape via the field's annotation. ``SecretStr`` fields are\n    redacted to ``\"**********\"``.\n:param default_value: The field's declared default value, dumped via the\n    same JSON serialiser. ``None`` when no default exists.\n:param type: A human-readable representation of the field's declared\n    annotation (for operator visibility; validation uses the actual\n    ``FieldInfo``).\n:param reload: The reload classification (HOT or NOT_OVERRIDABLE).\n:param description: The field's free-text description, or ``None``.\n:param is_secret: Whether the field's annotation contains a Pydantic secret\n    (``SecretStr`` / ``SecretBytes``) at any depth.\n:param is_complex: Whether the field's annotation is or contains a Pydantic\n    ``BaseModel`` subclass (true for nested submodels).\n:param has_override: Whether an **active** row in the ``settingoverride``\n    table applies to this ``(setting_class, key)`` pair. An inactive row is\n    skipped by the cache loader, so the served value falls back to the\n    declared default and reporting it as overridden would tell the UI a\n    field is overridden while showing it that default. A nested row also\n    marks every canonical prefix of its chain, so a parent reports ``True``\n    when only a deeper leaf carries a row.\n:param is_advanced: Whether the setting is flagged ``advanced`` so the UI can\n    present it separately from everyday settings. Display-only:\n    it does not affect PATCH/DELETE eligibility.\n:param is_applicable: Whether the setting applies under current runtime state\n    (e.g. the active auth provider). ``False`` lets the UI present the field\n    as inert. Display-only, like ``is_advanced``: it does not block\n    PATCH/DELETE server-side; the runtime gate is the real enforcement.\n:param options: Selectable enum members for dropdown UIs, or ``None`` when\n    the field is not an ``Enum`` annotation. Aliased members are excluded.\n:param updated_at: When the override applying to this key was last saved,\n    falling back to the row's creation time for a row written before the\n    stamp was recorded. ``None`` when ``has_override`` is ``False``.\n    Timestamps carry second granularity.\n:param updated_by: The username that last saved that override, or ``None``\n    both when no override applies and when the row predates the actor\n    column. A key can draw on several rows (a nested parent reporting on its\n    leaves), in which case the pair comes from the row carrying the latest\n    timestamp. Two writes landing within the same second are\n    indistinguishable by timestamp, and the pair reported is then whichever\n    contributing row was created later, which need not be the one written\n    later.",
         "properties": {
           "default_value": {
             "title": "Default Value"
@@ -3680,7 +3680,7 @@
       },
       "framework__StringField": {
         "additionalProperties": false,
-        "description": "Represent a single-line string input field.\n\n:param field_type: The discriminator literal; always ``\"string\"`` for this\n    class. Serialised as the JSON key ``\"type\"``.\n:type field_type: Literal[\"string\"]\n:param min_length: Optional minimum character length. Defaults to\n    ``None``.\n:type min_length: int | None\n:param max_length: Optional maximum character length. Defaults to\n    ``None``.\n:type max_length: int | None\n:param pattern: Optional regular expression the value must match.\n    Defaults to ``None``.\n:type pattern: NonEmptyStr | None\n:param placeholder: Optional placeholder text displayed when the field is\n    empty. Defaults to ``None``.\n:type placeholder: NonEmptyStr | None",
+        "description": "Represent a single-line string input field.\n\n:param field_type: The discriminator literal; always ``\"string\"`` for this\n    class. Serialised as the JSON key ``\"type\"``.\n:param min_length: Optional minimum character length. Defaults to\n    ``None``.\n:param max_length: Optional maximum character length. Defaults to\n    ``None``.\n:param pattern: Optional regular expression the value must match.\n    Defaults to ``None``.\n:param placeholder: Optional placeholder text displayed when the field is\n    empty. Defaults to ``None``.\n:param sensitive: Whether the value is a credential, which the client must\n    not display as typed. Defaults to ``False``.",
         "properties": {
           "default": {
             "anyOf": [
@@ -3830,6 +3830,11 @@
               }
             ],
             "title": "Requires"
+          },
+          "sensitive": {
+            "default": false,
+            "title": "Sensitive",
+            "type": "boolean"
           },
           "type": {
             "const": "string",
@@ -4007,7 +4012,7 @@
       },
       "framework__TextAreaField": {
         "additionalProperties": false,
-        "description": "Represent a multi-line string input field.\n\n:param field_type: The discriminator literal; always ``\"textarea\"`` for\n    this class. Serialised as the JSON key ``\"type\"``.\n:type field_type: Literal[\"textarea\"]\n:param rows: Optional number of visible text rows. Defaults to ``None``.\n:type rows: int | None\n:param placeholder: Optional placeholder text displayed when the field is\n    empty. Defaults to ``None``.\n:type placeholder: NonEmptyStr | None",
+        "description": "Represent a multi-line string input field.\n\n:param field_type: The discriminator literal; always ``\"textarea\"`` for\n    this class. Serialised as the JSON key ``\"type\"``.\n:param rows: Optional number of visible text rows. Defaults to ``None``.\n:param placeholder: Optional placeholder text displayed when the field is\n    empty. Defaults to ``None``.",
         "properties": {
           "default": {
             "anyOf": [
@@ -4361,6 +4366,28 @@
             ],
             "title": "Last Error"
           },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/om_inventory__ScanFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run Id"
+          },
           "last_success_at": {
             "anyOf": [
               {
@@ -4465,11 +4492,16 @@
         "type": "object"
       },
       "om_inventory__ProbeCounts": {
-        "description": "Count what one sweep reached.\n\n``resolved`` versus ``answered`` is the diagnostic split: the first says the\nservice mapped to a live executor host, the second says the node ran the payload.\nA sweep with ``resolved=9, answered=0`` is a healthy mapping and broken executors.\n\n:param services_total: MongoDB services inventory reported.\n:param services_resolved: ...of which mapped to a live executor host.\n:param services_orphaned: ...of which did not. Not an error.\n:param services_answered: Services that returned a usable probe record.\n:param hosts_total: Hosts in scope this sweep, service or no service.\n:param hosts_probeable: ...of which had a usable executor to dispatch to.\n:param hosts_answered: Hosts that returned a usable record.",
+        "description": "Count what one sweep reached.\n\n``resolved`` versus ``answered`` is the diagnostic split: the first says the\nservice mapped to a live executor host, the second says the node ran the payload.\nA sweep with ``resolved=9, answered=0`` is a healthy mapping and broken executors.\n\n:param services_total: MongoDB services inventory reported.\n:param services_resolved: ...of which mapped to a live executor host.\n:param services_orphaned: ...of which did not. Not an error.\n:param services_answered: Services that returned a usable probe record.\n:param hosts_total: Hosts in scope this sweep, service or no service.\n:param hosts_probeable: ...of which had a usable executor to dispatch to.\n:param hosts_answered: Hosts that returned a usable record.\n:param hosts_finished: Hosts whose scan has come back, answered or not, out of\n    ``hosts_probeable``; counted up while the sweep is still running.",
         "properties": {
           "hosts_answered": {
             "default": 0,
             "title": "Hosts Answered",
+            "type": "integer"
+          },
+          "hosts_finished": {
+            "default": 0,
+            "title": "Hosts Finished",
             "type": "integer"
           },
           "hosts_probeable": {
@@ -4696,6 +4728,13 @@
             ],
             "title": "Error"
           },
+          "failing_nodes": {
+            "items": {
+              "$ref": "#/components/schemas/om_inventory__ProbeRunFailingNode"
+            },
+            "title": "Failing Nodes",
+            "type": "array"
+          },
           "finished_at": {
             "anyOf": [
               {
@@ -4753,8 +4792,27 @@
         "title": "ProbeRunDetail",
         "type": "object"
       },
+      "om_inventory__ProbeRunFailingNode": {
+        "description": "Name one node a sweep failed to scan.\n\n:param node_id: PMM's node id.\n:param name: The node's name as the sweep recorded it, or its node id where the\n    sweep recorded none.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "name"
+        ],
+        "title": "ProbeRunFailingNode",
+        "type": "object"
+      },
       "om_inventory__ProbeRunResponse": {
-        "description": "Carry one sweep's record.\n\n:param run_id: The sweep's id.\n:param status: ``running`` / ``success`` / ``partial`` / ``failed``.\n:param started_at: When it began.\n:param finished_at: When it reached a terminal status; ``None`` while running.\n:param counts: What it reached.\n:param scope: The hosts it was asked to refresh, or ``None`` for the whole\n    estate. Without it the counters cannot be read: \"9 of 13 answered\" means\n    something different when the run was only ever asked about one host.\n:param error: The failure detail when the sweep itself raised.",
+        "description": "Carry one sweep's record.\n\n:param run_id: The sweep's id.\n:param status: ``running`` / ``success`` / ``partial`` / ``failed``.\n:param started_at: When it began.\n:param finished_at: When it reached a terminal status; ``None`` while running.\n:param counts: What it reached.\n:param scope: The hosts it was asked to refresh, or ``None`` for the whole\n    estate. Without it the counters cannot be read: \"9 of 13 answered\" means\n    something different when the run was only ever asked about one host.\n:param error: The failure detail when the sweep itself raised.\n:param failing_nodes: The nodes whose scan failed in this sweep, on the node's own\n    dispatch or on any service on it, sorted by name. A node with no automation\n    agent is not one: nothing was dispatched to it.",
         "properties": {
           "counts": {
             "$ref": "#/components/schemas/om_inventory__ProbeCounts"
@@ -4769,6 +4827,13 @@
               }
             ],
             "title": "Error"
+          },
+          "failing_nodes": {
+            "items": {
+              "$ref": "#/components/schemas/om_inventory__ProbeRunFailingNode"
+            },
+            "title": "Failing Nodes",
+            "type": "array"
           },
           "finished_at": {
             "anyOf": [
@@ -4820,6 +4885,25 @@
         "title": "ProbeRunResponse",
         "type": "object"
       },
+      "om_inventory__ScanFailure": {
+        "description": "Enumerate the kinds of scan failure a reader can be told what to do about.\n\nStored beside ``last_error`` rather than parsed back out of it: the message mixes\nthe node's own stderr, exception text and task API detail, and its wording must\nstay free to change without breaking whoever keys a resolution hint off it.\n\nA node with no usable executor has no code here, because it is never dispatched\nto and so never fails; its state is the ``executor`` block every host row\nalready carries.\n\n:cvar DISPATCH_REJECTED: The scan was never queued: the tasks API refused it or\n    could not be reached.\n:cvar NOT_STARTED: The scan was queued but had not started when the wait ran out.\n:cvar TIMED_OUT: The scan started but had not finished when the wait ran out.\n:cvar BLOCKED: A scan given up on could not be stopped, and will block this\n    node's next one until it is.\n:cvar ENVIRONMENT_SETUP_FAILED: The node could not prepare the scan's Python\n    environment: no ``python3``, no ``venv`` module, or ``pip`` could not install\n    the scan's one dependency.\n:cvar SCAN_CRASHED: The scan itself failed on the node.\n:cvar SCAN_LOST: The scan was lost, stopped or went stale before it reported -\n    usually because the node or its agent restarted.\n:cvar NO_OUTPUT: The scan finished but reported nothing for this node or service.\n:cvar DATABASE_UNREACHABLE: The scan ran but could not connect to the database.\n:cvar DATABASE_AUTH_FAILED: The scan ran but the database rejected its\n    credentials.\n:cvar DATABASE_ERROR: The scan ran but the database failed it some other way.\n:cvar UNKNOWN: Anything not recognised. A reader gets the raw detail and no hint,\n    rather than a guessed one.",
+        "enum": [
+          "dispatch_rejected",
+          "not_started",
+          "timed_out",
+          "blocked",
+          "environment_setup_failed",
+          "scan_crashed",
+          "scan_lost",
+          "no_output",
+          "database_unreachable",
+          "database_auth_failed",
+          "database_error",
+          "unknown"
+        ],
+        "title": "ScanFailure",
+        "type": "string"
+      },
       "om_inventory__ServiceResponse": {
         "description": "Report one MongoDB service PMM has registered, as OM currently holds it.\n\nKeyed on **PMM's** service id, which is the whole benefit of storing it that way:\nthe path and the payload carry the id every consumer already has, with nothing to\ntranslate on either side.\n\n:param service_id: PMM's service id.\n:param node_id: The host it runs on.\n:param name: The service name as PMM registered it.\n:param port: The port it listens on.\n:param role: What the probe found it to be, when a probe determined one.",
         "properties": {
@@ -4867,6 +4951,28 @@
               }
             ],
             "title": "Last Error"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/om_inventory__ScanFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run Id"
           },
           "last_success_at": {
             "anyOf": [

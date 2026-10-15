@@ -29,6 +29,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.celery.schedules import INTERVAL_TIMEZONE, NEXT_RUNS_PREVIEW_COUNT
 from app.core.pagination import DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET
 from app.core.utils.date_time import utc_now
+from app.extensions.apps.meta_keys import SERVICE_ID_META_KEY
+from app.tasks import reference_fence
 from app.tasks.crud import TaskHistoryManager, TaskManager
 from app.tasks.models import (
     SYSTEM_USER,
@@ -37,7 +39,10 @@ from app.tasks.models import (
     TaskHistoryStatusEnum,
     TaskWrite,
 )
+from app.tasks.reference_fence import hold_reference_collection_fence
+from tests.app.advisory_locks import isolate_reference_fence
 from tests.app.factories import TaskFactory
+from tests.app.tasks_api_client import tasks_api_client
 
 CELERY_TASK_NAME = "app.tasks.celery.execute_task_by_name"
 PAGED_PERIODIC_TOTAL = 5
@@ -1363,3 +1368,49 @@ class TestPreviewSchedule:
             (await celery_beat_session.execute(select(PeriodicTask))).scalars().all()
         )
         assert after == before
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_update_periodic_task_answers_503_while_a_batch_holds_the_fence(
+    mocker,
+    postgres_session_maker,
+    celery_beat_session,
+    created_periodic_task,
+    regular_user,
+):
+    """Refuse a schedule update that would add a service reference mid-batch.
+
+    The fence lives in the tasks database while the schedule lives in the beat
+    database, so the tasks session is real PostgreSQL and the beat one need not
+    be. The bound is shortened so an unfenced route writes at once instead.
+    """
+    isolate_reference_fence(mocker)
+    mocker.patch.object(
+        reference_fence, "REFERENCE_FENCE_TIMEOUT", timedelta(milliseconds=200)
+    )
+    original_kwargs = created_periodic_task.kwargs
+    payload = {
+        "name": created_periodic_task.name,
+        "task": "my-backup-task",
+        "start_time": None,
+        "enabled": True,
+        "description": "",
+        "interval": {"every": 10, "period": "minutes"},
+        "execute_request": {"meta": {SERVICE_ID_META_KEY: 42}},
+    }
+
+    async with (
+        postgres_session_maker() as fence_session,
+        hold_reference_collection_fence(fence_session),
+        tasks_api_client(
+            regular_user, postgres_session_maker, celery_beat_session
+        ) as client,
+    ):
+        response = await client.put(
+            f"/periodic/{created_periodic_task.id}", json=payload
+        )
+
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    await celery_beat_session.refresh(created_periodic_task)
+    assert created_periodic_task.kwargs == original_kwargs

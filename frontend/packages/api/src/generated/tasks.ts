@@ -244,30 +244,7 @@ export interface paths {
      */
     get: operations['tasks_list_task_history_history__get'];
     put?: never;
-    /**
-     * Create Task History
-     * @description Create a new task history.
-     *
-     *     Neither ``has_logs`` nor ``log_capture`` is populated on this response — a
-     *     row that was just created has no chunk-store entry, legacy tracking blob or
-     *     capture verdict yet, so both fall back to their serialization defaults.
-     *
-     *     A caller-supplied ``failure_reason`` is routed back through
-     *     :meth:`TaskHistory.set_failure_reason` so the single-line and length bounds
-     *     hold on every write path, not only on the reasons PMM Extensions composes itself.
-     *
-     *     The saved row is re-read with ``task`` joined and ``execution_request``
-     *     undeferred: ``save`` re-defers that column, and the response model requires
-     *     both, so serializing the save's own return value attempts lazy IO from an
-     *     async context.
-     *
-     *     :param session: The SQLAlchemy asynchronous session.
-     *     :param task: The task history to persist.
-     *     :return: The saved task history record.
-     *     :raises HTTPUnprocessableEntityException: If ``failure_reason`` conflicts
-     *         with a status that carries no operator-facing summary.
-     */
-    post: operations['tasks_create_task_history_history__post'];
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -642,26 +619,6 @@ export interface paths {
     get: operations['tasks_get_task_stats_stats__task__get'];
     put?: never;
     post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/transform/': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /**
-     * Transform Payload
-     * @description Transform a payload string into a dictionary.
-     */
-    post: operations['tasks_transform_payload_transform__post'];
     delete?: never;
     options?: never;
     head?: never;
@@ -1319,7 +1276,13 @@ export interface components {
      * SettingResponse
      * @description Represent a single setting's metadata and current value.
      *
-     *     :param setting_class: The Pydantic class ``__name__`` the field belongs to.
+     *     :param setting_class: The in-process identifier of the class the field
+     *         belongs to: the Pydantic class ``__name__`` (e.g. ``ExtensionsSettings``),
+     *         the same value the settings router takes as its ``{setting_class}`` path
+     *         segment. It is not the value stored in ``settingoverride.setting_class``;
+     *         that column holds the storage token ``setting_class_token`` derives from
+     *         the class (e.g. ``EXTENSIONS_SETTINGS``), so a query against the table
+     *         must filter on the token, not on this value.
      *     :param key: The field name on the settings class.
      *     :param key_path: Carry the canonical key segments for ``key`` such that
      *         ``"__".join(key_path) == key``.
@@ -1560,6 +1523,14 @@ export interface components {
        * Format: date-time
        */
       created_at?: string;
+      /**
+       * Duration
+       * @description Return the duration of the task execution in seconds.
+       *
+       *     :return: The duration in seconds, or None if not available.
+       *     :rtype: float | None
+       */
+      readonly duration: number | null;
       /** Executed By */
       executed_by?: string | null;
       execution_request: components['schemas']['TaskExecutionRequest'];
@@ -1611,6 +1582,12 @@ export interface components {
     /**
      * TaskHistoryResponse
      * @description Represent a task history API response.
+     *
+     *     ``execution_request.meta.args`` is not published as stored. It is the masked
+     *     copy the submitter recorded under ``meta._masked_args``, which equals the
+     *     arguments only when none of them is a credential, or ``<withheld>`` when the
+     *     run recorded arguments and no such copy. Arguments this deployment could not
+     *     read stay ``null``, and an empty value is published as it stands.
      *
      *     :param execution_request: The request that triggered the task execution.
      *     :param status: The status of the task execution.
@@ -1945,34 +1922,6 @@ export interface components {
       /** Run Result Recorder */
       run_result_recorder?: string | null;
     };
-    /**
-     * TransformPayloadRequest
-     * @description Define the request body for the /transform/ API route.
-     *
-     *     :param payload: The job specification payload to be parsed.
-     *     :type payload: str | bytes
-     *     :param fmt: The format of the payload, which can be "hcl", "json", or "yaml".
-     *     :type fmt: Literal["hcl", "json", "yaml"]
-     */
-    TransformPayloadRequest: {
-      /**
-       * Fmt
-       * @enum {string}
-       */
-      fmt: 'hcl' | 'json' | 'yaml';
-      /** Payload */
-      payload: string;
-    };
-    /**
-     * TransformPayloadResponse
-     * @description Define the parsed job specification returned from ``POST /transform/``.
-     *
-     *     The concrete keys depend on the executor backend; clients should treat values as
-     *     untyped JSON except where they validate domain-specific job fields themselves.
-     */
-    TransformPayloadResponse: {
-      [key: string]: unknown;
-    };
     /** ValidationError */
     ValidationError: {
       /** Context */
@@ -2299,39 +2248,6 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['PaginatedResponse_TaskHistoryResponse_'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  tasks_create_task_history_history__post: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TaskHistory'];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['TaskHistoryResponse'];
         };
       };
       /** @description Validation Error */
@@ -2858,41 +2774,6 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['TaskStats'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  tasks_transform_payload_transform__post: {
-    parameters: {
-      query?: {
-        backend?: components['schemas']['TaskBackendEnum'];
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TransformPayloadRequest'];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['TransformPayloadResponse'];
         };
       };
       /** @description Validation Error */

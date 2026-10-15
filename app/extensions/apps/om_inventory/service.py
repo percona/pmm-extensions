@@ -32,8 +32,10 @@ live until there is a second caller to justify one.
 
 import asyncio
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field as dc_field
+from datetime import datetime, timedelta, UTC
 from typing import Any
 from uuid import UUID
 
@@ -58,6 +60,7 @@ from app.extensions.apps.om_inventory.crud import (
     upsert_service,
 )
 from app.extensions.apps.om_inventory.dispatch import (
+    bound_error,
     HostProbeResult,
     probe_all,
     record_key,
@@ -81,10 +84,13 @@ from app.extensions.apps.om_inventory.models import (
     NodeResolution,
     ProbeRun,
     ProbeRunStatus,
+    ScanFailure,
 )
+from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
 from app.extensions.config import extensions_settings
 from app.extensions.db import get_async_session_maker
 from app.inventory.config import inventory_settings
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +114,7 @@ async def _build_clients() -> tuple[RemoteAPI, RemoteAPI]:
         endpoint=extensions_settings.TASKS_ENDPOINT,
         ssl_cafile=settings.SSL_CAFILE,
         logger_name="tasks_api",
+        **TASKS_CLIENT_LOG_POLICY,
     )
     return inventory_api, tasks_api
 
@@ -197,6 +204,75 @@ def _record_for(entry: Any, host_results: dict[str, HostProbeResult]) -> dict | 
     return result.records.get(record_key(entry.service.external_id, entry.service.name))
 
 
+#: pymongo's exception classes for "could not reach the server at all", as the
+#: payload reports them in a failed record's ``error_type``.
+_UNREACHABLE_ERRORS = frozenset(
+    {
+        "AutoReconnect",
+        "ConnectionFailure",
+        "NetworkTimeout",
+        "ServerSelectionTimeoutError",
+    }
+)
+#: MongoDB's ``AuthenticationFailed``.
+_AUTHENTICATION_FAILED = 18
+#: What a payload whose interpreter cannot import its one dependency reports. The
+#: venv was built but ``pymongo`` is not in it, which is an environment failure, not
+#: a database one.
+_IMPORT_ERRORS = frozenset({"ImportError", "ModuleNotFoundError"})
+
+
+def classify_record_failure(record: dict[str, Any]) -> ScanFailure:
+    """Return what kind of failure a record the payload marked failed is.
+
+    Keyed off the exception type and server code the payload records beside the
+    message, never the message itself.
+
+    :param record: A record with ``status: failed``.
+    :return: The failure's kind.
+    """
+    error_type = record.get("error_type")
+    if error_type == "OperationFailure" and (
+        record.get("error_code") == _AUTHENTICATION_FAILED
+    ):
+        return ScanFailure.DATABASE_AUTH_FAILED
+    if error_type in _UNREACHABLE_ERRORS:
+        return ScanFailure.DATABASE_UNREACHABLE
+    if error_type in _IMPORT_ERRORS:
+        return ScanFailure.ENVIRONMENT_SETUP_FAILED
+    return ScanFailure.DATABASE_ERROR
+
+
+def _record_failure(record: dict[str, Any] | None) -> tuple[str, ScanFailure] | None:
+    """Return why a probe record is a failed attempt, or ``None`` if it is not.
+
+    The payload prints a record for every target, including one it could not query -
+    a refused connection or a rejected password - and marks that record
+    ``status: failed``. A failed record is not an answer: the caller stores it as a
+    failed attempt and keeps the last good document.
+
+    :param record: The probe record, or ``None`` when there was none.
+    :return: The failure detail and its kind, or ``None`` for a usable record or no
+        record.
+    """
+    if not record or record.get("status") != STATUS_FAILED:
+        return None
+    error = str(record.get("error") or "no detail was reported")
+    return (
+        bound_error(f"could not query the database: {error}"),
+        classify_record_failure(record),
+    )
+
+
+def _answered(record: dict[str, Any] | None) -> bool:
+    """Return whether a service's probe record is a usable answer.
+
+    :param record: The probe record, or ``None`` when there was none.
+    :return: ``True`` for a record that is not a failed attempt.
+    """
+    return bool(record) and _record_failure(record) is None
+
+
 #: Probe-record fields that describe the **host** rather than any service on it.
 #:
 #: Lifted from the payload's own host record, which it prints once per dispatch
@@ -245,15 +321,11 @@ HOST_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("data_dir_free_bytes", ("install_readiness", "data_dir_free_bytes")),
 )
 
-#: Probe-record fields that belong to one **service**.
-SERVICE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("probe_status", ("status",)),
+#: The :data:`SERVICE_FIELDS` read off the host rather than out of the database: the
+#: installed binary and the process serving the port. A scan that cannot query the
+#: database still collects these, so a failed attempt refreshes them.
+PROCESS_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("installed_version", ("binary_version",)),
-    ("version", ("database", "db_version")),
-    ("git_version", ("database", "git_version")),
-    ("vendor", ("database", "vendor")),
-    ("storage_engine", ("database", "storage_engine")),
-    ("replication_set", ("database", "set_name")),
     ("config_path", ("process", "config_path")),
     ("argv", ("process", "argv")),
     ("server_process", ("process", "program")),
@@ -261,11 +333,100 @@ SERVICE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("uptime_seconds", ("process", "uptime_sec")),
 )
 
+PROBE_STATUS_FIELD: tuple[str, tuple[str, ...]] = ("probe_status", ("status",))
+
+#: Probe-record fields that belong to one **service**.
+SERVICE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    PROBE_STATUS_FIELD,
+    ("version", ("database", "db_version")),
+    ("git_version", ("database", "git_version")),
+    ("vendor", ("database", "vendor")),
+    ("storage_engine", ("database", "storage_engine")),
+    ("replication_set", ("database", "set_name")),
+    *PROCESS_FIELDS,
+)
+
+#: What a failed attempt refreshes on a service's stored document: its probe status,
+#: so the document does not keep the last good scan's ``ok``, and the
+#: :data:`PROCESS_FIELDS`.
+FAILED_ATTEMPT_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    PROBE_STATUS_FIELD,
+    *PROCESS_FIELDS,
+)
+
+#: How far past the moment a document is built a record's own ``collected_at`` may
+#: lie and still be kept: the executor host's clock supplies it, and a clock this
+#: close is trusted rather than corrected.
+COLLECTED_AT_SKEW = timedelta(seconds=60)
+
+
+def _lift(
+    record: dict[str, Any], fields: tuple[tuple[str, tuple[str, ...]], ...]
+) -> dict[str, Any]:
+    """Lift ``fields`` out of a probe record, leaving out the ones it has no value for.
+
+    :param record: One probe record.
+    :param fields: The ``(key, path)`` pairs to lift out of it.
+    :return: The lifted values, keyed as ``fields`` names them.
+    """
+    lifted: dict[str, Any] = {}
+    for key, path in fields:
+        value = _dig(record, path)
+        if value is None or value in ("", []):
+            continue
+        lifted[key] = value
+    return lifted
+
+
+def _process_facts(record: dict[str, Any]) -> dict[str, Any]:
+    """Lift :data:`FAILED_ATTEMPT_FIELDS` out of a failed record, ``None`` where absent.
+
+    ``None`` rather than absent, so that
+    :func:`~app.extensions.apps.om_inventory.crud.upsert_service` drops what the last
+    good scan saw of a process that has since stopped, its ``argv`` and uptime among
+    them, instead of keeping it beside ``server_running: false``.
+
+    :param record: The failed probe record.
+    :return: Every :data:`FAILED_ATTEMPT_FIELDS` key, with its value or ``None``.
+    """
+    lifted = _lift(record, FAILED_ATTEMPT_FIELDS)
+    return {key: lifted.get(key) for key, _ in FAILED_ATTEMPT_FIELDS}
+
+
+def _record_collected_at(record: dict[str, Any], fallback: str) -> str:
+    """Read when a probe record was collected, as ISO 8601 UTC.
+
+    The payload stamps each record with the epoch seconds it was collected at, which
+    can be minutes after the sweep began: enumeration retries, and probes queued
+    behind one another, all come between the two. That value is kept, normalised to
+    the ISO 8601 string ``observed`` has always carried, whenever it is usable: a
+    positive count of seconds no later than now plus :data:`COLLECTED_AT_SKEW`.
+    Anything else is not clamped but replaced by ``fallback`` whole, because a value
+    the executor's clock got that wrong says nothing about when the probe ran.
+
+    "Now" rather than the sweep start bounds it, since a probe answering after the
+    sweep began is exactly the observation worth keeping.
+
+    :param record: One probe record.
+    :param fallback: The sweep timestamp, ISO 8601, used when the record carries no
+        usable ``collected_at``.
+    :return: The record's own ``collected_at`` as ISO 8601 UTC, or ``fallback``.
+    """
+    value = record.get("collected_at")
+    # ``bool`` is an ``int``, and ``True`` is not a timestamp.
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return fallback
+    latest = utc_now() + COLLECTED_AT_SKEW
+    # Written so NaN, which compares false either way, falls back too.
+    if not 0 < value <= latest.timestamp():
+        return fallback
+    return datetime.fromtimestamp(value, UTC).replace(microsecond=0).isoformat()
+
 
 def build_document(
     record: dict[str, Any],
     fields: tuple[tuple[str, tuple[str, ...]], ...],
-    collected_at: str,
+    fallback_collected_at: str,
 ) -> dict[str, Any]:
     """Build one ``observed`` document out of a probe record.
 
@@ -274,18 +435,21 @@ def build_document(
     differ is the row — a host can be reachable while a mongod on it is not, and those
     are already two rows.
 
+    It is when *this record* was collected, read off the record itself, so two records
+    in one sweep collected at different times keep different values. The sweep
+    timestamp lands here only when the record carries no usable one of its own; see
+    :func:`_record_collected_at`.
+
     :param record: One probe record.
     :param fields: The ``(key, path)`` pairs to lift out of it.
-    :param collected_at: When the probe ran, ISO 8601.
+    :param fallback_collected_at: When the sweep began, ISO 8601, stored in place of a
+        missing or unusable record timestamp.
     :return: The document, always carrying at least ``collected_at``.
     """
-    document: dict[str, Any] = {"collected_at": collected_at}
-    for key, path in fields:
-        value = _dig(record, path)
-        if value is None or value in ("", []):
-            continue
-        document[key] = value
-    return document
+    return {
+        "collected_at": _record_collected_at(record, fallback_collected_at),
+        **_lift(record, fields),
+    }
 
 
 @dataclass
@@ -313,6 +477,8 @@ class SweepOutcome:
     :param service_errors: Why a service did not answer, keyed by PMM's service id.
         Only for services a run actually attempted: an entity nobody targeted must
         not have its timestamps touched at all.
+    :param service_process_facts: What a failed record still refreshes on a service's
+        document, keyed by PMM's service id; see :func:`_process_facts`.
     :param seen: ``(service, node_id)`` for every service PMM knows that resolved to
         a host in scope, orphans included — all of them get a row.
     :param attempted: PMM's service ids for the subset this run actually probed. The
@@ -328,6 +494,10 @@ class SweepOutcome:
         dispatch's own error where it had one, and otherwise that it answered nothing;
         the estate row and the receipt both read it, so the two cannot give an
         operator two different reasons for one failure.
+    :param service_error_codes: What kind of failure each of ``service_errors`` is,
+        keyed the same way.
+    :param host_error_codes: What kind of failure each of ``host_errors`` is, keyed
+        the same way.
     """
 
     total: int = 0
@@ -340,10 +510,35 @@ class SweepOutcome:
     service_documents: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
     service_roles: dict[str, str] = dc_field(default_factory=dict)
     service_errors: dict[str, str] = dc_field(default_factory=dict)
+    service_process_facts: dict[str, dict[str, Any]] = dc_field(default_factory=dict)
     seen: list[tuple[InventoryService, str]] = dc_field(default_factory=list)
     attempted: set[str] = dc_field(default_factory=set)
     dispatched: set[str] = dc_field(default_factory=set)
     host_errors: dict[str, str] = dc_field(default_factory=dict)
+    service_error_codes: dict[str, ScanFailure] = dc_field(default_factory=dict)
+    host_error_codes: dict[str, ScanFailure] = dc_field(default_factory=dict)
+
+    def fail_service(self, service_id: str, error: str, code: ScanFailure) -> None:
+        """Record why a service did not answer, and what kind of failure that is.
+
+        One call for both, so a service cannot end up with a reason and no code.
+
+        :param service_id: PMM's service id.
+        :param error: The failure detail.
+        :param code: Its kind.
+        """
+        self.service_errors[service_id] = error
+        self.service_error_codes[service_id] = code
+
+    def fail_host(self, node_id: str, error: str, code: ScanFailure) -> None:
+        """Record why a host did not answer, and what kind of failure that is.
+
+        :param node_id: PMM's node id.
+        :param error: The failure detail.
+        :param code: Its kind.
+        """
+        self.host_errors[node_id] = error
+        self.host_error_codes[node_id] = code
 
 
 #: How long to wait for PMM Extensions' own APIs before calling a sweep failed, and how often
@@ -410,7 +605,103 @@ async def enumerate_estate(
     raise AssertionError("unreachable: the loop returns or raises")
 
 
-async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOutcome:
+def _probeable_hosts_per_executor(hosts: list[InventoryHost]) -> Counter[str]:
+    """Count the hosts each usable executor serves.
+
+    Two hosts can share one executor, since :func:`build_hosts` also matches by
+    address, and one dispatch then scans both.
+
+    :param hosts: The hosts in scope.
+    :return: How many hosts with a usable executor each executor serves.
+    """
+    return Counter(
+        host.executor_host for host in hosts if host.has_executor and host.executor_host
+    )
+
+
+class SweepProgress:
+    """Report how far a sweep has got; this base records nothing."""
+
+    async def started(self, hosts: list[InventoryHost]) -> None:
+        """Note the hosts the sweep covers, once it knows them.
+
+        :param hosts: The hosts in scope.
+        """
+
+    async def host_done(self, result: HostProbeResult) -> None:
+        """Note one executor's scan as come back.
+
+        :param result: Its outcome.
+        """
+
+
+class RunProgress(SweepProgress):
+    """Write a running sweep's progress onto its run row as the sweep makes it.
+
+    Without it the row says nothing but ``running`` until the sweep ends, tens of
+    seconds later. The counts are kept here and written whole, under a lock, rather
+    than incremented in the database: every result comes back on this event loop, so
+    these counts are the true ones and the writes cannot interleave. A result finishes
+    every host its executor serves, so ``hosts_finished`` counts the same hosts as
+    ``hosts_probeable`` and reaches it when the last one comes back. Best-effort: a
+    write that fails is logged and the sweep carries on, since progress is for a
+    reader and the outcome is the record.
+
+    :param run_id: The run being swept.
+    """
+
+    def __init__(self, run_id: UUID) -> None:
+        """Track one run.
+
+        :param run_id: The run being swept.
+        """
+        self._run_id = run_id
+        self._total = 0
+        self._per_executor: Counter[str] = Counter()
+        self._finished = 0
+        self._lock = asyncio.Lock()
+
+    async def started(self, hosts: list[InventoryHost]) -> None:
+        """Record how many hosts the sweep covers, and which executors serve them.
+
+        :param hosts: The hosts in scope.
+        """
+        async with self._lock:
+            self._total = len(hosts)
+            self._per_executor = _probeable_hosts_per_executor(hosts)
+            await self._write()
+
+    async def host_done(self, result: HostProbeResult) -> None:
+        """Count every host the result's executor serves as come back.
+
+        :param result: One executor's outcome.
+        """
+        async with self._lock:
+            self._finished += self._per_executor[result.executor_host]
+            await self._write()
+
+    async def _write(self) -> None:
+        """Store the counts on the run row, logging rather than raising on failure."""
+        try:
+            async with get_async_session_maker()() as session:
+                run = await ProbeRunManager.get(session, id=self._run_id)
+                run.hosts_total = self._total
+                run.hosts_probeable = self._per_executor.total()
+                run.hosts_finished = self._finished
+                await ProbeRunManager.save(session, run)
+        except Exception:
+            logger.warning(
+                "OM inventory: could not record progress of sweep %s",
+                self._run_id,
+                exc_info=True,
+            )
+
+
+async def sweep(
+    observed_at: str,
+    node_ids: list[str] | None = None,
+    progress: SweepProgress | None = None,
+) -> SweepOutcome:
     """Map, probe and collect, without touching the run row.
 
     Split out so :func:`run_probe` reads as the lifecycle it is — create, work,
@@ -423,10 +714,14 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
     run did not attempt keeps every timestamp it had, so refreshing one host cannot
     make the rest of the estate look failed.
 
-    :param observed_at: When the sweep began, ISO 8601, stamped on every fact.
+    :param observed_at: When the sweep began, ISO 8601. It lands only in a document's
+        ``collected_at``, and only when the record carries no usable timestamp of its
+        own; the run row and the entity freshness columns are stamped separately.
     :param node_ids: The hosts to refresh, or ``None`` for the whole estate.
+    :param progress: Where to report how far the sweep has got, if anywhere.
     :return: What the sweep reached, collected and saw per service.
     """
+    progress = progress or SweepProgress()
     inventory_api, tasks_api = await _build_clients()
 
     # Both services authenticate; outside request context there is no user session to
@@ -445,17 +740,15 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
         hosts = build_hosts(nodes, services, executor_states)
         if node_ids:
             hosts, services, mapped = narrow_to_scope(hosts, services, mapped, node_ids)
+        await progress.started(hosts)
         # Every host with an executor is dispatched to, service or no service:
         # a machine with a PMM client and no database is the one an install
         # decision is about, and it has no service to be reached through.
         host_results = await probe_all(
             tasks_api,
             mapped,
-            executor_hosts=[
-                host.executor_host
-                for host in hosts
-                if host.has_executor and host.executor_host
-            ],
+            executor_hosts=_probeable_hosts_per_executor(hosts),
+            on_host_done=progress.host_done,
         )
 
     outcome = SweepOutcome(total=len(mapped), hosts=hosts, dispatched=set(host_results))
@@ -478,9 +771,16 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
             continue
         # The fallback is not decoration: a dispatch that succeeded and printed no
         # host line has no error of its own, and that *is* the finding.
-        outcome.host_errors[host.node_id] = (
-            result.error or "the host has an executor but returned no probe record"
-        )
+        if result.error:
+            outcome.fail_host(
+                host.node_id, result.error, result.error_code or ScanFailure.UNKNOWN
+            )
+        else:
+            outcome.fail_host(
+                host.node_id,
+                "the scan finished but reported nothing about this node",
+                ScanFailure.NO_OUTPUT,
+            )
 
     node_ids_by_host = _index_hosts(outcome)
 
@@ -492,7 +792,7 @@ async def sweep(observed_at: str, node_ids: list[str] | None = None) -> SweepOut
             outcome.orphaned += 1
         else:
             outcome.resolved += 1
-            if record:
+            if _answered(record):
                 outcome.answered += 1
 
         _record_entity(
@@ -547,7 +847,7 @@ def _build_receipt(
                 # inventory holds none.
                 "service_id": entry.service.external_id,
                 "service_name": entry.service.name,
-                "answered": bool(record),
+                "answered": _answered(record),
                 "error": outcome.service_errors.get(entry.service.external_id or ""),
             }
         )
@@ -664,7 +964,8 @@ def _record_entity(
     :param record: Its probe record, or ``None`` when it did not answer.
     :param host_result: The dispatch result for its executor host.
     :param node_ids: Node ids keyed by host name and address.
-    :param observed_at: When the sweep began, ISO 8601.
+    :param observed_at: When the sweep began, ISO 8601: the ``collected_at`` fallback
+        for a record carrying no usable timestamp of its own.
     """
     if entry.service.external_id is None:
         # No PMM service id, no row: the key is what the consumer joins on, and an
@@ -690,10 +991,28 @@ def _record_entity(
     outcome.attempted.add(entry.service.external_id)
 
     if record is None:
-        outcome.service_errors[entry.service.external_id] = (
-            host_result.error
-            if host_result and host_result.error
-            else "the host answered, but returned no record for this service"
+        if host_result and host_result.error:
+            outcome.fail_service(
+                entry.service.external_id,
+                host_result.error,
+                host_result.error_code or ScanFailure.UNKNOWN,
+            )
+        else:
+            outcome.fail_service(
+                entry.service.external_id,
+                "the node answered, but the scan reported nothing for this service",
+                ScanFailure.NO_OUTPUT,
+            )
+        return
+
+    failure = _record_failure(record)
+    if failure is not None:
+        # A failed attempt like any other: no document, so the last good one stays,
+        # and no role, so the one it last answered with is not blanked out. Only what
+        # it read off the host itself is refreshed.
+        outcome.fail_service(entry.service.external_id, *failure)
+        outcome.service_process_facts[entry.service.external_id] = _process_facts(
+            record
         )
         return
 
@@ -735,9 +1054,15 @@ async def finalise(
     # Hosts as well as services, because a sweep attempts both. A host-only refresh
     # would otherwise report "0 of 0 services", which reads exactly like a run that
     # did nothing — on the one host OM most exists to describe.
+    per_executor = _probeable_hosts_per_executor(outcome.hosts)
     finished.hosts_total = len(outcome.hosts)
-    finished.hosts_probeable = sum(1 for host in outcome.hosts if host.has_executor)
-    finished.hosts_answered = len(outcome.host_documents)
+    finished.hosts_probeable = per_executor.total()
+    finished.hosts_answered = sum(
+        per_executor[executor] for executor in outcome.host_documents
+    )
+    finished.hosts_finished = sum(
+        per_executor[executor] for executor in outcome.dispatched
+    )
     finished.nodes = outcome.nodes
     return await ProbeRunManager.save(session, finished)
 
@@ -776,6 +1101,9 @@ async def persist_estate(outcome: SweepOutcome, run_id: UUID) -> None:
                 # the hosts no probe was ever dispatched to.
                 executor=host.executor_document,
                 error=None if document else outcome.host_errors.get(host.node_id),
+                error_code=None
+                if document
+                else outcome.host_error_codes.get(host.node_id),
                 run_id=run_id,
                 attempted=attempted,
             )
@@ -794,6 +1122,8 @@ async def persist_estate(outcome: SweepOutcome, run_id: UUID) -> None:
                 role=outcome.service_roles.get(service_id),
                 observed=outcome.service_documents.get(service_id),
                 error=outcome.service_errors.get(service_id),
+                error_code=outcome.service_error_codes.get(service_id),
+                process_facts=outcome.service_process_facts.get(service_id),
                 run_id=run_id,
                 attempted=service_id in outcome.attempted,
             )
@@ -933,14 +1263,14 @@ async def run_probe(
         if blocking is not None:
             run.status = ProbeRunStatus.SKIPPED
             run.finished_at = utc_now()
-            run.error = conflict_detail(blocking, node_ids)
+            run.error = await conflict_detail(session, blocking, node_ids)
             await ProbeRunManager.save(session, run)
             logger.info("OM inventory: sweep %s skipped -- %s", run_id, run.error)
             return run_id
 
     observed_at = utc_now().isoformat()
     try:
-        outcome = await sweep(observed_at, node_ids)
+        outcome = await sweep(observed_at, node_ids, RunProgress(run_id))
         # The estate goes in before the run reaches a terminal status, so a reader
         # that sees a finished run always finds the rows that run produced. Covered
         # by the same try as the sweep itself: a raise here or in ``finalise`` has to

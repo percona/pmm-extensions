@@ -98,6 +98,17 @@ class TaskHistoryStatusEnum(StrEnum):
         """
         return frozenset({cls.PENDING, cls.RUNNING})
 
+    @classmethod
+    def interrupted_statuses(cls) -> frozenset["TaskHistoryStatusEnum"]:
+        """Return the terminal statuses of a run that was ended rather than finished.
+
+        Tracking of the run was lost, its placement went stale, or it was stopped:
+        none of them is the run's own verdict on its work.
+
+        :return: The frozen set of interrupted statuses.
+        """
+        return frozenset({cls.LOST, cls.STALE, cls.STOPPED})
+
     def is_active(self) -> bool:
         """Check whether the task status indicates an in-flight execution.
 

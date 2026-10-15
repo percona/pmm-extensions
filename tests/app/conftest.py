@@ -687,6 +687,24 @@ async def postgres_session(
         yield session
 
 
+@pytest_asyncio.fixture
+async def contending_sessions(
+    postgres_engine: AsyncEngine,
+) -> AsyncGenerator[tuple[AsyncSession, AsyncSession], None]:
+    """Yield two sessions on independent connections of the same engine.
+
+    One session cannot contend with itself for an advisory lock: the lock
+    helpers take it on a connection of their own, so a second attempt on the
+    same session would be that same caller locking twice rather than a
+    competing one. Built on the bare engine rather than on
+    ``postgres_session_maker`` because an advisory lock needs no table, so
+    creating the whole schema here would be paid per test for nothing.
+    """
+    session_maker = get_async_session_maker_from_engine(postgres_engine)
+    async with session_maker() as first, session_maker() as second:
+        yield first, second
+
+
 # The client/session fixtures below live here — the always-loaded ancestor conftest —
 # rather than in ``tests/app/extensions/conftest.py`` so they resolve regardless of single-process
 # collection order. ``tests/app/extensions/conftest.py`` re-exports them for the extensions
