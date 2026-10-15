@@ -362,6 +362,156 @@ def test_delete_held_copilot_runs_spares_runs_others_started():
     assert deleted == len(client.deleted)
 
 
+def _api_error():
+    return core_approval.GitHubApiError("DELETE", "/runs/1", 409, "in progress")
+
+
+class _RefusingClient(_FakeClient):
+    """Refuse to delete the held runs listed in ``refused``."""
+
+    def __init__(self, held, refused):
+        super().__init__(_PULLS, held=held)
+        self.refused = refused
+
+    def delete_run(self, owner, repo, run_id):
+        if run_id in self.refused:
+            raise _api_error()
+        super().delete_run(owner, repo, run_id)
+
+
+def test_delete_held_copilot_runs_skips_a_run_it_cannot_delete():
+    """Log and skip a failed deletion, so the cleanup never stops the evaluation."""
+    trigger, _ = core_approval.HELD_RUN_WORKFLOWS
+    copilot = core_approval.COPILOT_ACTOR
+    client = _RefusingClient(
+        held={
+            trigger: [
+                core_approval.HeldRun(run_id=1, actor=copilot),
+                core_approval.HeldRun(run_id=2, actor=copilot),
+            ]
+        },
+        refused={1},
+    )
+
+    deleted = core_approval.delete_held_copilot_runs(client, "o", "r", lambda _: None)
+
+    assert client.deleted == [2]
+    assert deleted == len(client.deleted)
+
+
+def test_evaluate_errors_on_a_foundation_change_when_membership_is_unknown():
+    """Fail a foundation change closed when team membership could not be resolved."""
+    verdict = core_approval.evaluate(
+        _changed(_FOUNDATION_PATH), _RULES, [_approve(_LEAD)], _OUTSIDER, None
+    )
+
+    assert verdict == core_approval.Verdict(
+        core_approval.StatusState.ERROR,
+        core_approval.MEMBERSHIP_UNAVAILABLE_DESCRIPTION,
+    )
+
+
+class _FakeRepository:
+    """Serve every API call ``main`` makes from in-memory pull requests."""
+
+    def __init__(self, pulls, files, *, members=None, cleanup_fails=False):
+        self.pulls = pulls
+        self.files = files
+        self.members = members
+        self.cleanup_fails = cleanup_fails
+        self.posted = []
+
+    def list_held_runs(self, owner, repo, workflow):
+        if self.cleanup_fails:
+            raise _api_error()
+        return []
+
+    def delete_run(self, owner, repo, run_id):
+        raise AssertionError("no held run was listed")
+
+    def list_team_members(self, org, team):
+        if self.members is None:
+            raise core_approval.GitHubApiError("GET", "/teams", 404, "Not Found")
+        return self.members[team]
+
+    def list_open_pull_requests(self, owner, repo):
+        return self.pulls
+
+    def list_changed_paths(self, owner, repo, number):
+        return _changed(*self.files[number])
+
+    def list_reviews(self, owner, repo, number):
+        return []
+
+    def get_status(self, owner, repo, sha, context):
+        return None
+
+    def create_status(self, owner, repo, sha, verdict, target_url):
+        self.posted.append((sha, verdict))
+
+
+_SHARED_SHA = "abc"
+_FOUNDATION_PULL = core_approval.PullRequest(
+    number=11, author=_OUTSIDER, head_sha=_SHARED_SHA
+)
+_APP_PULL = core_approval.PullRequest(number=12, author=_OUTSIDER, head_sha=_SHARED_SHA)
+_FILES = {11: [_FOUNDATION_PATH], 12: ["app/extensions/apps/atw/app.py"]}
+
+
+def _run_main(monkeypatch, repository):
+    monkeypatch.setenv("GITHUB_TOKEN", "repo-token")
+    monkeypatch.setenv("CORE_APPROVAL_READ_ORG_TOKEN", "org-token")
+    monkeypatch.setattr(core_approval, "HttpGitHubClient", lambda _token: repository)
+    return core_approval.main(["--owner", "o", "--repo", "r"])
+
+
+def test_main_posts_one_combined_status_per_shared_commit(monkeypatch):
+    """Post a single status for pull requests sharing a commit, held to the stricter."""
+    repository = _FakeRepository(
+        [_FOUNDATION_PULL, _APP_PULL], _FILES, members=_MEMBERS
+    )
+
+    assert _run_main(monkeypatch, repository) == 0
+    [(sha, verdict)] = repository.posted
+    assert sha == _SHARED_SHA
+    assert verdict.state == core_approval.StatusState.PENDING
+    assert verdict.description.startswith(f"#{_FOUNDATION_PULL.number}: ")
+
+
+def test_main_still_evaluates_when_the_held_run_cleanup_fails(monkeypatch):
+    """Post statuses even when listing held runs fails."""
+    repository = _FakeRepository(
+        [_APP_PULL], _FILES, members=_MEMBERS, cleanup_fails=True
+    )
+
+    assert _run_main(monkeypatch, repository) == 0
+    assert repository.posted == [
+        (
+            _SHARED_SHA,
+            core_approval.Verdict(
+                core_approval.StatusState.SUCCESS,
+                core_approval.NOT_FOUNDATION_DESCRIPTION,
+            ),
+        )
+    ]
+
+
+def test_main_fails_closed_when_team_membership_is_unavailable(monkeypatch):
+    """Post ``error`` on foundation changes and fail the run when teams cannot be read."""
+    repository = _FakeRepository([_FOUNDATION_PULL], _FILES, members=None)
+
+    assert _run_main(monkeypatch, repository) == 1
+    assert repository.posted == [
+        (
+            _SHARED_SHA,
+            core_approval.Verdict(
+                core_approval.StatusState.ERROR,
+                core_approval.MEMBERSHIP_UNAVAILABLE_DESCRIPTION,
+            ),
+        )
+    ]
+
+
 def test_main_refuses_to_run_without_the_org_token(monkeypatch, capsys):
     """Fail fast when the read:org token is absent."""
     monkeypatch.setenv("GITHUB_TOKEN", "repo-token")

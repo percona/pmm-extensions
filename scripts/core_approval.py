@@ -33,12 +33,15 @@ head commit receive one combined verdict that passes only when each of them does
 
 Each run evaluates every open pull request and also deletes this check's own runs
 that a Copilot review left waiting for approval, which would otherwise prompt for
-approval on every pull request.
+approval on every pull request. When team membership cannot be resolved, foundation
+changes get an ``error`` status and the run fails, so an earlier verdict cannot
+outlive the conditions that produced it.
 
 ``.github/workflows/core-approval.yaml`` runs this from a default-branch checkout
 in the ``core-approval`` environment, whose read:org token resolves team
-membership; ``GITHUB_TOKEN`` reads the pull request and posts the status. Uses the
-standard library only, so the workflow needs no Poetry install.
+membership; ``GITHUB_TOKEN`` lists and reads the pull requests, posts the statuses
+and deletes held runs. Uses the standard library only, so the workflow needs no
+Poetry install.
 """
 
 from __future__ import annotations
@@ -75,6 +78,9 @@ REQUIRED_WEIGHT = 2
 STATUS_CONTEXT = "core-approval"
 STATUS_DESCRIPTION_LIMIT = 140
 NOT_FOUNDATION_DESCRIPTION = "Not a backend-foundation change"
+MEMBERSHIP_UNAVAILABLE_DESCRIPTION = (
+    "Could not resolve team membership; see the run log"
+)
 
 HELD_RUN_WORKFLOWS = ("core-approval-trigger.yaml", "core-approval.yaml")
 COPILOT_ACTOR = "Copilot"
@@ -85,6 +91,7 @@ class StatusState(StrEnum):
 
     SUCCESS = "success"
     PENDING = "pending"
+    ERROR = "error"
 
 
 class ReviewState(StrEnum):
@@ -354,7 +361,7 @@ def evaluate(
     rules: list[PathRule],
     reviews: Iterable[Review],
     author: str,
-    members: dict[str, set[str]],
+    members: dict[str, set[str]] | None,
 ) -> Verdict:
     """Decide the ``core-approval`` status for one pull request.
 
@@ -363,13 +370,17 @@ def evaluate(
     :param rules: The parsed paths file.
     :param reviews: The pull request's reviews in submission order.
     :param author: The pull-request author.
-    :param members: Weighted-team members keyed by team slug.
+    :param members: Weighted-team members keyed by team slug, or ``None`` when
+        membership could not be resolved, which fails a foundation change with an
+        ``error`` status rather than leaving an earlier verdict standing.
     :return: The status to report.
     """
     if changed.complete and not any(
         is_foundation_path(path, rules) for path in changed.paths
     ):
         return Verdict(StatusState.SUCCESS, NOT_FOUNDATION_DESCRIPTION)
+    if members is None:
+        return Verdict(StatusState.ERROR, MEMBERSHIP_UNAVAILABLE_DESCRIPTION)
 
     weights = member_weights(members)
     credited = {
@@ -400,16 +411,18 @@ def combine_verdicts(verdicts: dict[int, Verdict]) -> Verdict:
     for every pull request at the commit: it passes only when all of them do.
 
     :param verdicts: Each pull request's verdict, keyed by pull-request number.
-    :return: The pending verdict of the lowest-numbered pending pull request, else
-        the lowest-numbered pull request's verdict; prefixed with that pull
+    :return: The verdict of the lowest-numbered pull request that does not pass,
+        else the lowest-numbered pull request's verdict; prefixed with that pull
         request's number when several share the commit.
     """
-    pending = sorted(
-        number
-        for number, verdict in verdicts.items()
-        if verdict.state != StatusState.SUCCESS
+    chosen = min(
+        (
+            number
+            for number, verdict in verdicts.items()
+            if verdict.state != StatusState.SUCCESS
+        ),
+        default=min(verdicts),
     )
-    chosen = pending[0] if pending else min(verdicts)
     verdict = verdicts[chosen]
     if len(verdicts) == 1:
         return verdict
@@ -456,9 +469,12 @@ def delete_held_copilot_runs(
 ) -> int:
     """Delete this check's runs that a Copilot review left waiting for approval.
 
-    GitHub holds every run whose actor is Copilot, and a Copilot review fires the
-    trigger workflow on every pull request, which would leave an approval prompt
-    on each one. Copilot never approves, so those runs carry no weight to lose.
+    GitHub holds the runs a Copilot review starts until a maintainer approves
+    them, and a Copilot review fires the trigger workflow on every pull request,
+    which would leave an approval prompt on each one. Copilot belongs to no
+    weighted team, so those runs carry no weight to lose. Removing the prompt is
+    cosmetic, so a failed listing or deletion is logged and skipped rather than
+    stopping the evaluation.
 
     :param client: Repository API client.
     :param owner: Repository owner.
@@ -468,10 +484,19 @@ def delete_held_copilot_runs(
     """
     deleted = 0
     for workflow in HELD_RUN_WORKFLOWS:
-        for run in client.list_held_runs(owner, repo, workflow):
+        try:
+            runs = client.list_held_runs(owner, repo, workflow)
+        except GitHubApiError as exc:
+            log(f"Could not list held {workflow} runs: {exc}")
+            continue
+        for run in runs:
             if run.actor != COPILOT_ACTOR:
                 continue
-            client.delete_run(owner, repo, run.run_id)
+            try:
+                client.delete_run(owner, repo, run.run_id)
+            except GitHubApiError as exc:
+                log(f"Could not delete held {workflow} run {run.run_id}: {exc}")
+                continue
             log(f"Deleted held {workflow} run {run.run_id}")
             deleted += 1
     return deleted
@@ -603,7 +628,7 @@ class HttpGitHubClient:
         :param verdict: The state and description to report.
         :param target_url: Link shown on the status; omitted when empty.
         """
-        body: dict[str, Any] = {
+        body = {
             "state": verdict.state,
             "description": verdict.description,
             "context": STATUS_CONTEXT,
@@ -700,9 +725,13 @@ def main(argv: list[str] | None = None) -> int:
     def log(message: str) -> None:
         print(message, flush=True)
 
+    delete_held_copilot_runs(client, args.owner, args.repo, log)
+    members: dict[str, set[str]] | None = None
     try:
-        delete_held_copilot_runs(client, args.owner, args.repo, log)
         members = load_team_members(directory, args.owner)
+    except (GitHubApiError, OSError) as exc:
+        print(f"Could not resolve team membership: {exc}", file=sys.stderr)
+    try:
         verdicts_by_sha: dict[str, dict[int, Verdict]] = {}
         for pull in client.list_open_pull_requests(args.owner, args.repo):
             verdicts_by_sha.setdefault(pull.head_sha, {})[pull.number] = evaluate(
@@ -726,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
     except (GitHubApiError, OSError) as exc:
         print(f"GitHub API request failed: {exc}", file=sys.stderr)
         return 1
-    return 0
+    return 0 if members is not None else 1
 
 
 if __name__ == "__main__":
