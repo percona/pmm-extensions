@@ -423,13 +423,15 @@ default:
     INVENTORY_SYNC_SYNCER: null  # Dotted "module.ClassName" syncer the seeded schedule targets; null runs every configured syncer
     # Per-syncer schedules seeded beside the pair above, for a syncer whose useful
     # cadence differs from it. SYNCER takes the full BaseSyncer.get_name() form,
-    # not the short EXTENSIONS.SYNCERS spelling. Rejected at validation if an entry
-    # duplicates INVENTORY_SYNC_SYNCER, repeats another entry's syncer, or sits
-    # beside a sync-all default (an interval with no syncer pinned). An entry runs
-    # on its own interval from bring-up. While the pinned default above is seeded,
-    # its runs also start an entry that has not run since that syncer's first
-    # completed inventory sync, so the entry reads that inventory. An entry an
-    # operator-managed schedule already covers is not seeded. Example:
+    # not the short EXTENSIONS.SYNCERS spelling. Startup fails when it, or the
+    # INVENTORY_SYNC_SYNCER pin above, matches no EXTENSIONS.SYNCERS entry.
+    # Rejected at validation if an entry duplicates INVENTORY_SYNC_SYNCER, repeats
+    # another entry's syncer, or sits beside a sync-all default (an interval with
+    # no syncer pinned). An entry runs on its own interval from bring-up. While
+    # the pinned default above is seeded, its runs also start an entry that has
+    # not run since that syncer's first completed inventory sync, so the entry
+    # reads that inventory. An entry an operator-managed schedule already covers
+    # is not seeded. Example:
     #   INVENTORY_SYNC_SCHEDULES:
     #     - SYNCER: app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer
     #       INTERVAL: 1 days

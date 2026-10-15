@@ -38,7 +38,11 @@ from app.extensions.bundle_upload.plan import (
     DeliveryPlanExecutor,
     SecretValue,
 )
-from app.extensions.config import ExtensionsSettings, SyncOptions
+from app.extensions.config import (
+    ExtensionsSettings,
+    SyncOptions,
+    validate_scheduled_syncers,
+)
 from app.extensions.routes.artifacts import collect_base_dirs
 from app.extensions.snippets.constants import ARTIFACT_TYPE_SNIPPET
 from app.extensions.sync.syncers.pmm import PMMSyncer
@@ -285,6 +289,21 @@ def test_profile_seeds_a_pmm_pinned_inventory_sync_schedule():
         settings.INVENTORY_SYNC_INTERVAL.period,
     ) == (EMBEDDED_INVENTORY_SYNC_MINUTES, Period.MINUTES)
     assert PMMSyncer.get_name() == settings.INVENTORY_SYNC_SYNCER
+
+
+class TestEmbeddedScheduledSyncers:
+    """Cover the profile's scheduled syncers against its configured ones."""
+
+    @pytest.mark.usefixtures("embedded_profile_cwd")
+    def test_profile_schedules_only_configured_syncers(self) -> None:
+        """Keep a profile edit from scheduling a syncer that stops the boot."""
+        tasks = TasksSettings()
+
+        validate_scheduled_syncers(
+            ExtensionsSettings().SYNCERS,
+            tasks.INVENTORY_SYNC_SYNCER,
+            tasks.INVENTORY_SYNC_SCHEDULES,
+        )
 
 
 def test_profile_writes_pool_sizing_into_the_shared_database(

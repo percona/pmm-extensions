@@ -44,7 +44,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import StaticPool
-from sqlalchemy_celery_beat.models import PeriodicTask
+from sqlalchemy_celery_beat.models import Period, PeriodicTask
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -56,12 +56,13 @@ from app.core.auth.models import OAuthToken, UserRole
 from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.auth.providers.grafana.models import ASSERTION_SALT
 from app.core.auth.providers.grafana.provider import GrafanaAuthProvider
+from app.core.celery.models import IntervalSchedule
 from app.core.config import settings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.health import HEALTH_PATH
 from app.core.requests import RemoteAPI
 from app.core.utils import json_serializer
-from app.extensions.config import extensions_settings
+from app.extensions.config import extensions_settings, SyncOptions
 from app.extensions.deps import (
     get_current_user,
     get_inventory_api,
@@ -80,7 +81,7 @@ from app.extensions.main import extensions_app
 from app.extensions.snippets.config import snippets_settings
 from app.inventory.models import ServiceTypeEnum
 from app.tasks.anonymizer.config import anonymizer_settings
-from app.tasks.config import tasks_settings
+from app.tasks.config import InventorySyncSchedule, tasks_settings
 from tests.app.db_schema import apply_schema
 from tests.app.factories import (
     CasdoorUserFactory,
@@ -106,6 +107,20 @@ if "stream_writer" in inspect.signature(ClientResponse.__init__).parameters:
             super().__init__(*args, **kwargs)
 
     aioresponses.core.ClientResponse = _CompatClientResponse
+
+
+def daily_inventory_sync_schedules(*syncers: str) -> list[InventorySyncSchedule]:
+    """Return one daily ``INVENTORY_SYNC_SCHEDULES`` entry per syncer name.
+
+    :param syncers: Syncer names in ``BaseSyncer.get_name()`` form.
+    :return: The schedule entries, in argument order.
+    """
+    return [
+        InventorySyncSchedule(
+            syncer=syncer, interval=IntervalSchedule(every=1, period=Period.DAYS)
+        )
+        for syncer in syncers
+    ]
 
 
 class HealthProbeServer:
@@ -189,6 +204,16 @@ class HealthProbeServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+
+
+@pytest.fixture(name="pmm_is_the_only_syncer")
+def pmm_is_the_only_syncer_fixture(mocker: MockerFixture) -> None:
+    """Configure ``PMMSyncer`` as the only syncer, with nothing pinned or scheduled."""
+    mocker.patch.object(
+        extensions_settings, "SYNCERS", [SyncOptions(syncer="PMMSyncer")]
+    )
+    mocker.patch.object(tasks_settings, "INVENTORY_SYNC_SYNCER", None)
+    mocker.patch.object(tasks_settings, "INVENTORY_SYNC_SCHEDULES", [])
 
 
 @pytest.fixture(name="health_probe_server")
