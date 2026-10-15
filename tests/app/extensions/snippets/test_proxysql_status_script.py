@@ -1613,10 +1613,13 @@ class TestOverlongLineCredentials:
             "password": line.removeprefix("PROXYSQL_PASSWORD='").removesuffix("'"),
         }
 
-    def test_skips_a_line_one_past_the_cap(self, harness):
-        """Fall back on a line one character over the cap."""
+    @pytest.mark.parametrize(
+        "ending", [pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf")]
+    )
+    def test_skips_a_line_one_past_the_cap(self, harness, ending):
+        """Fall back on a line one character over the cap, carriage return aside."""
         line = _line_of(CNF_MAX_LINE, "PROXYSQL_PASSWORD='") + "'"
-        harness.write_cnf(f"PROXYSQL_USERNAME='admin'\n{line}\n")
+        harness.write_cnf(f"PROXYSQL_USERNAME='admin'\n{line}{ending}")
 
         result = harness.run("--main")
 
@@ -1663,6 +1666,34 @@ class TestOverlongLineCredentials:
 
         assert result.returncode == 0, result.stderr
         assert _too_long(harness.admin_cnf) in result.stdout.splitlines()
+        assert harness.credentials == DEFAULT_CLIENT
+
+    def test_huge_continued_line_is_read_in_bounded_time(self, harness):
+        """Finish well within the run's limit when a backslash continues into a 4 MB line.
+
+        The continued line is scanned before it is joined, so only the
+        physical line's own length can stop that scan.
+        """
+        harness.write_cnf(
+            f"PROXYSQL_USERNAME='admin'\nPROXYSQL_PASSWORD=pw \\\n{HUGE_LINE}\n"
+        )
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _too_long(harness.admin_cnf) in result.stdout.splitlines()
+        assert harness.credentials == DEFAULT_CLIENT
+
+    def test_full_run_handles_a_huge_line(self, harness):
+        """Connect with the defaults and hide the line when both readers run."""
+        harness.write_cnf(f"{ADMIN_CNF}{HUGE_LINE}\n")
+
+        result = harness.run()
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines().count(_too_long(harness.admin_cnf)) == 1
+        assert _cnf_section(result.stdout)[-1] == HIDDEN_LINE
+        assert LONG_LINE_SECRET not in result.stdout
         assert harness.credentials == DEFAULT_CLIENT
 
     def test_notice_stays_out_of_the_report_file(self, harness):
@@ -2413,6 +2444,36 @@ class TestOverlongLineRedaction:
 
         assert result.returncode == 0, result.stderr
         assert _cnf_section(result.stdout) == [line, PORT_LINE]
+
+    @pytest.mark.parametrize(
+        "ending", [pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf")]
+    )
+    def test_hides_a_line_one_past_the_cap(self, harness, ending):
+        """Hide a plain line one character over the cap, carriage return aside."""
+        harness.write_cnf(f"{_line_of(CNF_MAX_LINE + 1)}{ending}{PORT_LINE}{ending}")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE, HIDDEN_LINE]
+
+    @pytest.mark.parametrize(
+        ("locale", "hidden"),
+        [pytest.param("C.UTF-8", False, id="utf-8"), pytest.param("C", True, id="c")],
+    )
+    def test_counts_the_locale_characters(self, harness, locale, hidden):
+        """Measure a non-ASCII line in characters, or in bytes under C.
+
+        Bytes only reach the cap sooner, so the C locale hides more, never less.
+        """
+        line = "NOTE=" + "\u00e9" * (CNF_MAX_LINE - len("NOTE="))
+        harness.write_cnf(f"{line}\n{PORT_LINE}\n")
+
+        result = harness.run("--files", env={"LC_ALL": locale})
+
+        assert result.returncode == 0, result.stderr
+        expected = [HIDDEN_LINE, HIDDEN_LINE] if hidden else [line, PORT_LINE]
+        assert _cnf_section(result.stdout) == expected
 
 
 def _function_body(name: str) -> str:

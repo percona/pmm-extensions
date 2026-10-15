@@ -75,7 +75,9 @@ declare ERR_FILE=""
 declare CNF_OPEN=""
 # Both config scanners are quadratic in a line's length, measured at up to
 # 0.28 s for 4096 characters and so about 17 ms at this cap. Real admin config
-# lines stay under 200.
+# lines stay under 200. Lengths count the locale's characters, and C counts
+# bytes, so there a non-ASCII line reaches the cap sooner, which only errs on
+# the cautious side.
 declare -r CNF_MAX_LINE=1024
 
 function usage() {
