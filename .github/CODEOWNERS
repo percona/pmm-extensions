@@ -1,50 +1,59 @@
 # Order matters: GitHub uses LAST-MATCH-WINS, so broad rules first,
-# specific overrides last. Within a row, owners are alphabetized.
+# specific overrides last. Owners are teams so that membership changes
+# never need an edit here:
+#   pmm-extensions-devs         everyone working on the repo (default)
+#   pmm-extensions-review-be    backend: app code, tests, scripts, snippets
+#   pmm-extensions-review-fe    frontend
+#   pmm-extensions-review-core  shared backend core, deps, build, release, CI
 
 # Default
-*                                  @percona/gas-team
+*                                       @percona/pmm-extensions-devs
 
-# ── App tree ────────────────────────────────────────────────────────
-/app/                              @peter-o-addo @yyyyyyyan
-/app/__init__.py                   @percona/gas-team
+# ── Backend ─────────────────────────────────────────────────────────
+/app/                                   @percona/pmm-extensions-review-core
+/app/extensions/apps/                   @percona/pmm-extensions-review-be
+/app/extensions/apps/*.py               @percona/pmm-extensions-review-core
+/app/extensions/apps/framework/         @percona/pmm-extensions-review-core
+/app/extensions/apps/shared/            @percona/pmm-extensions-review-core
+/tests/                                 @percona/pmm-extensions-review-be
+/scripts/                               @percona/pmm-extensions-review-be
+/sidecar/                               @percona/pmm-extensions-review-be
+/snippets/                              @percona/pmm-extensions-review-be
+/alembic.ini                            @percona/pmm-extensions-review-be
+/settings.yaml                          @percona/pmm-extensions-review-be
 
-# Plugins (uniform); any payload file/dir relaxes to gas-team.
-/app/extensions/apps/                  @maxbube @peter-o-addo @yyyyyyyan
-/app/extensions/apps/**/*payload*      @percona/gas-team
-/app/extensions/apps/**/payloads/**    @percona/gas-team
+# Per-app owners
+/app/extensions/apps/om_bootstrap/      @plebioda @percona/pmm-extensions-review-be
+/app/extensions/apps/om_inventory/      @plebioda @percona/pmm-extensions-review-be
+/tests/app/extensions/apps/om_bootstrap/  @plebioda @percona/pmm-extensions-review-be
+/tests/app/extensions/apps/om_inventory/  @plebioda @percona/pmm-extensions-review-be
 
-# ── Tests ───────────────────────────────────────────────────────────
-/tests/                            @marcuscruz-percona @peter-o-addo @yyyyyyyan
+# ── Frontend ────────────────────────────────────────────────────────
+/frontend/                              @percona/pmm-extensions-review-fe
 
-# ── UI assets ───────────────────────────────────────────────────────
-/static/                           @nachodd @peter-o-addo @yyyyyyyan
-/templates/                        @nachodd @peter-o-addo @yyyyyyyan
-/frontend/                         @nachodd @peter-o-addo @yyyyyyyan
+# ── Sensitive: dependencies ─────────────────────────────────────────
+/pyproject.toml                         @peter-o-addo @percona/pmm-extensions-review-core
+/poetry.lock                            @peter-o-addo @percona/pmm-extensions-review-core
+/poetry.toml                            @peter-o-addo @percona/pmm-extensions-review-core
+/frontend/package.json                  @nachodd @peter-o-addo @percona/pmm-extensions-review-core
+/frontend/pnpm-lock.yaml                @nachodd @peter-o-addo @percona/pmm-extensions-review-core
+/frontend/pnpm-workspace.yaml           @nachodd @peter-o-addo @percona/pmm-extensions-review-core
 
-# ── Operational content ─────────────────────────────────────────────
-/snippets/                         @cortiz-percona @percona/gas-admin
-
-# ── App config ──────────────────────────────────────────────────────
-/settings.yaml                     @maxbube @peter-o-addo @yyyyyyyan
-
-# ── Sensitive: Python deps ──────────────────────────────────────────
-/poetry.lock                       @maxbube @yyyyyyyan
-/pyproject.toml                    @maxbube @yyyyyyyan
-
-# ── Sensitive: Frontend deps ────────────────────────────────────────
-/frontend/package.json             @maxbube @yyyyyyyan
-/frontend/pnpm-lock.yaml           @maxbube @yyyyyyyan
-/frontend/pnpm-workspace.yaml      @maxbube @yyyyyyyan
-
-# ── Sensitive: build / release / runtime entrypoints ────────────────
-/Makefile                          @maxbube @yyyyyyyan
-/.pre-commit-config.yaml           @maxbube @yyyyyyyan
-/Containerfile.base                @percona/gas-admin
-/sidecar/                          @percona/gas-admin
-/CHANGELOG.md                      @maxbube @yyyyyyyan
-/scripts/release.py                @maxbube @yyyyyyyan
-/scripts/changelog.py              @maxbube @yyyyyyyan
+# ── Sensitive: build / release / runtime image ──────────────────────
+/Makefile                               @percona/pmm-extensions-review-core
+/.pre-commit-config.yaml                @percona/pmm-extensions-review-core
+/.trivyignore.yaml                      @percona/pmm-extensions-review-core
+/Containerfile.base                     @percona/pmm-extensions-review-core
+/sidecar/Containerfile.sidecar          @percona/pmm-extensions-review-core
+/CHANGELOG.md                           @percona/pmm-extensions-review-core
+/scripts/release.py                     @percona/pmm-extensions-review-core
+/scripts/changelog.py                   @percona/pmm-extensions-review-core
 
 # ── CI / repo automation ────────────────────────────────────────────
-/.github/                          @percona/gas-admin
-/build/                            @percona/gas-admin
+/.github/                               @percona/pmm-extensions-review-core
+/build/                                 @percona/pmm-extensions-review-core
+
+# Review guidance inside .github is everyone's to maintain
+/.github/copilot-instructions.md        @percona/pmm-extensions-devs
+/.github/instructions/                  @percona/pmm-extensions-devs
+/.github/PULL_REQUEST_TEMPLATE.md       @percona/pmm-extensions-devs
