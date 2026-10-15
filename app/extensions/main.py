@@ -69,6 +69,7 @@ from app.extensions.snippets.celery import sync_snippets
 from app.extensions.snippets.config import snippets_settings
 from app.inventory.config import inventory_settings
 from app.tasks.config import tasks_settings
+from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ def _make_remote_api_rebinder(
     key: Literal["INVENTORY_ENDPOINT", "TASKS_ENDPOINT"],
     *,
     pending: PendingCloses | None = None,
-    **ssl: Any,
+    **client_kwargs: Any,
 ) -> RefreshCallback:
     """Build a rebind callback for an ``app.state`` RemoteAPI endpoint override.
 
@@ -164,7 +165,8 @@ def _make_remote_api_rebinder(
     :param key: The top-level snapshot key for the endpoint field.
     :param pending: Owner-scoped deferred-close collection for app-state
         retirements, or ``None`` when the caller does not track them.
-    :param ssl: SSL keyword arguments forwarded to :class:`RemoteAPI` (not HOT,
+    :param client_kwargs: Keyword arguments forwarded to :class:`RemoteAPI` for
+        every replacement, such as its SSL settings and log policy (not HOT,
         captured once at wiring time).
     :return: The rebind callback.
     """
@@ -180,7 +182,7 @@ def _make_remote_api_rebinder(
                 await settings.invalidate_client(endpoint)
             return
         try:
-            new_api = await RemoteAPI(endpoint=new_endpoint, **ssl).open()
+            new_api = await RemoteAPI(endpoint=new_endpoint, **client_kwargs).open()
         except Exception:
             logger.exception("Failed to rebind %s; keeping previous client", name)
             return
@@ -276,6 +278,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
     """
     pending = PendingCloses()
     app.state.retired_remote_apis = pending
+    extensions_proxy = cast("OverridableSettingsProxy", extensions_settings)
     callbacks: CallbackRegistry = {
         (entry.setting_class, key): _reseed_system_periodic_tasks
         for entry in collect_app_owned_settings_classes()
@@ -289,7 +292,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
             ): _make_remote_api_rebinder(
                 app,
                 "inventory_api",
-                extensions_settings,
+                extensions_proxy,
                 "INVENTORY_ENDPOINT",
                 pending=pending,
                 ssl_cafile=settings.SSL_CAFILE,
@@ -302,12 +305,13 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
             ): _make_remote_api_rebinder(
                 app,
                 "tasks_api",
-                extensions_settings,
+                extensions_proxy,
                 "TASKS_ENDPOINT",
                 pending=pending,
                 ssl_cafile=settings.SSL_CAFILE,
                 ssl_keyfile=tasks_settings.SSL_KEYFILE,
                 ssl_certfile=tasks_settings.SSL_CERTFILE,
+                **TASKS_CLIENT_LOG_POLICY,
             ),
             (SETTINGS, "PMM"): invalidate_pmm_clients,
             (SETTINGS, "LOGGING"): apply_logging_dictconfig,
@@ -410,6 +414,7 @@ async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 ssl_cafile=settings.SSL_CAFILE,
                 ssl_keyfile=tasks_settings.SSL_KEYFILE,
                 ssl_certfile=tasks_settings.SSL_CERTFILE,
+                **TASKS_CLIENT_LOG_POLICY,
             ).open()
             clients_opened = True
             async with default_lifespan(app):

@@ -398,19 +398,16 @@ class StringField(BaseField):
 
     :param field_type: The discriminator literal; always ``"string"`` for this
         class. Serialised as the JSON key ``"type"``.
-    :type field_type: Literal["string"]
     :param min_length: Optional minimum character length. Defaults to
         ``None``.
-    :type min_length: int | None
     :param max_length: Optional maximum character length. Defaults to
         ``None``.
-    :type max_length: int | None
     :param pattern: Optional regular expression the value must match.
         Defaults to ``None``.
-    :type pattern: NonEmptyStr | None
     :param placeholder: Optional placeholder text displayed when the field is
         empty. Defaults to ``None``.
-    :type placeholder: NonEmptyStr | None
+    :param sensitive: Whether the value is a credential, which the client must
+        not display as typed. Defaults to ``False``.
     """
 
     field_type: Literal["string"] = Field(
@@ -420,6 +417,7 @@ class StringField(BaseField):
     max_length: int | None = Field(default=None, ge=1)
     pattern: NonEmptyStr | None = None
     placeholder: NonEmptyStr | None = None
+    sensitive: bool = False
 
 
 class TextAreaField(BaseField):
@@ -427,12 +425,9 @@ class TextAreaField(BaseField):
 
     :param field_type: The discriminator literal; always ``"textarea"`` for
         this class. Serialised as the JSON key ``"type"``.
-    :type field_type: Literal["textarea"]
     :param rows: Optional number of visible text rows. Defaults to ``None``.
-    :type rows: int | None
     :param placeholder: Optional placeholder text displayed when the field is
         empty. Defaults to ``None``.
-    :type placeholder: NonEmptyStr | None
     """
 
     field_type: Literal["textarea"] = Field(

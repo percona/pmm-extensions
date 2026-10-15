@@ -1350,9 +1350,12 @@ async def _persist_overrides(
     its values cleanly.
 
     :param session: The sub-app's database session.
-    :param settings_cls: The Pydantic settings class whose storage token is
-        written to ``settingoverride.setting_class``, and against which each
-        stored key is canonicalized.
+    :param settings_cls: The Pydantic settings class whose storage token
+        (``setting_class_token(settings_cls)``, not the class ``__name__`` the
+        API reports as ``setting_class``) is written to
+        ``settingoverride.setting_class``, and against which each stored key is
+        canonicalized. This helper takes no ``setting_class`` string, so the
+        in-process identifier never reaches the table.
     :param to_apply: The list of ``(key, coerced_value)`` tuples to persist.
     :param actor: The username recorded on every row this call writes.
     :return: The stamp written for each applied key. On the replay path this is
@@ -1490,8 +1493,12 @@ async def apply_class_overrides(
     :param request: The incoming request; its ``app.state`` carries the sub-app's
         rebind-callback registry.
     :param session: The sub-app's database session.
-    :param setting_class: The settings class the override targets.
-    :param settings_cls: The Pydantic settings class being overridden.
+    :param setting_class: The in-process identifier (class ``__name__``) of the
+        class the override targets. It is echoed on every returned row and keys
+        the rebind-callback lookup; it is never written to the table, whose
+        ``setting_class`` column holds ``setting_class_token(settings_cls)``.
+    :param settings_cls: The Pydantic settings class being overridden; its
+        storage token is what the persisted rows carry.
     :param proxy: The proxy wrapping it.
     :param body: The batch of ``{key: value, ...}`` overrides.
     :param actor: The username recorded on every row this call writes, and
@@ -1548,8 +1555,11 @@ async def clear_class_override(
     :param request: The incoming request; its ``app.state`` carries the sub-app's
         rebind-callback registry.
     :param session: The sub-app's database session.
-    :param setting_class: The settings class the field belongs to.
-    :param settings_cls: The Pydantic settings class being reverted.
+    :param setting_class: The in-process identifier (class ``__name__``) of the
+        class the field belongs to. It keys the rebind-callback lookup only; the
+        row to delete is found by ``setting_class_token(settings_cls)``.
+    :param settings_cls: The Pydantic settings class being reverted; its storage
+        token is what the stored rows are looked up by.
     :param proxy: The proxy wrapping it.
     :param key: The field name, or a ``__``-delimited nested key.
     :raises HTTPNotFoundException: If ``key`` is not a field on the class.

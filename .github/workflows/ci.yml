@@ -378,7 +378,7 @@ jobs:
       - changes
 
   build:
-    # Runs concurrently with the python test matrix — the docker image build
+    # Runs concurrently with the python tests — the docker image build
     # consumes no test output, so it no longer gates on `python`. It starts as
     # soon as label-gate and changes succeed, while tests are still running.
     # Merge correctness is preserved by ci-success below, which

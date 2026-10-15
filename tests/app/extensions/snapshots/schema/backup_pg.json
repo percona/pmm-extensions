@@ -55,6 +55,7 @@
           "min_length": 1,
           "name": "task_name",
           "required": true,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -89,6 +90,7 @@
           "name": "stanza",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
           "required": true,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -114,6 +116,7 @@
           "label": "pgBackRest Binary",
           "name": "pgbackrest_bin",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -122,12 +125,14 @@
           "label": "pgBackRest Config File",
           "name": "pgbackrest_config_file",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
           "label": "Postgres Data Directory",
           "name": "pgbackrest_datadir",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -193,6 +198,7 @@
           "label": "Logging Directory",
           "name": "logging_dir",
           "required": false,
+          "sensitive": false,
           "type": "string"
         },
         {
@@ -200,6 +206,7 @@
           "min_length": 1,
           "name": "backup_dir",
           "required": true,
+          "sensitive": false,
           "type": "string"
         }
       ],

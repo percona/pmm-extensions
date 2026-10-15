@@ -304,6 +304,27 @@ describe('SchemaFormRenderer — field rendering', () => {
     // A field with no description gets neither.
     expect(document.querySelectorAll('[data-help-for="Code"]')).toHaveLength(0);
   });
+
+  it('hides what is typed into a sensitive string field, and only there', () => {
+    const credentialSections: FormSection[] = [
+      {
+        title: 'Parameters',
+        fields: [
+          { type: 'string', name: 'password', label: 'Password', sensitive: true },
+          { type: 'string', name: 'dest', label: 'Destination', sensitive: false },
+          { type: 'string', name: 'legacy', label: 'Legacy' },
+        ],
+      },
+    ];
+    renderWithProviders(<SchemaFormRenderer sections={credentialSections} onSubmit={() => {}} />);
+
+    const password = screen.getByLabelText(/Password/);
+    expect(password).toHaveAttribute('type', 'password');
+    expect(password).toHaveAttribute('autocomplete', 'new-password');
+    expect(screen.getByLabelText(/Destination/)).toHaveAttribute('type', 'text');
+    expect(screen.getByLabelText(/Destination/)).not.toHaveAttribute('autocomplete');
+    expect(screen.getByLabelText(/Legacy/)).toHaveAttribute('type', 'text');
+  });
 });
 
 describe('SchemaFormRenderer — section layout controls', () => {
