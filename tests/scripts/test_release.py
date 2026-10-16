@@ -1787,7 +1787,7 @@ def test_prep_next_steps_name_the_manual_jenkins_trigger(capsys):
     release._print_prep_next_steps("3.11.0", "abc123", jira_version_created=True)
 
     out = capsys.readouterr().out
-    assert "make trigger-jenkins TAG=abc123" in out
+    assert "make trigger-jenkins TAG=abc123 PUSH_IMAGE_DOCKER=false" in out
     assert not any(name in out for name in _RETIRED_DESTINATIONS)
 
 

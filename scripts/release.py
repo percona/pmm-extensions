@@ -829,7 +829,8 @@ def _print_prep_next_steps(
         step += 1
     print(
         f"  {step}. Build the internal-registry image for {head_sha} "
-        f"(needs JENKINS_* credentials): make trigger-jenkins TAG={head_sha}"
+        f"(needs JENKINS_* credentials): make trigger-jenkins TAG={head_sha} "
+        "PUSH_IMAGE_DOCKER=false"
     )
     print(
         f"  {step + 1}. Merge the dev-version-bump PR opened on main so the "
