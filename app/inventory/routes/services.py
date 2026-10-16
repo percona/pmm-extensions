@@ -70,6 +70,8 @@ from app.inventory.models import (
     ServiceSystemObservationWrite,
     ServiceTypeEnum,
     ServiceWrite,
+    SyncHealthBulkResult,
+    SyncHealthBulkWrite,
     SyncHealthWrite,
 )
 
@@ -208,6 +210,25 @@ async def revive_service(session: SessionDep, service: RetirableServiceDep) -> N
     """
     logger.debug("Reviving service %s", service.id)
     await ServiceManager.revive(session, service)
+
+
+@router.post("/sync-health")
+async def record_services_sync_health(
+    session: SessionDep,
+    outcomes: SyncHealthBulkWrite,
+) -> SyncHealthBulkResult:
+    """Record the outcomes of several syncer attempts, one per Service.
+
+    Each entry gets the transition ``/{service_id}/sync-health`` gives it, retired
+    services included; an id naming no service is skipped and returned rather
+    than rejecting the rest of the list.
+
+    :param session: The async database session.
+    :param outcomes: What the syncer reported, one entry per service.
+    :return: The ids that named no service.
+    """
+    logger.debug("Recording sync health on %d services", len(outcomes))
+    return await ServiceManager.record_sync_health_bulk(session, outcomes)
 
 
 @router.post(

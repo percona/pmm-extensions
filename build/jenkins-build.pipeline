@@ -35,7 +35,7 @@ pipeline {
 		string(
 			name: 'customImageTag',
 			defaultValue: '',
-			description: 'Optional image tag override (OCI tag: starts [A-Za-z0-9_], then [A-Za-z0-9._-], max 128; the latest* family and release tags vX.Y.Z are reserved); skips git-tag naming, never pushes :latest'
+			description: 'Optional image tag override (OCI tag: starts [A-Za-z0-9_], then [A-Za-z0-9._-], max 128; the latest* family and release shapes like 3, 3.10, 3.10.0, 3.10.0-rc1, v3.10.0 are reserved); skips git-tag naming, never pushes :latest'
 		)
 	}
 
@@ -100,10 +100,19 @@ pipeline {
 					echo "Git commit SHA: ${env.GIT_COMMIT_SHA}"
 					echo "Git tag: ${env.GIT_TAG}"
 
-					env.GIT_TAG_SHORT =  sh(returnStdout: true, script: "echo ${env.GIT_TAG} | cut -f1-2 -d.").trim()
-
-					def isStableSemverTag = (env.GIT_TAG ==~ /^v\d+\.\d+\.\d+$/)
-					env.PUSH_LATEST = (env.GIT_TAG_COUNT.toInteger() > 0 && isStableSemverTag) ? "true" : "false"
+					env.IMAGE_TAG = env.GIT_TAG
+					env.IMAGE_ALIAS_TAGS = ''
+					if (env.GIT_TAG ==~ /^v\d+\.\d+\.\d+$/) {
+						def version = env.GIT_TAG.substring(1)
+						def parts = version.tokenize('.')
+						env.IMAGE_TAG = version
+						env.IMAGE_ALIAS_TAGS = "${parts[0]}.${parts[1]} ${parts[0]} latest"
+					} else if (env.GIT_TAG ==~ /^v\d+\.\d+\.\d+rc\d+$/) {
+						def rcAt = env.GIT_TAG.lastIndexOf('rc')
+						def version = env.GIT_TAG.substring(1, rcAt)
+						env.IMAGE_TAG = "${version}-rc${env.GIT_TAG.substring(rcAt + 2)}"
+						env.IMAGE_ALIAS_TAGS = "${version}-rc"
+					}
 
 					def customTag = (params.customImageTag ?: '').trim()
 					if (customTag) {
@@ -111,17 +120,17 @@ pipeline {
 							currentBuild.result = "FAILURE"
 							throw new Exception("Invalid customImageTag '${customTag}': must match ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}\$ (max 128 chars)")
 						}
-						// GIT_TAG drives the unguarded primary push, so a "latest" family or
-						// release-semver tag would republish an image the registry already
-						// maps to a different commit
-						if (customTag ==~ /^latest([._-].*)?$/ || customTag ==~ /^v\d+\.\d+\.\d+$/) {
+						// IMAGE_TAG drives the unguarded primary push, so a "latest" family or
+						// release tag would republish an image the registry already maps to a
+						// different commit
+						if (customTag ==~ /^latest([._-].*)?$/ || customTag ==~ /^v?\d+(\.\d+){0,2}(-?rc\d*)?$/) {
 							currentBuild.result = "FAILURE"
 							throw new Exception("Reserved customImageTag: ${customTag}")
 						}
 						env.GIT_TAG = customTag
-						env.GIT_TAG_SHORT = customTag
+						env.IMAGE_TAG = customTag
+						env.IMAGE_ALIAS_TAGS = ''
 						env.RELEASE_VER = customTag
-						env.PUSH_LATEST = "false"
 						sh "git tag -f -- \"${customTag}\" HEAD"
 						echo "Using custom image tag: ${customTag}"
 					}
@@ -201,16 +210,10 @@ pipeline {
 						set -o errexit
 						set -o pipefail
 
-						podman image push extensions:${GIT_TAG} labbox-mini.tp.int.percona.com:5555/pmm-extensions:${GIT_TAG}
-
-						if [ "${PUSH_LATEST}" = "true" ]; then
-							podman image tag extensions:${GIT_TAG} extensions:${GIT_TAG_SHORT}
-							podman image push extensions:${GIT_TAG_SHORT} labbox-mini.tp.int.percona.com:5555/pmm-extensions:${GIT_TAG_SHORT}
-							echo "Pushing labbox-mini.tp.int.percona.com:5555/pmm-extensions:latest"
-							podman image push extensions:${GIT_TAG} labbox-mini.tp.int.percona.com:5555/pmm-extensions:latest
-						else
-							echo "Skipping internal :${GIT_TAG_SHORT} and :latest push (not a stable release tag): ${GIT_TAG}"
-						fi
+						for tag in ${IMAGE_TAG} ${IMAGE_ALIAS_TAGS}; do
+							echo "Pushing labbox-mini.tp.int.percona.com:5555/pmm-extensions:${tag}"
+							podman image push extensions:${GIT_TAG} labbox-mini.tp.int.percona.com:5555/pmm-extensions:${tag}
+						done
 					'''
 
 					script {
@@ -220,15 +223,10 @@ pipeline {
 							set -o pipefail
 
 							echo -n "${DOCKER_TOKEN}" | podman login --authfile .dockerhub --username percona --password-stdin docker.io
-							podman image push --authfile .dockerhub extensions:${GIT_TAG} docker.io/percona/pmm-extensions:${GIT_TAG}
-
-							if [ "${PUSH_LATEST}" = "true" ]; then
-								podman image push --authfile .dockerhub extensions:${GIT_TAG_SHORT} docker.io/percona/pmm-extensions:${GIT_TAG_SHORT}
-								echo "Pushing docker.io/percona/pmm-extensions:latest"
-								podman image push --authfile .dockerhub extensions:${GIT_TAG} docker.io/percona/pmm-extensions:latest
-							else
-								echo "Skipping Docker Hub :${GIT_TAG_SHORT} and :latest push (not a stable release tag): ${GIT_TAG}"
-							fi
+							for tag in ${IMAGE_TAG} ${IMAGE_ALIAS_TAGS}; do
+								echo "Pushing docker.io/percona/pmm-extensions:${tag}"
+								podman image push --authfile .dockerhub extensions:${GIT_TAG} docker.io/percona/pmm-extensions:${tag}
+							done
 
 							podman logout --authfile .dockerhub docker.io
 							'''

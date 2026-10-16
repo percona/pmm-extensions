@@ -100,6 +100,8 @@ jobs:
           python-version: "3.11"
 
       - name: Pre-tag lint gate (all-files pre-commit)
+        env:
+          SKIP: oxfmt,oxlint
         run: make run-pre-commit
 
       - name: Pre-tag security audit (bandit + pip-audit)

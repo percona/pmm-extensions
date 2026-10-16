@@ -1,0 +1,18 @@
+name: Core approval trigger
+
+# Pull-request and review events run the pull request's own copy of a workflow,
+# so this one holds no token and does nothing: its completion starts
+# core-approval.yaml through workflow_run, which runs the default-branch copy.
+permissions: {}
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Evaluated by the Core approval workflow"

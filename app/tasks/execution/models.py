@@ -22,7 +22,7 @@ from collections.abc import AsyncGenerator
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.models import BaseCaseInsensitiveModel
-from app.core.pmm import await_annotation, schedule_annotation
+from app.core.pmm import schedule_annotation
 from app.core.utils import utc_now
 from app.tasks.crud import TaskHistoryManager
 from app.tasks.models import (
@@ -101,7 +101,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         was_running = queue_item.status == TaskHistoryStatusEnum.RUNNING
         # TODO(yan): Remove sync_task_history from here as it can keep the db session open for too long
         # SEP-554
-        queue_item = await self.sync_task_history(queue_item)
+        queue_item, _pending_event = await self.sync_task_history(queue_item)
         sync_resolved_it = queue_item.status.is_terminal()
         if not sync_resolved_it:
             queue_item.status = TaskHistoryStatusEnum.STOPPED
@@ -266,8 +266,8 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         queue_item: TaskHistory,
         writer_session: AsyncSession | None = None,
         *,
-        await_annotations: bool = False,
-    ) -> TaskHistory:
+        defer_terminal_annotation: bool = False,
+    ) -> tuple[TaskHistory, str | None]:
         """Sync the task history with the backend and trigger the configured alerts.
 
         :param queue_item: The task history record for tracking this execution.
@@ -275,13 +275,14 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
             for side-effect writes such as append-only log persistence. When
             ``None``, the executor falls back to whatever session management it
             has available.
-        :param await_annotations: When True, await the terminal PMM annotation
-            inline instead of scheduling it as a fire-and-forget background
-            task. Required from Celery contexts that drive the event loop via
-            discrete ``celery.loop.run_until_complete(...)`` calls; the FastAPI
-            default (``False``) keeps user-facing request paths (manual sync
-            route, connectivity polling, stop-task) non-blocking.
-        :return: The updated task history with execution details.
+        :param defer_terminal_annotation: When ``True``, do not schedule or
+            await the terminal PMM annotation here; return its event label for
+            the caller to handle after persisting the row. When ``False``
+            (default), schedule it as a fire-and-forget background task.
+        :return: The updated task history and, when
+            ``defer_terminal_annotation`` is ``True`` and a RUNNING-to-terminal
+            transition occurred, the PMM event label to await after save;
+            otherwise ``None``.
         """
         was_running = queue_item.status == TaskHistoryStatusEnum.RUNNING
         queue_item = await self._sync_task_history(
@@ -289,14 +290,15 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         )
         if queue_item.task.alert_on_fail:
             await queue_item.alert_for_status()
+        pending_event: str | None = None
         if was_running:
             event = _TERMINAL_STATUS_EVENT_MAP.get(queue_item.status)
             if event:
-                if await_annotations:
-                    await await_annotation(queue_item, event)
+                if defer_terminal_annotation:
+                    pending_event = event
                 else:
                     schedule_annotation(queue_item, event)
-        return queue_item
+        return queue_item, pending_event
 
     @abstractmethod
     async def _sync_task_history(

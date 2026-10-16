@@ -480,11 +480,11 @@ class TestMaybeRecordRun:
 def _flip_status(target: TaskHistoryStatusEnum, *, result: dict | None = None):
     """Return a fake executor that syncs an item to ``target`` and serves ``result``."""
 
-    async def _fake_sync(item, writer_session=None, *, await_annotations=False):
-        del writer_session, await_annotations
+    async def _fake_sync(item, writer_session=None, *, defer_terminal_annotation=False):
+        del writer_session, defer_terminal_annotation
         item.status = target
         item.finished_at = utc_now()
-        return item
+        return item, None
 
     executor = _fake_executor(
         _raising(_response_error(404))

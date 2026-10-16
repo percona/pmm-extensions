@@ -21,6 +21,7 @@ from starlette import status
 from starlette.testclient import TestClient
 
 from app.core.pagination import DEFAULT_PAGINATION_LIMIT
+from app.inventory.constants import SYNC_HEALTH_BULK_MAX_ENTRIES
 from app.inventory.models import Schema, Service, SyncOutcomeEnum, Table
 from tests.app.factories import SchemaWriteFactory, TableWriteFactory
 from tests.app.inventory.conftest import (
@@ -33,6 +34,7 @@ from tests.app.inventory.conftest import (
 EXPECTED_TABLE_COUNT = 2
 OFFSET_BEYOND_TOTAL = 999
 LIST_QUERY_MATCH_TOTAL = 2
+UNKNOWN_TABLE_ID = 99999
 
 
 class TestListTables:
@@ -476,6 +478,117 @@ class TestRecordTableSyncHealth:
         assert response.status_code == status.HTTP_204_NO_CONTENT
         await session.refresh(retired_table)
         assert retired_table.consecutive_failures == 1
+
+
+class TestRecordTablesSyncHealthBulk:
+    """Test the POST /tables/sync-health endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_records_every_entry(
+        self,
+        test_client: TestClient,
+        session: AsyncSession,
+        table: Table,
+        second_table: Table,
+    ) -> None:
+        """Apply a success and a failure, each to the table its id names."""
+        response = test_client.post(
+            "/tables/sync-health",
+            json=[
+                {"id": table.id, **sync_health_payload(SyncOutcomeEnum.SUCCESS)},
+                {
+                    "id": second_table.id,
+                    **sync_health_payload(SyncOutcomeEnum.FAILURE, "boom"),
+                },
+            ],
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"unresolved": []}
+        await session.refresh(table)
+        await session.refresh(second_table)
+        assert table.last_synced_at is not None
+        assert table.consecutive_failures == 0
+        assert second_table.last_sync_error == "boom"
+        assert second_table.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_table_does_not_reject_the_rest(
+        self, test_client: TestClient, session: AsyncSession, table: Table
+    ) -> None:
+        """Skip and return an id naming no table, recording the others."""
+        response = test_client.post(
+            "/tables/sync-health",
+            json=[
+                {
+                    "id": UNKNOWN_TABLE_ID,
+                    **sync_health_payload(SyncOutcomeEnum.SUCCESS),
+                },
+                {"id": table.id, **sync_health_payload(SyncOutcomeEnum.SUCCESS)},
+            ],
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"unresolved": [UNKNOWN_TABLE_ID]}
+        await session.refresh(table)
+        assert table.last_synced_at is not None
+
+    @pytest.mark.asyncio
+    async def test_a_retired_table_still_records_the_outcome(
+        self,
+        test_client: TestClient,
+        session: AsyncSession,
+        retired_table: Table,
+    ) -> None:
+        """Record the attempt against a table retired concurrently with the sync."""
+        response = test_client.post(
+            "/tables/sync-health",
+            json=[
+                {
+                    "id": retired_table.id,
+                    **sync_health_payload(SyncOutcomeEnum.FAILURE, "boom"),
+                }
+            ],
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        await session.refresh(retired_table)
+        assert retired_table.consecutive_failures == 1
+
+    @pytest.mark.parametrize(
+        "body", INVALID_SYNC_HEALTH_BODIES, ids=INVALID_SYNC_HEALTH_BODY_IDS
+    )
+    def test_rejects_an_inconsistent_or_incomplete_entry(
+        self, test_client: TestClient, table: Table, body: dict[str, str]
+    ) -> None:
+        """Refuse every entry shape the single-entity body declares invalid."""
+        response = test_client.post(
+            "/tables/sync-health", json=[{"id": table.id, **body}]
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    @pytest.mark.parametrize(
+        "count", [0, SYNC_HEALTH_BULK_MAX_ENTRIES + 1], ids=["empty", "oversized"]
+    )
+    def test_rejects_a_list_outside_its_bounds(
+        self, test_client: TestClient, table: Table, count: int
+    ) -> None:
+        """Refuse an empty list and one longer than a single request may carry."""
+        entry = {"id": table.id, **sync_health_payload(SyncOutcomeEnum.SUCCESS)}
+
+        response = test_client.post("/tables/sync-health", json=[entry] * count)
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_an_entry_without_an_id_is_rejected(self, test_client: TestClient) -> None:
+        """Refuse an entry that addresses no table."""
+        response = test_client.post(
+            "/tables/sync-health",
+            json=[sync_health_payload(SyncOutcomeEnum.SUCCESS)],
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
 
 class TestTableSyncHealthReads:

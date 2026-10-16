@@ -46,6 +46,7 @@ from app.extensions.main import (
     extensions_app,
     extensions_overrides_lifespan,
     extensions_startup,
+    validate_inventory_sync_syncers,
 )
 from app.inventory.main import inventory_app, inventory_overrides_lifespan
 from app.tasks.main import tasks_app, tasks_lifespan
@@ -76,12 +77,19 @@ async def main_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     :func:`app.extensions.main.extensions_lifespan`, which the standalone-app entry point
     uses for the same reason.
 
+    The scheduled-syncer check runs before ``tasks_lifespan`` because that is
+    what seeds the inventory-sync schedules a bad name would poison.
+
     :param app: The FastAPI application instance.
     :return: ``None``, once the lifespans have been entered.
+    :raises ValueError: When an inventory-sync schedule names an unconfigured syncer.
+    :raises ImportError: When a configured syncer's module cannot be imported.
+    :raises AttributeError: When a configured syncer's module has no such attribute.
     """
     detect_removed_auth_user_model()
     detect_removed_settings_override_keys()
     validate_importable_settings(*(s.syncer for s in extensions_settings.SYNCERS))
+    validate_inventory_sync_syncers()
     async with (
         extensions_overrides_lifespan(app),
         tasks_lifespan(app),
