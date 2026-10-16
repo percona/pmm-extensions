@@ -23,17 +23,11 @@ from alembic.config import Config
 from pydantic import SecretStr
 from sqlalchemy import URL
 
-from app.core.db.config import DatabaseOptions
 from app.core.utils.fields import AsyncDatabaseEngine
 from app.tasks.config import tasks_settings
 from tests.app.alembic_paths import ALEMBIC_INI
-from tests.app.conftest import POSTGRES_DSN_ENV, postgres_worker_schema
+from tests.app.conftest import postgres_worker_schema
 from tests.app.inventory.migrations.postgres_support import recreate_database
-
-#: The revision that attaches the ``taskhistory.status`` CHECK. The SQLite and
-#: real-PostgreSQL halves of that revision's coverage must land on the same
-#: revision so their assertions mean the same thing.
-TASKHISTORY_STATUS_CONSTRAINT_REVISION = "9c1d4f7a6b32"
 
 #: The head immediately before the CHECK constraint is added.
 TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION = "b5e17f6b3bc7"
@@ -43,53 +37,6 @@ TASKHISTORY_STATUS_CONSTRAINT = "taskhistorystatusenum"
 
 #: A status name no member of the enum carries, so only the CHECK rejects it.
 TASKHISTORY_STATUS_OUT_OF_ENUM = "ABANDONED"
-
-#: PostgreSQL ``NAMEDATALEN - 1`` — identifiers longer than this are truncated
-#: by the server, which would make CREATE/DROP target a different name than
-#: the URL the tests connect with.
-_PG_IDENT_MAX = 63
-
-
-class _DatabaseUrlOverride:
-    """Expose a fixed ``URL`` while proxying every other attribute.
-
-    ``DatabaseOptions.URL`` rebuilds from HOST/USER/PASSWORD/NAME and drops
-    query parameters (``sslmode``, …). Alembic's ``env.py`` connects through
-    that property, while the test engines use the full ``asyncpg`` URL, so the
-    two must be forced onto the same string.
-    """
-
-    __slots__ = ("_database", "_url")
-
-    def __init__(self, database: DatabaseOptions, url: str) -> None:
-        object.__setattr__(self, "_database", database)
-        object.__setattr__(self, "_url", url)
-
-    def __getattr__(self, name: str) -> object:
-        # ``URL`` must match ``DatabaseOptions.URL`` (uppercase); served via
-        # ``__getattr__`` so N802 does not fire on a property definition.
-        if name == "URL":
-            return object.__getattribute__(self, "_url")
-        return getattr(object.__getattribute__(self, "_database"), name)
-
-
-def _tasks_worker_database_name(maintenance_url: URL) -> str:
-    """Return a per-worker database name that fits PostgreSQL's identifier limit.
-
-    :param maintenance_url: The DSN URL used for ``CREATE``/``DROP DATABASE``.
-    :return: A database name unique to this xdist worker.
-    """
-    if not maintenance_url.database:
-        pytest.fail(
-            f"{POSTGRES_DSN_ENV} must include a database name "
-            "(maintenance connection for CREATE/DROP DATABASE)"
-        )
-    # Short fixed prefix + worker token: independent of the (possibly long) DSN
-    # database name, and unique across xdist workers.
-    name = f"tasks_{postgres_worker_schema()}"
-    if len(name) > _PG_IDENT_MAX:
-        name = name[:_PG_IDENT_MAX]
-    return name
 
 
 @pytest.fixture
@@ -119,13 +66,9 @@ def tasks_postgres_config(
     the per-worker *schema* the other PostgreSQL fixtures use cannot isolate it;
     a database per xdist worker does, and is dropped on teardown.
 
-    The yielded ``asyncpg`` URL is also installed as ``DATABASE.URL``, so Alembic
-    and the test-side engines share one connection string — including query
-    parameters the field-wise ``DatabaseOptions.URL`` rebuild would drop.
-
     :return: The Alembic config and the ``asyncpg`` URL of the worker database.
     """
-    worker_name = _tasks_worker_database_name(postgres_async_url)
+    worker_name = f"tasks_{postgres_worker_schema()}"
     worker_url = postgres_async_url.set(database=worker_name)
     recreate_database(postgres_async_url, worker_name)
     database = tasks_settings.DATABASE
@@ -139,13 +82,6 @@ def tasks_postgres_config(
     monkeypatch.setattr(database, "HOST", postgres_async_url.host)
     monkeypatch.setattr(database, "PORT", postgres_async_url.port)
     monkeypatch.setattr(database, "NAME", worker_name)
-    monkeypatch.setattr(
-        tasks_settings,
-        "DATABASE",
-        _DatabaseUrlOverride(
-            database, worker_url.render_as_string(hide_password=False)
-        ),
-    )
 
     cfg = Config(str(ALEMBIC_INI), ini_section="tasks")
     try:

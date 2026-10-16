@@ -23,9 +23,6 @@ this engine takes is never exercised.
 Everything runs over ``asyncpg``: the tasks track's ``env.py`` builds its own
 async engine, and the ``test_postgres`` CI job installs the ``postgresql`` group
 only, so no sync driver is available to lean on.
-
-Both cases stop at the CHECK revision itself rather than ``heads``, so a
-failure in an unrelated later revision cannot mask or break this harness.
 """
 
 import pytest
@@ -38,7 +35,6 @@ from app.tasks.models import TaskHistoryStatusEnum
 from tests.app.inventory.migrations.postgres_support import run_on_postgres
 from tests.app.tasks.migrations.conftest import (
     TASKHISTORY_STATUS_CONSTRAINT,
-    TASKHISTORY_STATUS_CONSTRAINT_REVISION,
     TASKHISTORY_STATUS_OUT_OF_ENUM,
     TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION,
 )
@@ -63,7 +59,7 @@ async def _insert_task(conn: AsyncConnection, name: str) -> int:
             "INSERT INTO task (created_at, updated_at, name, data, backend, owner, "
             "is_template, protected, alert_on_fail) "
             f"VALUES ({_SEED_TIMESTAMPS}, {_SEED_TIMESTAMPS}, :name, "
-            "CAST('{{}}' AS JSON), 'NOMAD', 'ANY', false, false, false) "
+            "CAST('{}' AS JSON), 'NOMAD', 'ANY', false, false, false) "
             "RETURNING id"
         ),
         {"name": name},
@@ -105,7 +101,7 @@ async def _history_status(conn: AsyncConnection, history_id: int) -> str:
 def test_upgrade_rejects_out_of_enum_status(tasks_postgres_config):
     """Carry the CHECK after the plain ALTER, and reject an out-of-enum status."""
     cfg, url = tasks_postgres_config
-    command.upgrade(cfg, TASKHISTORY_STATUS_CONSTRAINT_REVISION)
+    command.upgrade(cfg, "heads")
 
     assert run_on_postgres(url, _constraint_count) == 1
 
@@ -125,7 +121,7 @@ def test_upgrade_rejects_out_of_enum_status(tasks_postgres_config):
 def test_downgrade_accepts_out_of_enum_status(tasks_postgres_config):
     """Accept an out-of-enum status again once the CHECK has been dropped."""
     cfg, url = tasks_postgres_config
-    command.upgrade(cfg, TASKHISTORY_STATUS_CONSTRAINT_REVISION)
+    command.upgrade(cfg, "heads")
     command.downgrade(cfg, TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION)
 
     assert run_on_postgres(url, _constraint_count) == 0
