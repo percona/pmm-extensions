@@ -23,12 +23,12 @@ forward ``VERSION`` (and ``RC`` for ``release-rc``) to this script.
 
 Subcommands:
 
-- ``prep``: Day-27 prep step. Creates ``release/vX.Y.Z`` from ``main``
+- ``prep``: optional prep step. Creates ``release/vX.Y.Z`` from ``main``
   HEAD, dispatches the Jira ``version-create`` automation webhook to lock
   the ``fixVersion=sep-next`` scope, opens the ``main`` dev-version-bump
   PR, smoke-builds the wheel, and triggers an internal-registry-only
-  Jenkins build for the team-wide internal QA day before rc1 publishes
-  to Docker Hub. No version bump, no tag.
+  Jenkins build before rc1 publishes to Docker Hub. No version bump, no
+  tag.
 - ``rc``: cut release candidate ``vX.Y.ZrcN``. ``RC=1`` runs from
   ``main`` (legacy fresh-from-main path) or, if a prior ``prep`` already
   pushed ``release/vX.Y.Z``, from that existing branch (after-prep
@@ -874,26 +874,23 @@ def _print_stable_next_steps(version: str) -> None:
 
 
 def cmd_prep(version: str, *, sign_via_github_api: bool) -> int:
-    """Prepare a release on Day 27: scope-lock without bumping or tagging.
+    """Prepare a release: scope-lock without bumping or tagging.
 
     Carries the scope-lock side effects of today's atomic ``cmd_rc(RC=1)`` —
     create + push the release branch, fire the Jira version-create webhook,
     open the dev-bump PR on main, smoke-build the wheel, and trigger an
     internal-only Jenkins build (``pushImageDocker=false``) tagged by HEAD
-    SHA. The follow-up ``cmd_rc(RC=1)`` (Day 28) does the version bump, tag,
+    SHA. The follow-up ``cmd_rc(RC=1)`` does the version bump, tag,
     GH pre-release, and the Docker-Hub-pushing Jenkins build.
 
     :param version: The X.Y.Z release version (no ``v`` prefix).
-    :type version: str
     :param sign_via_github_api: Forwarded to the (subsequent) RC1 run; not
         used by ``prep`` itself because ``prep`` does not create a tag.
         Accepted here only so the workflow can pass the same flag through
         a single env-driven path. ``gh`` availability is still validated
         when ``True`` so a missing CLI surfaces at prep time rather than
-        the next day.
-    :type sign_via_github_api: bool
+        at rc1.
     :return: Process exit code (``0`` on success).
-    :rtype: int
     """
     branch = f"release/v{version}"
 
@@ -1045,7 +1042,7 @@ def cmd_rc(version: str, rc: int, *, sign_via_github_api: bool) -> int:
         # "Create Jira version" reminder — when after-prep and the local
         # env is missing the webhook secrets, the helper returns False and
         # we correctly print the reminder, because the planner cannot
-        # actually verify Day 27's webhook succeeded just from branch
+        # actually verify the prep webhook succeeded just from branch
         # existence.
         jira_version_created = _invoke_post_jira_webhook(
             WEBHOOK_CREATE_URL_ENV,
@@ -1458,9 +1455,9 @@ def build_parser() -> argparse.ArgumentParser:
     prep_parser = subparsers.add_parser(
         "prep",
         help=(
-            "Prep a release on Day 27: create release branch, lock scope, "
-            "trigger an internal-only Jenkins build for the team-wide internal "
-            "QA day before rc1 is published to Docker Hub."
+            "Prep a release: create release branch, lock scope, "
+            "trigger an internal-registry-only Jenkins build "
+            "before rc1 is published to Docker Hub."
         ),
     )
     prep_parser.add_argument("--version", required=True, help="X.Y.Z")
