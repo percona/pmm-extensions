@@ -20,14 +20,15 @@ from pathlib import Path
 
 import pytest
 from alembic.config import Config
-from pydantic import SecretStr
 from sqlalchemy import URL
 
-from app.core.utils.fields import AsyncDatabaseEngine
 from app.tasks.config import tasks_settings
 from tests.app.alembic_paths import ALEMBIC_INI
 from tests.app.conftest import postgres_worker_schema
-from tests.app.inventory.migrations.postgres_support import recreate_database
+from tests.app.inventory.migrations.postgres_support import (
+    point_database_at,
+    recreate_database,
+)
 
 #: The head immediately before the CHECK constraint is added.
 TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION = "b5e17f6b3bc7"
@@ -71,17 +72,9 @@ def tasks_postgres_config(
     worker_name = f"tasks_{postgres_worker_schema()}"
     worker_url = postgres_async_url.set(database=worker_name)
     recreate_database(postgres_async_url, worker_name)
-    database = tasks_settings.DATABASE
-    monkeypatch.setattr(database, "ENGINE", AsyncDatabaseEngine.POSTGRESQL)
-    monkeypatch.setattr(database, "USER", postgres_async_url.username)
-    monkeypatch.setattr(
-        database,
-        "PASSWORD",
-        SecretStr(postgres_async_url.password) if postgres_async_url.password else None,
+    point_database_at(
+        monkeypatch, tasks_settings.DATABASE, postgres_async_url, worker_name
     )
-    monkeypatch.setattr(database, "HOST", postgres_async_url.host)
-    monkeypatch.setattr(database, "PORT", postgres_async_url.port)
-    monkeypatch.setattr(database, "NAME", worker_name)
 
     cfg = Config(str(ALEMBIC_INI), ini_section="tasks")
     try:

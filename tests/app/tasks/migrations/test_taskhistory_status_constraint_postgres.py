@@ -39,8 +39,8 @@ from tests.app.tasks.migrations.conftest import (
     TASKHISTORY_STATUS_PRE_CONSTRAINT_REVISION,
 )
 
-#: The ``created_at`` / ``updated_at`` pair every real-PostgreSQL seed needs,
-#: spelled with the offset ``timestamptz`` requires.
+#: Seed value for the rows' timestamp columns, pinned to UTC so it does not
+#: depend on the session's ``TimeZone``.
 _SEED_TIMESTAMPS = "'2026-01-01 00:00:00+00'"
 
 _CONSTRAINT_PRESENT = (
