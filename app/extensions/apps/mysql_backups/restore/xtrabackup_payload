@@ -2207,29 +2207,27 @@ class Xtrabackup(Restore):
                     dst_file.write(re.sub(r'^([\s]*server[_-]id[\s]*=[\s]*)(\d*)', r'\1 %s' % new_server_id, line, flags=re.M))
 
     def _get_new_server_id(self):
-        """ try to get the server ip"""
-        active_ids = []
+        """Return a random server-id, skipping any id the master reports for itself or its replicas.
 
-        # We check for server_id only if we know the master ip
+        A master query that fails with BackupError, or with ProgrammingError for SQL the
+        server no longer supports, contributes no ids instead of raising.
+        """
+        active_ids = set()
         if self.master_ip:
-            # get master server_id
+            # mysqld is already stopped here, so an unknown id beats a failed restore.
             try:
-                result = self._query_mysql('SELECT @@server_id', host=self.master_ip, port=self.master_port)
-            except BackupError:
+                master = self._query_mysql('SELECT @@server_id', host=self.master_ip, port=self.master_port)
+            except (BackupError, ProgrammingError):
                 pass
-
-            if result and result['@@server_id']:
-                active_ids.append(int(result['@@server_id']))
-
-            # get slaves id
+            else:
+                if master and master['@@server_id']:
+                    active_ids.add(int(master['@@server_id']))
             try:
-                result = self._query_mysql('SHOW SLAVE HOSTS', fetchall=True, host=self.master_ip, port=self.master_port)
-            except BackupError:
+                replicas = self._query_mysql('SHOW SLAVE HOSTS', fetchall=True, host=self.master_ip, port=self.master_port)
+            except (BackupError, ProgrammingError):
                 pass
-
-            if result:
-                for row in result:
-                    active_ids.append(int(row['Server_id']))
+            else:
+                active_ids.update(int(row['Server_id']) for row in replicas or ())
 
         new_server_id = random.randint(1, 4294967295)
         while new_server_id in active_ids:
