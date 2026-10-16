@@ -23,6 +23,9 @@ core API only (``app.openapi()``), not the merged ``/api/openapi.json`` document
 Run this outside pytest: sibling conftests inject routers into the process-global
 ``extensions_app`` at import time, so a spec computed inside the test process would
 depend on test-collection order.
+
+``info.version`` is written as :data:`FIXTURE_VERSION`, not the app version, so a
+release's version bump does not make the fixtures stale.
 """
 
 import argparse
@@ -39,6 +42,10 @@ from cryptography.fernet import Fernet
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SPECS_DIR = REPO_ROOT / "frontend" / "packages" / "api" / "specs"
 
+#: The ``info.version`` every committed fixture carries. The codegen never reads
+#: it, and the live app's own version changes on every release bump.
+FIXTURE_VERSION = "unversioned"
+
 
 def canonical(doc: dict[str, Any]) -> str:
     """Return deterministic JSON for ``doc``: sorted keys, 2-space indent, trailing newline.
@@ -51,6 +58,15 @@ def canonical(doc: dict[str, Any]) -> str:
     :return: Canonical UTF-8 JSON text with a single trailing newline.
     """
     return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def unversioned(doc: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``doc`` whose ``info.version`` is :data:`FIXTURE_VERSION`.
+
+    :param doc: The OpenAPI document as the app generates it.
+    :return: The document with every other field unchanged.
+    """
+    return {**doc, "info": {**doc["info"], "version": FIXTURE_VERSION}}
 
 
 _ORIGINAL_GET_MODEL_NAME_MAP = fastapi.openapi.utils.get_model_name_map
@@ -220,7 +236,7 @@ def main() -> int:
 
     drift = []
     for name, fastapi_app in apps.items():
-        content = canonical(namespaced_openapi(fastapi_app))
+        content = canonical(unversioned(namespaced_openapi(fastapi_app)))
         target = SPECS_DIR / f"{name}.json"
         if args.check:
             if not target.exists() or target.read_text(encoding="utf-8") != content:
