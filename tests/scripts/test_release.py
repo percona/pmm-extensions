@@ -1636,3 +1636,59 @@ def test_cmd_stable_aborts_if_unexpected_merge_failure(repo, monkeypatch):
 
     rc = release.cmd_stable("0.13.0", sign_via_github_api=False)
     assert rc != 0
+
+
+# --- _release_notes ---------------------------------------------------------
+
+
+def _install_generated_notes(monkeypatch, body):
+    """Make the generate-notes call return ``body`` and record each command."""
+    calls = []
+
+    def fake_run(cmd, *, check=True, capture=False):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=body, stderr=""
+        )
+
+    monkeypatch.setattr(release, "_run", fake_run)
+    return calls
+
+
+def test_release_notes_within_the_limit_are_used_verbatim(monkeypatch):
+    """Pass notes no longer than GitHub's limit through unchanged."""
+    body = "## What's Changed\n* SEP-1: a change\n" + "x" * 100
+    calls = _install_generated_notes(monkeypatch, body)
+
+    assert release._release_notes("v3.10.0rc1") == body
+    assert "tag_name=v3.10.0rc1" in calls[0]
+
+
+def test_release_notes_past_the_limit_keep_only_the_compare_link(monkeypatch):
+    """Shrink notes past the limit to a notice plus GitHub's compare link."""
+    compare = (
+        "**Full Changelog**: "
+        "https://github.com/percona/pmm-extensions/compare/v0.13.1...v3.10.0rc1"
+    )
+    body = "* SEP-1: a change\n" * 10_000 + "\n" + compare + "\n"
+    assert len(body) > release._RELEASE_BODY_LIMIT
+    _install_generated_notes(monkeypatch, body)
+
+    notes = release._release_notes("v3.10.0rc1")
+
+    assert notes.endswith(compare + "\n")
+    assert "v3.10.0rc1 exceed GitHub's 125,000-character limit" in notes
+    assert len(notes) < release._RELEASE_BODY_LIMIT
+
+
+def test_release_notes_past_the_limit_without_a_compare_link(monkeypatch):
+    """Keep only the notice when notes past the limit carry no compare line."""
+    body = "* SEP-1: a change\n" * 10_000
+    _install_generated_notes(monkeypatch, body)
+
+    notes = release._release_notes("v3.10.0")
+
+    assert notes == (
+        "The changes in v3.10.0 exceed GitHub's 125,000-character limit for "
+        "release notes.\n"
+    )
