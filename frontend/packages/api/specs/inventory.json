@@ -3135,7 +3135,7 @@
   "info": {
     "description": "PMM Extensions — inventory (nodes, services, schemas, tables).",
     "title": "PMM Extensions Inventory API",
-    "version": "v3.10.0.dev0"
+    "version": "v3.11.0.dev0"
   },
   "openapi": "3.1.0",
   "paths": {

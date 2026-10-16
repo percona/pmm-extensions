@@ -1,0 +1,51 @@
+name: Core approval
+
+permissions:
+  contents: read
+
+on:
+  workflow_run:
+    workflows: [Core approval trigger]
+    types: [completed]
+  # Catches pull requests whose trigger never reached this workflow (Dependabot's
+  # runs get no secrets; Copilot's are held for approval) and clears the held runs.
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+# Runs are serialized so a slower run cannot overwrite a newer verdict, and every
+# run evaluates every open pull request, so a queued run that a newer one replaces
+# loses nothing.
+concurrency:
+  group: core-approval
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.actor.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    # The environment only admits the default branch, so the read:org token never
+    # reaches a workflow a branch could have edited.
+    environment: core-approval
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          sparse-checkout: |
+            .github
+            scripts
+      - name: Evaluate core approvals
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CORE_APPROVAL_READ_ORG_TOKEN: ${{ secrets.CORE_APPROVAL_READ_ORG_TOKEN }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/core_approval.py \
+            --owner "${GITHUB_REPOSITORY_OWNER}" \
+            --repo "${GITHUB_REPOSITORY#*/}" \
+            --target-url "${TARGET_URL}"
