@@ -128,7 +128,7 @@
 | app/extensions/apps/alerts/restore.py                                                                                               |       95 |        0 |       26 |        0 |    100% |           |
 | app/extensions/apps/alters/api\_routes.py                                                                                           |       38 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/alters/app.py                                                                                                   |       10 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/alters/deps.py                                                                                                  |      211 |       11 |       62 |       11 |     92% |101, 131-\>143, 137-\>136, 141-\>136, 144, 347, 417-418, 557, 580-581, 701, 712, 714, 754-\>758 |
+| app/extensions/apps/alters/deps.py                                                                                                  |      211 |       11 |       62 |       12 |     92% |101, 131-\>143, 137-\>136, 141-\>136, 144, 220-\>222, 347, 417-418, 557, 580-581, 701, 712, 714, 754-\>758 |
 | app/extensions/apps/alters/form\_backfill.py                                                                                        |       32 |        1 |       10 |        1 |     95% |       102 |
 | app/extensions/apps/alters/models.py                                                                                                |       49 |        1 |        6 |        1 |     96% |       121 |
 | app/extensions/apps/alters/schema.py                                                                                                |        7 |        0 |        0 |        0 |    100% |           |
@@ -445,7 +445,7 @@
 | app/tasks/anonymizer/anonymize.py                                                                                                   |       56 |        0 |       18 |        2 |     97% |75-\>84, 120-\>124 |
 | app/tasks/anonymizer/config.py                                                                                                      |       29 |        1 |        6 |        1 |     94% |        76 |
 | app/tasks/anonymizer/entities.py                                                                                                    |       28 |        0 |        2 |        0 |    100% |           |
-| app/tasks/celery.py                                                                                                                 |      431 |       11 |      102 |        9 |     96% |319-\>331, 328-\>330, 543, 549, 618-620, 821, 828-\>832, 888, 1091-\>exit, 1184, 1253, 1276-1277, 1374-\>1389 |
+| app/tasks/celery.py                                                                                                                 |      433 |       11 |      104 |        9 |     96% |319-\>331, 328-\>330, 543, 549, 618-620, 821, 828-\>832, 888, 1091-\>exit, 1191, 1260, 1283-1284, 1381-\>1396 |
 | app/tasks/config.py                                                                                                                 |       66 |        0 |       12 |        0 |    100% |           |
 | app/tasks/connectivity/constants.py                                                                                                 |        5 |        0 |        0 |        0 |    100% |           |
 | app/tasks/connectivity/models.py                                                                                                    |       11 |        0 |        0 |        0 |    100% |           |
@@ -463,7 +463,7 @@
 | app/tasks/execution/executors/nomad/log\_follow.py                                                                                  |      160 |        0 |       50 |        1 |     99% |144-\>exit |
 | app/tasks/execution/executors/nomad/models.py                                                                                       |     1157 |       30 |      382 |       20 |     97% |238, 245, 313-\>315, 507, 577-580, 581-\>exit, 621, 623-\>617, 672, 715, 987, 1118, 1236-\>1238, 1559-\>1557, 1597-\>1602, 1606, 1612, 1647-1652, 2381, 2476, 2881-2882, 3407-\>3406, 3477-3479, 3535, 3718, 3817-3818, 3893-3894 |
 | app/tasks/execution/executors/nomad/steps.py                                                                                        |       20 |        0 |        0 |        0 |    100% |           |
-| app/tasks/execution/models.py                                                                                                       |       63 |        2 |       14 |        0 |     97% |  178, 244 |
+| app/tasks/execution/models.py                                                                                                       |       64 |        2 |       14 |        0 |     97% |  178, 244 |
 | app/tasks/execution/nomad\_lifecycle.py                                                                                             |       91 |        0 |       20 |        3 |     97% |176-\>182, 233-\>237, 237-\>exit |
 | app/tasks/execution/utils.py                                                                                                        |       16 |        0 |        2 |        0 |    100% |           |
 | app/tasks/execution\_request\_secrets.py                                                                                            |       88 |        0 |       34 |        0 |    100% |           |
@@ -541,7 +541,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35109** | **1779** | **8476** |  **702** | **93%** |           |
+| **TOTAL**                                                                                                                           | **35112** | **1779** | **8478** |  **703** | **93%** |           |
 
 
 ## Setup coverage badge
