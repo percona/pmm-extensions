@@ -595,7 +595,8 @@ def _release_notes(tag: str) -> str:
 
     ``gh release create --generate-notes`` fails outright when the generated
     body exceeds GitHub's limit, which the notes for a long release cycle do.
-    Past the limit the body keeps only GitHub's "Full Changelog" compare link.
+    Past the limit the body is a one-line notice, followed by GitHub's "Full
+    Changelog" compare link when the generated notes carry one.
 
     :param tag: The already-pushed tag the release is created for.
     :return: The release body.
