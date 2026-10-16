@@ -128,7 +128,7 @@
 | app/extensions/apps/alerts/restore.py                                                                                               |       95 |        0 |       26 |        0 |    100% |           |
 | app/extensions/apps/alters/api\_routes.py                                                                                           |       38 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/alters/app.py                                                                                                   |       10 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/alters/deps.py                                                                                                  |      211 |       11 |       62 |       12 |     92% |101, 131-\>143, 137-\>136, 141-\>136, 144, 220-\>222, 347, 417-418, 557, 580-581, 701, 712, 714, 754-\>758 |
+| app/extensions/apps/alters/deps.py                                                                                                  |      211 |       11 |       62 |       11 |     92% |101, 131-\>143, 137-\>136, 141-\>136, 144, 347, 417-418, 557, 580-581, 701, 712, 714, 754-\>758 |
 | app/extensions/apps/alters/form\_backfill.py                                                                                        |       32 |        1 |       10 |        1 |     95% |       102 |
 | app/extensions/apps/alters/models.py                                                                                                |       49 |        1 |        6 |        1 |     96% |       121 |
 | app/extensions/apps/alters/schema.py                                                                                                |        7 |        0 |        0 |        0 |    100% |           |
@@ -385,7 +385,7 @@
 | app/extensions/sync/exceptions.py                                                                                                   |       36 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/fields.py                                                                                                       |       21 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/health.py                                                                                                       |       86 |        0 |       22 |        2 |     98% |234-\>238, 235-\>234 |
-| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 128, 130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
+| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 129-130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
 | app/extensions/sync/syncers/mysql/payload.py                                                                                        |      176 |       47 |       54 |        5 |     70% |158-\>166, 242-246, 251-256, 269-275, 279-302, 356-\>372, 375, 396-404, 423 |
 | app/extensions/sync/syncers/mysql/syncer.py                                                                                         |      241 |        2 |       94 |        5 |     98% |111, 604-\>605, 716, 819-\>823, 821-\>820 |
 | app/extensions/sync/syncers/pmm.py                                                                                                  |      169 |        2 |       46 |        2 |     98% |  109, 143 |
@@ -461,7 +461,7 @@
 | app/tasks/execution/executors/nomad/constants.py                                                                                    |        2 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/executors/nomad/exceptions.py                                                                                   |        8 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/executors/nomad/log\_follow.py                                                                                  |      160 |        0 |       50 |        1 |     99% |144-\>exit |
-| app/tasks/execution/executors/nomad/models.py                                                                                       |     1157 |       30 |      382 |       20 |     97% |238, 245, 313-\>315, 507, 577-580, 581-\>exit, 621, 623-\>617, 672, 715, 987, 1118, 1236-\>1238, 1559-\>1557, 1597-\>1602, 1606, 1612, 1647-1652, 2381, 2476, 2881-2882, 3407-\>3406, 3477-3479, 3535, 3718, 3817-3818, 3893-3894 |
+| app/tasks/execution/executors/nomad/models.py                                                                                       |     1157 |       11 |      382 |       14 |     98% |238, 245, 313-\>315, 577-580, 581-\>exit, 621, 623-\>617, 987, 1236-\>1238, 1559-\>1557, 1597-\>1602, 2381, 2476, 3407-\>3406, 3718 |
 | app/tasks/execution/executors/nomad/steps.py                                                                                        |       20 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/models.py                                                                                                       |       64 |        2 |       14 |        0 |     97% |  178, 244 |
 | app/tasks/execution/nomad\_lifecycle.py                                                                                             |       91 |        0 |       20 |        3 |     97% |176-\>182, 233-\>237, 237-\>exit |
@@ -541,7 +541,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35112** | **1779** | **8478** |  **703** | **93%** |           |
+| **TOTAL**                                                                                                                           | **35112** | **1760** | **8478** |  **696** | **94%** |           |
 
 
 ## Setup coverage badge
