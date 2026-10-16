@@ -52,13 +52,19 @@ instead of aborting a flow that has already pushed its release branch
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 PYPROJECT = Path("pyproject.toml")
 APP_INIT = Path("app/__init__.py")
@@ -621,6 +627,25 @@ def _release_notes(tag: str) -> str:
     return "\n\n".join(paragraphs) + "\n"
 
 
+@contextlib.contextmanager
+def _release_notes_file(tag: str) -> Iterator[Path]:
+    """Write the release notes for ``tag`` to a temporary UTF-8 file.
+
+    ``gh release create --notes`` takes the body as a single argv element, which
+    Linux caps at 128 KiB in bytes, so a body under the character limit that
+    holds multi-byte characters can still fail with ``Argument list too long``.
+    ``--notes-file`` has no such cap.
+
+    :param tag: The already-pushed tag the release is created for.
+    :return: A context manager yielding the path of the file holding the release
+        body.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        notes_file = Path(directory) / "release-notes.md"
+        notes_file.write_text(_release_notes(tag), encoding="utf-8")
+        yield notes_file
+
+
 def _create_rc_github_prerelease(rc_tag: str, branch: str, wheel: Path) -> None:
     """Create the RC GitHub pre-release and upload the wheel artifact.
 
@@ -638,19 +663,20 @@ def _create_rc_github_prerelease(rc_tag: str, branch: str, wheel: Path) -> None:
         print("Note: gh CLI not found, skipping GitHub release creation.")
         return
     print("==> Creating GitHub pre-release...")
-    _run(
-        [
-            "gh",
-            "release",
-            "create",
-            rc_tag,
-            "--prerelease",
-            "--notes",
-            _release_notes(rc_tag),
-            "--target",
-            branch,
-        ],
-    )
+    with _release_notes_file(rc_tag) as notes_file:
+        _run(
+            [
+                "gh",
+                "release",
+                "create",
+                rc_tag,
+                "--prerelease",
+                "--notes-file",
+                str(notes_file),
+                "--target",
+                branch,
+            ],
+        )
     _run(["gh", "release", "upload", rc_tag, str(wheel)])
 
 
@@ -1332,7 +1358,17 @@ def cmd_stable(version: str, *, sign_via_github_api: bool) -> int:
 
     if _gh_available():
         print("==> Creating GitHub release...")
-        _run(["gh", "release", "create", tag, "--notes", _release_notes(tag)])
+        with _release_notes_file(tag) as notes_file:
+            _run(
+                [
+                    "gh",
+                    "release",
+                    "create",
+                    tag,
+                    "--notes-file",
+                    str(notes_file),
+                ]
+            )
         _run(["gh", "release", "upload", tag, str(wheel)])
     else:
         print("Note: gh CLI not found, skipping GitHub release creation.")

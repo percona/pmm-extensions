@@ -1692,3 +1692,51 @@ def test_release_notes_past_the_limit_without_a_compare_link(monkeypatch):
         "The changes in v3.10.0 exceed GitHub's 125,000-character limit for "
         "release notes.\n"
     )
+
+
+_MAX_ARGV_BYTES = 131_072
+
+
+def _install_notes_file_capture(monkeypatch, body):
+    """Fake ``_run`` so each ``gh release create`` records its notes file."""
+    created = []
+
+    def fake_run(cmd, *, check=True, capture=False):
+        if cmd[:3] == ["gh", "release", "create"]:
+            created.append(
+                (cmd, Path(cmd[cmd.index("--notes-file") + 1]).read_text("utf-8"))
+            )
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=body, stderr=""
+        )
+
+    monkeypatch.setattr(release, "_run", fake_run)
+    monkeypatch.setattr(release, "_gh_available", lambda: True)
+    return created
+
+
+def test_rc_prerelease_passes_a_multibyte_body_through_a_notes_file(
+    monkeypatch, tmp_path
+):
+    """Hand a 136,000-byte body to ``gh`` by file, not as an oversized argv element."""
+    body = "a" * 118_000 + "\u2014" * 6_000
+    assert len(body) <= release._RELEASE_BODY_LIMIT
+    assert len(body.encode()) > _MAX_ARGV_BYTES
+    created = _install_notes_file_capture(monkeypatch, body)
+
+    release._create_rc_github_prerelease("v3.10.0rc1", "release/v3.10.0", tmp_path)
+
+    cmd, written = created[0]
+    assert "--notes" not in cmd
+    assert all(len(arg.encode()) <= _MAX_ARGV_BYTES for arg in cmd)
+    assert written == body
+
+
+def test_release_notes_file_is_removed_on_exit(monkeypatch):
+    """Delete the temporary notes file once the context exits."""
+    _install_generated_notes(monkeypatch, "body \u2014\n")
+
+    with release._release_notes_file("v3.10.0") as notes_file:
+        assert notes_file.read_text(encoding="utf-8") == "body \u2014\n"
+
+    assert not notes_file.exists()
