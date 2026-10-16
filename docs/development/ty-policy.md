@@ -688,14 +688,17 @@ The retired row held two groups: a `Field(...)` default ty read as `FieldInfo`
 the source, ty stopped reporting either shape, so both groups were removed from
 the classifier; either message reappearing is now a first-party regression.
 
-One group is additionally confined to a set of paths. `Cannot resolve imported
+Three groups are additionally confined to specific paths. `Cannot resolve imported
 module` reads identically for a golden-app module scaffolded at test time and for
 a first-party import someone mistyped, so the message alone cannot establish the
 verdict; `absent-modules` therefore matches only under
 `tests/app/extensions/apps/framework/golden/` and at
+`app/extensions/apps/om_inventory/payload/probe.py` and
 `app/extensions/sync/syncers/system_facts/payload.py`, and a mistyped import anywhere
-else stays a first-party defect. Every other group's message carries the evidence
-on its own and matches at any path.
+else stays a first-party defect. `predicate-dsl-comparison-operators` matches only
+at `app/extensions/apps/framework/rules.py`, and `factory-built-annotated-alias`
+only at `app/extensions/apps/mysql_backups/forms.py`. Every other group's message
+carries the evidence on its own and matches at any path.
 
 ### Two mechanisms, chosen per (file, rule) pair
 
