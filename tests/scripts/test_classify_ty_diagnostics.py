@@ -697,7 +697,9 @@ class TestCorpusReadOfAssembledRows:
     ``test_corpus_read_resolves_a_message_bound_to_a_module_constant`` gives.
     """
 
-    ROW_PREFIX: str = f"app/extensions/config.py:1:1: warning[{RULE_CLAIMED_BY_NO_GROUP}] "
+    ROW_PREFIX: str = (
+        f"app/extensions/config.py:1:1: warning[{RULE_CLAIMED_BY_NO_GROUP}] "
+    )
 
     @pytest.mark.parametrize(
         "assignment",
