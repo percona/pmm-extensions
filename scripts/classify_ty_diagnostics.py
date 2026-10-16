@@ -18,8 +18,8 @@
 ``make typecheck`` reports thousands of diagnostics and nothing in the output says
 which of them describe a defect in this repository. Each group in :data:`GROUPS`
 is a shape ty reports because of how a *dependency* is typed — a pydantic-settings
-private constructor kwarg, a ``Field(...)`` default that stays a ``FieldInfo``
-until the model is built, a Celery attribute installed at runtime. Those are the
+private constructor kwarg, a FastAPI ``Query(...)`` default replaced during
+request handling, a subscripted generic called at runtime. Those are the
 ones neutralized by ``[[tool.ty.overrides]]`` entries and per-site
 ``# ty: ignore[rule]`` comments; everything else is first-party and stays
 reportable. ``docs/development/ty-policy.md`` carries the narrative.
@@ -55,7 +55,7 @@ import shutil
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -234,12 +234,6 @@ GROUPS: tuple[Group, ...] = (
         "ordinary misspelled attribute on the same receiver first-party",
     ),
     _group(
-        "pydantic-fieldinfo",
-        "invalid-argument-type invalid-assignment",
-        r"^Object of type `FieldInfo` is not assignable to ",
-        "the assigned type is `FieldInfo`, the pre-build type of a `Field(...)` default",
-    ),
-    _group(
         "env-populated-required-params",
         "missing-argument",
         r"^No argument provided for required parameter `(CELERY|_session)`",
@@ -254,14 +248,6 @@ GROUPS: tuple[Group, ...] = (
         r"does not match any known parameter",
         "the argument is a pydantic-settings private kwarg, absent from the "
         "generated `__init__`",
-    ),
-    _group(
-        "celery-app-attributes",
-        "unresolved-attribute",
-        r"^Object of type `Celery` has no attribute `loop`$",
-        "the attribute is `loop`, which this project installs on the `Celery` "
-        "instance at runtime; naming it is what keeps an ordinary misspelled "
-        "attribute on the same receiver first-party",
     ),
     _group(
         "third-party-overload-sets",
@@ -406,27 +392,45 @@ def _module_strings(tree: ast.Module) -> dict[str, str]:
     (``CALL_IN_TYPE_EXPRESSION``), so a literal-only read of the tuples below
     would silently miss whichever spelling the author preferred. Annotated
     bindings count for the same reason: adding a ``: str`` to a constant the
-    corpus already has must not drop the fingerprint it feeds.
+    corpus already has must not drop the fingerprint it feeds. A name whose value
+    changes after its string binding (an augmented assignment, or a rebinding to
+    anything but a string) is left out: its tuple would pin a message cut off
+    where the rest is appended.
 
     :param tree: The parsed corpus module.
-    :return: Every module-level name bound directly to a string.
+    :return: Every module-level name that only ever holds a string literal.
     """
+    changed = {
+        node.target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name)
+    }
     bindings: dict[str, str] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-        else:
-            continue
-        if not isinstance(node.value, ast.Constant):
-            continue
-        if not isinstance(node.value.value, str):
-            continue
-        for target in targets:
-            if isinstance(target, ast.Name):
-                bindings[target.id] = node.value.value
-    return bindings
+    for targets, value in _bound_values(tree.body):
+        for name in targets:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                bindings[name] = value.value
+            else:
+                changed.add(name)
+    return {name: text for name, text in bindings.items() if name not in changed}
+
+
+def _bound_values(nodes: Iterable[ast.AST]) -> Iterator[tuple[set[str], ast.expr]]:
+    """Yield the names each plain or annotated assignment binds, with its value.
+
+    :param nodes: The statements to scan; a bare annotation binds nothing.
+    :return: ``(names, value)`` per assignment, ``names`` empty when no target
+        is a plain name.
+    """
+    for node in nodes:
+        match node:
+            case ast.Assign(targets=targets, value=value):
+                pass
+            case ast.AnnAssign(target=target, value=ast.expr() as value):
+                targets = [target]
+            case _:
+                continue
+        yield {target.id for target in targets if isinstance(target, ast.Name)}, value
 
 
 def _tuple_fingerprint(node: ast.Tuple, bindings: dict[str, str]) -> Fingerprint | None:
@@ -457,6 +461,69 @@ def _tuple_fingerprint(node: ast.Tuple, bindings: dict[str, str]) -> Fingerprint
     return (path, rule, message)
 
 
+def _fragments(tree: ast.Module) -> set[ast.Constant]:
+    """Return the string constants that are only a piece of a larger string.
+
+    The literal pieces of an f-string, a ``+`` or ``+=`` concatenation, a ``%``
+    or ``str.format`` template and a ``str.join`` sequence each read like a row
+    cut off where the dynamic part begins. Taken as a row, one pins a message no
+    diagnostic carries, and because no group claims it,
+    :func:`group_constraint_failures` would count it as evidence for its rule. A
+    complete row that gains a suffix is skipped too: the parser cannot tell the
+    suffix from the rest of the message, and a dropped pin only makes the audit
+    stricter. A piece that arrives through a name is a fragment the same way, so
+    the literal that name is bound to counts too.
+
+    :param tree: The parsed corpus module.
+    :return: Every constant that is a fragment.
+    """
+    parts: list[ast.expr] = []
+    for node in ast.walk(tree):
+        match node:
+            case ast.JoinedStr(values=values):
+                parts.extend(
+                    value.value if isinstance(value, ast.FormattedValue) else value
+                    for value in values
+                )
+            case ast.BinOp(op=ast.Add() | ast.Mod(), left=left, right=right):
+                parts.extend((left, right))
+            case ast.AugAssign(target=ast.Name() as target, op=ast.Add(), value=value):
+                parts.extend((target, value))
+            case ast.Call(
+                func=ast.Attribute(attr="format", value=ast.Name(id="str")),
+                args=[template, *_],
+            ):
+                parts.append(template)
+            case ast.Call(func=ast.Attribute(attr="format", value=template)):
+                parts.append(template)
+            case ast.Call(
+                func=ast.Attribute(attr="join"), args=[ast.List() | ast.Tuple() as seq]
+            ):
+                parts.extend(seq.elts)
+            case ast.Call(func=ast.Attribute(attr="join"), args=[ast.Name() as seq]):
+                parts.append(seq)
+
+    # A bound sequence hands the assembly on to the names it holds.
+    bound = list(_bound_values(ast.walk(tree)))
+    assembled: set[str] = set()
+    pending = {part.id for part in parts if isinstance(part, ast.Name)}
+    while pending:
+        assembled |= pending
+        pieces = [
+            piece
+            for names, value in bound
+            if names & pending
+            for piece in (
+                value.elts if isinstance(value, ast.List | ast.Tuple) else [value]
+            )
+        ]
+        parts.extend(pieces)
+        pending = {piece.id for piece in pieces if isinstance(piece, ast.Name)}
+        pending -= assembled
+
+    return {part for part in parts if isinstance(part, ast.Constant)}
+
+
 def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
     """Return every ``(path, rule, message)`` identity the classifier's tests name.
 
@@ -465,7 +532,8 @@ def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
     discriminates within that rule, which is what
     :func:`group_constraint_failures` accepts in place of a path constraint. Both
     spellings the suite uses are resolved — a whole ty row, and a bare
-    three-string tuple whose message may arrive through a module constant.
+    three-string tuple whose message may arrive through a module constant. A row
+    assembled at runtime is not read, per :func:`_fragments`.
 
     An unreadable or absent corpus yields the empty set, which can only make the
     audit stricter: every group then has to carry its own discriminant. Three
@@ -482,13 +550,18 @@ def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
         return frozenset()
 
     bindings = _module_strings(tree)
+    fragments = _fragments(tree)
     found: set[Fingerprint] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Tuple):
             fingerprint = _tuple_fingerprint(node, bindings)
             if fingerprint is not None:
                 found.add(fingerprint)
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node not in fragments
+        ):
             row = DIAGNOSTIC_RE.match(node.value)
             if row is not None:
                 found.add((row["path"], row["rule"], row["message"]))
@@ -711,7 +784,7 @@ def _print_rule_split(diagnostics: Sequence[Diagnostic]) -> None:
         total[diagnostic.rule] += 1
         if _is_artifact(diagnostic):
             artifact[diagnostic.rule] += 1
-    print("\nPer-rule split (residual is SEP-1908's baseline)")
+    print("\nPer-rule split (residual is the first-party baseline)")
     print(f"  {'rule':32s} {'total':>6s} {'artifact':>9s} {'residual':>9s}")
     for rule in sorted(total, key=lambda name: (-total[name], name)):
         residual = total[rule] - artifact[rule]
