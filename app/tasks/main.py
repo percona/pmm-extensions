@@ -149,6 +149,11 @@ async def tasks_standalone_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     :param app: The FastAPI application instance whose lifespan this manages.
     :return: An async context manager yielding ``None`` for the lifespan duration.
+    :raises Exception: Propagates whatever entering
+        :func:`~app.core.settings_override.extensions_owned.extensions_owned_overrides_refresher`
+        raises, including a ``ValidationError`` from invalid
+        ``EXTENSIONS__DATABASE__*`` values, and whatever :func:`tasks_lifespan`
+        raises.
     """
     async with (
         extensions_owned_overrides_refresher(SETTINGS, ALERT_SETTINGS),

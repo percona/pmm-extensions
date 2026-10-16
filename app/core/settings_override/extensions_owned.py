@@ -173,6 +173,10 @@ async def extensions_owned_overrides_refresher(
     :raises KeyError: When a name is not a PMM Extensions-owned class.
     :raises ValidationError: When the resolved ``EXTENSIONS__DATABASE__*``
         values do not validate.
+    :raises Exception: Propagates whatever building the engine raises (an
+        unknown or missing database driver, for example) and whatever
+        :func:`~app.core.settings_override.lifecycle.settings_override_refresher`
+        re-raises from its initial refresh.
     """
     proxies = {name: EXTENSIONS_OWNED_PROXIES[name] for name in setting_classes}
     engine = create_app_async_engine(extensions_override_database())

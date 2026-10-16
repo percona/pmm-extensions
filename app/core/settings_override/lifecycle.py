@@ -391,7 +391,7 @@ async def bounded_refresh(
     Callers own their log line on expiry; this helper only returns
     ``(False, pending_task)``.
 
-    The refresh never outlives a cancelled caller: when the wait itself is
+    A cancelled caller takes the refresh with it: when the wait itself is
     cancelled (a lifespan torn down mid-seed), the refresh task is cancelled the
     same advisory way before the cancellation propagates, so it cannot publish
     after its caller has gone.
@@ -514,10 +514,11 @@ async def start_refresh_task(
     service bounds it so an unreachable database cannot hold startup. When that
     budget expires, the cancelled seed task may still be unwinding with its
     session held, so the loop skips each cycle until it is done rather than open
-    a second session. The loop task cancels it when it finishes, through a done
-    callback rather than a ``finally`` in the loop body, because a task cancelled
-    before its first step never runs that body. The seed therefore cannot
-    outlive the loop.
+    a second session. The seed is cancelled no later than the loop task
+    finishes, through a done callback rather than a ``finally`` in the loop body,
+    because a task cancelled before its first step never runs that body. The
+    cancel is advisory and is not awaited, so a seed stuck in its session's
+    ``__aexit__`` can still be unwinding after the loop has gone.
     Bounded seeds for prefork children live on
     :class:`~app.core.settings_override.worker.WorkerRefresher`.
 

@@ -85,22 +85,17 @@ async def _wait_until_level(level: int) -> None:
 
 @pytest.fixture(autouse=True)
 def _restore_logging() -> Iterator[None]:
-    """Restore the process-global logging state a real ``dictConfig`` replaces."""
-    root = logging.getLogger()
-    app_logger = logging.getLogger("app")
-    saved = (
-        root.level,
-        list(root.handlers),
-        app_logger.level,
-        list(app_logger.handlers),
-        app_logger.propagate,
-    )
+    """Restore every logger a real ``dictConfig`` of ``LOGGING_CONFIG`` reconfigures."""
+    loggers = [logging.getLogger(name) for name in settings.LOGGING_CONFIG["loggers"]]
+    saved = [
+        (lg, lg.level, list(lg.handlers), lg.propagate, lg.disabled) for lg in loggers
+    ]
     yield
-    root.setLevel(saved[0])
-    root.handlers[:] = saved[1]
-    app_logger.setLevel(saved[2])
-    app_logger.handlers[:] = saved[3]
-    app_logger.propagate = saved[4]
+    for lg, level, handlers, propagate, disabled in saved:
+        lg.setLevel(level)
+        lg.handlers[:] = handlers
+        lg.propagate = propagate
+        lg.disabled = disabled
 
 
 @pytest.fixture(name="refresher_enabled")

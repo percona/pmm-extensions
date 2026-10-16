@@ -1169,7 +1169,9 @@ class _UnwindingSeed:
     The seed hangs, absorbs the cancel ``bounded_refresh`` sends on budget
     expiry, and keeps unwinding until :attr:`release` is set, the way a stuck
     ``AsyncSession.__aexit__`` keeps a cancelled task pending. A second cancel
-    ends it. Non-boot calls are the periodic loop's and are only counted.
+    ends it. Non-boot calls are the periodic loop's and are only counted. It
+    replaces the lifecycle's own ``refresh_all`` because no real session can be
+    made to absorb a cancel on demand.
     """
 
     def __init__(self) -> None:
@@ -1324,7 +1326,12 @@ class TestSeedBudget:
 async def test_bounded_refresh_cancels_the_refresh_with_its_caller(
     session_maker: async_sessionmaker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Leave no refresh running to publish later once the waiting caller is cancelled."""
+    """Leave no refresh running to publish later once the waiting caller is cancelled.
+
+    ``publish_snapshot`` is replaced so the refresh is held exactly between its
+    read and its publish, the one window where a surviving task would publish
+    after the caller has gone; a real query cannot be paused there.
+    """
     proxy, registry = _make_proxies()
     override_value = not ExtensionsSettings().CONNECTIVITY_CHECK_DEFAULT
     gate = asyncio.Event()
