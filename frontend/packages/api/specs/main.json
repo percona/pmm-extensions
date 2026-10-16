@@ -351,7 +351,7 @@
   "info": {
     "description": "PMM Extensions\n\nThis spec is the **core** API only (OAuth, users). Mounted services publish separate OpenAPI JSON on the same host: ``/api/inventory/openapi.json``, ``/api/tasks/openapi.json``, and ``/api/extensions/openapi.json`` (the PMM Extensions web app: shared routes, plugins, etc.; not merged into this document).",
     "title": "PMM Extensions HTTP API",
-    "version": "v3.10.0.dev0"
+    "version": "unversioned"
   },
   "openapi": "3.1.0",
   "paths": {
