@@ -2541,7 +2541,7 @@ def _strip_quoting(body: str) -> str:
     :param body: The shell text.
     :return: The text with only unquoted shell syntax left.
     """
-    out = []
+    out: list[str] = []
     index = 0
     while index < len(body):
         char = body[index]
@@ -2574,12 +2574,14 @@ FORKING_SYNTAX = re.compile(
 TEST_EXPRESSION = re.compile(r"\[\[\s.*?\s\]\]|\(\(.*?\)\)")
 COMMAND_SEPARATOR = re.compile(r"\n|;|&&|\|\||\|")
 COMMAND_PREFIX = frozenset(
-    {"if", "then", "elif", "else", "while", "until", "do", "!", "{"}
+    {"if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"}
 )
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
 PER_LINE_READERS = ("cnf_open_quote", "cnf_open_state", "print_redacted_cnf")
 # These run a command or code this check never sees.
-HIDING_BUILTINS = frozenset({"command", "exec", "eval", "source", ".", "coproc"})
+HIDING_BUILTINS = frozenset(
+    {"builtin", "command", "exec", "eval", "source", ".", "coproc"}
+)
 
 
 @functools.cache
@@ -2644,6 +2646,8 @@ class TestNoProcessPerLine:
             pytest.param("(\n    printf x\n)\n", id="multiline-subshell"),
             pytest.param("x=1 (printf x)\n", id="subshell-after-assignment"),
             pytest.param("command sed q\n", id="command-builtin"),
+            pytest.param("builtin source x\n", id="builtin-builtin"),
+            pytest.param("time sed q\n", id="external-after-time"),
             pytest.param('eval "$x"\n', id="eval"),
             pytest.param("coproc cat\n", id="coproc"),
             pytest.param("read -r x << done\ndone\n", id="heredoc"),
