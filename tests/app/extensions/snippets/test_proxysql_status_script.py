@@ -32,8 +32,14 @@ shape loads as the shell would read it, and that defaults fill the settings the
 file lacks. A value only shell evaluation could complete is ignored with a
 warning, nothing written in the file ever executes, and an unreadable file
 stops the run before any query.
+
+Both readers scan a line in time quadratic in its length, so a line over the
+script's cap is never scanned: the loader stops there and connects with the
+defaults, and the redactor hides it and every line after it and masks every
+plain value. Neither reader may start a process per line.
 """
 
+import functools
 import os
 import re
 import shutil
@@ -48,6 +54,11 @@ import pytest
 from app.extensions.snippets.config import snippets_settings
 
 SCRIPT = snippets_settings.SNIPPETS_DIR / "proxysql_status.sh"
+_cap = re.search(
+    r"^declare -r CNF_MAX_LINE=(\d+)$", SCRIPT.read_text(encoding="utf-8"), re.MULTILINE
+)
+assert _cap, "no CNF_MAX_LINE declaration in the script"
+CNF_MAX_LINE = int(_cap[1])
 NOTICE = "mysql: [Warning] OpenSSL 3.0.13 differs from the 3.0.2 it was built against"
 MYLOGIN_NOTICE = (
     "mysql: [Warning] Found option without preceding group in /root/.mylogin.cnf"
@@ -920,6 +931,18 @@ def _unclosed(cnf: Path) -> str:
     return f"A quote in {cnf} is never closed: the settings after it were not read."
 
 
+def _too_long(cnf: Path) -> str:
+    """Return the notice the script prints for a file with a line too long to read.
+
+    :param cnf: The config file.
+    :return: The notice line.
+    """
+    return (
+        f"A line in {cnf}, counting any continuation lines, is longer than "
+        f"{CNF_MAX_LINE} characters: every setting in the file was ignored."
+    )
+
+
 def _warnings(result: subprocess.CompletedProcess[str]) -> list[str]:
     """Return the ignored-credential warnings a run printed.
 
@@ -1456,6 +1479,235 @@ class TestLargeDefaultsFile:
         assert result.returncode == 0, result.stderr
         assert _warnings(result) == []
         assert harness.credentials == ADMIN_CLIENT
+
+    def test_hides_many_lines(self, harness):
+        """Hide thousands of lines that need a quote scan within the run's limit.
+
+        The limit is generous, so this only catches a redactor gone far
+        slower; a process per line is caught by the static check below.
+        """
+        entry = " probe $(pid 42) ran: \"ok\" {'n': 1} path=/var/lib/proxysql/data"
+        harness.write_cnf(f"2026-10-14 12:00:00 [INFO]{entry * 4}\n" * 5_000)
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE] * 5_000
+
+
+# Quotes, an escaped quote and a substitution send both scanners down their
+# slowest path. At 4 MB even one pass quadratic in the line's length, which
+# the cap cannot shield, overruns the run's time limit.
+LONG_ENTRY = " probe $(pid 42) ran: \"ok\" {'n': 1} it\\'s path=/var/lib/proxysql/data"
+LONG_LINE_SECRET = "hunter2-long-line"
+HUGE_LINE = (
+    f"PROXYSQL_PASSWORD='{LONG_LINE_SECRET}'#{LONG_ENTRY * (2**22 // len(LONG_ENTRY))}"
+)
+
+
+def _line_of(length: int, head: str = "NOTE=") -> str:
+    """Return ``head`` padded with ``x`` to exactly ``length`` characters.
+
+    :param length: The line's length.
+    :param head: The text the line starts with.
+    :return: The line, without a line break.
+    """
+    return head + "x" * (length - len(head))
+
+
+def _continued(joined: int, lines: int) -> str:
+    """Return a credential continued over ``lines`` lines, ``joined`` characters once joined.
+
+    :param joined: The joined line's length, its backslashes dropped.
+    :param lines: How many lines; any past the second are empty.
+    :return: The lines, each ending in a line break.
+    """
+    text = _line_of(joined, "PROXYSQL_PASSWORD=pw ")
+    cut = len(text) // 2
+    return "\\\n".join([text[:cut], text[cut:], *[""] * (lines - 2)]) + "\n"
+
+
+JOINED_LINES = [
+    pytest.param(2, id="two-lines"),
+    pytest.param(3, id="three-lines"),
+]
+
+
+class TestOverlongLineCredentials:
+    """Connect with the defaults when the config has a line too long to scan."""
+
+    def test_huge_line_is_read_in_bounded_time(self, harness):
+        """Finish well within the run's limit on a single 4 MB line."""
+        harness.write_cnf(f"{HUGE_LINE}\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert harness.credentials == DEFAULT_CLIENT
+
+    def test_resets_credentials_read_above_the_line(self, harness):
+        """Drop the credentials set before the line, which it may override."""
+        harness.write_cnf(f"{ADMIN_CNF}{_line_of(CNF_MAX_LINE + 1)}\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert harness.credentials == DEFAULT_CLIENT
+
+    def test_stops_reading_at_the_line(self, harness):
+        """Leave the credentials set after the line unread."""
+        harness.write_cnf(f"{_line_of(CNF_MAX_LINE + 1)}\n{ADMIN_CNF}")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert harness.credentials == DEFAULT_CLIENT
+
+    def test_notice_names_the_file_and_omits_the_line(self, harness):
+        """Print one notice naming the file, never the line's content."""
+        harness.write_cnf(f"{ADMIN_CNF}{HUGE_LINE}\n{HUGE_LINE}\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines().count(_too_long(harness.admin_cnf)) == 1
+        assert _warnings(result) == []
+        assert LONG_LINE_SECRET not in result.stdout
+        assert LONG_LINE_SECRET not in result.stderr
+        assert "probe" not in result.stdout
+
+    def test_reports_length_not_unclosed_quote_inside_a_quote(self, harness):
+        """Catch the line inside a quoted value and report only the length."""
+        harness.write_cnf(
+            f"{ADMIN_CNF}NOTE='first\n{_line_of(CNF_MAX_LINE + 1, '')}\n'\n"
+        )
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        lines = result.stdout.splitlines()
+        assert _too_long(harness.admin_cnf) in lines
+        assert _unclosed(harness.admin_cnf) not in lines
+        assert harness.credentials == DEFAULT_CLIENT
+
+    @pytest.mark.parametrize(
+        "ending",
+        [
+            pytest.param("\n", id="lf"),
+            pytest.param("\r\n", id="crlf"),
+            pytest.param("", id="no-final-newline"),
+        ],
+    )
+    def test_reads_a_line_at_the_cap(self, harness, ending):
+        """Read a line exactly at the cap, carriage return aside, as before."""
+        line = _line_of(CNF_MAX_LINE - 1, "PROXYSQL_PASSWORD='") + "'"
+        harness.write_cnf(f"PROXYSQL_USERNAME='admin'\n{line}{ending}")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _too_long(harness.admin_cnf) not in result.stdout
+        assert harness.credentials == {
+            **DEFAULT_CLIENT,
+            "user": "admin",
+            "password": line.removeprefix("PROXYSQL_PASSWORD='").removesuffix("'"),
+        }
+
+    @pytest.mark.parametrize(
+        "ending", [pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf")]
+    )
+    def test_skips_a_line_one_past_the_cap(self, harness, ending):
+        """Fall back on a line one character over the cap, carriage return aside."""
+        line = _line_of(CNF_MAX_LINE, "PROXYSQL_PASSWORD='") + "'"
+        harness.write_cnf(f"PROXYSQL_USERNAME='admin'\n{line}{ending}")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _too_long(harness.admin_cnf) in result.stdout.splitlines()
+        assert harness.credentials == DEFAULT_CLIENT
+
+    @pytest.mark.parametrize("lines", JOINED_LINES)
+    def test_reads_lines_joined_up_to_the_cap(self, harness, lines):
+        """Read a continued line whose joined length, backslashes dropped, is the cap.
+
+        Each physical line stays under the cap, but the joined line is what
+        the loader goes on to scan.
+        """
+        harness.write_cnf(
+            f"PROXYSQL_USERNAME='admin'\n{_continued(CNF_MAX_LINE, lines)}"
+        )
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _warnings(result) == [_ignored("PROXYSQL_PASSWORD", harness.admin_cnf)]
+        assert harness.credentials == {**DEFAULT_CLIENT, "user": "admin"}
+
+    @pytest.mark.parametrize("lines", JOINED_LINES)
+    def test_skips_lines_joined_past_the_cap(self, harness, lines):
+        """Fall back on a continued line one character over the cap once joined."""
+        harness.write_cnf(
+            f"PROXYSQL_USERNAME='admin'\n{_continued(CNF_MAX_LINE + 1, lines)}"
+        )
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _too_long(harness.admin_cnf) in result.stdout.splitlines()
+        assert harness.credentials == DEFAULT_CLIENT
+
+    def test_long_continuation_chain_is_read_in_bounded_time(self, harness):
+        """Finish well within the run's limit on a thousand short continued lines."""
+        continued = "A=b " * 200 + "\\\n"
+        harness.write_cnf(f"PROXYSQL_PASSWORD=pw \\\n{continued * 1_000}C=c\n")
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _too_long(harness.admin_cnf) in result.stdout.splitlines()
+        assert harness.credentials == DEFAULT_CLIENT
+
+    def test_huge_continued_line_is_read_in_bounded_time(self, harness):
+        """Finish well within the run's limit when a backslash continues into a 4 MB line.
+
+        The continued line is scanned before it is joined, so only the
+        physical line's own length can stop that scan.
+        """
+        harness.write_cnf(
+            f"PROXYSQL_USERNAME='admin'\nPROXYSQL_PASSWORD=pw \\\n{HUGE_LINE}\n"
+        )
+
+        result = harness.run("--main")
+
+        assert result.returncode == 0, result.stderr
+        assert _too_long(harness.admin_cnf) in result.stdout.splitlines()
+        assert harness.credentials == DEFAULT_CLIENT
+
+    def test_full_run_handles_a_huge_line(self, harness):
+        """Connect with the defaults and hide the line when both readers run."""
+        harness.write_cnf(f"{ADMIN_CNF}{HUGE_LINE}\n")
+
+        result = harness.run()
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines().count(_too_long(harness.admin_cnf)) == 1
+        assert _cnf_section(result.stdout)[-1] == HIDDEN_LINE
+        assert LONG_LINE_SECRET not in result.stdout
+        assert harness.credentials == DEFAULT_CLIENT
+
+    def test_notice_stays_out_of_the_report_file(self, harness):
+        """Print the notice to the run's output, not into the report file."""
+        harness.write_cnf(f"{ADMIN_CNF}{HUGE_LINE}\n")
+
+        result = harness.run("--main", "--output", "file")
+
+        assert result.returncode == 0, result.stderr
+        assert _too_long(harness.admin_cnf) in result.stdout.splitlines()
+        (report,) = harness.root.glob("proxysql_status_*.log")
+        report_text = report.read_text(encoding="utf-8")
+        assert report_text
+        assert "longer than" not in report_text
 
 
 SECRET = "hunter2-cnf-secret"
@@ -2090,20 +2342,6 @@ class TestAdminCnfRedaction:
         assert SECRET not in result.stdout
         assert _cnf_section(result.stdout) == expected
 
-    def test_hides_a_large_file_quickly(self, harness):
-        """Redact thousands of hidden lines within a few seconds."""
-        entry = " probe $(pid 42) ran: \"ok\" {'n': 1} path=/var/lib/proxysql/data"
-        line = f"2026-10-14 12:00:00 [INFO]{entry * 4}\n"
-        harness.write_cnf(line * 5_000)
-
-        # A redactor that forks or walks every character per line runs about
-        # five times slower, past this budget on CI runners, which are about
-        # three times slower than a laptop.
-        result = harness.run("--files", timeout=30)
-
-        assert result.returncode == 0, result.stderr
-        assert _cnf_section(result.stdout) == [HIDDEN_LINE] * 5_000
-
     def test_empty_cnf_prints_no_section(self, harness):
         """Leave the section out when the config file has nothing to show."""
         harness.write_cnf("\n\n")
@@ -2121,3 +2359,340 @@ class TestAdminCnfRedaction:
         assert result.returncode == 0, result.stderr
         assert _dumped_tables(result.stdout) == ["mysql_users"]
         assert CNF_START not in result.stdout
+
+
+class TestOverlongLineRedaction:
+    """Hide a config line too long to scan and distrust the whole file after it."""
+
+    def test_huge_line_is_hidden_in_bounded_time(self, harness):
+        """Finish well within the run's limit on a single 4 MB line."""
+        harness.write_cnf(f"{HUGE_LINE}\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert LONG_LINE_SECRET not in result.stdout
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE]
+
+    def test_masks_values_above_and_hides_lines_below(self, harness):
+        """Mask a plain value above the line and hide every line below it.
+
+        The line's words are never read, so any plain value may be one it
+        copies into a credential.
+        """
+        harness.write_cnf(
+            f"NOTE=visible\n{_line_of(CNF_MAX_LINE + 1, 'OTHER=')}\n{PORT_LINE}\n"
+        )
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [
+            "NOTE=[REDACTED]",
+            HIDDEN_LINE,
+            HIDDEN_LINE,
+        ]
+
+    def test_keeps_comments_and_empty_values_above(self, harness):
+        """Show what holds no value above the line as before."""
+        harness.write_cnf(
+            f"# keep me\n\nexport NOTE=visible\nEMPTY=''\n"
+            f"{_line_of(CNF_MAX_LINE + 1, 'OTHER=')}\n"
+        )
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [
+            "# keep me",
+            "",
+            "export NOTE=[REDACTED]",
+            "EMPTY=''",
+            HIDDEN_LINE,
+        ]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param(_line_of(CNF_MAX_LINE + 1, "# "), id="comment"),
+            pytest.param(" " * (CNF_MAX_LINE + 1), id="blank"),
+            pytest.param(_line_of(CNF_MAX_LINE + 1), id="plain-assignment"),
+            pytest.param(
+                _line_of(CNF_MAX_LINE + 1, "PROXYSQL_PASSWORD="), id="credential"
+            ),
+            pytest.param(f"NOTE='open\n{_line_of(CNF_MAX_LINE + 1, '')}", id="quoted"),
+        ],
+    )
+    def test_hides_the_line_and_everything_after(self, harness, line):
+        """Hide the line whatever its shape, and every later line, even blank ones."""
+        harness.write_cnf(f"{line}\n# comment\n\nPROXYSQL_USERNAME='admin'\n")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE] * (line.count("\n") + 4)
+
+    @pytest.mark.parametrize(
+        "ending", [pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf")]
+    )
+    def test_shows_a_line_at_the_cap(self, harness, ending):
+        """Show a plain line exactly at the cap, carriage return aside, as before."""
+        line = _line_of(CNF_MAX_LINE)
+        harness.write_cnf(f"{line}{ending}{PORT_LINE}{ending}")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [line, PORT_LINE]
+
+    @pytest.mark.parametrize(
+        "ending", [pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf")]
+    )
+    def test_hides_a_line_one_past_the_cap(self, harness, ending):
+        """Hide a plain line one character over the cap, carriage return aside."""
+        harness.write_cnf(f"{_line_of(CNF_MAX_LINE + 1)}{ending}{PORT_LINE}{ending}")
+
+        result = harness.run("--files")
+
+        assert result.returncode == 0, result.stderr
+        assert _cnf_section(result.stdout) == [HIDDEN_LINE, HIDDEN_LINE]
+
+    @pytest.mark.parametrize(
+        ("locale", "hidden"),
+        [pytest.param("C.UTF-8", False, id="utf-8"), pytest.param("C", True, id="c")],
+    )
+    def test_counts_the_locale_characters(self, harness, locale, hidden):
+        """Measure a non-ASCII line in characters, or in bytes under C.
+
+        Bytes only reach the cap sooner, so the C locale hides more, never less.
+        """
+        line = "NOTE=" + "\u00e9" * (CNF_MAX_LINE - len("NOTE="))
+        harness.write_cnf(f"{line}\n{PORT_LINE}\n")
+
+        result = harness.run("--files", env={"LC_ALL": locale})
+
+        assert result.returncode == 0, result.stderr
+        expected = [HIDDEN_LINE, HIDDEN_LINE] if hidden else [line, PORT_LINE]
+        assert _cnf_section(result.stdout) == expected
+
+
+def _function_body(name: str) -> str:
+    """Return the body of one of the script's functions.
+
+    :param name: The function's name.
+    :return: The text between its opening line and its closing brace or parenthesis.
+    """
+    script = SCRIPT.read_text(encoding="utf-8")
+    match = re.search(
+        rf"^function {name}\(\) [{{(]\n(.*?)^[}})]$", script, re.MULTILINE | re.DOTALL
+    )
+    assert match, f"no function {name} in the script"
+    return match[1]
+
+
+def _open(body: str, index: int, quote: str) -> str:
+    """Return the character at ``index`` inside a quoted string.
+
+    :param body: The shell text.
+    :param index: The index of a character the string should still cover.
+    :param quote: The string's opening quote, for the failure message.
+    :return: The character.
+    """
+    assert index < len(body), f"unclosed quote: {quote}"
+    return body[index]
+
+
+def _skip_ansi_c(body: str, index: int) -> int:
+    """Return the index just past the ``$'...'`` string whose content starts at ``index``.
+
+    :param body: The shell text.
+    :param index: The index of the first character after ``$'``.
+    :return: The index after the closing quote.
+    """
+    while _open(body, index, "$'") != "'":
+        index += 2 if body[index] == "\\" else 1
+    return index + 1
+
+
+def _skip_double(body: str, index: int) -> tuple[int, str]:
+    """Return the end of the ``"..."`` string starting at ``index`` and its substitutions.
+
+    :param body: The shell text.
+    :param index: The index of the first character after the opening quote.
+    :return: The index after the closing quote, and each ``$(`` and backtick
+        inside, which still start a process within double quotes.
+    """
+    kept = ""
+    while _open(body, index, '"') != '"':
+        if body[index] == "\\":
+            index += 2
+            continue
+        if body.startswith("$(", index) and not body.startswith("$((", index):
+            kept += "$("
+        elif body[index] == "`":
+            kept += "`"
+        index += 1
+    return index + 1, kept
+
+
+def _strip_quoting(body: str) -> str:
+    """Return ``body`` with each quoted string, escape and comment blanked to ``Q``.
+
+    :param body: The shell text.
+    :return: The text with only unquoted shell syntax left.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char == "\\":
+            out.append("Q")
+            index += 2
+        elif body.startswith("$'", index):
+            index = _skip_ansi_c(body, index + 2)
+            out.append("Q")
+        elif char == "'":
+            index = body.find("'", index + 1) + 1
+            assert index, "unclosed quote: '"
+            out.append("Q")
+        elif char == '"':
+            index, kept = _skip_double(body, index + 1)
+            out.append(f"Q{kept}")
+        elif char == "#" and (index == 0 or body[index - 1] in " \t\n;"):
+            newline = body.find("\n", index)
+            index = len(body) if newline == -1 else newline
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
+# A heredoc's body is text the statement split below cannot follow.
+FORKING_SYNTAX = re.compile(
+    r"\$\((?!\()|`|[<>]\(|(?<!\|)\|(?!\|)|(?<![&>])&(?![&>])|(?<!<)<<(?!<)"
+)
+TEST_EXPRESSION = re.compile(r"\[\[\s.*?\s\]\]|\(\(.*?\)\)")
+COMMAND_SEPARATOR = re.compile(r"\n|;|&&|\|\||\|")
+COMMAND_PREFIX = frozenset(
+    {"if", "then", "elif", "else", "while", "until", "do", "!", "{", "time"}
+)
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
+PER_LINE_READERS = ("cnf_open_quote", "cnf_open_state", "print_redacted_cnf")
+# These run a command or code this check never sees.
+HIDING_BUILTINS = frozenset(
+    {"builtin", "command", "exec", "eval", "source", ".", "coproc"}
+)
+
+
+@functools.cache
+def _in_process_commands() -> frozenset[str]:
+    """Return the command names that run without starting a process.
+
+    :return: Bash's builtins and keywords, bar those that hide what they run,
+        and the readers this module checks.
+    """
+    names = subprocess.run(
+        ["bash", "-c", "compgen -b; compgen -k"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    return frozenset(names) - HIDING_BUILTINS | set(PER_LINE_READERS)
+
+
+def _forks(body: str) -> list[str]:
+    """Return what in a function body would start a process.
+
+    A substitution, pipeline, process substitution, subshell or background
+    job forks, and so does any command that is not a builtin or a reader
+    this module checks.
+
+    :param body: The function body.
+    :return: The offending syntax and command names, in order of appearance.
+    """
+    code = _strip_quoting(body)
+    found = FORKING_SYNTAX.findall(code)
+    for statement in COMMAND_SEPARATOR.split(TEST_EXPRESSION.sub(" ", code)):
+        words = statement.split()
+        while words and (
+            words[0] in COMMAND_PREFIX
+            or words[0].endswith(")")
+            or ASSIGNMENT.match(words[0])
+        ):
+            words.pop(0)
+        if words and words[0] not in _in_process_commands():
+            found.append(words[0])
+    return found
+
+
+class TestNoProcessPerLine:
+    """Pin that the per-line config readers never start a process."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param("x=$(sed q)\n", id="command-substitution"),
+            pytest.param('x="$(printf a)"\n', id="quoted-command-substitution"),
+            pytest.param("x=`date`\n", id="backticks"),
+            pytest.param("printf a | cat\n", id="pipeline"),
+            pytest.param('done < <(cat "$cnf")\n', id="process-substitution"),
+            pytest.param("printf a &\n", id="background"),
+            pytest.param('sed -n p "$cnf"\n', id="external-command"),
+            pytest.param("if grep -q x; then\n", id="external-in-condition"),
+            pytest.param("    '$') tr a b ;;\n", id="external-in-case-branch"),
+            pytest.param("LC_ALL=C head -n 1\n", id="external-after-assignment"),
+            pytest.param("[[ -n $x ]] && wc -c\n", id="external-after-test"),
+            pytest.param("( printf x )\n", id="subshell"),
+            pytest.param("(\n    printf x\n)\n", id="multiline-subshell"),
+            pytest.param("x=1 (printf x)\n", id="subshell-after-assignment"),
+            pytest.param("command sed q\n", id="command-builtin"),
+            pytest.param("builtin source x\n", id="builtin-builtin"),
+            pytest.param("time sed q\n", id="external-after-time"),
+            pytest.param('eval "$x"\n', id="eval"),
+            pytest.param("coproc cat\n", id="coproc"),
+            pytest.param("read -r x << done\ndone\n", id="heredoc"),
+        ],
+    )
+    def test_detector_flags_a_fork(self, body):
+        """Flag each way a line of shell can start a process."""
+        assert _forks(body)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param("local x='a|b $(c) `d`'\n", id="single-quoted"),
+            pytest.param('local x="a|b <(c)"\n', id="double-quoted"),
+            pytest.param("local x=$'a\\'|$(b)'\n", id="ansi-c-quoted"),
+            pytest.param("[[ $c == [\\|\\&] ]]\n", id="escaped"),
+            pytest.param("[[ -n $a ]] || [[ $b == ^[[:space:]]*$ ]]\n", id="test"),
+            pytest.param("((n++)) && x=$((n + 1))\n", id="arithmetic"),
+            pytest.param("# $(x) | y\nprintf '%s' \"${#x}\"\n", id="comment"),
+            pytest.param("    '#') break ;;\n    *) continue ;;\n", id="case"),
+            pytest.param("local -a x=(a b) y=()\nz=(c)\n", id="array"),
+            pytest.param('while IFS= read -r line; do\ndone < "$cnf"\n', id="read"),
+            pytest.param("unset x; : noop\ndeclare -a y\n", id="other-builtins"),
+            pytest.param('read -r x <<< "$y"\n', id="here-string"),
+            pytest.param('cnf_open_state "$line"\n', id="checked-reader"),
+        ],
+    )
+    def test_detector_passes_in_process_shell(self, body):
+        """Pass shell that only runs builtins and quotes its special characters."""
+        assert _forks(body) == []
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param("x='a\n", id="single"),
+            pytest.param('x="a\n', id="double"),
+            pytest.param("x=$'a\n", id="ansi-c"),
+        ],
+    )
+    def test_detector_rejects_an_unclosed_quote(self, body):
+        """Fail with the reason on a body whose quoting it cannot follow."""
+        with pytest.raises(AssertionError, match="unclosed quote"):
+            _forks(body)
+
+    @pytest.mark.parametrize("name", PER_LINE_READERS)
+    def test_reader_starts_no_process(self, name):
+        """Keep each function the config readers run per line free of forks."""
+        assert _forks(_function_body(name)) == []
