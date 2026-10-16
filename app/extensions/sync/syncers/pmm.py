@@ -48,6 +48,14 @@ logger = logging.getLogger(__name__)
 #: they carry no ``external_id`` to match against the held set.
 _Retirable = TypeVar("_Retirable", CreatedNode, CreatedService)
 
+#: Bounds the warning an empty PMM answer logs every generation; each held node
+#: is still logged by ID at info level.
+_HELD_NODE_LOG_LIMIT = 20
+
+#: PMM registers its own node under this ID in every deployment, a freshly reset
+#: one included, so reporting it alone says nothing about the rest of the estate.
+_PMM_SERVER_NODE_ID = "pmm-server"
+
 
 class PMMSyncer(BaseSyncer):
     """Manage synchronization of PMM inventory entities.
@@ -373,7 +381,10 @@ class PMMSyncer(BaseSyncer):
         creating or updating corresponding nodes in the local inventory. A node that
         the fetch did not report is retired only once a complete generation has
         reported it absent ``missing_grace_generations`` times in a row. A partial
-        read is not evidence that anything disappeared from PMM.
+        read is not evidence that anything disappeared from PMM, and neither is a
+        node list that is empty or holds only PMM's own node: every active local
+        node is held through it, so an estate genuinely emptied in PMM has its last
+        nodes retired by hand.
 
         :raises ValidationError: If an entity fails validation and ``break_on_error``
             is set.
@@ -430,6 +441,25 @@ class PMMSyncer(BaseSyncer):
                 present_ids.append(created_node.id)
                 await self.sync_node(created_node, node)
             logger.debug("Nodes absent from PMM: %s", syncable_nodes)
+            # A PMM reset, lost credential scope or wrong endpoint all answer
+            # with an empty list, or just PMM's own node, which says nothing
+            # about any one node.
+            active_absent_ids = [
+                node.id for node in syncable_nodes.values() if not node.is_retired
+            ]
+            pmm_reported_nothing = not snapshot.diagnostics.filtered_node_ids and all(
+                node.external_id == _PMM_SERVER_NODE_ID for node in snapshot.nodes
+            )
+            if pmm_reported_nothing and active_absent_ids:
+                unnamed = len(active_absent_ids) - _HELD_NODE_LOG_LIMIT
+                logger.warning(
+                    "PMM reported no %snodes; holding %d local node(s) instead of "
+                    "counting them absent: %s%s",
+                    "valid " if snapshot.diagnostics.invalid_nodes else "",
+                    len(active_absent_ids),
+                    active_absent_ids[:_HELD_NODE_LOG_LIMIT],
+                    f" and {unnamed} more" if unnamed > 0 else "",
+                )
             owns_run = await self._owns_run()
             if owns_run:
                 await SyncEntityAbsenceManager.clear(
@@ -449,7 +479,9 @@ class PMMSyncer(BaseSyncer):
                 SyncInventoryEntityTypeEnum.NODE,
                 syncable_nodes.values(),
                 self.retire_node,
-                permitted=owns_run and self._generation_is_complete(),
+                permitted=owns_run
+                and self._generation_is_complete()
+                and not pmm_reported_nothing,
                 held_external_ids=snapshot.diagnostics.filtered_node_ids
                 | {
                     node.external_id
