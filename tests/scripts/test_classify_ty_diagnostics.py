@@ -192,21 +192,6 @@ def test_classify_names_the_proxy_installed_settings_helpers():
     assert classify_ty_diagnostics.classify(retired.fingerprint) is None
 
 
-def test_classify_names_the_runtime_installed_celery_attribute():
-    """Treat a misspelled attribute on a ``Celery`` receiver as first-party."""
-    installed, typo = classify_ty_diagnostics.parse_diagnostics(
-        _output(
-            "app/extensions/apps/alerts/celery.py:58:5: warning[unresolved-attribute] "
-            "Object of type `Celery` has no attribute `loop`",
-            "app/extensions/apps/alerts/celery.py:59:5: warning[unresolved-attribute] "
-            "Object of type `Celery` has no attribute `brokr_url`",
-        )
-    )
-
-    assert classify_ty_diagnostics.classify(installed.fingerprint) is not None
-    assert classify_ty_diagnostics.classify(typo.fingerprint) is None
-
-
 def test_check_passes_when_only_artifacts_were_removed(tmp_path, capsys):
     """Accept a run whose every dropped fingerprint is classified as an artifact."""
     manifest = _manifest(tmp_path, _output(ARTIFACT_ROW, FIRST_PARTY_ROW))
@@ -230,13 +215,14 @@ def test_check_fails_when_a_first_party_diagnostic_was_suppressed(tmp_path, caps
     manifest = _manifest(tmp_path, _output(ARTIFACT_ROW, FIRST_PARTY_ROW))
     unrelated = (
         "app/extensions/config.py:474:5: warning[invalid-assignment] "
-        "Object of type `FieldInfo` is not assignable to `int`"
+        "Object of type `str` is not assignable to `int`"
     )
 
     assert _check(tmp_path, manifest, _output(unrelated)) == 1
     out = capsys.readouterr().out
     assert "tests/app/extensions/test_config.py" in out
     assert "`PMM`" in out
+    assert "artifact still reports" not in out
 
 
 def test_check_names_the_rule_and_delta_when_the_drop_is_wrong(tmp_path, capsys):
@@ -376,6 +362,63 @@ def _claiming_groups(fingerprint):
 CALL_IN_TYPE_EXPRESSION = "Function calls are not allowed in type expressions"
 RULE_CLAIMED_BY_NO_GROUP = "synthetic-rule-a"
 SIBLING_RULE_CLAIMED_BY_NO_GROUP = "synthetic-rule-b"
+FIELDINFO_DEFAULT = "Object of type `FieldInfo` is not assignable to `int`"
+CELERY_LOOP = "Object of type `Celery` has no attribute `loop`"
+
+
+class TestRetiredArtifactShapes:
+    """Pin the shapes once claimed as artifacts, now typed at the source, as first-party.
+
+    The settings field helpers and ``ExtensionsCelery.loop`` carry real types, so
+    ty reporting either shape again means that typing regressed — a defect to
+    fix, not a dependency artifact ``check`` may accept a suppression for.
+    """
+
+    @pytest.mark.parametrize("rule", ["invalid-assignment", "invalid-argument-type"])
+    def test_no_group_claims_a_fieldinfo_default(self, rule):
+        """Leave a ``FieldInfo`` default first-party under either rule it reports as."""
+        assert (
+            _claiming_groups(("app/extensions/config.py", rule, FIELDINFO_DEFAULT))
+            == []
+        )
+
+    @pytest.mark.parametrize(
+        "message", [CELERY_LOOP, "Object of type `Celery` has no attribute `brokr_url`"]
+    )
+    def test_no_group_claims_any_attribute_on_a_celery_receiver(self, message):
+        """Leave every absent attribute on a ``Celery`` receiver first-party, ``loop`` included."""
+        fingerprint = (
+            "app/extensions/apps/alerts/celery.py",
+            "unresolved-attribute",
+            message,
+        )
+
+        assert _claiming_groups(fingerprint) == []
+
+    def test_settings_group_does_not_claim_loop_on_a_settings_receiver(self):
+        """Keep ``loop`` outside the attribute names the settings group accepts."""
+        fingerprint = (
+            "tests/app/extensions/routes/test_stream_logs.py",
+            "unresolved-attribute",
+            "Object of type `ExtensionsSettings` has no attribute `loop`",
+        )
+
+        assert _claiming_groups(fingerprint) == []
+
+    def test_check_rejects_suppressing_a_retired_shape(self, tmp_path, capsys):
+        """Fail ``check`` when a run hides either shape, as it would a first-party defect."""
+        fieldinfo = f"app/extensions/config.py:474:5: warning[invalid-assignment] {FIELDINFO_DEFAULT}"
+        celery = f"app/celery.py:58:5: warning[unresolved-attribute] {CELERY_LOOP}"
+        manifest = _manifest(tmp_path, _output(fieldinfo, celery, FIRST_PARTY_ROW))
+
+        assert _check(tmp_path, manifest, _output(FIRST_PARTY_ROW)) == 1
+        failures = [
+            line
+            for line in capsys.readouterr().out.splitlines()
+            if "suppressed a first-party diagnostic" in line
+        ]
+        assert any("app/extensions/config.py" in line for line in failures)
+        assert any("app/celery.py" in line for line in failures)
 
 
 def test_factory_built_alias_group_claims_only_the_module_it_is_confined_to():
@@ -459,8 +502,8 @@ def test_group_constraint_audit_rejects_a_pattern_quoting_only_a_wildcard():
     """Report a group whose backticks quote a wildcard rather than a symbol.
 
     Backticks alone are not the discriminant. This pattern claims every
-    ``unresolved-attribute`` diagnostic in the tree — including the two typos
-    the receiver-predicate tests above pin as first-party — so accepting it
+    ``unresolved-attribute`` diagnostic in the tree — including the ``*Settings``
+    and ``Celery`` typos the tests above pin as first-party — so accepting it
     would let the table launder a genuine defect into a suppressible artifact,
     which is the whole failure the audit exists to catch.
     """
@@ -641,6 +684,197 @@ def test_corpus_read_treats_an_undecodable_module_as_absent(tmp_path):
     )
 
 
+class TestCorpusReadOfAssembledRows:
+    """Skip the literal pieces of a row assembled at runtime.
+
+    A piece of an f-string, a ``+`` or ``+=`` concatenation, a ``%`` or
+    ``str.format`` template, or a ``str.join`` sequence looks like a row cut off
+    where the dynamic part begins. Read as a fingerprint, it names a message no
+    diagnostic carries, and because no group claims it, the audit counts it as
+    evidence that its rule is safe.
+
+    The rule is synthetic for the reason
+    ``test_corpus_read_resolves_a_message_bound_to_a_module_constant`` gives.
+    """
+
+    ROW_PREFIX: str = (
+        f"app/extensions/config.py:1:1: warning[{RULE_CLAIMED_BY_NO_GROUP}] "
+    )
+
+    @pytest.mark.parametrize(
+        "assignment",
+        [
+            f'ROW = f"{ROW_PREFIX}{{NAME}}"',
+            f'ROW = f"{ROW_PREFIX}Object of type {{NAME}}"',
+            f'ROW = "{ROW_PREFIX}" + NAME',
+            f'ROW = "{ROW_PREFIX}Object of type " + NAME + " is unknown"',
+            f'ROW = "{ROW_PREFIX}Object of type " \nROW += NAME',
+            f'ROW: str = "{ROW_PREFIX}Object of type " \nROW += NAME',
+            f'ROW = OTHER = "{ROW_PREFIX}Object of type " \nROW += NAME',
+            f'ROW = "{ROW_PREFIX}Object of type %s" % NAME',
+            f'ROW = "{ROW_PREFIX}Object of type {{}}".format(NAME)',
+            f'ROW = str.format("{ROW_PREFIX}Object of type {{}}", NAME)',
+            f'ROW = "".join(["{ROW_PREFIX}Object of type ", NAME])',
+        ],
+        ids=[
+            "fstring-empty",
+            "fstring-partial",
+            "concat-empty",
+            "concat-partial",
+            "augmented-concat",
+            "augmented-concat-annotated",
+            "augmented-concat-chained",
+            "percent-format",
+            "str-format",
+            "str-format-unbound",
+            "str-join",
+        ],
+    )
+    def test_skips_a_row_assembled_at_runtime(self, tmp_path, assignment):
+        """Pin nothing for a row whose message is only known at runtime."""
+        source = write_file(tmp_path, "corpus.py", f'NAME = "x"\n{assignment}\n')
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
+
+    @pytest.mark.parametrize(
+        "assembly",
+        [
+            "ROW = ROW + NAME",
+            'OUT = f"{ROW}tail"',
+            'OUT = "".join([ROW, NAME])',
+            'PIECES = [ROW, NAME]\nOUT = "".join(PIECES)',
+            "OUT = ROW.format(NAME)",
+            "OUT = ROW % NAME",
+        ],
+        ids=[
+            "rebind-concat",
+            "fstring-on-name",
+            "join-on-name",
+            "join-on-bound-list",
+            "format-on-name",
+            "percent-on-name",
+        ],
+    )
+    def test_skips_a_row_assembled_through_a_name(self, tmp_path, assembly):
+        """Pin nothing for a row bound to a name that is only a piece of a larger string."""
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            f'NAME = "x"\nROW = "{self.ROW_PREFIX}Object of type "\n{assembly}\n',
+        )
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
+
+    @pytest.mark.parametrize(
+        "extension",
+        ["MESSAGE += NAME", "MESSAGE = MESSAGE + NAME"],
+        ids=["augmented-concat", "rebind-concat"],
+    )
+    def test_skips_a_tuple_message_assembled_at_runtime(self, tmp_path, extension):
+        """Leave a tuple unread when its message constant is only a piece of the message."""
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            f'NAME = "x"\nMESSAGE = "Object of type "\n{extension}\n'
+            f'ROW = ("app/extensions/config.py", "{RULE_CLAIMED_BY_NO_GROUP}", '
+            "MESSAGE)\n",
+        )
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
+
+    def test_reads_a_tuple_message_constant_used_whole(self, tmp_path):
+        """Keep resolving a message constant whose own value never changes.
+
+        Quoting it inside a larger string elsewhere, such as a group pattern,
+        leaves the constant itself whole.
+        """
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            'MESSAGE = "a message"\n'
+            f'ROW = ("app/extensions/config.py", "{RULE_CLAIMED_BY_NO_GROUP}", '
+            'MESSAGE)\nPATTERN = f"^{MESSAGE}$"\nTOTAL = COUNT + 1\n',
+        )
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset(
+            {("app/extensions/config.py", RULE_CLAIMED_BY_NO_GROUP, "a message")}
+        )
+
+    def test_reads_a_bare_annotation_of_an_extended_name(self, tmp_path):
+        """Tolerate a ``+=`` target declared without a value."""
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            f'NAME = "x"\nROW: str\nROW = "{self.ROW_PREFIX}Object of type "\n'
+            "ROW += NAME\n",
+        )
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
+
+    def test_skips_a_whole_row_that_gains_a_suffix(self, tmp_path):
+        """Skip a complete row concatenated with more text, erring toward a stricter audit.
+
+        The parser cannot tell a trailing newline from the rest of the message,
+        and dropping a genuine pin only makes a group carry its own discriminant.
+        """
+        source = write_file(
+            tmp_path, "corpus.py", f'ROW = "{self.ROW_PREFIX}a message" + "\\n"\n'
+        )
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset()
+
+    def test_reads_a_row_split_by_implicit_concatenation(self, tmp_path):
+        """Read adjacent literals, which the parser joins into one string."""
+        source = write_file(
+            tmp_path, "corpus.py", f'ROW = ("{self.ROW_PREFIX}" "a message")\n'
+        )
+
+        assert classify_ty_diagnostics.corpus_fingerprints(source) == frozenset(
+            {("app/extensions/config.py", RULE_CLAIMED_BY_NO_GROUP, "a message")}
+        )
+
+    def test_an_assembled_row_does_not_clear_an_unconfined_group(self, tmp_path):
+        """Keep reporting a symbol-less group when its only declined pin is assembled."""
+        unconfined = classify_ty_diagnostics._group(
+            "unconfined", RULE_CLAIMED_BY_NO_GROUP, "^Object of type", "nothing"
+        )
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            f'NAME = "x"\nROW = f"{self.ROW_PREFIX}{{NAME}}"\n',
+        )
+        corpus = classify_ty_diagnostics.corpus_fingerprints(source)
+
+        (failure,) = classify_ty_diagnostics.group_constraint_failures(
+            groups=(unconfined,), corpus=corpus
+        )
+        assert "unconfined" in failure
+
+    def test_a_tuple_assembled_through_a_name_does_not_clear_an_unconfined_group(
+        self, tmp_path
+    ):
+        """Keep reporting a symbol-less group when its only declined pin is a cut-off tuple."""
+        unconfined = classify_ty_diagnostics._group(
+            "unconfined",
+            RULE_CLAIMED_BY_NO_GROUP,
+            "^Object of type .+ is unknown$",
+            "nothing",
+        )
+        source = write_file(
+            tmp_path,
+            "corpus.py",
+            'NAME = "x"\nMESSAGE = "Object of type "\nMESSAGE += NAME\n'
+            f'ROW = ("app/extensions/config.py", "{RULE_CLAIMED_BY_NO_GROUP}", '
+            "MESSAGE)\n",
+        )
+        corpus = classify_ty_diagnostics.corpus_fingerprints(source)
+
+        (failure,) = classify_ty_diagnostics.group_constraint_failures(
+            groups=(unconfined,), corpus=corpus
+        )
+        assert "unconfined" in failure
+
+
 def test_check_fails_on_an_over_claiming_table(tmp_path, capsys, monkeypatch):
     """Exit non-zero from ``check`` when a group claims more than it proves.
 
@@ -665,23 +899,10 @@ def test_check_fails_on_an_over_claiming_table(tmp_path, capsys, monkeypatch):
 
 #: One row per group whose only discriminant is the symbol its message names:
 #: the artifact it is meant to claim, and a first-party diagnostic of the same
-#: rule it must decline. The six are the groups carrying neither a path
+#: rule it must decline. These are the groups carrying neither a path
 #: constraint nor a negative pin, so nothing but these tests demonstrates that
 #: their patterns separate anything.
 SYMBOL_ONLY_GROUPS = [
-    (
-        "pydantic-fieldinfo",
-        (
-            "app/extensions/apps/backup/models.py",
-            "invalid-assignment",
-            "Object of type `FieldInfo` is not assignable to `str`",
-        ),
-        (
-            "app/extensions/apps/backup/models.py",
-            "invalid-assignment",
-            "Object of type `str` is not assignable to `int`",
-        ),
-    ),
     (
         "env-populated-required-params",
         (
@@ -756,12 +977,12 @@ def test_a_symbol_only_group_claims_its_artifact_and_declines_its_rule(
 ):
     """Pin what the symbol in each unconfined group's message actually separates.
 
-    These six groups carry no path constraint, so the symbol their pattern
-    quotes is the whole of their evidence, and ``group_constraint_failures``
-    accepts that symbol without checking it separates anything. A rule that
-    reads its own regex cannot: the pattern is the claim under test. Only a
-    same-rule diagnostic the group declines shows the discriminant working,
-    which is why the audit counts one of these as evidence in its own right.
+    These groups carry no path constraint, so the symbol their pattern quotes is
+    the whole of their evidence, and ``group_constraint_failures`` accepts that
+    symbol without checking it separates anything. A rule that reads its own
+    regex cannot: the pattern is the claim under test. Only a same-rule
+    diagnostic the group declines shows the discriminant working, which is why
+    the audit counts one of these as evidence in its own right.
     """
     assert name in _claiming_groups(artifact)
     assert _claiming_groups(first_party) == []

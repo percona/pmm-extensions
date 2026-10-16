@@ -18,7 +18,7 @@
 from collections import defaultdict
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
@@ -50,6 +50,7 @@ from app.extensions.inventory import Service as ExtensionsService
 from app.extensions.models import (
     SyncInstance,
     SyncInventoryEntityTypeEnum,
+    SyncItem,
     SyncStatusEnum,
 )
 from app.extensions.sync.exceptions import SyncFailError
@@ -1014,6 +1015,64 @@ def local_node(created_node) -> CreatedNode:
 
 
 @pytest.fixture
+def witness() -> CreatedNode:
+    """Return a second live node PMM keeps reporting.
+
+    An empty node list holds every node, so a test of absence counting needs PMM
+    to report something else alongside the node it reports absent.
+    """
+    node = CreatedNodeFactory.build(
+        id=MOCK_CREATED_NODE_ID + 1,
+        external_id="pmm-node-witness",
+        source=SourceEnum.PMM,
+        address="localhost",
+        retired_at=None,
+    )
+    node.services = []
+    return node
+
+
+@pytest.fixture
+def server_node() -> CreatedNode:
+    """Return the PMM server's own node, which every PMM reports."""
+    node = CreatedNodeFactory.build(
+        id=MOCK_CREATED_NODE_ID + 2,
+        external_id="pmm-server",
+        source=SourceEnum.PMM,
+        address="localhost",
+        retired_at=None,
+    )
+    node.services = []
+    return node
+
+
+@pytest.fixture
+def retire_node(mocker) -> AsyncMock:
+    """Replace the node retirement so the retire decision is seen in isolation."""
+    return mocker.patch(
+        "app.extensions.sync.syncers.pmm.PMMSyncer.retire_node",
+        new_callable=AsyncMock,
+    )
+
+
+@pytest_asyncio.fixture
+async def inventory_client(
+    regular_user: CasdoorUser, session: AsyncSession
+) -> AsyncIterator[AsyncClient]:
+    """Yield a client for the inventory app, reading and writing ``session``."""
+    inventory_app.dependency_overrides |= {
+        require_minimum_role_for_unsafe_methods: lambda: None,
+        get_current_user: lambda: regular_user,
+        get_current_service_principal: lambda: regular_user,
+        get_session: lambda: session,
+    }
+    transport = ASGITransport(app=inventory_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    inventory_app.dependency_overrides = {}
+
+
+@pytest.fixture
 def node_with_services(created_node) -> CreatedNode:
     """Return a locally known node whose live services carry persistable local IDs."""
     created_node.external_id = "pmm-node-1"
@@ -1049,6 +1108,14 @@ async def owned_pmmsyncer(pmmsyncer, session) -> PMMSyncer:
 async def _absence_rows(session, entity_type=SyncInventoryEntityTypeEnum.NODE) -> list:
     """Return the ledger rows recorded for ``entity_type``."""
     return await SyncEntityAbsenceManager.list(session, entity_type=entity_type)
+
+
+def _serve_local_nodes(syncer: PMMSyncer, *nodes: CreatedNode) -> None:
+    """Make the inventory list ``nodes`` and echo each node's update back."""
+    rows = {f"/nodes/{node.id}": node.model_dump() for node in nodes}
+    inventory_api = cast("AsyncMock", syncer.inventory_api)
+    inventory_api.get.side_effect = [local_nodes_payload(*nodes)]
+    inventory_api.put.side_effect = lambda url, **_: rows[url]
 
 
 class TestGetInventorySnapshot:
@@ -1231,24 +1298,14 @@ class TestGetInventorySnapshot:
 class TestInventoryGenerationGating:
     """Test that retirement requires a complete generation and spent grace."""
 
-    @pytest.fixture
-    def retire_node(self, mocker) -> AsyncMock:
-        """Replace the node retirement so the retire decision is seen in isolation."""
-        return mocker.patch(
-            "app.extensions.sync.syncers.pmm.PMMSyncer.retire_node",
-            new_callable=AsyncMock,
-        )
-
     @pytest.mark.asyncio
     async def test_validation_failure_retires_nothing(
-        self, local_node, owned_pmmsyncer, session, retire_node
+        self, local_node, witness, owned_pmmsyncer, session, retire_node
     ):
         """Retire nothing when a validation-skipped entity blocks the run."""
-        owned_pmmsyncer.inventory_api.get.side_effect = [
-            local_nodes_payload(local_node)
-        ]
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
-            return_value=_snapshot(invalid_services=1)
+            return_value=_snapshot(_remote_node(witness), invalid_services=1)
         )
 
         await owned_pmmsyncer.perform_inventory_sync()
@@ -1300,14 +1357,12 @@ class TestInventoryGenerationGating:
 
     @pytest.mark.asyncio
     async def test_single_absence_does_not_retire(
-        self, local_node, owned_pmmsyncer, session, retire_node
+        self, local_node, witness, owned_pmmsyncer, session, retire_node
     ):
         """Start the count without retiring on one generation reporting absence."""
-        owned_pmmsyncer.inventory_api.get.side_effect = [
-            local_nodes_payload(local_node)
-        ]
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
-            return_value=_snapshot()
+            return_value=_snapshot(_remote_node(witness))
         )
 
         await owned_pmmsyncer.perform_inventory_sync()
@@ -1317,14 +1372,12 @@ class TestInventoryGenerationGating:
 
     @pytest.mark.asyncio
     async def test_complete_generation_retires_after_grace(
-        self, local_node, owned_pmmsyncer, session, retire_node
+        self, local_node, witness, owned_pmmsyncer, session, retire_node
     ):
         """Retire the entity on a second consecutive complete generation."""
-        owned_pmmsyncer.inventory_api.get.side_effect = [
-            local_nodes_payload(local_node)
-        ]
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
-            return_value=_snapshot()
+            return_value=_snapshot(_remote_node(witness))
         )
 
         await owned_pmmsyncer.perform_inventory_sync()
@@ -1332,19 +1385,17 @@ class TestInventoryGenerationGating:
         await owned_pmmsyncer.perform_inventory_sync()
 
         retire_node.assert_awaited_once()
+        assert retire_node.await_args.args[0].id == local_node.id
         assert await _absence_rows(session) == []
 
     @pytest.mark.asyncio
     async def test_absence_counter_resets_on_reappearance(
-        self, local_node, owned_pmmsyncer, session, retire_node
+        self, local_node, witness, owned_pmmsyncer, session, retire_node
     ):
         """Reset the counter to zero, not to N-1, when an entity reappears."""
-        owned_pmmsyncer.inventory_api.get.side_effect = [
-            local_nodes_payload(local_node)
-        ]
-        owned_pmmsyncer.inventory_api.put.return_value = local_node.model_dump()
-        absent = _snapshot()
-        present = _snapshot(_remote_node(local_node))
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        absent = _snapshot(_remote_node(witness))
+        present = _snapshot(_remote_node(local_node), _remote_node(witness))
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             side_effect=[absent, present, absent]
         )
@@ -1358,14 +1409,17 @@ class TestInventoryGenerationGating:
 
     @pytest.mark.asyncio
     async def test_incomplete_generation_freezes_the_counter(
-        self, local_node, owned_pmmsyncer, session, retire_node
+        self, local_node, witness, owned_pmmsyncer, session, retire_node
     ):
         """Hold the counter steady when a generation is inconclusive."""
-        owned_pmmsyncer.inventory_api.get.side_effect = [
-            local_nodes_payload(local_node)
-        ]
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        reported = _remote_node(witness)
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
-            side_effect=[_snapshot(), _snapshot(invalid_nodes=1), _snapshot()]
+            side_effect=[
+                _snapshot(reported),
+                _snapshot(reported, invalid_nodes=1),
+                _snapshot(reported),
+            ]
         )
 
         await owned_pmmsyncer.perform_inventory_sync()
@@ -1377,7 +1431,7 @@ class TestInventoryGenerationGating:
 
     @pytest.mark.asyncio
     async def test_presence_in_an_incomplete_generation_clears_the_counter(
-        self, local_node, owned_pmmsyncer, session, retire_node
+        self, local_node, witness, owned_pmmsyncer, session, retire_node
     ):
         """Clear the counter for an entity the fetch returned, complete or not.
 
@@ -1386,15 +1440,13 @@ class TestInventoryGenerationGating:
         absences either side of it would retire an entity that never went away for
         two consecutive generations.
         """
-        owned_pmmsyncer.inventory_api.get.side_effect = [
-            local_nodes_payload(local_node)
-        ]
-        owned_pmmsyncer.inventory_api.put.return_value = local_node.model_dump()
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        reported = _remote_node(witness)
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             side_effect=[
-                _snapshot(),
-                _snapshot(_remote_node(local_node), invalid_services=1),
-                _snapshot(),
+                _snapshot(reported),
+                _snapshot(_remote_node(local_node), reported, invalid_services=1),
+                _snapshot(reported),
             ]
         )
 
@@ -1407,13 +1459,11 @@ class TestInventoryGenerationGating:
 
     @pytest.mark.asyncio
     async def test_cross_list_inconsistency_retries_once_then_marks_incomplete(
-        self, local_node, owned_pmmsyncer, session, retire_node
+        self, local_node, witness, owned_pmmsyncer, session, retire_node
     ):
         """Leave the generation incomplete when orphans persist across fetches."""
-        owned_pmmsyncer.inventory_api.get.side_effect = [
-            local_nodes_payload(local_node)
-        ]
-        orphaned = _snapshot(orphan_service_node_ids=["ghost"])
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        orphaned = _snapshot(_remote_node(witness), orphan_service_node_ids=["ghost"])
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
             side_effect=[orphaned, orphaned]
         )
@@ -1429,14 +1479,16 @@ class TestInventoryGenerationGating:
 
     @pytest.mark.asyncio
     async def test_cross_list_inconsistency_second_fetch_clean_proceeds(
-        self, local_node, owned_pmmsyncer, session, retire_node
+        self, local_node, witness, owned_pmmsyncer, session, retire_node
     ):
         """Restore a complete generation and normal gating after a clean refetch."""
-        owned_pmmsyncer.inventory_api.get.side_effect = [
-            local_nodes_payload(local_node)
-        ]
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        reported = _remote_node(witness)
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
-            side_effect=[_snapshot(orphan_service_node_ids=["ghost"]), _snapshot()]
+            side_effect=[
+                _snapshot(reported, orphan_service_node_ids=["ghost"]),
+                _snapshot(reported),
+            ]
         )
 
         await owned_pmmsyncer.perform_inventory_sync()
@@ -1512,14 +1564,12 @@ class TestInventoryGenerationGating:
 
     @pytest.mark.asyncio
     async def test_reclaimed_run_aborts_retire_phase(
-        self, local_node, owned_pmmsyncer, session, retire_node
+        self, local_node, witness, owned_pmmsyncer, session, retire_node
     ):
         """Retire nothing from a run that lost ownership of its instance."""
-        owned_pmmsyncer.inventory_api.get.side_effect = [
-            local_nodes_payload(local_node)
-        ]
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
         owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
-            return_value=_snapshot()
+            return_value=_snapshot(_remote_node(witness))
         )
         await SyncInstanceManager.update_where(
             session,
@@ -1566,6 +1616,310 @@ class TestInventoryGenerationGating:
         await owned_pmmsyncer.perform_inventory_sync()
 
         assert owned_pmmsyncer._snapshot_complete is False
+
+
+class TestEmptyGenerationHold:
+    """Test that an empty PMM node list is no evidence that any node went away.
+
+    A PMM reset, lost credential scope or wrong endpoint all answer with an
+    empty, otherwise faithful node list, or one holding only PMM's own node, so counting it would retire the whole
+    inventory once grace is spent.
+    """
+
+    @staticmethod
+    def _syncer_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+        """Return the warnings the syncer module logged."""
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == PMMSyncer.__module__ and record.levelname == "WARNING"
+        ]
+
+    @staticmethod
+    async def _node_items(session: AsyncSession, syncer: PMMSyncer) -> list[SyncItem]:
+        """Return the node SyncItems the syncer's run recorded."""
+        assert syncer.sync_instance is not None
+        return await SyncItemManager.list(
+            session,
+            entity_type=SyncInventoryEntityTypeEnum.NODE,
+            sync_instance_id=syncer.sync_instance.id,
+        )
+
+    @staticmethod
+    def _route(inventory_api: AsyncMock, client: AsyncClient) -> None:
+        """Send every node read and retirement on ``inventory_api`` through ``client``."""
+
+        async def get(path: str, params: dict[str, Any] | None = None) -> Any:
+            response = await client.get(path, params=params)
+            response.raise_for_status()
+            return response.json()
+
+        async def delete(path: str) -> None:
+            (await client.delete(path)).raise_for_status()
+
+        inventory_api.get.side_effect = get
+        inventory_api.delete.side_effect = delete
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("grace", [2, 3])
+    async def test_held_nodes_stay_active_beyond_grace(
+        self, grace, owned_pmmsyncer, session, inventory_client
+    ):
+        """Keep every stored node live, however many empty generations follow."""
+        rows = [
+            await NodeManager.create(session, NodeWriteFactory.build())
+            for _ in range(2)
+        ]
+        self._route(owned_pmmsyncer.inventory_api, inventory_client)
+        owned_pmmsyncer.missing_grace_generations = grace
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot()
+        )
+
+        for _ in range(grace + 1):
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        for row in rows:
+            await session.refresh(row)
+            assert row.retired_at is None
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+        assert await _absence_rows(session) == []
+
+    @pytest.mark.asyncio
+    async def test_held_nodes_close_success(
+        self, local_node, witness, owned_pmmsyncer, session
+    ):
+        """Close every held node's SyncItem so the run does not degrade."""
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot()
+        )
+
+        await owned_pmmsyncer.perform_inventory_sync()
+
+        items = await self._node_items(session, owned_pmmsyncer)
+        assert {item.entity_id for item in items} == {local_node.id, witness.id}
+        assert {item.status for item in items} == {SyncStatusEnum.SUCCESS}
+
+    @pytest.mark.asyncio
+    async def test_warns_once_naming_held_nodes(
+        self, local_node, witness, owned_pmmsyncer, caplog
+    ):
+        """Warn once, naming every node the empty list holds."""
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot()
+        )
+
+        with caplog.at_level("WARNING"):
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        [message] = self._syncer_warnings(caplog)
+        assert message.startswith("PMM reported no nodes;")
+        assert message.endswith(f": [{local_node.id}, {witness.id}]")
+
+    @pytest.mark.asyncio
+    async def test_warning_caps_named_nodes(
+        self, local_node, witness, owned_pmmsyncer, mocker, caplog
+    ):
+        """Name only the first held nodes and count the rest."""
+        mocker.patch("app.extensions.sync.syncers.pmm._HELD_NODE_LOG_LIMIT", 1)
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot()
+        )
+
+        with caplog.at_level("WARNING"):
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        [message] = self._syncer_warnings(caplog)
+        assert "holding 2 local node(s)" in message
+        assert message.endswith(f": [{local_node.id}] and 1 more")
+
+    @pytest.mark.asyncio
+    async def test_empty_local_inventory_is_noop(
+        self, owned_pmmsyncer, session, caplog
+    ):
+        """Complete quietly when there is nothing local to hold."""
+        _serve_local_nodes(owned_pmmsyncer)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot()
+        )
+
+        with caplog.at_level("WARNING"):
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+        assert await self._node_items(session, owned_pmmsyncer) == []
+        assert self._syncer_warnings(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_tombstones_only_is_noop(
+        self, local_node, owned_pmmsyncer, session, caplog
+    ):
+        """Hold nothing and stay quiet when every local node is already retired."""
+        local_node.retired_at = utc_now()
+        _serve_local_nodes(owned_pmmsyncer, local_node)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot()
+        )
+
+        with caplog.at_level("WARNING"):
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+        assert await self._node_items(session, owned_pmmsyncer) == []
+        assert await _absence_rows(session) == []
+        assert self._syncer_warnings(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_existing_counter_is_frozen_not_cleared(
+        self, local_node, witness, owned_pmmsyncer, session
+    ):
+        """Keep a running count through empty generations, then resume it."""
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        reported = _snapshot(_remote_node(witness))
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            side_effect=[reported, _snapshot(), _snapshot(), reported]
+        )
+
+        for _ in range(3):
+            await owned_pmmsyncer.perform_inventory_sync()
+        rows = await _absence_rows(session)
+        assert [(row.entity_id, row.missing_generations) for row in rows] == [
+            (local_node.id, 1)
+        ]
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+
+        await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_awaited_once_with(
+            f"/nodes/{local_node.id}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_filtered_only_response_keeps_grace(
+        self, local_node, witness, owned_pmmsyncer, caplog
+    ):
+        """Count absence normally when PMM reported only filtered nodes.
+
+        A filtered node shows PMM still sees the estate, so the list is not empty.
+        """
+        _serve_local_nodes(owned_pmmsyncer, local_node, witness)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(filtered_node_ids={witness.external_id})
+        )
+
+        with caplog.at_level("WARNING"):
+            await owned_pmmsyncer.perform_inventory_sync()
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_awaited_once_with(
+            f"/nodes/{local_node.id}"
+        )
+        assert self._syncer_warnings(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_server_only_response_holds(
+        self, local_node, server_node, owned_pmmsyncer, session, caplog
+    ):
+        """Hold every other node when PMM reports only its own server node.
+
+        PMM registers its own node even on a freshly reset instance, so that
+        answer is as empty as an empty list.
+        """
+        _serve_local_nodes(owned_pmmsyncer, local_node, server_node)
+        grace = owned_pmmsyncer.missing_grace_generations
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(_remote_node(server_node))
+        )
+
+        with caplog.at_level("WARNING"):
+            for _ in range(grace + 1):
+                await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+        assert await _absence_rows(session) == []
+        messages = self._syncer_warnings(caplog)
+        assert len(messages) == grace + 1
+        assert all(message.endswith(f": [{local_node.id}]") for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_server_and_another_node_keep_grace(
+        self, local_node, server_node, witness, owned_pmmsyncer, caplog
+    ):
+        """Count absence normally when PMM reports a node besides its own."""
+        _serve_local_nodes(owned_pmmsyncer, local_node, server_node, witness)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(_remote_node(server_node), _remote_node(witness))
+        )
+
+        with caplog.at_level("WARNING"):
+            await owned_pmmsyncer.perform_inventory_sync()
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_awaited_once_with(
+            f"/nodes/{local_node.id}"
+        )
+        assert self._syncer_warnings(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_reclaimed_run_holds_without_counting(
+        self, local_node, owned_pmmsyncer, session
+    ):
+        """Retire and count nothing from a reclaimed run that saw an empty list."""
+        _serve_local_nodes(owned_pmmsyncer, local_node)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot()
+        )
+        await SyncInstanceManager.update_where(
+            session,
+            {"status": SyncStatusEnum.FAILED},
+            id=owned_pmmsyncer.sync_instance.id,
+        )
+
+        await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+        assert await _absence_rows(session) == []
+
+    @pytest.mark.asyncio
+    async def test_empty_and_incomplete_still_holds(
+        self, local_node, owned_pmmsyncer, session, caplog
+    ):
+        """Hold, and say so, through an empty list that is also an incomplete read."""
+        _serve_local_nodes(owned_pmmsyncer, local_node)
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            return_value=_snapshot(invalid_nodes=1)
+        )
+
+        with caplog.at_level("WARNING"):
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+        assert await _absence_rows(session) == []
+        [message] = self._syncer_warnings(caplog)
+        assert message.startswith("PMM reported no valid nodes;")
+        assert message.endswith(f": [{local_node.id}]")
+
+    @pytest.mark.asyncio
+    async def test_reappearance_after_empty_generations_syncs_in_place(
+        self, local_node, owned_pmmsyncer, session
+    ):
+        """Sync a node PMM reports again onto its own row, never a new one."""
+        _serve_local_nodes(owned_pmmsyncer, local_node)
+        grace = owned_pmmsyncer.missing_grace_generations
+        owned_pmmsyncer.pmm_api.get_inventory_snapshot = AsyncMock(
+            side_effect=[_snapshot()] * (grace + 1)
+            + [_snapshot(_remote_node(local_node))]
+        )
+
+        for _ in range(grace + 2):
+            await owned_pmmsyncer.perform_inventory_sync()
+
+        owned_pmmsyncer.inventory_api.delete.assert_not_awaited()
+        assert entity_posts(owned_pmmsyncer.inventory_api) == []
+        assert await _absence_rows(session) == []
 
 
 @pytest.mark.parametrize("grace", [0, 1])
@@ -2915,22 +3269,6 @@ class TestRehomeAgainstTheInventoryRoute:
     The move tests above answer writes from a mock, so only a real route can
     show the body is one it takes and that the row keeps its id and children.
     """
-
-    @pytest_asyncio.fixture
-    async def inventory_client(
-        self, regular_user: CasdoorUser, session: AsyncSession
-    ) -> AsyncIterator[AsyncClient]:
-        """Yield a client for the inventory app, reading and writing ``session``."""
-        inventory_app.dependency_overrides |= {
-            require_minimum_role_for_unsafe_methods: lambda: None,
-            get_current_user: lambda: regular_user,
-            get_current_service_principal: lambda: regular_user,
-            get_session: lambda: session,
-        }
-        transport = ASGITransport(app=inventory_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            yield client
-        inventory_app.dependency_overrides = {}
 
     @staticmethod
     def _route(inventory_api: AsyncMock, client: AsyncClient) -> None:
