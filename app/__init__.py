@@ -14,7 +14,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 __all__ = ["BASE_DIR", "__summary__", "__version__"]
-__version__ = "v3.10.0.dev0"
+__version__ = "v3.10.0rc1"
 __summary__ = "PMM Extensions"
 
 from pathlib import Path
