@@ -19,6 +19,7 @@ import base64
 import gzip
 import json as json_lib
 from datetime import datetime, timedelta, UTC
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,6 +27,7 @@ import pytest
 import pytest_asyncio
 from fastapi import status
 from httpx import ASGITransport, AsyncClient
+from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.testclient import TestClient
 
@@ -34,11 +36,13 @@ from app.api.deps import (
     require_minimum_role_for_unsafe_methods,
     SERVICE_PRINCIPAL_ID,
 )
+from app.core.alerts.config import alert_settings, AlertSettings
 from app.core.celery.deps import get_session as get_celery_beat_session
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.encryption import decrypt, is_encrypted
 from app.core.pagination import DEFAULT_PAGINATION_LIMIT
 from app.core.pmm import _background_tasks
+from app.core.settings_override.lifecycle import publish_snapshot
 from app.core.utils import utc_now
 from app.core.utils.date_time import make_datetime_utc
 from app.extensions.apps.archives.alerts import ALERT_DETAIL_BUILDER
@@ -83,6 +87,10 @@ from app.tasks.models import (
 from app.tasks.periodic.crud import PeriodicTaskManager
 from app.tasks.reference_fence import hold_reference_collection_fence
 from tests.app.advisory_locks import isolate_reference_fence
+from tests.app.core.settings_override.conftest import (
+    ALERT_SETTINGS_TOKEN,
+    insert_override_row,
+)
 from tests.app.factories import build_task_history, TaskFactory
 from tests.app.tasks.conftest import (
     HOOK_PATH_FIELDS,
@@ -3975,3 +3983,49 @@ class TestWritersWaitForTheReferenceFence:
             )
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_manual_sync_alerts_from_the_stored_alert_settings(
+    test_client: TestClient,
+    session: AsyncSession,
+    mock_executor: AsyncMock,
+    created_task_with_history: TaskHistory,
+    mocker: MockerFixture,
+) -> None:
+    """Build a failure alert from the published ``AlertSettings`` override.
+
+    The standalone Tasks process publishes ``alert_settings`` from the PMM
+    Extensions database; this covers the rest of the path, from a manual sync of
+    an ``alert_on_fail`` task to the alert service the stored prefix reaches.
+    """
+    stored_prefix = "pmm-sidecar-"
+    await insert_override_row(
+        session,
+        setting_class=ALERT_SETTINGS_TOKEN,
+        key="SOURCE_PREFIX",
+        value=stored_prefix,
+    )
+    await publish_snapshot(alert_settings, session, AlertSettings)
+    created_task_with_history.task.alert_on_fail = True
+    created_task_with_history.status = TaskHistoryStatusEnum.RUNNING
+    await TaskHistoryManager.save(session, created_task_with_history)
+
+    async def _fail(item: TaskHistory, writer_session: object = None) -> TaskHistory:
+        item.status = TaskHistoryStatusEnum.FAILED
+        item.finished_at = utc_now()
+        return item
+
+    mock_executor._sync_task_history = AsyncMock(side_effect=_fail)
+    mock_executor.sync_task_history = partial(
+        BaseExecutor.sync_task_history, mock_executor
+    )
+    mocker.patch("app.tasks.execution.models.schedule_annotation")
+    alert_service_cls = mocker.patch("app.core.alerts.config.AlertService")
+    alert_service_cls.return_value.trigger = AsyncMock()
+
+    response = test_client.post(f"/history/{created_task_with_history.id}/sync/")
+
+    assert response.status_code == status.HTTP_200_OK
+    assert alert_service_cls.call_args.kwargs["source_prefix"] == stored_prefix
+    alert_service_cls.return_value.trigger.assert_awaited_once()
