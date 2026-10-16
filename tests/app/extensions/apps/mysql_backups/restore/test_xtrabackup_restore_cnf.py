@@ -26,6 +26,7 @@ import ast
 import os
 import shutil
 import stat
+import types
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -94,6 +95,7 @@ class Layout:
     outside: Path
     server_id_calls: list[None] = field(default_factory=list)
     during_server_id: Callable[[], None] | None = None
+    unreachable_master: bool = False
 
     def plant(self, name: str, content: str = "[mysqld]\nserver-id=1\n") -> Path:
         """Write ``name`` into the datadir as a restored archive entry."""
@@ -137,12 +139,36 @@ class Layout:
                 self.during_server_id()
             return _NEW_SERVER_ID
 
+        server_id_attrs: dict[str, object] = {"_get_new_server_id": new_server_id}
+        if self.unreachable_master:
+
+            def refuse(*_args: object, **_kwargs: object) -> None:
+                raise backup_error("master unreachable")
+
+            server_id_attrs = {
+                "_get_new_server_id": payload_method(
+                    "Xtrabackup",
+                    "_get_new_server_id",
+                    extra_namespace={
+                        **namespace,
+                        "ProgrammingError": type("ProgrammingError", (Exception,), {}),
+                        "random": types.SimpleNamespace(
+                            randint=lambda _a, _b: _NEW_SERVER_ID
+                        ),
+                    },
+                    payload_path=RESTORE_PAYLOAD_PATH,
+                ),
+                "_query_mysql": refuse,
+                "master_ip": "10.0.0.5",
+                "master_port": 3306,
+            }
+
         restorer = type(
             "Restorer",
             (),
             {
                 **methods,
-                "_get_new_server_id": new_server_id,
+                **server_id_attrs,
                 "BackupError": backup_error,
                 "datadir": str(self.datadir),
                 "logger": Recorder(),
@@ -426,6 +452,18 @@ class TestFailClosed:
             restorer._restore_cnf_files()
 
         assert layout.snapshot() == before
+
+    def test_unreachable_master_still_restores_with_a_fallback_server_id(
+        self, layout: Layout
+    ) -> None:
+        """Restore every entry with a random server-id when the master cannot be asked."""
+        dst = layout.allowed_dir / "my.cnf"
+        layout.plant(_encode(dst))
+        layout.unreachable_master = True
+
+        layout.restorer()._restore_cnf_files()
+
+        assert dst.read_text() == f"[mysqld]\nserver-id= {_NEW_SERVER_ID}\n"
 
     def test_write_failure_keeps_the_files_already_written(
         self, layout: Layout

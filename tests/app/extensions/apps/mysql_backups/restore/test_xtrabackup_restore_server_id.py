@@ -44,6 +44,9 @@ _REPLICAS_SQL = "SHOW SLAVE HOSTS"
 
 #: Shared with the lifted method, so a stubbed failure matches its ``except``.
 _BackupError = type("BackupError", (Exception,), {})
+#: Raised unwrapped by the payload's query helper for SQL the server rejects.
+_ProgrammingError = type("ProgrammingError", (Exception,), {})
+_SYNTAX_ERROR = "(1064, 'You have an error in your SQL syntax')"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -117,7 +120,11 @@ def _new_server_id(
     method = payload_method(
         "Xtrabackup",
         "_get_new_server_id",
-        extra_namespace={"BackupError": _BackupError, "random": rand},
+        extra_namespace={
+            "BackupError": _BackupError,
+            "ProgrammingError": _ProgrammingError,
+            "random": rand,
+        },
         payload_path=RESTORE_PAYLOAD_PATH,
     )
     restorer = types.SimpleNamespace(
@@ -181,6 +188,25 @@ class TestAllQueriesSucceed:
         """Exclude a master id the driver returns as a string."""
         master = FakeMaster(
             {_MASTER_SQL: _master_row(str(_MASTER_ID)), _REPLICAS_SQL: []}
+        )
+        rand = ScriptedRandom([_MASTER_ID, _FRESH_ID])
+
+        assert _new_server_id(master, rand) == _FRESH_ID
+
+    def test_excludes_a_replica_id_reported_as_text(self) -> None:
+        """Exclude a replica id the driver returns as a string."""
+        replica_id = _REPLICA_IDS[0]
+        master = FakeMaster(
+            {_MASTER_SQL: None, _REPLICAS_SQL: [{"Server_id": str(replica_id)}]}
+        )
+        rand = ScriptedRandom([replica_id, _FRESH_ID])
+
+        assert _new_server_id(master, rand) == _FRESH_ID
+
+    def test_excludes_an_id_shared_by_master_and_replica(self) -> None:
+        """Redraw once past an id the master and a replica both report."""
+        master = FakeMaster(
+            {_MASTER_SQL: _master_row(), _REPLICAS_SQL: _replica_rows(_MASTER_ID)}
         )
         rand = ScriptedRandom([_MASTER_ID, _FRESH_ID])
 
@@ -270,6 +296,35 @@ class TestBothQueriesFail:
         assert _SERVER_ID_RANGE[0] <= server_id <= _SERVER_ID_RANGE[1]
 
 
+class TestQueryRejectedAsSql:
+    """Cover a master that rejects a query as SQL it does not support."""
+
+    def test_excludes_the_master_when_the_replica_query_is_rejected(self) -> None:
+        """Redraw past the master's id when ``SHOW SLAVE HOSTS`` is unsupported."""
+        master = FakeMaster(
+            {
+                _MASTER_SQL: _master_row(),
+                _REPLICAS_SQL: _ProgrammingError(_SYNTAX_ERROR),
+            }
+        )
+        rand = ScriptedRandom([_MASTER_ID, _FRESH_ID])
+
+        assert _new_server_id(master, rand) == _FRESH_ID
+
+    def test_excludes_every_replica_when_the_master_query_is_rejected(self) -> None:
+        """Redraw past every replica id when ``SELECT @@server_id`` is rejected."""
+        master = FakeMaster(
+            {
+                _MASTER_SQL: _ProgrammingError(_SYNTAX_ERROR),
+                _REPLICAS_SQL: _replica_rows(*_REPLICA_IDS),
+            }
+        )
+        rand = ScriptedRandom([*_REPLICA_IDS, _FRESH_ID])
+
+        assert _new_server_id(master, rand) == _FRESH_ID
+        assert master.queries == [_MASTER_SQL, _REPLICAS_SQL]
+
+
 class TestEmptyMasterAnswers:
     """Cover queries that succeed but report no ids."""
 
@@ -286,6 +341,25 @@ class TestEmptyMasterAnswers:
         master = FakeMaster({_MASTER_SQL: master_answer, _REPLICAS_SQL: ()})
 
         assert _new_server_id(master, ScriptedRandom([_MASTER_ID])) == _MASTER_ID
+
+    @pytest.mark.parametrize(
+        "replicas_answer",
+        [
+            pytest.param(None, id="none"),
+            pytest.param((), id="empty-tuple"),
+            pytest.param([], id="empty-list"),
+        ],
+    )
+    def test_excludes_only_the_master_without_replicas(
+        self, replicas_answer: object
+    ) -> None:
+        """Exclude only the master's id when no replica rows come back."""
+        master = FakeMaster(
+            {_MASTER_SQL: _master_row(), _REPLICAS_SQL: replicas_answer}
+        )
+        rand = ScriptedRandom([_MASTER_ID, _FRESH_ID])
+
+        assert _new_server_id(master, rand) == _FRESH_ID
 
 
 class TestErrorsOutsideTheFallback:

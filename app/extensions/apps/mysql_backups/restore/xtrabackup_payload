@@ -2209,21 +2209,22 @@ class Xtrabackup(Restore):
     def _get_new_server_id(self):
         """Return a random server-id, skipping any id the master reports for itself or its replicas.
 
-        A master query that raises BackupError contributes no ids instead of raising.
+        A master query that fails with BackupError, or with ProgrammingError for SQL the
+        server no longer supports, contributes no ids instead of raising.
         """
         active_ids = set()
         if self.master_ip:
             # mysqld is already stopped here, so an unknown id beats a failed restore.
             try:
                 master = self._query_mysql('SELECT @@server_id', host=self.master_ip, port=self.master_port)
-            except BackupError:
+            except (BackupError, ProgrammingError):
                 pass
             else:
                 if master and master['@@server_id']:
                     active_ids.add(int(master['@@server_id']))
             try:
                 replicas = self._query_mysql('SHOW SLAVE HOSTS', fetchall=True, host=self.master_ip, port=self.master_port)
-            except BackupError:
+            except (BackupError, ProgrammingError):
                 pass
             else:
                 active_ids.update(int(row['Server_id']) for row in replicas or ())
