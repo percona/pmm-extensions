@@ -1767,3 +1767,39 @@ def test_release_notes_file_is_removed_on_exit(monkeypatch):
         assert notes_file.read_text(encoding="utf-8") == "body \u2014\n"
 
     assert not notes_file.exists()
+
+
+_RETIRED_DESTINATIONS = ("team01", "#gas-team", "#sep", "staging")
+
+
+def test_rc_next_steps_name_the_manual_jenkins_trigger(capsys):
+    """Tell the operator to build the RC images and announce on #pmm-extensions."""
+    release._print_rc_next_steps("3.10.0", 2, jira_version_created=True)
+
+    out = capsys.readouterr().out
+    assert "make trigger-jenkins TAG=v3.10.0rc2" in out
+    assert "#pmm-extensions" in out
+    assert not any(name in out for name in _RETIRED_DESTINATIONS)
+
+
+def test_prep_next_steps_name_the_manual_jenkins_trigger(capsys):
+    """Tell the operator to build the SHA image, with no team01 deploy."""
+    release._print_prep_next_steps("3.11.0", "abc123", jira_version_created=True)
+
+    out = capsys.readouterr().out
+    assert "make trigger-jenkins TAG=abc123" in out
+    assert not any(name in out for name in _RETIRED_DESTINATIONS)
+
+
+def test_stable_next_steps_name_the_trigger_with_the_release_webhook(capsys):
+    """Tell the operator the one command that builds the images and marks Jira released."""
+    release._print_stable_next_steps("3.10.0")
+
+    out = capsys.readouterr().out
+    assert (
+        "make trigger-jenkins TAG=v3.10.0 "
+        f"WEBHOOK_URL_ENV={release.WEBHOOK_RELEASE_URL_ENV} "
+        f"WEBHOOK_AUTH_ENV={release.WEBHOOK_RELEASE_AUTH_ENV}"
+    ) in out
+    assert "#pmm-extensions" in out
+    assert not any(name in out for name in _RETIRED_DESTINATIONS)

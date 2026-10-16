@@ -245,4 +245,4 @@ meaning something knip cannot see being used. Its comment must name what uses it
 
 If you have any questions or need assistance, feel free to reach out:
 - Open an issue on GitHub or on Jira.
-- Contact one of the [CODEOWNERS](https://github.com/percona/pmm-extensions/blob/main/.github/CODEOWNERS) or anyone from the GAS team.
+- Contact one of the [CODEOWNERS](https://github.com/percona/pmm-extensions/blob/main/.github/CODEOWNERS) or anyone on the PMM team.

@@ -510,8 +510,14 @@ def _print_rc_next_steps(
     if rc == 1 and not jira_version_created:
         print(f"  {step}. Create Jira version {version} (if not already created)")
         step += 1
-    print(f"  {step}. Deploy to staging and verify")
-    print(f"  {step + 1}. Notify the team")
+    print(
+        f"  {step}. Build and push the images "
+        f"(needs JENKINS_* credentials): make trigger-jenkins TAG=v{version}rc{rc}"
+    )
+    print(
+        f"  {step + 1}. Once PMM's {version} RC is out, announce the tester pair "
+        f"on #pmm-extensions (/pmmx-release-notes v{version}rc{rc})"
+    )
 
 
 def _validate_clean_tree_and_gh(*, sign_via_github_api: bool) -> int | None:
@@ -822,15 +828,15 @@ def _print_prep_next_steps(
         print(f"  {step}. Create Jira version {version} (if not already created)")
         step += 1
     print(
-        f"  {step}. Internal image SHA: {head_sha} — "
-        "deploy to team01 and announce on #gas-team for internal QA day."
+        f"  {step}. Build the internal-registry image for {head_sha} "
+        f"(needs JENKINS_* credentials): make trigger-jenkins TAG={head_sha}"
     )
     print(
         f"  {step + 1}. Merge the dev-version-bump PR opened on main so the "
         "next .dev0 lands before any post-scope-freeze PR."
     )
     print(
-        f"  {step + 2}. Tomorrow (Day 28), dispatch "
+        f"  {step + 2}. When PMM's {version} RC build starts, dispatch "
         f"`release_type: rc, rc_number: 1, version: {version}` "
         "to cut rc1 from the release branch."
     )
@@ -851,8 +857,19 @@ def _print_stable_next_steps(version: str) -> None:
     print(f"Verified: v{version} is an ancestor of origin/main.")
     print()
     print("Next steps:")
-    print("  1. Publish release notes")
-    print(f"  2. Mark Jira version {version} as released")
+    print(
+        "  1. Before PMM's GA announcement, build and push the images and fire "
+        "the Jira release webhook (needs JENKINS_* credentials): "
+        f"make trigger-jenkins TAG=v{version} "
+        f"WEBHOOK_URL_ENV={WEBHOOK_RELEASE_URL_ENV} "
+        f"WEBHOOK_AUTH_ENV={WEBHOOK_RELEASE_AUTH_ENV}"
+    )
+    print(
+        f"  2. Mark Jira version {version} as released (if the webhook was not fired)"
+    )
+    print(
+        f"  3. Publish release notes on #pmm-extensions (/pmmx-release-notes v{version})"
+    )
 
 
 def cmd_prep(version: str, *, sign_via_github_api: bool) -> int:
