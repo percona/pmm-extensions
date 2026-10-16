@@ -503,8 +503,7 @@ def _fragments(tree: ast.Module) -> set[ast.Constant]:
             case ast.Call(func=ast.Attribute(attr="join"), args=[ast.Name() as seq]):
                 parts.append(seq)
 
-    # A bound sequence hands the assembly on to the names it holds, so names are
-    # followed until no new one turns up.
+    # A bound sequence hands the assembly on to the names it holds.
     bound = list(_bound_values(ast.walk(tree)))
     assembled: set[str] = set()
     pending = {part.id for part in parts if isinstance(part, ast.Name)}
