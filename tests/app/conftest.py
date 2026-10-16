@@ -36,8 +36,8 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from itsdangerous import URLSafeTimedSerializer
 from pytest_mock import MockerFixture
-from sqlalchemy import event
-from sqlalchemy.engine import Engine
+from sqlalchemy import event, URL
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     AsyncEngine,
@@ -611,6 +611,18 @@ def postgres_worker_schema() -> str:
     ``CREATE``/``DROP`` against a shared database.
     """
     return f"extensions_test_{os.environ.get('PYTEST_XDIST_WORKER', 'main')}"
+
+
+@pytest.fixture
+def postgres_async_url() -> URL:
+    """Return an ``asyncpg`` URL to the real-PostgreSQL test database.
+
+    Skip when ``$EXTENSIONS_TEST_POSTGRES_DSN`` is unset (local runs without
+    PostgreSQL); the dedicated ``test_postgres`` CI job supplies it. Shared by
+    the inventory and tasks Alembic harnesses so both tracks build the URL the
+    same way.
+    """
+    return make_url(postgres_dsn_or_skip()).set(drivername="postgresql+asyncpg")
 
 
 @pytest_asyncio.fixture

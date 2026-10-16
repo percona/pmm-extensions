@@ -24,8 +24,13 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
+import pytest
+from pydantic import SecretStr
 from sqlalchemy import text, URL
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+
+from app.core.db.config import DatabaseOptions
+from app.core.utils.fields import AsyncDatabaseEngine
 
 T = TypeVar("T")
 
@@ -49,6 +54,29 @@ def run_on_postgres(
             await engine.dispose()
 
     return asyncio.run(_run())
+
+
+def point_database_at(
+    monkeypatch: pytest.MonkeyPatch, database: DatabaseOptions, url: URL, name: str
+) -> None:
+    """Redirect a track's ``DATABASE`` settings to database ``name`` on ``url``'s server.
+
+    A track's ``env.py`` builds its engine from these settings rather than
+    accepting one, so patching them is how a migration test reaches PostgreSQL.
+
+    :param monkeypatch: The fixture that undoes the patches on teardown.
+    :param database: The track's ``DATABASE`` settings object.
+    :param url: The ``asyncpg`` URL whose credentials, host and port to use.
+    :param name: The database to point at.
+    """
+    monkeypatch.setattr(database, "ENGINE", AsyncDatabaseEngine.POSTGRESQL)
+    monkeypatch.setattr(database, "USER", url.username)
+    monkeypatch.setattr(
+        database, "PASSWORD", SecretStr(url.password) if url.password else None
+    )
+    monkeypatch.setattr(database, "HOST", url.host)
+    monkeypatch.setattr(database, "PORT", url.port)
+    monkeypatch.setattr(database, "NAME", name)
 
 
 def recreate_database(url: URL, name: str, *, create: bool = True) -> None:
