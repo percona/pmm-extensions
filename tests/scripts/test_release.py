@@ -1643,7 +1643,7 @@ def test_cmd_stable_aborts_if_unexpected_merge_failure(repo, monkeypatch):
 
 def _install_generated_notes(monkeypatch, body):
     """Make the generate-notes call return ``body`` and record each command."""
-    calls = []
+    calls: list[list[str]] = []
 
     def fake_run(cmd, *, check=True, capture=False):
         calls.append(cmd)
@@ -1698,16 +1698,29 @@ _MAX_ARGV_BYTES = 131_072
 
 
 def _install_notes_file_capture(monkeypatch, body):
-    """Fake ``_run`` so each ``gh release create`` records its notes file."""
-    created = []
+    """Fake ``_run`` so each ``gh release create`` records its notes file.
+
+    The generate-notes call returns ``body``, ``make build`` drops the stable
+    wheel, and the current branch reads as ``release/v0.13.0``.
+    """
+    created: list[tuple[list[str], str]] = []
 
     def fake_run(cmd, *, check=True, capture=False):
-        if cmd[:3] == ["gh", "release", "create"]:
+        stdout = ""
+        if cmd[:2] == ["gh", "api"]:
+            stdout = body
+        elif cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+            stdout = "release/v0.13.0\n"
+        elif cmd == ["make", "build"]:
+            wheel = Path("dist") / "pmm_extensions-0.13.0-py3-none-any.whl"
+            wheel.parent.mkdir(exist_ok=True)
+            wheel.write_text("", encoding="utf-8")
+        elif cmd[:3] == ["gh", "release", "create"]:
             created.append(
                 (cmd, Path(cmd[cmd.index("--notes-file") + 1]).read_text("utf-8"))
             )
         return subprocess.CompletedProcess(
-            args=cmd, returncode=0, stdout=body, stderr=""
+            args=cmd, returncode=0, stdout=stdout, stderr=""
         )
 
     monkeypatch.setattr(release, "_run", fake_run)
@@ -1727,6 +1740,20 @@ def test_rc_prerelease_passes_a_multibyte_body_through_a_notes_file(
     release._create_rc_github_prerelease("v3.10.0rc1", "release/v3.10.0", tmp_path)
 
     cmd, written = created[0]
+    assert "--notes" not in cmd
+    assert all(len(arg.encode()) <= _MAX_ARGV_BYTES for arg in cmd)
+    assert written == body
+
+
+def test_cmd_stable_passes_a_multibyte_body_through_a_notes_file(repo, monkeypatch):
+    """Hand the stable release's 136,000-byte body to ``gh`` by file."""
+    body = "a" * 118_000 + "—" * 6_000
+    created = _install_notes_file_capture(monkeypatch, body)
+
+    assert release.cmd_stable("0.13.0", sign_via_github_api=False) == 0
+
+    ((cmd, written),) = created
+    assert cmd[:4] == ["gh", "release", "create", "v0.13.0"]
     assert "--notes" not in cmd
     assert all(len(arg.encode()) <= _MAX_ARGV_BYTES for arg in cmd)
     assert written == body
