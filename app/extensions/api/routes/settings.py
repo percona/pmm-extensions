@@ -68,8 +68,10 @@ EXTENSIONS_ADMIN_SETTINGS_CLASSES: list[ClassEntry] = [  # ty: ignore[invalid-as
     (EXTENSIONS_SETTINGS, ExtensionsSettings, extensions_settings),
     (SNIPPETS_SETTINGS, SnippetsSettings, snippets_settings),
     (ALERT_SETTINGS, AlertSettings, alert_settings),
-    # The global ``Settings`` class is refreshed only by the PMM Extensions web process, so
-    # its override-eligible fields (e.g. ``PMM``, ``LOGGING``) are exposed here.
+    # The PMM Extensions database owns the global ``Settings`` rows and this router
+    # is their only writer, so its override-eligible fields (e.g. ``PMM``,
+    # ``LOGGING``) are exposed here. Every process that reads them refreshes from
+    # that database.
     (SETTINGS, Settings, settings),
 ]
 

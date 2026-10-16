@@ -30,7 +30,15 @@ from app.api.deps import RequireMinimumRoleForUnsafeMethods
 from app.core.config import create_app, default_lifespan, settings
 from app.core.exceptions import HTTPBadGatewayException, HTTPGoneException
 from app.core.health import build_health_router
-from app.core.settings_override.constants import ANONYMIZER_SETTINGS, TASKS_SETTINGS
+from app.core.settings_override.constants import (
+    ALERT_SETTINGS,
+    ANONYMIZER_SETTINGS,
+    SETTINGS,
+    TASKS_SETTINGS,
+)
+from app.core.settings_override.extensions_owned import (
+    extensions_owned_overrides_refresher,
+)
 from app.core.settings_override.lifecycle import (
     CallbackRegistry,
     ProxyEntry,
@@ -81,11 +89,13 @@ _OVERRIDE_REBIND_CALLBACKS: CallbackRegistry = {
 
 @asynccontextmanager
 async def tasks_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Manage the Tasks API's lifespan.
+    """Manage the part of the Tasks API's lifespan every run mode enters.
 
     Initializes the Tasks database data and starts the settings-override
     refresher, the default lifespan, and the :class:`NomadLifecycle` holder that
-    owns the live entered ``NomadExecutor``.
+    owns the live entered ``NomadExecutor``. This is the part
+    :func:`app.main.main_lifespan` enters under the combined ``app.main:app``;
+    :func:`tasks_standalone_lifespan` wraps it when this app is served alone.
 
     The holder is anchored to the module-level ``tasks_app`` rather than to
     ``app``: when this lifespan runs under the combined ``app.main:app``,
@@ -96,20 +106,19 @@ async def tasks_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     :param app: The FastAPI application instance whose lifespan this manages
         (``tasks_app`` standalone, the parent app when mounted).
-    :type app: FastAPI
     :return: An async context manager yielding ``None`` for the lifespan duration.
-    :rtype: AsyncGenerator[None, None]
     """
     await init_tasks_db()
     await verify_taskhistory_execution_request_is_jsonb()
     async with (
         settings_override_refresher(
             get_async_session_maker,
-            # ALERT_SETTINGS is intentionally NOT wired here: ``alert_settings``
-            # is a single shared proxy owned by the PMM Extensions refresher. Wiring it here
-            # too would, in the combined ``app.main:app`` process, have both
-            # refreshers publish into it from their separate databases and clobber
-            # each other every cycle.
+            # SETTINGS and ALERT_SETTINGS are PMM Extensions-owned and refreshed
+            # from the PMM Extensions database: by tasks_standalone_lifespan when
+            # this app is served alone, and by the PMM Extensions refresher under
+            # ``app.main:app``. Wiring them here as well would give the combined
+            # process a second publisher per proxy and fire
+            # apply_logging_dictconfig twice per change.
             # ANONYMIZER_SETTINGS is safe to wire (unlike ALERT above): its proxy
             # is tasks-track-DB-owned, so no cross-refresher clobber. Without it
             # the API process serves stale defaults until an in-process PATCH.
@@ -127,7 +136,28 @@ async def tasks_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
 
 
-lifespan = tasks_lifespan
+@asynccontextmanager
+async def tasks_standalone_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Manage the Tasks API's lifespan when it runs standalone.
+
+    Wraps :func:`tasks_lifespan` with the refresher for the PMM
+    Extensions-owned ``Settings`` and ``AlertSettings``, read from the PMM
+    Extensions database, so a ``LOGGING``, ``PMM`` or alert override reaches
+    this process. Under the combined ``app.main:app`` the PMM Extensions
+    refresher publishes those classes and :func:`app.main.main_lifespan`
+    enters :func:`tasks_lifespan` alone.
+
+    :param app: The FastAPI application instance whose lifespan this manages.
+    :return: An async context manager yielding ``None`` for the lifespan duration.
+    """
+    async with (
+        extensions_owned_overrides_refresher(SETTINGS, ALERT_SETTINGS),
+        tasks_lifespan(app),
+    ):
+        yield
+
+
+lifespan = tasks_standalone_lifespan
 tasks_app = create_app(
     build_health_router(get_async_session_maker),
     tasks_router,
