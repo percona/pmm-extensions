@@ -16,11 +16,12 @@
 """Define PMM Extensions settings."""
 
 import logging
+from collections.abc import Iterable
 from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from string import Template
-from typing import Annotated, Any, ClassVar, Literal, Self
+from typing import Annotated, Any, ClassVar, Literal, Self, TYPE_CHECKING
 from urllib.parse import urlparse
 
 from annotated_types import Gt
@@ -67,6 +68,7 @@ from app.core.settings_override.registry import (
 )
 from app.core.utils import (
     deep_dict_update,
+    import_var,
     slugify,
 )
 from app.core.utils.fields import (
@@ -82,6 +84,11 @@ from app.core.utils.fields import (
 from app.extensions.apps.nav_icons import NavIcon
 from app.extensions.bundle_upload.plan import DeliveryPlan
 from app.extensions.sync.fields import CONSTRAINED_SYNCER_FIELDS
+
+if TYPE_CHECKING:
+    # A runtime import cycles: app.tasks.config -> app.tasks.execution.executors.nomad
+    # -> app.tasks.crud -> app.api.deps -> app.extensions.config.
+    from app.tasks.config import InventorySyncSchedule
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +478,50 @@ class SyncOptions(BaseLowercaseModel):
         if not v.startswith(root):
             v = root + v
         return v
+
+
+def validate_scheduled_syncers(
+    configured: Iterable[SyncOptions],
+    pinned: str | None,
+    schedules: Iterable["InventorySyncSchedule"],
+) -> None:
+    """Raise when an inventory-sync schedule names a syncer absent from ``SYNCERS``.
+
+    The tasks settings can only check that a scheduled name is a dotted path, so
+    a typo would otherwise be seeded and then fail every firing. Names are
+    compared in ``BaseSyncer.get_name()`` form, the one the seeded schedule is
+    matched on.
+
+    Scheduled names are compared as strings and never imported, so an operator-
+    supplied path cannot run module code at startup.
+
+    :param configured: The ``EXTENSIONS.SYNCERS`` entries.
+    :param pinned: The ``TASKS.INVENTORY_SYNC_SYNCER`` value, ``None`` for sync-all.
+    :param schedules: The ``TASKS.INVENTORY_SYNC_SCHEDULES`` entries.
+    :raises ValueError: When any scheduled name matches no configured syncer,
+        listing every offending name and the configured ones.
+    :raises ImportError: When a configured syncer's module cannot be imported.
+    :raises AttributeError: When a configured syncer's module has no such attribute.
+    """
+    scheduled = [entry.syncer for entry in schedules]
+    if pinned is None and not scheduled:
+        return
+    available = {import_var(option.syncer).get_name() for option in configured}
+    listing = ", ".join(sorted(available)) or "(none)"
+    problems: list[str] = []
+    if pinned is not None and pinned not in available:
+        problems.append(f"INVENTORY_SYNC_SYNCER names {pinned!r}")
+    problems.extend(
+        f"INVENTORY_SYNC_SCHEDULES entry {name!r}"
+        for name in scheduled
+        if name not in available
+    )
+    if problems:
+        raise ValueError(
+            "Inventory-sync syncer configuration matches no EXTENSIONS.SYNCERS entry "
+            "by its full 'module.ClassName' (BaseSyncer.get_name()) form: "
+            f"{'; '.join(problems)}. Configured: {listing}"
+        )
 
 
 class AppDrainSettings(BaseLowercaseModel):

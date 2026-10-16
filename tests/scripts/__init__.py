@@ -19,8 +19,11 @@ import importlib
 from pathlib import Path
 from types import ModuleType
 
+import yaml
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+CI_WORKFLOW_PATH = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def write_file(tmp_path: Path, name: str, text: str) -> Path:
@@ -61,3 +64,18 @@ def load_script(name: str) -> ModuleType:
         if exc.name != f"scripts.{name}":
             raise
         raise RuntimeError(f"cannot load {SCRIPTS_DIR / f'{name}.py'}") from exc
+
+
+def ci_filter_globs(name: str) -> list[str]:
+    """Return the globs of one ``dorny/paths-filter`` list in the CI workflow.
+
+    :param name: Filter key, such as ``python``.
+    :return: Glob entries declared under that key, in file order.
+    :raises AssertionError: When ``ci.yml`` declares no paths-filter step.
+    """
+    workflow = yaml.safe_load(CI_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    for step in workflow["jobs"]["changes"]["steps"]:
+        filters = step.get("with", {}).get("filters")
+        if filters is not None:
+            return yaml.safe_load(filters)[name]
+    raise AssertionError("ci.yml declares no paths-filter step")

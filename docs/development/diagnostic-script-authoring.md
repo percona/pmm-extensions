@@ -96,9 +96,9 @@ A script may name several categories; it then appears under each of them.
 
 The browser groups categories under a **root** per technology. The root comes
 from the script's `service_type:`, not from `diagnostic_categories:` —
-`mysql`, `mongodb`, `postgresql`, `proxysql`, `haproxy` and `external` map to
-their display labels, and a script with no `service_type` (or an unrecognised
-one) lands under **Generic**.
+`mysql`, `mongodb`, `postgresql`, `proxysql` and `haproxy` map to their display
+labels, and a script with no `service_type` (or an unrecognised one) lands under
+**Generic**.
 
 `service_type` is not display-only: Alert Troubleshooting reads it too, and its
 vocabulary is narrower than the browser's. `AlertServiceType`
@@ -108,8 +108,8 @@ vocabulary is narrower than the browser's. `AlertServiceType`
 altogether, leaving one `Unknown service_type` warning in the log as the only
 evidence.
 
-On a script with one of those three roots a per-alert override is therefore
-**required**, not optional: give every entry under `alerts:` its own
+On a script declaring one of those three service types a per-alert override is
+therefore **required**, not optional: give every entry under `alerts:` its own
 `service_type:` naming a value `AlertServiceType` defines, and that value
 overrides the script-level one for that alert.
 `snippets/proxysql_status.sh` is the worked example. The override is per entry —

@@ -30,8 +30,12 @@ from pytest_mock import MockerFixture
 
 from app import main as main_module
 from app.core.health import HEALTH_PATH
+from app.extensions.config import SyncOptions
+from app.extensions.sync.syncers.mysql.syncer import MySQLSyncer
+from app.extensions.sync.syncers.pmm import PMMSyncer
 from app.main import app
-from tests.app.conftest import HealthProbeServer
+from app.tasks.config import tasks_settings
+from tests.app.conftest import daily_inventory_sync_schedules, HealthProbeServer
 
 
 @pytest.fixture
@@ -225,6 +229,128 @@ def test_api_openapi_json_is_cached(test_client, monkeypatch):
         assert response.status_code == status.HTTP_200_OK
 
     assert calls["n"] == 0, "merge_openapi_documents should be cached after first call"
+
+
+@pytest.mark.usefixtures("pmm_is_the_only_syncer")
+class TestScheduledSyncerStartupCheck:
+    """Cover rejecting an unconfigured scheduled syncer before seeding."""
+
+    @pytest.fixture(name="entered")
+    def entered_fixture(self, mocker: MockerFixture) -> list[str]:
+        """Stub the lifespans, recording each one that runs."""
+        entered: list[str] = []
+
+        @asynccontextmanager
+        async def _recording_tasks_lifespan(_app):
+            entered.append("tasks_lifespan")
+            yield
+
+        @asynccontextmanager
+        async def _passthrough_lifespan(_app):
+            yield
+
+        async def _recording_extensions_startup():
+            entered.append("extensions_startup")
+
+        mocker.patch.object(main_module, "detect_removed_auth_user_model")
+        mocker.patch.object(main_module, "detect_removed_settings_override_keys")
+        mocker.patch.object(
+            main_module, "extensions_overrides_lifespan", _passthrough_lifespan
+        )
+        mocker.patch.object(main_module, "tasks_lifespan", _recording_tasks_lifespan)
+        mocker.patch.object(
+            main_module, "inventory_overrides_lifespan", _passthrough_lifespan
+        )
+        mocker.patch.object(
+            main_module, "extensions_startup", _recording_extensions_startup
+        )
+        return entered
+
+    @pytest.mark.asyncio
+    async def test_rejects_unmatched_pinned_syncer_before_seeding(
+        self, entered: list[str], mocker: MockerFixture
+    ) -> None:
+        """Stop startup before ``tasks_lifespan`` seeds the beat schedule."""
+        mocker.patch.object(
+            tasks_settings, "INVENTORY_SYNC_SYNCER", f"{PMMSyncer.get_name()}Typo"
+        )
+
+        with pytest.raises(ValueError, match="INVENTORY_SYNC_SYNCER"):
+            async with main_module.main_lifespan(app):
+                pass
+
+        assert entered == []
+
+    @pytest.mark.asyncio
+    async def test_rejects_unmatched_schedule_entry_before_seeding(
+        self, entered: list[str], mocker: MockerFixture
+    ) -> None:
+        """Stop startup on a bad per-syncer schedule as well."""
+        mocker.patch.object(
+            tasks_settings,
+            "INVENTORY_SYNC_SCHEDULES",
+            daily_inventory_sync_schedules(MySQLSyncer.get_name()),
+        )
+
+        with pytest.raises(ValueError, match="INVENTORY_SYNC_SCHEDULES"):
+            async with main_module.main_lifespan(app):
+                pass
+
+        assert entered == []
+
+    @pytest.mark.asyncio
+    async def test_starts_when_nothing_is_pinned_or_scheduled(
+        self, entered: list[str], mocker: MockerFixture
+    ) -> None:
+        """Start unchanged on the sync-all default with no schedules."""
+        check = mocker.spy(main_module, "validate_inventory_sync_syncers")
+
+        async with main_module.main_lifespan(app):
+            pass
+
+        check.assert_called_once()
+        assert entered == ["tasks_lifespan", "extensions_startup"]
+
+    @pytest.mark.asyncio
+    async def test_starts_when_every_named_syncer_is_configured(
+        self, entered: list[str], mocker: MockerFixture
+    ) -> None:
+        """Start when the pin and every schedule entry are configured."""
+        mocker.patch.object(
+            tasks_settings, "INVENTORY_SYNC_SYNCER", PMMSyncer.get_name()
+        )
+        mocker.patch.object(
+            tasks_settings,
+            "INVENTORY_SYNC_SCHEDULES",
+            daily_inventory_sync_schedules(PMMSyncer.get_name()),
+        )
+
+        async with main_module.main_lifespan(app):
+            pass
+
+        assert entered == ["tasks_lifespan", "extensions_startup"]
+
+    @pytest.mark.asyncio
+    async def test_reports_a_broken_syncers_entry_as_an_import_failure(
+        self, entered: list[str], mocker: MockerFixture
+    ) -> None:
+        """Validate ``SYNCERS`` imports first so a broken entry reads as itself."""
+        mocker.patch.object(
+            main_module.extensions_settings,
+            "SYNCERS",
+            [SyncOptions(syncer="pmm.NoSuchSyncer")],
+        )
+        mocker.patch.object(
+            tasks_settings, "INVENTORY_SYNC_SYNCER", PMMSyncer.get_name()
+        )
+        check = mocker.spy(main_module, "validate_inventory_sync_syncers")
+
+        with pytest.raises(AttributeError, match="NoSuchSyncer"):
+            async with main_module.main_lifespan(app):
+                pass
+
+        check.assert_not_called()
+        assert entered == []
 
 
 class TestCeleryBeatReadinessGate:

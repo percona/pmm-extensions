@@ -15,6 +15,7 @@
 
 """Define tests for the app.extensions.config module."""
 
+import importlib
 import json
 import re
 from collections.abc import Callable
@@ -52,8 +53,14 @@ from app.extensions.config import (
     prefixed_cookie_path,
     SyncerExtraKwargs,
     SyncOptions,
+    validate_scheduled_syncers,
 )
 from app.extensions.sync.syncers.pmm import PMMSyncer
+from app.extensions.sync.syncers.system_facts.syncer import (
+    SystemFactsSyncer,
+    UnmeasuredHostFactsSyncer,
+)
+from tests.app.conftest import daily_inventory_sync_schedules
 
 
 class TestCookieOptions:
@@ -1287,3 +1294,140 @@ class TestSyncerExtrasMergeParity:
         assert first.SYNCERS[0].model_dump()["ignore_schemas"] == ["sys"]
         assert second.SYNCERS[0].model_dump()["ignore_schemas"] == ["other"]
         assert first.SYNCERS[0].syncer == _MYSQL_SYNCER
+
+
+_SYSTEM_FACTS = SystemFactsSyncer.get_name()
+_UNMEASURED = UnmeasuredHostFactsSyncer.get_name()
+
+
+def _options(*syncers: str) -> list[SyncOptions]:
+    """Return ``SYNCERS`` entries spelled as an operator would write them."""
+    return [SyncOptions(syncer=syncer) for syncer in syncers]
+
+
+class TestValidateScheduledSyncers:
+    """Cover the startup check of scheduled syncer names against ``SYNCERS``."""
+
+    @pytest.mark.parametrize("configured", [[], ["PMMSyncer"]])
+    def test_passes_when_nothing_is_pinned_or_scheduled(
+        self, configured: list[str]
+    ) -> None:
+        """Accept the sync-all default whether or not any syncer is configured."""
+        validate_scheduled_syncers(_options(*configured), None, [])
+
+    def test_skips_imports_when_nothing_is_pinned_or_scheduled(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Leave an unscheduled install's startup free of any new import."""
+        spy = mocker.patch(
+            "app.core.utils.imports.import_module", wraps=importlib.import_module
+        )
+
+        validate_scheduled_syncers(_options("PMMSyncer"), None, [])
+
+        spy.assert_not_called()
+
+    def test_accepts_short_configured_name_against_full_pinned_name(self) -> None:
+        """Accept the embedded profile's short ``SYNCERS`` / full pin pair."""
+        validate_scheduled_syncers(_options("PMMSyncer"), _PMM_SYNCER, [])
+
+    def test_accepts_full_path_configured_name(self) -> None:
+        """Accept a ``SYNCERS`` entry already spelled in ``get_name()`` form."""
+        validate_scheduled_syncers(_options(_PMM_SYNCER), _PMM_SYNCER, [])
+
+    def test_accepts_schedules_whose_syncers_are_all_configured(self) -> None:
+        """Accept the embedded profile's per-syncer schedules."""
+        validate_scheduled_syncers(
+            _options("PMMSyncer", "SystemFactsSyncer", "UnmeasuredHostFactsSyncer"),
+            _PMM_SYNCER,
+            daily_inventory_sync_schedules(_SYSTEM_FACTS, _UNMEASURED),
+        )
+
+    def test_rejects_unmatched_pinned_name(self) -> None:
+        """Name the setting, the value and every configured syncer."""
+        typo = "app.extensions.sync.syncers.pmm.PMMSyncr"
+
+        with pytest.raises(ValueError, match="INVENTORY_SYNC_SYNCER") as excinfo:
+            validate_scheduled_syncers(_options("PMMSyncer", "MySQLSyncer"), typo, [])
+
+        message = str(excinfo.value)
+        assert typo in message
+        assert _PMM_SYNCER in message
+        assert _MYSQL_SYNCER in message
+
+    def test_rejects_pinned_name_when_no_syncer_is_configured(self) -> None:
+        """Reject a pin that an empty ``SYNCERS`` can never serve."""
+        with pytest.raises(ValueError, match=r"Configured: \(none\)"):
+            validate_scheduled_syncers([], _PMM_SYNCER, [])
+
+    @pytest.mark.parametrize(
+        "pinned",
+        [
+            pytest.param("app.extensions.sync.syncers.PMMSyncer", id="reexport"),
+            pytest.param("app.extensions.sync.syncers.pmm.pmmsyncer", id="case"),
+        ],
+    )
+    def test_rejects_names_that_differ_from_get_name(self, pinned: str) -> None:
+        """Compare against the resolved name the seeded schedule is matched on."""
+        with pytest.raises(ValueError, match=re.escape(pinned)):
+            validate_scheduled_syncers(_options("PMMSyncer"), pinned, [])
+
+    def test_rejects_unmatched_schedule_entry(self) -> None:
+        """Name the setting and the offending entry."""
+        with pytest.raises(ValueError, match="INVENTORY_SYNC_SCHEDULES") as excinfo:
+            validate_scheduled_syncers(
+                _options("PMMSyncer"),
+                _PMM_SYNCER,
+                daily_inventory_sync_schedules(_SYSTEM_FACTS),
+            )
+
+        assert _SYSTEM_FACTS in str(excinfo.value)
+
+    def test_reports_every_offending_name_at_once(self) -> None:
+        """Let an operator fix every bad name in a single restart."""
+        bad_pin = "app.extensions.sync.syncers.pmm.Nope"
+
+        with pytest.raises(ValueError, match="INVENTORY_SYNC_SYNCER") as excinfo:
+            validate_scheduled_syncers(
+                _options("PMMSyncer", "SystemFactsSyncer"),
+                bad_pin,
+                daily_inventory_sync_schedules(
+                    _SYSTEM_FACTS, _UNMEASURED, _MYSQL_SYNCER
+                ),
+            )
+
+        message = str(excinfo.value)
+        assert bad_pin in message
+        assert _UNMEASURED in message
+        assert _MYSQL_SYNCER in message
+        assert f"entry {_SYSTEM_FACTS!r}" not in message
+
+    def test_names_configured_syncers_in_sorted_order(self) -> None:
+        """Keep the message stable whatever order ``SYNCERS`` is written in."""
+        with pytest.raises(ValueError, match=re.escape("x.Unknown")) as excinfo:
+            validate_scheduled_syncers(
+                _options("PMMSyncer", "MySQLSyncer"), "x.Unknown", []
+            )
+
+        assert f"Configured: {_MYSQL_SYNCER}, {_PMM_SYNCER}" in str(excinfo.value)
+
+    def test_never_imports_a_scheduled_name(self, mocker: MockerFixture) -> None:
+        """Keep an operator-supplied path from running module code at startup."""
+        spy = mocker.patch(
+            "app.core.utils.imports.import_module", wraps=importlib.import_module
+        )
+
+        with pytest.raises(ValueError, match=re.escape("os.system")):
+            validate_scheduled_syncers(
+                _options("PMMSyncer"),
+                "os.system",
+                daily_inventory_sync_schedules("subprocess.run"),
+            )
+
+        imported = [call.args[0] for call in spy.call_args_list]
+        assert imported == ["app.extensions.sync.syncers"]
+
+    def test_propagates_error_for_unimportable_configured_syncer(self) -> None:
+        """Surface a broken ``SYNCERS`` entry as itself, not as a mismatch."""
+        with pytest.raises(AttributeError, match="NoSuchSyncer"):
+            validate_scheduled_syncers(_options("pmm.NoSuchSyncer"), _PMM_SYNCER, [])

@@ -1,0 +1,42 @@
+# Paths whose changes need one pmm-extensions-leads approval or two
+# pmm-extensions-review-core approvals, enforced by scripts/core_approval.py.
+#
+# One glob per line, matched against repository-relative paths: `*` stays
+# within a path segment, `**` crosses segments, a leading `!` excludes, and
+# the last matching line wins.
+
+# Backend foundation (mirrors the "Backend foundation" block in CODEOWNERS)
+app/*.py
+app/api/**
+app/core/**
+!app/core/exceptions.py
+!app/core/log.py
+!app/core/pagination/**
+!app/core/utils/**
+app/core/utils/cli_args.py
+app/core/utils/fields.py
+app/core/utils/path.py
+app/tasks/**
+app/inventory/**
+app/extensions/*.py
+app/extensions/api/**
+app/extensions/routes/**
+app/extensions/snippets/**
+app/extensions/bundle_upload/**
+app/extensions/migrations/**
+app/extensions/apps/framework/*.py
+!app/extensions/apps/framework/conformance.py
+!app/extensions/apps/framework/list_query.py
+!app/extensions/apps/framework/scaffold.py
+
+# Review routing and this check itself
+.github/CODEOWNERS
+.github/core-approval-paths
+scripts/core_approval.py
+
+# CI and release
+.github/workflows/**
+.github/actions/**
+scripts/release.py
+Containerfile.base
+sidecar/Containerfile.sidecar
