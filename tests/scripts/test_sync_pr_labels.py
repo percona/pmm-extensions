@@ -24,7 +24,7 @@ from unittest.mock import Mock
 import pytest
 import yaml
 
-from tests.scripts import load_script
+from tests.scripts import ci_filter_globs, load_script
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -58,23 +58,6 @@ def _pull_payload(login: str, changed_files: int = 1) -> dict[str, Any]:
         "head": {"repo": {"full_name": _REPOSITORY}},
         "changed_files": changed_files,
     }
-
-
-_CI_WORKFLOW_PATH = _PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
-
-
-def _ci_filter_globs(name: str) -> list[str]:
-    """Return the globs of one ``dorny/paths-filter`` list in the CI workflow.
-
-    :param name: Filter key, such as ``python``.
-    :return: Glob entries declared under that key, in file order.
-    """
-    workflow = yaml.safe_load(_CI_WORKFLOW_PATH.read_text(encoding="utf-8"))
-    for step in workflow["jobs"]["changes"]["steps"]:
-        filters = step.get("with", {}).get("filters")
-        if filters is not None:
-            return yaml.safe_load(filters)[name]
-    raise AssertionError("ci.yml declares no paths-filter step")
 
 
 def test_parse_app_globs_discovers_all_app_labels():
@@ -850,7 +833,7 @@ def test_ci_python_filter_covers_the_labeler_config():
     Without this entry the guard above never executes on the one PR shape that
     can reintroduce the rule.
     """
-    assert ".github/labeler.yml" in _ci_filter_globs("python")
+    assert ".github/labeler.yml" in ci_filter_globs("python")
 
 
 def test_ci_python_filter_covers_itself():
@@ -859,7 +842,7 @@ def test_ci_python_filter_covers_itself():
     The filter declares which paths reach the tests, so a PR editing only it
     would otherwise drop the guard above without any test observing the loss.
     """
-    assert ".github/workflows/ci.yml" in _ci_filter_globs("python")
+    assert ".github/workflows/ci.yml" in ci_filter_globs("python")
 
 
 def test_main_requires_github_token(tmp_path, monkeypatch, capsys):

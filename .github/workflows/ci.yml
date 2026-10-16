@@ -171,6 +171,9 @@ jobs:
               # A skipped job counts as green in ci-success, so omitting the
               # reusable workflow would let a PR editing only it merge unrun.
               - '.github/workflows/python.yaml'
+              # The core-approval drift test compares these two.
+              - '.github/core-approval-paths'
+              - '.github/CODEOWNERS'
             precommit:
               - '.pre-commit-config.yaml'
               - '.github/workflows/ci.yml'
