@@ -511,8 +511,9 @@ def _print_rc_next_steps(
         print(f"  {step}. Create Jira version {version} (if not already created)")
         step += 1
     print(
-        f"  {step}. Build and push the images "
-        f"(needs JENKINS_* credentials): make trigger-jenkins TAG=v{version}rc{rc}"
+        f"  {step}. If the Jenkins trigger above was skipped, build and push "
+        f"the images (needs JENKINS_* credentials): "
+        f"make trigger-jenkins TAG=v{version}rc{rc}"
     )
     print(
         f"  {step + 1}. Once PMM's {version} RC is out, announce the tester pair "
@@ -828,8 +829,9 @@ def _print_prep_next_steps(
         print(f"  {step}. Create Jira version {version} (if not already created)")
         step += 1
     print(
-        f"  {step}. Build the internal-registry image for {head_sha} "
-        f"(needs JENKINS_* credentials): make trigger-jenkins TAG={head_sha} "
+        f"  {step}. If the Jenkins trigger above was skipped, build the "
+        f"internal-registry image for {head_sha} (needs JENKINS_* credentials): "
+        f"make trigger-jenkins TAG={head_sha} "
         "PUSH_IMAGE_DOCKER=false"
     )
     print(
@@ -859,8 +861,9 @@ def _print_stable_next_steps(version: str) -> None:
     print()
     print("Next steps:")
     print(
-        "  1. Before PMM's GA announcement, build and push the images and fire "
-        "the Jira release webhook (needs JENKINS_* credentials): "
+        "  1. If the Jenkins trigger above was skipped, then before PMM's GA "
+        "announcement build and push the images and fire the Jira release "
+        "webhook (needs JENKINS_* credentials): "
         f"make trigger-jenkins TAG=v{version} "
         f"WEBHOOK_URL_ENV={WEBHOOK_RELEASE_URL_ENV} "
         f"WEBHOOK_AUTH_ENV={WEBHOOK_RELEASE_AUTH_ENV}"

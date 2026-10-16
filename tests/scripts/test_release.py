@@ -1803,3 +1803,24 @@ def test_stable_next_steps_name_the_trigger_with_the_release_webhook(capsys):
     ) in out
     assert "#pmm-extensions" in out
     assert not any(name in out for name in _RETIRED_DESTINATIONS)
+
+
+@pytest.mark.parametrize(
+    "print_next_steps",
+    [
+        lambda: release._print_prep_next_steps(
+            "3.11.0", "abc123", jira_version_created=True
+        ),
+        lambda: release._print_rc_next_steps("3.10.0", 2, jira_version_created=True),
+        lambda: release._print_stable_next_steps("3.10.0"),
+    ],
+    ids=["prep", "rc", "stable"],
+)
+def test_next_steps_trigger_only_when_the_automatic_one_was_skipped(
+    capsys, print_next_steps
+):
+    """Condition the manual trigger on the skip, so a credentialed run does not repeat it."""
+    print_next_steps()
+
+    out = capsys.readouterr().out
+    assert "If the Jenkins trigger above was skipped" in out
