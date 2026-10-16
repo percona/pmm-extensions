@@ -690,7 +690,8 @@ function print_redacted_cnf() (
         key=""
         shown=$hidden
         masked=""
-        # Measured as the loader does, so both readers cap the same lines.
+        # Measured as the loader measures a physical line, so both readers cap
+        # the same physical lines.
         length=${#line}
         [[ $line == *$'\r' ]] && ((length--))
         if ((length > CNF_MAX_LINE)); then
