@@ -286,7 +286,7 @@ async def test_log_stream_survives_a_reconcile_mid_transfer(
                 assert old._session is None
     finally:
         tasks_app.dependency_overrides = {}
-        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+        tasks_settings._set_snapshot({})
 
     assert (
         body
