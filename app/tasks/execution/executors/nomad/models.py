@@ -2144,10 +2144,13 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         with a 409. While the job lives, a pending or running allocation is
         simply still starting and is left alone until
         ``PENDING_ALLOCATION_TIMEOUT_SECONDS`` elapses from ``started_at``, after
-        which the row escalates to LOST and the job is deregistered so Nomad
-        cannot still place it. Once the job is dead nothing will advance it, so
-        any other status resolves to LOST: an allocation that started no task
-        produced no exit code to have earned SUCCESS.
+        which the row escalates to LOST and :meth:`_withdraw_unplaced_job` runs:
+        a job dispatched for this run alone is deregistered best-effort so Nomad
+        cannot still place it, while a shared job stays registered and may still
+        place or run that work after the row is LOST. Once the job is dead
+        nothing will advance it, so any other status resolves to LOST: an
+        allocation that started no task produced no exit code to have earned
+        SUCCESS.
 
         :param queue_item: The task history record for tracking this execution.
         :param writer_session: The dedicated session to use for log chunk
