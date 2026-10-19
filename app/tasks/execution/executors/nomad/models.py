@@ -2317,7 +2317,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 alloc["ID"],
                 queue_item.id,
             )
-            self._withdraw_job(job["ID"], queue_item, TaskHistoryStatusEnum.LOST)
+            self._withdraw_unplaced_job(job, queue_item, TaskHistoryStatusEnum.LOST)
             queue_item.finished_at = utc_now()
             queue_item.status = TaskHistoryStatusEnum.LOST
             queue_item.set_failure_reason(
