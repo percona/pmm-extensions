@@ -42,7 +42,12 @@ from app.tasks.deps import get_session
 from app.tasks.execution.executors.nomad.models import NomadExecutor
 from app.tasks.execution.nomad_lifecycle import NomadLifecycle
 from app.tasks.main import tasks_app
-from app.tasks.models import TaskHistory
+from app.tasks.models import (
+    TaskHistory,
+    TaskHistoryStatusEnum,
+    TaskLog,
+    TaskLogType,
+)
 from tests.app.asgi_stream import asgi_stream
 
 
@@ -188,4 +193,101 @@ async def test_file_stream_survives_a_reconcile_mid_transfer(
         tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
 
     assert body == payload
+    assert old._session is None
+
+
+_LOG_ALLOCATION = {
+    "ID": "alloc-1",
+    "JobID": "job-1",
+    "EvalID": "eval-1",
+    "ClientStatus": "running",
+    "TaskStates": {"step1": {"State": "running", "StartedAt": "1"}},
+}
+_LOG_LINE_1 = TaskLog(step="step1", type=TaskLogType.STDOUT, msg="line1")
+_LOG_LINE_2 = TaskLog(step="step1", type=TaskLogType.STDOUT, msg="line2")
+
+
+@pytest.mark.asyncio
+async def test_log_stream_survives_a_reconcile_mid_transfer(
+    mocker: MockerFixture,
+    regular_user: CasdoorUser,
+    session: AsyncSession,
+    created_task_with_history: TaskHistory,
+) -> None:
+    """Deliver a live log stream whose executor was retired by a live NOMAD change.
+
+    Runs without a ``get_request_executor`` override, so the request-scoped hold
+    is what is exercised. The reconcile is fired while the executor is inside its
+    stubbed ``stream_logs`` generator: without the hold the deferred close would
+    fire before the generator resumes and the stream would fail mid-flight.
+    """
+    release = asyncio.Event()
+    stream_started = asyncio.Event()
+    history_id = created_task_with_history.id
+
+    async def held_stream_logs(_self, _queue_item, _start_offsets=None):
+        stream_started.set()
+        yield _LOG_LINE_1
+        await release.wait()
+        yield _LOG_LINE_2
+
+    # Preflight resolves the allocation through the synchronous python-nomad
+    # SDK (``allocations.get_allocations``), distinct from the file-stream
+    # route's singular ``allocation.get_allocation``. Stub that seam so the
+    # request reaches the held ``stream_logs`` stage.
+    mock_backend = MagicMock()
+    mocker.patch(
+        "app.tasks.execution.executors.nomad.models.Nomad",
+        return_value=mock_backend,
+    )
+    mock_backend.allocations.get_allocations.return_value = [_LOG_ALLOCATION]
+    mocker.patch.object(NomadExecutor, "stream_logs", held_stream_logs)
+
+    created_task_with_history.status = TaskHistoryStatusEnum.RUNNING
+    created_task_with_history.execution_request = (
+        created_task_with_history.execution_request.model_copy(
+            update={
+                "tracking": {
+                    "job_id": _LOG_ALLOCATION["JobID"],
+                    "evaluation_id": _LOG_ALLOCATION["EvalID"],
+                }
+            }
+        )
+    )
+    await TaskHistoryManager.save(session, created_task_with_history)
+    tasks_app.dependency_overrides[get_current_user] = lambda: regular_user
+    tasks_app.dependency_overrides[get_session] = lambda: session
+    tasks_settings._set_snapshot(  # ty: ignore[unresolved-attribute]
+        {"NOMAD": _nomad_executor(NOMAD_ENDPOINT)}
+    )
+
+    try:
+        async with NomadLifecycle(tasks_app) as holder:
+            old = holder.current
+            async with asgi_stream(
+                tasks_app,
+                f"/history/{history_id}/logs/",
+            ) as response:
+                assert response.status_code == status.HTTP_200_OK
+                await asyncio.wait_for(stream_started.wait(), timeout=10)
+
+                tasks_settings._set_snapshot(  # ty: ignore[unresolved-attribute]
+                    {"NOMAD": _nomad_executor("http://nomad-new.example.org")}
+                )
+                await holder.reconcile()
+                assert holder.current is not old
+                assert old._session is not None
+
+                release.set()
+                body = await response.drain()
+    finally:
+        tasks_app.dependency_overrides = {}
+        tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+
+    assert (
+        body
+        == (
+            f"{_LOG_LINE_1.model_dump_json()}\n{_LOG_LINE_2.model_dump_json()}\n"
+        ).encode()
+    )
     assert old._session is None
