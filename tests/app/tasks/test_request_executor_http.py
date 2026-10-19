@@ -280,6 +280,10 @@ async def test_log_stream_survives_a_reconcile_mid_transfer(
 
                 release.set()
                 body = await response.drain()
+                # Assert before leaving NomadLifecycle: shutdown force-closes
+                # deferred retirees, so a post-exit check would pass even if the
+                # request leaked its hold.
+                assert old._session is None
     finally:
         tasks_app.dependency_overrides = {}
         tasks_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
@@ -290,4 +294,3 @@ async def test_log_stream_survives_a_reconcile_mid_transfer(
             f"{_LOG_LINE_1.model_dump_json()}\n{_LOG_LINE_2.model_dump_json()}\n"
         ).encode()
     )
-    assert old._session is None
