@@ -388,22 +388,24 @@ class TestDiscriminatedPairing:
 
         assert preserved == [{"PROVIDER": "secretleaf", "api_key": SECRET_STR_MASK}]
 
+    @pytest.mark.parametrize("blank", [None, "", 0], ids=["null", "empty", "zero"])
+    @pytest.mark.parametrize("key", ["PROVIDER", "provider"])
     @pytest.mark.parametrize(
-        "discriminator",
-        [{"PROVIDER": None}, {"PROVIDER": ""}],
-        ids=["null", "empty"],
+        "current",
+        [_secret_leaves("a"), [{"api_key": SecretStr("secret-a")}]],
+        ids=["stored-model", "stored-mapping"],
     )
     def test_blank_discriminator_pairs_like_no_discriminator(
-        self, discriminator: dict[str, str | None]
+        self, current: list[object], key: str, blank: str | int | None
     ) -> None:
         """Pair an element whose discriminator is blank as if it had none."""
-        incoming = [{**discriminator, "api_key": SECRET_STR_MASK}]
+        incoming = [{key: blank, "api_key": SECRET_STR_MASK}]
 
         preserved = preserve_patch_secret_value(
-            _ModelList.model_fields["items"], _secret_leaves("a"), incoming
+            _ModelList.model_fields["items"], current, incoming
         )
 
-        assert preserved == [{**discriminator, "api_key": "secret-a"}]
+        assert preserved == [{key: blank, "api_key": "secret-a"}]
 
     def test_unmatched_element_is_forwarded_as_a_copy(self) -> None:
         """Forward an unmatched element's values unchanged without aliasing it."""

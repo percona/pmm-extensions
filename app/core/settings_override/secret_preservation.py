@@ -360,7 +360,7 @@ def _collection_discriminator(incoming: Mapping[str, Any]) -> str | None:
         absent or falsy.
     """
     provider = incoming.get("PROVIDER") or incoming.get("provider")
-    return None if provider is None else str(provider).upper()
+    return str(provider).upper() if provider else None
 
 
 def _collection_discriminator_candidates(
