@@ -2054,12 +2054,13 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         queue_item: TaskHistory,
         outcome: TaskHistoryStatusEnum,
     ) -> None:
-        """Withdraw a run's own job when the run ends without an allocation.
+        """Withdraw a run's own job when escalating before any task has started.
 
-        Only a job Nomad dispatched for this run alone is withdrawn. A
-        non-parameterized task registers one job per task and target, which
-        every such run shares, so withdrawing it would stop the other runs' work
-        too; it stays registered.
+        Used both when the run ends without an allocation and when a pending
+        allocation times out with no task states. Only a job Nomad dispatched
+        for this run alone is withdrawn. A non-parameterized task registers one
+        job per task and target, which every such run shares, so withdrawing it
+        would stop the other runs' work too; it stays registered.
 
         :param job: The Nomad job dict backing the run.
         :param queue_item: The task history record being terminalized.
@@ -2238,12 +2239,13 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         When the allocation still has no task states and a non-terminal client
         status, :meth:`_should_escalate_pending_allocation` may escalate the
         row to LOST once ``PENDING_ALLOCATION_TIMEOUT_SECONDS`` has elapsed
-        since ``started_at``. The job is deregistered first so Nomad cannot
-        still place the allocation after the duplicate-dispatch guard drops; a
-        Nomad error is swallowed so a hiccup cannot leave the row RUNNING. The
-        finish time is ``utc_now()`` rather than the allocation's
-        ``ModifyTime``, which may predate the timeout on a never-placed
-        allocation and would under-report ``duration``.
+        since ``started_at``. :meth:`_withdraw_unplaced_job` runs first: a job
+        dispatched for this run alone is deregistered so Nomad cannot still
+        place the allocation after the duplicate-dispatch guard drops, while a
+        shared job stays registered; a Nomad error is swallowed so a hiccup
+        cannot leave the row RUNNING. The finish time is ``utc_now()`` rather
+        than the allocation's ``ModifyTime``, which may predate the timeout on
+        a never-placed allocation and would under-report ``duration``.
 
         :param queue_item: The running task history record to stamp.
         :param alloc: The current Nomad allocation dict.
