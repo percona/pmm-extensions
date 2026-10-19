@@ -3856,6 +3856,24 @@ class TestSyncTaskHistoryWithoutTaskStates:
         assert "Could not deregister job job-1" in caplog.text
         assert "marking LOST anyway" in caplog.text
 
+    @pytest.mark.parametrize(
+        "job",
+        [
+            pytest.param(
+                {
+                    "ID": "job-1",
+                    "Status": "running",
+                    "Stop": False,
+                    "Dispatched": False,
+                },
+                id="dispatched-false",
+            ),
+            pytest.param(
+                {"ID": "job-1", "Status": "running", "Stop": False},
+                id="dispatched-absent",
+            ),
+        ],
+    )
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_pending_allocation_shared_job_is_not_withdrawn(
@@ -3863,28 +3881,21 @@ class TestSyncTaskHistoryWithoutTaskStates:
         mock_nomad_cls,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
+        job: dict[str, Any],
     ):
         """Assert a job that is not a per-run dispatch is left registered.
 
         A non-parameterized task registers one job per task and target, so its
         other runs' work lives in the same job and deregistering it would stop
-        them too.
+        them too. A missing ``Dispatched`` key is treated the same as
+        ``False`` — the safe default.
         """
         monkeypatch.setattr(
             tasks_settings,
             "PENDING_ALLOCATION_TIMEOUT_SECONDS",
             PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
         )
-        mock_backend = self._backend(
-            mock_nomad_cls,
-            self._alloc(),
-            job={
-                "ID": "job-1",
-                "Status": "running",
-                "Stop": False,
-                "Dispatched": False,
-            },
-        )
+        mock_backend = self._backend(mock_nomad_cls, self._alloc(), job=job)
         executor = _build_executor()
         started_at = utc_now() - timedelta(seconds=PENDING_ALLOCATION_PAST_BOUND_AGE)
 

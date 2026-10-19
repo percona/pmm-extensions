@@ -2060,7 +2060,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         allocation times out with no task states. Only a job Nomad dispatched
         for this run alone is withdrawn. A non-parameterized task registers one
         job per task and target, which every such run shares, so withdrawing it
-        would stop the other runs' work too; it stays registered.
+        would stop the other runs' work too; it stays registered. Leaving it
+        registered means Nomad may still place and run that work after the row
+        is already terminal, with nothing tracking it — the same tradeoff on
+        both call sites.
 
         :param job: The Nomad job dict backing the run.
         :param queue_item: The task history record being terminalized.
