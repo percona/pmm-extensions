@@ -163,6 +163,14 @@ class TestSecretValuedSequencePayloads:
         assert preserved == [SECRET_STR_MASK]
 
 
+def _secret_leaves(*labels: str) -> list[_SecretLeafModel]:
+    """Return one stored model per label, each holding ``secret-<label>``."""
+    return [
+        _SecretLeafModel(api_key=SecretStr(f"secret-{label}"), label=label)
+        for label in labels
+    ]
+
+
 class TestModelCollectionPairing:
     """Cover which stored collection item a masked incoming item inherits from."""
 
@@ -222,6 +230,27 @@ class TestModelCollectionPairing:
         )
 
         assert preserved == ["not-a-mapping", {"api_key": "stored"}]
+
+    def test_tied_score_prefers_the_same_position(self) -> None:
+        """Break a value-identity tie on the element's own position."""
+        preserved = preserve_patch_secret_value(
+            _ModelList.model_fields["items"],
+            _secret_leaves("a", "b"),
+            ["scalar", {"api_key": SECRET_STR_MASK}],
+        )
+
+        assert preserved == ["scalar", {"api_key": "secret-b"}]
+
+    def test_stored_mappings_pair_by_position(self) -> None:
+        """Pair each element with the stored mapping at its own position."""
+        current = [{"api_key": SecretStr("fp-a")}, {"api_key": SecretStr("fp-b")}]
+        incoming = [{"api_key": SECRET_STR_MASK}, {"api_key": SECRET_STR_MASK}]
+
+        preserved = preserve_patch_secret_value(
+            _ModelList.model_fields["items"], current, incoming
+        )
+
+        assert preserved == [{"api_key": "fp-a"}, {"api_key": "fp-b"}]
 
     def test_unmatched_item_keeps_the_mask(self) -> None:
         """Keep the mask when the discriminator matches no unused stored model.
@@ -295,14 +324,6 @@ class _ProviderModelList(BaseModel):
     """Declare a collection of models carrying a non-discriminating ``provider``."""
 
     items: list[_ProviderSecretLeaf] = []
-
-
-def _secret_leaves(*labels: str) -> list[_SecretLeafModel]:
-    """Return one stored model per label, each holding ``secret-<label>``."""
-    return [
-        _SecretLeafModel(api_key=SecretStr(f"secret-{label}"), label=label)
-        for label in labels
-    ]
 
 
 class TestDiscriminatedPairing:
