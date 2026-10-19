@@ -3402,7 +3402,7 @@ class TestSyncTaskHistoryWithoutTaskStates:
 
         :param mock_nomad_cls: The patched ``Nomad`` class.
         :param alloc: The allocation to return from both lookup paths.
-        :param job: The job to return; defaults to a still-running job.
+        :param job: The job to return; defaults to a still-running dispatched job.
         :return: The backend mock.
         """
         mock_backend = MagicMock()
@@ -3416,6 +3416,7 @@ class TestSyncTaskHistoryWithoutTaskStates:
                 "ID": "job-1",
                 "Status": "running",
                 "Stop": False,
+                "Dispatched": True,
             }
         )
         return mock_backend
@@ -3854,6 +3855,48 @@ class TestSyncTaskHistoryWithoutTaskStates:
         mock_backend.job.deregister_job.assert_called_once_with("job-1")
         assert "Could not deregister job job-1" in caplog.text
         assert "marking LOST anyway" in caplog.text
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_pending_allocation_shared_job_is_not_withdrawn(
+        self,
+        mock_nomad_cls,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Assert a job that is not a per-run dispatch is left registered.
+
+        A non-parameterized task registers one job per task and target, so its
+        other runs' work lives in the same job and deregistering it would stop
+        them too.
+        """
+        monkeypatch.setattr(
+            tasks_settings,
+            "PENDING_ALLOCATION_TIMEOUT_SECONDS",
+            PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
+        )
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            self._alloc(),
+            job={
+                "ID": "job-1",
+                "Status": "running",
+                "Stop": False,
+                "Dispatched": False,
+            },
+        )
+        executor = _build_executor()
+        started_at = utc_now() - timedelta(seconds=PENDING_ALLOCATION_PAST_BOUND_AGE)
+
+        with caplog.at_level(logging.INFO):
+            result = await executor._sync_task_history(
+                self._queue_item(started_at=started_at)
+            )
+
+        assert result.status == TaskHistoryStatusEnum.LOST
+        assert result.finished_at is not None
+        mock_backend.job.deregister_job.assert_not_called()
+        assert "shared across runs; leaving it registered" in caplog.text
 
     @pytest.mark.asyncio
     async def test_should_escalate_pending_allocation_coerces_naive_started_at(
