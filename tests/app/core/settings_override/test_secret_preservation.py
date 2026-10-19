@@ -224,14 +224,10 @@ class TestModelCollectionPairing:
         assert preserved == ["not-a-mapping", {"api_key": "stored"}]
 
     def test_unmatched_item_keeps_the_mask(self) -> None:
-        """Keep the mask when the discriminator has claimed the only pairable model.
+        """Keep the mask when the discriminator matches no unused stored model.
 
-        The mask survives because the candidates ran out, not because the
-        second item's discriminator failed to match: item 0 claims index 1, so
-        item 1 falls through to a preferred index already taken and is left
-        with mapping-only candidates that overlap on no field name. An
-        unmatched item placed *first* still inherits a leftover secret; that
-        pairing defect is tracked separately and is not what this pins.
+        Item 0 claims the only model, so item 1 is left with stored fingerprint
+        mappings, which a discriminator never pairs with.
         """
         field_info = _ModelList.model_fields["items"]
         current = [
@@ -251,6 +247,33 @@ class TestModelCollectionPairing:
             {"PROVIDER": "nonesuch", "api_key": SECRET_STR_MASK},
         ]
 
+    def test_sole_unused_stored_item_pairs_past_the_preferred_index(self) -> None:
+        """Pair with the only unused stored item when the preferred slot is absent."""
+        field_info = _ModelList.model_fields["items"]
+        current = [{"api_key": SecretStr("fingerprint")}]
+
+        preserved = preserve_patch_secret_value(
+            field_info, current, ["scalar", {"api_key": SECRET_STR_MASK}]
+        )
+
+        assert preserved == ["scalar", {"api_key": "fingerprint"}]
+
+    def test_several_unused_stored_items_yield_no_pairing(self) -> None:
+        """Keep the mask when the preferred slot is absent and no single item remains."""
+        field_info = _ModelList.model_fields["items"]
+        current = [
+            {"api_key": SecretStr("first")},
+            {"api_key": SecretStr("second")},
+        ]
+
+        preserved = preserve_patch_secret_value(
+            field_info,
+            current,
+            ["scalar", "scalar", {"api_key": SECRET_STR_MASK}],
+        )
+
+        assert preserved == ["scalar", "scalar", {"api_key": SECRET_STR_MASK}]
+
     def test_non_collection_stored_value_yields_no_pairing(self) -> None:
         """Keep masks when the stored value is not a collection at all."""
         field_info = _ModelList.model_fields["items"]
@@ -260,6 +283,191 @@ class TestModelCollectionPairing:
         )
 
         assert preserved == [{"api_key": SECRET_STR_MASK}]
+
+
+class _ProviderSecretLeaf(_SecretLeafModel):
+    """Declare a model whose ``provider`` field names no class."""
+
+    provider: str = "external"
+
+
+class _ProviderModelList(BaseModel):
+    """Declare a collection of models carrying a non-discriminating ``provider``."""
+
+    items: list[_ProviderSecretLeaf] = []
+
+
+def _secret_leaves(*labels: str) -> list[_SecretLeafModel]:
+    """Return one stored model per label, each holding ``secret-<label>``."""
+    return [
+        _SecretLeafModel(api_key=SecretStr(f"secret-{label}"), label=label)
+        for label in labels
+    ]
+
+
+class TestDiscriminatedPairing:
+    """Cover pairing for elements that carry a ``PROVIDER``/``provider`` key."""
+
+    @pytest.mark.parametrize("key", ["PROVIDER", "provider"])
+    def test_unmatched_first_element_keeps_the_mask(self, key: str) -> None:
+        """Keep the mask rather than inherit the secret stored at the same index."""
+        preserved = preserve_patch_secret_value(
+            _ModelList.model_fields["items"],
+            _secret_leaves("a", "b"),
+            [{key: "nonesuch", "api_key": SECRET_STR_MASK}],
+        )
+
+        assert preserved == [{key: "nonesuch", "api_key": SECRET_STR_MASK}]
+
+    def test_unmatched_alert_provider_keeps_routing_key_mask(self) -> None:
+        """Keep a routing-key mask whose provider type no stored entry has."""
+        current = {PagerDutyEventsAlertProvider(routing_key=SecretStr("real-key"))}
+        incoming = [{"PROVIDER": "opsgenie", "routing_key": SECRET_STR_MASK}]
+
+        preserved = preserve_patch_secret_value(
+            AlertSettings.model_fields["PROVIDERS"], current, incoming
+        )
+
+        assert preserved == [{"PROVIDER": "opsgenie", "routing_key": SECRET_STR_MASK}]
+
+    def test_mixed_payload_unmatched_element_does_not_consume_a_stored_item(
+        self,
+    ) -> None:
+        """Leave the item an unmatched element skipped free for a later element."""
+        incoming = [
+            {"PROVIDER": "nonesuch", "api_key": SECRET_STR_MASK},
+            {"PROVIDER": "secretleaf", "api_key": SECRET_STR_MASK, "label": "b"},
+            {"api_key": SECRET_STR_MASK},
+        ]
+
+        preserved = preserve_patch_secret_value(
+            _ModelList.model_fields["items"], _secret_leaves("a", "b"), incoming
+        )
+
+        assert preserved == [
+            {"PROVIDER": "nonesuch", "api_key": SECRET_STR_MASK},
+            {"PROVIDER": "secretleaf", "api_key": "secret-b", "label": "b"},
+            {"api_key": "secret-a"},
+        ]
+
+    def test_discriminator_matching_only_consumed_items_keeps_the_mask(
+        self,
+    ) -> None:
+        """Keep the mask once every model the discriminator matches is taken."""
+        incoming = [
+            {"PROVIDER": "secretleaf", "api_key": SECRET_STR_MASK},
+            {"PROVIDER": "secretleaf", "api_key": SECRET_STR_MASK},
+        ]
+
+        preserved = preserve_patch_secret_value(
+            _ModelList.model_fields["items"], _secret_leaves("a"), incoming
+        )
+
+        assert preserved == [
+            {"PROVIDER": "secretleaf", "api_key": "secret-a"},
+            {"PROVIDER": "secretleaf", "api_key": SECRET_STR_MASK},
+        ]
+
+    def test_non_string_discriminator_is_unmatched(self) -> None:
+        """Treat a non-string discriminator that names no class as unmatched."""
+        preserved = preserve_patch_secret_value(
+            _ModelList.model_fields["items"],
+            _secret_leaves("a"),
+            [{"PROVIDER": 7, "api_key": SECRET_STR_MASK}],
+        )
+
+        assert preserved == [{"PROVIDER": 7, "api_key": SECRET_STR_MASK}]
+
+    def test_discriminated_element_skips_stored_mappings(self) -> None:
+        """Keep the mask instead of pairing a typed element with a fingerprint."""
+        preserved = preserve_patch_secret_value(
+            _ModelList.model_fields["items"],
+            [{"api_key": SecretStr("fingerprint")}],
+            [{"PROVIDER": "secretleaf", "api_key": SECRET_STR_MASK}],
+        )
+
+        assert preserved == [{"PROVIDER": "secretleaf", "api_key": SECRET_STR_MASK}]
+
+    @pytest.mark.parametrize(
+        "discriminator",
+        [{"PROVIDER": None}, {"PROVIDER": ""}],
+        ids=["null", "empty"],
+    )
+    def test_blank_discriminator_pairs_like_no_discriminator(
+        self, discriminator: dict[str, str | None]
+    ) -> None:
+        """Pair an element whose discriminator is blank as if it had none."""
+        incoming = [{**discriminator, "api_key": SECRET_STR_MASK}]
+
+        preserved = preserve_patch_secret_value(
+            _ModelList.model_fields["items"], _secret_leaves("a"), incoming
+        )
+
+        assert preserved == [{**discriminator, "api_key": "secret-a"}]
+
+    def test_unmatched_element_is_forwarded_as_a_copy(self) -> None:
+        """Forward an unmatched element's values unchanged without aliasing it."""
+        element = {"PROVIDER": "nonesuch", "api_key": "brand-new"}
+
+        preserved = preserve_patch_secret_value(
+            _ModelList.model_fields["items"], _secret_leaves("a"), [element]
+        )
+
+        assert preserved == [element]
+        assert preserved[0] is not element
+
+    @pytest.mark.parametrize(
+        ("order", "expected_secrets"),
+        [
+            ((1,), ["secret-b", "secret-a", "secret-c"]),
+            ((2, 0), ["secret-c", "secret-a", "secret-b"]),
+        ],
+        ids=["tie-takes-first-unused", "last-unused-item"],
+    )
+    def test_undiscriminated_elements_pair_without_reusing_a_stored_item(
+        self, order: tuple[int, ...], expected_secrets: list[str]
+    ) -> None:
+        """Restore each stored secret at most once across undiscriminated elements."""
+        current = _ProviderModelList(
+            items=[
+                _ProviderSecretLeaf(api_key=SecretStr(f"secret-{label}"), label=label)
+                for label in "abc"
+            ]
+        )
+        incoming_items = [
+            current.items[index].model_dump(mode="json", exclude={"provider"})
+            for index in order
+        ]
+        # Without labels every remaining model scores the same, so pairing
+        # falls to the tie-break rather than value identity.
+        anonymous = {"api_key": SECRET_STR_MASK}
+        incoming_items.extend(anonymous.copy() for _ in range(4 - len(incoming_items)))
+
+        preserved = preserve_secrets_in_model_payload(
+            _ProviderModelList, current, {"items": incoming_items}
+        )
+
+        assert preserved == {
+            "items": [
+                {**item, "api_key": secret}
+                for item, secret in zip(
+                    incoming_items, [*expected_secrets, SECRET_STR_MASK], strict=True
+                )
+            ]
+        }
+
+    def test_unrecognized_provider_value_keeps_the_mask(self) -> None:
+        """Keep the mask when a ``provider`` value names no stored class."""
+        current = _ProviderModelList(
+            items=[_ProviderSecretLeaf(api_key=SecretStr("secret-a"))]
+        )
+        element = current.items[0].model_dump(mode="json")
+
+        preserved = preserve_secrets_in_model_payload(
+            _ProviderModelList, current, {"items": [element]}
+        )
+
+        assert preserved == {"items": [{**element, "api_key": SECRET_STR_MASK}]}
 
 
 class TestAbsentStoredValue:
@@ -459,55 +667,6 @@ def test_preserve_secrets_in_model_payload_matches_reordered_models(
                 "label": current.items[index].label,
             }
             for index in order
-        ]
-    }
-
-
-@pytest.mark.parametrize(
-    ("order", "expected_secrets"),
-    [
-        ((1,), ["secret-b", "secret-a", "secret-c"]),
-        ((2, 0), ["secret-c", "secret-a", "secret-b"]),
-    ],
-    ids=["field-overlap-then-position", "sole-unused-item"],
-)
-def test_preserve_secrets_in_model_payload_with_unrecognized_discriminator(
-    order: tuple[int, ...], expected_secrets: list[str]
-) -> None:
-    """Restore masks through fallback matching without reusing a stored item."""
-
-    class _ProviderSecretLeaf(_SecretLeafModel):
-        provider: str = "external"
-
-    class _ListSecretSettings(BaseModel):
-        items: list[_ProviderSecretLeaf]
-
-    current = _ListSecretSettings(
-        items=[
-            _ProviderSecretLeaf(api_key=SecretStr("secret-a"), label="a"),
-            _ProviderSecretLeaf(api_key=SecretStr("secret-b"), label="b"),
-            _ProviderSecretLeaf(api_key=SecretStr("secret-c"), label="c"),
-        ]
-    )
-    incoming_items = [
-        current.items[index].model_dump(mode="json", exclude={"provider"})
-        for index in order
-    ]
-    # This discriminator matches no class name; omit labels to force fallback pairing.
-    fallback = current.items[0].model_dump(mode="json", exclude={"label"})
-    incoming_items.extend(fallback.copy() for _ in range(4 - len(incoming_items)))
-    incoming = {"items": incoming_items}
-
-    preserved = preserve_secrets_in_model_payload(
-        _ListSecretSettings, current, incoming
-    )
-
-    assert preserved == {
-        "items": [
-            {**item, "api_key": secret}
-            for item, secret in zip(
-                incoming_items, [*expected_secrets, SECRET_STR_MASK], strict=True
-            )
         ]
     }
 
