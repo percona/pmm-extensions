@@ -3888,7 +3888,9 @@ class TestSyncTaskHistoryWithoutTaskStates:
         executor = _build_executor()
         started_at = utc_now() - timedelta(seconds=PENDING_ALLOCATION_PAST_BOUND_AGE)
 
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(
+            logging.INFO, logger="app.tasks.execution.executors.nomad.models"
+        ):
             result = await executor._sync_task_history(
                 self._queue_item(started_at=started_at)
             )
