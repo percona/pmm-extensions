@@ -18,11 +18,13 @@
 import ast
 import functools
 import importlib
+import importlib.util
 import inspect
 import pkgutil
 import subprocess
 import sys
 from types import ModuleType
+from typing import NamedTuple
 
 import pytest
 
@@ -100,46 +102,71 @@ def _is_package_module(name: str) -> bool:
     return name == package.__name__ or name.startswith(f"{package.__name__}.")
 
 
-def _import_targets(statement: ast.Import | ast.ImportFrom) -> list[str]:
-    """Return the dotted module names an import statement reads from.
+class PackageImport(NamedTuple):
+    """Describe one import statement that reads from the package."""
+
+    source: str
+    statement: ast.Import | ast.ImportFrom
+    nested: bool
+
+
+def _import_sources(statement: ast.Import | ast.ImportFrom, anchor: str) -> list[str]:
+    """Return the absolute module names an import statement reads from.
 
     :param statement: The import statement to inspect.
-    :return: The module names; empty for a relative ``from . import``.
+    :param anchor: The importing module's package, against which a relative
+        ``from`` resolves.
+    :return: One absolute module name per source the statement names.
     """
-    if isinstance(statement, ast.ImportFrom):
+    if isinstance(statement, ast.Import):
+        return [alias.name for alias in statement.names]
+    if not statement.level:
         return [statement.module] if statement.module else []
-    return [alias.name for alias in statement.names]
+    relative = "." * statement.level + (statement.module or "")
+    return [importlib.util.resolve_name(relative, anchor)]
 
 
-def _package_imports(
-    module_name: str,
-) -> list[tuple[ast.Import | ast.ImportFrom, bool]]:
-    """Return every import statement in a module that targets the package.
+def _scan_package_imports(source: str, *, anchor: str) -> list[PackageImport]:
+    """Return every import in ``source`` that reads from the package.
 
     Walks the whole tree rather than the top level, so imports inside function
-    bodies and ``TYPE_CHECKING`` blocks are reported too.
+    bodies and ``TYPE_CHECKING`` blocks are reported too. Relative imports are
+    resolved first, since their raw ``module`` never names the package.
 
-    :param module_name: The dotted name of the module to parse.
-    :return: ``(statement, nested)`` pairs, where ``nested`` is ``True`` when
-        the statement sits inside a function body.
+    :param source: Python source text to scan.
+    :param anchor: The importing module's package.
+    :return: One entry per package source an import statement names.
     """
-    tree = ast.parse(inspect.getsource(importlib.import_module(module_name)))
-    found: list[tuple[ast.Import | ast.ImportFrom, bool]] = []
+    found: list[PackageImport] = []
 
     def visit(node: ast.AST, *, nested: bool) -> None:
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.ImportFrom | ast.Import) and any(
-                _is_package_module(target) for target in _import_targets(child)
-            ):
-                found.append((child, nested))
+            if isinstance(child, ast.ImportFrom | ast.Import):
+                found.extend(
+                    PackageImport(target, child, nested)
+                    for target in _import_sources(child, anchor)
+                    if _is_package_module(target)
+                )
             visit(
                 child,
                 nested=nested
                 or isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef),
             )
 
-    visit(tree, nested=False)
+    visit(ast.parse(source), nested=False)
     return found
+
+
+def _package_imports(module_name: str) -> list[PackageImport]:
+    """Return every import in a package module that reads from the package.
+
+    :param module_name: The dotted name of the module to parse.
+    :return: The imports :func:`_scan_package_imports` reports for its source.
+    """
+    module = importlib.import_module(module_name)
+    return _scan_package_imports(
+        inspect.getsource(module), anchor=module.__package__ or module_name
+    )
 
 
 def _imported_names(module_name: str) -> list[tuple[str, str]]:
@@ -149,11 +176,41 @@ def _imported_names(module_name: str) -> list[tuple[str, str]]:
     :return: One pair per name bound by a ``from ... import`` of a package module.
     """
     return [
-        (statement.module, alias.name)
-        for statement, _nested in _package_imports(module_name)
-        if isinstance(statement, ast.ImportFrom) and statement.module
-        for alias in statement.names
+        (found.source, alias.name)
+        for found in _package_imports(module_name)
+        if isinstance(found.statement, ast.ImportFrom)
+        for alias in found.statement.names
     ]
+
+
+def _dependencies_of(imports: list[PackageImport]) -> set[str]:
+    """Return the package modules a set of imports depends on.
+
+    ``from package import registry`` reads its source as the package, so a name
+    that is itself a submodule counts as a dependency on that submodule too.
+
+    :param imports: The imports to attribute.
+    :return: Every package module the imports name, as a source or a submodule.
+    """
+    submodules = set(_package_module_names())
+    dependencies = {found.source for found in imports}
+    dependencies.update(
+        f"{found.source}.{alias.name}"
+        for found in imports
+        if isinstance(found.statement, ast.ImportFrom)
+        for alias in found.statement.names
+        if f"{found.source}.{alias.name}" in submodules
+    )
+    return dependencies
+
+
+def _module_dependencies(module_name: str) -> set[str]:
+    """Return the package modules a package module imports, in any form.
+
+    :param module_name: The dotted name of the importing module.
+    :return: The dependencies :func:`_dependencies_of` finds in its imports.
+    """
+    return _dependencies_of(_package_imports(module_name))
 
 
 @functools.cache
@@ -243,11 +300,7 @@ class TestSymbolOwnership:
         scope, yet still points the dependency the wrong way.
         """
         assert _borrowed_from(resolution, (registry,)) == set()
-        assert not [
-            name
-            for source, name in _imported_names(resolution.__name__)
-            if source == registry.__name__
-        ]
+        assert registry.__name__ not in _module_dependencies(resolution.__name__)
 
     def test_nested_metadata_resolver_lives_with_the_classification_registry(
         self,
@@ -315,9 +368,9 @@ class TestInternalImports:
         :return: ``None``.
         """
         deferred = [
-            f"line {statement.lineno}"
-            for statement, nested in _package_imports(module_name)
-            if nested
+            f"line {found.statement.lineno}"
+            for found in _package_imports(module_name)
+            if found.nested
         ]
         assert not deferred, deferred
 
@@ -441,3 +494,88 @@ class TestSharedSentinel:
         """
         assert "NESTED_VALUE_MISSING" not in vars(registry)
         assert "NESTED_VALUE_MISSING" not in registry.__all__
+
+
+class TestImportScanner:
+    """Cover the AST scan the layering tests rely on.
+
+    A form the scan cannot see would let the boundary it guards rot silently,
+    so each one is pinned against an inline source rather than a real module.
+    """
+
+    def _scan(self, source: str) -> list[PackageImport]:
+        """Return the package imports ``source`` makes from a top-level package module.
+
+        :param source: Python source text to scan.
+        :return: The package imports the scan reports.
+        """
+        return _scan_package_imports(source, anchor=package.__name__)
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("from .registry import x", f"{package.__name__}.registry"),
+            ("from . import registry", package.__name__),
+            ("from .api.routes import x", f"{package.__name__}.api.routes"),
+            ("from .. import config", None),
+        ],
+        ids=["sibling", "package", "subpackage", "outside-package"],
+    )
+    def test_relative_import_resolves_against_the_importer_package(
+        self, source: str, expected: str | None
+    ) -> None:
+        """Report a relative import under its absolute source module.
+
+        :param source: A one-line relative import.
+        :param expected: The absolute source, or ``None`` when it leaves the
+            package.
+        :return: ``None``.
+        """
+        assert [found.source for found in self._scan(source)] == (
+            [expected] if expected else []
+        )
+
+    def test_relative_private_import_is_reported_by_name(self) -> None:
+        """Attribute a relative import's names to the resolved sibling."""
+        found = self._scan("from .registry import _resolve_default")
+
+        assert [
+            (item.source, alias.name)
+            for item in found
+            for alias in item.statement.names
+        ] == [(f"{package.__name__}.registry", "_resolve_default")]
+
+    def test_relative_import_in_a_function_is_nested(self) -> None:
+        """Flag a relative import inside a function body as deferred."""
+        found = self._scan("def f():\n    from .registry import x\n")
+
+        assert [item.nested for item in found] == [True]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            f"import {package.__name__}.registry as registry",
+            f"from {package.__name__} import registry",
+            "from . import registry",
+            "from .registry import FieldMetadata",
+            (
+                "from typing import TYPE_CHECKING\n"
+                "if TYPE_CHECKING:\n"
+                f"    import {package.__name__}.registry\n"
+            ),
+        ],
+        ids=[
+            "module-alias",
+            "package-attribute",
+            "relative-package",
+            "symbol",
+            "type-checking",
+        ],
+    )
+    def test_every_import_form_counts_as_a_module_dependency(self, source: str) -> None:
+        """Record a dependency on the registry whichever import form names it.
+
+        :param source: Source text importing the registry in one form.
+        :return: ``None``.
+        """
+        assert f"{package.__name__}.registry" in _dependencies_of(self._scan(source))
