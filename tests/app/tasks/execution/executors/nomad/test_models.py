@@ -149,6 +149,13 @@ _SHARED_NOMAD_JOB = {
     "Stop": False,
     "Dispatched": False,
 }
+SHARED_JOB_VARIANTS = [
+    pytest.param(_SHARED_NOMAD_JOB, id="dispatched-false"),
+    pytest.param(
+        {k: v for k, v in _SHARED_NOMAD_JOB.items() if k != "Dispatched"},
+        id="dispatched-absent",
+    ),
+]
 MULTI_CHUNK_LOG_FIRST_OFFSET = 17
 MULTI_CHUNK_LOG_SECOND_OFFSET = 42
 EXPECTED_MULTI_CHUNK_LOG_COUNT = 2
@@ -3863,16 +3870,7 @@ class TestSyncTaskHistoryWithoutTaskStates:
         assert "Could not deregister job job-1" in caplog.text
         assert "marking LOST anyway" in caplog.text
 
-    @pytest.mark.parametrize(
-        "job",
-        [
-            pytest.param(_SHARED_NOMAD_JOB, id="dispatched-false"),
-            pytest.param(
-                {k: v for k, v in _SHARED_NOMAD_JOB.items() if k != "Dispatched"},
-                id="dispatched-absent",
-            ),
-        ],
-    )
+    @pytest.mark.parametrize("job", SHARED_JOB_VARIANTS)
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.utc_now")
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
@@ -4473,16 +4471,7 @@ class TestSyncTaskHistoryQueuedEvaluations:
             ),
         ],
     )
-    @pytest.mark.parametrize(
-        "job",
-        [
-            pytest.param(_SHARED_NOMAD_JOB, id="dispatched-false"),
-            pytest.param(
-                {k: v for k, v in _SHARED_NOMAD_JOB.items() if k != "Dispatched"},
-                id="dispatched-absent",
-            ),
-        ],
-    )
+    @pytest.mark.parametrize("job", SHARED_JOB_VARIANTS)
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_job_shared_across_runs_is_not_withdrawn(
