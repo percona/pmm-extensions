@@ -4473,6 +4473,16 @@ class TestSyncTaskHistoryQueuedEvaluations:
             ),
         ],
     )
+    @pytest.mark.parametrize(
+        "job",
+        [
+            pytest.param(_SHARED_NOMAD_JOB, id="dispatched-false"),
+            pytest.param(
+                {k: v for k, v in _SHARED_NOMAD_JOB.items() if k != "Dispatched"},
+                id="dispatched-absent",
+            ),
+        ],
+    )
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_job_shared_across_runs_is_not_withdrawn(
@@ -4482,12 +4492,14 @@ class TestSyncTaskHistoryQueuedEvaluations:
         evaluations: list[dict[str, Any]],
         age: int,
         expected_status: TaskHistoryStatusEnum,
+        job: dict[str, Any],
     ):
         """Assert a job that is not a per-run dispatch is left registered.
 
         A non-parameterized task registers one job per task and target, so its
         other runs' work lives in the same job and deregistering it would stop
-        them too.
+        them too. A missing ``Dispatched`` key is treated the same as
+        ``False`` — the safe default.
         """
         monkeypatch.setattr(
             tasks_settings,
@@ -4497,7 +4509,7 @@ class TestSyncTaskHistoryQueuedEvaluations:
         mock_backend = self._backend(
             mock_nomad_cls,
             evaluations,
-            job=_SHARED_NOMAD_JOB,
+            job=job,
         )
         executor = _build_executor()
 
