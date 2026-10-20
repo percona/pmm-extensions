@@ -24,10 +24,8 @@ from typing import Annotated, cast
 
 from fastapi import APIRouter, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import or_
 from sqlalchemy.orm import undefer
 from sqlalchemy_celery_beat import PeriodicTask
-from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import CurrentUserID, IsAuthenticatedDep, require_minimum_role
@@ -49,6 +47,8 @@ from app.tasks.celery import (
     execute_task_queue,
     get_executor_for_task,
     maybe_dispatch_chain,
+    release_sync_lock,
+    sync_lock_free,
 )
 from app.tasks.config import PreExecutionCheckMode, tasks_settings
 from app.tasks.connectivity.constants import (
@@ -717,20 +717,21 @@ async def sync_task_history(
     because the status has already flipped to terminal — refresh the row
     from the DB and return without re-syncing. The holder (or completed
     syncer) is responsible for dispatching any chained task.
+
+    A failed executor call or status commit releases the lock this request
+    claimed, unless another syncer has re-taken it, and re-raises. A failure
+    after the commit leaves the lock alone, as the commit already freed it.
     """
     logger.debug("Syncing task history %s", task_history.id)
     if task_history.status != TaskHistoryStatusEnum.RUNNING:
         await _populate_log_metadata(session, [task_history])
         return task_history
 
+    claimed_at = utc_now()
     claim_result = await TaskHistoryManager.update_where(
         session,
-        {"sync_in_progress_started_at": utc_now()},
-        or_(
-            col(TaskHistory.sync_in_progress_started_at).is_(None),
-            col(TaskHistory.sync_in_progress_started_at)
-            < (utc_now() - tasks_settings.SYNC_LOCK_TTL),
-        ),
+        {"sync_in_progress_started_at": claimed_at},
+        sync_lock_free(),
         id=task_history.id,
         status=TaskHistoryStatusEnum.RUNNING,
     )
@@ -740,13 +741,20 @@ async def sync_task_history(
         await _populate_log_metadata(session, [task_history])
         return task_history
 
+    history_id = cast("int", task_history.id)
     async_session = get_async_session_maker()
     try:
         async with async_session() as writer_session:
             updated, _pending_event = await executor.sync_task_history(
                 task_history, writer_session=writer_session
             )
-        updated.sync_in_progress_started_at = None
+    except Exception:
+        await release_sync_lock(async_session, history_id, claimed_at)
+        raise
+    updated.sync_in_progress_started_at = None
+    # save() raises the HTTP exceptions below only when its commit fails; any
+    # other error comes after the commit freed the lock.
+    try:
         saved = await TaskHistoryManager.save(
             session,
             updated,
@@ -759,12 +767,8 @@ async def sync_task_history(
                 "sync_in_progress_started_at",
             ],
         )
-    except Exception:
-        await TaskHistoryManager.update_where(
-            session,
-            {"sync_in_progress_started_at": None},
-            id=task_history.id,
-        )
+    except (HTTPBadRequestException, HTTPConflictException):
+        await release_sync_lock(async_session, history_id, claimed_at)
         raise
     synced = await _get_history_for_response(session, saved)
     await maybe_dispatch_chain(synced, was_running=True)

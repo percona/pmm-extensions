@@ -31,6 +31,7 @@ from cryptography import x509
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from kombu import serialization as kombu_serialization
 from nomad.api.exceptions import BaseNomadException
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.dialects import postgresql
@@ -65,6 +66,7 @@ from app.tasks.celery import (
     sync_finishing_items,
     sync_queue_item,
     sync_running_items,
+    sync_task_history,
     task_revoked_handler,
 )
 from app.tasks.config import tasks_settings
@@ -1846,7 +1848,7 @@ class TestSyncRunningItems:
 
     @pytest.mark.asyncio
     async def test_dispatches_one_sync_task_per_running_history(self):
-        """Assert each claimed history gets its own task, so one failure strands no other."""
+        """Assert each claimed history gets its own task, carrying its claim stamp."""
         with (
             patch(
                 "app.tasks.celery.get_async_session_maker",
@@ -1855,7 +1857,7 @@ class TestSyncRunningItems:
             patch(
                 "app.tasks.celery.TaskHistoryManager.update_where",
                 new_callable=AsyncMock,
-                return_value=[1, 2, 3],
+                return_value=[(1, _CLAIMED_AT), (2, _CLAIMED_AT), (3, _CLAIMED_AT)],
             ),
             patch("app.tasks.celery.group") as mock_group,
         ):
@@ -1865,7 +1867,11 @@ class TestSyncRunningItems:
         assert [signature.task for signature in signatures] == [
             "app.tasks.celery.sync_task_history"
         ] * 3
-        assert [signature.args for signature in signatures] == [(1,), (2,), (3,)]
+        assert [signature.args for signature in signatures] == [
+            (1, _CLAIMED_AT),
+            (2, _CLAIMED_AT),
+            (3, _CLAIMED_AT),
+        ]
         mock_group.return_value.apply_async.assert_called_once_with()
 
     @pytest.mark.asyncio
@@ -2040,6 +2046,21 @@ class TestSyncFinishingItems:
         assert await self._lock_of(session, busy) is None
 
     @pytest.mark.asyncio
+    async def test_dispatch_carries_claim_stamp(self, session: AsyncSession):
+        """Assert the dispatched sync carries the stamp its history was claimed with.
+
+        Without it the sync adopts whatever stamp the history holds when it
+        starts, and so syncs a history another claimant took over.
+        """
+        ready = await self._seed_running(session, {"job_id": "job-a"})
+
+        async with self._probe(session, frozenset({"job-a"})) as (mock_group, _):
+            await sync_finishing_items()
+
+        (signature,) = mock_group.call_args.args[0]
+        assert signature.args == (ready, await self._lock_of(session, ready))
+
+    @pytest.mark.asyncio
     async def test_concurrent_finishers_dispatch_as_independent_tasks(
         self, session: AsyncSession
     ):
@@ -2204,8 +2225,9 @@ class TestSyncFinishingItems:
         """Assert a finished run is stored terminal with no sweep in between.
 
         The probe's dispatch is replayed through ``sync_queue_item``, the same
-        body the Celery ``sync_task_history`` task runs, so the stored status is
-        what a viewer would read before the next 30-second sweep fires.
+        body the Celery ``sync_task_history`` task runs, with the signature's
+        own arguments, so the stored status is what a viewer would read before
+        the next 30-second sweep fires.
         """
         history_id = await self._seed_running(session, {"job_id": "job-a"})
 
@@ -2225,8 +2247,9 @@ class TestSyncFinishingItems:
         async with self._probe(session, frozenset({"job-a"})) as (mock_group, _):
             with patch(f"{MODULE}.get_executor_for_task", return_value=executor):
                 await sync_finishing_items()
-                for dispatched_id in self._dispatched_ids(mock_group):
-                    await sync_queue_item(dispatched_id)
+                assert self._dispatched_ids(mock_group) == [history_id]
+                (signature,) = mock_group.call_args.args[0]
+                await sync_queue_item(*signature.args)
 
         session.expire_all()
         stored = await TaskHistoryManager.get_or_404(session, id=history_id)
@@ -2965,8 +2988,152 @@ class TestSyncQueueItemLockAfterSave:
         update_where.assert_not_awaited()
 
 
-async def _claim_running_history(maker: async_sessionmaker[AsyncSession]) -> int:
-    """Persist a RUNNING history and take its sync lock the way the sweep does."""
+class TestSyncTaskHistoryMessage:
+    """Test the claim stamp the Celery ``sync_task_history`` task carries."""
+
+    @pytest.mark.parametrize(
+        "claimed_at",
+        [_CLAIMED_AT, _CLAIMED_AT.replace(microsecond=0, tzinfo=None)],
+        ids=["postgres-aware", "sqlite-naive"],
+    )
+    def test_claim_stamp_survives_the_wire(self, claimed_at):
+        """Assert the stamp comes back from the task serializer as an equal datetime.
+
+        Each engine hands back its own stamp shape, and the sync compares the
+        received stamp against the stored one with ``!=``, where an aware and a
+        naive datetime never match.
+        """
+        signature = sync_task_history.s(_HISTORY_ID, claimed_at)
+        content_type, encoding, body = kombu_serialization.dumps(
+            signature.args, serializer=celery_module.celery.conf.task_serializer
+        )
+
+        history_id, received = kombu_serialization.loads(body, content_type, encoding)
+        assert history_id == _HISTORY_ID
+        assert received == claimed_at
+        assert received.tzinfo == claimed_at.tzinfo
+
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            ((_HISTORY_ID, _CLAIMED_AT), (_HISTORY_ID, _CLAIMED_AT)),
+            ((_HISTORY_ID,), (_HISTORY_ID, None)),
+        ],
+        ids=["stamped", "queued-before-stamps"],
+    )
+    def test_hands_claim_stamp_to_sync(self, args, expected):
+        """Assert the task syncs with the message's stamp, or none for an old message."""
+        with (
+            patch(f"{MODULE}.celery") as mock_celery,
+            patch(f"{MODULE}.sync_queue_item", new_callable=MagicMock) as mock_sync,
+        ):
+            sync_task_history(*args)
+
+        mock_sync.assert_called_once_with(*expected)
+        mock_celery.loop.run_until_complete.assert_called_once_with(
+            mock_sync.return_value
+        )
+
+
+class TestSyncQueueItemClaimStamp:
+    """Test that ``sync_queue_item`` syncs only under the lock it was dispatched with."""
+
+    @pytest.mark.asyncio
+    async def test_matching_stamp_syncs(self):
+        """Assert a history still holding the dispatched stamp is synced."""
+        queue_item = _running_item()
+        executor = _syncing_executor(queue_item)
+
+        with _patched_running_sync(queue_item, executor):
+            result = await sync_queue_item(_HISTORY_ID, _CLAIMED_AT)
+
+        assert result is queue_item
+        executor.sync_task_history.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "held_at",
+        [_CLAIMED_AT + timedelta(minutes=6), None],
+        ids=["re-claimed", "released"],
+    )
+    async def test_lost_lock_skips_sync(self, held_at):
+        """Assert a history whose lock moved on since dispatch is left untouched."""
+        queue_item = _running_item(claimed_at=held_at)
+        executor = _syncing_executor(queue_item)
+        save = AsyncMock(return_value=queue_item)
+
+        with _patched_running_sync(queue_item, executor, save=save) as update_where:
+            result = await sync_queue_item(_HISTORY_ID, _CLAIMED_AT)
+
+        assert result is queue_item
+        assert queue_item.sync_in_progress_started_at == held_at
+        executor.sync_task_history.assert_not_awaited()
+        save.assert_not_awaited()
+        update_where.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("held_at", "synced"),
+        [(_CLAIMED_AT, True), (_CLAIMED_AT + timedelta(minutes=6), False)],
+        ids=["own-lock", "re-claimed"],
+    )
+    async def test_history_back_to_running_checks_reloaded_stamp(self, held_at, synced):
+        """Assert a history that turned RUNNING mid-load is checked by its reload.
+
+        The first load sees a non-running history whose lock clear then matches
+        nothing, so the sync reloads it; only the reloaded stamp tells whether
+        the lock is still the dispatched one.
+        """
+        pending_item = _make_history(
+            id=_HISTORY_ID,
+            status=TaskHistoryStatusEnum.PENDING,
+            sync_in_progress_started_at=_CLAIMED_AT,
+        )
+        running_item = _running_item(claimed_at=held_at)
+        executor = _syncing_executor(running_item)
+        save = AsyncMock(return_value=running_item)
+
+        with (
+            _patched_running_sync(
+                running_item,
+                executor,
+                save=save,
+                update_where=AsyncMock(return_value=MagicMock(rowcount=0)),
+            ),
+            patch(
+                f"{MODULE}.TaskHistoryManager.get_or_404",
+                new_callable=AsyncMock,
+                side_effect=[pending_item, running_item],
+            ),
+        ):
+            result = await sync_queue_item(_HISTORY_ID, _CLAIMED_AT)
+
+        assert result is running_item
+        assert executor.sync_task_history.await_count == int(synced)
+        assert save.await_count == int(synced)
+
+    @pytest.mark.asyncio
+    async def test_failure_releases_with_dispatched_stamp(self):
+        """Assert a failed sync releases the lock filtered on the dispatched stamp."""
+        queue_item = _running_item()
+        error = ConnectionError("Nomad unreachable")
+
+        with (
+            _patched_running_sync(queue_item, _failing_executor(error)) as update_where,
+            pytest.raises(ConnectionError),
+        ):
+            await sync_queue_item(_HISTORY_ID, _CLAIMED_AT)
+
+        _assert_released_own_lock(update_where)
+
+
+async def _claimed_ids(session: AsyncSession) -> list[int]:
+    """Run the sweep's claim and return the ids of the histories it locked."""
+    return [history_id for history_id, _ in await celery_module._claim_syncs(session)]
+
+
+async def _seed_running_history(maker: async_sessionmaker[AsyncSession]) -> int:
+    """Persist an unlocked RUNNING history and return its id."""
     async with maker() as session:
         task = await _create_pg_task(session, name="lock-release-task")
         assert task.id is not None
@@ -2979,8 +3146,14 @@ async def _claim_running_history(maker: async_sessionmaker[AsyncSession]) -> int
         )
         history_id = history.id
     assert history_id is not None
+    return history_id
+
+
+async def _claim_running_history(maker: async_sessionmaker[AsyncSession]) -> int:
+    """Persist a RUNNING history and take its sync lock the way the sweep does."""
+    history_id = await _seed_running_history(maker)
     async with maker() as session:
-        assert await celery_module._claim_syncs(session) == [history_id]
+        assert await _claimed_ids(session) == [history_id]
     return history_id
 
 
@@ -3052,7 +3225,7 @@ class TestSyncQueueItemLockReleaseRealEngine:
 
         assert await _lock_stamp(real_session_maker, history_id) is None
         async with real_session_maker() as session:
-            assert await celery_module._claim_syncs(session) == [history_id]
+            assert await _claimed_ids(session) == [history_id]
 
     @pytest.mark.asyncio
     async def test_lock_reclaimed_mid_sync_is_kept(self, real_session_maker):
@@ -3095,7 +3268,7 @@ class TestSyncQueueItemLockReleaseRealEngine:
 
         assert await _lock_stamp(real_session_maker, history_id) is None
         async with real_session_maker() as session:
-            assert await celery_module._claim_syncs(session) == [history_id]
+            assert await _claimed_ids(session) == [history_id]
 
     @pytest.mark.asyncio
     async def test_refresh_error_after_commit_keeps_same_second_reclaim(
@@ -3138,7 +3311,7 @@ class TestClaimSyncsRealEngine:
         """Assert a lock left by a killed worker is reclaimed once it outlives the TTL."""
         history_id = await _claim_running_history(real_session_maker)
         async with real_session_maker() as session:
-            assert await celery_module._claim_syncs(session) == []
+            assert await _claimed_ids(session) == []
             await TaskHistoryManager.update_where(
                 session,
                 {
@@ -3148,7 +3321,74 @@ class TestClaimSyncsRealEngine:
                 id=history_id,
             )
         async with real_session_maker() as session:
-            assert await celery_module._claim_syncs(session) == [history_id]
+            assert await _claimed_ids(session) == [history_id]
+
+
+class TestClaimStampRealEngine:
+    """Exercise the dispatched claim stamp on each real database engine.
+
+    The claim reads the stamp back through ``RETURNING`` while the sync loads it
+    from the row, so these prove both reads agree on each engine.
+    """
+
+    @pytest.mark.asyncio
+    async def test_claim_returns_stored_stamp(self, real_session_maker):
+        """Assert the claim reports the very stamp it stored on the history."""
+        history_id = await _seed_running_history(real_session_maker)
+
+        async with real_session_maker() as session:
+            ((claimed_id, claimed_at),) = await celery_module._claim_syncs(session)
+
+        assert claimed_id == history_id
+        assert claimed_at == await _lock_stamp(real_session_maker, history_id)
+
+    @pytest.mark.asyncio
+    async def test_failed_sync_under_dispatched_stamp_frees_history(
+        self, real_session_maker
+    ):
+        """Assert a sync dispatched with its claim stamp runs and releases on failure."""
+        history_id = await _seed_running_history(real_session_maker)
+        async with real_session_maker() as session:
+            ((_, claimed_at),) = await celery_module._claim_syncs(session)
+        executor = _failing_executor(ConnectionError("Nomad unreachable"))
+
+        with (
+            patch(f"{MODULE}.get_async_session_maker", return_value=real_session_maker),
+            patch(f"{MODULE}.get_executor_for_task", return_value=executor),
+            pytest.raises(ConnectionError),
+        ):
+            await sync_queue_item(history_id, claimed_at)
+
+        executor.sync_task_history.assert_awaited_once()
+        assert await _lock_stamp(real_session_maker, history_id) is None
+
+    @pytest.mark.asyncio
+    async def test_lock_taken_over_before_start_is_kept(self, real_session_maker):
+        """Assert a sync that starts after its lock expired and was re-taken skips."""
+        history_id = await _seed_running_history(real_session_maker)
+        async with real_session_maker() as session:
+            await TaskHistoryManager.update_where(
+                session,
+                {
+                    "sync_in_progress_started_at": utc_now()
+                    - 2 * tasks_settings.SYNC_LOCK_TTL
+                },
+                id=history_id,
+            )
+        claimed_at = await _lock_stamp(real_session_maker, history_id)
+        async with real_session_maker() as session:
+            assert await _claimed_ids(session) == [history_id]
+        taken_over_at = await _lock_stamp(real_session_maker, history_id)
+        executor = _echoing_executor()
+
+        with (
+            patch(f"{MODULE}.get_async_session_maker", return_value=real_session_maker),
+            patch(f"{MODULE}.get_executor_for_task", return_value=executor),
+        ):
+            await sync_queue_item(history_id, claimed_at)
+
+        executor.sync_task_history.assert_not_awaited()
+        assert await _lock_stamp(real_session_maker, history_id) == taken_over_at
 
 
 class TestDispatchChainedTask:

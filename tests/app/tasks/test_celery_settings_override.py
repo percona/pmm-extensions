@@ -411,7 +411,10 @@ class TestSyncRunningItemsRespectsOverriddenTtl:
             await sync_running_items()
 
         (signature,) = mock_group.call_args.args[0]
-        assert signature.args == (row_id,)
+        assert signature.args == (
+            row_id,
+            await _get_sync_started_at(override_session_maker, row_id),
+        )
 
     def test_overridden_ttl_excludes_recently_locked_row(
         self, worker_loop_env, monkeypatch
