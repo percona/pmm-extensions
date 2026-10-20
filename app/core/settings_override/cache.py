@@ -30,7 +30,7 @@ from app.core.encryption import DecryptionError
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import setting_class_token, SettingOverride
 from app.core.settings_override.registry import (
-    _clear_cached_properties,
+    clear_cached_properties,
     coerce_nested_field_value,
     is_hot_reloadable,
     is_nested_overridable_parent,
@@ -382,7 +382,7 @@ def _build_nested_update(
     # ``model_copy`` is shallow and carries over already-evaluated
     # ``cached_property`` memos from ``parent``; drop them at every level so a
     # nested child's cached value cannot go stale against its new fields.
-    _clear_cached_properties(merged)
+    clear_cached_properties(merged)
     return merged
 
 

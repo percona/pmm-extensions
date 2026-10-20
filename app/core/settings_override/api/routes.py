@@ -75,6 +75,7 @@ from app.core.settings_override.registry import (
     materialize_override_value,
     ReloadClassification,
     rendered_leaf_keys,
+    resolve_nested_field_metadata,
     unwrap_secrets_for_storage,
 )
 from app.core.settings_override.resolution import (
@@ -83,7 +84,6 @@ from app.core.settings_override.resolution import (
     override_rows_for_key,
     resolve_field_in_model,
     resolve_nested_field,
-    resolve_nested_field_metadata,
     resolve_nested_value,
     SettingProvenance,
 )

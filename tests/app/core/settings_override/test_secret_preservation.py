@@ -19,11 +19,12 @@ import typing
 from types import GenericAlias
 
 import pytest
-from pydantic import BaseModel, HttpUrl, SecretStr
+from pydantic import BaseModel, HttpUrl, SecretBytes, SecretStr
 from pydantic.fields import FieldInfo
 
 from app.core.alerts.config import AlertSettings
 from app.core.alerts.providers.pagerduty import PagerDutyEventsAlertProvider
+from app.core.settings_override import registry, secret_preservation
 from app.core.settings_override.registry import (
     dump_field_value,
     hot_field,
@@ -31,6 +32,7 @@ from app.core.settings_override.registry import (
     unwrap_secrets_for_storage,
 )
 from app.core.settings_override.secret_preservation import (
+    _stable_collection_items,
     preserve_credential_urls_in_model_payload,
     preserve_patch_credential_url_value,
     preserve_patch_secret_value,
@@ -40,6 +42,7 @@ from app.core.utils.fields import CredentialHttpUrl, redact_credential_url
 from app.extensions.config import ExtensionsSettings
 from app.tasks.config import TasksSettings
 from app.tasks.execution.executors.nomad.models import NomadExecutor
+from tests.app.core.settings_override.conftest import TaggedSecret
 
 
 class _SecretLeafModel(BaseModel):
@@ -78,6 +81,117 @@ class _PlainCollections(BaseModel):
 
     labels: dict[str, str | None] = {}
     names: list[str | None] = []
+
+
+class TaggedSecretSet(BaseModel):
+    """Declare an unordered collection of secret-bearing models."""
+
+    items: frozenset[TaggedSecret] = frozenset()
+
+
+class _SecretSets(BaseModel):
+    """Declare unordered collections of bare secret wrappers."""
+
+    tokens: set[SecretStr] = set()
+    blobs: frozenset[SecretBytes] = frozenset()
+
+
+def _tagged_set() -> frozenset[TaggedSecret]:
+    """Return stored items whose secret order disagrees with their label order.
+
+    :return: Three items: sorted by secret they read ``b, c, a``; by label
+        ``a, b, c``. A path sorting on labels would therefore pair wrongly.
+    """
+    return frozenset(
+        {
+            TaggedSecret(api_key=SecretStr("zz-secret"), label="a"),
+            TaggedSecret(api_key=SecretStr("aa-secret"), label="b"),
+            TaggedSecret(api_key=SecretStr("mm-secret"), label="c"),
+        }
+    )
+
+
+class TestCollectionOrderingContract:
+    """Cover the GET dump and PATCH restore paths agreeing on set order.
+
+    Masked set elements are restored by position, so if the two paths sorted
+    differently a PATCH would write one item's stored secret onto another.
+    """
+
+    def test_both_paths_share_one_sort_key(self) -> None:
+        """Assert the restore path uses the registry's sort key object itself."""
+        assert (
+            secret_preservation.stable_collection_sort_key
+            is registry.stable_collection_sort_key
+        )
+
+    def test_get_dump_order_matches_patch_restore_order(self) -> None:
+        """Assert both paths list a set of models in the same order."""
+        field_info = TaggedSecretSet.model_fields["items"]
+        current = _tagged_set()
+
+        dumped = dump_field_value(field_info, current)
+        restore_order = _stable_collection_items(current)
+
+        assert [item["label"] for item in dumped] == ["b", "c", "a"]
+        assert [item.label for item in restore_order] == ["b", "c", "a"]
+
+    def test_round_tripped_masks_restore_each_item_own_secret(self) -> None:
+        """Restore every masked item from its own stored model, never a neighbour."""
+        field_info = TaggedSecretSet.model_fields["items"]
+        current = _tagged_set()
+
+        preserved = preserve_patch_secret_value(
+            field_info, current, dump_field_value(field_info, current)
+        )
+
+        assert sorted(preserved, key=lambda item: item["label"]) == [
+            {"api_key": "zz-secret", "label": "a"},
+            {"api_key": "aa-secret", "label": "b"},
+            {"api_key": "mm-secret", "label": "c"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("field_name", "current", "replacement", "expected"),
+        [
+            (
+                "tokens",
+                {SecretStr("c"), SecretStr("a"), SecretStr("b")},
+                "new",
+                ["a", "new", "c"],
+            ),
+            (
+                "blobs",
+                frozenset({SecretBytes(b"c"), SecretBytes(b"a"), SecretBytes(b"b")}),
+                "new",
+                [b"a", "new", b"c"],
+            ),
+        ],
+        ids=["secret-str-set", "secret-bytes-frozenset"],
+    )
+    def test_edit_at_get_position_replaces_only_that_element(
+        self,
+        field_name: str,
+        current: set[SecretStr] | frozenset[SecretBytes],
+        replacement: str,
+        expected: list[str | bytes],
+    ) -> None:
+        """Replace exactly the element shown at the edited GET position.
+
+        :param field_name: The secret-set field under test.
+        :param current: The stored unordered collection.
+        :param replacement: The new plaintext submitted at index 1.
+        :param expected: The restored payload, in GET order.
+        :return: ``None``.
+        """
+        field_info = _SecretSets.model_fields[field_name]
+        dumped = dump_field_value(field_info, current)
+        assert dumped == [SECRET_STR_MASK] * 3
+        dumped[1] = replacement
+
+        preserved = preserve_patch_secret_value(field_info, current, dumped)
+
+        assert preserved == expected
 
 
 class TestSecretValuedDictPayloads:
