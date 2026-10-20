@@ -25,31 +25,26 @@ receivers register at worker startup even in an image that ships no app with a
 ``celery.tasks``.
 """
 
-import logging.config
-from copy import deepcopy
-from typing import Any, cast
+from typing import Any
 
 from celery.signals import task_prerun, worker_process_init, worker_process_shutdown
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.celery import celery
-from app.core.alerts.config import alert_settings, AlertSettings
-from app.core.config import PMMSettings, Settings, settings
 from app.core.settings_override.constants import (
-    ALERT_SETTINGS,
     EXTENSIONS_SETTINGS,
-    SETTINGS,
     SNIPPETS_SETTINGS,
+)
+from app.core.settings_override.extensions_owned import (
+    EXTENSIONS_OWNED_CALLBACKS,
+    EXTENSIONS_OWNED_PROXIES,
 )
 from app.core.settings_override.lifecycle import (
     CallbackRegistry,
-    fire_on_boot,
-    previous_or_base,
     ProxyEntry,
     ProxyRegistry,
     publish_snapshot,
-    SnapshotChange,
 )
 from app.core.settings_override.worker import WorkerRefresher
 from app.extensions.apps.framework.registry import collect_app_owned_settings_classes
@@ -57,18 +52,17 @@ from app.extensions.config import extensions_settings, ExtensionsSettings
 from app.extensions.db import get_async_session_maker
 from app.extensions.snippets.config import snippets_settings, SnippetsSettings
 
-logger = logging.getLogger(__name__)
-
 
 def build_extensions_override_proxies() -> ProxyRegistry:
     """Compose the PMM Extensions side proxy registry: app-owned entries plus PMM Extensions' own.
 
-    PMM Extensions' own entries override whatever the activated apps declare,
-    so ``SETTINGS`` and ``ALERT_SETTINGS`` -- shared module-level proxies
-    (``settings`` / ``alert_settings``) -- keep the PMM Extensions refresher as their sole
-    owner even if an app were to declare them: under the combined
-    ``app.main:app`` the Tasks refresher must not also publish into them from
-    the Tasks database.
+    PMM Extensions' own entries override whatever the activated apps declare.
+    ``SETTINGS`` and ``ALERT_SETTINGS`` are the shared module-level proxies
+    (``settings`` / ``alert_settings``), taken from
+    :data:`~app.core.settings_override.extensions_owned.EXTENSIONS_OWNED_PROXIES`,
+    so they keep exactly one refresher publishing them in each process even if
+    an app were to declare them, and every publisher reads them from the PMM
+    Extensions database.
 
     ``collect_app_owned_settings_classes`` imports every activated app module,
     so this runs at call time, never at import: this module is itself named in
@@ -91,8 +85,7 @@ def build_extensions_override_proxies() -> ProxyRegistry:
         {
             EXTENSIONS_SETTINGS: ProxyEntry(extensions_settings, ExtensionsSettings),
             SNIPPETS_SETTINGS: ProxyEntry(snippets_settings, SnippetsSettings),
-            SETTINGS: ProxyEntry(settings, Settings),
-            ALERT_SETTINGS: ProxyEntry(alert_settings, AlertSettings),
+            **EXTENSIONS_OWNED_PROXIES,
         }
     )
     return proxies
@@ -125,61 +118,6 @@ async def republish_extensions_settings_snapshot(session: AsyncSession) -> None:
     await publish_snapshot(extensions_settings, session, ExtensionsSettings)
 
 
-async def invalidate_pmm_clients(change: SnapshotChange) -> None:
-    """Evict cached PMM clients on the previous and current endpoints after a ``PMM`` override.
-
-    Evicts the ordered de-duplicated set of previous-and-current endpoints so a
-    same-endpoint change (credentials, SSL) collapses to a single eviction, while
-    an endpoint change also drops the client keyed by the endpoint no longer in
-    use. The next :class:`PMMSyncer` key-misses to a fresh client via its
-    ``default_factory`` PMM read. When ``PMM`` is absent from ``change.previous``
-    (override created), :func:`previous_or_base` supplies the YAML/env value.
-
-    :param change: The override snapshots on either side of the republish.
-    """
-    previous_pmm = cast("PMMSettings", previous_or_base(change, settings, "PMM"))
-    for endpoint in dict.fromkeys(
-        str(pmm.endpoint)
-        for pmm in (previous_pmm, settings.PMM)
-        if pmm.endpoint is not None
-    ):
-        await settings.invalidate_client(endpoint)
-
-
-@fire_on_boot
-async def apply_logging_dictconfig(_: SnapshotChange) -> None:
-    """Re-apply ``logging.config.dictConfig`` after a global ``LOGGING`` override.
-
-    ``LOGGING`` is a HOT field, but ``LOGGING_CONFIG`` (the dict handed to
-    ``dictConfig``) is not: the override snapshot replaces only the ``LOGGING``
-    key, so ``settings.LOGGING_CONFIG`` still carries the level baked in by the
-    ``set_log_level`` model validator at construction time. This callback mirrors
-    that validator -- inject the now-live ``settings.LOGGING`` into a copy of the
-    config and re-apply it -- so a log-level change takes effect in the PMM Extensions web
-    process and Celery worker children without a restart. Failures are logged and
-    swallowed: a malformed config must not take the process down mid-request or
-    mid-task. ``LOGGING_CONFIG`` sets ``disable_existing_loggers: False``, so
-    re-entering ``dictConfig`` from a worker refresh cycle leaves the loggers
-    Celery created at runtime enabled, and re-creates the ones the config names
-    -- ``celery`` among them -- with their handlers.
-
-    Marked ``fire_on_boot`` because the boot-time ``dictConfig`` call reads the
-    process-wide ``LOGGING_CONFIG``, which no snapshot carries: a process that
-    starts with a ``LOGGING`` override already stored would otherwise keep the
-    YAML/env level until the override next changed.
-
-    :param _: The snapshots on either side of the republish (unused; the
-        level is re-read from the proxy).
-    """
-    try:
-        config = deepcopy(settings.LOGGING_CONFIG)
-        config["loggers"][""]["level"] = settings.LOGGING
-        config["loggers"]["app"]["level"] = settings.LOGGING
-        logging.config.dictConfig(config)
-    except Exception:
-        logger.exception("Failed to re-apply logging config after LOGGING override")
-
-
 #: The callbacks the worker refresher registers -- deliberately a strict subset
 #: of the web lifespan's registry. The dropped entries either rebind ``app.state``
 #: clients or reseed beat-schedule rows, neither of which a worker child owns.
@@ -188,10 +126,7 @@ async def apply_logging_dictconfig(_: SnapshotChange) -> None:
 #: refresh the snapshot while worker tasks keep the client with the old key.
 #: ``apply_logging_dictconfig`` is kept so a HOT ``LOGGING`` override re-enters
 #: ``dictConfig`` after Celery's ``setup_logging`` installed boot-time levels.
-WORKER_OVERRIDE_CALLBACKS: CallbackRegistry = {
-    (SETTINGS, "PMM"): invalidate_pmm_clients,
-    (SETTINGS, "LOGGING"): apply_logging_dictconfig,
-}
+WORKER_OVERRIDE_CALLBACKS: CallbackRegistry = EXTENSIONS_OWNED_CALLBACKS
 
 
 def _session_maker() -> async_sessionmaker:

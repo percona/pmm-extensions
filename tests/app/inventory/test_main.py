@@ -20,12 +20,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 
+from app.core.settings_override.constants import ALERT_SETTINGS, SETTINGS
 from app.inventory.main import (
     inventory_app,
     inventory_lifespan,
     inventory_overrides_lifespan,
 )
 from app.inventory.main import lifespan as inventory_module_lifespan
+from tests.app.conftest import null_async_cm
 from tests.app.core.settings_override.conftest import (
     assert_registry_keyed_by_class_name,
 )
@@ -40,6 +42,44 @@ def test_inventory_app_lifespan_is_always_set():
     now wraps ``default_lifespan`` with the settings-override refresher.
     """
     assert inventory_module_lifespan is inventory_lifespan
+
+
+class TestInventoryStandaloneLifespan:
+    """Pin which refreshers each Inventory lifespan enters."""
+
+    @pytest.mark.asyncio
+    async def test_standalone_refreshes_settings_only(self) -> None:
+        """Refresh ``Settings`` from the PMM Extensions database when served alone."""
+        shared = MagicMock(return_value=null_async_cm())
+        with (
+            patch("app.inventory.main.extensions_owned_overrides_refresher", shared),
+            patch(
+                "app.inventory.main.settings_override_refresher",
+                MagicMock(return_value=null_async_cm()),
+            ),
+            patch("app.inventory.main.default_lifespan", return_value=null_async_cm()),
+        ):
+            async with inventory_lifespan(FastAPI()):
+                pass
+
+        shared.assert_called_once_with(SETTINGS)
+
+    @pytest.mark.asyncio
+    async def test_the_combined_part_adds_no_shared_class_publisher(self) -> None:
+        """Leave the shared classes to the PMM Extensions refresher under ``app.main:app``."""
+        shared = MagicMock(return_value=null_async_cm())
+        refresher = MagicMock(return_value=null_async_cm())
+        with (
+            patch("app.inventory.main.extensions_owned_overrides_refresher", shared),
+            patch("app.inventory.main.settings_override_refresher", refresher),
+        ):
+            async with inventory_overrides_lifespan(FastAPI()):
+                pass
+
+        shared.assert_not_called()
+        registry = refresher.call_args.args[1]
+        assert SETTINGS not in registry
+        assert ALERT_SETTINGS not in registry
 
 
 class TestInventoryOverridesLifespanRegistry:

@@ -133,7 +133,7 @@ class _ServiceDatabase(BaseYamlSettings):
     :meth:`~app.core.config.BaseYamlSettings.settings_customise_sources` ranks
     the prefixed spelling of a name above the unprefixed one from
     ``SETTINGS_PREFIXES``, which is a class-level declaration. Mirrors
-    ``app.core.config._ExtensionsDatabaseSettings``, which reads the PMM Extensions database the
+    ``app.core.config.ExtensionsDatabaseSettings``, which reads the PMM Extensions database the
     same way for the same reason: to stay clear of a proxy it cannot resolve.
 
     :param DATABASE: The service's database connection options. Left without a
