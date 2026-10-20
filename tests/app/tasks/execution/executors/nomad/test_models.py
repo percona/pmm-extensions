@@ -140,6 +140,20 @@ PENDING_ALLOCATION_TIMEOUT_OVERRIDE = 60
 PENDING_ALLOCATION_WITHIN_BOUND_AGE = 30
 PENDING_ALLOCATION_BOUNDARY_AGE = 30
 PENDING_ALLOCATION_PAST_BOUND_AGE = 120
+# Non-parameterized task: one job per task and target, shared by every such run.
+_SHARED_NOMAD_JOB = {
+    "ID": "job-1",
+    "Status": "running",
+    "Stop": False,
+    "Dispatched": False,
+}
+SHARED_JOB_VARIANTS = [
+    pytest.param(_SHARED_NOMAD_JOB, id="dispatched-false"),
+    pytest.param(
+        {k: v for k, v in _SHARED_NOMAD_JOB.items() if k != "Dispatched"},
+        id="dispatched-absent",
+    ),
+]
 MULTI_CHUNK_LOG_FIRST_OFFSET = 17
 MULTI_CHUNK_LOG_SECOND_OFFSET = 42
 EXPECTED_MULTI_CHUNK_LOG_COUNT = 2
@@ -3264,7 +3278,7 @@ class TestSyncTaskHistoryWithoutTaskStates:
 
         :param mock_nomad_cls: The patched ``Nomad`` class.
         :param alloc: The allocation to return from both lookup paths.
-        :param job: The job to return; defaults to a still-running job.
+        :param job: The job to return; defaults to a still-running dispatched job.
         :return: The backend mock.
         """
         mock_backend = MagicMock()
@@ -3278,6 +3292,7 @@ class TestSyncTaskHistoryWithoutTaskStates:
                 "ID": "job-1",
                 "Status": "running",
                 "Stop": False,
+                "Dispatched": True,
             }
         )
         return mock_backend
@@ -3716,6 +3731,48 @@ class TestSyncTaskHistoryWithoutTaskStates:
         mock_backend.job.deregister_job.assert_called_once_with("job-1")
         assert "Could not deregister job job-1" in caplog.text
         assert "marking LOST anyway" in caplog.text
+
+    @pytest.mark.parametrize("job", SHARED_JOB_VARIANTS)
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.utc_now")
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_pending_allocation_shared_job_is_not_withdrawn(
+        self,
+        mock_nomad_cls,
+        mock_utc_now: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        job: dict[str, Any],
+    ):
+        """Assert a job that is not a per-run dispatch is left registered.
+
+        A non-parameterized task registers one job per task and target, so its
+        other runs' work lives in the same job and deregistering it would stop
+        them too. A missing ``Dispatched`` key is treated the same as
+        ``False`` — the safe default.
+        """
+        monkeypatch.setattr(
+            tasks_settings,
+            "PENDING_ALLOCATION_TIMEOUT_SECONDS",
+            PENDING_ALLOCATION_TIMEOUT_OVERRIDE,
+        )
+        mock_backend = self._backend(mock_nomad_cls, self._alloc(), job=job)
+        executor = _build_executor()
+        now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
+        mock_utc_now.return_value = now
+        started_at = now - timedelta(seconds=PENDING_ALLOCATION_PAST_BOUND_AGE)
+
+        with caplog.at_level(
+            logging.INFO, logger="app.tasks.execution.executors.nomad.models"
+        ):
+            result = await executor._sync_task_history(
+                self._queue_item(started_at=started_at)
+            )
+
+        assert result.status == TaskHistoryStatusEnum.LOST
+        assert result.finished_at == now
+        mock_backend.job.deregister_job.assert_not_called()
+        assert "shared across runs; leaving it registered" in caplog.text
 
     @pytest.mark.asyncio
     async def test_should_escalate_pending_allocation_coerces_naive_started_at(
@@ -4276,6 +4333,7 @@ class TestSyncTaskHistoryQueuedEvaluations:
             ),
         ],
     )
+    @pytest.mark.parametrize("job", SHARED_JOB_VARIANTS)
     @pytest.mark.asyncio
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_job_shared_across_runs_is_not_withdrawn(
@@ -4285,12 +4343,14 @@ class TestSyncTaskHistoryQueuedEvaluations:
         evaluations: list[dict[str, Any]],
         age: int,
         expected_status: TaskHistoryStatusEnum,
+        job: dict[str, Any],
     ):
         """Assert a job that is not a per-run dispatch is left registered.
 
         A non-parameterized task registers one job per task and target, so its
         other runs' work lives in the same job and deregistering it would stop
-        them too.
+        them too. A missing ``Dispatched`` key is treated the same as
+        ``False`` — the safe default.
         """
         monkeypatch.setattr(
             tasks_settings,
@@ -4300,12 +4360,7 @@ class TestSyncTaskHistoryQueuedEvaluations:
         mock_backend = self._backend(
             mock_nomad_cls,
             evaluations,
-            job={
-                "ID": "job-1",
-                "Status": "running",
-                "Stop": False,
-                "Dispatched": False,
-            },
+            job=job,
         )
         executor = _build_executor()
 
