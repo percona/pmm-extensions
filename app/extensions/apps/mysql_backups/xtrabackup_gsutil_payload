@@ -1178,6 +1178,7 @@ class Backup(BaseBackup):
         )
         logging_set_host(self.alias, BACKUP_TYPES[self.backup_code].lower() + ".log")
 
+        self.mycnf_copy_skipped = False
         self.report_options = {
             "host": self.alias,
             "status": "error",
@@ -1258,10 +1259,9 @@ class Backup(BaseBackup):
                 self.logger.info("Trying to copy %s to %s", src, dest_filename)
                 try:
                     shutil.copy(str(src), str(dest_filename))
-                except shutil.Error as err:
-                    self.logger.exception("%s", str(err))
-                except OSError as err:
-                    self.logger.exception("Error copying %s: %s", filename, str(err))
+                except (shutil.Error, OSError) as err:
+                    self.mycnf_copy_skipped = True
+                    self.logger.exception("%s", err)
 
     def get_datadir(self) -> str:
         """Return the MySQL datadir path.
@@ -1283,8 +1283,8 @@ class Backup(BaseBackup):
                 try:
                     shutil.copy(str(filen), backup_dir)
                 except (OSError, shutil.Error) as err:
-                    msg = f"Copy of cert files failed: {err!s}"
-                    self.logger.warning(msg)
+                    self.mycnf_copy_skipped = True
+                    self.logger.warning("Copy of cert files failed: %s", err)
 
     def enable_upload(self, backup_dir: str) -> None:
         """If upload interval permits, mark backup for upload by creating the UPLOADME_FILE.
@@ -1861,7 +1861,7 @@ class XtraBackupRunner(multiprocessing.Process):
                     bkp.textfile_collector_write_status(STATUS_OK, backup_running=0)
                 except BackupError as exc:
                     self.logger.error(exc.message)
-                    self.logger.error('Backup failed for this host.')
+                    self.logger.error('Backup failed.')
                     bkp.notify(STATUS_CRITICAL, exc.message)
                     bkp.textfile_collector_write_status(STATUS_CRITICAL, backup_running=0)
                     sys.exit(1)
@@ -2047,15 +2047,19 @@ class Xtrabackup(Backup):
             for _ in list(range(60)):
                 if self._pxc_desync(new_status=0):
                     break
-                self.logger.info('Sleeping 10 secs to re-try syncing Galera node.')
+                self.logger.info('Retry Galera sync in 10s.')
                 time.sleep(10)
             else:
-                self.logger.error('Galera node left desynced.')
+                self.logger.error('Galera left desynced.')
 
         # Backup other files
         if self.host == 'localhost' and not self.incremental:
-            self.backup_mycnf(self.last_backup_dir)
-            self.backup_certs(self.last_backup_dir)
+            try:
+                self.backup_mycnf(self.last_backup_dir)
+                self.backup_certs(self.last_backup_dir)
+            except BackupError as e:
+                self.mycnf_copy_skipped = True
+                self.logger.warning('Skipped my.cnf/cert copy: %s', e)
 
         # Purge changed page tracking
         if self._is_track_changed_pages():
@@ -2103,7 +2107,7 @@ class Xtrabackup(Backup):
             # to carry it. Warning and skipping would report the backup OK with no
             # offsite copy, so fail loudly instead.
             if provider is None:
-                raise BackupError('Unsupported upload type: %r' % (upload_type,))
+                raise BackupError('Unsupported upload: %r' % (upload_type,))
             uploader = XtraBackupUpload(
                 upload_type=upload_type,
                 upload_provider=provider,
@@ -2783,7 +2787,7 @@ class Xtrabackup(Backup):
         # --report.
         cycles = ['daily', 'weekly'] + list('1234567')
         if cycle not in cycles:
-            msg = 'Invalid XTRABACKUP_INCREMENTAL_CYCLE: %s (want %s)' % (cycle, cycles)
+            msg = 'Bad XTRABACKUP_INCREMENTAL_CYCLE: %s (%s)' % (cycle, cycles)
             self._clean_after_error()
             raise BackupError(msg)
 
