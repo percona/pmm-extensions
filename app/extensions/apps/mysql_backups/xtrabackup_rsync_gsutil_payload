@@ -985,15 +985,14 @@ class BaseBackup:
 
         if status == STATUS_OK:
             self.report_options["status"] = "success"
-            if (
-                isinstance(self, Backup)
-                and self.backup_code in ["M", "X"]
-                and self.last_backup_dir
-            ):
-                self.report_options["options"]["local_path"] = self.last_backup_dir
-                self.report_options["size_mb"] = get_dir_size(
-                    self.last_backup_dir, "mb"
-                )
+        if (
+            status in (STATUS_OK, STATUS_WARNING)
+            and isinstance(self, Backup)
+            and self.backup_code in ["M", "X"]
+            and self.last_backup_dir
+        ):
+            self.report_options["options"]["local_path"] = self.last_backup_dir
+            self.report_options["size_mb"] = get_dir_size(self.last_backup_dir, "mb")
 
     def check_textcollector_dir(self, collector_file: Path) -> bool:
         """Check if the textfile collector directory exists.
@@ -1004,7 +1003,7 @@ class BaseBackup:
         backup_textfile_collector_dir = collector_file.parent
         if not backup_textfile_collector_dir.is_dir():
             self.logger.warning(
-                "Textfile Collector directory %s does not exist.",
+                "No textfile collector dir %s.",
                 backup_textfile_collector_dir,
             )
             return False
@@ -1257,7 +1256,7 @@ class Backup(BaseBackup):
             src = Path(filename)
             if src.is_file():
                 dest_filename = backup_path / src.name.replace("/", "_").strip()
-                self.logger.info("Trying to copy %s to %s", src, dest_filename)
+                self.logger.info("Copy %s -> %s", src, dest_filename)
                 try:
                     shutil.copy(str(src), str(dest_filename))
                 except (shutil.Error, OSError) as err:
@@ -1295,7 +1294,7 @@ class Backup(BaseBackup):
         uploadme_path = Path(backup_dir) / UPLOADME_FILE
         if not uploadme_path.is_file():
             uploadme_path.touch()
-            self.logger.info("Backup marked for upload.")
+            self.logger.info("Marked for upload.")
             # enable textfile collector metric
             self.textfile_collector_write_enable("X", self.alias, True, "upload")
 
@@ -2189,9 +2188,15 @@ class Xtrabackup(Backup):
         # Report we are OK :)
         time_spent = format_seconds_to_hhmmss(time.time() - start_time)
 
-        # Alert for zero-size backups
+        # Alert for zero-size backups or a skipped my.cnf/certs copy
         backup_size = get_dir_size(self.last_backup_dir)
-        if backup_size == '0 MB':
+        if self.mycnf_copy_skipped:
+            msg = 'WARN my.cnf/cert copy skipped. Duration: %s. Size: %s.' % (
+                time_spent,
+                backup_size,
+            )
+            notify_status = STATUS_WARNING
+        elif backup_size == '0 MB':
             msg = 'WARN Backup completed without data. Duration: %s.' % time_spent
             notify_status = STATUS_WARNING
         else:
@@ -2208,7 +2213,7 @@ class Xtrabackup(Backup):
                     upload_destination,
                 )
             except Exception:
-                self.logger.exception("Failed to write the run-result file.")
+                self.logger.exception("run-result write failed.")
 
     def encrypt_files_aes256(self, dir_path: "str | None") -> None:
         """Encrypt plaintext files under a directory with xbcrypt/AES-256.
@@ -2701,7 +2706,7 @@ class Xtrabackup(Backup):
         except BackupError:
             return False
 
-        self.logger.info('Chnaged page bitmaps purged until %s', to_lsn)
+        self.logger.info('Purged changed-page bitmaps to %s', to_lsn)
 
         return True
 
