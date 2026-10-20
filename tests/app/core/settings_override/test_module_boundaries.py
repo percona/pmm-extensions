@@ -213,6 +213,76 @@ def _module_dependencies(module_name: str) -> set[str]:
     return _dependencies_of(_package_imports(module_name))
 
 
+def _module_bindings(imports: list[PackageImport]) -> dict[str, str]:
+    """Return the local names a set of imports binds to whole package modules.
+
+    A plain ``import package.registry`` binds no short name, so its full dotted
+    name is the key that attribute chains are matched against.
+
+    :param imports: The imports to inspect.
+    :return: A mapping of local (possibly dotted) name to absolute module name.
+    """
+    modules = {package.__name__, *_package_module_names()}
+    bindings: dict[str, str] = {}
+    for found in imports:
+        for alias in found.statement.names:
+            if isinstance(found.statement, ast.Import):
+                target = alias.name
+            else:
+                target = f"{found.source}.{alias.name}"
+            if target in modules:
+                bindings[alias.asname or alias.name] = target
+    return bindings
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    """Return the dotted name an expression spells, or ``None`` if it is not one.
+
+    :param node: A ``Name`` or a chain of ``Attribute`` nodes.
+    :return: The dotted name, such as ``registry`` or ``package.registry``.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted_name(node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
+
+
+def _scan_private_attribute_reads(source: str, *, anchor: str) -> list[str]:
+    """Return every private attribute ``source`` reads off a package module.
+
+    An import scan alone misses ``registry._helper`` after ``from . import
+    registry``: the import names a public module, and the private access is
+    an attribute read further down.
+
+    :param source: Python source text to scan.
+    :param anchor: The importing module's package.
+    :return: One ``module.attribute`` entry per private read.
+    """
+    bindings = _module_bindings(_scan_package_imports(source, anchor=anchor))
+    return [
+        f"{bindings[base]}.{node.attr}"
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Attribute)
+        and node.attr.startswith("_")
+        and not node.attr.startswith("__")
+        and (base := _dotted_name(node.value)) in bindings
+    ]
+
+
+def _private_attribute_reads(module_name: str) -> list[str]:
+    """Return every private attribute a package module reads off a sibling.
+
+    :param module_name: The dotted name of the module to parse.
+    :return: The reads :func:`_scan_private_attribute_reads` reports.
+    """
+    module = importlib.import_module(module_name)
+    return _scan_private_attribute_reads(
+        inspect.getsource(module), anchor=module.__package__ or module_name
+    )
+
+
 @functools.cache
 def _declared_names(module: ModuleType) -> frozenset[str]:
     """Return the names ``module`` binds at its own top level.
@@ -354,6 +424,16 @@ class TestInternalImports:
             for source, name in _imported_names(module_name)
             if name.startswith("_")
         ]
+        assert not private, private
+
+    @pytest.mark.parametrize("module_name", _package_module_names())
+    def test_no_private_attribute_read_through_a_module(self, module_name: str) -> None:
+        """Assert a module reads no private name off a sibling module object.
+
+        :param module_name: The importing module.
+        :return: ``None``.
+        """
+        private = _private_attribute_reads(module_name)
         assert not private, private
 
     @pytest.mark.parametrize("module_name", _package_module_names())
@@ -545,11 +625,81 @@ class TestImportScanner:
             for alias in item.statement.names
         ] == [(f"{package.__name__}.registry", "_resolve_default")]
 
-    def test_relative_import_in_a_function_is_nested(self) -> None:
-        """Flag a relative import inside a function body as deferred."""
-        found = self._scan("def f():\n    from .registry import x\n")
+    def test_star_import_is_reported_as_its_wildcard(self) -> None:
+        """Report ``*`` as the imported name, which no ``__all__`` lists."""
+        found = self._scan("from .registry import *")
 
-        assert [item.nested for item in found] == [True]
+        assert [alias.name for item in found for alias in item.statement.names] == ["*"]
+
+    @pytest.mark.parametrize(
+        ("source", "nested"),
+        [
+            ("def f():\n    from .registry import x\n", True),
+            ("async def f():\n    from .registry import x\n", True),
+            ("class C:\n    def f(self):\n        from .registry import x\n", True),
+            ("class C:\n    from .registry import x\n", False),
+            (
+                "try:\n    from .registry import x\nexcept ImportError:\n    pass\n",
+                False,
+            ),
+        ],
+        ids=["function", "async-function", "method", "class-body", "try-except"],
+    )
+    def test_only_a_function_body_marks_an_import_nested(
+        self, source: str, *, nested: bool
+    ) -> None:
+        """Flag an import as deferred exactly when it runs inside a function.
+
+        :param source: Source text holding one package import.
+        :param nested: Whether that import runs only when a function is called.
+        :return: ``None``.
+        """
+        assert [item.nested for item in self._scan(source)] == [nested]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "from . import registry\nregistry._x\n",
+            "from . import registry as reg\ndef f():\n    return reg._x\n",
+            f"from {package.__name__} import registry\nregistry._x()\n",
+            f"import {package.__name__}.registry as reg\nreg._x\n",
+            f"import {package.__name__}.registry\n{package.__name__}.registry._x\n",
+        ],
+        ids=[
+            "relative-package",
+            "aliased-in-function",
+            "package-attribute",
+            "module-alias",
+            "dotted-module",
+        ],
+    )
+    def test_private_attribute_read_off_a_module_is_reported(self, source: str) -> None:
+        """Report a private name reached through a module object.
+
+        :param source: Source text binding the registry and reading ``_x`` off it.
+        :return: ``None``.
+        """
+        assert _scan_private_attribute_reads(source, anchor=package.__name__) == [
+            f"{package.__name__}.registry._x"
+        ]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "from . import registry\nregistry.FieldMetadata\n",
+            "from . import registry\nregistry.__name__\n",
+            "from .registry import FieldMetadata\nFieldMetadata._x\n",
+            "registry = object()\nregistry._x\n",
+        ],
+        ids=["public-name", "dunder", "symbol-attribute", "unbound-name"],
+    )
+    def test_non_module_private_reads_are_not_reported(self, source: str) -> None:
+        """Ignore reads that are public, dunder, or not off a package module.
+
+        :param source: Source text whose attribute read crosses no boundary.
+        :return: ``None``.
+        """
+        assert _scan_private_attribute_reads(source, anchor=package.__name__) == []
 
     @pytest.mark.parametrize(
         "source",
@@ -563,6 +713,15 @@ class TestImportScanner:
                 "if TYPE_CHECKING:\n"
                 f"    import {package.__name__}.registry\n"
             ),
+            (
+                "from typing import TYPE_CHECKING\n"
+                "if TYPE_CHECKING:\n"
+                "    pass\n"
+                "else:\n"
+                "    from .registry import FieldMetadata\n"
+            ),
+            "try:\n    from .registry import x\nexcept ImportError:\n    x = None\n",
+            "from .registry import *",
         ],
         ids=[
             "module-alias",
@@ -570,6 +729,9 @@ class TestImportScanner:
             "relative-package",
             "symbol",
             "type-checking",
+            "type-checking-else",
+            "try-except",
+            "star",
         ],
     )
     def test_every_import_form_counts_as_a_module_dependency(self, source: str) -> None:

@@ -84,6 +84,13 @@ class TestClearCachedProperties:
         clear_cached_properties(instance)
         assert "derived" not in instance.__dict__
 
+    def test_regular_fields_are_kept(self) -> None:
+        """Keep every declared field value while dropping the memo."""
+        instance = _CachedModel(value=2)
+        assert instance.derived == instance.value * 10
+        clear_cached_properties(instance)
+        assert instance.__dict__ == {"value": 2}
+
     def test_unpopulated_instance_is_left_alone(self) -> None:
         """Leave an instance with no populated memo unchanged."""
         instance = _CachedModel(value=2)
@@ -458,6 +465,53 @@ def test_non_advanced_nested_leaf_stays_false() -> None:
     leaf = resolve_nested_field_metadata(ExtensionsSettings, "DATABASE__NAME")
     assert leaf is not None
     assert leaf.is_advanced is False
+
+
+class _MetadataItem(BaseModel):
+    """Element model that makes a list leaf complex."""
+
+    name: str = "item"
+
+
+class _MetadataChild(BaseModel):
+    """Submodel whose leaves carry distinct annotations, defaults and descriptions."""
+
+    TAGS: list[str] = Field(
+        default_factory=lambda: ["first"], description="Tags applied to a run."
+    )
+    ITEMS: list[_MetadataItem] = Field(
+        default_factory=list, description="Items handed to a run."
+    )
+
+
+class _MetadataParent(BaseModel):
+    """Root model nesting :class:`_MetadataChild`."""
+
+    CHILD: _MetadataChild = Field(default_factory=_MetadataChild)
+
+
+class TestResolveNestedFieldMetadata:
+    """Cover the leaf attributes the nested metadata resolver reports."""
+
+    @pytest.mark.parametrize(
+        ("leaf_name", "default", "is_complex"),
+        [("TAGS", ["first"], False), ("ITEMS", [], True)],
+    )
+    def test_leaf_attributes_come_from_the_leaf_field(
+        self, leaf_name: str, default: list[object], *, is_complex: bool
+    ) -> None:
+        """Report the leaf's annotation, default, description and complexity."""
+        leaf_info = _MetadataChild.model_fields[leaf_name]
+        key = f"CHILD__{leaf_name}"
+
+        metadata = resolve_nested_field_metadata(_MetadataParent, key)
+
+        assert metadata is not None
+        assert metadata.key == key
+        assert metadata.annotation == leaf_info.annotation
+        assert metadata.default == default
+        assert metadata.description == leaf_info.description
+        assert metadata.is_complex is is_complex
 
 
 def test_advanced_does_not_change_reload_classification() -> None:
