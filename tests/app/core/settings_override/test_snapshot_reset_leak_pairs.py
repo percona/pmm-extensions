@@ -28,11 +28,11 @@ from app.extensions.apps.inventory.config import inventory_app_settings
 from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.report.config import health_report_settings
 
-_PROBE = {"_sep2161_probe": True}
+_PROBE = {"_probe": True}
 
 
 class TestAlertsSettingsSnapshotDoesNotLeak:
-    """A published ``alerts_settings`` snapshot must not reach the next test."""
+    """Pin that a published ``alerts_settings`` snapshot does not reach the next test."""
 
     def test_publish_leaves_a_snapshot(self) -> None:
         """Publish a probe snapshot and leave it for the following test."""
@@ -49,7 +49,7 @@ class TestAlertsSettingsSnapshotDoesNotLeak:
 
 
 class TestInventoryAppSettingsSnapshotDoesNotLeak:
-    """A published ``inventory_app_settings`` snapshot must not reach the next test."""
+    """Pin that a published ``inventory_app_settings`` snapshot does not reach the next test."""
 
     def test_publish_leaves_a_snapshot(self) -> None:
         """Publish a probe snapshot and leave it for the following test."""
@@ -66,7 +66,7 @@ class TestInventoryAppSettingsSnapshotDoesNotLeak:
 
 
 class TestOmInventorySettingsSnapshotDoesNotLeak:
-    """A published ``om_inventory_settings`` snapshot must not reach the next test."""
+    """Pin that a published ``om_inventory_settings`` snapshot does not reach the next test."""
 
     def test_publish_leaves_a_snapshot(self) -> None:
         """Publish a probe snapshot and leave it for the following test."""
@@ -83,7 +83,7 @@ class TestOmInventorySettingsSnapshotDoesNotLeak:
 
 
 class TestHealthReportSettingsSnapshotDoesNotLeak:
-    """A published ``health_report_settings`` snapshot must not reach the next test."""
+    """Pin that a published ``health_report_settings`` snapshot does not reach the next test."""
 
     def test_publish_leaves_a_snapshot(self) -> None:
         """Publish a probe snapshot and leave it for the following test."""

@@ -20,7 +20,7 @@ import os
 import socket
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
-from functools import lru_cache
+from functools import cache
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
 from typing import Any, Final
@@ -94,7 +94,7 @@ from tests.app.factories import (
 )
 
 
-@lru_cache(maxsize=1)
+@cache
 def wired_override_proxies() -> tuple[OverridableSettingsProxy, ...]:
     """Return every proxy the Extensions and Tasks override registries wire.
 
