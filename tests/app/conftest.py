@@ -116,6 +116,16 @@ def wired_override_proxies() -> tuple[OverridableSettingsProxy, ...]:
     )
 
 
+def clear_wired_override_snapshots() -> None:
+    """Clear the override snapshot on every wired proxy.
+
+    Shared by the autouse fixture and tests that pin the reset behaviour, so a
+    regression in the loop cannot hide behind a hand-written fixture list.
+    """
+    for proxy in wired_override_proxies():
+        proxy._set_snapshot({})  # noqa: SLF001
+
+
 # aiohttp 3.14 made ``stream_writer`` a required arg of ``ClientResponse``, but
 # aioresponses (<=0.7.8) still constructs mocks without it. Default it here until
 # aioresponses ships a fix; guarded on the param so it's a no-op on aiohttp < 3.14.
@@ -324,8 +334,7 @@ def _override_snapshot_cleared() -> None:
     The proxy set comes from the production override registries so an activated
     app's proxy is covered without extending a hand list.
     """
-    for proxy in wired_override_proxies():
-        proxy._set_snapshot({})  # noqa: SLF001
+    clear_wired_override_snapshots()
 
 
 @pytest.fixture(autouse=True)
