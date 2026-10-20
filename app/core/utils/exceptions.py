@@ -23,10 +23,12 @@ def exception_detail(exc: BaseException) -> str:
 
     An upstream exception's ``detail`` is built from the upstream JSON error
     body, so it may be a dict, list or number; it is always coerced to text.
+    A request timeout raises a bare ``TimeoutError`` whose string form is
+    empty, so the type name stands in for a missing message.
 
     :param exc: The exception to describe.
     :return: ``str(exc.detail)`` when the exception carries a truthy ``detail``,
-        else ``str(exc)``.
+        else ``str(exc)``, else the exception's type name.
     """
     detail = getattr(exc, "detail", None)
-    return str(detail) if detail else str(exc)
+    return str(detail) if detail else str(exc) or type(exc).__name__

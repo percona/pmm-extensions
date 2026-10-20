@@ -35,6 +35,7 @@ from app.core.exceptions import (
 from app.core.pagination import PaginatedResponse
 from app.core.pagination.deps import PaginationDep
 from app.core.utils.date_time import make_datetime_utc, utc_now
+from app.core.utils.exceptions import exception_detail
 from app.core.utils.fields import StrippedNonEmptyStr
 from app.core.utils.iterators import unique_everseen
 from app.extensions.apps.atw.batch import (
@@ -572,12 +573,11 @@ def _failure_detail(exc: Exception) -> str | list[dict[str, Any]]:
     """Return the client-facing detail for a failed batch item.
 
     :param exc: The exception that ended the item.
-    :return: The exception's HTTP detail, or its message for a transport error.
+    :return: A validation-error list unchanged, otherwise the failure as text.
     """
-    return cast(
-        "str | list[dict[str, Any]]",
-        exc.detail if isinstance(exc, HTTPException) else str(exc),
-    )
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, list):
+        return cast("list[dict[str, Any]]", exc.detail)
+    return exception_detail(exc)
 
 
 @router.post(

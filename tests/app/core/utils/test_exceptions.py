@@ -18,7 +18,7 @@
 from typing import Any
 
 import pytest
-from aiohttp import ClientError
+from aiohttp import ClientConnectionError, ClientError
 from fastapi import HTTPException, status
 
 from app.core.exceptions import HTTPConflictException
@@ -91,9 +91,16 @@ class TestExceptionDetail:
         """Describe an ``aiohttp.ClientError`` by its string form."""
         assert exception_detail(ClientError("boom")) == "boom"
 
-    def test_returns_empty_string_for_bare_exception(self) -> None:
-        """Return an empty string, not ``None``, for an exception with no message."""
-        assert exception_detail(OSError()) == ""
+    @pytest.mark.parametrize(
+        "exc",
+        [OSError(), TimeoutError(), ConnectionResetError(), ClientConnectionError()],
+        ids=["oserror", "timeout", "connection-reset", "client-connection"],
+    )
+    def test_names_the_exception_when_it_carries_no_message(
+        self, exc: BaseException
+    ) -> None:
+        """Name the exception type when neither its detail nor its message has text."""
+        assert exception_detail(exc) == type(exc).__name__
 
     def test_describes_mapped_project_exception(self) -> None:
         """Coerce the structured detail of an exception ``RemoteAPI`` would raise."""

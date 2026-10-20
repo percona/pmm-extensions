@@ -186,9 +186,9 @@ async def _proxy_settings_request(
     except HTTPException as exc:
         if exc.status_code < status.HTTP_500_INTERNAL_SERVER_ERROR:
             raise
-        raise HTTPBadGatewayException(detail=str(exc.detail)) from exc
+        raise HTTPBadGatewayException(detail=exception_detail(exc)) from exc
     except OSError as exc:
-        raise HTTPBadGatewayException(detail=str(exc)) from exc
+        raise HTTPBadGatewayException(detail=exception_detail(exc)) from exc
 
 
 def _remote_wiring(

@@ -574,6 +574,41 @@ class TestProxyErrorSplit:
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
         assert response.json() == {"detail": "conn refused"}
 
+    @pytest.mark.parametrize(
+        ("upstream", "expected"),
+        [
+            (
+                HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={"message": "tasks down"},
+                ),
+                "{'message': 'tasks down'}",
+            ),
+            (
+                HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=""
+                ),
+                "503: ",
+            ),
+            (TimeoutError(), "TimeoutError"),
+        ],
+        ids=["structured", "empty", "timeout"],
+    )
+    def test_detail_upstream_failure_reaches_502_as_text(
+        self,
+        admin_client: TestClient,
+        mock_tasks: AsyncMock,
+        upstream: Exception,
+        expected: str,
+    ) -> None:
+        """Carry a structured, empty or message-less failure onto the 502 as text."""
+        mock_tasks.get.side_effect = upstream
+        response = admin_client.get(
+            f"/api/extensions/admin/settings/TasksSettings/{TASKS_KEY}"
+        )
+        assert response.status_code == status.HTTP_502_BAD_GATEWAY
+        assert response.json() == {"detail": expected}
+
     def test_patch_upstream_5xx_becomes_502(
         self, admin_client: TestClient, mock_tasks: AsyncMock
     ) -> None:

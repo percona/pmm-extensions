@@ -1120,6 +1120,66 @@ class TestAlertsPushNonStringDetail:
         assert result["status"] == "success"
         assert "replaced conflicting rule" in result["message"]
 
+    def test_structured_conflict_deletes_only_matching_rules_in_its_folder(
+        self, api_client, mock_pmm_api
+    ):
+        """Scope the delete a structured conflict triggers to the managed folder."""
+        mock_pmm_api.create_rule.side_effect = [
+            exception_for_status(
+                status.HTTP_502_BAD_GATEWAY,
+                detail={"message": "rule conflicts with existing rule"},
+            ),
+            None,
+        ]
+        mock_pmm_api.list_rules.return_value = [
+            AlertRule(uid="r1", title="High CPU", namespace_uid=_FOLDER.uid),
+            AlertRule(uid="r2", title="", namespace_uid=_FOLDER.uid),
+            AlertRule(uid="r3", title="High CPU", namespace_uid="other-folder"),
+            AlertRule(uid="r4", title="unrelated", namespace_uid=_FOLDER.uid),
+        ]
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "success"
+        deleted = sorted(
+            call.args[0] for call in mock_pmm_api.delete_rule.await_args_list
+        )
+        assert deleted == ["r1", "r2"]
+
+    @_NON_STRING_DETAILS
+    def test_conflicting_rule_delete_failure_reports_detail_as_text(
+        self, api_client, mock_pmm_api, detail
+    ):
+        """Report an orphaned-template error carrying text when the delete fails."""
+        mock_pmm_api.create_rule.side_effect = HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="rule conflicts with existing rule",
+        )
+        mock_pmm_api.list_rules.side_effect = exception_for_status(
+            status.HTTP_502_BAD_GATEWAY, detail=detail
+        )
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == f"Template created but rule failed: {detail}"
+
+    def test_already_present_empty_detail_falls_back_to_status_text(
+        self, api_client, mock_pmm_api
+    ):
+        """Report the exception's own text when the present-rule detail is empty."""
+        extensions_app.dependency_overrides[get_pmm_present_names] = lambda: {
+            "High CPU"
+        }
+        exc = HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="")
+        mock_pmm_api.create_rule.side_effect = exc
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == str(exc)
+
+    def test_rule_create_timeout_names_the_timeout(self, api_client, mock_pmm_api):
+        """Name a message-less timeout instead of leaving the cause blank."""
+        mock_pmm_api.create_rule.side_effect = TimeoutError
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == "Template created but rule failed: TimeoutError"
+
     def test_template_create_empty_detail_falls_back_to_status_text(
         self, api_client, mock_pmm_api
     ):

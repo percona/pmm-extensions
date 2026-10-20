@@ -106,6 +106,16 @@ class TestReraiseUpstreamTasksErrors:
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
         assert exc_info.value.detail == "connection refused"
 
+    def test_timeout_becomes_502_naming_the_timeout(self) -> None:
+        """Name a message-less upstream timeout on the 502 instead of a blank detail."""
+        with (
+            pytest.raises(HTTPBadGatewayException) as exc_info,
+            reraise_upstream_tasks_errors(),
+        ):
+            raise TimeoutError
+        assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
+        assert exc_info.value.detail == "TimeoutError"
+
     def test_unrelated_exception_propagates(self) -> None:
         """Let a non-target exception propagate unchanged, never swallowing it."""
         with (
