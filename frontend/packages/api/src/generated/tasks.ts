@@ -445,6 +445,10 @@ export interface paths {
      *     because the status has already flipped to terminal — refresh the row
      *     from the DB and return without re-syncing. The holder (or completed
      *     syncer) is responsible for dispatching any chained task.
+     *
+     *     A failed executor call or status commit releases the lock this request
+     *     claimed, unless another syncer has re-taken it, and re-raises. A failure
+     *     after the commit leaves the lock alone, as the commit already freed it.
      */
     post: operations['tasks_sync_task_history_history__task_history_id__sync__post'];
     delete?: never;
