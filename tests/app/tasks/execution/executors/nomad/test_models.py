@@ -142,6 +142,13 @@ PENDING_ALLOCATION_TIMEOUT_OVERRIDE = 60
 PENDING_ALLOCATION_WITHIN_BOUND_AGE = 30
 PENDING_ALLOCATION_BOUNDARY_AGE = 30
 PENDING_ALLOCATION_PAST_BOUND_AGE = 120
+# Non-parameterized task: one job per task and target, shared by every such run.
+_SHARED_NOMAD_JOB = {
+    "ID": "job-1",
+    "Status": "running",
+    "Stop": False,
+    "Dispatched": False,
+}
 MULTI_CHUNK_LOG_FIRST_OFFSET = 17
 MULTI_CHUNK_LOG_SECOND_OFFSET = 42
 EXPECTED_MULTI_CHUNK_LOG_COUNT = 2
@@ -3859,26 +3866,20 @@ class TestSyncTaskHistoryWithoutTaskStates:
     @pytest.mark.parametrize(
         "job",
         [
+            pytest.param(_SHARED_NOMAD_JOB, id="dispatched-false"),
             pytest.param(
-                {
-                    "ID": "job-1",
-                    "Status": "running",
-                    "Stop": False,
-                    "Dispatched": False,
-                },
-                id="dispatched-false",
-            ),
-            pytest.param(
-                {"ID": "job-1", "Status": "running", "Stop": False},
+                {k: v for k, v in _SHARED_NOMAD_JOB.items() if k != "Dispatched"},
                 id="dispatched-absent",
             ),
         ],
     )
     @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.utc_now")
     @patch("app.tasks.execution.executors.nomad.models.Nomad")
     async def test_pending_allocation_shared_job_is_not_withdrawn(
         self,
         mock_nomad_cls,
+        mock_utc_now: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
         job: dict[str, Any],
@@ -3897,7 +3898,9 @@ class TestSyncTaskHistoryWithoutTaskStates:
         )
         mock_backend = self._backend(mock_nomad_cls, self._alloc(), job=job)
         executor = _build_executor()
-        started_at = utc_now() - timedelta(seconds=PENDING_ALLOCATION_PAST_BOUND_AGE)
+        now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
+        mock_utc_now.return_value = now
+        started_at = now - timedelta(seconds=PENDING_ALLOCATION_PAST_BOUND_AGE)
 
         with caplog.at_level(
             logging.INFO, logger="app.tasks.execution.executors.nomad.models"
@@ -3907,7 +3910,7 @@ class TestSyncTaskHistoryWithoutTaskStates:
             )
 
         assert result.status == TaskHistoryStatusEnum.LOST
-        assert result.finished_at is not None
+        assert result.finished_at == now
         mock_backend.job.deregister_job.assert_not_called()
         assert "shared across runs; leaving it registered" in caplog.text
 
@@ -4494,12 +4497,7 @@ class TestSyncTaskHistoryQueuedEvaluations:
         mock_backend = self._backend(
             mock_nomad_cls,
             evaluations,
-            job={
-                "ID": "job-1",
-                "Status": "running",
-                "Stop": False,
-                "Dispatched": False,
-            },
+            job=_SHARED_NOMAD_JOB,
         )
         executor = _build_executor()
 
