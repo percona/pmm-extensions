@@ -1137,17 +1137,19 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
     awaiting after save keeps the UI status prompt while still completing the
     annotation before chain dispatch.
 
-    A sync that fails before its status is saved releases the lock it holds
-    and re-raises, so the next sweep retries the history instead of waiting
-    for ``SYNC_LOCK_TTL``.
+    A sync whose executor call or status commit fails releases the lock it
+    holds and re-raises, so the next sweep retries the history instead of
+    waiting for ``SYNC_LOCK_TTL``. A failure after the commit leaves the lock
+    alone, as the commit already freed it.
 
     :param queue_id: The unique identifier of the queue item to sync.
     :return: The TaskHistory object post sync.
-    :raises HTTPBadRequestException: If the task backend is unsupported,
-        raises a 400 Bad Request error.
-    :raises Exception: Any executor, status save or refresh error, such as a
+    :raises HTTPBadRequestException: If the task backend is unsupported or the
+        status commit fails.
+    :raises HTTPConflictException: If the status commit hits a unique conflict.
+    :raises Exception: Any executor or post-commit refresh error, such as a
         ``ClientError`` from an unreachable Nomad or a database error, re-raised
-        unchanged once the lock is released.
+        unchanged.
     """
     async_session = get_async_session_maker()
     async with async_session() as session:
@@ -1187,7 +1189,15 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
                 writer_session=writer_session,
                 defer_terminal_annotation=True,
             )
-        queue_item.sync_in_progress_started_at = None
+    except Exception:
+        await _release_sync_lock(queue_id, claimed_at)
+        raise
+    queue_item.sync_in_progress_started_at = None
+    # save() raises the HTTP exceptions below only when its commit fails. Any
+    # other error comes after the commit freed the lock, and releasing then
+    # could clear a newer claim stamped in the same second on SQLite, which
+    # stores whole seconds.
+    try:
         async with async_session() as session:
             saved = await TaskHistoryManager.save(
                 session,
@@ -1202,7 +1212,7 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
                 ],
             )
             await session.refresh(saved, attribute_names=["execution_request"])
-    except Exception:
+    except (HTTPBadRequestException, HTTPConflictException):
         await _release_sync_lock(queue_id, claimed_at)
         raise
     if pending_event:

@@ -17,11 +17,12 @@
 
 import asyncio
 import logging
-from collections.abc import Collection
+from collections.abc import Awaitable, Callable, Collection, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,7 +34,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from nomad.api.exceptions import BaseNomadException
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import undefer
 from sqlmodel import col, select, SQLModel
@@ -2798,42 +2799,20 @@ class TestSyncQueueItemReleasesLockOnFailure:
         _assert_released_own_lock(update_where)
 
     @pytest.mark.asyncio
-    async def test_save_error_releases_lock_and_reraises_it(self):
-        """Assert a failed status save releases the lock and propagates unchanged."""
+    @pytest.mark.parametrize(
+        "error",
+        [HTTPBadRequestException("commit failed"), HTTPConflictException("duplicate")],
+    )
+    async def test_failed_commit_releases_lock_and_reraises_it(self, error):
+        """Assert a status commit the save rejects releases the lock and propagates."""
         queue_item = _running_item()
         executor = _syncing_executor(queue_item)
-        error = HTTPBadRequestException("commit failed")
 
         with (
             _patched_running_sync(
                 queue_item, executor, save=AsyncMock(side_effect=error)
             ) as update_where,
-            pytest.raises(HTTPBadRequestException) as exc_info,
-        ):
-            await sync_queue_item(_HISTORY_ID)
-
-        assert exc_info.value is error
-        _assert_released_own_lock(update_where)
-
-    @pytest.mark.asyncio
-    async def test_refresh_error_releases_only_the_loaded_stamp(self):
-        """Assert a failed post-save refresh releases only a lock not re-taken since.
-
-        The save already wrote a NULL stamp, so the conditional release cannot
-        touch the saved row or a newer claimant's lock.
-        """
-        queue_item = _running_item()
-        executor = _syncing_executor(queue_item)
-        session_maker = _make_lock_session_maker()
-        session = session_maker.return_value.__aenter__.return_value
-        error = RuntimeError("refresh failed")
-        session.refresh = AsyncMock(side_effect=error)
-
-        with (
-            _patched_running_sync(
-                queue_item, executor, session_maker=session_maker
-            ) as update_where,
-            pytest.raises(RuntimeError) as exc_info,
+            pytest.raises(type(error)) as exc_info,
         ):
             await sync_queue_item(_HISTORY_ID)
 
@@ -2900,6 +2879,45 @@ class TestSyncQueueItemReleasesLockOnFailure:
 
 class TestSyncQueueItemLockAfterSave:
     """Test that ``sync_queue_item`` leaves the lock alone once the status is saved."""
+
+    @pytest.mark.asyncio
+    async def test_save_refresh_error_skips_release(self):
+        """Assert an error from the save's own refresh, after its commit, skips the release."""
+        queue_item = _running_item()
+        error = OperationalError("SELECT", {}, Exception("connection lost"))
+
+        with (
+            _patched_running_sync(
+                queue_item,
+                _syncing_executor(queue_item),
+                save=AsyncMock(side_effect=error),
+            ) as update_where,
+            pytest.raises(OperationalError) as exc_info,
+        ):
+            await sync_queue_item(_HISTORY_ID)
+
+        assert exc_info.value is error
+        update_where.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refresh_error_after_save_skips_release(self):
+        """Assert a failed refresh of the saved history skips the release."""
+        queue_item = _running_item()
+        session_maker = _make_lock_session_maker()
+        session = session_maker.return_value.__aenter__.return_value
+        error = OperationalError("SELECT", {}, Exception("connection lost"))
+        session.refresh = AsyncMock(side_effect=error)
+
+        with (
+            _patched_running_sync(
+                queue_item, _syncing_executor(queue_item), session_maker=session_maker
+            ) as update_where,
+            pytest.raises(OperationalError) as exc_info,
+        ):
+            await sync_queue_item(_HISTORY_ID)
+
+        assert exc_info.value is error
+        update_where.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_success_clears_lock_through_save_only(self):
@@ -2975,6 +2993,41 @@ async def _lock_stamp(
         return history.sync_in_progress_started_at
 
 
+@contextmanager
+def _session_call_fails_once(
+    method: str, before_failing: Callable[[], Awaitable[None]] | None = None
+) -> Iterator[None]:
+    """Make the next ``AsyncSession`` ``method`` call raise a database error.
+
+    :param method: The session method to fail, such as ``"commit"``.
+    :param before_failing: A coroutine function to run just before the failure.
+    :return: A context manager restoring the method on exit.
+    """
+    original = getattr(AsyncSession, method)
+    failed = False
+
+    async def fail_once(self: AsyncSession, *args: Any, **kwargs: Any) -> Any:
+        nonlocal failed
+        if failed:
+            return await original(self, *args, **kwargs)
+        failed = True
+        if before_failing is not None:
+            await before_failing()
+        raise OperationalError(method, {}, Exception("connection lost"))
+
+    with patch.object(AsyncSession, method, fail_once):
+        yield
+
+
+def _echoing_executor() -> MagicMock:
+    """Return an executor whose ``sync_task_history`` returns the history it is given."""
+    executor = MagicMock(spec=BaseExecutor)
+    executor.sync_task_history = AsyncMock(
+        side_effect=lambda queue_item, **_: (queue_item, None)
+    )
+    return executor
+
+
 class TestSyncQueueItemLockReleaseRealEngine:
     """Exercise the failed-sync lock release on each real database engine.
 
@@ -3026,6 +3079,55 @@ class TestSyncQueueItemLockReleaseRealEngine:
             await sync_queue_item(history_id)
 
         assert await _lock_stamp(real_session_maker, history_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_failed_commit_frees_history_for_next_sweep(self, real_session_maker):
+        """Assert a status commit that fails releases the lock for the next sweep."""
+        history_id = await _claim_running_history(real_session_maker)
+
+        with (
+            patch(f"{MODULE}.get_async_session_maker", return_value=real_session_maker),
+            patch(f"{MODULE}.get_executor_for_task", return_value=_echoing_executor()),
+            _session_call_fails_once("commit"),
+            pytest.raises(HTTPBadRequestException),
+        ):
+            await sync_queue_item(history_id)
+
+        assert await _lock_stamp(real_session_maker, history_id) is None
+        async with real_session_maker() as session:
+            assert await celery_module._claim_syncs(session) == [history_id]
+
+    @pytest.mark.asyncio
+    async def test_refresh_error_after_commit_keeps_same_second_reclaim(
+        self, real_session_maker
+    ):
+        """Assert a lock re-taken with an equal stamp after the commit survives.
+
+        SQLite stores the stamp to the second, so a claimant that takes the
+        freed lock within that second writes a stamp equal to the loaded one.
+        """
+        history_id = await _claim_running_history(real_session_maker)
+        claimed_at = await _lock_stamp(real_session_maker, history_id)
+
+        async def reclaim_with_equal_stamp() -> None:
+            async with real_session_maker() as session:
+                await TaskHistoryManager.update_where(
+                    session,
+                    {"sync_in_progress_started_at": claimed_at},
+                    id=history_id,
+                )
+
+        with (
+            patch(f"{MODULE}.get_async_session_maker", return_value=real_session_maker),
+            patch(f"{MODULE}.get_executor_for_task", return_value=_echoing_executor()),
+            _session_call_fails_once(
+                "refresh", before_failing=reclaim_with_equal_stamp
+            ),
+            pytest.raises(OperationalError),
+        ):
+            await sync_queue_item(history_id)
+
+        assert await _lock_stamp(real_session_maker, history_id) == claimed_at
 
 
 class TestClaimSyncsRealEngine:
