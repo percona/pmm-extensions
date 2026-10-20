@@ -15,14 +15,13 @@
 
 """Pin that the autouse snapshot reset covers every wired override proxy."""
 
-import pytest
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 from app.core.alerts.config import alert_settings
 from app.core.config import settings
-from app.extensions.apps.alerts.config import alerts_settings
-from app.extensions.apps.inventory.config import inventory_app_settings
-from app.extensions.apps.om_inventory.config import om_inventory_settings
-from app.extensions.apps.report.config import health_report_settings
 from app.extensions.config import extensions_settings
 from app.extensions.settings_override import build_extensions_override_proxies
 from app.extensions.snippets.config import snippets_settings
@@ -31,7 +30,14 @@ from app.tasks.celery import build_tasks_override_proxies
 from app.tasks.config import tasks_settings
 from tests.app.conftest import wired_override_proxies
 
-_PROBE = {"_sep2161_probe": True}
+REPO_ROOT = Path(__file__).resolve().parents[4]
+_LEAK_PAIRS = Path(__file__).with_name("test_snapshot_reset_leak_pairs.py")
+
+#: Variables the child run must not inherit. ``-o addopts=`` clears the ini
+#: option but not ``PYTEST_ADDOPTS``, which the pre-push gate uses to inject its
+#: checkpoint plugin; the child would then deselect every node id the outer run
+#: already verified, collect nothing, and exit 5 on a resumed push.
+_INHERITED_PYTEST_VARS = ("PYTEST_ADDOPTS", "EXTENSIONS_PREPUSH_CHECKPOINT")
 
 
 def test_wired_override_proxies_covers_both_registries() -> None:
@@ -63,69 +69,44 @@ def test_wired_override_proxies_covers_both_registries() -> None:
         assert id(proxy) in wired_ids
 
 
-@pytest.mark.xdist_group("snapshot_reset_alerts")
-class TestAlertsSettingsSnapshotDoesNotLeak:
-    """A published ``alerts_settings`` snapshot must not reach the next test."""
+def test_app_owned_proxy_snapshots_do_not_leak_across_tests() -> None:
+    """Publish then check each app-owned proxy in one ``-n0`` child process.
 
-    def test_publish_leaves_a_snapshot(self) -> None:
-        """Publish a probe snapshot and leave it for the following test."""
-        alerts_settings._set_snapshot(_PROBE)  # ty: ignore[unresolved-attribute]
-        assert dict(alerts_settings.get_snapshot()) == _PROBE  # ty: ignore[unresolved-attribute]
+    ``xdist_group`` only keeps tests on one worker under ``--dist=loadgroup``.
+    The Makefile defaults to ``worksteal``, so an in-suite publisher/checker
+    pair can split across workers: the checker sees a fresh empty snapshot and
+    passes even when the autouse reset no longer covers that proxy. Spawning
+    the pairs under ``-n0`` forces one process and definition order, so each
+    publisher is immediately followed by its checker against the real fixture
+    lifecycle.
 
-    def test_next_test_finds_snapshot_empty(self) -> None:
-        """See an empty snapshot after the autouse reset ran."""
-        assert dict(alerts_settings.get_snapshot()) == {}  # ty: ignore[unresolved-attribute]
-
-
-@pytest.mark.xdist_group("snapshot_reset_inventory_app")
-class TestInventoryAppSettingsSnapshotDoesNotLeak:
-    """A published ``inventory_app_settings`` snapshot must not reach the next test."""
-
-    def test_publish_leaves_a_snapshot(self) -> None:
-        """Publish a probe snapshot and leave it for the following test."""
-        inventory_app_settings._set_snapshot(_PROBE)  # ty: ignore[unresolved-attribute]
-        assert (
-            dict(inventory_app_settings.get_snapshot()) == _PROBE  # ty: ignore[unresolved-attribute]
-        )
-
-    def test_next_test_finds_snapshot_empty(self) -> None:
-        """See an empty snapshot after the autouse reset ran."""
-        assert (
-            dict(inventory_app_settings.get_snapshot()) == {}  # ty: ignore[unresolved-attribute]
-        )
-
-
-@pytest.mark.xdist_group("snapshot_reset_om_inventory")
-class TestOmInventorySettingsSnapshotDoesNotLeak:
-    """A published ``om_inventory_settings`` snapshot must not reach the next test."""
-
-    def test_publish_leaves_a_snapshot(self) -> None:
-        """Publish a probe snapshot and leave it for the following test."""
-        om_inventory_settings._set_snapshot(_PROBE)  # ty: ignore[unresolved-attribute]
-        assert (
-            dict(om_inventory_settings.get_snapshot()) == _PROBE  # ty: ignore[unresolved-attribute]
-        )
-
-    def test_next_test_finds_snapshot_empty(self) -> None:
-        """See an empty snapshot after the autouse reset ran."""
-        assert (
-            dict(om_inventory_settings.get_snapshot()) == {}  # ty: ignore[unresolved-attribute]
-        )
-
-
-@pytest.mark.xdist_group("snapshot_reset_health_report")
-class TestHealthReportSettingsSnapshotDoesNotLeak:
-    """A published ``health_report_settings`` snapshot must not reach the next test."""
-
-    def test_publish_leaves_a_snapshot(self) -> None:
-        """Publish a probe snapshot and leave it for the following test."""
-        health_report_settings._set_snapshot(_PROBE)  # ty: ignore[unresolved-attribute]
-        assert (
-            dict(health_report_settings.get_snapshot()) == _PROBE  # ty: ignore[unresolved-attribute]
-        )
-
-    def test_next_test_finds_snapshot_empty(self) -> None:
-        """See an empty snapshot after the autouse reset ran."""
-        assert (
-            dict(health_report_settings.get_snapshot()) == {}  # ty: ignore[unresolved-attribute]
-        )
+    The pairs live in ``test_snapshot_reset_leak_pairs.py``, which
+    ``collect_ignore`` keeps out of directory collection so xdist never runs
+    a checker alone; the child still collects them via an explicit path.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(_LEAK_PAIRS.relative_to(REPO_ROOT)),
+            "-n0",
+            "--no-cov",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:cacheprovider",
+            "-q",
+        ],
+        cwd=REPO_ROOT,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if key not in _INHERITED_PYTEST_VARS
+        },
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

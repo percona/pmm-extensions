@@ -58,6 +58,12 @@ from app.tasks.anonymizer.config import AnonymizerSettings
 from app.tasks.config import TasksSettings
 from tests.app.db_schema import apply_schema
 
+#: Leak pairs for ``test_snapshot_reset.py``: named ``test_*.py`` for ruff, but
+#: skipped during directory collection so xdist ``worksteal`` cannot run a
+#: checker alone. An explicit ``pytest path/to/file.py`` (the ``-n0`` child)
+#: still collects them.
+collect_ignore = ["test_snapshot_reset_leak_pairs.py"]
+
 #: Importable path patched when tests replace ``bounded_seed``.
 BOUNDED_SEED = "app.core.settings_override.worker.bounded_seed"
 
