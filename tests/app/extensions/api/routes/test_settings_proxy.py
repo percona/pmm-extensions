@@ -271,6 +271,18 @@ class TestListAggregation:
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
         assert response.json() == {"detail": "tasks down"}
 
+    def test_upstream_structured_detail_fails_closed_502_with_text(
+        self, admin_client: TestClient, mock_tasks: AsyncMock
+    ) -> None:
+        """Carry a structured upstream detail onto the 502 as text."""
+        detail = {"message": "tasks down"}
+        mock_tasks.get.side_effect = HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=detail
+        )
+        response = admin_client.get("/api/extensions/admin/settings/")
+        assert response.status_code == status.HTTP_502_BAD_GATEWAY
+        assert response.json() == {"detail": str(detail)}
+
     def test_upstream_oserror_fails_closed_502(
         self, admin_client: TestClient, mock_tasks: AsyncMock
     ) -> None:
