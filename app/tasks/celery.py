@@ -24,7 +24,7 @@ import json
 import logging
 import typing
 from contextlib import AsyncExitStack
-from datetime import timedelta
+from datetime import datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -1008,21 +1008,55 @@ async def _claim_syncs(
     )
 
 
+async def _release_sync_lock(queue_id: int, claimed_at: datetime | None) -> None:
+    """Release the sync lock on ``queue_id`` unless it was re-taken after ``claimed_at``.
+
+    A lock another claimant took since ``claimed_at`` is left in place. A failed
+    release is logged rather than raised, so the caller's own error is the one
+    reported and ``SYNC_LOCK_TTL`` frees the lock instead.
+
+    :param queue_id: The id of the history whose lock to release.
+    :param claimed_at: The lock stamp loaded when the sync started.
+    """
+    # update_where ignores None equality filters, so an unstamped release
+    # would clear any claimant's lock.
+    if claimed_at is None:
+        return
+    async_session = get_async_session_maker()
+    try:
+        async with async_session() as session:
+            await TaskHistoryManager.update_where(
+                session,
+                {"sync_in_progress_started_at": None},
+                # Not ==: SQLite stores func.now() without microseconds but binds
+                # the loaded stamp with them. A re-claim only follows an expired
+                # TTL, so it always carries a later stamp.
+                col(TaskHistory.sync_in_progress_started_at) <= claimed_at,
+                id=queue_id,
+            )
+    except Exception:
+        logger.warning(
+            "Could not release the sync lock of task history %s",
+            queue_id,
+            exc_info=True,
+        )
+
+
 async def sync_running_items() -> None:
     """Sync running tasks in the task history.
 
     This function updates the ``sync_in_progress_started_at`` field for tasks that are
     either not currently in progress or have been in progress for longer than the
-    configured SYNC_LOCK_TTL. It then dispatches the sync task for those tasks.
+    configured SYNC_LOCK_TTL. It then dispatches one sync task per claimed history.
     """
     async_session = get_async_session_maker()
     async with async_session() as session:
-        result = await _claim_syncs(session)
-        args = [(item_id,) for item_id in result]
-        if args:
-            logger.debug("Dispatching sync of %d running tasks", len(args))
-            chunk_size = 100
-            sync_task_history.chunks(args, chunk_size).apply_async()
+        claimed = await _claim_syncs(session)
+    if claimed:
+        logger.debug("Dispatching sync of %d running tasks", len(claimed))
+        # Not chunks: a chunk runs its items in turn and stops at the first
+        # failure, leaving the rest of it locked until SYNC_LOCK_TTL.
+        group([sync_task_history.s(history_id) for history_id in claimed]).apply_async()
 
 
 async def sync_finishing_items() -> None:
@@ -1103,10 +1137,17 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
     awaiting after save keeps the UI status prompt while still completing the
     annotation before chain dispatch.
 
+    A sync that fails before its status is saved releases the lock it holds
+    and re-raises, so the next sweep retries the history instead of waiting
+    for ``SYNC_LOCK_TTL``.
+
     :param queue_id: The unique identifier of the queue item to sync.
     :return: The TaskHistory object post sync.
     :raises HTTPBadRequestException: If the task backend is unsupported,
         raises a 400 Bad Request error.
+    :raises Exception: Any executor, status save or refresh error, such as a
+        ``ClientError`` from an unreachable Nomad or a database error, re-raised
+        unchanged once the lock is released.
     """
     async_session = get_async_session_maker()
     async with async_session() as session:
@@ -1138,25 +1179,32 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
             else:
                 return queue_item
     executor = get_executor_for_task(task)
-    async with async_session() as writer_session:
-        queue_item, pending_event = await executor.sync_task_history(
-            queue_item, writer_session=writer_session, defer_terminal_annotation=True
-        )
-    queue_item.sync_in_progress_started_at = None
-    async with async_session() as session:
-        saved = await TaskHistoryManager.save(
-            session,
-            queue_item,
-            flag_modified_fields=[
-                "execution_request",
-                "status",
-                "started_at",
-                "finished_at",
-                "failure_reason",
-                "sync_in_progress_started_at",
-            ],
-        )
-        await session.refresh(saved, attribute_names=["execution_request"])
+    claimed_at = queue_item.sync_in_progress_started_at
+    try:
+        async with async_session() as writer_session:
+            queue_item, pending_event = await executor.sync_task_history(
+                queue_item,
+                writer_session=writer_session,
+                defer_terminal_annotation=True,
+            )
+        queue_item.sync_in_progress_started_at = None
+        async with async_session() as session:
+            saved = await TaskHistoryManager.save(
+                session,
+                queue_item,
+                flag_modified_fields=[
+                    "execution_request",
+                    "status",
+                    "started_at",
+                    "finished_at",
+                    "failure_reason",
+                    "sync_in_progress_started_at",
+                ],
+            )
+            await session.refresh(saved, attribute_names=["execution_request"])
+    except Exception:
+        await _release_sync_lock(queue_id, claimed_at)
+        raise
     if pending_event:
         await await_annotation(saved, pending_event)
     await maybe_dispatch_chain(saved, was_running=was_running, await_annotations=True)
