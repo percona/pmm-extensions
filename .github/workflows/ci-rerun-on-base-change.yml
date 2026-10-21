@@ -16,7 +16,7 @@ jobs:
     if: github.event.changes.base != null
     runs-on: ubuntu-latest
     steps:
-      - name: Re-run latest CI for this head SHA
+      - name: Re-run latest CI for this PR head
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -26,10 +26,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Latest pull_request-triggered CI run for this head (workflow file ci.yml).
-          run_json="$(gh api \
-            "repos/$REPO/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$HEAD_SHA&per_page=1" \
-            --jq '.workflow_runs[0] // empty')"
+          # Latest pull_request-triggered CI run for this PR + head (workflow file
+          # ci.yml). Filter by pull_requests[].number so two open PRs that share a
+          # head SHA (same branch, different bases) cannot cancel/re-run each other.
+          runs="$(gh api \
+            "repos/$REPO/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$HEAD_SHA&per_page=20")"
+          run_json="$(jq -c --arg pr "$PR_NUMBER" '
+            [.workflow_runs[]
+              | select(any(.pull_requests[]; .number == ($pr | tonumber)))
+            ][0] // empty
+          ' <<<"$runs")"
           if [ -z "$run_json" ]; then
             echo "No CI run found for PR #$PR_NUMBER head $HEAD_SHA; nothing to re-run."
             exit 0
@@ -37,7 +43,7 @@ jobs:
 
           run_id="$(jq -r '.id' <<<"$run_json")"
           status="$(jq -r '.status' <<<"$run_json")"
-          echo "Found CI run $run_id (status=$status) for head $HEAD_SHA"
+          echo "Found CI run $run_id (status=$status) for PR #$PR_NUMBER head $HEAD_SHA"
 
           if [ "$status" = "queued" ] || [ "$status" = "in_progress" ] || [ "$status" = "waiting" ] || [ "$status" = "pending" ] || [ "$status" = "requested" ]; then
             echo "Cancelling in-flight run $run_id before re-run"
