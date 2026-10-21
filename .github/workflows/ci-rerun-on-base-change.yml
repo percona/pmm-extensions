@@ -1,0 +1,62 @@
+# Re-run CI when an open PR's base branch changes (hand retarget).
+# Keeps gate logic in ci.yml; does not add `edited` there (SEP-2092 / SEP-2071).
+name: Re-run CI on base change
+
+on:
+  pull_request_target:
+    types: [edited]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  rerun-ci:
+    if: github.event.changes.base != null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-run latest CI for this head SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Latest pull_request-triggered CI run for this head (workflow file ci.yml).
+          run_json="$(gh api \
+            "repos/$REPO/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$HEAD_SHA&per_page=1" \
+            --jq '.workflow_runs[0] // empty')"
+          if [ -z "$run_json" ]; then
+            echo "No CI run found for PR #$PR_NUMBER head $HEAD_SHA; nothing to re-run."
+            exit 0
+          fi
+
+          run_id="$(jq -r '.id' <<<"$run_json")"
+          status="$(jq -r '.status' <<<"$run_json")"
+          echo "Found CI run $run_id (status=$status) for head $HEAD_SHA"
+
+          if [ "$status" = "queued" ] || [ "$status" = "in_progress" ] || [ "$status" = "waiting" ] || [ "$status" = "pending" ] || [ "$status" = "requested" ]; then
+            echo "Cancelling in-flight run $run_id before re-run"
+            gh run cancel "$run_id" --repo "$REPO" || true
+            # Re-run is refused while a run is still active; poll until terminal.
+            for _ in $(seq 1 60); do
+              status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status')"
+              echo "status=$status"
+              case "$status" in
+                completed) break ;;
+              esac
+              sleep 10
+            done
+            status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status')"
+            if [ "$status" != "completed" ]; then
+              echo "::error::Timed out waiting for run $run_id to finish after cancel."
+              exit 1
+            fi
+          fi
+
+          echo "Re-running CI run $run_id (label-gate will resolve base from the API)"
+          gh run rerun "$run_id" --repo "$REPO"
