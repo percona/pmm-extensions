@@ -277,3 +277,39 @@ async def test_maps_empty_upstream_body_onto_unrecognized_result(
         await probe_service_connectivity(mysql_service, tasks_api)
 
     assert "unrecognized result" in exc_info.value.detail
+
+
+class TestUpstreamDetailAsText:
+    """Cover how an upstream HTTP failure's detail reaches the 502 message."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verb", ["get", "post"], ids=["host-fetch", "probe"])
+    async def test_structured_detail_reaches_502_as_text(
+        self, mysql_service, tasks_api, verb: str
+    ) -> None:
+        """Render a structured upstream detail in the service-scoped message."""
+        getattr(tasks_api, verb).side_effect = HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": "Nomad unavailable"},
+        )
+
+        with pytest.raises(HTTPBadGatewayException) as exc_info:
+            await probe_service_connectivity(mysql_service, tasks_api)
+
+        assert exc_info.value.detail.endswith(": {'message': 'Nomad unavailable'}")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verb", ["get", "post"], ids=["host-fetch", "probe"])
+    async def test_empty_detail_falls_back_to_status_text(
+        self, mysql_service, tasks_api, verb: str
+    ) -> None:
+        """Name the upstream status rather than ending the message with a blank cause."""
+        upstream = HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=""
+        )
+        getattr(tasks_api, verb).side_effect = upstream
+
+        with pytest.raises(HTTPBadGatewayException) as exc_info:
+            await probe_service_connectivity(mysql_service, tasks_api)
+
+        assert exc_info.value.detail.endswith(f": {upstream}")

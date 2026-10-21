@@ -55,6 +55,7 @@ from app.core.requests import RemoteAPI
 from app.core.security import get_internal_token
 from app.core.utils import json_serializer
 from app.core.utils.date_time import utc_now
+from app.core.utils.exceptions import exception_detail
 from app.extensions.apps.atw.config import atw_settings
 from app.extensions.apps.atw.crud import AtwIncidentManager, AtwSendLogManager
 from app.extensions.apps.atw.models import AtwSendLog, AtwSendStatusEnum
@@ -815,17 +816,6 @@ def _step_detail(record: StepRecord) -> dict[str, Any]:
     }
 
 
-def _upstream_detail(exc: Exception) -> str:
-    """Return the message ``exc`` carries, preferring a project exception's detail.
-
-    :param exc: The exception to describe.
-    :return: The exception's ``detail`` when it carries a non-empty one, else
-        its string form.
-    """
-    detail = getattr(exc, "detail", None)
-    return str(detail) if detail else str(exc)
-
-
 @contextmanager
 def _reraise_upstream_errors(message: str) -> Iterator[None]:
     """Report an upstream Tasks-API failure raised in the block as a send failure.
@@ -843,7 +833,7 @@ def _reraise_upstream_errors(message: str) -> Iterator[None]:
     try:
         yield
     except (HTTPException, OSError, ClientError) as exc:
-        raise AtwSendError(f"{message}: {_upstream_detail(exc)}") from exc
+        raise AtwSendError(f"{message}: {exception_detail(exc)}") from exc
 
 
 def _error_message(exc: Exception, records: Sequence[StepRecord]) -> str:
@@ -858,7 +848,7 @@ def _error_message(exc: Exception, records: Sequence[StepRecord]) -> str:
     :param records: The step transitions the executor observed.
     :return: A message a support engineer can act on.
     """
-    upstream = _upstream_detail(exc)
+    upstream = exception_detail(exc)
     failed = next(
         (record for record in reversed(records) if record.status == "failed"), None
     )
