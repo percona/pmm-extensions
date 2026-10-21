@@ -407,10 +407,14 @@ class TestSyncRunningItemsRespectsOverriddenTtl:
             override_session_maker, sync_started_at=ANCHOR - timedelta(minutes=10)
         )
 
-        with patch("app.tasks.celery.sync_task_history") as mock_sync:
+        with patch("app.tasks.celery.group") as mock_group:
             await sync_running_items()
 
-        mock_sync.chunks.assert_called_once_with([(row_id,)], 100)
+        (signature,) = mock_group.call_args.args[0]
+        assert signature.args == (
+            row_id,
+            await _get_sync_started_at(override_session_maker, row_id),
+        )
 
     def test_overridden_ttl_excludes_recently_locked_row(
         self, worker_loop_env, monkeypatch
@@ -434,10 +438,10 @@ class TestSyncRunningItemsRespectsOverriddenTtl:
 
         start_settings_override_refresher()
         assert override_ttl == tasks_settings.SYNC_LOCK_TTL
-        with patch("app.tasks.celery.sync_task_history") as mock_sync:
+        with patch("app.tasks.celery.group") as mock_group:
             loop.run_until_complete(sync_running_items())
 
-        mock_sync.chunks.assert_not_called()
+        mock_group.assert_not_called()
         # The excluded row's lock timestamp was not bumped to ``func.now()``.
         # SQLite returns the value tz-naive, so compare without tzinfo.
         stored = loop.run_until_complete(_get_sync_started_at(maker, row_id))
