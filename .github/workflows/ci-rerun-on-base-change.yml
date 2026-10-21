@@ -69,12 +69,15 @@ jobs:
           echo "PR #$PR_NUMBER live head $head_sha"
 
           # Latest pull_request-triggered CI run for this PR + head (workflow file
-          # ci.yml). Filter by pull_requests[].number so two open PRs that share a
-          # head SHA (same branch, different bases) cannot cancel/re-run each other.
-          runs="$(gh api \
-            "repos/$REPO/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$head_sha&per_page=20")"
+          # ci.yml). Paginate: another PR sharing this head can fill the first
+          # page with newer runs (e.g. label churn), which would hide ours.
+          # Filter by pull_requests[].number so two open PRs that share a head
+          # SHA (same branch, different bases) cannot cancel/re-run each other.
+          runs="$(gh api --paginate \
+            "repos/$REPO/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$head_sha&per_page=100" \
+            --jq '.workflow_runs[]' | jq -s '.')"
           run_json="$(jq -c --arg pr "$PR_NUMBER" '
-            [.workflow_runs[]
+            [.[]
               | select(any(.pull_requests[]; .number == ($pr | tonumber)))
             ][0] // empty
           ' <<<"$runs")"
