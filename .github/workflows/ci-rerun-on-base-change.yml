@@ -1,5 +1,10 @@
 # Re-run CI when an open PR's base branch changes (hand retarget).
 # Keeps gate logic in ci.yml; does not add `edited` there (SEP-2092 / SEP-2071).
+#
+# SECURITY: pull_request_target + actions: write is safe only while this workflow
+# checks out nothing and executes no pull-request code. Do not add
+# actions/checkout or run scripts from the PR head. The job below asserts the
+# workspace has no git checkout before it proceeds.
 name: Re-run CI on base change
 
 on:
@@ -20,49 +25,89 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
           set -euo pipefail
 
+          # Guard: a later edit that checks out the PR would turn actions: write
+          # into a privilege escalation under pull_request_target.
+          if [ -d "$GITHUB_WORKSPACE/.git" ]; then
+            echo "::error::Refusing to run with a checked-out repository under pull_request_target + actions:write. Remove any checkout from this workflow."
+            exit 1
+          fi
+
+          # Live head from the API: a push right after the retarget can leave
+          # github.event.pull_request.head.sha pointing at a superseded commit.
+          if ! pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"; then
+            echo "::error::Could not read pull request #$PR_NUMBER."
+            exit 1
+          fi
+          head_sha="$(jq -r '.head.sha' <<<"$pr")"
+          if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
+            echo "::error::Could not resolve head SHA of pull request #$PR_NUMBER."
+            exit 1
+          fi
+          echo "PR #$PR_NUMBER live head $head_sha"
+
           # Latest pull_request-triggered CI run for this PR + head (workflow file
           # ci.yml). Filter by pull_requests[].number so two open PRs that share a
           # head SHA (same branch, different bases) cannot cancel/re-run each other.
           runs="$(gh api \
-            "repos/$REPO/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$HEAD_SHA&per_page=20")"
+            "repos/$REPO/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$head_sha&per_page=20")"
           run_json="$(jq -c --arg pr "$PR_NUMBER" '
             [.workflow_runs[]
               | select(any(.pull_requests[]; .number == ($pr | tonumber)))
             ][0] // empty
           ' <<<"$runs")"
           if [ -z "$run_json" ]; then
-            echo "No CI run found for PR #$PR_NUMBER head $HEAD_SHA; nothing to re-run."
+            echo "No CI run found for PR #$PR_NUMBER head $head_sha; nothing to re-run."
             exit 0
           fi
 
           run_id="$(jq -r '.id' <<<"$run_json")"
           status="$(jq -r '.status' <<<"$run_json")"
-          echo "Found CI run $run_id (status=$status) for PR #$PR_NUMBER head $HEAD_SHA"
+          echo "Found CI run $run_id (status=$status) for PR #$PR_NUMBER head $head_sha"
 
-          if [ "$status" = "queued" ] || [ "$status" = "in_progress" ] || [ "$status" = "waiting" ] || [ "$status" = "pending" ] || [ "$status" = "requested" ]; then
+          # gh run rerun is refused while the run is still active. ci.yml
+          # concurrency only cancels *new* runs in the group — it does not make
+          # an in-progress run re-runnable, so cancel-and-wait stays required.
+          if [ "$status" != "completed" ]; then
             echo "Cancelling in-flight run $run_id before re-run"
-            gh run cancel "$run_id" --repo "$REPO" || true
-            # Re-run is refused while a run is still active; poll until terminal.
-            for _ in $(seq 1 60); do
+            if ! gh run cancel "$run_id" --repo "$REPO"; then
               status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status')"
-              echo "status=$status"
-              case "$status" in
-                completed) break ;;
-              esac
-              sleep 10
-            done
-            status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status')"
-            if [ "$status" != "completed" ]; then
-              echo "::error::Timed out waiting for run $run_id to finish after cancel."
-              exit 1
+              if [ "$status" != "completed" ]; then
+                echo "::error::Failed to cancel run $run_id (status=$status)."
+                exit 1
+              fi
+              echo "Run completed before cancel took effect; proceeding to re-run."
+            else
+              status=""
+              for attempt in $(seq 1 60); do
+                status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status')"
+                if [ "$status" = "completed" ]; then
+                  echo "Run $run_id completed after cancel."
+                  break
+                fi
+                echo "Waiting for run $run_id to finish (status=$status, attempt $attempt/60)"
+                sleep 10
+              done
+              if [ "$status" != "completed" ]; then
+                echo "::error::Timed out waiting for run $run_id to finish after cancel (last status=$status)."
+                exit 1
+              fi
             fi
           fi
 
           echo "Re-running CI run $run_id (label-gate will resolve base from the API)"
-          gh run rerun "$run_id" --repo "$REPO"
+          # Brief retries cover the race where GitHub still reports the run as
+          # not re-runnable for a moment after status flips to completed.
+          for attempt in 1 2 3 4 5; do
+            if gh run rerun "$run_id" --repo "$REPO"; then
+              exit 0
+            fi
+            echo "gh run rerun failed (attempt $attempt/5); retrying in 5s"
+            sleep 5
+          done
+          echo "::error::Could not re-run CI run $run_id after retries."
+          exit 1
