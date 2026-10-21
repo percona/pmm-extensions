@@ -352,25 +352,37 @@ def _annotation_collection_element_model(annotation: Any) -> type[BaseModel] | N
     return None
 
 
+def _collection_discriminator(incoming: Mapping[str, Any]) -> str | None:
+    """Return the upper-cased type discriminator of ``incoming``, if any.
+
+    :param incoming: One element of the PATCH collection payload.
+    :return: The ``PROVIDER``/``provider`` value, or ``None`` when both are
+        absent or falsy.
+    """
+    provider = incoming.get("PROVIDER") or incoming.get("provider")
+    return str(provider).upper() if provider else None
+
+
 def _collection_discriminator_candidates(
-    incoming: Mapping[str, Any],
+    discriminator: str | None,
     current_items: Sequence[Any],
     used: set[int],
 ) -> list[int]:
-    """Return unused model indexes matching an optional type discriminator.
+    """Return unused model indexes whose class name contains ``discriminator``.
 
-    :param incoming: One element of the PATCH collection payload.
+    :param discriminator: The upper-cased discriminator, or ``None`` to keep every model.
     :param current_items: The live stored collection as a sequence.
     :param used: Indexes already paired with an earlier incoming element.
-    :return: Candidate indexes; empty when none match the discriminator filter.
+    :return: Candidate indexes; empty when no unused model matches.
     """
-    provider = incoming.get("PROVIDER") or incoming.get("provider")
-    needle = str(provider).upper() if provider is not None else None
     candidates: list[int] = []
     for index, current in enumerate(current_items):
         if index in used or not isinstance(current, BaseModel):
             continue
-        if needle is not None and needle not in current.__class__.__name__.upper():
+        if (
+            discriminator is not None
+            and discriminator not in current.__class__.__name__.upper()
+        ):
             continue
         candidates.append(index)
     return candidates
@@ -406,32 +418,6 @@ def _pick_best_scored_index(
     return best_indices[0]
 
 
-def _match_by_field_name_overlap(
-    incoming: Mapping[str, Any],
-    current_items: Sequence[Any],
-    unused: Sequence[int],
-) -> int | None:
-    """Return the unused model with the largest field-name overlap, if any.
-
-    :param incoming: One element of the PATCH collection payload.
-    :param current_items: The live stored collection as a sequence.
-    :param unused: Indexes not yet paired.
-    :return: The best-overlap index, or ``None``.
-    """
-    best_index: int | None = None
-    best_overlap = 0
-    incoming_keys = set(incoming)
-    for index in unused:
-        current = current_items[index]
-        if not isinstance(current, BaseModel):
-            continue
-        overlap = len(set(type(current).model_fields) & incoming_keys)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_index = index
-    return best_index if best_overlap > 0 else None
-
-
 def _match_collection_item_index(
     incoming: Mapping[str, Any],
     current_items: Sequence[Any],
@@ -440,12 +426,14 @@ def _match_collection_item_index(
 ) -> int | None:
     """Return the index of the stored collection item that ``incoming`` updates.
 
-    Matching order: optional type-discriminator (case-insensitive substring of
-    the concrete class name) narrows candidates; among those, non-masked field
-    value identity (:func:`_collection_item_value_score`) picks a winner;
-    ties break on ``preferred_index`` when that slot is still a candidate
-    (stable against :func:`_stable_collection_items` order); else the sole
-    remaining unused item; else largest field-name overlap.
+    Matching order: an optional type discriminator (case-insensitive substring
+    of the concrete class name) narrows the unused models; among those,
+    non-masked field value identity (:func:`_collection_item_value_score`)
+    picks a winner, ties breaking on ``preferred_index`` when that slot is
+    still a candidate (stable against :func:`_stable_collection_items` order).
+    A discriminator that matches no unused model yields no pairing. Without a
+    discriminator and with no unused model left, fall back to
+    ``preferred_index``, else the sole remaining unused item.
 
     :param incoming: One element of the PATCH collection payload.
     :param current_items: The live stored collection as a sequence.
@@ -453,17 +441,22 @@ def _match_collection_item_index(
     :param preferred_index: The incoming element's position (list order).
     :return: The matched index into ``current_items``, or ``None``.
     """
-    candidates = _collection_discriminator_candidates(incoming, current_items, used)
+    discriminator = _collection_discriminator(incoming)
+    candidates = _collection_discriminator_candidates(
+        discriminator, current_items, used
+    )
     if candidates:
         return _pick_best_scored_index(
             incoming, current_items, candidates, preferred_index
         )
+    # An element that names a type no stored item has is not that item; a
+    # positional guess would copy an unrelated entry's secret into it.
+    if discriminator is not None:
+        return None
     if preferred_index < len(current_items) and preferred_index not in used:
         return preferred_index
     unused = [index for index in range(len(current_items)) if index not in used]
-    if len(unused) == 1:
-        return unused[0]
-    return _match_by_field_name_overlap(incoming, current_items, unused)
+    return unused[0] if len(unused) == 1 else None
 
 
 def _preserve_secrets_in_sequence_payload(
