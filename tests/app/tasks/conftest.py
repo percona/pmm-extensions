@@ -23,7 +23,7 @@ import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 from cryptography.fernet import Fernet
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import undefer
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -79,12 +79,12 @@ REJECTED_HOOK_PATHS = (
 )
 
 
-@pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
-    """Create an async db session for testing."""
-    # scaffolding-dup-ok: this duplication predates the change that
-    # re-annotated the fixture's return type; promoting it against
-    # its sibling bootstrap is a cross-tree refactor of its own.
+@pytest_asyncio.fixture
+async def sqlite_session_maker() -> AsyncGenerator[async_sessionmaker[AsyncSession]]:
+    """Create every ``SQLModel`` table on in-memory SQLite and yield a session maker.
+
+    :return: A session maker bound to a fresh tasks DB.
+    """
     engine = create_async_engine(
         "sqlite+aiosqlite://",
         connect_args={"check_same_thread": False},
@@ -93,12 +93,34 @@ async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
     )
     async with engine.begin() as conn:
         await apply_schema(conn, SQLModel.metadata)
-    async_session_maker = get_async_session_maker_from_engine(engine)
     try:
-        async with async_session_maker() as session:
-            yield session
+        yield get_async_session_maker_from_engine(engine)
     finally:
         await engine.dispose()
+
+
+@pytest_asyncio.fixture(name="session")
+async def session_fixture(
+    sqlite_session_maker: async_sessionmaker[AsyncSession],
+) -> AsyncGenerator[AsyncSession, None]:
+    """Create an async db session for testing."""
+    async with sqlite_session_maker() as session:
+        yield session
+
+
+@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
+def real_session_maker(
+    request: pytest.FixtureRequest,
+) -> async_sessionmaker[AsyncSession]:
+    """Return a session maker on each supported real database engine.
+
+    Sync on purpose: resolving the async PostgreSQL fixture from inside an
+    async one would re-enter the running event loop.
+
+    :param request: The fixture request carrying the engine name.
+    :return: A session maker bound to that engine's tasks DB.
+    """
+    return request.getfixturevalue(f"{request.param}_session_maker")
 
 
 @pytest.fixture
