@@ -23,6 +23,9 @@ def exception_detail(exc: BaseException) -> str:
 
     An upstream exception's ``detail`` is built from the upstream JSON error
     body, so it may be a dict, list or number; it is always coerced to text.
+    A falsy ``detail`` (``""``, ``{}``, ``[]``, ``0``) falls back to
+    ``str(exc)``, which for an ``HTTPException`` is ``"<status>: <detail>"``,
+    so the value still surfaces beside its status.
     A request timeout raises a bare ``TimeoutError`` whose string form is
     empty, so the type name stands in for a missing message.
 
