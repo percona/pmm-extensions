@@ -24,12 +24,14 @@ concurrency:
 jobs:
   label-gate:
     runs-on: ubuntu-latest
-    # base_sha is the live PR base from the API so re-runs after a retarget
-    # (SEP-2092) do not keep github.event.pull_request.base.sha from the
-    # original event. typecheck_diff consumes it; paths-filter does not need it
+    # base_sha / head_sha are live from the API so re-runs after a retarget
+    # (SEP-2092) do not keep github.event.pull_request.*.sha from the original
+    # event. typecheck_diff consumes both; paths-filter does not need base_sha
     # because it lists files via the Pull Request Files API (current base).
     outputs:
       base_sha: ${{ steps.verdict.outputs.base_sha }}
+      head_sha: ${{ steps.verdict.outputs.head_sha }}
+      head_repo: ${{ steps.verdict.outputs.head_repo }}
     permissions:
       contents: read
       pull-requests: read
@@ -56,18 +58,22 @@ jobs:
             echo "No pull-request context; nothing to gate."
             echo "protected=false" >> "$GITHUB_OUTPUT"
             echo "base_sha=" >> "$GITHUB_OUTPUT"
+            echo "head_sha=" >> "$GITHUB_OUTPUT"
+            echo "head_repo=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # github.event replays the original event on a re-run, and freezes the
-          # label set at trigger time in every case: read base and labels from
-          # the API so a hand retarget is visible to the gate and to consumers
-          # of base_sha (e.g. typecheck_diff).
+          # label set at trigger time in every case: read base, head, and labels
+          # from the API so a hand retarget is visible to the gate and to
+          # consumers of base_sha / head_sha (e.g. typecheck_diff).
           if ! pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"; then
             echo "::error::Could not read pull request #$PR_NUMBER."
             exit 1
           fi
           base_ref="$(jq -r '.base.ref' <<<"$pr")"
           base_sha="$(jq -r '.base.sha' <<<"$pr")"
+          head_sha="$(jq -r '.head.sha' <<<"$pr")"
+          head_repo="$(jq -r '.head.repo.full_name' <<<"$pr")"
           labels="$(jq -r '.labels[].name' <<<"$pr")"
           if [ -z "$base_ref" ] || [ "$base_ref" = "null" ]; then
             echo "::error::Could not resolve the base branch of pull request #$PR_NUMBER."
@@ -77,7 +83,17 @@ jobs:
             echo "::error::Could not resolve the base SHA of pull request #$PR_NUMBER."
             exit 1
           fi
+          if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
+            echo "::error::Could not resolve the head SHA of pull request #$PR_NUMBER."
+            exit 1
+          fi
+          if [ -z "$head_repo" ] || [ "$head_repo" = "null" ]; then
+            echo "::error::Could not resolve the head repository of pull request #$PR_NUMBER."
+            exit 1
+          fi
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "head_repo=$head_repo" >> "$GITHUB_OUTPUT"
           if ! branches="$(gh api --paginate \
               "repos/$REPO/branches?protected=true&per_page=100" \
               --jq '.[].name')"; then
@@ -366,11 +382,27 @@ jobs:
     env:
       POETRY: poetry
     steps:
-      - name: Checkout codebase
+      # Checkout the live PR head, not the replayed merge commit: a re-run keeps
+      # the original GITHUB_SHA (merge into the old base), so the default
+      # checkout would still analyze the wrong tree against the new BASE_SHA.
+      - name: Checkout PR head
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # The default depth of 1 cannot compute a merge-base.
+          repository: ${{ needs.label-gate.outputs.head_repo }}
+          ref: ${{ needs.label-gate.outputs.head_sha }}
+          # Full history so merge-base with the live base SHA can be computed.
           fetch-depth: 0
+
+      - name: Ensure live base SHA is fetchable for merge-base
+        env:
+          BASE_SHA: ${{ needs.label-gate.outputs.base_sha }}
+          # Head checkout may be a fork remote; fetch the base tip from this repo.
+          BASE_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --no-tags \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${BASE_REPO}.git" \
+            "$BASE_SHA"
 
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
