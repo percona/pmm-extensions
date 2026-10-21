@@ -24,12 +24,16 @@ the copy succeeds.
 
 from __future__ import annotations
 
+import os
 import shutil
+import sys
+import time
 import types
 from typing import Any, TYPE_CHECKING
 
 from tests.app.extensions.apps.mysql_backups.payload_harness import (
     payload_instance,
+    payload_method,
     Recorder,
 )
 
@@ -69,6 +73,7 @@ class _RunProbe:
         self.warnings: list[str] = []
         self.report_options: dict[str, Any] = {}
         self.last_backup_dir: str = ""
+        self.notify_status: int = STATUS_OK
 
 
 def _shutil_namespace(*, fail_mycnf: bool = False, fail_certs: bool = False) -> object:
@@ -281,6 +286,7 @@ def _run_backup(
     _wrap_notify(inst, probe)
     inst.run()
     probe.report_options = dict(inst.report_options)
+    probe.notify_status = inst.notify_status
     return probe
 
 
@@ -301,6 +307,7 @@ def test_query_failure_warns_notifies_warning_and_still_runs_gpg(
             "WARN my.cnf/cert copy skipped. Duration: 00:00:00. Size: 1 MB.",
         )
     ]
+    assert probe.notify_status == STATUS_WARNING
     assert probe.report_options["options"]["local_path"] == str(
         tmp_path / "backups" / "host1"
     )
@@ -375,3 +382,77 @@ def test_successful_copy_path_notifies_ok(tmp_path: Path) -> None:
     assert probe.notify_calls == [
         (STATUS_OK, "OK Backup complete. Duration: 00:00:00. Size: 1 MB.")
     ]
+    assert probe.notify_status == STATUS_OK
+
+
+def test_runner_clears_running_with_notify_status() -> None:
+    """Assert XtraBackupRunner keeps WARNING when clearing backup_running.
+
+    After ``bkp.run()`` returns, the runner must write ``bkp.notify_status`` (not
+    hard-coded OK) so a skipped my.cnf/certs copy stays visible in Prometheus.
+    """
+    writes: list[tuple[object, object]] = []
+
+    class _FakeBackup:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            self.notify_status = STATUS_OK
+
+        def textfile_collector_write_status(
+            self,
+            status: object,
+            *_a: object,
+            backup_running: object = None,
+            **_k: object,
+        ) -> None:
+            writes.append((status, backup_running))
+
+        def run(self) -> None:
+            self.notify_status = STATUS_WARNING
+
+    class _FakeLock:
+        def acquire(self) -> None:
+            return None
+
+        def release(self) -> None:
+            return None
+
+    class _FakeLocalConfig:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            self.raw_cfg_data = {
+                "ALL_SERVERS": {"LOGGING_DIR": "/tmp", "LOGGING_STDOUT": False}
+            }
+            self.server_data_list = [{"DEBUG": False}]
+
+    logger = types.SimpleNamespace(
+        info=lambda *_a, **_k: None,
+        exception=lambda *_a, **_k: None,
+        warn=lambda *_a, **_k: None,
+        setLevel=lambda *_a, **_k: None,
+    )
+    runner_run = payload_method(
+        "XtraBackupRunner",
+        "run",
+        extra_namespace={
+            "LocalConfig": _FakeLocalConfig,
+            "FileLock": lambda *_a, **_k: _FakeLock(),
+            "Timeout": type("Timeout", (Exception,), {}),
+            "logging_setup": lambda *_a, **_k: logger,
+            "logging_set_host": lambda *_a, **_k: None,
+            "Xtrabackup": _FakeBackup,
+            "STATUS_OK": STATUS_OK,
+            "STATUS_CRITICAL": 2,
+            "format_seconds_to_hhmmss": lambda _s: "00:00:00",
+            "resource": types.SimpleNamespace(
+                setrlimit=lambda *_a, **_k: None, RLIMIT_NOFILE=7
+            ),
+            "DEFAULT_LOGGING_DIR": "/tmp",
+            "DEFAULT_LOGGING_STDOUT": False,
+            "BackupError": Exception,
+            "logging": types.SimpleNamespace(Logger=type("Logger", (), {}), DEBUG=10),
+            "time": time,
+            "os": os,
+            "sys": sys,
+        },
+    )
+    runner_run(types.SimpleNamespace(config_path=None, logger=None))
+    assert writes == [(STATUS_OK, 1), (STATUS_WARNING, 0)]

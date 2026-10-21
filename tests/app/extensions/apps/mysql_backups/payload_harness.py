@@ -426,9 +426,10 @@ def payload_instance(
     inst.enc_aes = True
     inst.enc_gpg = False
     inst.compress = False
-    # XtraBackup ``run`` reads this after the my.cnf/certs block; synthetic
-    # instances never call ``Backup.__init__``, so seed the soft-fail flag here.
+    # XtraBackup ``run`` / the runner read these after notify; synthetic
+    # instances never call ``Backup.__init__``, so seed them here.
     inst.mycnf_copy_skipped = False
+    inst.notify_status = 0  # STATUS_OK
     return inst, namespace["BackupError"], calls
 
 

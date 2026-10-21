@@ -974,6 +974,7 @@ class BaseBackup:
             output = f"Host {self.alias}. {output}"
 
         self.report_options["end_time"] = time.strftime(DATETIME_FORMAT, time.gmtime())
+        self.notify_status = status
 
         if status == 0:
             self.textfile_collector_notify(0)
@@ -1178,6 +1179,7 @@ class Backup(BaseBackup):
         logging_set_host(self.alias, BACKUP_TYPES[self.backup_code].lower() + ".log")
 
         self.mycnf_copy_skipped = False
+        self.notify_status = STATUS_OK
         self.report_options = {
             "host": self.alias,
             "status": "error",
@@ -1820,7 +1822,7 @@ class XtraBackupRunner(multiprocessing.Process):
             lock.acquire()
         except Timeout:
             self.logger.exception(
-                "Another instance of this application currently holds the lock."
+                "Another instance holds the lock."
             )
             sys.exit(1)
 
@@ -1857,7 +1859,9 @@ class XtraBackupRunner(multiprocessing.Process):
                 try:
                     bkp.textfile_collector_write_status(STATUS_OK, backup_running=1)
                     bkp.run()
-                    bkp.textfile_collector_write_status(STATUS_OK, backup_running=0)
+                    bkp.textfile_collector_write_status(
+                        bkp.notify_status, backup_running=0
+                    )
                 except BackupError as exc:
                     self.logger.error(exc.message)
                     self.logger.error('Backup failed.')
@@ -2786,8 +2790,7 @@ class Xtrabackup(Backup):
         weekly - a full backup runs once a week on Monday.
         1..7 - also weekly cycle but a full backup runs once a week on the specified day Monday-Sunday.
         """
-        # Built list (not a 9-literal): 16,368 after minify+gzip (16 B headroom).
-        # Re-check with scripts/check_nomad_payload_size.py --report.
+        # Built list (not a 9-literal); check_nomad_payload_size.py --report.
         cycles = ['daily', 'weekly'] + list('1234567')
         if cycle not in cycles:
             msg = 'Bad XTRABACKUP_INCREMENTAL_CYCLE: %s (%s)' % (cycle, cycles)
