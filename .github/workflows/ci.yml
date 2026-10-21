@@ -24,6 +24,12 @@ concurrency:
 jobs:
   label-gate:
     runs-on: ubuntu-latest
+    # base_sha is the live PR base from the API so re-runs after a retarget
+    # (SEP-2092) do not keep github.event.pull_request.base.sha from the
+    # original event. typecheck_diff consumes it; paths-filter does not need it
+    # because it lists files via the Pull Request Files API (current base).
+    outputs:
+      base_sha: ${{ steps.verdict.outputs.base_sha }}
     permissions:
       contents: read
       pull-requests: read
@@ -49,20 +55,29 @@ jobs:
           if [ -z "$PR_NUMBER" ]; then
             echo "No pull-request context; nothing to gate."
             echo "protected=false" >> "$GITHUB_OUTPUT"
+            echo "base_sha=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # github.event replays the original event on a re-run, and freezes the
-          # label set at trigger time in every case: read both from the API.
+          # label set at trigger time in every case: read base and labels from
+          # the API so a hand retarget is visible to the gate and to consumers
+          # of base_sha (e.g. typecheck_diff).
           if ! pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"; then
             echo "::error::Could not read pull request #$PR_NUMBER."
             exit 1
           fi
           base_ref="$(jq -r '.base.ref' <<<"$pr")"
+          base_sha="$(jq -r '.base.sha' <<<"$pr")"
           labels="$(jq -r '.labels[].name' <<<"$pr")"
           if [ -z "$base_ref" ] || [ "$base_ref" = "null" ]; then
             echo "::error::Could not resolve the base branch of pull request #$PR_NUMBER."
             exit 1
           fi
+          if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
+            echo "::error::Could not resolve the base SHA of pull request #$PR_NUMBER."
+            exit 1
+          fi
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           if ! branches="$(gh api --paginate \
               "repos/$REPO/branches?protected=true&per_page=100" \
               --jq '.[].name')"; then
@@ -136,6 +151,11 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Do not pass `base: ${{ github.event.pull_request.base.sha }}`: a re-run
+      # replays the original event, so that SHA stays on the pre-retarget base.
+      # With no `base` override, paths-filter lists files via the Pull Request
+      # Files API, which uses the PR's current base (same live source as
+      # label-gate's base_sha output).
       - name: Detect changed files
         id: filter
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
@@ -365,7 +385,9 @@ jobs:
 
       - name: Report ty diagnostics the branch adds
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Live base from label-gate (API), not github.event — re-runs after a
+          # base retarget must not diff against the original event's base SHA.
+          BASE_SHA: ${{ needs.label-gate.outputs.base_sha }}
         run: make typecheck-diff
 
   frontend:
