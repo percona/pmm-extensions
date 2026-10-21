@@ -1676,6 +1676,14 @@ class TestTaskPath:
         with pytest.raises(HTTPUnprocessableEntityException):
             task_path(task_name, "/history/")
 
+    # Kept out of PATH_UNSAFE_TASKS: those names also travel through HTTP test
+    # clients and pydantic, which cannot encode or accept a lone surrogate.
+    @pytest.mark.parametrize("task_name", ["\ud800foo", "fo\udbffo", "foo\udfff"])
+    def test_name_carrying_a_lone_surrogate_is_refused(self, task_name: str) -> None:
+        """Refuse a name whose surrogate yarl would delete from the composed URL."""
+        with pytest.raises(HTTPUnprocessableEntityException):
+            task_path(task_name)
+
 
 class TestTaskPathRoundTrip:
     """Test that every name the guard admits addresses the task it names."""

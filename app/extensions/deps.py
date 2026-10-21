@@ -889,6 +889,13 @@ _PATH_UNSAFE_NAMES = frozenset({"", ".", ".."})
 _PATH_UNSAFE_CONTROL_CHARACTERS = frozenset(chr(code) for code in (*range(0x20), 0x7F))
 """Characters that would be dropped from a composed path, or do not belong in one."""
 
+_PATH_UNSAFE_SURROGATES = frozenset(chr(code) for code in range(0xD800, 0xE000))
+"""Lone surrogates, which yarl deletes from a URL instead of encoding or rejecting.
+
+Request paths and pydantic ``str`` fields already refuse them, so this guards
+the names that reach composition by any other route.
+"""
+
 _PATH_UNSAFE_LEADING_CHARACTERS = frozenset(" ")
 """Characters stripped from the front of a relative reference, so only there.
 
@@ -924,7 +931,10 @@ def require_one_path_segment(task_name: str) -> None:
     failing. The whole C0 range and ``DEL`` go with them; none belongs in a name.
     A *leading* space is refused for that reason too: ``urlsplit`` left-strips it
     from the relative reference ``prepare_path`` builds against a non-root
-    ``base_path``, so ``" foo"`` composes the path of ``foo`` there.
+    ``base_path``, so ``" foo"`` composes the path of ``foo`` there. A lone
+    surrogate (U+D800 to U+DFFF) is refused for the same reason: yarl deletes
+    it while building the request URL, so the name composes the path of the
+    shorter name left without it.
 
     :param task_name: The task name about to be composed into a request path.
     :raises HTTPUnprocessableEntityException: If the name is empty, a dot-segment,
@@ -935,6 +945,7 @@ def require_one_path_segment(task_name: str) -> None:
         task_name in _PATH_UNSAFE_NAMES
         or _PATH_UNSAFE_CHARACTERS.intersection(task_name)
         or _PATH_UNSAFE_CONTROL_CHARACTERS.intersection(task_name)
+        or _PATH_UNSAFE_SURROGATES.intersection(task_name)
         or task_name[:1] in _PATH_UNSAFE_LEADING_CHARACTERS
     ):
         raise HTTPUnprocessableEntityException(
