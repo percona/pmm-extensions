@@ -16,7 +16,7 @@
 """Share the scaffolding more than one om_inventory test module needs."""
 
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import nullcontext
 from typing import Protocol
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,7 +28,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
-from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.dispatch import HostProbeResult
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
@@ -189,21 +188,6 @@ def log_line(step: str, stream: str, msg: str) -> str:
     :return: The NDJSON line.
     """
     return json.dumps({"step": step, "type": stream, "msg": msg})
-
-
-@pytest.fixture(autouse=True)
-def _reset_proxy_snapshot() -> Iterator[None]:
-    """Drop any snapshot a test published on ``om_inventory_settings``.
-
-    The proxy is a module singleton shared across the whole session, and a
-    published snapshot overrides ``monkeypatch.setattr``, so without this one test's
-    stored override leaks into every later test in the same xdist worker. The
-    autouse reset in ``tests/app/conftest.py`` clears the core proxies by name, not
-    this one.
-    """
-    yield
-    # ty-attr-ok: annotated as the settings class; the proxy owns ``_set_snapshot``.
-    om_inventory_settings._set_snapshot({})  # noqa: SLF001
 
 
 @pytest_asyncio.fixture
