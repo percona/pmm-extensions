@@ -13,6 +13,7 @@ on:
 
 permissions:
   actions: write
+  checks: write
   contents: read
   pull-requests: read
 
@@ -36,6 +37,23 @@ jobs:
             echo "::error::Refusing to run with a checked-out repository under pull_request_target + actions:write. Remove any checkout from this workflow."
             exit 1
           fi
+
+          # Fail-closed: this helper is not itself a required check. When CI
+          # cannot be re-run (e.g. GitHub's 30-day re-run window), post a
+          # failing ci-success on the head SHA so a stale green check cannot
+          # satisfy the merge gate without a QA re-evaluation.
+          fail_closed_ci_success() {
+            local reason="$1"
+            echo "::error::$reason"
+            gh api -X POST "repos/$REPO/check-runs" \
+              -f name='ci-success' \
+              -f head_sha="$head_sha" \
+              -f status='completed' \
+              -f conclusion='failure' \
+              -f 'output[title]=Retarget could not re-run CI' \
+              -f "output[summary]=${reason} Push a new commit (or close and reopen the PR) so CI runs against the new base with a full label-gate evaluation."
+            exit 1
+          }
 
           # Live head from the API: a push right after the retarget can leave
           # github.event.pull_request.head.sha pointing at a superseded commit.
@@ -77,8 +95,7 @@ jobs:
             if ! gh run cancel "$run_id" --repo "$REPO"; then
               status="$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status')"
               if [ "$status" != "completed" ]; then
-                echo "::error::Failed to cancel run $run_id (status=$status)."
-                exit 1
+                fail_closed_ci_success "Failed to cancel in-flight CI run $run_id (status=$status) after base retarget."
               fi
               echo "Run completed before cancel took effect; proceeding to re-run."
             else
@@ -93,8 +110,7 @@ jobs:
                 sleep 10
               done
               if [ "$status" != "completed" ]; then
-                echo "::error::Timed out waiting for run $run_id to finish after cancel (last status=$status)."
-                exit 1
+                fail_closed_ci_success "Timed out waiting for CI run $run_id to finish after cancel (last status=$status)."
               fi
             fi
           fi
@@ -102,6 +118,7 @@ jobs:
           echo "Re-running CI run $run_id (label-gate will resolve base from the API)"
           # Brief retries cover the race where GitHub still reports the run as
           # not re-runnable for a moment after status flips to completed.
+          # Permanent failures include the 30-day re-run window.
           for attempt in 1 2 3 4 5; do
             if gh run rerun "$run_id" --repo "$REPO"; then
               exit 0
@@ -109,5 +126,4 @@ jobs:
             echo "gh run rerun failed (attempt $attempt/5); retrying in 5s"
             sleep 5
           done
-          echo "::error::Could not re-run CI run $run_id after retries."
-          exit 1
+          fail_closed_ci_success "Could not re-run CI run $run_id after base retarget (GitHub may refuse re-runs older than 30 days)."
