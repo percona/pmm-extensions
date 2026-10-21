@@ -3008,7 +3008,7 @@
     },
     "/history/{task_history_id}/sync/": {
       "post": {
-        "description": "Sync task history with the executor and persist the latest status.\n\nAtomically claim the ``sync_in_progress_started_at`` lock before calling\nthe executor so the celery ``sync_running_tasks`` periodic and this route\nnever both progress past the executor call for the same row. When the\nclaim returns no rows — either because another syncer holds the lock or\nbecause the status has already flipped to terminal — refresh the row\nfrom the DB and return without re-syncing. The holder (or completed\nsyncer) is responsible for dispatching any chained task.",
+        "description": "Sync task history with the executor and persist the latest status.\n\nAtomically claim the ``sync_in_progress_started_at`` lock before calling\nthe executor so the celery ``sync_running_tasks`` periodic and this route\nnever both progress past the executor call for the same row. When the\nclaim returns no rows — either because another syncer holds the lock or\nbecause the status has already flipped to terminal — refresh the row\nfrom the DB and return without re-syncing. The holder (or completed\nsyncer) is responsible for dispatching any chained task.\n\nA failed executor call or status commit releases the lock this request\nclaimed, unless another syncer has re-taken it, and re-raises. A failure\nafter the commit leaves the lock alone, as the commit already freed it.",
         "operationId": "tasks_sync_task_history_history__task_history_id__sync__post",
         "parameters": [
           {
