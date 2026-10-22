@@ -64,13 +64,14 @@ _COPY_METHODS = (
 
 
 class _RunProbe:
-    """Record GPG passes, notify calls, and logger warnings from ``run``."""
+    """Record GPG passes, notify calls, and logger output from ``run``."""
 
     def __init__(self) -> None:
         self.gpg_dirs: list[str] = []
         self.gpg_cfgs: list[Mapping[str, object]] = []
         self.notify_calls: list[tuple[int, str]] = []
         self.warnings: list[str] = []
+        self.errors: list[str] = []
         self.report_options: dict[str, Any] = {}
         self.last_backup_dir: str = ""
         self.notify_status: int = STATUS_OK
@@ -146,6 +147,7 @@ def _seed_instance(
     recorder = Recorder()
     inst.logger = recorder
     probe.warnings = recorder.warnings
+    probe.errors = recorder.errors
     last_backup_dir = tmp_path / "backups" / "host1"
     last_backup_dir.mkdir(parents=True)
     probe.last_backup_dir = str(last_backup_dir)
@@ -192,10 +194,11 @@ def _configure_copy(
     tmp_path: Path,
     *,
     fail_metadata_copy: bool,
-    fail_mycnf: bool,
-    fail_certs: bool,
 ) -> None:
-    """Arm the localhost my.cnf/certs block for success or a soft-fail."""
+    """Arm the localhost my.cnf/certs block for success or a query soft-fail.
+
+    Per-file copy failures are armed via ``_shutil_namespace`` in ``_run_backup``.
+    """
     inst.incremental = False
     inst.all_cnf_files = []
     if fail_metadata_copy:
@@ -217,7 +220,6 @@ def _configure_copy(
         "@@basedir": str(tmp_path),
         "@@datadir": datadir,
     }
-    # fail_mycnf / fail_certs are applied through the shutil namespace.
 
 
 def _wrap_notify(inst: object, probe: _RunProbe) -> None:
@@ -280,8 +282,6 @@ def _run_backup(
         backup_error,
         tmp_path,
         fail_metadata_copy=fail_metadata_copy,
-        fail_mycnf=fail_mycnf,
-        fail_certs=fail_certs,
     )
     _wrap_notify(inst, probe)
     inst.run()
@@ -312,6 +312,8 @@ def test_query_failure_warns_notifies_warning_and_still_runs_gpg(
         tmp_path / "backups" / "host1"
     )
     assert probe.report_options["size_mb"] == 1.0
+    # Only STATUS_OK maps report_options["status"] to "success"; WARNING keeps
+    # the initial "error" so consumers still treat the run as non-success.
     assert probe.report_options["status"] == "error"
     assert len(probe.gpg_dirs) == 1
     assert probe.gpg_cfgs == [recipient]
@@ -322,12 +324,14 @@ def test_per_file_mycnf_copy_failure_notifies_warning(tmp_path: Path) -> None:
     probe = _run_backup(
         tmp_path, fail_mycnf=True, enc_gpg=False, post_run_encrypt=False
     )
+    assert probe.errors == ["Permission denied"]
     assert probe.notify_calls == [
         (
             STATUS_WARNING,
             "WARN my.cnf/cert copy skipped. Duration: 00:00:00. Size: 1 MB.",
         )
     ]
+    assert probe.notify_status == STATUS_WARNING
     assert probe.report_options["options"]["local_path"] == str(
         tmp_path / "backups" / "host1"
     )
@@ -341,13 +345,14 @@ def test_per_file_cert_copy_failure_warns_and_still_runs_gpg(tmp_path: Path) -> 
         fail_certs=True,
         dir_encrypt_config=recipient,
     )
-    assert any(msg.startswith("Copy of cert files failed:") for msg in probe.warnings)
+    assert probe.warnings == ["Copy of cert files failed: Permission denied"]
     assert probe.notify_calls == [
         (
             STATUS_WARNING,
             "WARN my.cnf/cert copy skipped. Duration: 00:00:00. Size: 1 MB.",
         )
     ]
+    assert probe.notify_status == STATUS_WARNING
     assert (tmp_path / "backups" / "host1" / "my.cnf").is_file()
     assert not (tmp_path / "backups" / "host1" / "server-cert.pem").exists()
     assert len(probe.gpg_dirs) == 1
@@ -370,6 +375,36 @@ def test_zero_size_warning_unchanged_when_copy_succeeds(tmp_path: Path) -> None:
     assert probe.notify_calls == [
         (STATUS_WARNING, "WARN Backup completed without data. Duration: 00:00:00.")
     ]
+    assert probe.notify_status == STATUS_WARNING
+    # STATUS_WARNING now fills path/size (including zero-size); only OK → success.
+    assert probe.report_options["options"]["local_path"] == str(backup)
+    assert probe.report_options["size_mb"] == 0
+    assert probe.report_options["status"] == "error"
+
+
+def test_skip_takes_precedence_over_zero_size(tmp_path: Path) -> None:
+    """Assert a skipped copy wins the notify message when size is also zero."""
+    probe = _run_backup(
+        tmp_path,
+        fail_metadata_copy=True,
+        backup_size="0 MB",
+        size_mb=0,
+        enc_gpg=False,
+        post_run_encrypt=False,
+    )
+    assert probe.warnings == [_SKIPPED_WARNING]
+    assert probe.notify_calls == [
+        (
+            STATUS_WARNING,
+            "WARN my.cnf/cert copy skipped. Duration: 00:00:00. Size: 0 MB.",
+        )
+    ]
+    assert probe.notify_status == STATUS_WARNING
+    assert probe.report_options["options"]["local_path"] == str(
+        tmp_path / "backups" / "host1"
+    )
+    assert probe.report_options["size_mb"] == 0
+    assert probe.report_options["status"] == "error"
 
 
 def test_successful_copy_path_notifies_ok(tmp_path: Path) -> None:
