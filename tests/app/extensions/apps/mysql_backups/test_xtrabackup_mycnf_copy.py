@@ -324,7 +324,7 @@ def test_per_file_mycnf_copy_failure_notifies_warning(tmp_path: Path) -> None:
     probe = _run_backup(
         tmp_path, fail_mycnf=True, enc_gpg=False, post_run_encrypt=False
     )
-    assert probe.errors == ["Permission denied"]
+    assert probe.errors == ["Copy of my.cnf failed: Permission denied"]
     assert probe.notify_calls == [
         (
             STATUS_WARNING,
@@ -420,11 +420,11 @@ def test_successful_copy_path_notifies_ok(tmp_path: Path) -> None:
     assert probe.notify_status == STATUS_OK
 
 
-def test_runner_clears_running_with_notify_status() -> None:
-    """Assert XtraBackupRunner keeps WARNING when clearing backup_running.
+def _runner_status_writes(final_notify_status: int) -> list[tuple[object, object]]:
+    """Drive ``XtraBackupRunner.run`` and return textfile status writes.
 
-    After ``bkp.run()`` returns, the runner must write ``bkp.notify_status`` (not
-    hard-coded OK) so a skipped my.cnf/certs copy stays visible in Prometheus.
+    :param final_notify_status: Value ``bkp.notify_status`` has after ``bkp.run()``.
+    :return: ``(status, backup_running)`` pairs written to the textfile collector.
     """
     writes: list[tuple[object, object]] = []
 
@@ -442,7 +442,7 @@ def test_runner_clears_running_with_notify_status() -> None:
             writes.append((status, backup_running))
 
         def run(self) -> None:
-            self.notify_status = STATUS_WARNING
+            self.notify_status = final_notify_status
 
     class _FakeLock:
         def acquire(self) -> None:
@@ -490,4 +490,24 @@ def test_runner_clears_running_with_notify_status() -> None:
         },
     )
     runner_run(types.SimpleNamespace(config_path=None, logger=None))
-    assert writes == [(STATUS_OK, 1), (STATUS_WARNING, 0)]
+    return writes
+
+
+def test_runner_clears_running_with_notify_status() -> None:
+    """Assert a skipped my.cnf/certs copy keeps WARNING on the status metric."""
+    assert _runner_status_writes(STATUS_WARNING) == [
+        (STATUS_OK, 1),
+        (STATUS_WARNING, 0),
+    ]
+
+
+def test_runner_clears_running_keeps_zero_size_warning() -> None:
+    """Assert a zero-size WARNING also survives clearing backup_running.
+
+    On main the runner always wrote STATUS_OK here; zero-size runs now leave the
+    Prometheus status metric at WARNING like the notify outcome.
+    """
+    assert _runner_status_writes(STATUS_WARNING) == [
+        (STATUS_OK, 1),
+        (STATUS_WARNING, 0),
+    ]

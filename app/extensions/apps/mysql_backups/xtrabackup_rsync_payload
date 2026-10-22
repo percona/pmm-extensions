@@ -1261,7 +1261,7 @@ class Backup(BaseBackup):
                     shutil.copy(str(src), str(dest_filename))
                 except (shutil.Error, OSError) as err:
                     self.mycnf_copy_skipped = True
-                    self.logger.exception("%s", err)
+                    self.logger.exception("Copy of my.cnf failed: %s", err)
 
     def get_datadir(self) -> str:
         """Return the MySQL datadir path.
