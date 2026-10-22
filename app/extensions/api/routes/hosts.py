@@ -27,6 +27,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from app.core.exceptions import HTTPBadGatewayException
 from app.core.pagination import fetch_all_dict_items
+from app.core.utils.exceptions import exception_detail
 from app.extensions.api.host_resolution import address_to_name_index
 from app.extensions.api.openapi import UPSTREAM_TASKS_502_RESPONSE
 from app.extensions.deps import InventoryAPI, TaskAPI
@@ -168,8 +169,7 @@ async def list_hosts(
     try:
         executor_hosts = cast("dict[str, str]", await tasks_api.get("/hosts/"))
     except (HTTPException, OSError) as exc:
-        detail = getattr(exc, "detail", str(exc))
-        raise HTTPBadGatewayException(detail=str(detail)) from exc
+        raise HTTPBadGatewayException(detail=exception_detail(exc)) from exc
 
     nodes: list[Any] = []
     try:

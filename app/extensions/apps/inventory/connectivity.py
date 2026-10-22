@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from app.core.exceptions import HTTPBadGatewayException, HTTPBadRequestException
 from app.core.requests import RemoteAPI
+from app.core.utils.exceptions import exception_detail
 from app.extensions.api.host_resolution import resolve_executor_name_by_address
 from app.extensions.apps.inventory.constants import CONNECTABLE_SERVICE_TYPES
 from app.extensions.inventory import CreatedService
@@ -90,7 +91,7 @@ async def probe_service_connectivity(
             service.id,
             exc.detail,
         )
-        raise HTTPBadGatewayException(_failure(service, exc.detail)) from exc
+        raise HTTPBadGatewayException(_failure(service, exception_detail(exc))) from exc
     except Exception as exc:
         logger.exception(
             "Failed to fetch executor hosts for connectivity check on service %s",
@@ -130,7 +131,7 @@ async def probe_service_connectivity(
             service.id,
             exc.detail,
         )
-        raise HTTPBadGatewayException(_failure(service, exc.detail)) from exc
+        raise HTTPBadGatewayException(_failure(service, exception_detail(exc))) from exc
     except ValidationError as exc:
         logger.exception(
             "Tasks API returned an unrecognized connectivity result for service %s",

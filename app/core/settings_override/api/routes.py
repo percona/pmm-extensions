@@ -92,6 +92,7 @@ from app.core.settings_override.secret_preservation import (
 )
 from app.core.settings_override.secret_storage import encrypt_secret_leaves
 from app.core.utils.date_time import utc_now
+from app.core.utils.exceptions import exception_detail
 
 ClassEntry = tuple[str, type[BaseYamlSettings], OverridableSettingsProxy]
 
@@ -185,9 +186,9 @@ async def _proxy_settings_request(
     except HTTPException as exc:
         if exc.status_code < status.HTTP_500_INTERNAL_SERVER_ERROR:
             raise
-        raise HTTPBadGatewayException(detail=str(exc.detail)) from exc
+        raise HTTPBadGatewayException(detail=exception_detail(exc)) from exc
     except OSError as exc:
-        raise HTTPBadGatewayException(detail=str(exc)) from exc
+        raise HTTPBadGatewayException(detail=exception_detail(exc)) from exc
 
 
 def _remote_wiring(
@@ -238,8 +239,7 @@ async def _remote_list_group(
     try:
         payload = await remote_api.get(f"{base_path}/")
     except (HTTPException, OSError) as exc:
-        detail = getattr(exc, "detail", str(exc))
-        raise HTTPBadGatewayException(detail=str(detail)) from exc
+        raise HTTPBadGatewayException(detail=exception_detail(exc)) from exc
     remote = SettingsListResponse.model_validate(payload)
     group = next((g for g in remote.groups if g.setting_class == setting_class), None)
     if group is None:
