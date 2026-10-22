@@ -69,6 +69,14 @@ class OverridableSettingsProxy(LazyProxy[T]):
         """
         return object.__getattribute__(self, "_snapshot")
 
+    def get_base(self) -> T:
+        """Return the wrapped YAML/env instance, bypassing the override snapshot.
+
+        :return: The settings instance as the deployment configured it, so a
+            caller can tell what a field reverts to once its override is gone.
+        """
+        return self._resolve()
+
     def _set_snapshot(self, snapshot: Mapping[str, object]) -> None:
         """Replace the snapshot reference atomically.
 

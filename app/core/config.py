@@ -24,7 +24,7 @@ from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import timedelta
-from functools import cached_property
+from functools import cached_property, partial
 from pathlib import Path
 from typing import (
     Annotated,
@@ -82,6 +82,7 @@ from app.core.requests import BaseRemoteAPI, ClientRegistry, RemoteAPI
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import hot_field, not_overridable_field
 from app.core.utils import deep_dict_update
+from app.core.utils.cross_field import CrossFieldRule, violated_rules
 from app.core.utils.fields import (
     EmptyStrToNone,
     LogLevel,
@@ -276,6 +277,9 @@ class BaseYamlSettings(BaseSettings):
 
     :cvar SETTINGS_PREFIXES: Tuple of settings prefixes.
     :vartype SETTINGS_PREFIXES: list[str]
+    :cvar CROSS_FIELD_RULES: Relationships the class's top-level fields must
+        satisfy together; a load that breaks one is refused.
+    :vartype CROSS_FIELD_RULES: tuple[CrossFieldRule, ...]
     :param FASTAPI_ENV: The environment used (e.g. development, production).
         Defaults to "development".
     :type FASTAPI_ENV: str
@@ -289,7 +293,19 @@ class BaseYamlSettings(BaseSettings):
         extra="ignore",
     )
     SETTINGS_PREFIXES: ClassVar[list[str]] = []
+    CROSS_FIELD_RULES: ClassVar[tuple[CrossFieldRule, ...]] = ()
     FASTAPI_ENV: str = pre_env_settings.FASTAPI_ENV
+
+    @model_validator(mode="after")
+    def _check_cross_field_rules(self) -> Self:
+        """Refuse a combination of fields that breaks a ``CROSS_FIELD_RULES`` entry.
+
+        :return: The validated settings instance.
+        :raises ValueError: Naming every violated rule's fields and relationship.
+        """
+        if violated := violated_rules(self.CROSS_FIELD_RULES, partial(getattr, self)):
+            raise ValueError("; ".join(rule.message for rule in violated))
+        return self
 
     @classmethod
     def settings_customise_sources(

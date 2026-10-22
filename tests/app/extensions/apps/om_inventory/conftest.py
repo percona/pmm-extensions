@@ -17,7 +17,7 @@
 
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from typing import Protocol
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -190,17 +190,17 @@ def log_line(step: str, stream: str, msg: str) -> str:
     return json.dumps({"step": step, "type": stream, "msg": msg})
 
 
-@pytest_asyncio.fixture
-async def api(
-    regular_user: CasdoorUser, session: AsyncSession
+@asynccontextmanager
+async def _client_as(
+    user: CasdoorUser, session: AsyncSession
 ) -> AsyncIterator[AsyncClient]:
-    """Yield an authenticated client sharing the test session.
+    """Yield a client authenticated as ``user`` and sharing the test session.
 
     Async rather than a sync ``TestClient`` so a test can await a database read after
     the request — asserting the cascade on delete needs the request and the check to
     run on one event loop and one session.
 
-    :param regular_user: The authenticated user.
+    :param user: The authenticated user.
     :param session: The database session the routes should use.
     :return: The client.
     """
@@ -210,7 +210,7 @@ async def api(
     extensions_app.dependency_overrides[require_minimum_role_for_unsafe_methods] = (
         lambda: None
     )
-    extensions_app.dependency_overrides[get_current_user] = lambda: regular_user
+    extensions_app.dependency_overrides[get_current_user] = lambda: user
     extensions_app.dependency_overrides[get_session] = lambda: session
     client = AsyncClient(
         transport=ASGITransport(app=extensions_app),
@@ -222,3 +222,31 @@ async def api(
     finally:
         await client.aclose()
         extensions_app.dependency_overrides = {}
+
+
+@pytest_asyncio.fixture
+async def api(
+    regular_user: CasdoorUser, session: AsyncSession
+) -> AsyncIterator[AsyncClient]:
+    """Yield a client authenticated as a regular user.
+
+    :param regular_user: The authenticated user.
+    :param session: The database session the routes should use.
+    :return: The client.
+    """
+    async with _client_as(regular_user, session) as client:
+        yield client
+
+
+@pytest_asyncio.fixture
+async def admin_api(
+    admin_user: CasdoorUser, session: AsyncSession
+) -> AsyncIterator[AsyncClient]:
+    """Yield a client authenticated as an admin, for the admin-gated routers.
+
+    :param admin_user: The authenticated admin.
+    :param session: The database session the routes should use.
+    :return: The client.
+    """
+    async with _client_as(admin_user, session) as client:
+        yield client

@@ -17,10 +17,11 @@
 
 from __future__ import annotations
 
-__all__ = ["build_snapshot"]
+__all__ = ["build_snapshot", "load_stored_overrides"]
 
 import logging
 from collections import defaultdict
+from functools import partial
 from types import MappingProxyType
 from typing import Any, TYPE_CHECKING
 
@@ -39,6 +40,7 @@ from app.core.settings_override.registry import (
 )
 from app.core.settings_override.resolution import resolve_field_in_model
 from app.core.settings_override.secret_storage import decrypt_secret_leaves
+from app.core.utils.cross_field import drop_broken_overrides
 from app.core.utils.pydantic import annotation_pydantic_class
 
 if TYPE_CHECKING:
@@ -78,6 +80,10 @@ async def build_snapshot(
     fields, or hit a non-Pydantic intermediate are logged and skipped without
     affecting their siblings.
 
+    Overrides that together break one of the class's ``CROSS_FIELD_RULES`` are
+    dropped as a group, so those fields take their base values and the
+    application keeps running; one warning names them.
+
     The storage token used to filter override rows is derived from
     ``settings_cls`` via :func:`setting_class_token`: the SCREAMING_SNAKE
     form of the Pydantic class ``__name__``, matching the spelling already
@@ -88,9 +94,10 @@ async def build_snapshot(
     :param settings_cls: The Pydantic settings class being snapshotted.
     :param base_settings: The resolved (YAML/env) settings instance whose
         nested-parent attributes seed each merged copy, so leaves with no
-        override row fall back to their YAML/env values. When ``None``, parent
-        bases are taken from each field's declared default -- sufficient for
-        direct callers that only exercise top-level rows.
+        override row fall back to their YAML/env values, and the values
+        cross-field rules judge un-overridden fields by. When ``None``, both come
+        from each field's declared default -- sufficient for direct callers that
+        only exercise top-level rows.
     :return: An immutable mapping of field name to coerced typed value.
     :raises sqlalchemy.exc.SQLAlchemyError: If the database query fails
         (connection lost, schema mismatch, transaction aborted, ...). This
@@ -98,10 +105,41 @@ async def build_snapshot(
         or swallow at a higher level (e.g. the background refresher's
         per-cycle ``except``).
     """
+    stored = await load_stored_overrides(session, settings_cls, base_settings)
+    if base_settings is None:
+        base_value_of = partial(_declared_default, settings_cls)
+    else:
+        base_value_of = partial(getattr, base_settings)
+    snapshot, _ = drop_broken_overrides(
+        settings_cls.CROSS_FIELD_RULES, stored, base_value_of
+    )
+    if ignored := sorted(stored.keys() - snapshot.keys()):
+        logger.warning(
+            "Overrides ignored for %s: %s violate cross-field rules",
+            settings_cls.__name__,
+            ", ".join(ignored),
+        )
+    return MappingProxyType(snapshot)
+
+
+async def load_stored_overrides(
+    session: AsyncSession,
+    settings_cls: type[BaseYamlSettings],
+    base_settings: BaseModel | None = None,
+) -> dict[str, Any]:
+    """Return every usable stored override, coerced, before cross-field rules apply.
+
+    :param session: The async SQLModel session used to query overrides.
+    :param settings_cls: The Pydantic settings class being read.
+    :param base_settings: The resolved (YAML/env) instance nested overrides merge
+        onto, or ``None`` for each field's declared default.
+    :return: A mapping of field name to coerced typed value.
+    :raises sqlalchemy.exc.SQLAlchemyError: If the database query fails.
+    """
     rows = await SettingsOverrideManager.list(
         session, setting_class=setting_class_token(settings_cls), is_active=True
     )
-    snapshot = {}
+    stored: dict[str, Any] = {}
     nested_groups = defaultdict(list)
     for row in rows:
         if "__" in row.key:
@@ -109,17 +147,27 @@ async def build_snapshot(
             # into a single group instead of clobbering each other.
             nested_groups[row.key.split("__", 1)[0].lower()].append(row)
             continue
-        _apply_top_level_row(snapshot, settings_cls, settings_cls.__name__, row)
+        _apply_top_level_row(stored, settings_cls, settings_cls.__name__, row)
     for prefix, group in nested_groups.items():
         _apply_nested_group(
-            snapshot,
+            stored,
             settings_cls,
             settings_cls.__name__,
             prefix,
             group,
             base_settings,
         )
-    return MappingProxyType(snapshot)
+    return stored
+
+
+def _declared_default(settings_cls: type[BaseYamlSettings], name: str) -> Any:
+    """Return the default ``settings_cls`` declares for field ``name``.
+
+    :param settings_cls: The Pydantic settings class.
+    :param name: The field name.
+    :return: The field's declared default.
+    """
+    return settings_cls.model_fields[name].default
 
 
 def _apply_top_level_row(

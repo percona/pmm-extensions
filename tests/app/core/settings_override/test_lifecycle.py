@@ -53,7 +53,7 @@ from app.core.settings_override.lifecycle import (
     start_refresh_task,
 )
 from app.core.settings_override.manager import SettingsOverrideManager
-from app.core.settings_override.models import SettingOverride
+from app.core.settings_override.models import setting_class_token, SettingOverride
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.utils import json_serializer
 from app.extensions.config import ExtensionsSettings
@@ -70,6 +70,7 @@ from tests.app.core.settings_override.conftest import (
     seed_connectivity_override,
     SETTINGS_TOKEN,
     TASKS_SETTINGS_TOKEN,
+    TimingSettings,
 )
 from tests.app.db_schema import apply_schema
 
@@ -455,6 +456,31 @@ async def test_bounded_seed_completes_and_returns_true(
     assert seeded is True
     assert pending is None
     assert proxy.CONNECTIVITY_CHECK_DEFAULT is override_value
+
+
+@pytest.mark.asyncio
+async def test_bounded_seed_survives_stored_overrides_that_break_a_rule(
+    session_maker: async_sessionmaker,
+) -> None:
+    """Boot with the YAML/env values when stored overrides break a cross-field rule."""
+    proxy = OverridableSettingsProxy(TimingSettings)
+    registry = {TimingSettings.__name__: ProxyEntry(proxy, TimingSettings)}
+    async with session_maker() as session:
+        for key, value in {"POLL": 90, "TIMEOUT": 30}.items():
+            await SettingsOverrideManager.create(
+                session,
+                SettingOverride(
+                    setting_class=setting_class_token(TimingSettings),
+                    key=key,
+                    value=value,
+                ),
+            )
+
+    seeded, _ = await bounded_seed(lambda: session_maker, registry, seed_timeout=5.0)
+
+    assert seeded is True
+    base = proxy.get_base()
+    assert (proxy.POLL, proxy.TIMEOUT) == (base.POLL, base.TIMEOUT)
 
 
 @pytest.mark.asyncio

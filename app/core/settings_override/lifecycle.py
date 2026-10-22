@@ -109,7 +109,7 @@ def previous_or_base(
     """
     if key in change.previous:
         return change.previous[key]
-    return getattr(proxy._resolve(), key)  # noqa: SLF001
+    return getattr(proxy.get_base(), key)
 
 
 #: A rebind callback fired when a watched ``(setting_class, key)`` override
@@ -174,10 +174,9 @@ async def publish_snapshot(
     :param settings_cls: The Pydantic settings class being snapshotted.
     :type settings_cls: type[BaseYamlSettings]
     """
-    # Resolve the wrapped (YAML/env) instance so nested-field overrides merge
-    # onto current parent values; ``_resolve`` bypasses the snapshot so the
-    # base is never a previously-merged copy.
-    base_settings = proxy._resolve()  # noqa: SLF001
+    # Nested-field overrides merge onto the YAML/env parent, never onto a
+    # previously-merged copy from the snapshot.
+    base_settings = proxy.get_base()
     snapshot = await build_snapshot(session, settings_cls, base_settings)
     proxy._set_snapshot(snapshot)  # noqa: SLF001
 

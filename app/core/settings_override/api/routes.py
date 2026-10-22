@@ -28,6 +28,7 @@ __all__ = [
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, params, Request, status
@@ -53,6 +54,7 @@ from app.core.settings_override.api.models import (
     SettingsListResponse,
     SettingsPatch,
 )
+from app.core.settings_override.cache import load_stored_overrides
 from app.core.settings_override.constants import NESTED_VALUE_MISSING
 from app.core.settings_override.lifecycle import (
     fire_change_callbacks,
@@ -91,6 +93,7 @@ from app.core.settings_override.secret_preservation import (
     preserve_patch_credential_url_value,
 )
 from app.core.settings_override.secret_storage import encrypt_secret_leaves
+from app.core.utils.cross_field import CrossFieldRule, drop_broken_overrides
 from app.core.utils.date_time import utc_now
 from app.core.utils.exceptions import exception_detail
 
@@ -520,8 +523,9 @@ def _format_annotation(annotation: Any) -> str:
     return repr(annotation).removeprefix("typing.")
 
 
-def _validate_patch_body(
+async def _validate_patch_body(
     *,
+    session: AsyncSession,
     settings_cls: type[BaseYamlSettings],
     proxy: OverridableSettingsProxy,
     body: SettingsPatch,
@@ -538,16 +542,23 @@ def _validate_patch_body(
     materialized value is not JSON-storable); plain fields persist the coerced
     value.
 
+    Once every key passes on its own, the batch's end state is judged against
+    the class's ``CROSS_FIELD_RULES`` (see :func:`_cross_field_errors`), so a
+    batch moving several related fields at once is accepted whatever its key
+    order.
+
+    :param session: The sub-app's database session, read for stored overrides.
     :param settings_cls: The Pydantic settings class to validate against.
     :param proxy: The proxy whose attribute access yields current field values.
     :param body: The PATCH payload as a :class:`SettingsPatch` root model.
     :return: The list of ``(key, coerced_value)`` tuples ready to persist.
-    :raises HTTPUnprocessableEntityException: If any key fails validation;
-        the exception's ``detail`` is a structured list of Pydantic-style
-        error entries.
+    :raises HTTPUnprocessableEntityException: If any key fails validation, or
+        the resulting combination breaks a cross-field rule; the exception's
+        ``detail`` is a structured list of Pydantic-style error entries.
     """
     errors = []
     to_apply = []
+    materialized_by_key: dict[str, Any] = {}
     for key, raw_value in body.root.items():
         if "__" in key:
             _validate_nested_key(
@@ -610,7 +621,12 @@ def _validate_patch_body(
         to_apply.append(
             (key, patch_value if materializer is not None else materialized)
         )
+        materialized_by_key[key] = materialized
 
+    if not errors:
+        errors = await _cross_field_errors(
+            session, settings_cls, proxy, setting=materialized_by_key
+        )
     if errors:
         raise HTTPUnprocessableEntityException(detail=errors)
     return to_apply
@@ -1298,6 +1314,66 @@ def _assert_key_deletable(
         )
 
 
+async def _cross_field_errors(
+    session: AsyncSession,
+    settings_cls: type[BaseYamlSettings],
+    proxy: OverridableSettingsProxy,
+    *,
+    setting: Mapping[str, Any] | None = None,
+    clearing: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return one 422 entry per cross-field rule a change would leave broken.
+
+    A change is refused when the snapshot built after it would ignore a value it
+    sets, or an override that is honoured today. An override already ignored
+    stays the operator's to fix, so it never blocks an unrelated change.
+
+    :param session: The sub-app's database session, read for stored overrides.
+    :param settings_cls: The Pydantic settings class declaring the rules.
+    :param proxy: The proxy wrapping it, for the YAML/env base values.
+    :param setting: The materialized top-level values a PATCH would store.
+    :param clearing: The key a DELETE would revert to its YAML/env value.
+    :return: Pydantic-style entries naming each violated rule's fields.
+    """
+    setting = setting or {}
+    changed = {*setting, clearing}
+    rules = settings_cls.CROSS_FIELD_RULES
+    if all(changed.isdisjoint(rule.fields) for rule in rules):
+        return []
+    base = proxy.get_base()
+    base_value_of = partial(getattr, base)
+    # Read the stored rows rather than this process's snapshot: it can lag a
+    # write from another worker and omits the rows it ignored, and judging by it
+    # would accept a change the next snapshot then drops.
+    stored = await load_stored_overrides(session, settings_cls, base)
+    honoured, _ = drop_broken_overrides(rules, stored, base_value_of)
+    proposed = {key: value for key, value in stored.items() if key != clearing}
+    proposed |= setting
+    kept, broken = drop_broken_overrides(rules, proposed, base_value_of)
+    lost = {
+        key
+        for key in proposed.keys() - kept.keys()
+        if key in setting or key in honoured
+    }
+    return [
+        _cross_field_error(rule) for rule in broken if not lost.isdisjoint(rule.fields)
+    ]
+
+
+def _cross_field_error(rule: CrossFieldRule) -> dict[str, Any]:
+    """Return the 422 entry reporting ``rule`` as broken.
+
+    :param rule: The violated rule.
+    :return: A Pydantic-style entry naming the rule's fields and relationship.
+    """
+    return {
+        "loc": ["body"],
+        "msg": rule.message,
+        "type": "cross_field",
+        "ctx": {"fields": list(rule.fields)},
+    }
+
+
 async def _delete_override_rows(
     session: AsyncSession,
     setting_class: str,
@@ -1506,12 +1582,14 @@ async def apply_class_overrides(
     :param applicability: Optional predicate driving ``is_applicable`` on the
         returned rows; ``None`` marks every field applicable.
     :return: One :class:`SettingResponse` per applied key, in input order.
-    :raises HTTPUnprocessableEntityException: If any key fails validation; no
-        rows are written.
+    :raises HTTPUnprocessableEntityException: If any key fails validation or the
+        batch breaks a cross-field rule; no rows are written.
     :raises IntegrityError: When the replay of a batch that lost the
         unique-index race conflicts again, which leaves nothing written.
     """
-    to_apply = _validate_patch_body(settings_cls=settings_cls, proxy=proxy, body=body)
+    to_apply = await _validate_patch_body(
+        session=session, settings_cls=settings_cls, proxy=proxy, body=body
+    )
     provenance_by_key = await _persist_overrides(
         session=session, settings_cls=settings_cls, to_apply=to_apply, actor=actor
     )
@@ -1564,7 +1642,8 @@ async def clear_class_override(
     :param key: The field name, or a ``__``-delimited nested key.
     :raises HTTPNotFoundException: If ``key`` is not a field on the class.
     :raises HTTPConflictException: If the field is NOT_OVERRIDABLE and has no row.
-    :raises HTTPUnprocessableEntityException: If ``key`` names a NESTED_ONLY parent.
+    :raises HTTPUnprocessableEntityException: If ``key`` names a NESTED_ONLY
+        parent, or reverting it would break a cross-field rule.
     """
     key = canonical_override_key(settings_cls, key)
     field_meta = _field_meta_or_404(settings_cls, key)
@@ -1576,6 +1655,8 @@ async def clear_class_override(
         key=key,
     )
     _assert_key_deletable(settings_cls, field_meta, has_override_row=bool(rows))
+    if errors := await _cross_field_errors(session, settings_cls, proxy, clearing=key):
+        raise HTTPUnprocessableEntityException(detail=errors)
     await _delete_override_rows(session, token, rows)
     previous = proxy.get_snapshot()
     await publish_snapshot(proxy, session, settings_cls)
