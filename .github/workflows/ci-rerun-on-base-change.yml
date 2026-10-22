@@ -43,6 +43,8 @@ jobs:
           # failing ci-success on the head SHA so a stale green check cannot
           # satisfy the merge gate without a QA re-evaluation.
           fail_closed_ci_success() {
+            # Avoid re-entering via the ERR trap when we exit 1 below.
+            trap - ERR
             local reason="$1"
             echo "::error::$reason"
             gh api -X POST "repos/$REPO/check-runs" \
@@ -67,6 +69,11 @@ jobs:
             exit 1
           fi
           echo "PR #$PR_NUMBER live head $head_sha"
+
+          # After head_sha is known, any unexpected failure under set -e
+          # (run list, status polls, etc.) must still block merge: otherwise
+          # only this non-required helper goes red and stale ci-success stays.
+          trap 'fail_closed_ci_success "Unexpected failure after resolving head '"$head_sha"' (exit $?); QA was not re-evaluated against the new base."' ERR
 
           # Latest pull_request-triggered CI run for this PR + head (workflow file
           # ci.yml). Paginate: another PR sharing this head can fill the first
