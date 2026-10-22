@@ -2935,7 +2935,9 @@ class Xtrabackup(Backup):
         weekly - a full backup runs once a week on Monday.
         1..7 - also weekly cycle but a full backup runs once a week on the specified day Monday-Sunday.
         """
-        # Built list (not a 9-literal); check_nomad_payload_size.py --report.
+        # Built, not spelled out: the 9-member literal costs ~9 more bytes after
+        # minify + gzip, and this payload sits at the 16 KiB Nomad limit. Re-check
+        # with scripts/check_nomad_payload_size.py --report.
         cycles = ['daily', 'weekly'] + list('1234567')
         if cycle not in cycles:
             msg = 'Bad XTRABACKUP_INCREMENTAL_CYCLE: %s (%s)' % (cycle, cycles)
