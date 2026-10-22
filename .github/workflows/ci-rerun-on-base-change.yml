@@ -11,6 +11,13 @@ on:
   pull_request_target:
     types: [edited]
 
+# Two rapid retargets must not race on the same CI run: the second helper would
+# see the first's re-run as active, exhaust retries, and post a false-red
+# ci-success. Queue per PR; do not cancel the helper already working.
+concurrency:
+  group: ci-rerun-on-base-change-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 permissions:
   actions: write
   checks: write
