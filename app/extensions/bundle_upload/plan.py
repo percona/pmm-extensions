@@ -68,7 +68,7 @@ import asyncio
 import logging
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, ClassVar, Literal, Self
 from urllib.parse import urlparse
 
 import regex
@@ -239,28 +239,6 @@ AnyStepValue = (
 )
 
 
-def _reject_off_origin_path(value: str, *, what: str) -> str:
-    """Keep a step on the receiver's own origin.
-
-    A path carrying a scheme or an authority is not resolved *under* the
-    endpoint but *instead of* it, so the request, and the credentials it
-    carries, would reach a host the plan never named.
-
-    :param value: The configured step path.
-    :param what: A label naming the step kind, used in the error message.
-    :return: The validated path.
-    :raises ValueError: When the path carries a scheme or an authority.
-    """
-    parsed = urlparse(value)
-    if parsed.scheme or parsed.netloc or value.startswith("//"):
-        raise ValueError(
-            f"{what} path must be relative to the plan's endpoint: a path "
-            f"carrying a scheme or host would send the credentials it carries "
-            f"to another origin."
-        )
-    return value
-
-
 class RequestStep(BaseModel):
     """Describe one request the plan issues under its own endpoint.
 
@@ -271,16 +249,43 @@ class RequestStep(BaseModel):
 
     Subclasses narrow ``query`` to the value union their own kind admits. The
     base states only that the values are step values, which is what the
-    rebasing helper needs and all that it needs. It deliberately declares no
-    path validator: only some subclasses reject an off-origin path, and
-    reconciling that here would change which plans install.
+    rebasing helper needs and all that it needs.
 
+    The same-origin rule on ``path`` lives here, so a step kind added later is
+    held to it without opting in; a subclass only names itself for the error.
+
+    :cvar step_label: The step kind's name, used in validation errors.
     :param path: The request path, resolved against the plan endpoint.
     :param query: Query-string parameters keyed by parameter name.
     """
 
+    step_label: ClassVar[str] = "Request step"
+
     path: NonEmptyStr
     query: Mapping[str, AnyStepValue] = {}
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        """Keep the request on the plan endpoint's own origin.
+
+        A path carrying a scheme or an authority is not resolved *under* the
+        endpoint but *instead of* it, so the request, and the credentials it
+        carries, would reach a host the plan never named. ``//`` with an empty
+        authority leaves ``netloc`` falsy, hence the explicit prefix check.
+
+        :param value: The configured step path.
+        :return: The validated path.
+        :raises ValueError: When the path carries a scheme or an authority.
+        """
+        parsed = urlparse(value)
+        if parsed.scheme or parsed.netloc or value.startswith("//"):
+            raise ValueError(
+                f"{cls.step_label} path must be relative to the plan's endpoint: "
+                f"a path carrying a scheme or host would send the credentials it "
+                f"carries to another origin."
+            )
+        return value
 
 
 class ResolutionStep(RequestStep):
@@ -294,6 +299,8 @@ class ResolutionStep(RequestStep):
     :param body: A flat JSON object body keyed by field name.
     :param outputs: JSON Pointers into the response, keyed by output name.
     """
+
+    step_label: ClassVar[str] = "Resolution step"
 
     name: NonEmptyStr
     method: Literal["GET", "POST"]
@@ -315,6 +322,8 @@ class UploadStep(RequestStep):
         the value to surface as the upload reference; ``None`` extracts none.
     """
 
+    step_label: ClassVar[str] = "Upload step"
+
     headers: dict[str, PlanValue] = {}
     query: dict[str, PlanValue] = {}
     fields: dict[str, PlanValue] = {}
@@ -335,19 +344,10 @@ class ProbeStep(RequestStep):
     :param query: Query-string parameters keyed by parameter name.
     """
 
+    step_label: ClassVar[str] = "Probe step"
+
     headers: dict[str, ProbeValue] = {}
     query: dict[str, ProbeValue] = {}
-
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        """Keep the probe under the plan's own endpoint.
-
-        :param value: The configured probe path.
-        :return: The validated path.
-        :raises ValueError: When the path carries a scheme or an authority.
-        """
-        return _reject_off_origin_path(value, what="Probe step")
 
 
 class CaseSearchStep(RequestStep):
@@ -370,23 +370,14 @@ class CaseSearchStep(RequestStep):
         case title to show beside the reference.
     """
 
+    step_label: ClassVar[str] = "Case-search step"
+
     headers: dict[str, CaseSearchValue] = {}
     query: dict[str, CaseSearchValue] = {}
     term_pattern: NonEmptyStr
     results_pointer: JsonPointerStr
     reference_pointer: JsonPointerStr
     title_pointer: JsonPointerStr
-
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        """Keep the search under the plan's own endpoint.
-
-        :param value: The configured case-search path.
-        :return: The validated path.
-        :raises ValueError: When the path carries a scheme or an authority.
-        """
-        return _reject_off_origin_path(value, what="Case-search step")
 
     @field_validator("term_pattern")
     @classmethod
@@ -426,20 +417,11 @@ class ConnectionDetailsStep(RequestStep):
         it is rendered verbatim and a blank one would name nothing.
     """
 
+    step_label: ClassVar[str] = "Connection-details step"
+
     headers: dict[str, ProbeValue] = {}
     query: dict[str, ProbeValue] = {}
     details: dict[NonEmptyStr, JsonPointerStr] = {}
-
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        """Keep the connection-details read under the plan's own endpoint.
-
-        :param value: The configured connection-details path.
-        :return: The validated path.
-        :raises ValueError: When the path carries a scheme or an authority.
-        """
-        return _reject_off_origin_path(value, what="Connection-details step")
 
 
 def _check_value(

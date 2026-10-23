@@ -31,6 +31,7 @@ from pytest_mock import MockerFixture
 
 from app.core.exceptions import HTTPServiceUnavailableException
 from app.core.requests import RemoteAPI
+from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import (
     chain_is_locked,
     is_advanced_field,
@@ -191,6 +192,62 @@ class TestDiagnosticsDelivery:
 
         with pytest.raises(ValidationError, match="undefined secret 'api_key'"):
             ExtensionsSettings(DIAGNOSTICS_DELIVERY=payload)
+
+    @classmethod
+    def _off_origin_plan_payload(cls, step: str) -> dict[str, Any]:
+        """Return a plan mapping whose ``step`` kind carries an off-origin path.
+
+        :param step: ``"resolution"`` or ``"upload"``.
+        :return: The plan mapping.
+        """
+        payload = cls._plan_payload()
+        if step == "resolution":
+            payload["resolution_steps"] = [
+                {
+                    "name": "token",
+                    "method": "GET",
+                    "path": "https://other-host/api/token",
+                    "headers": {"x-sn-apikey": {"source": "secret", "name": "api_key"}},
+                }
+            ]
+        else:
+            payload["upload"]["path"] = "//other-host/attachment/upload"
+        return payload
+
+    @pytest.mark.parametrize(
+        ("step", "label"),
+        [("resolution", "Resolution step"), ("upload", "Upload step")],
+    )
+    def test_an_off_origin_step_path_refuses_settings_load(
+        self, monkeypatch: pytest.MonkeyPatch, step: str, label: str
+    ):
+        """Refuse an env-configured plan that would send credentials to another host."""
+        monkeypatch.setenv(
+            "EXTENSIONS__DIAGNOSTICS_DELIVERY",
+            json.dumps(self._off_origin_plan_payload(step)),
+        )
+
+        with pytest.raises(ValidationError, match=f"{label} path must be relative"):
+            ExtensionsSettings(_env_file=None)  # ty: ignore[unknown-argument]
+
+    def test_an_off_origin_step_path_refuses_every_setting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Fail the first read of any setting, not only delivery's.
+
+        The settings object is built whole on first access, so such a plan stops
+        the service from starting rather than leaving delivery unavailable.
+        """
+        monkeypatch.setenv(
+            "EXTENSIONS__DIAGNOSTICS_DELIVERY",
+            json.dumps(self._off_origin_plan_payload("upload")),
+        )
+        settings = OverridableSettingsProxy(
+            lambda: ExtensionsSettings(_env_file=None)  # ty: ignore[unknown-argument]
+        )
+
+        with pytest.raises(ValidationError, match="Upload step path must be relative"):
+            _ = settings.ROOT_PATH
 
 
 class TestDiagnosticsDeliveryInputs:

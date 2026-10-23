@@ -189,6 +189,10 @@ default:
     # manifest does not carry as a scalar fails that send.
     # Secrets are rejected in `query` (query strings reach logs, caches and proxies
     # unredacted) - place them in `headers`, `body`, or the upload's `fields`.
+    # Every step's `path` is resolved under `endpoint`. A path carrying a scheme or
+    # host (`https://other/x`, `//other/x`) would send that step's credentials to
+    # another origin, so it is refused at settings load and the service will not
+    # start until the path is made relative.
     #
     # Single-request intake receiver (no resolution steps):
     #   DIAGNOSTICS_DELIVERY:

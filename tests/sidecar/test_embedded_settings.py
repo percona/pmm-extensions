@@ -38,7 +38,10 @@ from app.extensions.bundle_upload.plan import (
     DeliveryPlanExecutor,
     SecretValue,
 )
+from app.extensions.bundle_upload.resolver import resolve_delivery_plan
 from app.extensions.config import (
+    DeliveryPlanInputs,
+    extensions_settings,
     ExtensionsSettings,
     SyncOptions,
     validate_scheduled_syncers,
@@ -884,3 +887,21 @@ class TestBakedDeliveryProbeAndConnectionDetails:
             ConnectionDetail(label="Active", value="true"),
             ConnectionDetail(label="Expires", value="2028-06-04 16:40:12"),
         ]
+
+    def test_the_baked_plan_resolves_once_its_inputs_are_supplied(self, mocker):
+        """Assert the merged plan the resolver rebuilds still validates."""
+        plan = ExtensionsSettings().DIAGNOSTICS_DELIVERY
+        assert plan is not None
+        inputs = DeliveryPlanInputs.model_validate(
+            {
+                "endpoint": "https://receiver.example.com/",
+                "secrets": dict.fromkeys(plan.secrets, "operator-supplied"),
+            }
+        )
+        mocker.patch.object(extensions_settings, "DIAGNOSTICS_DELIVERY", plan)
+        mocker.patch.object(extensions_settings, "DIAGNOSTICS_DELIVERY_INPUTS", inputs)
+
+        resolution = resolve_delivery_plan()
+
+        assert resolution.code is None
+        assert resolution.plan is not None

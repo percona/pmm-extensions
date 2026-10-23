@@ -36,6 +36,7 @@ from app.extensions.bundle_upload.plan import (
     DeliveryPlan,
     DeliveryPlanError,
     DeliveryPlanExecutor,
+    RequestStep,
     StepRecord,
     TERM_MATCH_TIMEOUT_SECONDS,
 )
@@ -296,6 +297,40 @@ def _two_step_plan() -> dict[str, Any]:
     return payload
 
 
+#: Every spelling of a step path that leaves the plan endpoint's origin. ``//``
+#: and ``///x`` carry an empty authority, which ``urlparse`` reports as a falsy
+#: ``netloc``, so only the explicit ``//`` prefix check rejects them. The
+#: leading-whitespace spellings rely on ``urlparse`` stripping them first.
+_OFF_ORIGIN_PATHS = [
+    pytest.param("https://attacker.example/x", id="absolute_url"),
+    pytest.param("//attacker.example/x", id="network_path_reference"),
+    pytest.param("//", id="bare_authority_marker"),
+    pytest.param("///x", id="empty_authority"),
+    pytest.param("HTTPS://attacker.example/x", id="uppercase_scheme"),
+    pytest.param("https:attacker.example/x", id="scheme_without_authority"),
+    pytest.param("\t//attacker.example/x", id="leading_control_character"),
+    pytest.param(" //attacker.example/x", id="leading_space"),
+    pytest.param("attacker.example:443/x", id="host_and_port_without_scheme"),
+]
+
+_SAME_ORIGIN_PATHS = [
+    pytest.param("api/now/table/x", id="relative"),
+    pytest.param("/api/now/table/x", id="rooted"),
+    pytest.param("api/now/table/x:y", id="colon_after_first_segment"),
+]
+
+
+def _resolution_step_plan(path: str) -> dict[str, Any]:
+    """Return the one-step plan payload with its resolution step at ``path``.
+
+    :param path: The resolution step's path.
+    :return: The plan payload to validate.
+    """
+    payload = _one_step_plan()
+    payload["resolution_steps"][0]["path"] = path
+    return payload
+
+
 class TestDeliveryPlanValidation:
     """Cover the load-time cross-reference validator on ``DeliveryPlan``."""
 
@@ -503,38 +538,17 @@ class TestProbeStepValidation:
         with pytest.raises(ValidationError, match="may not use a secret"):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "https://attacker.example/probe",
-            "//attacker.example/probe",
-            "//",
-            "///probe",
-        ],
-        ids=[
-            "absolute_url",
-            "network_path_reference",
-            "bare_authority_marker",
-            "empty_authority",
-        ],
-    )
+    @pytest.mark.parametrize("path", _OFF_ORIGIN_PATHS)
     def test_an_off_origin_path_is_refused(self, path: str):
-        """Reject every spelling that is not a path under the plan's endpoint.
-
-        ``//`` and ``///probe`` carry an empty authority, which ``urlparse``
-        reports as a falsy ``netloc``; the explicit ``//`` prefix check is the
-        only clause that rejects them.
-        """
+        """Reject every spelling that is not a path under the plan's endpoint."""
         payload = _probe_plan(path=path)
 
-        with pytest.raises(ValidationError, match="must be relative"):
+        with pytest.raises(ValidationError, match="Probe step path must be relative"):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize(
-        "path", ["api/now/table/x", "/api/now/table/x"], ids=["relative", "rooted"]
-    )
+    @pytest.mark.parametrize("path", _SAME_ORIGIN_PATHS)
     def test_ordinary_paths_are_accepted(self, path: str):
-        """Accept both spellings of a path that stays under the plan's endpoint."""
+        """Accept every spelling of a path that stays under the plan's endpoint."""
         assert DeliveryPlan(**_probe_plan(path=path)).probe.path == path
 
     def test_a_plan_without_a_probe_still_validates(self):
@@ -624,33 +638,19 @@ class TestCaseSearchStepValidation:
         with pytest.raises(ValidationError, match="may not use a secret"):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "https://attacker.example/case",
-            "//attacker.example/case",
-            "//",
-            "///case",
-        ],
-        ids=[
-            "absolute_url",
-            "network_path_reference",
-            "bare_authority_marker",
-            "empty_authority",
-        ],
-    )
+    @pytest.mark.parametrize("path", _OFF_ORIGIN_PATHS)
     def test_an_off_origin_path_is_refused(self, path: str):
         """Reject every spelling that is not a path under the plan's endpoint."""
         payload = _case_search_plan(path=path)
 
-        with pytest.raises(ValidationError, match="must be relative"):
+        with pytest.raises(
+            ValidationError, match="Case-search step path must be relative"
+        ):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize(
-        "path", ["api/now/table/x", "/api/now/table/x"], ids=["relative", "rooted"]
-    )
+    @pytest.mark.parametrize("path", _SAME_ORIGIN_PATHS)
     def test_ordinary_paths_are_accepted(self, path: str):
-        """Accept both spellings of a path that stays under the plan's endpoint."""
+        """Accept every spelling of a path that stays under the plan's endpoint."""
         assert DeliveryPlan(**_case_search_plan(path=path)).case_search.path == path
 
     def test_a_term_pattern_that_is_not_a_regex_is_refused(self):
@@ -741,33 +741,19 @@ class TestConnectionDetailsStepValidation:
         with pytest.raises(ValidationError, match="may not use a secret"):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "https://attacker.example/api_key",
-            "//attacker.example/api_key",
-            "//",
-            "///api_key",
-        ],
-        ids=[
-            "absolute_url",
-            "network_path_reference",
-            "bare_authority_marker",
-            "empty_authority",
-        ],
-    )
+    @pytest.mark.parametrize("path", _OFF_ORIGIN_PATHS)
     def test_an_off_origin_path_is_refused(self, path: str):
         """Reject every spelling that is not a path under the plan's endpoint."""
         payload = _connection_details_plan(path=path)
 
-        with pytest.raises(ValidationError, match="must be relative"):
+        with pytest.raises(
+            ValidationError, match="Connection-details step path must be relative"
+        ):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize(
-        "path", ["api/now/table/x", "/api/now/table/x"], ids=["relative", "rooted"]
-    )
+    @pytest.mark.parametrize("path", _SAME_ORIGIN_PATHS)
     def test_ordinary_paths_are_accepted(self, path: str):
-        """Accept both spellings of a path that stays under the plan's endpoint."""
+        """Accept every spelling of a path that stays under the plan's endpoint."""
         payload = _connection_details_plan(path=path)
 
         assert DeliveryPlan(**payload).connection_details.path == path
@@ -791,6 +777,147 @@ class TestConnectionDetailsStepValidation:
         plan = DeliveryPlan(**_one_step_plan())
 
         assert plan.connection_details is None
+
+
+class TestResolutionStepPathValidation:
+    """Cover the same-origin path rule on resolution steps."""
+
+    @pytest.mark.parametrize("path", _OFF_ORIGIN_PATHS)
+    def test_an_off_origin_path_is_refused(self, path: str):
+        """Reject a path that would carry the step's credentials to another host."""
+        with pytest.raises(
+            ValidationError, match="Resolution step path must be relative"
+        ):
+            DeliveryPlan(**_resolution_step_plan(path))
+
+    def test_the_error_locates_the_offending_step(self):
+        """Point at the one step to fix when a plan declares several."""
+        payload = _two_step_plan()
+        payload["resolution_steps"][1]["path"] = "//attacker.example/x"
+
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**payload)
+
+        assert [error["loc"] for error in exc_info.value.errors()] == [
+            ("resolution_steps", 1, "path")
+        ]
+
+    @pytest.mark.parametrize("path", _SAME_ORIGIN_PATHS)
+    def test_ordinary_paths_are_accepted(self, path: str):
+        """Accept every spelling of a path that stays under the plan's endpoint."""
+        plan = DeliveryPlan(**_resolution_step_plan(path))
+
+        assert plan.resolution_steps[0].path == path
+
+
+class TestUploadStepPathValidation:
+    """Cover the same-origin path rule on the upload step."""
+
+    @pytest.mark.parametrize("path", _OFF_ORIGIN_PATHS)
+    def test_an_off_origin_path_is_refused(self, path: str):
+        """Reject a path that would carry the bundle and credentials elsewhere."""
+        with pytest.raises(ValidationError, match="Upload step path must be relative"):
+            DeliveryPlan(**_upload_only_plan(path=path))
+
+    def test_the_error_locates_the_offending_step(self):
+        """Point at the upload step rather than the plan as a whole."""
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**_upload_only_plan(path="//attacker.example/x"))
+
+        assert [error["loc"] for error in exc_info.value.errors()] == [
+            ("upload", "path")
+        ]
+
+    @pytest.mark.parametrize("path", _SAME_ORIGIN_PATHS)
+    def test_ordinary_paths_are_accepted(self, path: str):
+        """Accept every spelling of a path that stays under the plan's endpoint."""
+        assert DeliveryPlan(**_upload_only_plan(path=path)).upload.path == path
+
+
+class TestOffOriginPathRule:
+    """Cover the same-origin path rule as one definition shared by every step kind."""
+
+    @pytest.mark.parametrize(
+        ("payload", "label"),
+        [
+            pytest.param(
+                _resolution_step_plan("//attacker.example/x"),
+                "Resolution step",
+                id="resolution",
+            ),
+            pytest.param(
+                _upload_only_plan(path="//attacker.example/x"),
+                "Upload step",
+                id="upload",
+            ),
+            pytest.param(
+                _probe_plan(path="//attacker.example/x"), "Probe step", id="probe"
+            ),
+            pytest.param(
+                _case_search_plan(path="//attacker.example/x"),
+                "Case-search step",
+                id="case_search",
+            ),
+            pytest.param(
+                _connection_details_plan(path="//attacker.example/x"),
+                "Connection-details step",
+                id="connection_details",
+            ),
+        ],
+    )
+    def test_every_step_kind_names_itself(self, payload: dict[str, Any], label: str):
+        """Name the offending step kind, so the operator knows which block to fix."""
+        with pytest.raises(ValidationError, match=f"{label} path must be relative"):
+            DeliveryPlan(**payload)
+
+    def test_a_step_kind_added_later_inherits_the_rule(self):
+        """Hold a new step kind to the endpoint's origin without it opting in."""
+
+        class LaterStep(RequestStep):
+            """Stand in for a step kind that names neither a label nor a rule."""
+
+        with pytest.raises(ValidationError, match="Request step path must be relative"):
+            LaterStep(path="//attacker.example/x")
+
+    @pytest.mark.parametrize(
+        "step_kind",
+        RequestStep.__subclasses__(),
+        ids=lambda step_kind: step_kind.__name__,
+    )
+    def test_no_step_kind_redeclares_the_rule(self, step_kind: type[RequestStep]):
+        """Keep the rule in one place, so a kind cannot drift from the others."""
+        base_validators = _path_validator_names(RequestStep)
+        own_validators = _path_validator_names(step_kind)
+
+        assert base_validators
+        assert own_validators == base_validators
+        assert not own_validators & vars(step_kind).keys()
+
+    def test_every_offending_step_is_reported_at_once(self):
+        """Report every off-origin step in one error, so one restart fixes them all."""
+        payload = _resolution_step_plan("//attacker.example/x")
+        payload["upload"]["path"] = "https://attacker.example/upload"
+
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**payload)
+
+        assert {error["loc"] for error in exc_info.value.errors()} == {
+            ("resolution_steps", 0, "path"),
+            ("upload", "path"),
+        }
+
+
+def _path_validator_names(model: type[RequestStep]) -> set[str]:
+    """Return the names of the field validators ``model`` applies to ``path``.
+
+    :param model: The step model to inspect.
+    :return: The validator names, inherited ones included.
+    """
+    return {
+        name
+        for name, decorator in model.__pydantic_decorators__.field_validators.items()
+        if "path" in decorator.info.fields
+    }
 
 
 @pytest.mark.asyncio
