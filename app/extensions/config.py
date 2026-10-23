@@ -40,7 +40,11 @@ from pydantic import (
     SecretStr,
     ValidationError,
 )
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from app import BASE_DIR
 from app.core.celery.models import IntervalSchedule, Period
@@ -719,6 +723,10 @@ class ExtensionsSettings(BaseYamlAppSettings):
         effect only under the Grafana auth provider and requires PMM Extensions and Grafana
         to be same-site so the browser sends the session cookie to PMM Extensions.
     """
+
+    # A settings-load error reaches the startup traceback, and a mistyped key in
+    # the delivery plan, or a malformed credential URL, may carry a credential.
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
 
     SETTINGS_PREFIXES: ClassVar[list[str]] = ["EXTENSIONS"]
     UVICORN_PORT: int = 8000
