@@ -54,7 +54,10 @@ from app.extensions.apps.om_inventory.config import (
     OmInventorySettings,
 )
 from app.extensions.main import extensions_app, extensions_overrides_lifespan
-from tests.app.extensions.apps.om_inventory.conftest import BASE
+from tests.app.extensions.apps.om_inventory.conftest import (
+    BASE,
+    BEYOND_TIMEDELTA_SECONDS,
+)
 
 #: The YAML-configured values these tests assert against, taken from the class so a
 #: default change moves the assertions with it rather than silently passing.
@@ -854,3 +857,89 @@ class TestChangesWhileStoredRowsAreIgnored:
         response = await api.delete(f"{BASE}/config/{key}")
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
+
+
+class TestStaleRunAfterRoundTrip:
+    """Keep every accepted threshold re-submittable exactly as GET returns it.
+
+    The field reads back in whole seconds, so a margin that rounding removes
+    would come back as a value the same PATCH then refuses.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_margin_the_api_rounds_away_is_refused(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Refuse a threshold that would read back as the timeout itself.
+
+        :param api: The authenticated client.
+        :param session: The database session.
+        """
+        response = await api.patch(
+            f"{BASE}/config", json={"STALE_RUN_AFTER": DEFAULTS.TASK_TIMEOUT + 0.5}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert _cross_field_fields(response.json()) == [
+            ["STALE_RUN_AFTER", "TASK_TIMEOUT"]
+        ]
+        assert await _stored_overrides(session) == {}
+
+    @pytest.mark.asyncio
+    async def test_an_accepted_threshold_patches_back_as_read(
+        self, api: AsyncClient
+    ) -> None:
+        """Accept the value GET returns for a fractional threshold PATCH accepted.
+
+        :param api: The authenticated client.
+        """
+        accepted = await api.patch(
+            f"{BASE}/config", json={"STALE_RUN_AFTER": DEFAULTS.TASK_TIMEOUT + 0.6}
+        )
+        rows = {row["key"]: row for row in (await api.get(f"{BASE}/config")).json()}
+
+        response = await api.patch(
+            f"{BASE}/config",
+            json={"STALE_RUN_AFTER": rows["STALE_RUN_AFTER"]["value"]},
+        )
+
+        assert (accepted.status_code, response.status_code) == (
+            status.HTTP_200_OK,
+            status.HTTP_200_OK,
+        )
+
+
+class TestTimeoutBeyondTheDurationRange:
+    """Answer a timeout too large for ``timedelta`` with a refusal, not a crash."""
+
+    @pytest.mark.asyncio
+    async def test_a_patch_is_refused(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Refuse it through the stale-run relationship and store nothing.
+
+        :param api: The authenticated client.
+        :param session: The database session.
+        """
+        response = await api.patch(
+            f"{BASE}/config", json={"TASK_TIMEOUT": BEYOND_TIMEDELTA_SECONDS}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert _cross_field_fields(response.json()) == [
+            ["STALE_RUN_AFTER", "TASK_TIMEOUT"]
+        ]
+        assert await _stored_overrides(session) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_stored_row_is_ignored(self, session: AsyncSession) -> None:
+        """Drop such a row from the snapshot so the YAML/env timeout applies.
+
+        :param session: The database session.
+        """
+        await _store(session, TASK_TIMEOUT=BEYOND_TIMEDELTA_SECONDS)
+
+        proxy = cast("OverridableSettingsProxy", om_inventory_settings)
+        await publish_snapshot(proxy, session, OmInventorySettings)
+
+        assert om_inventory_settings.TASK_TIMEOUT == DEFAULTS.TASK_TIMEOUT

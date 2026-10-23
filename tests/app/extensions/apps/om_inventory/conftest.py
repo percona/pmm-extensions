@@ -18,6 +18,7 @@
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, nullcontext
+from datetime import timedelta
 from typing import Protocol
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,6 +47,9 @@ from app.extensions.main import extensions_app
 
 #: The app's mount point, which every route in these tests hangs off.
 BASE = "/api/apps/om_inventory"
+
+#: A ``TASK_TIMEOUT`` a ``PositiveInt`` accepts but ``timedelta`` cannot hold.
+BEYOND_TIMEDELTA_SECONDS = (timedelta.max.days + 1) * 86_400
 
 #: A host's free data-directory space, as ``collect_install_readiness`` would report it.
 FREE_BYTES = 107374182400

@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from app.core.settings_override.registry import is_hot_reloadable
 from app.extensions.apps.om_inventory.config import OmInventorySettings
+from tests.app.extensions.apps.om_inventory.conftest import BEYOND_TIMEDELTA_SECONDS
 
 
 def _load(**values: Any) -> OmInventorySettings:
@@ -87,18 +88,19 @@ class TestStaleRunAfterVersusTaskTimeout:
         """Refuse a threshold equal to the timeout; it can only reap a live run."""
         _refusal(STALE_RUN_AFTER=180, TASK_TIMEOUT=180)
 
-    @pytest.mark.parametrize(
-        "stale", [181, 180.5], ids=["one-second-over", "sub-second-over"]
-    )
-    def test_any_margin_over_the_timeout_is_accepted(self, stale: float) -> None:
-        """Accept a threshold above the timeout, compared at sub-second precision.
+    def test_one_second_over_is_accepted(self) -> None:
+        """Accept a threshold one second above the timeout."""
+        assert timedelta(seconds=181) == (
+            _load(STALE_RUN_AFTER=181, TASK_TIMEOUT=180).STALE_RUN_AFTER
+        )
+
+    @pytest.mark.parametrize("stale", [180.4, 180.5])
+    def test_a_margin_the_api_rounds_away_is_refused(self, stale: float) -> None:
+        """Refuse a threshold that reads back as the timeout itself.
 
         :param stale: The threshold, in seconds, against a 180-second timeout.
         """
-        assert (
-            timedelta(seconds=stale)
-            == _load(STALE_RUN_AFTER=stale, TASK_TIMEOUT=180).STALE_RUN_AFTER
-        )
+        _refusal(STALE_RUN_AFTER=stale, TASK_TIMEOUT=180)
 
     def test_a_threshold_below_the_timeout_is_refused_naming_both_fields(
         self,
@@ -114,6 +116,16 @@ class TestStaleRunAfterVersusTaskTimeout:
         message = _refusal(POLL_INTERVAL=60, TASK_TIMEOUT=30, STALE_RUN_AFTER=10)
 
         assert "POLL_INTERVAL, TASK_TIMEOUT" in message
+        assert "STALE_RUN_AFTER, TASK_TIMEOUT" in message
+
+
+class TestTimeoutBeyondTheDurationRange:
+    """Group the checks of a timeout too large for ``timedelta`` to hold."""
+
+    def test_it_is_refused_as_a_validation_error(self) -> None:
+        """Refuse it through the stale-run relationship rather than overflowing."""
+        message = _refusal(TASK_TIMEOUT=BEYOND_TIMEDELTA_SECONDS)
+
         assert "STALE_RUN_AFTER, TASK_TIMEOUT" in message
 
 

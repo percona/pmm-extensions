@@ -42,6 +42,21 @@ from app.core.utils.fields import StrHttpUrl, TimedeltaSeconds
 _PositiveSeconds = Annotated[TimedeltaSeconds, Gt(timedelta(0))]
 
 
+def _stale_run_after_exceeds(stale: timedelta, task_timeout: int) -> bool:
+    """Return whether ``stale`` exceeds ``task_timeout`` in the whole seconds GET shows.
+
+    Rounding the way ``TimedeltaSeconds`` serializes keeps every accepted threshold
+    re-submittable exactly as GET returns it, and comparing numbers instead of building
+    a ``timedelta`` turns a timeout too large for one into a refusal, not an
+    ``OverflowError``.
+
+    :param stale: The stale-run threshold.
+    :param task_timeout: The task timeout, seconds.
+    :return: Whether the threshold is strictly greater.
+    """
+    return round(stale.total_seconds()) > task_timeout
+
+
 class OmInventorySettings(BaseYamlSettings):
     """Configure the on-host probe.
 
@@ -128,7 +143,7 @@ class OmInventorySettings(BaseYamlSettings):
         ),
         CrossFieldRule(
             ("STALE_RUN_AFTER", "TASK_TIMEOUT"),
-            lambda stale, task: stale > timedelta(seconds=task),
+            _stale_run_after_exceeds,
             "STALE_RUN_AFTER must exceed TASK_TIMEOUT",
         ),
     )
