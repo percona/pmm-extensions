@@ -60,6 +60,14 @@ repos:
         language: system
         files: ^(sidecar/Containerfile\.sidecar|scripts/check_sidecar_purge\.py)$
         pass_filenames: false
+      - id: check-pmm-fb-pins
+        name: Check the extensions-mysql feature-build pins
+        description: "Ensure the pmm-server image, PMM_FB_TAG and NOMAD_VERSION_FB_TAG name one build"
+        entry: python3 scripts/check_pmm_fb_pins.py
+        language: python
+        additional_dependencies: ["pyyaml==6.0.2"]
+        files: ^(sidecar/pmm-fb/compose\.yaml|scripts/check_pmm_fb_pins\.py)$
+        pass_filenames: false
       - id: gen-xtrabackup-payload-variants
         name: Check xtrabackup payload variants
         description: "Ensure the generated xtrabackup payload variants match the canonical payload"
