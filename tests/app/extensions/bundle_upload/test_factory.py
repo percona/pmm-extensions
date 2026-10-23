@@ -16,6 +16,7 @@
 """Define tests for the delivery-executor factory and endpoint splitting."""
 
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any, get_args, TYPE_CHECKING
 
 import pytest
@@ -34,10 +35,12 @@ from app.extensions.bundle_upload.factory import (
 from app.extensions.bundle_upload.plan import (
     DeliveryPlan,
     DeliveryPlanError,
+    DeliveryPlanExecutor,
     RequestStep,
     StepRecord,
 )
 from app.extensions.bundle_upload.seam import BundleSource
+from tests.app.extensions.bundle_upload.step_paths import SAME_ORIGIN_PATHS
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -577,6 +580,100 @@ class TestIntraSendConnectionReuse:
         )
 
 
+#: The header every step kind of the destination tests carries, citing a secret,
+#: so a request landing elsewhere would carry the credential with it.
+_SECRET_HEADER = {"x-api-key": {"source": "secret", "name": "api_key"}}
+
+
+def _destination_payload(field: str, value: Any) -> dict[str, Any]:
+    """Return a plan payload setting ``field`` to ``value``, next to an upload.
+
+    :param field: The ``DeliveryPlan`` field to set.
+    :param value: The field's payload: one step, or a list of them.
+    :return: The plan payload, its endpoint left for the caller to set.
+    """
+    return {
+        "secrets": {"api_key": "real-api-key"},
+        "upload": {"path": "attachment/upload", "headers": _SECRET_HEADER},
+        field: value,
+    }
+
+
+async def _send_upload(executor: DeliveryPlanExecutor) -> None:
+    """Run one send, issuing every resolution step and the upload.
+
+    :param executor: The executor bound to the plan under test.
+    """
+    await executor.upload_bundle(
+        source_ref="atw-incident/1",
+        bundle=_bundle(),
+        case_ref="CS0001",
+        manifest={"bundle": "diag"},
+    )
+
+
+#: One entry per step kind: the plan payload builder, given the path under test,
+#: and the executor call that issues that kind's request.
+_STEP_KINDS = [
+    pytest.param(
+        lambda path: _destination_payload(
+            "resolution_steps",
+            [
+                {
+                    "name": "lookup",
+                    "method": "GET",
+                    "path": path,
+                    "headers": _SECRET_HEADER,
+                }
+            ],
+        ),
+        _send_upload,
+        id="resolution",
+    ),
+    pytest.param(
+        lambda path: _destination_payload(
+            "upload", {"path": path, "headers": _SECRET_HEADER}
+        ),
+        _send_upload,
+        id="upload",
+    ),
+    pytest.param(
+        lambda path: _destination_payload(
+            "probe", {"path": path, "headers": _SECRET_HEADER}
+        ),
+        lambda executor: executor.probe(),
+        id="probe",
+    ),
+    pytest.param(
+        lambda path: _destination_payload(
+            "case_search",
+            {
+                "path": path,
+                "headers": _SECRET_HEADER,
+                "term_pattern": r"[A-Za-z0-9 ._-]+",
+                "results_pointer": "/rows",
+                "reference_pointer": "/number",
+                "title_pointer": "/short_description",
+            },
+        ),
+        lambda executor: executor.search_cases("CS0001"),
+        id="case_search",
+    ),
+    pytest.param(
+        lambda path: _destination_payload(
+            "connection_details",
+            {
+                "path": path,
+                "headers": _SECRET_HEADER,
+                "details": {"Key active": "/result/active"},
+            },
+        ),
+        lambda executor: executor.read_connection_details(),
+        id="connection_details",
+    ),
+]
+
+
 class TestStepRequestDestination:
     """Cover where a step's request lands once its path is rebased and joined."""
 
@@ -585,40 +682,30 @@ class TestStepRequestDestination:
         [_ORIGIN, f"{_ORIGIN}/api/now"],
         ids=["root_endpoint", "prefixed_endpoint"],
     )
-    @pytest.mark.parametrize(
-        "path",
-        [
-            pytest.param("attachment/upload", id="relative"),
-            pytest.param("api/./attachment/upload", id="current_segment"),
-            pytest.param("api/../attachment/upload", id="parent_segment"),
-            pytest.param("../../attachment/upload", id="parent_segments_past_root"),
-            pytest.param("api/%2e%2e/attachment/upload", id="percent_encoded_parent"),
-            pytest.param("api//attachment/upload", id="empty_segment"),
-        ],
-    )
+    @pytest.mark.parametrize("path", SAME_ORIGIN_PATHS)
+    @pytest.mark.parametrize(("build", "send"), _STEP_KINDS)
     @pytest.mark.asyncio
     async def test_an_accepted_path_stays_on_the_endpoint_host(
-        self, endpoint: str, path: str
+        self,
+        endpoint: str,
+        path: str,
+        build: Callable[[str], dict[str, Any]],
+        send: Callable[[DeliveryPlanExecutor], Awaitable[Any]],
     ) -> None:
-        """Send every request a validated plan issues to the endpoint's own host.
+        """Send every credential-bearing request a valid plan issues to its host.
 
         The plan validator judges the path alone, while the request goes out
         only after the factory rebases it and the transport joins it, so this
-        checks the rule against the URL actually requested.
+        checks the rule against the URL actually requested, for every step kind.
         """
-        plan = DeliveryPlan.model_validate(
-            {"endpoint": endpoint, "upload": {"path": path}}
-        )
+        plan = DeliveryPlan.model_validate({"endpoint": endpoint, **build(path)})
 
         with aioresponses() as mock:
-            mock.post(re.compile(".*"), payload={"result": {"sys_id": "att-9"}})
+            body = {"result": {"sys_id": "att-9", "active": True}, "rows": []}
+            mock.get(re.compile(".*"), payload=body, repeat=True)
+            mock.post(re.compile(".*"), payload=body, repeat=True)
             async with get_delivery_executor(plan) as executor:
-                await executor.upload_bundle(
-                    source_ref="atw-incident/1",
-                    bundle=_bundle(),
-                    case_ref="CS0001",
-                    manifest={"bundle": "diag"},
-                )
+                await send(executor)
 
         assert mock.requests
         assert {url.host for _, url in mock.requests} == {"intake.example.com"}

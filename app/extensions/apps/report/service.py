@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from jinja2 import Environment, FileSystemLoader
+from pydantic import ValidationError
 from weasyprint import CSS, HTML
 
 from app.core.config import settings
@@ -46,6 +47,7 @@ from app.extensions.apps.report.config import (
 from app.extensions.bundle_upload.factory import split_endpoint
 from app.extensions.bundle_upload.plan import (
     DeliveryPlan,
+    DeliveryPlanError,
     DeliveryPlanExecutor,
     LiteralValue,
     ManifestValue,
@@ -1049,7 +1051,8 @@ async def upload_pdf_report(
     :return: The intake's parsed JSON response, or ``None`` when it answers a
         success status with a body that is not a JSON object.
     :raises HTTPServiceUnavailableException: When upload is not configured.
-    :raises DeliveryPlanError: When the PDF exceeds the size cap.
+    :raises DeliveryPlanError: When the PDF exceeds the size cap, or the endpoint
+        is not a valid upload target, such as one whose path names another host.
     :raises HTTPException: Propagates the project exception the transport maps
         an intake error status to.
     :raises OSError: Propagates connection and timeout failures.
@@ -1059,10 +1062,15 @@ async def upload_pdf_report(
         raise HTTPServiceUnavailableException(detail="Report upload is not configured")
 
     origin, path, query = split_endpoint(upload.endpoint)
+    try:
+        plan = _health_report_plan(upload, origin=origin, path=path, query=query)
+    except ValidationError as err:
+        raise DeliveryPlanError(
+            "The configured health-report endpoint is not a valid upload target, "
+            "so nothing was sent."
+        ) from err
     api = await settings.get_remote_api(RemoteAPI, endpoint=origin)
-    result = await DeliveryPlanExecutor(
-        _health_report_plan(upload, origin=origin, path=path, query=query), api
-    ).upload_bundle(
+    result = await DeliveryPlanExecutor(plan, api).upload_bundle(
         source_ref=f"health-report/{report.metadata.report_week}",
         bundle=BundleSource(
             filename=(

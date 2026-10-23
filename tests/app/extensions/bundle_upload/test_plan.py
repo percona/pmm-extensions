@@ -41,6 +41,10 @@ from app.extensions.bundle_upload.plan import (
     TERM_MATCH_TIMEOUT_SECONDS,
 )
 from app.extensions.bundle_upload.seam import BundleSource, BundleUploader
+from tests.app.extensions.bundle_upload.step_paths import (
+    OFF_ORIGIN_PATHS,
+    SAME_ORIGIN_PATHS,
+)
 from tests.app.extensions.runaway_term_pattern import RUNAWAY_PATTERN, RUNAWAY_TERM
 
 _BASE_URL = "http://localhost:8000/"
@@ -297,39 +301,6 @@ def _two_step_plan() -> dict[str, Any]:
     return payload
 
 
-#: Every spelling of a step path that leaves the plan endpoint's origin. ``//``
-#: and ``///x`` carry an empty authority, which ``urlparse`` reports as a falsy
-#: ``netloc``, so only the explicit ``//`` prefix check rejects them. The
-#: leading-whitespace spellings rely on ``urlparse`` stripping them first. The
-#: dot-segment spellings only open with ``//`` once a join resolves them.
-_OFF_ORIGIN_PATHS = [
-    pytest.param("https://attacker.example/x", id="absolute_url"),
-    pytest.param("//attacker.example/x", id="network_path_reference"),
-    pytest.param("//", id="bare_authority_marker"),
-    pytest.param("///x", id="empty_authority"),
-    pytest.param("HTTPS://attacker.example/x", id="uppercase_scheme"),
-    pytest.param("https:attacker.example/x", id="scheme_without_authority"),
-    pytest.param("\t//attacker.example/x", id="leading_control_character"),
-    pytest.param(" //attacker.example/x", id="leading_space"),
-    pytest.param("attacker.example:443/x", id="host_and_port_without_scheme"),
-    pytest.param("/.//attacker.example/x", id="current_segment_before_authority"),
-    pytest.param("/a/..//attacker.example/x", id="parent_segment_before_authority"),
-    pytest.param("a/../..//attacker.example/x", id="parent_segment_past_the_root"),
-    pytest.param("/a/%2E%2e//attacker.example/x", id="percent_encoded_parent_segment"),
-    pytest.param(" /.//attacker.example/x", id="leading_space_before_dot_segment"),
-]
-
-_SAME_ORIGIN_PATHS = [
-    pytest.param("api/now/table/x", id="relative"),
-    pytest.param("/api/now/table/x", id="rooted"),
-    pytest.param("api/now/table/x:y", id="colon_after_first_segment"),
-    pytest.param("api/./now/table/x", id="current_segment"),
-    pytest.param("api/../api/now/table/x", id="parent_segment_within_the_path"),
-    pytest.param("../api/now/table/x", id="parent_segment_past_the_root"),
-    pytest.param("api//now/table/x", id="empty_segment_after_the_first"),
-]
-
-
 def _resolution_step_plan(path: str) -> dict[str, Any]:
     """Return the one-step plan payload with its resolution step at ``path``.
 
@@ -548,7 +519,7 @@ class TestProbeStepValidation:
         with pytest.raises(ValidationError, match="may not use a secret"):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize("path", _OFF_ORIGIN_PATHS)
+    @pytest.mark.parametrize("path", OFF_ORIGIN_PATHS)
     def test_an_off_origin_path_is_refused(self, path: str):
         """Reject every spelling that is not a path under the plan's endpoint."""
         payload = _probe_plan(path=path)
@@ -556,7 +527,7 @@ class TestProbeStepValidation:
         with pytest.raises(ValidationError, match="Probe step path must be relative"):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize("path", _SAME_ORIGIN_PATHS)
+    @pytest.mark.parametrize("path", SAME_ORIGIN_PATHS)
     def test_ordinary_paths_are_accepted(self, path: str):
         """Accept every spelling of a path that stays under the plan's endpoint."""
         assert DeliveryPlan(**_probe_plan(path=path)).probe.path == path
@@ -648,7 +619,7 @@ class TestCaseSearchStepValidation:
         with pytest.raises(ValidationError, match="may not use a secret"):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize("path", _OFF_ORIGIN_PATHS)
+    @pytest.mark.parametrize("path", OFF_ORIGIN_PATHS)
     def test_an_off_origin_path_is_refused(self, path: str):
         """Reject every spelling that is not a path under the plan's endpoint."""
         payload = _case_search_plan(path=path)
@@ -658,7 +629,7 @@ class TestCaseSearchStepValidation:
         ):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize("path", _SAME_ORIGIN_PATHS)
+    @pytest.mark.parametrize("path", SAME_ORIGIN_PATHS)
     def test_ordinary_paths_are_accepted(self, path: str):
         """Accept every spelling of a path that stays under the plan's endpoint."""
         assert DeliveryPlan(**_case_search_plan(path=path)).case_search.path == path
@@ -751,7 +722,7 @@ class TestConnectionDetailsStepValidation:
         with pytest.raises(ValidationError, match="may not use a secret"):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize("path", _OFF_ORIGIN_PATHS)
+    @pytest.mark.parametrize("path", OFF_ORIGIN_PATHS)
     def test_an_off_origin_path_is_refused(self, path: str):
         """Reject every spelling that is not a path under the plan's endpoint."""
         payload = _connection_details_plan(path=path)
@@ -761,7 +732,7 @@ class TestConnectionDetailsStepValidation:
         ):
             DeliveryPlan(**payload)
 
-    @pytest.mark.parametrize("path", _SAME_ORIGIN_PATHS)
+    @pytest.mark.parametrize("path", SAME_ORIGIN_PATHS)
     def test_ordinary_paths_are_accepted(self, path: str):
         """Accept every spelling of a path that stays under the plan's endpoint."""
         payload = _connection_details_plan(path=path)
@@ -792,7 +763,7 @@ class TestConnectionDetailsStepValidation:
 class TestResolutionStepPathValidation:
     """Cover the same-origin path rule on resolution steps."""
 
-    @pytest.mark.parametrize("path", _OFF_ORIGIN_PATHS)
+    @pytest.mark.parametrize("path", OFF_ORIGIN_PATHS)
     def test_an_off_origin_path_is_refused(self, path: str):
         """Reject a path that would carry the step's credentials to another host."""
         with pytest.raises(
@@ -812,7 +783,7 @@ class TestResolutionStepPathValidation:
             ("resolution_steps", 1, "path")
         ]
 
-    @pytest.mark.parametrize("path", _SAME_ORIGIN_PATHS)
+    @pytest.mark.parametrize("path", SAME_ORIGIN_PATHS)
     def test_ordinary_paths_are_accepted(self, path: str):
         """Accept every spelling of a path that stays under the plan's endpoint."""
         plan = DeliveryPlan(**_resolution_step_plan(path))
@@ -823,7 +794,7 @@ class TestResolutionStepPathValidation:
 class TestUploadStepPathValidation:
     """Cover the same-origin path rule on the upload step."""
 
-    @pytest.mark.parametrize("path", _OFF_ORIGIN_PATHS)
+    @pytest.mark.parametrize("path", OFF_ORIGIN_PATHS)
     def test_an_off_origin_path_is_refused(self, path: str):
         """Reject a path that would carry the bundle and credentials elsewhere."""
         with pytest.raises(ValidationError, match="Upload step path must be relative"):
@@ -838,7 +809,7 @@ class TestUploadStepPathValidation:
             ("upload", "path")
         ]
 
-    @pytest.mark.parametrize("path", _SAME_ORIGIN_PATHS)
+    @pytest.mark.parametrize("path", SAME_ORIGIN_PATHS)
     def test_ordinary_paths_are_accepted(self, path: str):
         """Accept every spelling of a path that stays under the plan's endpoint."""
         assert DeliveryPlan(**_upload_only_plan(path=path)).upload.path == path
@@ -3573,3 +3544,118 @@ class TestConnectionDetailsSecretRedaction:
         messages = [record.getMessage() for record in caplog.records]
         assert any("****" in message for message in messages)
         assert all("real-api-key" not in message for message in messages)
+
+
+#: Paths the plan validator refuses, planted past validation to stand in for one
+#: that a join turns into another origin in a way no parse-time rule foresaw.
+#: Each differs from the test transport's ``http://localhost:8000`` origin in one
+#: part only.
+_LEAKING_PATHS = [
+    pytest.param("/../http://attacker.example:8000/x", id="other_host"),
+    pytest.param("/../http://localhost:9999/x", id="other_port"),
+    pytest.param("/../https://localhost:8000/x", id="other_scheme"),
+]
+
+
+def _with_planted_path(payload: dict[str, Any], field: str, path: str) -> DeliveryPlan:
+    """Return the validated plan with ``field``'s step paths swapped unvalidated.
+
+    :param payload: The plan payload to validate first.
+    :param field: The ``DeliveryPlan`` field holding the step or steps to alter.
+    :param path: The path to plant.
+    :return: The plan, its ``field`` steps now at ``path``.
+    """
+    plan = DeliveryPlan(**payload)
+    value = getattr(plan, field)
+    if isinstance(value, list):
+        planted = [step.model_copy(update={"path": path}) for step in value]
+    else:
+        planted = value.model_copy(update={"path": path})
+    return plan.model_copy(update={field: planted})
+
+
+@pytest.mark.asyncio
+class TestRequestOriginGuard:
+    """Cover the executor's refusal to issue a request that leaves the endpoint."""
+
+    @pytest.mark.parametrize(
+        ("payload", "field", "label", "send"),
+        [
+            pytest.param(
+                _one_step_plan(),
+                "resolution_steps",
+                "Resolution step",
+                lambda executor, bundle: executor.upload_bundle(
+                    source_ref="atw-incident/1",
+                    bundle=bundle,
+                    case_ref="CS0001",
+                    manifest=_MANIFEST,
+                ),
+                id="resolution",
+            ),
+            pytest.param(
+                _upload_only_plan(),
+                "upload",
+                "Upload step",
+                lambda executor, bundle: executor.upload_bundle(
+                    source_ref="atw-incident/1",
+                    bundle=bundle,
+                    case_ref="CS0001",
+                    manifest=_MANIFEST,
+                ),
+                id="upload",
+            ),
+            pytest.param(
+                _probe_plan(),
+                "probe",
+                "Probe step",
+                lambda executor, _bundle: executor.probe(),
+                id="probe",
+            ),
+            pytest.param(
+                _case_search_plan(),
+                "case_search",
+                "Case-search step",
+                lambda executor, _bundle: executor.search_cases("CS0001"),
+                id="case_search",
+            ),
+            pytest.param(
+                _connection_details_plan(),
+                "connection_details",
+                "Connection-details step",
+                lambda executor, _bundle: executor.read_connection_details(),
+                id="connection_details",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("planted", _LEAKING_PATHS)
+    async def test_a_request_leaving_the_endpoint_is_never_sent(
+        self,
+        api: RemoteAPI,
+        bundle: BundleSource,
+        payload: dict[str, Any],
+        field: str,
+        label: str,
+        send: Callable[[DeliveryPlanExecutor, BundleSource], Any],
+        planted: str,
+    ):
+        """Refuse the request, so its credentials never reach another origin.
+
+        The plan validator judges a path by a model of the joins that follow it,
+        so this plants a path past it and checks the executor still sends nothing
+        once the URL actually built names another host.
+        """
+        executor = DeliveryPlanExecutor(
+            _with_planted_path(payload, field, planted), api
+        )
+
+        with aioresponses() as mock:
+            mock.get(re.compile(".*"), payload={"result": {}}, repeat=True)
+            mock.post(re.compile(".*"), payload={"result": {}}, repeat=True)
+            async with api:
+                with pytest.raises(
+                    DeliveryPlanError, match=f"{label} path leaves the plan's endpoint"
+                ):
+                    await send(executor, bundle)
+
+        assert not mock.requests
