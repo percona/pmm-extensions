@@ -39,6 +39,7 @@ from app.core.settings_override.registry import (
     not_overridable_field,
     ReloadClassification,
     rendered_leaf_keys,
+    resolve_nested_field_metadata,
 )
 from app.core.settings_override.resolution import (
     canonical_override_key,
@@ -46,7 +47,6 @@ from app.core.settings_override.resolution import (
     override_rows_for_key,
     resolve_field_in_model,
     resolve_nested_field,
-    resolve_nested_field_metadata,
     resolve_nested_value,
 )
 from app.extensions.config import CookieOptions, ExtensionsSettings

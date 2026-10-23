@@ -24,7 +24,6 @@ __all__ = [
     "override_rows_for_key",
     "resolve_field_in_model",
     "resolve_nested_field",
-    "resolve_nested_field_metadata",
     "resolve_nested_segments",
     "resolve_nested_value",
 ]
@@ -46,7 +45,6 @@ if TYPE_CHECKING:
 
     from app.core.settings_override.models import SettingOverride
     from app.core.settings_override.proxy import OverridableSettingsProxy
-    from app.core.settings_override.registry import FieldMetadata
 
 
 def resolve_field_in_model(
@@ -390,67 +388,3 @@ async def override_rows_for_key(
         for row in rows
         if _stored_key_matches_override_key(settings_cls, row.key, key)
     ]
-
-
-def resolve_nested_field_metadata(
-    settings_cls: type[BaseModel], key: str
-) -> FieldMetadata | None:
-    """Return introspected metadata for a ``__``-delimited nested override key.
-
-    Resolves ``key`` to its leaf field and synthesises a
-    :class:`app.core.settings_override.registry.FieldMetadata`
-    whose ``key`` is the full nested key while every other attribute
-    (annotation, default, description, secret/complex flags) is taken from the
-    leaf field. The reported ``reload`` is ``HOT`` for an override-eligible
-    leaf (the default under a nested-overridable parent) and
-    ``NOT_OVERRIDABLE`` when the leaf *or any intermediate in its chain* is
-    explicitly marked by
-    :func:`app.core.settings_override.registry.not_overridable_field`, or when
-    ``SETTINGS_OVERRIDE.ALLOWED_KEYS`` withholds the leaf. That is the same
-    chain check that gates PATCH, so the reported classification matches what
-    an override would actually be allowed to do. ``is_advanced`` is
-    chain-resolved via
-    :func:`app.core.settings_override.registry.chain_has_advanced`, so a leaf
-    inherits the flag from an advanced parent.
-
-    :param settings_cls: The top-level Pydantic settings class.
-    :param key: The ``__``-delimited override key.
-    :return: The synthesised leaf metadata, or ``None`` when ``key`` does not
-        resolve to a nested field.
-    """
-    # Deferred, and not safe to hoist: registry imports
-    # resolution.resolve_nested_segments at module scope, so a module-level
-    # import here closes registry -> resolution -> registry. Whichever module
-    # the interpreter reaches first would then be asked for names it has not
-    # bound yet. The failure depends on the entry point rather than on this
-    # file, so the module-boundary tests import each entry point in a fresh
-    # interpreter instead of trusting that this one stays acyclic.
-    from app.core.settings_override.registry import (  # noqa: PLC0415
-        _field_contains_secret,
-        _field_is_complex,
-        _resolve_default,
-        chain_has_advanced,
-        chain_is_locked,
-        FieldMetadata,
-        ReloadClassification,
-    )
-
-    resolved = resolve_nested_field(settings_cls, key)
-    if resolved is None:
-        return None
-    _chain, leaf_info = resolved
-    reload = (
-        ReloadClassification.NOT_OVERRIDABLE
-        if chain_is_locked(settings_cls, key)
-        else ReloadClassification.HOT
-    )
-    return FieldMetadata(
-        key=key,
-        annotation=leaf_info.annotation,
-        default=_resolve_default(leaf_info),
-        description=leaf_info.description,
-        reload=reload,
-        is_secret=_field_contains_secret(leaf_info),
-        is_complex=_field_is_complex(leaf_info.annotation),
-        is_advanced=chain_has_advanced(settings_cls, key),
-    )
