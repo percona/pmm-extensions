@@ -18,6 +18,7 @@
 import base64
 import hashlib
 import hmac
+import operator
 import re
 import secrets
 import warnings
@@ -48,6 +49,7 @@ from app.core.config import (
     _ExtensionsDatabaseSettings,
     _sanitize_client_kwargs,
     BaseYamlAppSettings,
+    BaseYamlSettings,
     create_app,
     default_lifespan,
     detect_removed_settings_override_keys,
@@ -61,6 +63,7 @@ from app.core.settings_override.registry import (
     field_reload_classification,
     ReloadClassification,
 )
+from app.core.utils.cross_field import CrossFieldRule
 from app.extensions.apps.alerts.config import AlertsSettings
 from app.extensions.apps.atw.config import AtwSettings
 from app.extensions.apps.report.config import HealthReportSettings
@@ -1579,3 +1582,50 @@ class TestRemovedSettingsOverrideKeysDetector:
             "  SETTINGS_OVERRIDE:\n    ALLOWED_KEYS:\n      - Settings.LOGGING\n",
         )
         detect_removed_settings_override_keys()
+
+
+class _UnruledSettings(BaseYamlSettings):
+    SETTINGS_PREFIXES = ["CROSS_FIELD_TEST"]
+    LOW: int = 5
+    HIGH: int = 1
+
+
+class _RuledSettings(BaseYamlSettings):
+    SETTINGS_PREFIXES = ["CROSS_FIELD_TEST"]
+    CROSS_FIELD_RULES = (
+        CrossFieldRule(("LOW", "HIGH"), operator.le, "LOW must not exceed HIGH"),
+    )
+    LOW: int = 1
+    HIGH: int = 5
+
+
+class TestBaseYamlSettingsCrossFieldRules:
+    """Group the load-time enforcement of ``CROSS_FIELD_RULES``."""
+
+    def test_a_class_without_rules_is_unaffected(self) -> None:
+        """Load a class declaring no rules exactly as before."""
+        loaded = _UnruledSettings()
+
+        assert (loaded.LOW, loaded.HIGH) == (5, 1)
+
+    def test_a_consistent_combination_loads(self) -> None:
+        """Load a combination every rule accepts."""
+        loaded = _RuledSettings(LOW=5, HIGH=5)
+
+        assert (loaded.LOW, loaded.HIGH) == (5, 5)
+
+    def test_an_inconsistent_combination_is_refused(self) -> None:
+        """Refuse a combination naming both fields and the relationship."""
+        with pytest.raises(ValidationError) as exc_info:
+            _RuledSettings(LOW=6, HIGH=5)
+
+        message = str(exc_info.value)
+        assert "LOW, HIGH" in message
+        assert "LOW must not exceed HIGH" in message
+
+    def test_the_refusal_does_not_echo_values(self) -> None:
+        """Keep field values out of the message so a secret cannot leak through it."""
+        with pytest.raises(ValidationError) as exc_info:
+            _RuledSettings(LOW=60061, HIGH=5)
+
+        assert "60061" not in exc_info.value.errors()[0]["msg"]

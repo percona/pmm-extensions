@@ -36,8 +36,10 @@ from app.core.settings_override.cache import (
     _build_nested_update,
     _parent_base_value,
     build_snapshot,
+    load_stored_overrides,
 )
 from app.core.settings_override.manager import SettingsOverrideManager
+from app.core.settings_override.models import setting_class_token
 from app.core.settings_override.registry import MaterializerPurpose
 from app.core.utils.fields import LogLevel
 from app.extensions.config import CookieOptions, ExtensionsSettings
@@ -52,6 +54,7 @@ from tests.app.core.settings_override.conftest import (
     ROUTING_KEY,
     SETTINGS_TOKEN,
     TASKS_SETTINGS_TOKEN,
+    TimingSettings,
 )
 
 _NOMAD_OVERRIDE_TIMEOUT = 30
@@ -956,3 +959,165 @@ async def test_materializer_backed_provider_secret_decrypted(
     snapshot = await build_snapshot(session, AlertSettings)
     provider = next(iter(snapshot["PROVIDERS"]))
     assert provider.routing_key.get_secret_value() == ROUTING_KEY
+
+
+class TestBuildSnapshotCrossFieldRules:
+    """Group the snapshot fallback for stored overrides that break a cross-field rule.
+
+    Rows can disagree with each other without the API ever accepting the pair:
+    two concurrent PATCHes each judged against the other's old value, a YAML
+    change on redeploy, or a row written straight to the table.
+    """
+
+    TOKEN = setting_class_token(TimingSettings)
+
+    async def _store(self, session: AsyncSession, **values: int) -> None:
+        """Insert one active override row per ``values`` entry.
+
+        :param session: The database session.
+        :param values: Field name to stored value.
+        """
+        for key, value in values.items():
+            await insert_override_row(
+                session, setting_class=self.TOKEN, key=key, value=value
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_jointly_violating_pair_falls_back_to_the_base_values(
+        self, session: AsyncSession
+    ) -> None:
+        """Ignore both stored halves so each field takes its YAML/env value.
+
+        :param session: The database session.
+        """
+        await self._store(session, POLL=60, TIMEOUT=1)
+
+        snapshot = await build_snapshot(session, TimingSettings, TimingSettings())
+
+        assert dict(snapshot) == {}
+
+    @pytest.mark.asyncio
+    async def test_one_warning_names_the_ignored_fields_and_no_values(
+        self, session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Emit exactly one warning naming every ignored field.
+
+        :param session: The database session.
+        :param caplog: Fixture capturing log records.
+        """
+        await self._store(session, POLL=60061, TIMEOUT=1)
+
+        with caplog.at_level(logging.WARNING, logger=cache.logger.name):
+            await build_snapshot(session, TimingSettings, TimingSettings())
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "POLL, TIMEOUT" in warnings[0].getMessage()
+        assert "60061" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_restoring_a_base_value_drops_the_override_it_breaks(
+        self, session: AsyncSession
+    ) -> None:
+        """Keep dropping until every rule holds, not just the first one broken.
+
+        :param session: The database session.
+        """
+        await self._store(session, POLL=90, TIMEOUT=30, STALE=100)
+
+        snapshot = await build_snapshot(session, TimingSettings, TimingSettings())
+
+        assert dict(snapshot) == {}
+
+    @pytest.mark.asyncio
+    async def test_the_declared_defaults_are_the_base_without_an_instance(
+        self, session: AsyncSession
+    ) -> None:
+        """Judge an un-overridden field by its declared default when no base is given.
+
+        :param session: The database session.
+        """
+        await self._store(session, POLL=181)
+
+        snapshot = await build_snapshot(session, TimingSettings)
+
+        assert dict(snapshot) == {}
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_override_survives(self, session: AsyncSession) -> None:
+        """Keep overrides outside the violated relationship.
+
+        :param session: The database session.
+        """
+        await self._store(session, POLL=60, TIMEOUT=1, BYSTANDER=7)
+
+        snapshot = await build_snapshot(session, TimingSettings, TimingSettings())
+
+        assert dict(snapshot) == {"BYSTANDER": 7}
+
+    @pytest.mark.asyncio
+    async def test_a_consistent_set_of_overrides_is_kept(
+        self, session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Publish a consistent set unchanged and without a warning.
+
+        :param session: The database session.
+        :param caplog: Fixture capturing log records.
+        """
+        await self._store(session, POLL=30, TIMEOUT=60, STALE=120)
+
+        with caplog.at_level(logging.WARNING, logger=cache.logger.name):
+            snapshot = await build_snapshot(session, TimingSettings, TimingSettings())
+
+        assert dict(snapshot) == {"POLL": 30, "TIMEOUT": 60, "STALE": 120}
+        assert not caplog.records
+
+    @pytest.mark.asyncio
+    async def test_a_class_without_rules_never_warns(
+        self, session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Leave classes that declare no rules exactly as before.
+
+        :param session: The database session.
+        :param caplog: Fixture capturing log records.
+        """
+        override = not ExtensionsSettings().CONNECTIVITY_CHECK_DEFAULT
+        await insert_override_row(
+            session,
+            setting_class=EXTENSIONS_SETTINGS_TOKEN,
+            key="CONNECTIVITY_CHECK_DEFAULT",
+            value=override,
+        )
+
+        with caplog.at_level(logging.WARNING, logger=cache.logger.name):
+            snapshot = await build_snapshot(session, ExtensionsSettings)
+
+        assert snapshot["CONNECTIVITY_CHECK_DEFAULT"] is override
+        assert not caplog.records
+
+
+class TestLoadStoredOverrides:
+    """Group the read of stored overrides before cross-field rules apply."""
+
+    @pytest.mark.asyncio
+    async def test_a_pair_the_snapshot_ignores_is_still_returned(
+        self, session: AsyncSession
+    ) -> None:
+        """Return what is stored, so a caller can judge a change against it.
+
+        :param session: The database session.
+        """
+        for key, value in {"POLL": 60, "TIMEOUT": 1}.items():
+            await insert_override_row(
+                session,
+                setting_class=setting_class_token(TimingSettings),
+                key=key,
+                value=value,
+            )
+
+        assert await load_stored_overrides(
+            session, TimingSettings, TimingSettings()
+        ) == {
+            "POLL": 60,
+            "TIMEOUT": 1,
+        }
