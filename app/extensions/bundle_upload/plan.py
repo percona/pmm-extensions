@@ -69,7 +69,7 @@ import logging
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, Self
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import regex
 from fastapi import HTTPException
@@ -239,6 +239,28 @@ AnyStepValue = (
 )
 
 
+def _opens_an_authority_once_resolved(path: str) -> bool:
+    """Tell whether resolving ``path``'s dot segments leaves it opening with ``//``.
+
+    Whether a join collapses the empty segment that follows a removed ``.`` or
+    ``..`` differs across ``urljoin`` releases, so ``/a/..//host/x`` must be
+    judged as the ``//host/x`` it can become. Percent-encoded dots count, since
+    yarl resolves them as dot segments too.
+
+    :param path: The step path, without a scheme or authority.
+    :return: Whether the resolved path is a reference to another host.
+    """
+    resolved: list[str] = []
+    for segment in path.lstrip("/").split("/"):
+        decoded = unquote(segment)
+        if decoded == "..":
+            if resolved:
+                resolved.pop()
+        elif decoded != ".":
+            resolved.append(segment)
+    return len(resolved) > 1 and not resolved[0]
+
+
 class RequestStep(BaseModel):
     """Describe one request the plan issues under its own endpoint.
 
@@ -276,14 +298,21 @@ class RequestStep(BaseModel):
 
         :param value: The configured step path.
         :return: The validated path.
-        :raises ValueError: When the path carries a scheme or an authority.
+        :raises ValueError: When the path carries a scheme or an authority, or
+            resolves to one through its dot segments.
         """
         parsed = urlparse(value)
-        if parsed.scheme or parsed.netloc or value.startswith("//"):
+        if (
+            parsed.scheme
+            or parsed.netloc
+            or value.startswith("//")
+            or _opens_an_authority_once_resolved(parsed.path)
+        ):
             raise ValueError(
                 f"{cls.step_label} path must be relative to the plan's endpoint: "
-                f"a path carrying a scheme or host would send the credentials it "
-                f"carries to another origin."
+                f"a path carrying a scheme or host, or resolving to one through "
+                f"its dot segments, would send the credentials it carries to "
+                f"another origin."
             )
         return value
 

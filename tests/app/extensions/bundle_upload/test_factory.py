@@ -15,6 +15,7 @@
 
 """Define tests for the delivery-executor factory and endpoint splitting."""
 
+import re
 from typing import Any, get_args, TYPE_CHECKING
 
 import pytest
@@ -574,3 +575,50 @@ class TestIntraSendConnectionReuse:
         assert (
             sum(len(reqs) for reqs in mock.requests.values()) == _EXPECTED_REQUEST_COUNT
         )
+
+
+class TestStepRequestDestination:
+    """Cover where a step's request lands once its path is rebased and joined."""
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [_ORIGIN, f"{_ORIGIN}/api/now"],
+        ids=["root_endpoint", "prefixed_endpoint"],
+    )
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("attachment/upload", id="relative"),
+            pytest.param("api/./attachment/upload", id="current_segment"),
+            pytest.param("api/../attachment/upload", id="parent_segment"),
+            pytest.param("../../attachment/upload", id="parent_segments_past_root"),
+            pytest.param("api/%2e%2e/attachment/upload", id="percent_encoded_parent"),
+            pytest.param("api//attachment/upload", id="empty_segment"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_an_accepted_path_stays_on_the_endpoint_host(
+        self, endpoint: str, path: str
+    ) -> None:
+        """Send every request a validated plan issues to the endpoint's own host.
+
+        The plan validator judges the path alone, while the request goes out
+        only after the factory rebases it and the transport joins it, so this
+        checks the rule against the URL actually requested.
+        """
+        plan = DeliveryPlan.model_validate(
+            {"endpoint": endpoint, "upload": {"path": path}}
+        )
+
+        with aioresponses() as mock:
+            mock.post(re.compile(".*"), payload={"result": {"sys_id": "att-9"}})
+            async with get_delivery_executor(plan) as executor:
+                await executor.upload_bundle(
+                    source_ref="atw-incident/1",
+                    bundle=_bundle(),
+                    case_ref="CS0001",
+                    manifest={"bundle": "diag"},
+                )
+
+        assert mock.requests
+        assert {url.host for _, url in mock.requests} == {"intake.example.com"}
