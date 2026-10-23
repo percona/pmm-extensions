@@ -976,6 +976,7 @@ class BaseBackup:
             output = f"Host {self.alias}. {output}"
 
         self.report_options["end_time"] = time.strftime(DATETIME_FORMAT, time.gmtime())
+        self.notify_status = status
 
         if status == 0:
             self.textfile_collector_notify(0)
@@ -986,15 +987,14 @@ class BaseBackup:
 
         if status == STATUS_OK:
             self.report_options["status"] = "success"
-            if (
-                isinstance(self, Backup)
-                and self.backup_code in ["M", "X"]
-                and self.last_backup_dir
-            ):
-                self.report_options["options"]["local_path"] = self.last_backup_dir
-                self.report_options["size_mb"] = get_dir_size(
-                    self.last_backup_dir, "mb"
-                )
+        if (
+            status in (STATUS_OK, STATUS_WARNING)
+            and isinstance(self, Backup)
+            and self.backup_code in ["M", "X"]
+            and self.last_backup_dir
+        ):
+            self.report_options["options"]["local_path"] = self.last_backup_dir
+            self.report_options["size_mb"] = get_dir_size(self.last_backup_dir, "mb")
 
     def check_textcollector_dir(self, collector_file: Path) -> bool:
         """Check if the textfile collector directory exists.
@@ -1005,7 +1005,7 @@ class BaseBackup:
         backup_textfile_collector_dir = collector_file.parent
         if not backup_textfile_collector_dir.is_dir():
             self.logger.warning(
-                "Textfile Collector directory %s does not exist.",
+                "No textfile collector dir %s.",
                 backup_textfile_collector_dir,
             )
             return False
@@ -1180,6 +1180,8 @@ class Backup(BaseBackup):
         )
         logging_set_host(self.alias, BACKUP_TYPES[self.backup_code].lower() + ".log")
 
+        self.mycnf_copy_skipped = False
+        self.notify_status = STATUS_OK
         self.report_options = {
             "host": self.alias,
             "status": "error",
@@ -1257,13 +1259,12 @@ class Backup(BaseBackup):
             src = Path(filename)
             if src.is_file():
                 dest_filename = backup_path / src.name.replace("/", "_").strip()
-                self.logger.info("Trying to copy %s to %s", src, dest_filename)
+                self.logger.info("Copy %s -> %s", src, dest_filename)
                 try:
                     shutil.copy(str(src), str(dest_filename))
-                except shutil.Error as err:
-                    self.logger.exception("%s", str(err))
-                except OSError as err:
-                    self.logger.exception("Error copying %s: %s", filename, str(err))
+                except (shutil.Error, OSError) as err:
+                    self.mycnf_copy_skipped = True
+                    self.logger.exception("Copy of my.cnf failed: %s", err)
 
     def get_datadir(self) -> str:
         """Return the MySQL datadir path.
@@ -1285,8 +1286,8 @@ class Backup(BaseBackup):
                 try:
                     shutil.copy(str(filen), backup_dir)
                 except (OSError, shutil.Error) as err:
-                    msg = f"Copy of cert files failed: {err!s}"
-                    self.logger.warning(msg)
+                    self.mycnf_copy_skipped = True
+                    self.logger.warning("Copy of cert files failed: %s", err)
 
     def enable_upload(self, backup_dir: str) -> None:
         """If upload interval permits, mark backup for upload by creating the UPLOADME_FILE.
@@ -1296,7 +1297,7 @@ class Backup(BaseBackup):
         uploadme_path = Path(backup_dir) / UPLOADME_FILE
         if not uploadme_path.is_file():
             uploadme_path.touch()
-            self.logger.info("Backup marked for upload.")
+            self.logger.info("Marked for upload.")
             # enable textfile collector metric
             self.textfile_collector_write_enable("X", self.alias, True, "upload")
 
@@ -1965,7 +1966,7 @@ class XtraBackupRunner(multiprocessing.Process):
             lock.acquire()
         except Timeout:
             self.logger.exception(
-                "Another instance of this application currently holds the lock."
+                "Another instance holds the lock."
             )
             sys.exit(1)
 
@@ -2002,10 +2003,12 @@ class XtraBackupRunner(multiprocessing.Process):
                 try:
                     bkp.textfile_collector_write_status(STATUS_OK, backup_running=1)
                     bkp.run()
-                    bkp.textfile_collector_write_status(STATUS_OK, backup_running=0)
+                    bkp.textfile_collector_write_status(
+                        bkp.notify_status, backup_running=0
+                    )
                 except BackupError as exc:
                     self.logger.error(exc.message)
-                    self.logger.error('Backup failed for this host.')
+                    self.logger.error('Backup failed.')
                     bkp.notify(STATUS_CRITICAL, exc.message)
                     bkp.textfile_collector_write_status(STATUS_CRITICAL, backup_running=0)
                     sys.exit(1)
@@ -2191,15 +2194,19 @@ class Xtrabackup(Backup):
             for _ in list(range(60)):
                 if self._pxc_desync(new_status=0):
                     break
-                self.logger.info('Sleeping 10 secs to re-try syncing Galera node.')
+                self.logger.info('Retry Galera sync in 10s.')
                 time.sleep(10)
             else:
-                self.logger.error('Galera node left desynced.')
+                self.logger.error('Galera left desynced.')
 
         # Backup other files
         if self.host == 'localhost' and not self.incremental:
-            self.backup_mycnf(self.last_backup_dir)
-            self.backup_certs(self.last_backup_dir)
+            try:
+                self.backup_mycnf(self.last_backup_dir)
+                self.backup_certs(self.last_backup_dir)
+            except BackupError as e:
+                self.mycnf_copy_skipped = True
+                self.logger.warning('Skipped my.cnf/cert copy: %s', e)
 
         # Purge changed page tracking
         if self._is_track_changed_pages():
@@ -2248,7 +2255,7 @@ class Xtrabackup(Backup):
             # to carry it. Warning and skipping would report the backup OK with no
             # offsite copy, so fail loudly instead.
             if provider is None:
-                raise BackupError('Unsupported upload type: %r' % (upload_type,))
+                raise BackupError('Unsupported upload: %r' % (upload_type,))
             uploader = XtraBackupUpload(
                 upload_type=upload_type,
                 upload_provider=provider,
@@ -2263,9 +2270,15 @@ class Xtrabackup(Backup):
         # Report we are OK :)
         time_spent = format_seconds_to_hhmmss(time.time() - start_time)
 
-        # Alert for zero-size backups
+        # Alert for zero-size backups or a skipped my.cnf/certs copy
         backup_size = get_dir_size(self.last_backup_dir)
-        if backup_size == '0 MB':
+        if self.mycnf_copy_skipped:
+            msg = 'WARN my.cnf/cert copy skipped. Duration: %s. Size: %s.' % (
+                time_spent,
+                backup_size,
+            )
+            notify_status = STATUS_WARNING
+        elif backup_size == '0 MB':
             msg = 'WARN Backup completed without data. Duration: %s.' % time_spent
             notify_status = STATUS_WARNING
         else:
@@ -2282,7 +2295,7 @@ class Xtrabackup(Backup):
                     upload_destination,
                 )
             except Exception:
-                self.logger.exception("Failed to write the run-result file.")
+                self.logger.exception("run-result write failed.")
 
     def encrypt_files_aes256(self, dir_path: "str | None") -> None:
         """Encrypt plaintext files under a directory with xbcrypt/AES-256.
@@ -2775,7 +2788,7 @@ class Xtrabackup(Backup):
         except BackupError:
             return False
 
-        self.logger.info('Chnaged page bitmaps purged until %s', to_lsn)
+        self.logger.info('Purged changed-page bitmaps to %s', to_lsn)
 
         return True
 
@@ -2922,13 +2935,12 @@ class Xtrabackup(Backup):
         weekly - a full backup runs once a week on Monday.
         1..7 - also weekly cycle but a full backup runs once a week on the specified day Monday-Sunday.
         """
-        # Built, not spelled out: the 9-member literal measures 16,387 bytes after
-        # minify + gzip (3 over the 16 KiB Nomad limit). This form measures 16,377
-        # (7 bytes headroom). Re-check with scripts/check_nomad_payload_size.py
-        # --report.
+        # Built, not spelled out: the 9-member literal costs ~9 more bytes after
+        # minify + gzip, and this payload sits at the 16 KiB Nomad limit. Re-check
+        # with scripts/check_nomad_payload_size.py --report.
         cycles = ['daily', 'weekly'] + list('1234567')
         if cycle not in cycles:
-            msg = 'Invalid XTRABACKUP_INCREMENTAL_CYCLE: %s (want %s)' % (cycle, cycles)
+            msg = 'Bad XTRABACKUP_INCREMENTAL_CYCLE: %s (%s)' % (cycle, cycles)
             self._clean_after_error()
             raise BackupError(msg)
 
