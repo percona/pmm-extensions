@@ -1,5 +1,5 @@
 # Re-run CI when an open PR's base branch changes (hand retarget).
-# Keeps gate logic in ci.yml; does not add `edited` there (SEP-2092 / SEP-2071).
+# Keeps gate logic in ci.yml; does not add `edited` there.
 #
 # SECURITY: pull_request_target + actions: write is safe only while this workflow
 # checks out nothing and executes no pull-request code. Do not add

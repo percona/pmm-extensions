@@ -24,9 +24,9 @@ concurrency:
 jobs:
   label-gate:
     runs-on: ubuntu-latest
-    # base_sha / head_sha are live from the API so re-runs after a retarget
-    # (SEP-2092) do not keep github.event.pull_request.*.sha from the original
-    # event. typecheck_diff consumes both; paths-filter does not need base_sha
+    # base_sha / head_sha / head_repo are live from the API so re-runs after a
+    # retarget do not keep github.event.pull_request.* from the original
+    # event. typecheck_diff consumes all three; paths-filter does not need base_sha
     # because it lists files via the Pull Request Files API (current base).
     outputs:
       base_sha: ${{ steps.verdict.outputs.base_sha }}
@@ -401,11 +401,11 @@ jobs:
         env:
           BASE_SHA: ${{ needs.label-gate.outputs.base_sha }}
           # Head checkout may be a fork remote; fetch the base tip from this repo.
+          # Public fetch needs no token; keep credentials off the command line.
           BASE_REPO: ${{ github.repository }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           git fetch --no-tags \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${BASE_REPO}.git" \
+            "https://github.com/${BASE_REPO}.git" \
             "$BASE_SHA"
 
       - name: Setup Python
