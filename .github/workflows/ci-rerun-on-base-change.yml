@@ -84,7 +84,12 @@ jobs:
             fail_closed_ci_success "Could not resolve live head SHA of pull request #$PR_NUMBER."
           fi
           head_sha="$live_head"
-          echo "PR #$PR_NUMBER live head $head_sha"
+          head_repo="$(jq -r '.head.repo.full_name' <<<"$pr")"
+          head_branch="$(jq -r '.head.ref' <<<"$pr")"
+          if [ -z "$head_repo" ] || [ "$head_repo" = "null" ] || [ -z "$head_branch" ] || [ "$head_branch" = "null" ]; then
+            fail_closed_ci_success "Could not resolve head repo/branch of pull request #$PR_NUMBER."
+          fi
+          echo "PR #$PR_NUMBER live head $head_sha ($head_repo:$head_branch)"
 
           # After head_sha is known, any unexpected failure under set -e
           # (run list, status polls, etc.) must still block merge: otherwise
@@ -94,19 +99,22 @@ jobs:
           # Latest pull_request-triggered CI run for this PR + head (workflow file
           # ci.yml). Paginate: another PR sharing this head can fill the first
           # page with newer runs (e.g. label churn), which would hide ours.
-          # Filter by pull_requests[].number so two open PRs that share a head
-          # SHA (same branch, different bases) cannot cancel/re-run each other.
+          # Prefer pull_requests[].number when present (same-repo PRs). Fork runs
+          # often return pull_requests: [] — fall back to head_repository +
+          # head_branch so we do not exit green and leave a stale ci-success.
           runs="$(gh api --paginate \
             "repos/$REPO/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$head_sha&per_page=100" \
             --jq '.workflow_runs[]' | jq -s '.')"
-          run_json="$(jq -c --arg pr "$PR_NUMBER" '
-            [.[]
-              | select(any(.pull_requests[]; .number == ($pr | tonumber)))
-            ][0] // empty
+          run_json="$(jq -c --arg pr "$PR_NUMBER" --arg head_repo "$head_repo" --arg head_branch "$head_branch" '
+            def by_pr: any(.pull_requests[]; .number == ($pr | tonumber));
+            def by_fork_head:
+              ((.pull_requests // []) | length) == 0
+              and .head_repository.full_name == $head_repo
+              and .head_branch == $head_branch;
+            [.[] | select(by_pr or by_fork_head)][0] // empty
           ' <<<"$runs")"
           if [ -z "$run_json" ]; then
-            echo "No CI run found for PR #$PR_NUMBER head $head_sha; nothing to re-run."
-            exit 0
+            fail_closed_ci_success "No CI run found for PR #$PR_NUMBER head $head_sha ($head_repo:$head_branch) after base retarget."
           fi
 
           run_id="$(jq -r '.id' <<<"$run_json")"
