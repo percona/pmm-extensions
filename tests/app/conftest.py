@@ -20,6 +20,7 @@ import os
 import socket
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
+from functools import cache
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
 from typing import Any, Final
@@ -49,7 +50,6 @@ from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import require_minimum_role_for_unsafe_methods
-from app.core.alerts.config import alert_settings
 from app.core.auth.base import BaseAuthProvider
 from app.core.auth.config import get_active_auth_provider
 from app.core.auth.models import OAuthToken, UserRole
@@ -61,6 +61,7 @@ from app.core.config import settings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.health import HEALTH_PATH
 from app.core.requests import RemoteAPI
+from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.utils import json_serializer
 from app.extensions.config import extensions_settings, SyncOptions
 from app.extensions.deps import (
@@ -78,9 +79,9 @@ from app.extensions.inventory import (
     CreatedTable,
 )
 from app.extensions.main import extensions_app
-from app.extensions.snippets.config import snippets_settings
+from app.extensions.settings_override import build_extensions_override_proxies
 from app.inventory.models import ServiceTypeEnum
-from app.tasks.anonymizer.config import anonymizer_settings
+from app.tasks.celery import build_tasks_override_proxies
 from app.tasks.config import InventorySyncSchedule, tasks_settings
 from tests.app.db_schema import apply_schema
 from tests.app.factories import (
@@ -91,6 +92,39 @@ from tests.app.factories import (
     CreatedTableFactory,
     OAuthTokenFactory,
 )
+
+
+@cache
+def wired_override_proxies() -> tuple[OverridableSettingsProxy, ...]:
+    """Return every proxy the Extensions and Tasks override registries wire.
+
+    Built on first call from ``build_extensions_override_proxies`` and
+    ``build_tasks_override_proxies`` so a newly activated app's proxy is
+    covered without extending a hand list. Cached per process so the autouse
+    reset stays cheap, and so conftest import does not run the collectors.
+
+    :return: The wired ``OverridableSettingsProxy`` instances to reset between
+        tests.
+    """
+    return tuple(
+        entry.proxy
+        for registry in (
+            build_extensions_override_proxies(),
+            build_tasks_override_proxies(),
+        )
+        for entry in registry.values()
+    )
+
+
+def clear_wired_override_snapshots() -> None:
+    """Clear the override snapshot on every wired proxy.
+
+    Shared by the autouse fixture and tests that pin the reset behaviour, so a
+    regression in the loop cannot hide behind a hand-written fixture list.
+    """
+    for proxy in wired_override_proxies():
+        proxy._set_snapshot({})  # noqa: SLF001
+
 
 # aiohttp 3.14 made ``stream_writer`` a required arg of ``ClientResponse``, but
 # aioresponses (<=0.7.8) still constructs mocks without it. Default it here until
@@ -290,6 +324,17 @@ def _disable_settings_override_refresher_for_session() -> Iterator[None]:
     mp.undo()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _warm_wired_override_proxies() -> None:
+    """Build the reset set once before any test can monkeypatch the collectors.
+
+    ``no_app_owned_classes`` patches ``collect_app_owned_settings_classes`` for
+    individual tests. Warming at session scope keeps the cached proxy list
+    complete even when such a test is the first one a worker runs.
+    """
+    wired_override_proxies()
+
+
 @pytest.fixture(autouse=True)
 def _override_snapshot_cleared() -> None:
     """Clear every wired ``OverridableSettingsProxy`` snapshot before each test.
@@ -297,13 +342,10 @@ def _override_snapshot_cleared() -> None:
     Tests that monkey-patch ``*_settings`` attributes assume the proxy's
     ``__getattr__`` falls through to the wrapped Pydantic instance. An active
     snapshot entry would shadow the monkey-patched value and confuse the test.
+    The proxy set comes from the production override registries so an activated
+    app's proxy is covered without extending a hand list.
     """
-    settings._set_snapshot({})  # noqa: SLF001
-    extensions_settings._set_snapshot({})  # noqa: SLF001
-    tasks_settings._set_snapshot({})  # noqa: SLF001
-    snippets_settings._set_snapshot({})  # noqa: SLF001
-    alert_settings._set_snapshot({})  # noqa: SLF001
-    anonymizer_settings._set_snapshot({})  # noqa: SLF001
+    clear_wired_override_snapshots()
 
 
 @pytest.fixture(autouse=True)

@@ -24,7 +24,7 @@ import json
 import logging
 import typing
 from contextlib import AsyncExitStack
-from datetime import timedelta
+from datetime import datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -609,14 +609,16 @@ async def _purge_task_history_logs() -> None:
 
 
 @celery.task
-def sync_task_history(task_history_id: int) -> None:
+def sync_task_history(task_history_id: int, claimed_at: datetime | None = None) -> None:
     """Define Celery task to sync a task history item.
 
     :param task_history_id: The unique identifier of the task history item to sync.
     :type task_history_id: int
+    :param claimed_at: The sync lock stamp the dispatcher claimed the history with,
+        or ``None`` for a message queued before claims carried their stamp.
     """
     logger.info("Syncing task history %s", task_history_id)
-    celery.loop.run_until_complete(sync_queue_item(task_history_id))
+    celery.loop.run_until_complete(sync_queue_item(task_history_id, claimed_at))
     logger.info("Finished syncing task history %s", task_history_id)
 
 
@@ -973,7 +975,7 @@ async def _raise_if_identical_task_conflict(
             )
 
 
-def _sync_lock_free() -> ColumnElement[bool]:
+def sync_lock_free() -> ColumnElement[bool]:
     """Return the predicate matching histories no sync currently holds.
 
     :return: ``True`` for a history whose sync lock was never taken or has outlived
@@ -988,7 +990,7 @@ def _sync_lock_free() -> ColumnElement[bool]:
 
 async def _claim_syncs(
     session: AsyncSession, *whereclause: ColumnElement[bool]
-) -> list[int]:
+) -> list[tuple[int, datetime]]:
     """Take the sync lock on every free RUNNING history matching ``whereclause``.
 
     The claim is one atomic UPDATE, so a history another claimant holds is
@@ -996,16 +998,56 @@ async def _claim_syncs(
 
     :param session: The session to run the claim in.
     :param whereclause: Extra filters narrowing which histories to claim.
-    :return: The ids of the histories this call claimed.
+    :return: The id and lock stamp of each history this call claimed.
     """
-    return await TaskHistoryManager.update_where(
+    rows = await TaskHistoryManager.update_where(
         session,
         {"sync_in_progress_started_at": func.now()},
-        _sync_lock_free(),
+        sync_lock_free(),
         *whereclause,
-        returning=("id",),
+        returning=("id", "sync_in_progress_started_at"),
         status=TaskHistoryStatusEnum.RUNNING,
     )
+    return [(history_id, claimed_at) for history_id, claimed_at in rows]
+
+
+async def release_sync_lock(
+    async_session: async_sessionmaker[AsyncSession],
+    queue_id: int,
+    claimed_at: datetime | None,
+) -> None:
+    """Release the sync lock on ``queue_id`` unless it was re-taken after ``claimed_at``.
+
+    A lock another claimant took since ``claimed_at`` is left in place. The
+    release runs in its own session, as the caller's may be in a failed
+    transaction. A failed release is logged rather than raised, so the caller's
+    own error is the one reported and ``SYNC_LOCK_TTL`` frees the lock instead.
+
+    :param async_session: The session maker to open the release session from.
+    :param queue_id: The id of the history whose lock to release.
+    :param claimed_at: The lock stamp the caller claimed the history with.
+    """
+    # update_where ignores None equality filters, so an unstamped release
+    # would clear any claimant's lock.
+    if claimed_at is None:
+        return
+    try:
+        async with async_session() as session:
+            await TaskHistoryManager.update_where(
+                session,
+                {"sync_in_progress_started_at": None},
+                # Not ==: SQLite stores func.now() without microseconds but binds
+                # the loaded stamp with them. A re-claim only follows an expired
+                # TTL, so it always carries a later stamp.
+                col(TaskHistory.sync_in_progress_started_at) <= claimed_at,
+                id=queue_id,
+            )
+    except Exception:
+        logger.warning(
+            "Could not release the sync lock of task history %s",
+            queue_id,
+            exc_info=True,
+        )
 
 
 async def sync_running_items() -> None:
@@ -1013,16 +1055,21 @@ async def sync_running_items() -> None:
 
     This function updates the ``sync_in_progress_started_at`` field for tasks that are
     either not currently in progress or have been in progress for longer than the
-    configured SYNC_LOCK_TTL. It then dispatches the sync task for those tasks.
+    configured SYNC_LOCK_TTL. It then dispatches one sync task per claimed history.
     """
     async_session = get_async_session_maker()
     async with async_session() as session:
-        result = await _claim_syncs(session)
-        args = [(item_id,) for item_id in result]
-        if args:
-            logger.debug("Dispatching sync of %d running tasks", len(args))
-            chunk_size = 100
-            sync_task_history.chunks(args, chunk_size).apply_async()
+        claimed = await _claim_syncs(session)
+    if claimed:
+        logger.debug("Dispatching sync of %d running tasks", len(claimed))
+        # Not chunks: a chunk runs its items in turn and stops at the first
+        # failure, leaving the rest of it locked until SYNC_LOCK_TTL.
+        group(
+            [
+                sync_task_history.s(history_id, claimed_at)
+                for history_id, claimed_at in claimed
+            ]
+        ).apply_async()
 
 
 async def sync_finishing_items() -> None:
@@ -1051,7 +1098,7 @@ async def sync_finishing_items() -> None:
     async with async_session() as session:
         running = await TaskHistoryManager.list(
             session,
-            _sync_lock_free(),
+            sync_lock_free(),
             query_options=[
                 undefer(
                     typing.cast(
@@ -1090,10 +1137,17 @@ async def sync_finishing_items() -> None:
         claimed = await _claim_syncs(session, col(TaskHistory.id).in_(finishing_ids))
     if claimed:
         logger.debug("Dispatching sync of %d finishing tasks", len(claimed))
-        group([sync_task_history.s(history_id) for history_id in claimed]).apply_async()
+        group(
+            [
+                sync_task_history.s(history_id, claimed_at)
+                for history_id, claimed_at in claimed
+            ]
+        ).apply_async()
 
 
-async def sync_queue_item(queue_id: int) -> TaskHistory:
+async def sync_queue_item(
+    queue_id: int, claimed_at: datetime | None = None
+) -> TaskHistory:
     """Sync a task history item.
 
     Pass ``defer_terminal_annotation=True`` into ``sync_task_history`` and
@@ -1103,10 +1157,25 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
     awaiting after save keeps the UI status prompt while still completing the
     annotation before chain dispatch.
 
+    A sync whose executor call or status commit fails releases the lock it
+    holds and re-raises, so the next sweep retries the history instead of
+    waiting for ``SYNC_LOCK_TTL``. A failure after the commit leaves the lock
+    alone, as the commit already freed it.
+
+    A RUNNING history whose lock no longer holds ``claimed_at`` is returned
+    unsynced: the lock outlived ``SYNC_LOCK_TTL`` before this sync started and
+    another claimant took it over.
+
     :param queue_id: The unique identifier of the queue item to sync.
+    :param claimed_at: The lock stamp the dispatcher claimed the history with,
+        or ``None`` to adopt whatever stamp the history holds.
     :return: The TaskHistory object post sync.
-    :raises HTTPBadRequestException: If the task backend is unsupported,
-        raises a 400 Bad Request error.
+    :raises HTTPBadRequestException: If the task backend is unsupported or the
+        status commit fails.
+    :raises HTTPConflictException: If the status commit hits a unique conflict.
+    :raises Exception: Any executor or post-commit refresh error, such as a
+        ``ClientError`` from an unreachable Nomad or a database error, re-raised
+        unchanged.
     """
     async_session = get_async_session_maker()
     async with async_session() as session:
@@ -1137,26 +1206,48 @@ async def sync_queue_item(queue_id: int) -> TaskHistory:
                 was_running = True
             else:
                 return queue_item
+    if claimed_at is None:
+        claimed_at = queue_item.sync_in_progress_started_at
+    elif queue_item.sync_in_progress_started_at != claimed_at:
+        logger.info(
+            "Skipping sync of task history %s: another claimant holds its lock",
+            queue_id,
+        )
+        return queue_item
     executor = get_executor_for_task(task)
-    async with async_session() as writer_session:
-        queue_item, pending_event = await executor.sync_task_history(
-            queue_item, writer_session=writer_session, defer_terminal_annotation=True
-        )
+    try:
+        async with async_session() as writer_session:
+            queue_item, pending_event = await executor.sync_task_history(
+                queue_item,
+                writer_session=writer_session,
+                defer_terminal_annotation=True,
+            )
+    except Exception:
+        await release_sync_lock(async_session, queue_id, claimed_at)
+        raise
     queue_item.sync_in_progress_started_at = None
-    async with async_session() as session:
-        saved = await TaskHistoryManager.save(
-            session,
-            queue_item,
-            flag_modified_fields=[
-                "execution_request",
-                "status",
-                "started_at",
-                "finished_at",
-                "failure_reason",
-                "sync_in_progress_started_at",
-            ],
-        )
-        await session.refresh(saved, attribute_names=["execution_request"])
+    # save() raises the HTTP exceptions below only when its commit fails. Any
+    # other error comes after the commit freed the lock, and releasing then
+    # could clear a newer claim stamped in the same second on SQLite, which
+    # stores whole seconds.
+    try:
+        async with async_session() as session:
+            saved = await TaskHistoryManager.save(
+                session,
+                queue_item,
+                flag_modified_fields=[
+                    "execution_request",
+                    "status",
+                    "started_at",
+                    "finished_at",
+                    "failure_reason",
+                    "sync_in_progress_started_at",
+                ],
+            )
+            await session.refresh(saved, attribute_names=["execution_request"])
+    except (HTTPBadRequestException, HTTPConflictException):
+        await release_sync_lock(async_session, queue_id, claimed_at)
+        raise
     if pending_event:
         await await_annotation(saved, pending_event)
     await maybe_dispatch_chain(saved, was_running=was_running, await_annotations=True)

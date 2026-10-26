@@ -44,6 +44,7 @@ from app.core.settings_override.constants import (
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import FieldMetadata
 from app.core.utils.date_time import utc_now
+from app.core.utils.exceptions import exception_detail
 from app.extensions.api.openapi import UPSTREAM_TASKS_502_RESPONSE
 from app.extensions.apps.framework.registry import (
     collect_app_owned_settings_classes,
@@ -324,8 +325,7 @@ async def _append_tasks_export_block(
     try:
         tasks_payload = await tasks_api.get("/admin/settings/")
     except (HTTPException, OSError) as exc:
-        detail = getattr(exc, "detail", str(exc))
-        raise HTTPBadGatewayException(detail=str(detail)) from exc
+        raise HTTPBadGatewayException(detail=exception_detail(exc)) from exc
 
     if not isinstance(tasks_payload, dict):
         raise HTTPBadGatewayException(

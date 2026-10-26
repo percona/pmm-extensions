@@ -44,6 +44,7 @@ from app.core.exceptions import (
     HTTPServiceUnavailableException,
 )
 from app.core.requests import RemoteAPI
+from app.core.requests.remote_api import exception_for_status
 from app.core.utils.date_time import utc_now
 from app.extensions.apps.atw.crud import AtwIncidentExecutionManager, AtwIncidentManager
 from app.extensions.apps.atw.models import AtwIncident, AtwIncidentExecution
@@ -951,6 +952,46 @@ class TestAtwBatchExecute:
         assert succeeded["task_history_id"] == _SECOND_TASK_ID
         rows = await AtwIncidentExecutionManager.list(session, incident_id=incident_id)
         assert [row.task_history_id for row in rows] == [_SECOND_TASK_ID]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("detail", "expected"),
+        [
+            ({"message": "upstream failed"}, "{'message': 'upstream failed'}"),
+            (500, "500"),
+            ([{"loc": ["body"], "msg": "bad"}], [{"loc": ["body"], "msg": "bad"}]),
+        ],
+        ids=["dict", "number", "validation-list"],
+    )
+    async def test_dispatch_failure_detail_reaches_its_item(
+        self,
+        api_client: TestClient,
+        create_snippet: Callable[..., Awaitable[Snippet]],
+        incident: AtwIncident,
+        tasks_api: AsyncMock,
+        detail: Any,
+        expected: Any,
+    ) -> None:
+        """Report any upstream detail on its item, keeping a validation list as-is."""
+        await create_snippet("a.sh", parameters=[])
+        await create_snippet("b.sh", parameters=[])
+        tasks_api.post.side_effect = [
+            exception_for_status(status.HTTP_502_BAD_GATEWAY, detail=detail),
+            {"id": _SECOND_TASK_ID},
+        ]
+
+        response = api_client.post(
+            executions_url(incident.id),
+            json={
+                "executor_host": "host1",
+                "items": [{"snippet_filename": "a.sh"}, {"snippet_filename": "b.sh"}],
+            },
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        failed, succeeded = response.json()["items"]
+        assert failed["error"] == expected
+        assert succeeded["task_history_id"] == _SECOND_TASK_ID
 
     @pytest.mark.asyncio
     async def test_dispatch_without_task_id_is_reported_unrecorded(

@@ -1872,11 +1872,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         ``_LIVE_EVAL_STATUSES``) the work is queued and the row stays RUNNING
         until ``PENDING_ALLOCATION_TIMEOUT_SECONDS`` elapses from ``started_at``,
         after which the row goes LOST. With every evaluation terminal the row
-        goes FAILED. On both paths a job dispatched for this run alone is
-        withdrawn first, best-effort, so a Nomad error cannot leave the row
-        RUNNING; a job shared by every run of its task and target stays
-        registered, since withdrawing it would stop the other runs' work. A job
-        Nomad no longer has goes LOST with nothing to withdraw.
+        goes FAILED. On both paths :meth:`_withdraw_unplaced_job` runs first.
+        A job Nomad no longer has goes LOST with nothing to withdraw.
 
         Every terminal outcome mutates ``queue_item`` and returns ``None`` so the
         caller knows to bail out without further work.
@@ -2054,12 +2051,14 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         queue_item: TaskHistory,
         outcome: TaskHistoryStatusEnum,
     ) -> None:
-        """Withdraw a run's own job when the run ends without an allocation.
+        """Withdraw a run's own job when escalating before any task has started.
 
         Only a job Nomad dispatched for this run alone is withdrawn. A
         non-parameterized task registers one job per task and target, which
-        every such run shares, so withdrawing it would stop the other runs' work
-        too; it stays registered.
+        every such run shares, so withdrawing it would stop the other runs'
+        work too; it stays registered. Leaving it registered means Nomad may
+        still place and run that work after the row is already terminal, with
+        nothing tracking it.
 
         :param job: The Nomad job dict backing the run.
         :param queue_item: The task history record being terminalized.
@@ -2140,10 +2139,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         with a 409. While the job lives, a pending or running allocation is
         simply still starting and is left alone until
         ``PENDING_ALLOCATION_TIMEOUT_SECONDS`` elapses from ``started_at``, after
-        which the row escalates to LOST and the job is deregistered so Nomad
-        cannot still place it. Once the job is dead nothing will advance it, so
-        any other status resolves to LOST: an allocation that started no task
-        produced no exit code to have earned SUCCESS.
+        which the row escalates to LOST and :meth:`_withdraw_unplaced_job` runs.
+        Once the job is dead nothing will advance it, so any other status
+        resolves to LOST: an allocation that started no task produced no exit
+        code to have earned SUCCESS.
 
         :param queue_item: The task history record for tracking this execution.
         :param writer_session: The dedicated session to use for log chunk
@@ -2238,9 +2237,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         When the allocation still has no task states and a non-terminal client
         status, :meth:`_should_escalate_pending_allocation` may escalate the
         row to LOST once ``PENDING_ALLOCATION_TIMEOUT_SECONDS`` has elapsed
-        since ``started_at``. The job is deregistered first so Nomad cannot
-        still place the allocation after the duplicate-dispatch guard drops; a
-        Nomad error is swallowed so a hiccup cannot leave the row RUNNING. The
+        since ``started_at``. :meth:`_withdraw_unplaced_job` runs first. The
         finish time is ``utc_now()`` rather than the allocation's
         ``ModifyTime``, which may predate the timeout on a never-placed
         allocation and would under-report ``duration``.
@@ -2317,7 +2314,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 alloc["ID"],
                 queue_item.id,
             )
-            self._withdraw_job(job["ID"], queue_item, TaskHistoryStatusEnum.LOST)
+            self._withdraw_unplaced_job(job, queue_item, TaskHistoryStatusEnum.LOST)
             queue_item.finished_at = utc_now()
             queue_item.status = TaskHistoryStatusEnum.LOST
             queue_item.set_failure_reason(

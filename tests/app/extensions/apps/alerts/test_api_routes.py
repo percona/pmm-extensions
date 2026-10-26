@@ -16,6 +16,7 @@
 """Define HTTP integration tests for the alerts plugin JSON API routes."""
 
 from collections.abc import Callable, Iterator, Mapping
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -28,6 +29,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.models import UserRole
 from app.core.exceptions import HTTPNotFoundException
+from app.core.requests.remote_api import exception_for_status
 from app.extensions.apps.alerts.crud import AlertBackupManager
 from app.extensions.apps.alerts.deps import (
     get_alert_templates,
@@ -1023,6 +1025,183 @@ class TestAlertsPushApi:
         assert [r["status"] for r in results] == ["success", "error", "error"]
         assert results[1]["message"] == "Template not found"
         assert "boom" in results[2]["message"]
+
+
+_NON_STRING_DETAILS = pytest.mark.parametrize(
+    "detail",
+    [{"message": "upstream failed"}, 500],
+    ids=["dict", "number"],
+)
+
+
+class TestAlertsPushNonStringDetail:
+    """Cover the push endpoint when an upstream detail is not a string.
+
+    ``RemoteAPI`` builds a failure's ``detail`` from the upstream JSON error
+    body, so every failure here is built with :func:`exception_for_status`.
+    """
+
+    def _push(self, api_client: TestClient, *names: str) -> list[dict[str, Any]]:
+        response = api_client.post(
+            f"{API_BASE}/push", json={"selected_templates": list(names)}
+        )
+        assert response.status_code == status.HTTP_200_OK
+        return response.json()["results"]
+
+    @_NON_STRING_DETAILS
+    def test_template_create_reports_detail_as_text(
+        self, api_client, mock_pmm_api, detail
+    ):
+        """Report a per-item error carrying text when ``create_template`` fails."""
+        mock_pmm_api.create_template.side_effect = exception_for_status(
+            status.HTTP_502_BAD_GATEWAY, detail=detail
+        )
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == str(detail)
+        mock_pmm_api.create_rule.assert_not_awaited()
+
+    @_NON_STRING_DETAILS
+    def test_rule_create_reports_detail_as_text(self, api_client, mock_pmm_api, detail):
+        """Report an orphaned-template error carrying text when ``create_rule`` fails."""
+        mock_pmm_api.create_rule.side_effect = exception_for_status(
+            status.HTTP_502_BAD_GATEWAY, detail=detail
+        )
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == f"Template created but rule failed: {detail}"
+        mock_pmm_api.delete_rule.assert_not_awaited()
+
+    @_NON_STRING_DETAILS
+    def test_conflict_retry_reports_detail_as_text(
+        self, api_client, mock_pmm_api, detail
+    ):
+        """Report an orphaned-template error carrying text when the retry fails."""
+        mock_pmm_api.create_rule.side_effect = [
+            HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="rule conflicts with existing rule",
+            ),
+            exception_for_status(status.HTTP_502_BAD_GATEWAY, detail=detail),
+        ]
+        mock_pmm_api.list_rules.return_value = []
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == f"Template created but rule failed: {detail}"
+
+    @_NON_STRING_DETAILS
+    def test_already_present_reports_detail_as_text(
+        self, api_client, mock_pmm_api, detail
+    ):
+        """Report a per-item error carrying text when the present-rule create fails."""
+        extensions_app.dependency_overrides[get_pmm_present_names] = lambda: {
+            "High CPU"
+        }
+        mock_pmm_api.create_rule.side_effect = exception_for_status(
+            status.HTTP_502_BAD_GATEWAY, detail=detail
+        )
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == str(detail)
+
+    def test_rule_create_retries_on_conflict_inside_structured_detail(
+        self, api_client, mock_pmm_api
+    ):
+        """Treat a structured detail whose text names a conflict as a conflict."""
+        mock_pmm_api.create_rule.side_effect = [
+            exception_for_status(
+                status.HTTP_502_BAD_GATEWAY,
+                detail={"message": "rule conflicts with existing rule"},
+            ),
+            None,
+        ]
+        mock_pmm_api.list_rules.return_value = []
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "success"
+        assert "replaced conflicting rule" in result["message"]
+
+    def test_structured_conflict_deletes_only_matching_rules_in_its_folder(
+        self, api_client, mock_pmm_api
+    ):
+        """Scope the delete a structured conflict triggers to the managed folder."""
+        mock_pmm_api.create_rule.side_effect = [
+            exception_for_status(
+                status.HTTP_502_BAD_GATEWAY,
+                detail={"message": "rule conflicts with existing rule"},
+            ),
+            None,
+        ]
+        mock_pmm_api.list_rules.return_value = [
+            AlertRule(uid="r1", title="High CPU", namespace_uid=_FOLDER.uid),
+            AlertRule(uid="r2", title="", namespace_uid=_FOLDER.uid),
+            AlertRule(uid="r3", title="High CPU", namespace_uid="other-folder"),
+            AlertRule(uid="r4", title="unrelated", namespace_uid=_FOLDER.uid),
+        ]
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "success"
+        deleted = sorted(
+            call.args[0] for call in mock_pmm_api.delete_rule.await_args_list
+        )
+        assert deleted == ["r1", "r2"]
+
+    @_NON_STRING_DETAILS
+    def test_conflicting_rule_delete_failure_reports_detail_as_text(
+        self, api_client, mock_pmm_api, detail
+    ):
+        """Report an orphaned-template error carrying text when the delete fails."""
+        mock_pmm_api.create_rule.side_effect = HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="rule conflicts with existing rule",
+        )
+        mock_pmm_api.list_rules.side_effect = exception_for_status(
+            status.HTTP_502_BAD_GATEWAY, detail=detail
+        )
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == f"Template created but rule failed: {detail}"
+
+    def test_already_present_empty_detail_falls_back_to_status_text(
+        self, api_client, mock_pmm_api
+    ):
+        """Report the exception's own text when the present-rule detail is empty."""
+        extensions_app.dependency_overrides[get_pmm_present_names] = lambda: {
+            "High CPU"
+        }
+        exc = HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="")
+        mock_pmm_api.create_rule.side_effect = exc
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == str(exc)
+
+    def test_rule_create_timeout_names_the_timeout(self, api_client, mock_pmm_api):
+        """Name a message-less timeout instead of leaving the cause blank."""
+        mock_pmm_api.create_rule.side_effect = TimeoutError
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == "Template created but rule failed: TimeoutError"
+
+    def test_template_create_empty_detail_falls_back_to_status_text(
+        self, api_client, mock_pmm_api
+    ):
+        """Report the exception's own text when the upstream detail is empty."""
+        exc = HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="")
+        mock_pmm_api.create_template.side_effect = exc
+        [result] = self._push(api_client, "High CPU")
+        assert result["status"] == "error"
+        assert result["message"] == str(exc)
+
+    def test_one_structured_failure_does_not_affect_other_items(
+        self, api_client, mock_pmm_api
+    ):
+        """Keep the batch's other results when one item fails with a dict detail."""
+        mock_pmm_api.create_template.side_effect = [
+            exception_for_status(
+                status.HTTP_502_BAD_GATEWAY, detail={"message": "upstream failed"}
+            ),
+            None,
+        ]
+        results = self._push(api_client, "High CPU", "Disk Full")
+        assert [r["status"] for r in results] == ["error", "success"]
 
 
 @pytest.mark.asyncio
