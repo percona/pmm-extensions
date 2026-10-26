@@ -724,8 +724,6 @@ class ExtensionsSettings(BaseYamlAppSettings):
         to be same-site so the browser sends the session cookie to PMM Extensions.
     """
 
-    # A settings-load error reaches the startup traceback, and a mistyped key in
-    # the delivery plan, or a malformed credential URL, may carry a credential.
     model_config = SettingsConfigDict(hide_input_in_errors=True)
 
     SETTINGS_PREFIXES: ClassVar[list[str]] = ["EXTENSIONS"]
