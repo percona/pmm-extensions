@@ -25,7 +25,7 @@ receivers register at worker startup even in an image that ships no app with a
 ``celery.tasks``.
 """
 
-from typing import Any
+from typing import Any, cast
 
 from celery.signals import task_prerun, worker_process_init, worker_process_shutdown
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -46,6 +46,7 @@ from app.core.settings_override.lifecycle import (
     ProxyRegistry,
     publish_snapshot,
 )
+from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.worker import WorkerRefresher
 from app.extensions.apps.framework.registry import collect_app_owned_settings_classes
 from app.extensions.config import extensions_settings, ExtensionsSettings
@@ -83,8 +84,13 @@ def build_extensions_override_proxies() -> ProxyRegistry:
     }
     proxies.update(
         {
-            EXTENSIONS_SETTINGS: ProxyEntry(extensions_settings, ExtensionsSettings),
-            SNIPPETS_SETTINGS: ProxyEntry(snippets_settings, SnippetsSettings),
+            EXTENSIONS_SETTINGS: ProxyEntry(
+                cast("OverridableSettingsProxy", extensions_settings),
+                ExtensionsSettings,
+            ),
+            SNIPPETS_SETTINGS: ProxyEntry(
+                cast("OverridableSettingsProxy", snippets_settings), SnippetsSettings
+            ),
             **EXTENSIONS_OWNED_PROXIES,
         }
     )

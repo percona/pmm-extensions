@@ -53,6 +53,7 @@ from app.core.settings_override.lifecycle import (
     settings_override_refresher,
     SnapshotChange,
 )
+from app.core.settings_override.proxy import OverridableSettingsProxy
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,10 @@ async def invalidate_pmm_clients(change: SnapshotChange) -> None:
 
     :param change: The override snapshots on either side of the republish.
     """
-    previous_pmm = cast("PMMSettings", previous_or_base(change, settings, "PMM"))
+    previous_pmm = cast(
+        "PMMSettings",
+        previous_or_base(change, cast("OverridableSettingsProxy", settings), "PMM"),
+    )
     for endpoint in dict.fromkeys(
         str(pmm.endpoint)
         for pmm in (previous_pmm, settings.PMM)
@@ -122,8 +126,10 @@ async def apply_logging_dictconfig(_: SnapshotChange) -> None:
 #: The PMM Extensions-owned shared classes, keyed by class name, bound to the
 #: module-level proxies every service reads.
 EXTENSIONS_OWNED_PROXIES: ProxyRegistry = {
-    SETTINGS: ProxyEntry(settings, Settings),
-    ALERT_SETTINGS: ProxyEntry(alert_settings, AlertSettings),
+    SETTINGS: ProxyEntry(cast("OverridableSettingsProxy", settings), Settings),
+    ALERT_SETTINGS: ProxyEntry(
+        cast("OverridableSettingsProxy", alert_settings), AlertSettings
+    ),
 }
 
 #: The rebinds the shared classes need in any process that publishes them.
