@@ -360,6 +360,10 @@ jobs:
     needs:
       - label-gate
       - changes
+    with:
+      # Live merge of head into the current base — not the replayed GITHUB_SHA
+      # (merge into the old base) that a gh run rerun after retarget would keep.
+      checkout_ref: refs/pull/${{ github.event.pull_request.number }}/merge
 
   # Advisory by design: intentionally omitted from `ci-success`'s `needs`. It
   # sits here rather than in python.yaml because a reusable workflow cannot make
@@ -433,6 +437,10 @@ jobs:
     needs:
       - label-gate
       - changes
+    with:
+      # Live merge of head into the current base — not the replayed GITHUB_SHA
+      # (merge into the old base) that a gh run rerun after retarget would keep.
+      checkout_ref: refs/pull/${{ github.event.pull_request.number }}/merge
 
   build:
     # Runs concurrently with the python tests — the docker image build
@@ -454,8 +462,12 @@ jobs:
       - label-gate
       - changes
     steps:
+      # Live merge of head into the current base — not the replayed GITHUB_SHA
+      # (merge into the old base) that a gh run rerun after retarget would keep.
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@a0c73a10bb6782f082cd6714666c87911e4fc7d3 # v4.0.0
