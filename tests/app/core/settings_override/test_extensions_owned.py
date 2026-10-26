@@ -116,7 +116,7 @@ async def override_db_fixture(
 
     :param tmp_path: The per-test directory holding the database file.
     :param monkeypatch: The pytest patcher whose undo restores the environment.
-    :yield: A session maker bound to the same database file.
+    :return: A session maker bound to the same database file.
     """
     path = tmp_path / "extensions.db"
     monkeypatch.setenv("EXTENSIONS__DATABASE__NAME", str(path))
