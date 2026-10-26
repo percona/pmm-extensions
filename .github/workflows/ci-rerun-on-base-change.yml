@@ -11,13 +11,6 @@ on:
   pull_request_target:
     types: [edited]
 
-# Two rapid retargets must not race on the same CI run: the second helper would
-# see the first's re-run as active, exhaust retries, and post a false-red
-# ci-success. Queue per PR; do not cancel the helper already working.
-concurrency:
-  group: ci-rerun-on-base-change-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 permissions:
   actions: write
   checks: write
@@ -27,6 +20,13 @@ permissions:
 jobs:
   rerun-ci:
     if: github.event.changes.base != null
+    # Job-level: title/body edits skip the if: and never join this group.
+    # Workflow-level concurrency would queue those edits and, with
+    # cancel-in-progress: false, can drop a pending retarget helper.
+    # Two rapid retargets must not race on the same CI run.
+    concurrency:
+      group: ci-rerun-on-base-change-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - name: Re-run latest CI for this PR head
