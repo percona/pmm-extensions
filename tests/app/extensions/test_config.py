@@ -192,6 +192,45 @@ class TestDiagnosticsDelivery:
         with pytest.raises(ValidationError, match="undefined secret 'api_key'"):
             ExtensionsSettings(DIAGNOSTICS_DELIVERY=payload)
 
+    def test_undeclared_plan_field_fails_settings_construction(self):
+        """Refuse to start on a plan carrying a key no plan model declares."""
+        payload = self._plan_payload()
+        payload["upload"]["bogus"] = "x"
+
+        with pytest.raises(ValidationError) as exc_info:
+            ExtensionsSettings(DIAGNOSTICS_DELIVERY=payload)
+
+        assert [(error["type"], error["loc"]) for error in exc_info.value.errors()] == [
+            ("extra_forbidden", ("DIAGNOSTICS_DELIVERY", "upload", "bogus"))
+        ]
+        assert "DIAGNOSTICS_DELIVERY.upload.bogus" in str(exc_info.value)
+
+    def test_undeclared_plan_field_from_the_environment_fails_settings_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Refuse an undeclared key arriving through the env JSON form as well."""
+        payload = self._plan_payload()
+        payload["bogus"] = "x"
+        monkeypatch.setenv("EXTENSIONS__DIAGNOSTICS_DELIVERY", json.dumps(payload))
+
+        with pytest.raises(ValidationError) as exc_info:
+            ExtensionsSettings()
+
+        assert [error["loc"] for error in exc_info.value.errors()] == [
+            ("DIAGNOSTICS_DELIVERY", "bogus")
+        ]
+
+    def test_settings_load_error_does_not_echo_a_misplaced_credential(self):
+        """Keep a credential under an undeclared key out of the startup error text."""
+        payload = self._plan_payload()
+        payload["upload"]["secrets"] = {"api_key": "sentinel-credential-value"}
+
+        with pytest.raises(ValidationError) as exc_info:
+            ExtensionsSettings(DIAGNOSTICS_DELIVERY=payload)
+
+        assert "DIAGNOSTICS_DELIVERY.upload.secrets" in str(exc_info.value)
+        assert "sentinel-credential-value" not in str(exc_info.value)
+
 
 class TestDiagnosticsDeliveryInputs:
     """Cover the ``DIAGNOSTICS_DELIVERY_INPUTS`` runtime-inputs settings block."""
