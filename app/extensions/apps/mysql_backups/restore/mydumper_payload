@@ -2031,18 +2031,10 @@ class Restorer(object):  # pylint: disable=too-many-instance-attributes
         self.logger.info('>>>>>>>>>>>>>>>>>> Restore started.')
 
         exit_status = STATUS_OK
-        rst = None
         for server_data in servers:
             self.backup_type = server_data.get('BACKUP_TYPE')
-            if self.backup_type == 'X':
-                pass
-                #rst = Xtrabackup(server_data)
-            if self.backup_type == 'M':
-                rst = Myloader(server_data)
-            if self.backup_type == 'B':
-                pass
-                #rst = Binlog(server_data)
-            else:
+            rst = Myloader(server_data) if self.backup_type == 'M' else None
+            if rst is None:
                 self.logger.error('No Restores to run.')
 
             if rst:
@@ -2150,7 +2142,7 @@ class Myloader(Restore):
             myloader_cmd.append("--port=%s" % self.dest_port)
 
         if self.overwrite_tables:
-            myloader_cmd.append('--overwrite-tables')
+            myloader_cmd.append('-o')
 
         if self.database:
             myloader_cmd.append('--database=%s' % (self.database))
@@ -2291,7 +2283,8 @@ def parse_args():
     myload.add_argument('--overwrite-tables',
                         action="store_true",
                         default=False,
-                        help='Sets myloader --overwrite-tables option'
+                        help=('Passes myloader -o, which older myloader releases '
+                              'spell --overwrite-tables and newer ones --drop-table')
                     )
     myload.add_argument('--skip-databases',
                         help='mydumper only comma separated databases to exclude'

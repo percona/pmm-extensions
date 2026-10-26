@@ -25,7 +25,7 @@ from sqlalchemy.orm.attributes import NO_VALUE
 
 from app.core.config import settings
 from app.core.requests.remote_api import RemoteAPI
-from app.tasks.models import TaskExecutionRequest, TaskHistory
+from app.tasks.models import CELERY_LOCAL_TARGET, TaskExecutionRequest, TaskHistory
 
 _EXECUTION_REQUEST_ATTR = "execution_request"
 
@@ -118,6 +118,10 @@ async def annotate_task_event(
     rather than an ORM instance so the coroutine is safe to run after the
     originating request session has closed.
 
+    Skip a task whose node is :data:`~app.tasks.models.CELERY_LOCAL_TARGET`:
+    it ran on PMM Extensions' own worker (the scheduled inventory sync and
+    collection), which is no PMM node, so PMM would refuse the annotation.
+
     :param task_name: The task name (from ``TaskExecutionRequest.task``).
     :type task_name: str
     :param target: The execution target node (from ``TaskExecutionRequest.target``).
@@ -134,6 +138,11 @@ async def annotate_task_event(
         service_names = [single] if single else []
 
     node_name = safe_meta.get("_pmm_node_name") or target
+    if node_name == CELERY_LOCAL_TARGET:
+        logger.debug(
+            "PMM annotation skipped for %s: it ran on the local worker", task_name
+        )
+        return
 
     await create_pmm_annotation(
         text=f"PMM Extensions: {task_name} - {event}",

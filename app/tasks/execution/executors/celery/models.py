@@ -31,6 +31,7 @@ from app.tasks.crud import TaskHistoryManager
 from app.tasks.execution.models import BaseExecutor
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
+    CELERY_LOCAL_TARGET,
     FileMetadata,
     LogCaptureStatusEnum,
     Task,
@@ -263,7 +264,7 @@ class CeleryExecutor(BaseExecutor):
         :return: A dictionary with a single ``local`` entry.
         :rtype: dict[str, str]
         """
-        return {"local": "localhost"}
+        return {CELERY_LOCAL_TARGET: "localhost"}
 
     async def stream_logs(
         self,
