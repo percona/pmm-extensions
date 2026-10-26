@@ -617,6 +617,20 @@ class TestExtensionsHostsEndpoint:
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
         assert response.json() == {"detail": "tasks unreachable"}
 
+    def test_tasks_structured_detail_returns_502_with_text(
+        self,
+        test_client: TestClient,
+        mock_task_api_dep,
+        mock_inventory_api_dep,
+    ) -> None:
+        """Carry a structured upstream detail onto the ``502`` as text."""
+        detail = {"message": "tasks unreachable"}
+        mock_task_api_dep.get.side_effect = HTTPBadGatewayException(detail)
+        mock_inventory_api_dep.get.side_effect = _inventory_answers([])
+        response = test_client.get("/api/extensions/hosts/")
+        assert response.status_code == status.HTTP_502_BAD_GATEWAY
+        assert response.json() == {"detail": str(detail)}
+
     def test_tasks_oserror_returns_502(
         self,
         test_client: TestClient,

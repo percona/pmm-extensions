@@ -19,6 +19,7 @@ import pytest
 from fastapi import HTTPException, status
 
 from app.core.exceptions import HTTPBadGatewayException
+from app.core.requests.remote_api import exception_for_status
 from app.extensions.api.proxy import reraise_upstream_tasks_errors
 
 
@@ -65,6 +66,36 @@ class TestReraiseUpstreamTasksErrors:
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
         assert exc_info.value.detail == "tasks down"
 
+    @pytest.mark.parametrize(
+        "detail",
+        [{"message": "tasks down"}, ["tasks", "down"], 503],
+        ids=["dict", "list", "number"],
+    )
+    def test_server_error_structured_detail_reaches_gateway_as_text(
+        self, detail: object
+    ) -> None:
+        """Carry a structured upstream detail onto the 502 as its string form."""
+        with (
+            pytest.raises(HTTPBadGatewayException) as exc_info,
+            reraise_upstream_tasks_errors(),
+        ):
+            raise exception_for_status(
+                status.HTTP_500_INTERNAL_SERVER_ERROR, detail=detail
+            )
+        assert exc_info.value.detail == str(detail)
+
+    def test_server_error_empty_detail_falls_back_to_exception_text(self) -> None:
+        """Describe the upstream exception itself when its detail is empty."""
+        upstream = HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=""
+        )
+        with (
+            pytest.raises(HTTPBadGatewayException) as exc_info,
+            reraise_upstream_tasks_errors(),
+        ):
+            raise upstream
+        assert exc_info.value.detail == str(upstream)
+
     def test_oserror_becomes_502(self) -> None:
         """Map a connection-level ``OSError`` onto a 502 gateway failure."""
         with (
@@ -74,6 +105,16 @@ class TestReraiseUpstreamTasksErrors:
             raise OSError("connection refused")
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
         assert exc_info.value.detail == "connection refused"
+
+    def test_timeout_becomes_502_naming_the_timeout(self) -> None:
+        """Name a message-less upstream timeout on the 502 instead of a blank detail."""
+        with (
+            pytest.raises(HTTPBadGatewayException) as exc_info,
+            reraise_upstream_tasks_errors(),
+        ):
+            raise TimeoutError
+        assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
+        assert exc_info.value.detail == "TimeoutError"
 
     def test_unrelated_exception_propagates(self) -> None:
         """Let a non-target exception propagate unchanged, never swallowing it."""

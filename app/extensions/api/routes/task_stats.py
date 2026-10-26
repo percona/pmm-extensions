@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.core.exceptions import HTTPBadGatewayException
 from app.core.requests import as_json_object
+from app.core.utils.exceptions import exception_detail
 from app.core.utils.fields import ArbitraryMapping
 from app.extensions.api.openapi import UPSTREAM_TASKS_502_RESPONSE
 from app.extensions.deps import task_path, TaskAPI
@@ -62,5 +63,4 @@ async def get_task_stats(
     try:
         return ArbitraryMapping(as_json_object(await tasks_api.get(stats_path)))
     except (HTTPException, OSError) as exc:
-        detail = getattr(exc, "detail", str(exc))
-        raise HTTPBadGatewayException(detail=str(detail)) from exc
+        raise HTTPBadGatewayException(detail=exception_detail(exc)) from exc

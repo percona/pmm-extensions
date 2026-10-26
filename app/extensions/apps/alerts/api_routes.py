@@ -44,6 +44,7 @@ from app.core.exceptions import (
     HTTPNotFoundException,
 )
 from app.core.pagination import PaginatedResponse
+from app.core.utils.exceptions import exception_detail
 from app.extensions.apps.alerts.config import alerts_settings
 from app.extensions.apps.alerts.crud import AlertBackupManager
 from app.extensions.apps.alerts.deps import (
@@ -395,7 +396,7 @@ async def alerts_api_push(
                     group=alerts_settings.ALERT_FOLDER_NAME,
                 )
             except (HTTPException, OSError) as exc:
-                detail = str(getattr(exc, "detail", exc))
+                detail = exception_detail(exc)
                 if "conflicts with existing" in detail:
                     logger.debug("Rule already exists for %s", name, exc_info=True)
                     results.append(
@@ -421,7 +422,7 @@ async def alerts_api_push(
             pmm_yaml = to_pmm_template_yaml(template)
             await pmm_api.create_template(pmm_yaml)
         except (HTTPException, OSError) as exc:
-            detail = getattr(exc, "detail", str(exc))
+            detail = exception_detail(exc)
             results.append(PushItemResult(name=name, status="error", message=detail))
             continue
 
@@ -439,7 +440,7 @@ async def alerts_api_push(
                 )
             )
         except (HTTPException, OSError) as exc:
-            detail = getattr(exc, "detail", str(exc))
+            detail = exception_detail(exc)
             if "conflicts with existing" not in detail:
                 results.append(
                     PushItemResult(
@@ -466,7 +467,7 @@ async def alerts_api_push(
                     )
                 )
             except (HTTPException, OSError) as retry_exc:
-                retry_detail = getattr(retry_exc, "detail", str(retry_exc))
+                retry_detail = exception_detail(retry_exc)
                 results.append(
                     PushItemResult(
                         name=name,
