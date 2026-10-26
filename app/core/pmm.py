@@ -123,13 +123,9 @@ async def annotate_task_event(
     collection), which is no PMM node, so PMM would refuse the annotation.
 
     :param task_name: The task name (from ``TaskExecutionRequest.task``).
-    :type task_name: str
     :param target: The execution target node (from ``TaskExecutionRequest.target``).
-    :type target: str
     :param meta: The task execution metadata (from ``TaskExecutionRequest.meta``).
-    :type meta: dict[str, Any] | None
     :param event: The event label (e.g. ``"STARTED"``, ``"COMPLETED"``, ``"FAILED"``).
-    :type event: str
     """
     safe_meta = meta or {}
     service_names = safe_meta.get("_service_names")

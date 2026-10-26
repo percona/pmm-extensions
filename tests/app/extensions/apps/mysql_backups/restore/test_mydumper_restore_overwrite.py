@@ -90,6 +90,7 @@ def test_overwrite_tables_never_passes_the_long_option(tmp_path, overwrite_table
     """Assert neither long spelling reaches myloader, whatever the setting."""
     cmd = _myloader_command(tmp_path, overwrite_tables=overwrite_tables)
 
+    assert cmd[0] == "/usr/bin/myloader"
     assert "--overwrite-tables" not in cmd
     assert not any(arg.startswith("--drop-table") for arg in cmd)
 
@@ -101,4 +102,7 @@ def test_overwrite_tables_passes_the_short_option(tmp_path):
 
 def test_no_overwrite_passes_no_drop_option(tmp_path):
     """Assert a restore without Overwrite tables keeps myloader's fail-on-exists."""
-    assert "-o" not in _myloader_command(tmp_path, overwrite_tables=False)
+    cmd = _myloader_command(tmp_path, overwrite_tables=False)
+
+    assert cmd[0] == "/usr/bin/myloader"
+    assert "-o" not in cmd
