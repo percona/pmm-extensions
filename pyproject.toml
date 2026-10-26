@@ -1,6 +1,6 @@
 [project]
 name = "pmm-extensions"
-version = "3.10.0rc2"
+version = "3.10.0rc3"
 description = "PMM Extensions"
 authors = [
     {name = "Ceri Williams", email = "ceri.williams@percona.com"},
