@@ -62,8 +62,15 @@ _FAST_INTERVAL = timedelta(milliseconds=50)
 #: Seed budget the unreachable-database tests shorten the real one to.
 _SHORT_SEED_TIMEOUT = 0.05
 
-#: How long a runtime test waits for a refresh cycle to land a change.
-_LANDING_DEADLINE_STEPS = 200
+#: Bound that fails a hung run instead of stalling the suite. A correct
+#: implementation never reaches it, so it is sized for a loaded xdist worker.
+_HANG_TIMEOUT = 10.0
+
+#: Poll period while a runtime test waits for a refresh cycle to land a change.
+_LANDING_POLL_SECONDS = 0.01
+
+#: How many polls a runtime test makes before failing, spanning ``_HANG_TIMEOUT``.
+_LANDING_DEADLINE_STEPS = int(_HANG_TIMEOUT / _LANDING_POLL_SECONDS)
 
 
 async def _wait_until_level(level: int) -> None:
@@ -79,7 +86,7 @@ async def _wait_until_level(level: int) -> None:
             and logging.getLogger("app").level == level
         ):
             return
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(_LANDING_POLL_SECONDS)
     raise AssertionError(f"logging level never reached {level}")
 
 
@@ -271,7 +278,7 @@ class TestExtensionsOwnedOverridesRefresher:
                 assert yaml_env_level == settings.LOGGING
 
         with caplog.at_level("ERROR", logger="app.core.settings_override.lifecycle"):
-            await asyncio.wait_for(_enter(), timeout=1.0)
+            await asyncio.wait_for(_enter(), timeout=_HANG_TIMEOUT)
 
         assert any(
             record.levelname == "ERROR"

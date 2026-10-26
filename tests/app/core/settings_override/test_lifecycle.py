@@ -1162,6 +1162,10 @@ class TestFireBootCallbacks:
 #: Importable path of the lifecycle ``refresh_all`` the seed and loop resolve.
 _LIFECYCLE_REFRESH_ALL = "app.core.settings_override.lifecycle.refresh_all"
 
+#: Bound that fails a hung run instead of stalling the suite. A correct
+#: implementation never reaches it, so it is sized for a loaded xdist worker.
+_HANG_TIMEOUT = 10.0
+
 
 class _UnwindingSeed:
     """Stand in for ``refresh_all`` whose boot seed outlives its first cancel.
@@ -1267,7 +1271,7 @@ class TestSeedBudget:
                 pass
 
         with caplog.at_level("ERROR", logger="app.core.settings_override.lifecycle"):
-            await asyncio.wait_for(_enter_and_exit(), timeout=1.0)
+            await asyncio.wait_for(_enter_and_exit(), timeout=_HANG_TIMEOUT)
 
         assert proxy.get_snapshot() == {}
         assert any(
@@ -1297,7 +1301,7 @@ class TestSeedBudget:
             assert seed.loop_refreshes == 0
 
             seed.release.set()
-            await asyncio.wait_for(seed.loop_refreshed.wait(), timeout=1.0)
+            await asyncio.wait_for(seed.loop_refreshed.wait(), timeout=_HANG_TIMEOUT)
 
     @pytest.mark.asyncio
     async def test_lifespan_exit_cancels_a_seed_still_unwinding(
@@ -1318,7 +1322,7 @@ class TestSeedBudget:
             assert seed.seed_task is not None
             assert not seed.seed_task.done()
 
-        await asyncio.wait({seed.seed_task}, timeout=1.0)
+        await asyncio.wait({seed.seed_task}, timeout=_HANG_TIMEOUT)
         assert seed.seed_task.cancelled()
 
 
@@ -1353,7 +1357,7 @@ async def test_bounded_refresh_cancels_the_refresh_with_its_caller(
     caller = asyncio.create_task(
         bounded_refresh(lambda: session_maker, registry, budget=10.0)
     )
-    await asyncio.wait_for(started.wait(), timeout=1.0)
+    await asyncio.wait_for(started.wait(), timeout=_HANG_TIMEOUT)
 
     caller.cancel()
     with pytest.raises(asyncio.CancelledError):
