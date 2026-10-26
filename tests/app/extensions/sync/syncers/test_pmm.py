@@ -1842,6 +1842,7 @@ class TestEmptyGenerationHold:
         assert await _absence_rows(session) == []
         messages = self._syncer_warnings(caplog)
         assert len(messages) == grace + 1
+        assert messages
         assert all(message.endswith(f": [{local_node.id}]") for message in messages)
 
     @pytest.mark.asyncio
