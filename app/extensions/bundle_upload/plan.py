@@ -119,7 +119,6 @@ TERM_MATCH_TIMEOUT_SECONDS = 0.25
 class _PlanModel(BaseModel):
     """Reject a key the model does not declare, without echoing its value."""
 
-    # A misplaced key may hold a credential, and a parse error is logged.
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
 
