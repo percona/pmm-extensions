@@ -31,6 +31,8 @@ import time
 import types
 from typing import Any, TYPE_CHECKING
 
+import pytest
+
 from tests.app.extensions.apps.mysql_backups.payload_harness import (
     payload_instance,
     payload_method,
@@ -376,7 +378,7 @@ def test_zero_size_warning_unchanged_when_copy_succeeds(tmp_path: Path) -> None:
         (STATUS_WARNING, "WARN Backup completed without data. Duration: 00:00:00.")
     ]
     assert probe.notify_status == STATUS_WARNING
-    # STATUS_WARNING now fills path/size (including zero-size); only OK → success.
+    # Any WARNING fills path/size, zero-size included; status stays "error".
     assert probe.report_options["options"]["local_path"] == str(backup)
     assert probe.report_options["size_mb"] == 0
     assert probe.report_options["status"] == "error"
@@ -493,21 +495,10 @@ def _runner_status_writes(final_notify_status: int) -> list[tuple[object, object
     return writes
 
 
-def test_runner_clears_running_with_notify_status() -> None:
-    """Assert a skipped my.cnf/certs copy keeps WARNING on the status metric."""
-    assert _runner_status_writes(STATUS_WARNING) == [
+@pytest.mark.parametrize("final_status", [STATUS_OK, STATUS_WARNING])
+def test_runner_clears_running_with_notify_status(final_status: int) -> None:
+    """Assert the runner clears backup_running with the run's final notify status."""
+    assert _runner_status_writes(final_status) == [
         (STATUS_OK, 1),
-        (STATUS_WARNING, 0),
-    ]
-
-
-def test_runner_clears_running_keeps_zero_size_warning() -> None:
-    """Assert a zero-size WARNING also survives clearing backup_running.
-
-    On main the runner always wrote STATUS_OK here; zero-size runs now leave the
-    Prometheus status metric at WARNING like the notify outcome.
-    """
-    assert _runner_status_writes(STATUS_WARNING) == [
-        (STATUS_OK, 1),
-        (STATUS_WARNING, 0),
+        (final_status, 0),
     ]
