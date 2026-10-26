@@ -985,7 +985,6 @@ class BaseBackup:
             output = f"Host {self.alias}. {output}"
 
         self.report_options["end_time"] = time.strftime(DATETIME_FORMAT, time.gmtime())
-        self.notify_status = status
 
         if status == 0:
             self.textfile_collector_notify(0)
@@ -1190,7 +1189,6 @@ class Backup(BaseBackup):
         logging_set_host(self.alias, BACKUP_TYPES[self.backup_code].lower() + ".log")
 
         self.mycnf_copy_skipped = False
-        self.notify_status = STATUS_OK
         self.report_options = {
             "host": self.alias,
             "status": "error",
@@ -2083,9 +2081,7 @@ class XtraBackupRunner(multiprocessing.Process):
                 try:
                     bkp.textfile_collector_write_status(STATUS_OK, backup_running=1)
                     bkp.run()
-                    bkp.textfile_collector_write_status(
-                        bkp.notify_status, backup_running=0
-                    )
+                    bkp.textfile_collector_write_status(STATUS_OK, backup_running=0)
                 except BackupError as exc:
                     self.logger.error(exc.message)
                     self.logger.error('Backup failed.')

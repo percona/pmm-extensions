@@ -24,18 +24,12 @@ the copy succeeds.
 
 from __future__ import annotations
 
-import os
 import shutil
-import sys
-import time
 import types
 from typing import Any, TYPE_CHECKING
 
-import pytest
-
 from tests.app.extensions.apps.mysql_backups.payload_harness import (
     payload_instance,
-    payload_method,
     Recorder,
 )
 
@@ -76,7 +70,6 @@ class _RunProbe:
         self.errors: list[str] = []
         self.report_options: dict[str, Any] = {}
         self.last_backup_dir: str = ""
-        self.notify_status: int = STATUS_OK
 
 
 def _shutil_namespace(*, fail_mycnf: bool = False, fail_certs: bool = False) -> object:
@@ -288,7 +281,6 @@ def _run_backup(
     _wrap_notify(inst, probe)
     inst.run()
     probe.report_options = dict(inst.report_options)
-    probe.notify_status = inst.notify_status
     return probe
 
 
@@ -309,7 +301,6 @@ def test_query_failure_warns_notifies_warning_and_still_runs_gpg(
             "WARN my.cnf/cert copy skipped. Duration: 00:00:00. Size: 1 MB.",
         )
     ]
-    assert probe.notify_status == STATUS_WARNING
     assert probe.report_options["options"]["local_path"] == str(
         tmp_path / "backups" / "host1"
     )
@@ -333,7 +324,6 @@ def test_per_file_mycnf_copy_failure_notifies_warning(tmp_path: Path) -> None:
             "WARN my.cnf/cert copy skipped. Duration: 00:00:00. Size: 1 MB.",
         )
     ]
-    assert probe.notify_status == STATUS_WARNING
     assert probe.report_options["options"]["local_path"] == str(
         tmp_path / "backups" / "host1"
     )
@@ -354,7 +344,6 @@ def test_per_file_cert_copy_failure_warns_and_still_runs_gpg(tmp_path: Path) -> 
             "WARN my.cnf/cert copy skipped. Duration: 00:00:00. Size: 1 MB.",
         )
     ]
-    assert probe.notify_status == STATUS_WARNING
     assert (tmp_path / "backups" / "host1" / "my.cnf").is_file()
     assert not (tmp_path / "backups" / "host1" / "server-cert.pem").exists()
     assert len(probe.gpg_dirs) == 1
@@ -377,7 +366,6 @@ def test_zero_size_warning_unchanged_when_copy_succeeds(tmp_path: Path) -> None:
     assert probe.notify_calls == [
         (STATUS_WARNING, "WARN Backup completed without data. Duration: 00:00:00.")
     ]
-    assert probe.notify_status == STATUS_WARNING
     # Any WARNING fills path/size, zero-size included; status stays "error".
     assert probe.report_options["options"]["local_path"] == str(backup)
     assert probe.report_options["size_mb"] == 0
@@ -401,7 +389,6 @@ def test_skip_takes_precedence_over_zero_size(tmp_path: Path) -> None:
             "WARN my.cnf/cert copy skipped. Duration: 00:00:00. Size: 0 MB.",
         )
     ]
-    assert probe.notify_status == STATUS_WARNING
     assert probe.report_options["options"]["local_path"] == str(
         tmp_path / "backups" / "host1"
     )
@@ -418,87 +405,4 @@ def test_successful_copy_path_notifies_ok(tmp_path: Path) -> None:
     assert probe.warnings == []
     assert probe.notify_calls == [
         (STATUS_OK, "OK Backup complete. Duration: 00:00:00. Size: 1 MB.")
-    ]
-    assert probe.notify_status == STATUS_OK
-
-
-def _runner_status_writes(final_notify_status: int) -> list[tuple[object, object]]:
-    """Drive ``XtraBackupRunner.run`` and return textfile status writes.
-
-    :param final_notify_status: Value ``bkp.notify_status`` has after ``bkp.run()``.
-    :return: ``(status, backup_running)`` pairs written to the textfile collector.
-    """
-    writes: list[tuple[object, object]] = []
-
-    class _FakeBackup:
-        def __init__(self, *_a: object, **_k: object) -> None:
-            self.notify_status = STATUS_OK
-
-        def textfile_collector_write_status(
-            self,
-            status: object,
-            *_a: object,
-            backup_running: object = None,
-            **_k: object,
-        ) -> None:
-            writes.append((status, backup_running))
-
-        def run(self) -> None:
-            self.notify_status = final_notify_status
-
-    class _FakeLock:
-        def acquire(self) -> None:
-            return None
-
-        def release(self) -> None:
-            return None
-
-    class _FakeLocalConfig:
-        def __init__(self, *_a: object, **_k: object) -> None:
-            self.raw_cfg_data = {
-                "ALL_SERVERS": {"LOGGING_DIR": "/tmp", "LOGGING_STDOUT": False}
-            }
-            self.server_data_list = [{"DEBUG": False}]
-
-    logger = types.SimpleNamespace(
-        info=lambda *_a, **_k: None,
-        exception=lambda *_a, **_k: None,
-        warn=lambda *_a, **_k: None,
-        setLevel=lambda *_a, **_k: None,
-    )
-    runner_run = payload_method(
-        "XtraBackupRunner",
-        "run",
-        extra_namespace={
-            "LocalConfig": _FakeLocalConfig,
-            "FileLock": lambda *_a, **_k: _FakeLock(),
-            "Timeout": type("Timeout", (Exception,), {}),
-            "logging_setup": lambda *_a, **_k: logger,
-            "logging_set_host": lambda *_a, **_k: None,
-            "Xtrabackup": _FakeBackup,
-            "STATUS_OK": STATUS_OK,
-            "STATUS_CRITICAL": 2,
-            "format_seconds_to_hhmmss": lambda _s: "00:00:00",
-            "resource": types.SimpleNamespace(
-                setrlimit=lambda *_a, **_k: None, RLIMIT_NOFILE=7
-            ),
-            "DEFAULT_LOGGING_DIR": "/tmp",
-            "DEFAULT_LOGGING_STDOUT": False,
-            "BackupError": Exception,
-            "logging": types.SimpleNamespace(Logger=type("Logger", (), {}), DEBUG=10),
-            "time": time,
-            "os": os,
-            "sys": sys,
-        },
-    )
-    runner_run(types.SimpleNamespace(config_path=None, logger=None))
-    return writes
-
-
-@pytest.mark.parametrize("final_status", [STATUS_OK, STATUS_WARNING])
-def test_runner_clears_running_with_notify_status(final_status: int) -> None:
-    """Assert the runner clears backup_running with the run's final notify status."""
-    assert _runner_status_writes(final_status) == [
-        (STATUS_OK, 1),
-        (final_status, 0),
     ]
