@@ -18,6 +18,7 @@
 import base64
 import gzip
 import json as json_lib
+import logging
 from datetime import datetime, timedelta, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +27,8 @@ import pytest
 import pytest_asyncio
 from fastapi import status
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.testclient import TestClient
 
@@ -37,6 +40,7 @@ from app.api.deps import (
 from app.core.celery.deps import get_session as get_celery_beat_session
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.encryption import decrypt, is_encrypted
+from app.core.exceptions import HTTPBadRequestException, HTTPConflictException
 from app.core.pagination import DEFAULT_PAGINATION_LIMIT
 from app.core.pmm import _background_tasks
 from app.core.utils import utc_now
@@ -1432,6 +1436,23 @@ class TestSyncTaskHistoryChainDispatch:
 
         return fake_sync
 
+    @pytest.fixture
+    def route_sessions(self, sqlite_session_maker: async_sessionmaker[AsyncSession]):
+        """Open the route's own sessions, the lock release among them, on the test DB."""
+        with patch(
+            "app.tasks.routes.get_async_session_maker",
+            return_value=sqlite_session_maker,
+        ):
+            yield
+
+    @staticmethod
+    async def _stored_lock(session: AsyncSession, history_id: int) -> datetime | None:
+        """Return the stored sync lock stamp of ``history_id``, UTC-aware."""
+        session.expire_all()
+        refreshed = await TaskHistoryManager.get_or_404(session, id=history_id)
+        stamp = refreshed.sync_in_progress_started_at
+        return None if stamp is None else make_datetime_utc(stamp)
+
     async def test_dispatches_chain_on_running_to_success(
         self, test_client, session, mock_executor, created_task_with_history, mocker
     ):
@@ -1730,6 +1751,7 @@ class TestSyncTaskHistoryChainDispatch:
         mock_executor.sync_task_history.assert_not_called()
         mock_chain.assert_not_awaited()
 
+    @pytest.mark.usefixtures("route_sessions")
     async def test_clears_lock_when_executor_raises(
         self, test_client, session, mock_executor, created_task_with_history
     ):
@@ -1748,10 +1770,157 @@ class TestSyncTaskHistoryChainDispatch:
         with pytest.raises(RuntimeError, match="boom"):
             test_client.post(f"/history/{created_task_with_history.id}/sync/")
 
-        refreshed = await TaskHistoryManager.get_or_404(
-            session, id=created_task_with_history.id
+        assert await self._stored_lock(session, created_task_with_history.id) is None
+
+    @pytest.mark.usefixtures("route_sessions")
+    async def test_keeps_lock_retaken_during_failed_sync(
+        self,
+        test_client,
+        session,
+        mock_executor,
+        created_task_with_history,
+        sqlite_session_maker,
+    ):
+        """Assert a failed sync leaves a lock another syncer took meanwhile in place."""
+        await self._arm_parent_chain(
+            session, created_task_with_history, chain_target_name=None
         )
-        assert refreshed.sync_in_progress_started_at is None
+        history_id = created_task_with_history.id
+        retaken_at = utc_now() + timedelta(minutes=10)
+
+        async def retake_then_fail(*_args, **_kwargs):
+            async with sqlite_session_maker() as other_session:
+                await TaskHistoryManager.update_where(
+                    other_session,
+                    {"sync_in_progress_started_at": retaken_at},
+                    id=history_id,
+                )
+            raise RuntimeError("boom")
+
+        mock_executor.sync_task_history = AsyncMock(side_effect=retake_then_fail)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            test_client.post(f"/history/{history_id}/sync/")
+
+        assert await self._stored_lock(session, history_id) == retaken_at
+
+    async def test_failed_release_reports_executor_error(
+        self,
+        test_client,
+        session,
+        mock_executor,
+        created_task_with_history,
+        sqlite_session_maker,
+        caplog,
+    ):
+        """Assert a release the database rejects leaves the sync's own error reported.
+
+        The lock then stays for ``SYNC_LOCK_TTL`` to free.
+        """
+        await self._arm_parent_chain(
+            session, created_task_with_history, chain_target_name=None
+        )
+        history_id = created_task_with_history.id
+        mock_executor.sync_task_history = AsyncMock(side_effect=RuntimeError("boom"))
+        unreachable = MagicMock()
+        unreachable.__aenter__ = AsyncMock(
+            side_effect=OperationalError("UPDATE", {}, Exception("database gone"))
+        )
+        route_session_maker = MagicMock(
+            side_effect=[sqlite_session_maker(), unreachable]
+        )
+
+        with (
+            patch(
+                "app.tasks.routes.get_async_session_maker",
+                return_value=route_session_maker,
+            ),
+            caplog.at_level(logging.WARNING, logger="app.tasks.celery"),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            test_client.post(f"/history/{history_id}/sync/")
+
+        assert f"Could not release the sync lock of task history {history_id}" in (
+            caplog.text
+        )
+        assert await self._stored_lock(session, history_id) is not None
+
+    @pytest.mark.usefixtures("route_sessions")
+    @pytest.mark.parametrize(
+        ("error", "status_code"),
+        [
+            (HTTPBadRequestException("commit failed"), status.HTTP_400_BAD_REQUEST),
+            (HTTPConflictException("duplicate"), status.HTTP_409_CONFLICT),
+        ],
+        ids=["database-error", "unique-conflict"],
+    )
+    async def test_failed_commit_releases_lock(
+        self,
+        test_client,
+        session,
+        mock_executor,
+        created_task_with_history,
+        mocker,
+        error,
+        status_code,
+    ):
+        """Assert a status commit the save rejects frees the lock for the next syncer."""
+        await self._arm_parent_chain(
+            session, created_task_with_history, chain_target_name=None
+        )
+        mock_executor.sync_task_history = AsyncMock(
+            side_effect=self._executor_flips_to(TaskHistoryStatusEnum.SUCCESS)
+        )
+        mocker.patch.object(TaskHistoryManager, "save", side_effect=error)
+
+        response = test_client.post(f"/history/{created_task_with_history.id}/sync/")
+
+        assert response.status_code == status_code
+        assert await self._stored_lock(session, created_task_with_history.id) is None
+
+    @pytest.mark.usefixtures("route_sessions")
+    async def test_error_after_commit_keeps_lock_retaken_with_equal_stamp(
+        self,
+        test_client,
+        session,
+        mock_executor,
+        created_task_with_history,
+        sqlite_session_maker,
+        mocker,
+    ):
+        """Assert an error after the status commit releases nothing.
+
+        The commit already freed the lock, so a syncer may have re-taken it.
+        Re-taking it with the route's own stamp shows no release ran.
+        """
+        await self._arm_parent_chain(
+            session, created_task_with_history, chain_target_name=None
+        )
+        history_id = created_task_with_history.id
+        claimed_at = utc_now()
+        mocker.patch("app.tasks.routes.utc_now", return_value=claimed_at)
+        mock_executor.sync_task_history = AsyncMock(
+            side_effect=self._executor_flips_to(TaskHistoryStatusEnum.SUCCESS)
+        )
+        original_save = TaskHistoryManager.save
+        error = OperationalError("SELECT", {}, Exception("connection lost"))
+
+        async def commit_then_fail(*args, **kwargs):
+            await original_save(*args, **kwargs)
+            async with sqlite_session_maker() as other_session:
+                await TaskHistoryManager.update_where(
+                    other_session,
+                    {"sync_in_progress_started_at": claimed_at},
+                    id=history_id,
+                )
+            raise error
+
+        mocker.patch.object(TaskHistoryManager, "save", side_effect=commit_then_fail)
+
+        with pytest.raises(OperationalError):
+            test_client.post(f"/history/{history_id}/sync/")
+
+        assert await self._stored_lock(session, history_id) == claimed_at
 
 
 @pytest.mark.asyncio

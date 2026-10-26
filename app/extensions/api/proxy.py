@@ -22,6 +22,7 @@ from typing import NoReturn
 from fastapi import HTTPException, status
 
 from app.core.exceptions import HTTPBadGatewayException
+from app.core.utils.exceptions import exception_detail
 
 
 def reraise_upstream_tasks_error(exc: HTTPException | OSError) -> NoReturn:
@@ -46,8 +47,7 @@ def reraise_upstream_tasks_error(exc: HTTPException | OSError) -> NoReturn:
         and exc.status_code < status.HTTP_500_INTERNAL_SERVER_ERROR
     ):
         raise exc.with_traceback(exc.__traceback__)
-    detail = getattr(exc, "detail", str(exc))
-    raise HTTPBadGatewayException(detail=str(detail)) from exc
+    raise HTTPBadGatewayException(detail=exception_detail(exc)) from exc
 
 
 @contextmanager

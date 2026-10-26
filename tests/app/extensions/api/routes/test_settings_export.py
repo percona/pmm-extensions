@@ -528,6 +528,20 @@ class TestExtensionsConfigExportTasksFanOut:
         assert response.headers["content-type"].startswith("application/json")
         assert response.json() == {"detail": "tasks unavailable"}
 
+    async def test_tasks_structured_detail_returns_502_with_text(
+        self,
+        api_admin_client: TestClient,
+        mock_tasks_api: AsyncMock,
+    ) -> None:
+        """Carry a structured upstream detail onto the ``502`` as text."""
+        detail = {"message": "tasks unavailable"}
+        mock_tasks_api.get.side_effect = HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail
+        )
+        response = api_admin_client.get(EXPORT_URL)
+        assert response.status_code == status.HTTP_502_BAD_GATEWAY
+        assert response.json() == {"detail": str(detail)}
+
     async def test_tasks_oserror_returns_502(
         self,
         api_admin_client: TestClient,
