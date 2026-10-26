@@ -250,10 +250,10 @@ def _run_backup(
     """Drive ``run`` through the my.cnf/certs block and end-of-run notify.
 
     :param tmp_path: Pytest temp directory used for the backup paths.
-    :param fail_metadata_copy: When True, ``_query_mysql`` raises so the failure
+    :param fail_metadata_copy: When ``True``, ``_query_mysql`` raises so the failure
         boundary is ``get_default_mycnf``.
-    :param fail_mycnf: When True, ``shutil.copy`` raises for ``.cnf`` sources.
-    :param fail_certs: When True, ``shutil.copy`` raises for ``.pem`` sources.
+    :param fail_mycnf: When ``True``, ``shutil.copy`` raises for ``.cnf`` sources.
+    :param fail_certs: When ``True``, ``shutil.copy`` raises for ``.pem`` sources.
     :param backup_size: Text size ``get_dir_size`` returns for the notify branch.
     :param size_mb: Numeric size ``notify`` stores into ``report_options``.
     :param enc_gpg: Whether GPG encryption is enabled on the instance.
