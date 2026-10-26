@@ -34,6 +34,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Fallback when the live PR API lookup fails (before the ERR trap).
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -45,6 +47,10 @@ jobs:
             exit 1
           fi
 
+          # Prefer live head; fall back to the event head so fail_closed can still
+          # post a check when the initial PR API lookup fails.
+          head_sha="${EVENT_HEAD_SHA:-}"
+
           # Fail-closed: this helper is not itself a required check. When CI
           # cannot be re-run (e.g. GitHub's 30-day re-run window), post a
           # failing ci-success on the head SHA so a stale green check cannot
@@ -53,6 +59,10 @@ jobs:
             # Avoid re-entering via the ERR trap when we exit 1 below.
             trap - ERR
             local reason="$1"
+            if [ -z "${head_sha:-}" ]; then
+              echo "::error::$reason (no head SHA available to post ci-success)."
+              exit 1
+            fi
             echo "::error::$reason"
             gh api -X POST "repos/$REPO/check-runs" \
               -f name='ci-success' \
@@ -67,14 +77,13 @@ jobs:
           # Live head from the API: a push right after the retarget can leave
           # github.event.pull_request.head.sha pointing at a superseded commit.
           if ! pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"; then
-            echo "::error::Could not read pull request #$PR_NUMBER."
-            exit 1
+            fail_closed_ci_success "Could not read pull request #$PR_NUMBER after base retarget."
           fi
-          head_sha="$(jq -r '.head.sha' <<<"$pr")"
-          if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
-            echo "::error::Could not resolve head SHA of pull request #$PR_NUMBER."
-            exit 1
+          live_head="$(jq -r '.head.sha' <<<"$pr")"
+          if [ -z "$live_head" ] || [ "$live_head" = "null" ]; then
+            fail_closed_ci_success "Could not resolve live head SHA of pull request #$PR_NUMBER."
           fi
+          head_sha="$live_head"
           echo "PR #$PR_NUMBER live head $head_sha"
 
           # After head_sha is known, any unexpected failure under set -e
