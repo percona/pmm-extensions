@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import JSON, JSONB
 from app.core.settings_override.constants import (
     ALERT_SETTINGS,
     ANONYMIZER_SETTINGS,
+    SETTINGS,
     TASKS_SETTINGS,
 )
 from app.core.settings_override.lifecycle import SnapshotChange
@@ -39,19 +40,13 @@ from app.tasks.main import (
     task_data_not_found_handler,
     tasks_app,
     tasks_lifespan,
+    tasks_standalone_lifespan,
 )
 from app.tasks.main import lifespan as tasks_module_lifespan
+from tests.app.conftest import null_async_cm
 from tests.app.core.settings_override.conftest import (
     assert_registry_keyed_by_class_name,
 )
-
-
-def _null_async_cm() -> MagicMock:
-    """Return a MagicMock that behaves as a no-op async context manager."""
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=None)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    return cm
 
 
 @pytest.mark.asyncio
@@ -64,7 +59,7 @@ async def test_tasks_lifespan_wires_anonymizer_into_refresher():
     Celery worker already wires both proxies; this asserts the HTTP-API lifespan
     mirrors it. ``ALERT_SETTINGS`` stays out (shared-proxy clobber concern).
     """
-    refresher = MagicMock(return_value=_null_async_cm())
+    refresher = MagicMock(return_value=null_async_cm())
     with (
         patch("app.tasks.main.init_tasks_db", new=AsyncMock()),
         patch(
@@ -72,8 +67,8 @@ async def test_tasks_lifespan_wires_anonymizer_into_refresher():
             new=AsyncMock(),
         ),
         patch("app.tasks.main.settings_override_refresher", refresher),
-        patch("app.tasks.main.default_lifespan", return_value=_null_async_cm()),
-        patch("app.tasks.main.NomadLifecycle", return_value=_null_async_cm()),
+        patch("app.tasks.main.default_lifespan", return_value=null_async_cm()),
+        patch("app.tasks.main.NomadLifecycle", return_value=null_async_cm()),
     ):
         async with tasks_lifespan(FastAPI()):
             pass
@@ -86,6 +81,49 @@ async def test_tasks_lifespan_wires_anonymizer_into_refresher():
     assert ALERT_SETTINGS not in proxies
 
 
+class TestTasksStandaloneLifespan:
+    """Pin which refreshers each Tasks lifespan enters."""
+
+    @pytest.mark.asyncio
+    async def test_standalone_refreshes_settings_and_alert_settings(self) -> None:
+        """Refresh both shared classes from the PMM Extensions database when served alone."""
+        shared = MagicMock(return_value=null_async_cm())
+        combined_part = MagicMock(return_value=null_async_cm())
+        with (
+            patch("app.tasks.main.extensions_owned_overrides_refresher", shared),
+            patch("app.tasks.main.tasks_lifespan", combined_part),
+        ):
+            async with tasks_standalone_lifespan(FastAPI()):
+                pass
+
+        shared.assert_called_once_with(SETTINGS, ALERT_SETTINGS)
+        combined_part.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_the_combined_part_adds_no_shared_class_publisher(self) -> None:
+        """Leave the shared classes to the PMM Extensions refresher under ``app.main:app``."""
+        shared = MagicMock(return_value=null_async_cm())
+        refresher = MagicMock(return_value=null_async_cm())
+        with (
+            patch("app.tasks.main.init_tasks_db", new=AsyncMock()),
+            patch(
+                "app.tasks.main.verify_taskhistory_execution_request_is_jsonb",
+                new=AsyncMock(),
+            ),
+            patch("app.tasks.main.extensions_owned_overrides_refresher", shared),
+            patch("app.tasks.main.settings_override_refresher", refresher),
+            patch("app.tasks.main.default_lifespan", return_value=null_async_cm()),
+            patch("app.tasks.main.NomadLifecycle", return_value=null_async_cm()),
+        ):
+            async with tasks_lifespan(FastAPI()):
+                pass
+
+        shared.assert_not_called()
+        registry = refresher.call_args.args[1]
+        assert SETTINGS not in registry
+        assert ALERT_SETTINGS not in registry
+
+
 class TestTasksLifespanRegistry:
     """Pin the registry ``tasks_lifespan`` starts the override refresher with."""
 
@@ -96,7 +134,7 @@ class TestTasksLifespanRegistry:
         ``refresh_all`` looks callbacks up by registry key, so a key spelled as
         the storage token would load overrides yet never fire the NOMAD rebind.
         """
-        refresher = MagicMock(return_value=_null_async_cm())
+        refresher = MagicMock(return_value=null_async_cm())
         with (
             patch("app.tasks.main.init_tasks_db", new=AsyncMock()),
             patch(
@@ -104,8 +142,8 @@ class TestTasksLifespanRegistry:
                 new=AsyncMock(),
             ),
             patch("app.tasks.main.settings_override_refresher", refresher),
-            patch("app.tasks.main.default_lifespan", return_value=_null_async_cm()),
-            patch("app.tasks.main.NomadLifecycle", return_value=_null_async_cm()),
+            patch("app.tasks.main.default_lifespan", return_value=null_async_cm()),
+            patch("app.tasks.main.NomadLifecycle", return_value=null_async_cm()),
         ):
             async with tasks_lifespan(FastAPI()):
                 pass
@@ -123,7 +161,7 @@ def test_tasks_app_lifespan_is_always_set():
     re-imports the module with ``__name__ == "app.tasks.main"`` rather than
     ``"__main__"``, which would leave the lifespan as ``None``.
     """
-    assert tasks_module_lifespan is tasks_lifespan
+    assert tasks_module_lifespan is tasks_standalone_lifespan
 
 
 def test_tasks_app_publishes_nomad_rebind_callback_on_state():
