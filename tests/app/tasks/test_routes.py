@@ -2698,6 +2698,83 @@ async def test_execute_route_keeps_scheduled_at_out_of_meta(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case_id", "requirements"),
+    [
+        ("number", 42),
+        ("empty_string_item", ["PyMySQL", ""]),
+        ("non_string_item", ["PyMySQL", 1]),
+    ],
+    ids=["number", "empty_string_item", "non_string_item"],
+)
+async def test_execute_rejects_invalid_requirements_with_422(
+    test_client, session, mocker, case_id, requirements
+):
+    """Assert invalid meta.requirements returns 422 and creates no history row."""
+    task = await TaskManager.create(
+        session,
+        TaskWrite.model_validate(
+            TaskFactory.build(name=f"invalid-requirements-{case_id}", anonymize_mask=0)
+        ),
+    )
+    dispatch_spy = mocker.patch("app.tasks.routes.dispatch_queue_item")
+
+    response = test_client.post(
+        f"/execute/{task.name}",
+        json={"meta_target": "node1", "meta": {"requirements": requirements}},
+    )
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    dispatch_spy.assert_not_called()
+    history = test_client.get(f"/{task.name}/history/")
+    assert history.status_code == status.HTTP_200_OK
+    assert history.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_normalizes_requirements_list_to_joined_string(
+    test_client, session, mocker
+):
+    """Assert a requirements list is stored and returned as a newline-joined string."""
+    task = await TaskManager.create(
+        session,
+        TaskWrite.model_validate(
+            TaskFactory.build(name="list-requirements", anonymize_mask=0)
+        ),
+    )
+
+    async def fake_dispatch_queue_item(queue_item, passed_session):
+        queue_item.status = TaskHistoryStatusEnum.RUNNING
+        return await TaskHistoryManager.save(
+            passed_session,
+            queue_item,
+            flag_modified_fields=["execution_request"],
+        )
+
+    fake_executor = MagicMock(spec=BaseExecutor)
+    fake_executor.get_hosts.return_value = {"node1": "10.0.0.1"}
+    mocker.patch("app.tasks.routes.get_executor_for_task", return_value=fake_executor)
+    mocker.patch(
+        "app.tasks.routes.dispatch_queue_item",
+        side_effect=fake_dispatch_queue_item,
+    )
+
+    response = test_client.post(
+        f"/execute/{task.name}",
+        json={
+            "meta_target": "node1",
+            "meta": {"requirements": ["PyMySQL", "filelock"]},
+        },
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert (
+        response.json()["execution_request"]["meta"]["requirements"]
+        == "PyMySQL\nfilelock"
+    )
+
+
+@pytest.mark.asyncio
 async def test_execute_task_name_refreshes_execution_request_before_annotation(
     test_client, session, mock_executor, mocker
 ):
