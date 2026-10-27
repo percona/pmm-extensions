@@ -118,9 +118,11 @@ async def annotate_task_event(
     rather than an ORM instance so the coroutine is safe to run after the
     originating request session has closed.
 
-    Skip a task whose node is :data:`~app.tasks.models.CELERY_LOCAL_TARGET`:
-    it ran on PMM Extensions' own worker (the scheduled inventory sync and
-    collection), which is no PMM node, so PMM would refuse the annotation.
+    Skip a task whose ``target`` is :data:`~app.tasks.models.CELERY_LOCAL_TARGET`
+    and that sets no ``_pmm_node_name`` override: it ran on PMM Extensions' own
+    worker (the scheduled inventory sync and collection), which is no PMM node,
+    so PMM would refuse the annotation. An explicit override always annotates,
+    even one naming a node called ``local``.
 
     :param task_name: The task name (from ``TaskExecutionRequest.task``).
     :param target: The execution target node (from ``TaskExecutionRequest.target``).
@@ -133,12 +135,13 @@ async def annotate_task_event(
         single = safe_meta.get("_service_name")
         service_names = [single] if single else []
 
-    node_name = safe_meta.get("_pmm_node_name") or target
-    if node_name == CELERY_LOCAL_TARGET:
+    pmm_node_name = safe_meta.get("_pmm_node_name")
+    if not pmm_node_name and target == CELERY_LOCAL_TARGET:
         logger.debug(
             "PMM annotation skipped for %s: it ran on the local worker", task_name
         )
         return
+    node_name = pmm_node_name or target
 
     await create_pmm_annotation(
         text=f"PMM Extensions: {task_name} - {event}",

@@ -248,6 +248,27 @@ class TestAnnotateTaskEvent:
         assert mock_create.await_args.kwargs["node_name"] == "db-node-1"
 
     @pytest.mark.asyncio
+    async def test_annotates_an_override_that_names_a_node_called_local(self):
+        """Assert an explicit ``_pmm_node_name`` of ``local`` is still annotated.
+
+        Only a task whose ``target`` is the local worker is skipped; an
+        override naming a real PMM node that happens to be called ``local``
+        must not be mistaken for it.
+        """
+        with patch(
+            "app.core.pmm.create_pmm_annotation", new_callable=AsyncMock
+        ) as mock_create:
+            await annotate_task_event(
+                task_name="archive",
+                target="executor-host",
+                meta={"_pmm_node_name": CELERY_LOCAL_TARGET},
+                event="COMPLETED",
+            )
+
+        mock_create.assert_awaited_once()
+        assert mock_create.await_args.kwargs["node_name"] == CELERY_LOCAL_TARGET
+
+    @pytest.mark.asyncio
     async def test_reads_service_names_list_from_meta(self):
         """Assert ``_service_names`` list is passed through from meta."""
         with patch(
