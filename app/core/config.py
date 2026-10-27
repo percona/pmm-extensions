@@ -24,7 +24,7 @@ from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import timedelta
-from functools import cached_property
+from functools import cached_property, partial
 from pathlib import Path
 from typing import (
     Annotated,
@@ -80,8 +80,14 @@ from app.core.middleware.security_headers import (
 from app.core.models import BaseCaseInsensitiveModel, BaseLowercaseModel
 from app.core.requests import BaseRemoteAPI, ClientRegistry, RemoteAPI
 from app.core.settings_override.proxy import OverridableSettingsProxy
-from app.core.settings_override.registry import hot_field, not_overridable_field
+from app.core.settings_override.registry import (
+    field_reload_classification,
+    hot_field,
+    not_overridable_field,
+    ReloadClassification,
+)
 from app.core.utils import deep_dict_update
+from app.core.utils.cross_field import CrossFieldRule, violated_rules
 from app.core.utils.fields import (
     EmptyStrToNone,
     LogLevel,
@@ -97,6 +103,7 @@ from app.core.utils.openapi import (
     generate_tag_prefixed_unique_id,
     install_namespaced_openapi,
 )
+from app.core.utils.pydantic import annotation_pydantic_class
 
 
 def _sanitize_client_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -276,6 +283,8 @@ class BaseYamlSettings(BaseSettings):
 
     :cvar SETTINGS_PREFIXES: Tuple of settings prefixes.
     :vartype SETTINGS_PREFIXES: list[str]
+    :cvar CROSS_FIELD_RULES: Relationships the class's top-level fields must
+        satisfy together; a load that breaks one is refused.
     :param FASTAPI_ENV: The environment used (e.g. development, production).
         Defaults to "development".
     :type FASTAPI_ENV: str
@@ -289,7 +298,58 @@ class BaseYamlSettings(BaseSettings):
         extra="ignore",
     )
     SETTINGS_PREFIXES: ClassVar[list[str]] = []
+    CROSS_FIELD_RULES: ClassVar[tuple[CrossFieldRule, ...]] = ()
     FASTAPI_ENV: str = pre_env_settings.FASTAPI_ENV
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Refuse ``CROSS_FIELD_RULES`` that a load or override route cannot honour.
+
+        A ruled class must hide inputs in errors, because a refused load reports
+        the whole input and is logged. Every rule field must be a declared field
+        that is not nested-overridable. A nested-model field marked ``HOT`` or
+        ``NESTED_ONLY`` accepts ``parent__leaf`` overrides, and the PATCH and
+        DELETE checks never see those leaves.
+
+        :param kwargs: Forwarded to the parent hook.
+        :raises TypeError: If the class declares a rule it cannot enforce safely.
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+        if not cls.CROSS_FIELD_RULES:
+            return
+        if not cls.model_config.get("hide_input_in_errors"):
+            raise TypeError(
+                f"{cls.__name__} declares CROSS_FIELD_RULES, so it must set "
+                "hide_input_in_errors"
+            )
+        for name in {name for rule in cls.CROSS_FIELD_RULES for name in rule.fields}:
+            field_info = cls.model_fields.get(name)
+            if field_info is None:
+                raise TypeError(
+                    f"{cls.__name__}.CROSS_FIELD_RULES names {name}, "
+                    "which is not a field"
+                )
+            if annotation_pydantic_class(
+                field_info.annotation
+            ) is not None and field_reload_classification(field_info) in {
+                ReloadClassification.HOT,
+                ReloadClassification.NESTED_ONLY,
+            }:
+                raise TypeError(
+                    f"{cls.__name__}.CROSS_FIELD_RULES names {name}, "
+                    "which is nested-overridable"
+                )
+
+    @model_validator(mode="after")
+    def _check_cross_field_rules(self) -> Self:
+        """Refuse a combination of fields that breaks a ``CROSS_FIELD_RULES`` entry.
+
+        :return: The validated settings instance.
+        :raises ValueError: Naming every violated rule's fields and relationship.
+        """
+        if violated := violated_rules(self.CROSS_FIELD_RULES, partial(getattr, self)):
+            raise ValueError("; ".join(rule.message for rule in violated))
+        return self
 
     @classmethod
     def settings_customise_sources(

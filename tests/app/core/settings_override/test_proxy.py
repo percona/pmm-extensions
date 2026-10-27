@@ -210,3 +210,27 @@ class TestConstructorContract:
         """Raise ``AttributeError`` for the removed identifier attribute."""
         with pytest.raises(AttributeError):
             _ = proxy._setting_class
+
+
+class TestGetBase:
+    """Group the checks of :meth:`OverridableSettingsProxy.get_base`."""
+
+    def test_it_ignores_the_snapshot(
+        self, proxy: OverridableSettingsProxy[_Sample]
+    ) -> None:
+        """Return the wrapped value even while an override shadows it.
+
+        :param proxy: A proxy wrapping ``_Sample``.
+        """
+        proxy._set_snapshot({"name": "from-snapshot"})
+
+        assert proxy.get_base().name == _Sample().name
+
+    def test_it_is_the_one_wrapped_instance(
+        self, proxy: OverridableSettingsProxy[_Sample]
+    ) -> None:
+        """Resolve the factory once, not on every call.
+
+        :param proxy: A proxy wrapping ``_Sample``.
+        """
+        assert proxy.get_base() is proxy.get_base()

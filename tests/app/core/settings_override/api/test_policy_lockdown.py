@@ -175,6 +175,53 @@ class TestRemotePassThrough:
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert response.json()["detail"] == upstream_detail
 
+    def test_upstream_refusal_of_a_revert_reaches_the_caller_unchanged(
+        self, override_session: AsyncSession
+    ) -> None:
+        """Assert an upstream DELETE 422 keeps its per-field entries and context."""
+        upstream_detail = [
+            {
+                "loc": ["body", name],
+                "msg": "POLL_INTERVAL, TASK_TIMEOUT: POLL_INTERVAL must not exceed "
+                "TASK_TIMEOUT",
+                "type": "cross_field",
+                "ctx": {"fields": ["POLL_INTERVAL", "TASK_TIMEOUT"]},
+            }
+            for name in ("POLL_INTERVAL", "TASK_TIMEOUT")
+        ]
+
+        class _RefusingRemoteAPI:
+            """Stand in for an owning service refusing a revert."""
+
+            async def delete(self, path: str, **kwargs: object) -> None:
+                """Raise the 422 the owning service's cross-field check would return."""
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=upstream_detail,
+                )
+
+        async def get_session() -> AsyncSession:
+            return override_session
+
+        async def get_remote_api() -> _RefusingRemoteAPI:
+            return _RefusingRemoteAPI()
+
+        router = build_settings_router(
+            classes=[(SETTINGS, Settings, settings)],
+            session_dep=Annotated[AsyncSession, Depends(get_session)],
+            admin_dep=Depends(lambda: None),
+            actor_dep=Annotated[str, Depends(lambda: "test-admin")],
+            remote_classes=[(TASKS_SETTINGS, "/admin/settings")],
+            remote_api_dep=Annotated[_RefusingRemoteAPI, Depends(get_remote_api)],
+        )
+        app = FastAPI()
+        app.include_router(router, prefix="/settings")
+        client = TestClient(app, raise_server_exceptions=False)
+
+        response = client.delete(f"{TASKS_URL}/TASK_TIMEOUT")
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.json()["detail"] == upstream_detail
+
 
 class TestPatchGate:
     """Cover the three PATCH guards under an active restriction."""

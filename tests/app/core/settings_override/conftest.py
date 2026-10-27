@@ -17,12 +17,14 @@
 
 import asyncio
 import logging
+import operator
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
-from typing import Self
+from typing import ClassVar, Self
 
 import pytest
 import pytest_asyncio
 from pydantic import BaseModel, SecretStr
+from pydantic_settings import SettingsConfigDict
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -51,7 +53,9 @@ from app.core.settings_override.models import (
     setting_class_token,
     SettingOverride,
 )
+from app.core.settings_override.registry import hot_field
 from app.core.utils import json_serializer
+from app.core.utils.cross_field import CrossFieldRule
 from app.extensions.config import ExtensionsSettings
 from app.extensions.snippets.config import SnippetsSettings
 from app.inventory.config import InventorySettings
@@ -290,3 +294,24 @@ async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
             yield session
     finally:
         await engine.dispose()
+
+
+class TimingSettings(BaseYamlSettings):
+    """Carry two related fields, a third sharing one of them, and a bystander.
+
+    Shaped like the probe-timing rules, so core tests exercise cross-field
+    enforcement without importing an app.
+    """
+
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
+    CROSS_FIELD_RULES: ClassVar[tuple[CrossFieldRule, ...]] = (
+        CrossFieldRule(
+            ("POLL", "TIMEOUT"), operator.le, "POLL must not exceed TIMEOUT"
+        ),
+        CrossFieldRule(("STALE", "TIMEOUT"), operator.gt, "STALE must exceed TIMEOUT"),
+    )
+
+    POLL: int = hot_field(3)
+    TIMEOUT: int = hot_field(180)
+    STALE: int = hot_field(600)
+    BYSTANDER: int = hot_field(5)

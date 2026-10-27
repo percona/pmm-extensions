@@ -24,20 +24,38 @@ runs the package ``__init__``, which pulls in the app definition and transitivel
 
 __all__ = ["OmInventorySettings", "om_inventory_settings"]
 
+import operator
 from datetime import timedelta
 from typing import Annotated, ClassVar
 
 from annotated_types import Gt
 from pydantic import PositiveInt
+from pydantic_settings import SettingsConfigDict
 
 from app.core.celery.models import IntervalSchedule, Period
 from app.core.config import BaseYamlSettings
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import hot_field
+from app.core.utils.cross_field import CrossFieldRule
 from app.core.utils.fields import StrHttpUrl, TimedeltaSeconds
 
 #: A ``TimedeltaSeconds`` that must be greater than zero.
 _PositiveSeconds = Annotated[TimedeltaSeconds, Gt(timedelta(0))]
+
+
+def _stale_run_after_exceeds(stale: timedelta, task_timeout: int) -> bool:
+    """Return whether ``stale`` exceeds ``task_timeout`` in the whole seconds GET shows.
+
+    Rounding the way ``TimedeltaSeconds`` serializes keeps every accepted threshold
+    re-submittable exactly as GET returns it, and comparing numbers instead of building
+    a ``timedelta`` turns a timeout too large for one into a refusal, not an
+    ``OverflowError``.
+
+    :param stale: The stale-run threshold.
+    :param task_timeout: The task timeout, seconds.
+    :return: Whether the threshold is strictly greater.
+    """
+    return round(stale.total_seconds()) > task_timeout
 
 
 class OmInventorySettings(BaseYamlSettings):
@@ -57,6 +75,8 @@ class OmInventorySettings(BaseYamlSettings):
     deployment.
 
     :cvar SETTINGS_PREFIXES: Places this section under ``EXTENSIONS.OM_INVENTORY``.
+    :cvar CROSS_FIELD_RULES: The probe-timing relationships below, refused on load
+        and on every API change rather than discovered mid-sweep.
     :param ENABLED: Whether the sweep may run at all, scheduled *or* manually
         triggered, independent of ``SCHEDULE``. Mirrors PMM's Operations for
         MongoDB on/off switch: pmm-managed flips this (not ``SCHEDULE``) when an
@@ -85,7 +105,9 @@ class OmInventorySettings(BaseYamlSettings):
     :param CONNECT_TIMEOUT: Per-target connect and server-selection timeout, seconds.
     :param TASK_TIMEOUT: How long to wait for one dispatched probe task to reach a
         terminal status before giving up on it, seconds.
-    :param POLL_INTERVAL: Delay between task-status polls, seconds.
+    :param POLL_INTERVAL: Delay between task-status polls, seconds. Must not exceed
+        ``TASK_TIMEOUT``: the wait loop sleeps a full interval before its first
+        deadline check, so a longer interval overshoots the timeout by that much.
     :param MAX_CONCURRENT_PROBES: Ceiling on probe tasks in flight at once. Every
         dispatch is a Nomad job, and a real estate has far more hosts than this
         workspace's sandbox. Bounded well under the Tasks API's own database pool
@@ -103,14 +125,30 @@ class OmInventorySettings(BaseYamlSettings):
         endpoint concludes its worker is gone. Must comfortably exceed the slowest
         legitimate sweep, which dispatches ``MAX_CONCURRENT_PROBES`` hosts at a time
         and can take up to ``TASK_TIMEOUT`` per batch: for an estate of ``N`` hosts
-        that is roughly ``ceil(N / MAX_CONCURRENT_PROBES) * TASK_TIMEOUT``. The
+        that is roughly ``ceil(N / MAX_CONCURRENT_PROBES) * TASK_TIMEOUT``. Only
+        the ``TASK_TIMEOUT`` floor is enforced, since a single probe may run that
+        long and anything at or below it can only reap a live run; the estate-size
+        bound stays advisory because ``N`` is unknown here. The
         default covers estates up to a few hundred hosts at the defaults above;
         raising ``MAX_CONCURRENT_PROBES`` or targeting a much larger estate should
         raise this too, or the trigger endpoint reaps a sweep that is still running
         and reopens the single-flight race this check exists to close.
     """
 
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
     SETTINGS_PREFIXES: ClassVar[list[str]] = ["EXTENSIONS", "OM_INVENTORY"]
+    CROSS_FIELD_RULES: ClassVar[tuple[CrossFieldRule, ...]] = (
+        CrossFieldRule(
+            ("POLL_INTERVAL", "TASK_TIMEOUT"),
+            operator.le,
+            "POLL_INTERVAL must not exceed TASK_TIMEOUT",
+        ),
+        CrossFieldRule(
+            ("STALE_RUN_AFTER", "TASK_TIMEOUT"),
+            _stale_run_after_exceeds,
+            "STALE_RUN_AFTER must exceed TASK_TIMEOUT",
+        ),
+    )
 
     ENABLED: bool = hot_field(default=False)
     SCHEDULE: IntervalSchedule | None = hot_field(

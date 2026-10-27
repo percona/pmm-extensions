@@ -18,16 +18,19 @@
 import base64
 import hashlib
 import hmac
+import operator
 import re
 import secrets
 import warnings
+from collections.abc import Callable
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
-from pydantic import AliasChoices, Field, SecretStr, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, ValidationError
 from pydantic_settings import (
     BaseSettings,
     NestedSecretsSettingsSource,
@@ -47,6 +50,7 @@ from app.core.auth.config import AuthSettings
 from app.core.config import (
     _sanitize_client_kwargs,
     BaseYamlAppSettings,
+    BaseYamlSettings,
     create_app,
     default_lifespan,
     detect_removed_settings_override_keys,
@@ -59,8 +63,11 @@ from app.core.config import (
 )
 from app.core.settings_override.registry import (
     field_reload_classification,
+    hot_field,
+    nested_overridable_field,
     ReloadClassification,
 )
+from app.core.utils.cross_field import CrossFieldRule
 from app.extensions.apps.alerts.config import AlertsSettings
 from app.extensions.apps.atw.config import AtwSettings
 from app.extensions.apps.report.config import HealthReportSettings
@@ -1579,3 +1586,121 @@ class TestRemovedSettingsOverrideKeysDetector:
             "  SETTINGS_OVERRIDE:\n    ALLOWED_KEYS:\n      - Settings.LOGGING\n",
         )
         detect_removed_settings_override_keys()
+
+
+class _UnruledSettings(BaseYamlSettings):
+    SETTINGS_PREFIXES = ["CROSS_FIELD_TEST"]
+    LOW: int = 5
+    HIGH: int = 1
+
+
+class _RuledSettings(BaseYamlSettings):
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
+    SETTINGS_PREFIXES = ["CROSS_FIELD_TEST"]
+    CROSS_FIELD_RULES = (
+        CrossFieldRule(("LOW", "HIGH"), operator.le, "LOW must not exceed HIGH"),
+    )
+    LOW: int = 1
+    HIGH: int = 5
+
+
+class TestBaseYamlSettingsCrossFieldRules:
+    """Group the load-time enforcement of ``CROSS_FIELD_RULES``."""
+
+    def test_a_class_without_rules_is_unaffected(self) -> None:
+        """Load a class declaring no rules exactly as before."""
+        loaded = _UnruledSettings()
+
+        assert (loaded.LOW, loaded.HIGH) == (5, 1)
+
+    def test_a_consistent_combination_loads(self) -> None:
+        """Load a combination every rule accepts."""
+        loaded = _RuledSettings(LOW=5, HIGH=5)
+
+        assert (loaded.LOW, loaded.HIGH) == (5, 5)
+
+    def test_an_inconsistent_combination_is_refused(self) -> None:
+        """Refuse a combination naming both fields and the relationship."""
+        with pytest.raises(ValidationError) as exc_info:
+            _RuledSettings(LOW=6, HIGH=5)
+
+        message = str(exc_info.value)
+        assert "LOW, HIGH" in message
+        assert "LOW must not exceed HIGH" in message
+
+    def test_the_refusal_does_not_echo_values(self) -> None:
+        """Keep field values out of the message so a secret cannot leak through it."""
+        with pytest.raises(ValidationError) as exc_info:
+            _RuledSettings(LOW=60061, HIGH=5)
+
+        assert "60061" not in str(exc_info.value)
+
+
+class _Window(BaseModel):
+    START: int = 0
+
+
+_LOW_NOT_ABOVE_HIGH = CrossFieldRule(
+    ("LOW", "HIGH"), operator.le, "LOW must not exceed HIGH"
+)
+
+
+class TestCrossFieldRuleDeclarations:
+    """Refuse at class definition a rule that some route could not enforce."""
+
+    def test_a_ruled_class_must_hide_inputs_in_errors(self) -> None:
+        """Refuse a class whose refused load would log every field's value."""
+        with pytest.raises(TypeError, match="hide_input_in_errors"):
+
+            class _Leaky(BaseYamlSettings):
+                CROSS_FIELD_RULES = (_LOW_NOT_ABOVE_HIGH,)
+                LOW: int = 1
+                HIGH: int = 5
+
+    def test_a_rule_naming_an_undeclared_field_is_refused(self) -> None:
+        """Fail loudly on a misspelt field instead of at the first load."""
+        with pytest.raises(TypeError, match="HIGH"):
+
+            class _Misspelt(BaseYamlSettings):
+                model_config = SettingsConfigDict(hide_input_in_errors=True)
+                CROSS_FIELD_RULES = (_LOW_NOT_ABOVE_HIGH,)
+                LOW: int = 1
+                HIHG: int = 5
+
+    @pytest.mark.parametrize(
+        "declare",
+        [nested_overridable_field, hot_field],
+        ids=["nested_only", "hot"],
+    )
+    def test_a_rule_naming_a_nested_overridable_field_is_refused(
+        self, declare: Callable[[_Window], Any]
+    ) -> None:
+        """Refuse a field whose leaves the PATCH and DELETE checks never see."""
+        with pytest.raises(TypeError, match="WINDOW"):
+
+            class _Nested(BaseYamlSettings):
+                model_config = SettingsConfigDict(hide_input_in_errors=True)
+                CROSS_FIELD_RULES = (
+                    CrossFieldRule(("WINDOW", "HIGH"), lambda *_: True, "anything"),
+                )
+                WINDOW: _Window = declare(_Window())
+                HIGH: int = 5
+
+    def test_a_rule_naming_a_hot_scalar_field_is_accepted(self) -> None:
+        """Accept a hot field with no leaves, since its override is checked whole."""
+
+        class _Scalar(BaseYamlSettings):
+            model_config = SettingsConfigDict(hide_input_in_errors=True)
+            CROSS_FIELD_RULES = (_LOW_NOT_ABOVE_HIGH,)
+            LOW: int = hot_field(1)
+            HIGH: int = hot_field(5)
+
+        assert (_Scalar().LOW, _Scalar().HIGH) == (1, 5)
+
+    def test_a_class_without_rules_needs_neither(self) -> None:
+        """Leave a class that declares no rules free of both requirements."""
+
+        class _Plain(BaseYamlSettings):
+            WINDOW: _Window = nested_overridable_field(_Window())
+
+        assert _Plain().WINDOW.START == 0
