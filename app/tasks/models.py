@@ -699,10 +699,14 @@ class TaskWrite(TaskBase):
 
 
 class TaskExecuteRequest(BaseModel):
-    """Represent a request to execute a task with additional metadata and payload.
+    r"""Represent a request to execute a task with additional metadata and payload.
 
     :param meta: A dictionary of meta variables for the task execution.
-        Defaults to an empty dictionary.
+        Defaults to an empty dictionary. For ``run-python``, ``meta.requirements``
+        may be a newline-joined string (for example ``"PyMySQL\nfilelock"``) or a
+        list of non-empty package lines (for example
+        ``["PyMySQL", "filelock"]``); both are stored and dispatched as the joined
+        string.
     :type meta: dict[str, Any]
     :param payload: Optional payload data or file path for the task execution.
         Defaults to None.
@@ -720,7 +724,16 @@ class TaskExecuteRequest(BaseModel):
     :type chain_on_failure: bool
     """
 
-    meta: dict[str, Any] = Field(default={}, json_schema_extra=ARBITRARY_ARGS_SCHEMA)
+    meta: dict[str, Any] = Field(
+        default={},
+        description=(
+            "Task execution meta variables. For run-python, requirements may be a "
+            r"newline-joined string (e.g. 'PyMySQL\nfilelock') or a list of "
+            "non-empty package lines (e.g. ['PyMySQL', 'filelock']); both are "
+            "stored and dispatched as the joined string."
+        ),
+        json_schema_extra=ARBITRARY_ARGS_SCHEMA,
+    )
     payload: str | None = None
     eta: datetime | EmptyStrToNone = None
     anonymize_mask: int | None = None

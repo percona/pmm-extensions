@@ -328,7 +328,10 @@ which kind of task envelope the generated `spec.py` builds:
 - **`run-python`** runs a **Python payload** shipped with the task. The spec
   builder returns a `RunPythonSpec` — a serialized config, a pip requirements
   string, and a `file://` payload URI. Choose it when the work is Python code
-  you write rather than a command you invoke.
+  you write rather than a command you invoke. The Tasks API also accepts
+  `meta.requirements` as a list of non-empty package lines (for example
+  `["PyMySQL", "filelock"]`); both the string form and the list form are
+  stored and dispatched as a newline-joined string.
 
 Keep `run-command` unless you are shipping a Python payload; it is the path the
 rest of this guide's examples follow.
