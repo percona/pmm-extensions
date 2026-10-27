@@ -32,13 +32,13 @@ from typing import Any, TYPE_CHECKING, Union
 from pydantic import BaseModel, SecretBytes, SecretStr
 
 from app.core.settings_override.registry import (
-    _field_contains_secret,
-    _stable_collection_sort_key,
-    _unwrap_secret_value,
     annotated_type,
     annotation_is_credential_url,
+    field_contains_secret,
     is_credential_url_field,
     SECRET_STR_MASK,
+    stable_collection_sort_key,
+    unwrap_secret_value,
 )
 from app.core.utils.fields import preserve_credential_url_password
 from app.core.utils.pydantic import annotation_pydantic_class
@@ -216,10 +216,10 @@ def _stable_collection_items(current: Any) -> list[Any]:
     :param current: A stored ``list``/``set``/``tuple``/``frozenset``, or
         ``None``.
     :return: A list of items; ``set``/``frozenset`` inputs are sorted by
-        :func:`app.core.settings_override.registry._stable_collection_sort_key`.
+        :func:`app.core.settings_override.registry.stable_collection_sort_key`.
     """
     if isinstance(current, set | frozenset):
-        return sorted(current, key=_stable_collection_sort_key)
+        return sorted(current, key=stable_collection_sort_key)
     if isinstance(current, list | tuple):
         return list(current)
     return []
@@ -246,7 +246,7 @@ def _collection_item_value_score(
         if incoming_val == SECRET_STR_MASK:
             continue
         current_val = getattr(current, name, None)
-        unwrapped = _unwrap_secret_value(current_val)
+        unwrapped = unwrap_secret_value(current_val)
         compare: Any = unwrapped if unwrapped is not None else current_val
         if incoming_val == compare or str(incoming_val) == str(compare):
             score += 2
@@ -265,7 +265,7 @@ def _preserve_masked_secret_scalar(current: Any, incoming: Any) -> Any:
     """
     if incoming != SECRET_STR_MASK:
         return incoming
-    stored = _unwrap_secret_value(current)
+    stored = unwrap_secret_value(current)
     return incoming if stored is None else stored
 
 
@@ -284,7 +284,7 @@ def _preserve_secrets_in_dict_payload(
         if value != SECRET_STR_MASK:
             continue
         leaf_current = current.get(key) if isinstance(current, Mapping) else None
-        stored = _unwrap_secret_value(leaf_current)
+        stored = unwrap_secret_value(leaf_current)
         if stored is not None:
             result[key] = stored
     return result
@@ -312,7 +312,7 @@ def _preserve_secrets_in_secret_sequence_payload(
             result.append(value)
             continue
         leaf = current_items[index] if index < len(current_items) else None
-        stored = _unwrap_secret_value(leaf)
+        stored = unwrap_secret_value(leaf)
         result.append(value if stored is None else stored)
     return result
 
@@ -502,7 +502,7 @@ def _preserve_secrets_in_sequence_payload(
             for key, value in restored.items():
                 if value != SECRET_STR_MASK:
                     continue
-                stored = _unwrap_secret_value(matched.get(key))
+                stored = unwrap_secret_value(matched.get(key))
                 if stored is not None:
                     restored[key] = stored
             result.append(restored)
@@ -557,7 +557,7 @@ def preserve_secrets_in_model_payload(
                 leaf_current, result[name]
             )
             continue
-        if _field_contains_secret(field_info):
+        if field_contains_secret(field_info):
             result[name] = _preserve_masked_secret_scalar(leaf_current, result[name])
     return result
 
@@ -601,6 +601,6 @@ def preserve_patch_secret_value(
         )
     ):
         return _preserve_secrets_in_sequence_payload(current, incoming)
-    if _field_contains_secret(field_info):
+    if field_contains_secret(field_info):
         return _preserve_masked_secret_scalar(current, incoming)
     return incoming
