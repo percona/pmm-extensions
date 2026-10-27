@@ -432,11 +432,33 @@ class TestAuthenticateBearerTokenTypes:
         """Verify the failed-authentication log does not echo the credential."""
         bearer = "bogus-bearer-xyz"
 
-        with caplog.at_level(logging.DEBUG), pytest.raises(HTTPUnauthorizedException):
+        with (
+            caplog.at_level(logging.DEBUG, logger="app.api.deps"),
+            pytest.raises(HTTPUnauthorizedException),
+        ):
             await authenticate_bearer_token(bearer)
 
         assert caplog.records
         assert bearer not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_refused_bearer_is_an_info_line_without_traceback(self, caplog):
+        """Verify a rejected credential logs one INFO reason, not an ERROR traceback.
+
+        Expired and malformed bearers are routine client errors that the 401
+        already answers, so they must not read as a server fault in the logs.
+        """
+        with (
+            caplog.at_level(logging.DEBUG, logger="app.api.deps"),
+            pytest.raises(HTTPUnauthorizedException),
+        ):
+            await authenticate_bearer_token("bogus-bearer-xyz")
+
+        rejected = [r for r in caplog.records if "Rejected a bearer" in r.getMessage()]
+        assert len(rejected) == 1
+        assert rejected[0].levelno == logging.INFO
+        assert rejected[0].exc_info is None
+        assert all(r.levelno < logging.ERROR for r in caplog.records)
 
 
 class TestGetCurrentUserRequestCache:

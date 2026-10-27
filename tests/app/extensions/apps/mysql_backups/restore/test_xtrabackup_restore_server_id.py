@@ -49,7 +49,7 @@ _ProgrammingError = type("ProgrammingError", (Exception,), {})
 _SYNTAX_ERROR = "(1064, 'You have an error in your SQL syntax')"
 
 
-@dataclass(frozen=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True, slots=True)
 class QueryCall:
     """Record one ``_query_mysql`` call."""
 
@@ -227,7 +227,7 @@ class TestMasterQueryFails:
         )
 
     def test_still_asks_for_the_replicas(self, master: FakeMaster) -> None:
-        """Still list the replicas after the master's id is refused."""
+        """List the replicas even after the master's id is refused."""
         _new_server_id(master, ScriptedRandom([_FRESH_ID]))
 
         assert master.queries == [_MASTER_SQL, _REPLICAS_SQL]

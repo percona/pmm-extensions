@@ -25,7 +25,7 @@ from sqlalchemy.orm.attributes import NO_VALUE
 
 from app.core.config import settings
 from app.core.requests.remote_api import RemoteAPI
-from app.tasks.models import TaskExecutionRequest, TaskHistory
+from app.tasks.models import CELERY_LOCAL_TARGET, TaskExecutionRequest, TaskHistory
 
 _EXECUTION_REQUEST_ATTR = "execution_request"
 
@@ -118,14 +118,15 @@ async def annotate_task_event(
     rather than an ORM instance so the coroutine is safe to run after the
     originating request session has closed.
 
+    Skip a task whose ``target`` is :data:`~app.tasks.models.CELERY_LOCAL_TARGET`
+    and that sets no ``_pmm_node_name`` override: it ran on PMM Extensions' own
+    Celery worker, which is no PMM node, so PMM would refuse the annotation. An
+    explicit override always annotates, even one naming a node called ``local``.
+
     :param task_name: The task name (from ``TaskExecutionRequest.task``).
-    :type task_name: str
     :param target: The execution target node (from ``TaskExecutionRequest.target``).
-    :type target: str
     :param meta: The task execution metadata (from ``TaskExecutionRequest.meta``).
-    :type meta: dict[str, Any] | None
     :param event: The event label (e.g. ``"STARTED"``, ``"COMPLETED"``, ``"FAILED"``).
-    :type event: str
     """
     safe_meta = meta or {}
     service_names = safe_meta.get("_service_names")
@@ -133,7 +134,13 @@ async def annotate_task_event(
         single = safe_meta.get("_service_name")
         service_names = [single] if single else []
 
-    node_name = safe_meta.get("_pmm_node_name") or target
+    pmm_node_name = safe_meta.get("_pmm_node_name")
+    if not pmm_node_name and target == CELERY_LOCAL_TARGET:
+        logger.debug(
+            "PMM annotation skipped for %s: it ran on the local worker", task_name
+        )
+        return
+    node_name = pmm_node_name or target
 
     await create_pmm_annotation(
         text=f"PMM Extensions: {task_name} - {event}",

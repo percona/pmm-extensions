@@ -112,8 +112,9 @@ async def authenticate_bearer_token(token: str) -> BaseUser:
         return _build_service_principal(secret)
     try:
         user = await User.from_bearer(token)
-    except ValidationError:
-        logger.exception("Failed to authenticate user")
+    except ValidationError as exc:
+        reasons = "; ".join(error["msg"] for error in exc.errors(include_input=False))
+        logger.info("Rejected a bearer credential: %s", reasons)
         raise HTTPUnauthorizedException from None
     if not user.is_active:
         raise InactiveUserException

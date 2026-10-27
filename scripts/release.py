@@ -23,12 +23,12 @@ forward ``VERSION`` (and ``RC`` for ``release-rc``) to this script.
 
 Subcommands:
 
-- ``prep``: Day-27 prep step. Creates ``release/vX.Y.Z`` from ``main``
+- ``prep``: optional prep step. Creates ``release/vX.Y.Z`` from ``main``
   HEAD, dispatches the Jira ``version-create`` automation webhook to lock
   the ``fixVersion=sep-next`` scope, opens the ``main`` dev-version-bump
   PR, smoke-builds the wheel, and triggers an internal-registry-only
-  Jenkins build for the team-wide internal QA day before rc1 publishes
-  to Docker Hub. No version bump, no tag.
+  Jenkins build before rc1 publishes to Docker Hub. No version bump, no
+  tag.
 - ``rc``: cut release candidate ``vX.Y.ZrcN``. ``RC=1`` runs from
   ``main`` (legacy fresh-from-main path) or, if a prior ``prep`` already
   pushed ``release/vX.Y.Z``, from that existing branch (after-prep
@@ -52,13 +52,19 @@ instead of aborting a flow that has already pushed its release branch
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 PYPROJECT = Path("pyproject.toml")
 APP_INIT = Path("app/__init__.py")
@@ -77,6 +83,13 @@ _DUNDER_VERSION_LINE_RE: re.Pattern[str] = re.compile(
 # ``git ls-remote --exit-code`` returns 2 when the ref is missing; any other
 # non-zero exit indicates a network/auth error worth surfacing.
 _LS_REMOTE_NOT_FOUND_EXIT_CODE = 2
+
+#: GitHub rejects a release whose body is longer than this.
+_RELEASE_BODY_LIMIT = 125_000
+_FULL_CHANGELOG_LINE_RE: re.Pattern[str] = re.compile(
+    r"^\*\*Full Changelog\*\*: \S+$",
+    re.MULTILINE,
+)
 
 
 def _run(
@@ -497,8 +510,15 @@ def _print_rc_next_steps(
     if rc == 1 and not jira_version_created:
         print(f"  {step}. Create Jira version {version} (if not already created)")
         step += 1
-    print(f"  {step}. Deploy to staging and verify")
-    print(f"  {step + 1}. Notify the team")
+    print(
+        f"  {step}. If the Jenkins trigger above was skipped, build and push "
+        f"the images (needs JENKINS_* credentials): "
+        f"make trigger-jenkins TAG=v{version}rc{rc}"
+    )
+    print(
+        f"  {step + 1}. Once PMM's {version} RC is out, announce the tester pair "
+        f"on #pmm-extensions (/pmmx-release-notes v{version}rc{rc})"
+    )
 
 
 def _validate_clean_tree_and_gh(*, sign_via_github_api: bool) -> int | None:
@@ -577,6 +597,63 @@ def _prepare_release_branch_for_rc(
     return 0
 
 
+def _release_notes(tag: str) -> str:
+    """Return GitHub's generated release notes for ``tag``, shortened past the limit.
+
+    ``gh release create --generate-notes`` fails outright when the generated
+    body exceeds GitHub's limit, which the notes for a long release cycle do.
+    Past the limit the body is a one-line notice, followed by GitHub's "Full
+    Changelog" compare link when the generated notes carry one.
+
+    :param tag: The already-pushed tag the release is created for.
+    :return: The release body.
+    """
+    body = _run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "POST",
+            "repos/{owner}/{repo}/releases/generate-notes",
+            "-f",
+            f"tag_name={tag}",
+            "--jq",
+            ".body",
+        ],
+        capture=True,
+    ).stdout
+    if len(body) <= _RELEASE_BODY_LIMIT:
+        return body
+    limit_notice = (
+        f"The changes in {tag} exceed GitHub's {_RELEASE_BODY_LIMIT:,}-character "
+        "limit for release notes."
+    )
+    paragraphs = [limit_notice]
+    compare = _FULL_CHANGELOG_LINE_RE.search(body)
+    if compare:
+        paragraphs.append(compare.group(0))
+    return "\n\n".join(paragraphs) + "\n"
+
+
+@contextlib.contextmanager
+def _release_notes_file(tag: str) -> Iterator[Path]:
+    """Write the release notes for ``tag`` to a temporary UTF-8 file.
+
+    ``gh release create --notes`` takes the body as a single argv element, which
+    Linux caps at 128 KiB in bytes, so a body under the character limit that
+    holds multi-byte characters can still fail with ``Argument list too long``.
+    ``--notes-file`` has no such cap.
+
+    :param tag: The already-pushed tag the release is created for.
+    :return: A context manager yielding the path of the file holding the release
+        body.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        notes_file = Path(directory) / "release-notes.md"
+        notes_file.write_text(_release_notes(tag), encoding="utf-8")
+        yield notes_file
+
+
 def _create_rc_github_prerelease(rc_tag: str, branch: str, wheel: Path) -> None:
     """Create the RC GitHub pre-release and upload the wheel artifact.
 
@@ -594,18 +671,20 @@ def _create_rc_github_prerelease(rc_tag: str, branch: str, wheel: Path) -> None:
         print("Note: gh CLI not found, skipping GitHub release creation.")
         return
     print("==> Creating GitHub pre-release...")
-    _run(
-        [
-            "gh",
-            "release",
-            "create",
-            rc_tag,
-            "--prerelease",
-            "--generate-notes",
-            "--target",
-            branch,
-        ],
-    )
+    with _release_notes_file(rc_tag) as notes_file:
+        _run(
+            [
+                "gh",
+                "release",
+                "create",
+                rc_tag,
+                "--prerelease",
+                "--notes-file",
+                str(notes_file),
+                "--target",
+                branch,
+            ],
+        )
     _run(["gh", "release", "upload", rc_tag, str(wheel)])
 
 
@@ -750,15 +829,17 @@ def _print_prep_next_steps(
         print(f"  {step}. Create Jira version {version} (if not already created)")
         step += 1
     print(
-        f"  {step}. Internal image SHA: {head_sha} — "
-        "deploy to team01 and announce on #gas-team for internal QA day."
+        f"  {step}. If the Jenkins trigger above was skipped, build the "
+        f"internal-registry image for {head_sha} (needs JENKINS_* credentials): "
+        f"make trigger-jenkins TAG={head_sha} "
+        "PUSH_IMAGE_DOCKER=false"
     )
     print(
         f"  {step + 1}. Merge the dev-version-bump PR opened on main so the "
         "next .dev0 lands before any post-scope-freeze PR."
     )
     print(
-        f"  {step + 2}. Tomorrow (Day 28), dispatch "
+        f"  {step + 2}. When PMM's {version} RC build starts, dispatch "
         f"`release_type: rc, rc_number: 1, version: {version}` "
         "to cut rc1 from the release branch."
     )
@@ -779,31 +860,40 @@ def _print_stable_next_steps(version: str) -> None:
     print(f"Verified: v{version} is an ancestor of origin/main.")
     print()
     print("Next steps:")
-    print("  1. Publish release notes")
-    print(f"  2. Mark Jira version {version} as released")
+    print(
+        "  1. If the Jenkins trigger above was skipped, then before PMM's GA "
+        "announcement build and push the images and fire the Jira release "
+        "webhook (needs JENKINS_* credentials): "
+        f"make trigger-jenkins TAG=v{version} "
+        f"WEBHOOK_URL_ENV={WEBHOOK_RELEASE_URL_ENV} "
+        f"WEBHOOK_AUTH_ENV={WEBHOOK_RELEASE_AUTH_ENV}"
+    )
+    print(
+        f"  2. Mark Jira version {version} as released (if the webhook was not fired)"
+    )
+    print(
+        f"  3. Publish release notes on #pmm-extensions (/pmmx-release-notes v{version})"
+    )
 
 
 def cmd_prep(version: str, *, sign_via_github_api: bool) -> int:
-    """Prepare a release on Day 27: scope-lock without bumping or tagging.
+    """Prepare a release: scope-lock without bumping or tagging.
 
     Carries the scope-lock side effects of today's atomic ``cmd_rc(RC=1)`` —
     create + push the release branch, fire the Jira version-create webhook,
     open the dev-bump PR on main, smoke-build the wheel, and trigger an
     internal-only Jenkins build (``pushImageDocker=false``) tagged by HEAD
-    SHA. The follow-up ``cmd_rc(RC=1)`` (Day 28) does the version bump, tag,
+    SHA. The follow-up ``cmd_rc(RC=1)`` does the version bump, tag,
     GH pre-release, and the Docker-Hub-pushing Jenkins build.
 
     :param version: The X.Y.Z release version (no ``v`` prefix).
-    :type version: str
     :param sign_via_github_api: Forwarded to the (subsequent) RC1 run; not
         used by ``prep`` itself because ``prep`` does not create a tag.
         Accepted here only so the workflow can pass the same flag through
         a single env-driven path. ``gh`` availability is still validated
         when ``True`` so a missing CLI surfaces at prep time rather than
-        the next day.
-    :type sign_via_github_api: bool
+        at rc1.
     :return: Process exit code (``0`` on success).
-    :rtype: int
     """
     branch = f"release/v{version}"
 
@@ -955,7 +1045,7 @@ def cmd_rc(version: str, rc: int, *, sign_via_github_api: bool) -> int:
         # "Create Jira version" reminder — when after-prep and the local
         # env is missing the webhook secrets, the helper returns False and
         # we correctly print the reminder, because the planner cannot
-        # actually verify Day 27's webhook succeeded just from branch
+        # actually verify the prep webhook succeeded just from branch
         # existence.
         jira_version_created = _invoke_post_jira_webhook(
             WEBHOOK_CREATE_URL_ENV,
@@ -1287,7 +1377,17 @@ def cmd_stable(version: str, *, sign_via_github_api: bool) -> int:
 
     if _gh_available():
         print("==> Creating GitHub release...")
-        _run(["gh", "release", "create", tag, "--generate-notes"])
+        with _release_notes_file(tag) as notes_file:
+            _run(
+                [
+                    "gh",
+                    "release",
+                    "create",
+                    tag,
+                    "--notes-file",
+                    str(notes_file),
+                ]
+            )
         _run(["gh", "release", "upload", tag, str(wheel)])
     else:
         print("Note: gh CLI not found, skipping GitHub release creation.")
@@ -1358,9 +1458,9 @@ def build_parser() -> argparse.ArgumentParser:
     prep_parser = subparsers.add_parser(
         "prep",
         help=(
-            "Prep a release on Day 27: create release branch, lock scope, "
-            "trigger an internal-only Jenkins build for the team-wide internal "
-            "QA day before rc1 is published to Docker Hub."
+            "Prep a release: create release branch, lock scope, "
+            "trigger an internal-registry-only Jenkins build "
+            "before rc1 is published to Docker Hub."
         ),
     )
     prep_parser.add_argument("--version", required=True, help="X.Y.Z")

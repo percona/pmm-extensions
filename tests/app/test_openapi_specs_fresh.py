@@ -15,6 +15,7 @@
 
 """Guard the committed frontend OpenAPI spec fixtures and the dump's settings pins."""
 
+import json
 import os
 import subprocess
 import sys
@@ -46,6 +47,34 @@ def test_committed_openapi_specs_are_fresh():
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_committed_specs_do_not_carry_the_app_version():
+    """Assert every committed fixture's ``info.version`` is the fixed placeholder.
+
+    A fixture carrying the app version goes stale on every release bump, which
+    fails the freshness guard above on the bump commit itself.
+    """
+    versions = {
+        spec.name: json.loads(spec.read_text(encoding="utf-8"))["info"]["version"]
+        for spec in dump_openapi.SPECS_DIR.glob("*.json")
+    }
+
+    assert versions
+    assert set(versions.values()) == {dump_openapi.FIXTURE_VERSION}
+
+
+def test_unversioned_replaces_only_the_version():
+    """Assert ``unversioned`` swaps ``info.version`` and leaves the input intact."""
+    doc = {"info": {"title": "PMM Extensions", "version": "v3.10.0rc1"}, "paths": {}}
+
+    result = dump_openapi.unversioned(doc)
+
+    assert result == {
+        "info": {"title": "PMM Extensions", "version": dump_openapi.FIXTURE_VERSION},
+        "paths": {},
+    }
+    assert doc["info"]["version"] == "v3.10.0rc1"
 
 
 def test_dump_script_ignores_developer_auth_config(tmp_path):
