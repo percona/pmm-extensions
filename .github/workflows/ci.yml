@@ -188,6 +188,7 @@ jobs:
               - 'alembic.ini'
               - 'poetry.lock'
               - 'poetry.toml'
+              - '.test_durations'
               - 'settings.yaml'
               - 'sidecar/settings.yaml'
               - 'sidecar/settings-env.sh'

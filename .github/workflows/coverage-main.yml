@@ -49,6 +49,11 @@ jobs:
           EXTENSIONS_PAYLOAD_CHECK_PYTHON: ${{ steps.py39.outputs.python-path }}
         run: make test PYTEST_ARGS='--store-durations --clean-durations'
 
+      - name: Store coverage data on data branch
+        uses: py-cov-action/python-coverage-comment-action@63f52f4fbbffada6e8dee8ec432de7e01df9ba79 # v3.41
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Upload test durations
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -56,8 +61,3 @@ jobs:
           path: .test_durations
           include-hidden-files: true
           if-no-files-found: error
-
-      - name: Store coverage data on data branch
-        uses: py-cov-action/python-coverage-comment-action@63f52f4fbbffada6e8dee8ec432de7e01df9ba79 # v3.41
-        with:
-          GITHUB_TOKEN: ${{ github.token }}
