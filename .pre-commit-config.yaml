@@ -116,6 +116,9 @@ repos:
       - id: check-ast
       - id: check-case-conflict
       - id: check-added-large-files
+        # pytest-split's per-test durations; size scales
+        # with the test count, not with content worth reviewing.
+        exclude: ^\.test_durations$
       - id: check-json
       - id: check-merge-conflict
       - id: check-toml

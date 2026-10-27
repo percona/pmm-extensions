@@ -146,15 +146,7 @@ jobs:
         run: >-
           make test PYTEST_MARKERS='not postgres' COV=1
           PYTEST_ARGS='--splits ${{ strategy.job-total }} --group ${{ matrix.group }}
-          --cov-report= --cov-fail-under=0
-          --store-durations --durations-path .test_durations.${{ matrix.group }}'
-      - name: Upload shard durations (temporary, seeds .test_durations)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: shard-durations-${{ matrix.group }}
-          path: .test_durations.${{ matrix.group }}
-          include-hidden-files: true
-          if-no-files-found: error
+          --cov-report= --cov-fail-under=0'
       - name: Scaffold conformance check
         if: matrix.group == 1
         run: make startapp-check
