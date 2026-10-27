@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 import regex
+import yaml
 from aiohttp import MultipartWriter
 from aioresponses import aioresponses
 from fastapi import HTTPException, status
@@ -294,6 +295,58 @@ def _two_step_plan() -> dict[str, Any]:
         "output": "account_id",
     }
     return payload
+
+
+#: Parameter names that collide with the plan models' own field names, so a
+#: test can tell a map key apart from an undeclared model field.
+_FIELD_LIKE_NAMES = ("source", "value", "path", "name", "method", "sysparm_field")
+
+_SENTINEL_CREDENTIAL = "sentinel-credential-value"
+
+
+def _field_like_names_plan() -> dict[str, Any]:
+    """Return a one-step plan whose every value map is keyed by model field names."""
+    literals = {
+        name: {"source": "literal", "value": f"{name}-value"}
+        for name in _FIELD_LIKE_NAMES
+    }
+    payload = _one_step_plan()
+    step = payload["resolution_steps"][0]
+    step["query"] = dict(literals)
+    step["headers"] |= literals
+    step["body"] |= literals
+    payload["upload"]["query"] = dict(literals)
+    payload["upload"]["fields"] |= literals
+    return payload
+
+
+def _with_key(
+    payload: dict[str, Any], *path: str | int, key: str = "bogus", value: Any = "x"
+) -> dict[str, Any]:
+    """Return ``payload`` with ``key`` added to the mapping found at ``path``.
+
+    :param payload: The plan payload to modify in place.
+    :param path: The keys and list indexes leading to the target mapping.
+    :param key: The key to add.
+    :param value: The value to store under ``key``.
+    :return: The modified payload.
+    """
+    target: Any = payload
+    for part in path:
+        target = target[part]
+    target[key] = value
+    return payload
+
+
+def _extra_forbidden_locs(
+    exc_info: pytest.ExceptionInfo[ValidationError],
+) -> list[tuple[str | int, ...]]:
+    """Return the location of every undeclared-field error a validation raised."""
+    return [
+        error["loc"]
+        for error in exc_info.value.errors()
+        if error["type"] == "extra_forbidden"
+    ]
 
 
 class TestDeliveryPlanValidation:
@@ -791,6 +844,359 @@ class TestConnectionDetailsStepValidation:
         plan = DeliveryPlan(**_one_step_plan())
 
         assert plan.connection_details is None
+
+
+class TestUndeclaredValueField:
+    """Cover the rejection of a key no value kind declares."""
+
+    @pytest.mark.parametrize(
+        ("payload", "loc"),
+        [
+            pytest.param(
+                _with_key(_upload_only_plan(), "upload", "fields", "table_name"),
+                ("upload", "fields", "table_name", "literal", "bogus"),
+                id="literal",
+            ),
+            pytest.param(
+                _with_key(_upload_only_plan(), "upload", "fields", "source"),
+                ("upload", "fields", "source", "input", "bogus"),
+                id="input",
+            ),
+            pytest.param(
+                _with_key(
+                    _one_step_plan(), "resolution_steps", 0, "headers", "x-sn-apikey"
+                ),
+                ("resolution_steps", 0, "headers", "x-sn-apikey", "secret", "bogus"),
+                id="secret",
+            ),
+            pytest.param(
+                _with_key(_one_step_plan(), "upload", "fields", "table_sys_id"),
+                ("upload", "fields", "table_sys_id", "output", "bogus"),
+                id="output",
+            ),
+            pytest.param(
+                _with_key(
+                    _upload_only_plan(
+                        fields={"week": {"source": "manifest_key", "key": "week"}}
+                    ),
+                    "upload",
+                    "fields",
+                    "week",
+                ),
+                ("upload", "fields", "week", "manifest_key", "bogus"),
+                id="manifest_key",
+            ),
+            pytest.param(
+                _with_key(
+                    _case_search_plan(query={"q": {"source": "term"}}),
+                    "case_search",
+                    "query",
+                    "q",
+                ),
+                ("case_search", "query", "q", "term", "bogus"),
+                id="term",
+            ),
+        ],
+    )
+    def test_an_undeclared_value_field_is_rejected_where_it_sits(
+        self, payload: dict[str, Any], loc: tuple[str | int, ...]
+    ):
+        """Name the undeclared field and its place in the plan, for every value kind."""
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**payload)
+
+        assert _extra_forbidden_locs(exc_info) == [loc]
+
+    def test_unquoted_comma_in_a_flow_mapping_names_the_split_off_key(self):
+        """Reject the key YAML splits off at an unquoted comma, not truncate the value."""
+        query = yaml.safe_load(
+            "sysparm_fields: {source: literal, value: number,short_description}"
+        )
+
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**_case_search_plan(query=query))
+
+        assert _extra_forbidden_locs(exc_info) == [
+            ("case_search", "query", "sysparm_fields", "literal", "short_description")
+        ]
+        assert "case_search.query.sysparm_fields.literal.short_description" in str(
+            exc_info.value
+        )
+
+    def test_quoted_comma_in_a_flow_mapping_keeps_the_whole_value(self):
+        """Keep a quoted comma inside the value it belongs to."""
+        query = yaml.safe_load(
+            'sysparm_fields: {source: literal, value: "number,short_description"}'
+        )
+
+        plan = DeliveryPlan(**_case_search_plan(query=query))
+
+        assert (
+            plan.case_search.query["sysparm_fields"].value == "number,short_description"
+        )
+
+    def test_a_misspelt_optional_term_affix_is_rejected(self):
+        """Reject a typo on an optional field, which would otherwise change the query."""
+        payload = _case_search_plan(
+            query={"q": {"source": "term", "prefix": "numberLIKE", "sufix": "^"}}
+        )
+
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**payload)
+
+        assert _extra_forbidden_locs(exc_info) == [
+            ("case_search", "query", "q", "term", "sufix")
+        ]
+
+
+class TestUndeclaredStepField:
+    """Cover the rejection of a key a step kind does not declare."""
+
+    @pytest.mark.parametrize(
+        ("payload", "loc"),
+        [
+            pytest.param(
+                _with_key(_one_step_plan(), "resolution_steps", 0),
+                ("resolution_steps", 0, "bogus"),
+                id="resolution",
+            ),
+            pytest.param(
+                _with_key(_upload_only_plan(), "upload", key="method", value="POST"),
+                ("upload", "method"),
+                id="upload",
+            ),
+            pytest.param(
+                _with_key(
+                    _probe_plan(),
+                    "probe",
+                    key="body",
+                    value={"x": {"source": "literal", "value": "y"}},
+                ),
+                ("probe", "body"),
+                id="probe",
+            ),
+            pytest.param(
+                _with_key(_case_search_plan(), "case_search", key="name", value="s"),
+                ("case_search", "name"),
+                id="case_search",
+            ),
+            pytest.param(
+                _with_key(
+                    _connection_details_plan(),
+                    "connection_details",
+                    key="outputs",
+                    value={"id": "/result/id"},
+                ),
+                ("connection_details", "outputs"),
+                id="connection_details",
+            ),
+        ],
+    )
+    def test_a_misplaced_step_field_is_rejected_where_it_sits(
+        self, payload: dict[str, Any], loc: tuple[str | int, ...]
+    ):
+        """Name a key the step kind does not declare, even one another kind does."""
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**payload)
+
+        assert _extra_forbidden_locs(exc_info) == [loc]
+        assert ".".join(map(str, loc)) in str(exc_info.value)
+
+
+class TestUndeclaredPlanField:
+    """Cover the rejection of a key ``DeliveryPlan`` does not declare."""
+
+    @pytest.mark.parametrize(
+        ("declared", "misspelt", "payload"),
+        [
+            pytest.param(
+                "resolution_steps",
+                "resolution_step",
+                _one_step_plan(),
+                id="resolution_steps",
+            ),
+            pytest.param(
+                "case_search", "case_serach", _case_search_plan(), id="case_search"
+            ),
+        ],
+    )
+    def test_a_misspelt_section_is_rejected(
+        self, declared: str, misspelt: str, payload: dict[str, Any]
+    ):
+        """Reject a misspelt section rather than run the plan without it."""
+        payload[misspelt] = payload.pop(declared)
+
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**payload)
+
+        assert _extra_forbidden_locs(exc_info) == [(misspelt,)]
+
+    def test_a_miscased_field_is_rejected(self):
+        """Reject a key differing only in case, since plan keys are case-sensitive."""
+        payload = _with_key(_upload_only_plan(), key="Max_bundle_size_mb", value=5)
+
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**payload)
+
+        assert _extra_forbidden_locs(exc_info) == [("Max_bundle_size_mb",)]
+
+    def test_every_undeclared_field_is_reported(self):
+        """Report each undeclared field in one error, not just the first."""
+        payload = _with_key(_upload_only_plan(), key="bogus")
+        _with_key(payload, "upload", key="file_feild", value="uploadFile")
+
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**payload)
+
+        assert sorted(_extra_forbidden_locs(exc_info)) == [
+            ("bogus",),
+            ("upload", "file_feild"),
+        ]
+
+
+class TestUndeclaredFieldConfidentiality:
+    """Cover keeping a credential under an undeclared key out of the error text."""
+
+    @pytest.mark.parametrize(
+        ("payload", "loc"),
+        [
+            pytest.param(
+                _with_key(
+                    _upload_only_plan(),
+                    key="secret",
+                    value={"api_key": _SENTINEL_CREDENTIAL},
+                ),
+                ("secret",),
+                id="misspelt",
+            ),
+            pytest.param(
+                _with_key(
+                    _upload_only_plan(),
+                    "upload",
+                    key="secrets",
+                    value={"api_key": _SENTINEL_CREDENTIAL},
+                ),
+                ("upload", "secrets"),
+                id="misplaced",
+            ),
+        ],
+    )
+    def test_the_rejected_value_is_not_echoed(
+        self, payload: dict[str, Any], loc: tuple[str | int, ...]
+    ):
+        """Name the undeclared key without printing the credential it carries."""
+        with pytest.raises(ValidationError) as exc_info:
+            DeliveryPlan(**payload)
+
+        assert _extra_forbidden_locs(exc_info) == [loc]
+        assert _SENTINEL_CREDENTIAL not in str(exc_info.value)
+
+
+class TestArbitraryParameterNames:
+    """Cover value-map keys staying the plan author's own choice."""
+
+    @pytest.mark.asyncio
+    async def test_field_like_names_reach_the_wire_unchanged(
+        self, api: RemoteAPI, bundle: BundleSource
+    ):
+        """Send parameter names that match model fields exactly as the plan has them."""
+        expected = {name: f"{name}-value" for name in _FIELD_LIKE_NAMES}
+        executor = DeliveryPlanExecutor(DeliveryPlan(**_field_like_names_plan()), api)
+        with aioresponses() as mock:
+            mock.post(
+                re.compile(rf"^{re.escape(_TICKET_URL)}(\?.*)?$"),
+                status=status.HTTP_200_OK,
+                payload={"result": {"sys_id": "case-77"}},
+            )
+            mock.post(
+                re.compile(rf"^{re.escape(_UPLOAD_URL)}(\?.*)?$"),
+                status=status.HTTP_201_CREATED,
+                payload={"result": {"sys_id": "att-1"}},
+            )
+            async with api:
+                await executor.upload_bundle(
+                    source_ref="src-9",
+                    bundle=bundle,
+                    case_ref="CS0001",
+                    manifest=_MANIFEST,
+                )
+            lookup = _recorded(mock, "ticket_details")
+            upload = _recorded(mock, "attachment/upload")
+            fields = _multipart_fields(upload.kwargs["data"])
+
+        assert lookup.kwargs["params"] == expected
+        assert {name: lookup.kwargs["headers"][name] for name in expected} == expected
+        assert {name: lookup.kwargs["json"][name] for name in expected} == expected
+        assert upload.kwargs["params"] == expected
+        assert {name: fields[name] for name in expected} == expected
+
+    @pytest.mark.asyncio
+    async def test_field_like_probe_query_names_reach_the_wire_unchanged(
+        self, api: RemoteAPI
+    ):
+        """Send a probe's field-like query names exactly as the plan has them."""
+        expected = {name: f"{name}-value" for name in _FIELD_LIKE_NAMES}
+        payload = _probe_plan(
+            query={
+                name: {"source": "literal", "value": value}
+                for name, value in expected.items()
+            }
+        )
+        executor = DeliveryPlanExecutor(DeliveryPlan(**payload), api)
+        with aioresponses() as mock:
+            mock.get(
+                re.compile(rf"^{re.escape(_PROBE_URL)}(\?.*)?$"),
+                status=status.HTTP_200_OK,
+                payload={"result": []},
+            )
+            async with api:
+                await executor.probe()
+            probe = _recorded(mock, "health")
+
+        assert probe.kwargs["params"] == expected
+
+    def test_field_like_output_detail_and_secret_names_are_accepted(self):
+        """Accept model field names as output names, detail labels and secret names."""
+        payload = _connection_details_plan(details={"path": "/result/path"})
+        payload["secrets"] = {"value": "real-api-key"}
+        payload["resolution_steps"] = [
+            {
+                "name": "lookup",
+                "method": "GET",
+                "path": "ticket_details",
+                "outputs": {"source": "/result/source"},
+            }
+        ]
+
+        plan = DeliveryPlan(**payload)
+
+        assert plan.connection_details.details == {"path": "/result/path"}
+        assert plan.secrets["value"].get_secret_value() == "real-api-key"
+        assert plan.resolution_steps[0].outputs == {"source": "/result/source"}
+
+
+class TestPlanRoundTrip:
+    """Cover re-validating a plan from its own dump, as the resolver's merge does."""
+
+    @pytest.mark.parametrize(
+        "builder",
+        [
+            _upload_only_plan,
+            _one_step_plan,
+            _two_step_plan,
+            _probe_plan,
+            _case_search_plan,
+            _connection_details_plan,
+            _field_like_names_plan,
+        ],
+    )
+    def test_a_dumped_plan_revalidates_unchanged(
+        self, builder: Callable[[], dict[str, Any]]
+    ):
+        """Rebuild an equal plan from ``model_dump``, emitting no undeclared key."""
+        plan = DeliveryPlan(**builder())
+
+        assert DeliveryPlan.model_validate(plan.model_dump()) == plan
 
 
 @pytest.mark.asyncio

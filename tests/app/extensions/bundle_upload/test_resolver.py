@@ -292,6 +292,47 @@ class TestMergedInputs:
         assert "client_token" in caplog.text
 
 
+class TestUndeclaredFieldAtResolution:
+    """Cover a merged plan whose rebuild meets a key no plan model declares."""
+
+    def test_an_undeclared_field_in_the_merge_resolves_to_unconfigured(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Degrade to unconfigured, naming the key but not the value it carries.
+
+        A configured plan cannot bring an undeclared key here: settings load
+        refuses it first, and ``model_dump`` emits declared fields only. The dump
+        is patched to stand in for a serialized shape that no longer validates,
+        which is the one way such a key could reach the rebuild.
+        """
+        original_dump = DeliveryPlan.model_dump
+        mocker.patch.object(
+            DeliveryPlan,
+            "model_dump",
+            autospec=True,
+            side_effect=lambda plan, **kwargs: (
+                original_dump(plan, **kwargs)
+                | {"stray_field": "sentinel-credential-value"}
+            ),
+        )
+        mocker.patch.object(
+            extensions_settings, "DIAGNOSTICS_DELIVERY", _plan({"sn_api_key": ""})
+        )
+        mocker.patch.object(
+            extensions_settings,
+            "DIAGNOSTICS_DELIVERY_INPUTS",
+            DeliveryPlanInputs(secrets={"sn_api_key": "key-value"}),
+        )
+
+        with caplog.at_level(logging.WARNING, logger=_RESOLVER_LOGGER):
+            resolution = resolve_delivery_plan()
+
+        assert resolution.plan is None
+        assert resolution.code is DeliveryUnavailableCode.UNCONFIGURED
+        assert "stray_field" in caplog.text
+        assert "sentinel-credential-value" not in caplog.text
+
+
 class TestDriftedInputs:
     """Cover inputs whose secret names stopped matching the baked skeleton.
 

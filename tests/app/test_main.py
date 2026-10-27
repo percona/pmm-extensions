@@ -29,13 +29,20 @@ from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
 
 from app import main as main_module
+from app.core.alerts.config import alert_settings
+from app.core.config import settings
 from app.core.health import HEALTH_PATH
+from app.core.settings_override.lifecycle import ProxyRegistry
 from app.extensions.config import SyncOptions
 from app.extensions.sync.syncers.mysql.syncer import MySQLSyncer
 from app.extensions.sync.syncers.pmm import PMMSyncer
 from app.main import app
 from app.tasks.config import tasks_settings
-from tests.app.conftest import daily_inventory_sync_schedules, HealthProbeServer
+from tests.app.conftest import (
+    daily_inventory_sync_schedules,
+    HealthProbeServer,
+    null_async_cm,
+)
 
 
 @pytest.fixture
@@ -95,6 +102,68 @@ async def test_extensions_startup_runs_after_the_override_snapshot_publishes(
         "extensions_startup",
         "extensions_overrides_exit",
     ]
+
+
+#: Modules whose lifespans ``main_lifespan`` enters, each starting one refresher.
+_COMBINED_REFRESHER_MODULES = (
+    "app.extensions.main",
+    "app.tasks.main",
+    "app.inventory.main",
+)
+
+
+@pytest.mark.asyncio
+async def test_combined_process_publishes_each_shared_proxy_exactly_once(
+    mocker: MockerFixture,
+) -> None:
+    """Give ``settings`` and ``alert_settings`` one publisher under ``app.main:app``.
+
+    The PMM Extensions refresher already publishes both from the PMM Extensions
+    database here, so a second publisher would refresh the same proxy twice per
+    cycle and fire ``apply_logging_dictconfig`` twice per change.
+    """
+    registries: dict[str, ProxyRegistry] = {}
+
+    def _recording_refresher(module: str) -> Any:
+        @asynccontextmanager
+        async def _refresher(
+            _factory: object, proxies: ProxyRegistry, *_args: object, **_kwargs: object
+        ):
+            registries[module] = proxies
+            yield
+
+        return _refresher
+
+    @asynccontextmanager
+    async def _passthrough_lifespan(_app):
+        yield
+
+    shared = MagicMock()
+    for module in _COMBINED_REFRESHER_MODULES:
+        mocker.patch(
+            f"{module}.settings_override_refresher", _recording_refresher(module)
+        )
+    mocker.patch("app.tasks.main.extensions_owned_overrides_refresher", shared)
+    mocker.patch("app.inventory.main.extensions_owned_overrides_refresher", shared)
+    mocker.patch("app.tasks.main.init_tasks_db")
+    mocker.patch("app.tasks.main.verify_taskhistory_execution_request_is_jsonb")
+    mocker.patch("app.tasks.main.default_lifespan", _passthrough_lifespan)
+    mocker.patch("app.tasks.main.NomadLifecycle", return_value=null_async_cm())
+    mocker.patch.object(main_module, "detect_removed_auth_user_model")
+    mocker.patch.object(main_module, "detect_removed_settings_override_keys")
+    mocker.patch.object(main_module, "validate_importable_settings")
+    mocker.patch.object(main_module, "extensions_startup")
+
+    async with main_module.main_lifespan(app):
+        pass
+
+    assert set(registries) == set(_COMBINED_REFRESHER_MODULES)
+    published = [
+        entry.proxy for registry in registries.values() for entry in registry.values()
+    ]
+    assert [proxy for proxy in published if proxy is settings] == [settings]
+    assert [proxy for proxy in published if proxy is alert_settings] == [alert_settings]
+    shared.assert_not_called()
 
 
 def test_extensions_openapi_json_endpoint_returns_valid_schema(test_client):

@@ -555,13 +555,17 @@ def detect_removed_settings_override_keys() -> None:
     )
 
 
-class _ExtensionsDatabaseSettings(BaseYamlSettings):
+class ExtensionsDatabaseSettings(BaseYamlSettings):
     """Resolve the PMM Extensions service's database options in isolation.
 
     ``Settings`` cannot read ``extensions_settings`` while it is being constructed:
     ``BaseYamlAppSettings.BACKEND_CORS_ORIGINS`` defaults off ``settings``, so
     forcing the PMM Extensions proxy re-enters the global proxy that is still resolving. This
     reads the same ``EXTENSIONS__DATABASE__*`` sources without either proxy.
+
+    It is also how ``app/tasks`` and ``app/inventory`` reach the PMM Extensions
+    database, which owns the shared ``Settings`` and ``AlertSettings`` override
+    rows, without importing ``app/extensions``.
 
     :cvar SETTINGS_PREFIXES: The prefix the probe resolves its environment and YAML
         sources under. Set to ["EXTENSIONS"].
@@ -631,7 +635,7 @@ class BeatStoreDefaultSource(PydanticBaseSettingsSource):
             key.lower() == "beat_dburi" for key in configured
         ):
             return {}
-        database = _ExtensionsDatabaseSettings(
+        database = ExtensionsDatabaseSettings(
             _env_file=self._env_file, _secrets_dir=self._secrets_dir
         ).DATABASE
         return {"CELERY": {"BEAT_DBURI": database.URL}}

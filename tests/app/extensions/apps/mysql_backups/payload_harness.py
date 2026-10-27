@@ -426,6 +426,9 @@ def payload_instance(
     inst.enc_aes = True
     inst.enc_gpg = False
     inst.compress = False
+    # XtraBackup ``run`` reads this before its final notify; synthetic
+    # instances never call ``Backup.__init__``, so seed it here.
+    inst.mycnf_copy_skipped = False
     return inst, namespace["BackupError"], calls
 
 
