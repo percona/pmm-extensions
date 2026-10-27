@@ -35,15 +35,18 @@ __all__ = [
     "chain_has_advanced",
     "chain_has_explicit_not_overridable",
     "chain_is_locked",
+    "clear_cached_properties",
     "coerce_field_value",
     "coerce_nested_field_value",
     "computed_field_info",
     "dump_field_value",
+    "field_contains_secret",
     "field_materializer",
     "field_reload_classification",
     "hot_field",
     "hot_field_names",
     "is_advanced_field",
+    "is_credential_url_field",
     "is_explicit_not_overridable",
     "is_hot_reloadable",
     "is_nested_overridable_parent",
@@ -56,6 +59,9 @@ __all__ = [
     "nested_overridable_field_names",
     "not_overridable_field",
     "rendered_leaf_keys",
+    "resolve_nested_field_metadata",
+    "stable_collection_sort_key",
+    "unwrap_secret_value",
     "unwrap_secrets_for_storage",
 ]
 
@@ -88,7 +94,10 @@ from app.core.settings_override.policy import (
     is_key_allowed,
     is_restriction_active,
 )
-from app.core.settings_override.resolution import resolve_nested_segments
+from app.core.settings_override.resolution import (
+    resolve_nested_field,
+    resolve_nested_segments,
+)
 from app.core.utils.fields import _credential_url_serializer
 from app.core.utils.pydantic import (
     annotation_pydantic_class,
@@ -989,7 +998,7 @@ def coerce_nested_field_value(
     return chain, coerce_field_value(leaf_info, raw)
 
 
-def _clear_cached_properties(instance: BaseModel) -> None:
+def clear_cached_properties(instance: BaseModel) -> None:
     """Remove every ``@cached_property`` memo from ``instance.__dict__``.
 
     Pydantic ``model_copy()`` is shallow and carries over any
@@ -1133,7 +1142,7 @@ def annotation_contains_secret(annotation: Any) -> bool:
     )
 
 
-def _field_contains_secret(field_info: FieldInfo) -> bool:
+def field_contains_secret(field_info: FieldInfo) -> bool:
     """Return whether ``field_info`` exposes a Pydantic secret anywhere in its annotation.
 
     :param field_info: The Pydantic field metadata for the target attribute.
@@ -1142,7 +1151,7 @@ def _field_contains_secret(field_info: FieldInfo) -> bool:
     return annotation_contains_secret(field_info.annotation)
 
 
-def _unwrap_secret_value(current: Any) -> str | bytes | None:
+def unwrap_secret_value(current: Any) -> str | bytes | None:
     """Return the plain secret from a ``SecretStr``/``SecretBytes``, else ``None``.
 
     :param current: A live stored value that may be a Pydantic secret wrapper.
@@ -1170,7 +1179,7 @@ def unwrap_secrets_for_storage(value: Any) -> Any:
         ``get_secret_value()`` (``SecretBytes`` decoded as UTF-8 with
         surrogateescape so the result stays JSON-serialisable).
     """
-    unwrapped = _unwrap_secret_value(value)
+    unwrapped = unwrap_secret_value(value)
     if unwrapped is not None:
         if isinstance(unwrapped, bytes):
             return unwrapped.decode("utf-8", errors="surrogateescape")
@@ -1254,12 +1263,17 @@ def is_credential_url_field(field_info: FieldInfo) -> bool:
     return annotation_contains_credential_url(annotated_type(field_info))
 
 
-def _stable_collection_sort_key(item: Any) -> tuple[Any, ...]:
+def stable_collection_sort_key(item: Any) -> tuple[Any, ...]:
     """Return a deterministic sort key for collection pairing and JSON dumps.
 
     Unordered collections (``set``/``frozenset``) must serialize and match in
     the same order across workers; plaintext secret values are included so two
     otherwise identical models remain distinguishable before masking.
+
+    This key is the single ordering contract between the GET dump and the
+    PATCH restore of unordered collections: both must sort with it. Masked
+    elements are restored by position, so if the two orders ever disagree a
+    PATCH writes one item's stored secret onto another.
 
     :param item: A stored collection element (model, secret wrapper, or scalar).
     :return: A comparable tuple suitable for :func:`sorted`.
@@ -1268,14 +1282,14 @@ def _stable_collection_sort_key(item: Any) -> tuple[Any, ...]:
         field_parts: list[tuple[str, str]] = []
         for name in sorted(type(item).model_fields):
             value = getattr(item, name, None)
-            unwrapped = _unwrap_secret_value(value)
+            unwrapped = unwrap_secret_value(value)
             if unwrapped is not None:
                 rendered = unwrapped if isinstance(unwrapped, str) else repr(unwrapped)
             else:
                 rendered = repr(value)
             field_parts.append((name, rendered))
         return (item.__class__.__qualname__, tuple(field_parts))
-    unwrapped = _unwrap_secret_value(item)
+    unwrapped = unwrap_secret_value(item)
     if unwrapped is not None:
         return (
             type(item).__qualname__,
@@ -1289,7 +1303,7 @@ def _stable_collection_sort_key(item: Any) -> tuple[Any, ...]:
                     str(key),
                     repr(
                         stored
-                        if (stored := _unwrap_secret_value(value)) is not None
+                        if (stored := unwrap_secret_value(value)) is not None
                         else value
                     ),
                 )
@@ -1415,7 +1429,7 @@ def _field_metadata(
         reload=field_reload_classification(
             field, owner_cls=settings_cls, field_name=name
         ),
-        is_secret=_field_contains_secret(field),
+        is_secret=field_contains_secret(field),
         is_complex=_field_is_complex(field.annotation),
         is_advanced=is_advanced_field(field, owner_cls=settings_cls, field_name=name),
     )
@@ -1528,6 +1542,50 @@ def _resolve_default(field_info: FieldInfo) -> Any:
     return factory()
 
 
+def resolve_nested_field_metadata(
+    settings_cls: type[BaseModel], key: str
+) -> FieldMetadata | None:
+    """Return introspected metadata for a ``__``-delimited nested override key.
+
+    Resolves ``key`` to its leaf field and synthesises a :class:`FieldMetadata`
+    whose ``key`` is the full nested key while every other attribute
+    (annotation, default, description, secret/complex flags) is taken from the
+    leaf field. The reported ``reload`` is ``HOT`` for an override-eligible
+    leaf (the default under a nested-overridable parent) and
+    ``NOT_OVERRIDABLE`` when the leaf *or any intermediate in its chain* is
+    explicitly marked by :func:`not_overridable_field`, or when
+    ``SETTINGS_OVERRIDE.ALLOWED_KEYS`` withholds the leaf. That is the same
+    chain check that gates PATCH, so the reported classification matches what
+    an override would actually be allowed to do. ``is_advanced`` is
+    chain-resolved via :func:`chain_has_advanced`, so a leaf inherits the flag
+    from an advanced parent.
+
+    :param settings_cls: The top-level Pydantic settings class.
+    :param key: The ``__``-delimited override key.
+    :return: The synthesised leaf metadata, or ``None`` when ``key`` does not
+        resolve to a nested field.
+    """
+    resolved = resolve_nested_field(settings_cls, key)
+    if resolved is None:
+        return None
+    _chain, leaf_info = resolved
+    reload = (
+        ReloadClassification.NOT_OVERRIDABLE
+        if chain_is_locked(settings_cls, key)
+        else ReloadClassification.HOT
+    )
+    return FieldMetadata(
+        key=key,
+        annotation=leaf_info.annotation,
+        default=_resolve_default(leaf_info),
+        description=leaf_info.description,
+        reload=reload,
+        is_secret=field_contains_secret(leaf_info),
+        is_complex=_field_is_complex(leaf_info.annotation),
+        is_advanced=chain_has_advanced(settings_cls, key),
+    )
+
+
 def dump_field_value(field_info: FieldInfo, value: Any) -> Any:
     """Return a JSON-safe representation of ``value`` for the response model.
 
@@ -1539,9 +1597,8 @@ def dump_field_value(field_info: FieldInfo, value: Any) -> Any:
     redacted to ``"**********"`` by Pydantic's secret-aware JSON dump.
 
     Unordered collections (``set``/``frozenset``) are dumped as a list sorted by
-    :func:`_stable_collection_sort_key` so GET order matches the PATCH restore
-    path in :func:`app.core.settings_override.secret_preservation._stable_collection_items`
-    across workers.
+    :func:`stable_collection_sort_key` so GET order matches the PATCH restore
+    path across workers.
 
     When ``field_info.annotation`` is a non-Pydantic-compatible type (e.g.
     ``string.Template``) for which Pydantic cannot build a TypeAdapter, the
@@ -1566,7 +1623,7 @@ def dump_field_value(field_info: FieldInfo, value: Any) -> Any:
             # fields; a list[Base...] adapter would strip subclass attributes.
             return [
                 TypeAdapter(type(item)).dump_python(item, mode="json")
-                for item in sorted(value, key=_stable_collection_sort_key)
+                for item in sorted(value, key=stable_collection_sort_key)
             ]
         return TypeAdapter(annotated_type(field_info)).dump_python(value, mode="json")
     except PydanticSchemaGenerationError:
