@@ -379,7 +379,7 @@ endif
 				--url-env "$(WEBHOOK_URL_ENV)" \
 				--auth-env "$(WEBHOOK_AUTH_ENV)" \
 				--version-tag "$${tag}" \
-				$(if $(WEBHOOK_PAYLOAD_FILE),--payload-file "$(WEBHOOK_PAYLOAD_FILE)") || true; \
+				$(if $(WEBHOOK_PAYLOAD_FILE),--payload-file "$$WEBHOOK_PAYLOAD_FILE") || true; \
 		fi; \
 	elif [ "$${optional}" = 1 ]; then \
 		echo "WARNING: Failed to trigger the Jenkins build for $${tag}. Trigger it manually." >&2; \
