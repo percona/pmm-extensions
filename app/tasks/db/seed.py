@@ -51,7 +51,6 @@ from app.tasks.execution.executors.nomad.steps import (
     RUN_SCRIPT_OUTPUT_FILES_PATH,
 )
 from app.tasks.models import (
-    CELERY_LOCAL_TARGET,
     EXECUTE_TASK_BY_NAME_TASK,
     INVENTORY_COLLECTION_TASK_NAME,
     INVENTORY_SYNC_FOLLOWERS_KEY,
@@ -799,7 +798,7 @@ SYSTEM_TASKS = [
         name=INVENTORY_SYNC_TASK_NAME,
         data={
             "callable": "app.extensions.apps.inventory.sync.run_scheduled_inventory_sync",
-            "target": CELERY_LOCAL_TARGET,
+            "target": "local",
         },
         backend=TaskBackendEnum.CELERY,
         protected=True,
@@ -811,7 +810,7 @@ SYSTEM_TASKS = [
             "callable": (
                 "app.extensions.apps.inventory.collection.run_scheduled_inventory_collection"
             ),
-            "target": CELERY_LOCAL_TARGET,
+            "target": "local",
         },
         backend=TaskBackendEnum.CELERY,
         protected=True,
