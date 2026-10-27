@@ -17,6 +17,7 @@
 
 import json
 import urllib.error
+from typing import Any
 
 import pytest
 
@@ -311,7 +312,7 @@ def test_main_dispatches_to_post_webhook(monkeypatch, webhook_env):
 
 def _capture_payloads(monkeypatch):
     """Record every request body ``urlopen`` is handed, answering each with a 200."""
-    sent = []
+    sent: list[dict[str, Any]] = []
 
     def capture(request, timeout):
         sent.append(json.loads(request.data))
