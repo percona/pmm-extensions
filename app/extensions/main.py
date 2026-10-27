@@ -38,9 +38,9 @@ from app.core.requests import RemoteAPI
 from app.core.requests.remote_api import PendingCloses
 from app.core.settings_override.constants import (
     EXTENSIONS_SETTINGS,
-    SETTINGS,
     SNIPPETS_SETTINGS,
 )
+from app.core.settings_override.extensions_owned import EXTENSIONS_OWNED_CALLBACKS
 from app.core.settings_override.lifecycle import (
     CallbackRegistry,
     previous_or_base,
@@ -64,11 +64,7 @@ from app.extensions.db import get_async_session_maker
 from app.extensions.db.seed import get_system_periodic_tasks, init_extensions_db
 from app.extensions.periodic_tasks import sync_app_periodic_task_gating
 from app.extensions.routes.artifacts import router as artifacts_router
-from app.extensions.settings_override import (
-    apply_logging_dictconfig,
-    build_extensions_override_proxies,
-    invalidate_pmm_clients,
-)
+from app.extensions.settings_override import build_extensions_override_proxies
 from app.extensions.snippets.celery import sync_snippets
 from app.extensions.snippets.config import snippets_settings
 from app.inventory.config import inventory_settings
@@ -317,8 +313,7 @@ async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, No
                 ssl_certfile=tasks_settings.SSL_CERTFILE,
                 **TASKS_CLIENT_LOG_POLICY,
             ),
-            (SETTINGS, "PMM"): invalidate_pmm_clients,
-            (SETTINGS, "LOGGING"): apply_logging_dictconfig,
+            **EXTENSIONS_OWNED_CALLBACKS,
             (
                 SNIPPETS_SETTINGS,
                 "SYNC_INTERVAL",

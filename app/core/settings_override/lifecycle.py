@@ -393,6 +393,11 @@ async def bounded_refresh(
     Callers own their log line on expiry; this helper only returns
     ``(False, pending_task)``.
 
+    A cancelled caller takes the refresh with it: when the wait itself is
+    cancelled (a lifespan torn down mid-seed), the refresh task is cancelled the
+    same advisory way before the cancellation propagates, so it cannot publish
+    after its caller has gone.
+
     :param session_maker_factory: A zero-argument callable returning a
         service-scoped ``async_sessionmaker``.
     :param proxies: The wired proxy registry keyed by class identifier.
@@ -412,7 +417,12 @@ async def bounded_refresh(
     refresh_task = asyncio.create_task(
         refresh_all(session_maker_factory, proxies, callbacks, boot=boot)
     )
-    done, _ = await asyncio.wait({refresh_task}, timeout=budget)
+    try:
+        done, _ = await asyncio.wait({refresh_task}, timeout=budget)
+    except asyncio.CancelledError:
+        refresh_task.cancel()
+        refresh_task.add_done_callback(_drain_cancelled_refresh_task)
+        raise
     if done:
         await refresh_task
         return True, None
@@ -485,6 +495,8 @@ async def start_refresh_task(
     proxies: ProxyRegistry,
     interval: timedelta,
     callbacks: CallbackRegistry | None = None,
+    *,
+    seed_timeout: float | None = None,
 ) -> asyncio.Task:
     """Perform an initial refresh and start a background refresh loop.
 
@@ -499,9 +511,17 @@ async def start_refresh_task(
     keys it published an override for; every callback fires on change from the
     periodic loop.
 
-    The inline seed always goes through :func:`bounded_seed` unbounded
-    (``seed_timeout=None``), matching the web lifespan contract. Bounded
-    seeds for prefork children live on
+    The inline seed goes through :func:`bounded_seed`, unbounded unless the
+    caller passes ``seed_timeout``. A caller whose database is owned by another
+    service bounds it so an unreachable database cannot hold startup. When that
+    budget expires, the cancelled seed task may still be unwinding with its
+    session held, so the loop skips each cycle until it is done rather than open
+    a second session. The seed is cancelled no later than the loop task
+    finishes, through a done callback rather than a ``finally`` in the loop body,
+    because a task cancelled before its first step never runs that body. The
+    cancel is advisory and is not awaited, so a seed stuck in its session's
+    ``__aexit__`` can still be unwinding after the loop has gone.
+    Bounded seeds for prefork children live on
     :class:`~app.core.settings_override.worker.WorkerRefresher`.
 
     :param session_maker_factory: A zero-argument callable returning a
@@ -513,6 +533,8 @@ async def start_refresh_task(
     :param callbacks: Optional rebind callbacks fired by the periodic loop when
         a watched override changes. The initial refresh fires only those
         marked with :func:`fire_on_boot`.
+    :param seed_timeout: Wall-clock budget in seconds for the inline seed, or
+        ``None`` (the default) to leave it unbounded.
     :return: The background refresh task. Callers must cancel and await this
         task during shutdown to drain pending iterations cleanly.
     :raises Exception: Re-raises any failure from the inline initial
@@ -524,14 +546,16 @@ async def start_refresh_task(
         NOT propagate; only ``session_maker_factory()`` failures at startup can
         break the lifespan.
     """
-    await bounded_seed(
-        session_maker_factory, proxies, seed_timeout=None, callbacks=callbacks
+    _, pending = await bounded_seed(
+        session_maker_factory, proxies, seed_timeout=seed_timeout, callbacks=callbacks
     )
     interval_seconds = interval.total_seconds()
 
     async def _loop() -> None:
         while True:
             await asyncio.sleep(interval_seconds)
+            if pending is not None and not pending.done():
+                continue
             try:
                 await refresh_all(session_maker_factory, proxies, callbacks)
             except Exception:
@@ -539,7 +563,10 @@ async def start_refresh_task(
                     "Settings override refresher iteration failed; will retry next cycle"
                 )
 
-    return asyncio.create_task(_loop(), name="settings-override-refresher")
+    loop_task = asyncio.create_task(_loop(), name="settings-override-refresher")
+    if pending is not None:
+        loop_task.add_done_callback(lambda _: pending.cancel())
+    return loop_task
 
 
 def resolve_refresher_options(
@@ -578,6 +605,7 @@ async def settings_override_refresher(
     *,
     enabled: bool | None = None,
     callbacks: CallbackRegistry | None = None,
+    seed_timeout: float | None = None,
 ) -> AsyncGenerator[None, None]:
     """Run the background override refresher for the duration of a lifespan.
 
@@ -598,13 +626,20 @@ async def settings_override_refresher(
         :func:`start_refresh_task`, fired by the periodic loop when a watched
         override changes. The initial refresh fires only those marked with
         :func:`fire_on_boot`.
+    :param seed_timeout: Wall-clock budget in seconds for the initial refresh,
+        forwarded to :func:`start_refresh_task`. ``None``, the default, leaves it
+        unbounded.
     :return: None
     """
     interval, enabled = resolve_refresher_options(interval, enabled=enabled)
     refresher: asyncio.Task | None = None
     if enabled:
         refresher = await start_refresh_task(
-            session_maker_factory, proxies, interval, callbacks
+            session_maker_factory,
+            proxies,
+            interval,
+            callbacks,
+            seed_timeout=seed_timeout,
         )
     try:
         yield

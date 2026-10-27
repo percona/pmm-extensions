@@ -25,7 +25,10 @@ from app import __summary__, __version__
 from app.api.deps import IsAuthenticatedDep, RequireMinimumRoleForUnsafeMethods
 from app.core.config import create_app, default_lifespan, settings
 from app.core.health import build_health_router
-from app.core.settings_override.constants import INVENTORY_SETTINGS
+from app.core.settings_override.constants import INVENTORY_SETTINGS, SETTINGS
+from app.core.settings_override.extensions_owned import (
+    extensions_owned_overrides_refresher,
+)
 from app.core.settings_override.lifecycle import (
     ProxyEntry,
     settings_override_refresher,
@@ -84,15 +87,27 @@ async def inventory_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, Non
 async def inventory_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage the Inventory API's lifespan when it runs standalone.
 
-    Wraps :func:`inventory_overrides_lifespan` with :func:`default_lifespan`.
-    Under the combined ``app.main:app`` the refresher is entered from
-    :func:`app.main.main_lifespan` and ``default_lifespan`` from
+    Wraps :func:`inventory_overrides_lifespan` with :func:`default_lifespan`
+    and the refresher for the PMM Extensions-owned ``Settings``, read from the
+    PMM Extensions database, so a ``LOGGING`` override reaches this process.
+    ``AlertSettings`` is not wired because nothing under ``app/inventory``
+    reaches ``alert_service``. Under the combined ``app.main:app`` the PMM
+    Extensions refresher publishes ``Settings``, the Inventory refresher is
+    entered from :func:`app.main.main_lifespan`, and ``default_lifespan`` from
     :func:`app.tasks.main.tasks_lifespan` instead.
 
     :param app: The FastAPI application instance whose lifespan this manages.
-    :yield: None
+    :return: An async context manager yielding ``None`` for the lifespan duration.
+    :raises Exception: Propagates whatever entering
+        :func:`~app.core.settings_override.extensions_owned.extensions_owned_overrides_refresher`
+        raises, including a ``ValidationError`` from invalid
+        ``EXTENSIONS__DATABASE__*`` values.
     """
-    async with inventory_overrides_lifespan(app), default_lifespan(app):
+    async with (
+        extensions_owned_overrides_refresher(SETTINGS),
+        inventory_overrides_lifespan(app),
+        default_lifespan(app),
+    ):
         yield
 
 
