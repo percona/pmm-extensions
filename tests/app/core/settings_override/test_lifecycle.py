@@ -66,6 +66,7 @@ from tests.app.core.settings_override.conftest import (
     CONNECTIVITY_CALLBACK_KEY,
     EXTENSIONS_SETTINGS_TOKEN,
     hanging_session_maker_factory,
+    recording_bounded_seed,
     recording_callback,
     seed_connectivity_override,
     SETTINGS_TOKEN,
@@ -1156,3 +1157,213 @@ class TestFireBootCallbacks:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+
+
+#: Importable path of the lifecycle ``refresh_all`` the seed and loop resolve.
+_LIFECYCLE_REFRESH_ALL = "app.core.settings_override.lifecycle.refresh_all"
+
+#: Bound that fails a hung run instead of stalling the suite. A correct
+#: implementation never reaches it, so it is sized for a loaded xdist worker.
+_HANG_TIMEOUT = 10.0
+
+
+class _UnwindingSeed:
+    """Stand in for ``refresh_all`` whose boot seed outlives its first cancel.
+
+    The seed hangs, absorbs the cancel ``bounded_refresh`` sends on budget
+    expiry, and keeps unwinding until :attr:`release` is set, the way a stuck
+    ``AsyncSession.__aexit__`` keeps a cancelled task pending. A second cancel
+    ends it. Non-boot calls are the periodic loop's and are only counted. It
+    replaces the lifecycle's own ``refresh_all`` because no real session can be
+    made to absorb a cancel on demand.
+    """
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.seed_task: asyncio.Task | None = None
+        self.loop_refreshes = 0
+        self.loop_refreshed = asyncio.Event()
+
+    async def __call__(
+        self,
+        _session_maker_factory: object,
+        _proxies: object,
+        _callbacks: object = None,
+        *,
+        boot: bool = False,
+    ) -> None:
+        if not boot:
+            self.loop_refreshes += 1
+            self.loop_refreshed.set()
+            return
+        self.seed_task = asyncio.current_task()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await self.release.wait()
+
+
+class TestSeedBudget:
+    """Cover the optional seed budget on the web-path refresher."""
+
+    @pytest.mark.asyncio
+    async def test_settings_override_refresher_forwards_the_seed_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hand the caller's ``seed_timeout`` to ``bounded_seed``."""
+        _proxy, registry = _make_proxies()
+        seed_timeout = 0.5
+        recorded: dict[str, object] = {}
+        monkeypatch.setattr(
+            "app.core.settings_override.lifecycle.bounded_seed",
+            recording_bounded_seed(recorded),
+        )
+
+        async with settings_override_refresher(
+            hanging_session_maker_factory,
+            registry,
+            interval=timedelta(seconds=3600),
+            enabled=True,
+            seed_timeout=seed_timeout,
+        ):
+            pass
+
+        assert recorded["seed_timeout"] == seed_timeout
+
+    @pytest.mark.asyncio
+    async def test_settings_override_refresher_seed_stays_unbounded_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Leave the seed unbounded for a caller that passes no budget."""
+        _proxy, registry = _make_proxies()
+        recorded: dict[str, object] = {}
+        monkeypatch.setattr(
+            "app.core.settings_override.lifecycle.bounded_seed",
+            recording_bounded_seed(recorded),
+        )
+
+        async with settings_override_refresher(
+            hanging_session_maker_factory,
+            registry,
+            interval=timedelta(seconds=3600),
+            enabled=True,
+        ):
+            pass
+
+        assert recorded["seed_timeout"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_hung_seed_releases_the_lifespan_within_its_budget(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Yield after the budget when the database never answers, logging ERROR."""
+        proxy, registry = _make_proxies()
+        seed_timeout = 0.05
+
+        async def _enter_and_exit() -> None:
+            async with settings_override_refresher(
+                hanging_session_maker_factory,
+                registry,
+                interval=timedelta(seconds=3600),
+                enabled=True,
+                seed_timeout=seed_timeout,
+            ):
+                pass
+
+        with caplog.at_level("ERROR", logger="app.core.settings_override.lifecycle"):
+            await asyncio.wait_for(_enter_and_exit(), timeout=_HANG_TIMEOUT)
+
+        assert proxy.get_snapshot() == {}
+        assert any(
+            record.levelname == "ERROR" and f"{seed_timeout:.2f}s" in record.message
+            for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_loop_skips_while_the_cancelled_seed_unwinds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refuse a refresh while the expired seed still holds its session, then resume."""
+        _proxy, registry = _make_proxies()
+        seed = _UnwindingSeed()
+        monkeypatch.setattr(_LIFECYCLE_REFRESH_ALL, seed)
+
+        async with settings_override_refresher(
+            lambda: None,
+            registry,
+            interval=timedelta(milliseconds=10),
+            enabled=True,
+            seed_timeout=0.05,
+        ):
+            await asyncio.sleep(0.1)
+            assert seed.seed_task is not None
+            assert not seed.seed_task.done()
+            assert seed.loop_refreshes == 0
+
+            seed.release.set()
+            await asyncio.wait_for(seed.loop_refreshed.wait(), timeout=_HANG_TIMEOUT)
+
+    @pytest.mark.asyncio
+    async def test_lifespan_exit_cancels_a_seed_still_unwinding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cancel an expired seed still unwinding when its refresher exits."""
+        _proxy, registry = _make_proxies()
+        seed = _UnwindingSeed()
+        monkeypatch.setattr(_LIFECYCLE_REFRESH_ALL, seed)
+
+        async with settings_override_refresher(
+            lambda: None,
+            registry,
+            interval=timedelta(seconds=3600),
+            enabled=True,
+            seed_timeout=0.05,
+        ):
+            assert seed.seed_task is not None
+            assert not seed.seed_task.done()
+
+        await asyncio.wait({seed.seed_task}, timeout=_HANG_TIMEOUT)
+        assert seed.seed_task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_bounded_refresh_cancels_the_refresh_with_its_caller(
+    session_maker: async_sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leave no refresh running to publish later once the waiting caller is cancelled.
+
+    ``publish_snapshot`` is replaced so the refresh is held exactly between its
+    read and its publish, the one window where a surviving task would publish
+    after the caller has gone; a real query cannot be paused there.
+    """
+    proxy, registry = _make_proxies()
+    override_value = not ExtensionsSettings().CONNECTIVITY_CHECK_DEFAULT
+    gate = asyncio.Event()
+    started = asyncio.Event()
+
+    async def _publish_once_the_gate_opens(
+        target: OverridableSettingsProxy,
+        _session: AsyncSession,
+        _settings_cls: type,
+    ) -> None:
+        started.set()
+        await gate.wait()
+        target._set_snapshot({"CONNECTIVITY_CHECK_DEFAULT": override_value})
+
+    monkeypatch.setattr(
+        "app.core.settings_override.lifecycle.publish_snapshot",
+        _publish_once_the_gate_opens,
+    )
+    caller = asyncio.create_task(
+        bounded_refresh(lambda: session_maker, registry, budget=10.0)
+    )
+    await asyncio.wait_for(started.wait(), timeout=_HANG_TIMEOUT)
+
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    gate.set()
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    assert proxy.get_snapshot() == {}

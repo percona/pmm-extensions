@@ -18,6 +18,7 @@ allowBuilds:
   esbuild: true
   msw: true
 overrides:
+  '@vitest/mocker@4.1.11': 4.1.12
   esbuild: 0.28.1
   brace-expansion@5.0.6: 5.0.12
   brace-expansion@<2.1.7: 2.1.7
