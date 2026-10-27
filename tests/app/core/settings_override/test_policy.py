@@ -46,11 +46,9 @@ from app.core.settings_override.registry import (
     iter_class_fields,
     ReloadClassification,
     rendered_leaf_keys,
-)
-from app.core.settings_override.resolution import (
-    resolve_nested_field,
     resolve_nested_field_metadata,
 )
+from app.core.settings_override.resolution import resolve_nested_field
 from app.extensions.apps.alerts.config import AlertsSettings
 from app.extensions.apps.om_inventory.config import OmInventorySettings
 from app.extensions.apps.report.config import HealthReportSettings
