@@ -244,6 +244,36 @@ class TaskLog(BaseModel):
     offset: int = 0
 
 
+def normalize_meta_requirements(meta: dict[str, Any]) -> dict[str, Any]:
+    r"""Normalize ``meta["requirements"]`` to a newline-joined string for Nomad.
+
+    Accept a string (unchanged, including embedded newlines) or a list of
+    non-empty strings (joined with ``\n``). Leave meta unchanged when the key
+    is absent. Nomad dispatch meta values are strings, and the run-python job
+    template writes ``NOMAD_META_requirements`` straight into
+    ``requirements.txt``, so every execution path must store and dispatch a
+    string — never a list.
+
+    :param meta: The task execution meta mapping.
+    :return: The same mapping with ``requirements`` normalized when present.
+    :raises ValueError: If ``requirements`` is neither a string nor a list of
+        non-empty strings.
+    """
+    if "requirements" not in meta:
+        return meta
+    value = meta["requirements"]
+    if isinstance(value, str):
+        return meta
+    if isinstance(value, list):
+        if not all(isinstance(item, str) and item for item in value):
+            msg = "meta.requirements list items must be non-empty strings"
+            raise ValueError(msg)
+        meta["requirements"] = "\n".join(value)
+        return meta
+    msg = "meta.requirements must be a string or a list of non-empty strings"
+    raise ValueError(msg)
+
+
 class TaskExecutionRequest(BaseModel):
     """Represent an execution request.
 
@@ -271,6 +301,26 @@ class TaskExecutionRequest(BaseModel):
     #: read into. Private so it never reaches ``model_dump``, and therefore
     #: neither the stored document nor an API response.
     _unreadable_leaves: tuple[str, ...] = PrivateAttr(default=())
+
+    @field_validator("meta", mode="after")
+    @classmethod
+    def normalize_requirements(
+        cls, meta: ArbitraryMapping | None
+    ) -> ArbitraryMapping | None:
+        """Normalize ``meta.requirements`` to a newline-joined string.
+
+        Covers every path that builds a stored ``TaskExecutionRequest``,
+        including PROXY merge of ``task.data.meta`` and chain dispatch, so
+        task history and Nomad always receive a string.
+
+        :param meta: The execution-request meta mapping, or ``None``.
+        :return: The meta mapping with ``requirements`` normalized when present.
+        :raises ValueError: If ``requirements`` is neither a string nor a list
+            of non-empty strings.
+        """
+        if meta is None:
+            return meta
+        return normalize_meta_requirements(meta)
 
     def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
         """Yield the fields ``repr`` and ``str`` render, protected leaves redacted.
@@ -676,6 +726,22 @@ class TaskExecuteRequest(BaseModel):
     anonymize_mask: int | None = None
     chain_task_names: list[str] | None = None
     chain_on_failure: bool = False
+
+    @field_validator("meta", mode="after")
+    @classmethod
+    def normalize_requirements(cls, meta: dict[str, Any]) -> dict[str, Any]:
+        """Normalize ``meta.requirements`` to a newline-joined string.
+
+        Accept a string (unchanged) or a list of non-empty package lines so
+        clients need not join and escape newlines by hand. Invalid values raise
+        at request validation (HTTP 422) before any task history row is created.
+
+        :param meta: The execute-request meta mapping.
+        :return: The meta mapping with ``requirements`` normalized when present.
+        :raises ValueError: If ``requirements`` is neither a string nor a list
+            of non-empty strings.
+        """
+        return normalize_meta_requirements(meta)
 
     @field_validator("chain_on_failure", mode="before")
     @classmethod
