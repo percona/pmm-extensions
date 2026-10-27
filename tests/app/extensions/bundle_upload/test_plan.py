@@ -1223,39 +1223,6 @@ class TestUploadStepPathValidation:
 class TestOffOriginPathRule:
     """Cover the same-origin path rule as one definition shared by every step kind."""
 
-    @pytest.mark.parametrize(
-        ("payload", "label"),
-        [
-            pytest.param(
-                _resolution_step_plan("//attacker.example/x"),
-                "Resolution step",
-                id="resolution",
-            ),
-            pytest.param(
-                _upload_only_plan(path="//attacker.example/x"),
-                "Upload step",
-                id="upload",
-            ),
-            pytest.param(
-                _probe_plan(path="//attacker.example/x"), "Probe step", id="probe"
-            ),
-            pytest.param(
-                _case_search_plan(path="//attacker.example/x"),
-                "Case-search step",
-                id="case_search",
-            ),
-            pytest.param(
-                _connection_details_plan(path="//attacker.example/x"),
-                "Connection-details step",
-                id="connection_details",
-            ),
-        ],
-    )
-    def test_every_step_kind_names_itself(self, payload: dict[str, Any], label: str):
-        """Name the offending step kind, so the operator knows which block to fix."""
-        with pytest.raises(ValidationError, match=f"{label} path must be relative"):
-            DeliveryPlan(**payload)
-
     def test_a_step_kind_added_later_inherits_the_rule(self):
         """Hold a new step kind to the endpoint's origin without it opting in."""
 

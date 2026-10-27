@@ -69,7 +69,7 @@ import logging
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, Self
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import regex
 from fastapi import HTTPException
@@ -270,13 +270,25 @@ def _names_an_origin(reference: str) -> bool:
     """Tell whether ``reference`` carries a scheme or an authority of its own.
 
     ``//`` with an empty authority leaves ``netloc`` falsy, hence the explicit
-    prefix check.
+    prefix check. yarl, which builds the URL actually requested, also reads a
+    scheme that does not start with a letter, such as ``..:``, which
+    ``urlparse`` leaves in the path, so the reference is read both ways. One
+    that either parser cannot read at all, such as an out-of-range port, cannot
+    be shown to stay on the endpoint, so it counts as naming an origin.
 
     :param reference: A URL reference, as a join would produce it.
     :return: Whether the reference names an origin rather than a path.
     """
-    parsed = urlparse(reference)
-    return bool(parsed.scheme or parsed.netloc) or reference.startswith("//")
+    try:
+        parsed = urlparse(reference)
+        yarl_scheme = URL(reference).scheme
+    except ValueError:
+        return True
+    return (
+        bool(parsed.scheme or parsed.netloc)
+        or reference.startswith("//")
+        or bool(yarl_scheme)
+    )
 
 
 def _joins_to_another_origin(path: str) -> bool:
@@ -289,13 +301,21 @@ def _joins_to_another_origin(path: str) -> bool:
     can become ``//x``. Under a bare origin a ``..`` pops the root itself, and
     ``/../http://x`` becomes ``http://x``.
 
+    Both shapes decode ``%2e%2e`` as ``..``, but the transport's first join,
+    ``urljoin`` in :meth:`RemoteAPI.prepare_path`, keeps it as an ordinary
+    segment, so the path is also judged as that join leaves it. Otherwise
+    ``/../http:/%2e%2e/..//%2e%2e/h`` would pass here and only be refused when
+    sent.
+
     :param path: The step path, without a scheme or authority.
     :return: Whether some join of the path names another origin.
     """
     segments = path.lstrip("/").split("/")
-    return _names_an_origin(
-        "/" + "/".join(_resolve_dot_segments(segments))
-    ) or _names_an_origin("/".join(_resolve_dot_segments(["", *segments])))
+    return (
+        _names_an_origin("/" + "/".join(_resolve_dot_segments(segments)))
+        or _names_an_origin("/".join(_resolve_dot_segments(["", *segments])))
+        or _names_an_origin(urljoin("/", path))
+    )
 
 
 class RequestStep(_PlanModel):

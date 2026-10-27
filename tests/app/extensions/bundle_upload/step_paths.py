@@ -28,7 +28,9 @@ import pytest
 #: leading-whitespace spellings rely on ``urlparse`` stripping them first. The
 #: dot-segment spellings only name another origin once a join resolves them: a
 #: leading ``/..`` pops the root itself, leaving whatever follows to read as a
-#: scheme.
+#: scheme. The transport's first join keeps ``%2e%2e`` encoded, so a spelling
+#: can also name an authority only as that join leaves it. yarl reads ``..:`` as
+#: a scheme where ``urlparse`` does not.
 OFF_ORIGIN_PATHS = [
     pytest.param("https://attacker.example/x", id="absolute_url"),
     pytest.param("//attacker.example/x", id="network_path_reference"),
@@ -55,6 +57,11 @@ OFF_ORIGIN_PATHS = [
     pytest.param("/a/../../http://attacker.example/x", id="scheme_behind_deep_parent"),
     pytest.param("/../attacker.example:443/x", id="host_and_port_behind_root_parent"),
     pytest.param("../http://attacker.example/x", id="scheme_behind_relative_parent"),
+    pytest.param(
+        "/../http:/%2e%2e/..//%2e%2e/h", id="authority_left_encoded_by_the_first_join"
+    ),
+    pytest.param("../..://attacker.example/x", id="scheme_only_yarl_reads"),
+    pytest.param("../..://attacker.example:99999/x", id="port_out_of_range"),
 ]
 
 #: Step path spellings that stay on the plan endpoint's origin wherever the
