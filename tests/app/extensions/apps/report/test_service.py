@@ -1618,6 +1618,33 @@ class TestUploadPdfReport:
         assert upload.await_args.args[0] == "/v1/upload/"
         assert upload.await_args.kwargs["params"] == {"tenant": "acme"}
 
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            pytest.param("https://intake.example.com//api/upload", id="authority"),
+            pytest.param(
+                "https://intake.example.com/a/..//evil.example/x",
+                id="authority_behind_dot_segments",
+            ),
+            pytest.param(
+                "https://intake.example.com/../http://evil.example/x",
+                id="scheme_behind_dot_segments",
+            ),
+        ],
+    )
+    async def test_an_endpoint_path_naming_another_host_is_never_sent(
+        self, endpoint: str
+    ):
+        """Refuse the upload, so the API key field never reaches another host."""
+        upload = AsyncMock()
+        with (
+            self._wired(self._upload_settings(endpoint=endpoint), upload),
+            pytest.raises(DeliveryPlanError, match="not a valid upload target"),
+        ):
+            await upload_pdf_report(self._make_report(), b"%PDF-1.4")
+
+        upload.assert_not_awaited()
+
     async def test_upload_error_propagates_unwrapped(self):
         """Let the transport's mapped project exception reach the caller as-is."""
         upload = AsyncMock(side_effect=HTTPInternalServerErrorException())

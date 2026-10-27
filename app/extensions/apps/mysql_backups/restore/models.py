@@ -667,7 +667,11 @@ class RestoreCreate(TaskFormModel):
         Ui(
             label="Myloader threads",
             section="Mydumper",
-            description="How many tables are loaded in parallel",
+            description=(
+                "How many tables are loaded in parallel. With Overwrite tables on "
+                "a database whose tables reference each other by foreign key, use "
+                "1: replacing those tables in parallel can deadlock"
+            ),
         ),
     ] = Field(default=4)
     myloader_extra_args: Annotated[

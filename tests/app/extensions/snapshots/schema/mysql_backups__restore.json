@@ -192,7 +192,7 @@
         },
         {
           "default": 4,
-          "description": "How many tables are loaded in parallel",
+          "description": "How many tables are loaded in parallel. With Overwrite tables on a database whose tables reference each other by foreign key, use 1: replacing those tables in parallel can deadlock",
           "label": "Myloader threads",
           "name": "myloader_threads",
           "required": false,
