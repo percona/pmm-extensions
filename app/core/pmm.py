@@ -120,9 +120,8 @@ async def annotate_task_event(
 
     Skip a task whose ``target`` is :data:`~app.tasks.models.CELERY_LOCAL_TARGET`
     and that sets no ``_pmm_node_name`` override: it ran on PMM Extensions' own
-    worker (the scheduled inventory sync and collection), which is no PMM node,
-    so PMM would refuse the annotation. An explicit override always annotates,
-    even one naming a node called ``local``.
+    Celery worker, which is no PMM node, so PMM would refuse the annotation. An
+    explicit override always annotates, even one naming a node called ``local``.
 
     :param task_name: The task name (from ``TaskExecutionRequest.task``).
     :param target: The execution target node (from ``TaskExecutionRequest.target``).
