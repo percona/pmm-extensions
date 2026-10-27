@@ -75,6 +75,7 @@ import regex
 from fastapi import HTTPException
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     field_validator,
     model_validator,
@@ -115,7 +116,13 @@ _UPLOAD_STEP_LABEL = "upload"
 TERM_MATCH_TIMEOUT_SECONDS = 0.25
 
 
-class LiteralValue(BaseModel):
+class _PlanModel(BaseModel):
+    """Reject a key the model does not declare, without echoing its value."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
+class LiteralValue(_PlanModel):
     """Provide a constant value written into the plan.
 
     :param source: The discriminator tag, always ``"literal"``.
@@ -126,7 +133,7 @@ class LiteralValue(BaseModel):
     value: str
 
 
-class InputValue(BaseModel):
+class InputValue(_PlanModel):
     """Provide a value taken from the send inputs.
 
     :param source: The discriminator tag, always ``"input"``.
@@ -137,7 +144,7 @@ class InputValue(BaseModel):
     field: Literal["source_ref", "case_ref", "manifest"]
 
 
-class SecretValue(BaseModel):
+class SecretValue(_PlanModel):
     """Provide a value taken from the plan's named secrets.
 
     :param source: The discriminator tag, always ``"secret"``.
@@ -148,7 +155,7 @@ class SecretValue(BaseModel):
     name: NonEmptyStr
 
 
-class StepOutputValue(BaseModel):
+class StepOutputValue(_PlanModel):
     """Provide a value extracted from an earlier resolution step's response.
 
     :param source: The discriminator tag, always ``"output"``.
@@ -161,7 +168,7 @@ class StepOutputValue(BaseModel):
     output: NonEmptyStr
 
 
-class ManifestValue(BaseModel):
+class ManifestValue(_PlanModel):
     """Provide a value read from one key of the send's manifest.
 
     Unlike an ``input`` value naming the whole manifest, which reaches the
@@ -178,7 +185,7 @@ class ManifestValue(BaseModel):
     key: NonEmptyStr
 
 
-class TermValue(BaseModel):
+class TermValue(_PlanModel):
     """Provide the caller's typed search term, wrapped in literal affixes.
 
     The affixes exist because a receiver's search parameter is rarely the bare
@@ -261,7 +268,7 @@ def _reject_off_origin_path(value: str, *, what: str) -> str:
     return value
 
 
-class RequestStep(BaseModel):
+class RequestStep(_PlanModel):
     """Describe one request the plan issues under its own endpoint.
 
     Every step kind resolves a path against the plan's endpoint and carries a
@@ -274,6 +281,10 @@ class RequestStep(BaseModel):
     rebasing helper needs and all that it needs. It deliberately declares no
     path validator: only some subclasses reject an off-origin path, and
     reconciling that here would change which plans install.
+
+    Every step kind rejects a field it does not declare when the plan is parsed.
+    The keys inside its value maps are parameter names the plan author chooses,
+    so no name there is refused for not being a field.
 
     :param path: The request path, resolved against the plan endpoint.
     :param query: Query-string parameters keyed by parameter name.
@@ -511,8 +522,13 @@ def _check_value_maps(
             )
 
 
-class DeliveryPlan(BaseModel):
+class DeliveryPlan(_PlanModel):
     """Describe a complete bundle-delivery configuration.
+
+    A field this plan, any of its steps or any of their values does not declare
+    is rejected when the plan is parsed, and the error names it and where it
+    sits. The keys of ``secrets``, of ``outputs`` and ``details``, and of every
+    value map are the plan author's own names and stay unrestricted.
 
     :param endpoint: The receiver base URL every step's ``path`` is relative to.
         The executor issues requests through the transport client it is handed,
