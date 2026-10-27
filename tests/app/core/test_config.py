@@ -45,12 +45,12 @@ from app import BASE_DIR
 from app.core.alerts.config import AlertSettings
 from app.core.auth.config import AuthSettings
 from app.core.config import (
-    _ExtensionsDatabaseSettings,
     _sanitize_client_kwargs,
     BaseYamlAppSettings,
     create_app,
     default_lifespan,
     detect_removed_settings_override_keys,
+    ExtensionsDatabaseSettings,
     PMMSettings,
     PreEnvSettings,
     Settings,
@@ -1514,7 +1514,7 @@ class TestDerivedBeatStoreDefault:
         the default rather than reading it; this fails if the two drift apart.
         """
         assert (
-            _ExtensionsDatabaseSettings.model_fields["DATABASE"].default
+            ExtensionsDatabaseSettings.model_fields["DATABASE"].default
             == ExtensionsSettings.model_fields["DATABASE"].default
         )
 

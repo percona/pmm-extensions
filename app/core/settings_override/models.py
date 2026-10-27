@@ -87,9 +87,13 @@ class SettingOverride(BaseSQLModel, table=True):
     ``migrations/env.py`` imports the model directly (via
     ``from app.core.settings_override.models import *``) so it is registered
     on the shared metadata, and creates the same DDL in its own logical
-    database. Rows live in whichever service writes them and are never
-    accessed cross-service -- each service queries its own engine for its own
-    snapshot.
+    database. Rows live in the database of the service that writes them, and
+    each service queries its own engine for its own snapshot, with one
+    exception: the PMM Extensions-owned shared classes (``Settings`` and
+    ``AlertSettings``) are written only by the PMM Extensions settings API and
+    are read from the PMM Extensions database by every process that reads them:
+    the web process, the worker children, and standalone Tasks and Inventory
+    (see :mod:`app.core.settings_override.extensions_owned`).
 
     :param setting_class: The storage token of the wrapped settings class
         (the SCREAMING_SNAKE form derived by :func:`setting_class_token`).
