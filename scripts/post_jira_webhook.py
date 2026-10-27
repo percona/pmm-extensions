@@ -18,8 +18,9 @@
 
 Best-effort helper invoked from the ``trigger-jenkins`` Makefile rule and from
 ``scripts/release.py`` for the RC create-version webhook. Exits non-zero on any
-failure (missing/empty env vars, non-HTTPS URL, network error, non-2xx
-response) so callers can treat success/failure via the process exit code.
+failure (missing/empty env vars, non-HTTPS URL, unreadable payload file,
+network error, non-2xx response) so callers can treat success/failure via the
+process exit code.
 """
 
 from __future__ import annotations
@@ -30,11 +31,46 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+from typing import Any
 
 WEBHOOK_TIMEOUT_SECONDS = 10
 
 
-def post_webhook(url_env: str, auth_env: str, version_tag: str) -> int:
+def load_payload_file(path: Path) -> dict[str, Any] | None:
+    """Read the extra webhook fields from a JSON file holding one object.
+
+    The release-stable webhook carries the release email this way: the rule
+    reads ``webhookData.release.subject`` and ``webhookData.release.body_html``.
+
+    :param path: The JSON file to read.
+    :return: The object's fields, or ``None`` after printing a warning when the
+        file is unreadable, is not JSON, or holds something other than an
+        object.
+    """
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(
+            f"warning: cannot read webhook payload file {path}: {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return None
+    if not isinstance(loaded, dict):
+        print(
+            f"warning: webhook payload file {path} must hold a JSON object",
+            file=sys.stderr,
+        )
+        return None
+    return loaded
+
+
+def post_webhook(
+    url_env: str,
+    auth_env: str,
+    version_tag: str,
+    extra_data: dict[str, Any] | None = None,
+) -> int:
     """POST the Jira version-name payload to the configured webhook.
 
     Silently exit ``1`` when either env var is unset or empty — webhook
@@ -50,14 +86,12 @@ def post_webhook(url_env: str, auth_env: str, version_tag: str) -> int:
     swallow the status code needed for the warning and tests.
 
     :param url_env: The environment-variable name holding the webhook URL.
-    :type url_env: str
     :param auth_env: The environment-variable name holding the webhook token.
-    :type auth_env: str
     :param version_tag: The version-name payload value (e.g. ``v0.12.0``).
-    :type version_tag: str
+    :param extra_data: Further fields to send beside ``versionName``, which
+        always wins over a field of the same name.
     :return: ``0`` on HTTP 2xx, ``1`` on any error (missing env var, non-HTTPS
         URL, network failure, timeout, or non-2xx response).
-    :rtype: int
     """
     url = os.environ.get(url_env)
     secret = os.environ.get(auth_env)
@@ -69,7 +103,8 @@ def post_webhook(url_env: str, auth_env: str, version_tag: str) -> int:
             file=sys.stderr,
         )
         return 1
-    payload = json.dumps({"data": {"versionName": version_tag}}).encode("utf-8")
+    data = {**(extra_data or {}), "versionName": version_tag}
+    payload = json.dumps({"data": data}).encode("utf-8")
     try:
         request = urllib.request.Request(  # noqa: S310
             url,
@@ -127,8 +162,18 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Version-name payload value (e.g. v0.12.0).",
     )
+    parser.add_argument(
+        "--payload-file",
+        type=Path,
+        help="JSON file holding one object whose fields are sent beside versionName.",
+    )
     args = parser.parse_args(argv)
-    return post_webhook(args.url_env, args.auth_env, args.version_tag)
+    extra_data = None
+    if args.payload_file is not None:
+        extra_data = load_payload_file(args.payload_file)
+        if extra_data is None:
+            return 1
+    return post_webhook(args.url_env, args.auth_env, args.version_tag, extra_data)
 
 
 if __name__ == "__main__":

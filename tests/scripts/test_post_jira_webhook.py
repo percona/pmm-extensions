@@ -309,6 +309,86 @@ def test_main_dispatches_to_post_webhook(monkeypatch, webhook_env):
     )
 
 
+def _capture_payloads(monkeypatch):
+    """Record every request body ``urlopen`` is handed, answering each with a 200."""
+    sent = []
+
+    def capture(request, timeout):
+        sent.append(json.loads(request.data))
+        return _fake_ok_response()
+
+    monkeypatch.setattr(post_jira_webhook.urllib.request, "urlopen", capture)
+    return sent
+
+
+def _main_with_payload_file(path):
+    """Run ``main`` with the three required flags plus ``--payload-file``."""
+    return post_jira_webhook.main(
+        [
+            "--url-env",
+            URL_ENV,
+            "--auth-env",
+            AUTH_ENV,
+            "--version-tag",
+            "v3.10.0",
+            "--payload-file",
+            str(path),
+        ],
+    )
+
+
+def test_main_sends_payload_file_fields_beside_version_name(
+    monkeypatch, webhook_env, tmp_path
+):
+    """Send the ``--payload-file`` fields in ``data`` next to ``versionName``."""
+    payload_file = tmp_path / "release.json"
+    release = {"subject": "PMM Extensions 3.10.0 released", "body_html": "<p>Hi</p>"}
+    payload_file.write_text(json.dumps({"release": release}), encoding="utf-8")
+    sent = _capture_payloads(monkeypatch)
+
+    assert _main_with_payload_file(payload_file) == 0
+    assert sent == [{"data": {"release": release, "versionName": "v3.10.0"}}]
+
+
+def test_payload_file_cannot_override_version_name(monkeypatch, webhook_env, tmp_path):
+    """Keep the ``--version-tag`` value over a ``versionName`` in the file."""
+    payload_file = tmp_path / "release.json"
+    payload_file.write_text(json.dumps({"versionName": "v9.9.9"}), encoding="utf-8")
+    sent = _capture_payloads(monkeypatch)
+
+    assert _main_with_payload_file(payload_file) == 0
+    assert sent == [{"data": {"versionName": "v3.10.0"}}]
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        ("{not json", "JSONDecodeError"),
+        ('["a list"]', "must hold a JSON object"),
+    ],
+)
+def test_bad_payload_file_posts_nothing(
+    monkeypatch, webhook_env, tmp_path, capsys, content, reason
+):
+    """Fail before any request when the payload file is not one JSON object."""
+    payload_file = tmp_path / "release.json"
+    payload_file.write_text(content, encoding="utf-8")
+    sent = _capture_payloads(monkeypatch)
+
+    assert _main_with_payload_file(payload_file) == 1
+    assert sent == []
+    assert reason in capsys.readouterr().err
+
+
+def test_missing_payload_file_posts_nothing(monkeypatch, webhook_env, tmp_path, capsys):
+    """Fail before any request when the payload file does not exist."""
+    sent = _capture_payloads(monkeypatch)
+
+    assert _main_with_payload_file(tmp_path / "absent.json") == 1
+    assert sent == []
+    assert "FileNotFoundError" in capsys.readouterr().err
+
+
 def test_main_requires_all_flags(capsys):
     """``main`` exits with argparse error when a required flag is missing."""
     with pytest.raises(SystemExit) as exc_info:
