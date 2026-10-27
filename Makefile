@@ -42,6 +42,8 @@ PYTEST_DIST?=worksteal
 COV?=1
 PYTEST_PATHS?=tests/
 PYTEST_MARKERS?=
+# Extra pytest flags, such as CI's `--splits N --group G` sharding.
+PYTEST_ARGS?=
 
 # WeasyPrint loads native libs (libgobject-2.0, libpango, libcairo) at import
 # time. Homebrew installs them under /opt/homebrew/lib (Apple Silicon) or
@@ -225,7 +227,7 @@ mergemigrations: venv alembic.ini
 	@"${VENV_BIN}"/python -m scripts.merge_alembic_heads
 
 test: venv
-	@$(DARWIN_DYLD) "${VENV_BIN}"/pytest -v -r a -n ${PYTEST_WORKERS} --dist ${PYTEST_DIST} $(if $(filter 1,$(COV)),--cov=app,) $(if ${PYTEST_MARKERS},-m "${PYTEST_MARKERS}",) ${PYTEST_PATHS}
+	@$(DARWIN_DYLD) "${VENV_BIN}"/pytest -v -r a -n ${PYTEST_WORKERS} --dist ${PYTEST_DIST} $(if $(filter 1,$(COV)),--cov=app,) $(if ${PYTEST_MARKERS},-m "${PYTEST_MARKERS}",) ${PYTEST_ARGS} ${PYTEST_PATHS}
 
 # Regenerate every derived API/form contract from the live app in one pass:
 # the route GET /schema + OpenAPI snapshot goldens, the synthetic form-DSL

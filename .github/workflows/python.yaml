@@ -105,7 +105,15 @@ jobs:
         run: AUTH__PROVIDER__CASDOOR__CLIENT_SECRET=notatoken AUTH__PROVIDER__CASDOOR__CLIENT_ID=notatoken ENCRYPTION_KEY="$(make -s encryption-key)" make checkmigrations
 
   test:
+    name: test (${{ matrix.group }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pytest-split balances the shards with the per-test durations in
+        # .test_durations. Refresh that file from the `test-durations` artifact
+        # of a recent Coverage (main) run.
+        group: [1, 2, 3]
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -132,15 +140,61 @@ jobs:
       - name: Run tests
         env:
           EXTENSIONS_PAYLOAD_CHECK_PYTHON: ${{ steps.py39.outputs.python-path }}
-        run: make test PYTEST_MARKERS='not postgres' COV=1
+          COVERAGE_FILE: .coverage.${{ matrix.group }}
+        # One shard's coverage falls short of fail_under on its own, so the
+        # gate and the report run on the merged data in the coverage job.
+        run: >-
+          make test PYTEST_MARKERS='not postgres' COV=1
+          PYTEST_ARGS='--splits ${{ strategy.job-total }} --group ${{ matrix.group }}
+          --cov-report= --cov-fail-under=0
+          --store-durations --durations-path .test_durations.${{ matrix.group }}'
+      - name: Upload shard durations (temporary, seeds .test_durations)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shard-durations-${{ matrix.group }}
+          path: .test_durations.${{ matrix.group }}
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Scaffold conformance check
+        if: matrix.group == 1
+        run: make startapp-check
+      - name: Upload coverage data
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-data-${{ matrix.group }}
+          path: .coverage.${{ matrix.group }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+      - name: Setup Python
+        uses: ./.github/actions/setup-python-job
+        with:
+          python-version: "3.11.9"
+          cache: poetry
+      - name: Install dependencies
+        run: poetry sync --no-root
+      - name: Download coverage data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-data-*
+          merge-multiple: true
+      - name: Combine coverage and enforce fail_under
+        run: poetry run coverage combine && poetry run coverage report
       - name: Generate coverage comment data
         id: coverage_comment
         if: github.event_name == 'pull_request'
         uses: py-cov-action/python-coverage-comment-action@63f52f4fbbffada6e8dee8ec432de7e01df9ba79 # v3.41
         with:
           GITHUB_TOKEN: ${{ github.token }}
-      - name: Scaffold conformance check
-        run: make startapp-check
       - name: Upload coverage comment artifact
         if: steps.coverage_comment.outputs.COMMENT_FILE_WRITTEN == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
