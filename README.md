@@ -64,13 +64,13 @@
 | app/core/settings\_override/cache.py                                                                                                |      127 |       13 |       46 |        6 |     87% |200-205, 218-223, 309, 372, 413, 417-424 |
 | app/core/settings\_override/constants.py                                                                                            |       12 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/extensions\_owned.py                                                                                    |       40 |        0 |        2 |        0 |    100% |           |
-| app/core/settings\_override/lifecycle.py                                                                                            |      133 |        1 |       38 |        0 |     99% |       560 |
+| app/core/settings\_override/lifecycle.py                                                                                            |      133 |        1 |       38 |        0 |     99% |       562 |
 | app/core/settings\_override/manager.py                                                                                              |        5 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/models.py                                                                                               |       43 |        0 |        6 |        1 |     98% |151-\>exit |
 | app/core/settings\_override/policy.py                                                                                               |       29 |        0 |        6 |        0 |    100% |           |
 | app/core/settings\_override/proxy.py                                                                                                |       20 |        0 |        2 |        0 |    100% |           |
-| app/core/settings\_override/registry.py                                                                                             |      317 |        2 |      122 |        2 |     99% |1285, 1328 |
-| app/core/settings\_override/resolution.py                                                                                           |      116 |        0 |       62 |        0 |    100% |           |
+| app/core/settings\_override/registry.py                                                                                             |      324 |        1 |      124 |        1 |     99% |      1342 |
+| app/core/settings\_override/resolution.py                                                                                           |      108 |        0 |       60 |        0 |    100% |           |
 | app/core/settings\_override/secret\_preservation.py                                                                                 |      256 |        0 |      148 |        0 |    100% |           |
 | app/core/settings\_override/secret\_storage.py                                                                                      |      154 |        4 |       50 |        5 |     96% |575, 577-\>579, 603, 757, 787 |
 | app/core/settings\_override/worker.py                                                                                               |       59 |        1 |       14 |        1 |     97% |       214 |
@@ -387,7 +387,7 @@
 | app/extensions/sync/exceptions.py                                                                                                   |       36 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/fields.py                                                                                                       |       21 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/health.py                                                                                                       |       86 |        0 |       22 |        2 |     98% |234-\>238, 235-\>234 |
-| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 128, 130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
+| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 129-130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
 | app/extensions/sync/syncers/mysql/payload.py                                                                                        |      176 |       47 |       54 |        5 |     70% |158-\>166, 242-246, 251-256, 269-275, 279-302, 356-\>372, 375, 396-404, 423 |
 | app/extensions/sync/syncers/mysql/syncer.py                                                                                         |      241 |        2 |       94 |        5 |     98% |111, 604-\>605, 716, 819-\>823, 821-\>820 |
 | app/extensions/sync/syncers/pmm.py                                                                                                  |      176 |        4 |       48 |        1 |     97% |113-117, 151 |
@@ -543,7 +543,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35185** | **1756** | **8486** |  **693** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35184** | **1755** | **8486** |  **692** | **94%** |           |
 
 
 ## Setup coverage badge
