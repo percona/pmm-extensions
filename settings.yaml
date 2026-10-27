@@ -176,6 +176,13 @@ default:
     # lowercase. Header names, secret names and multipart field names go on the wire
     # verbatim, so nothing here is case-folded for you.
     #
+    # A key the plan does not declare, misspelt or misplaced, is refused at
+    # settings load, and the error names it and where it sits; the names inside
+    # `headers`, `query`, `body`, `fields`, `outputs`, `details` and `secrets`
+    # are yours to choose.
+    # Quote a `value` carrying a comma inside `{...}`: unquoted, YAML ends the
+    # value at the comma and reads the rest as another key.
+    #
     # A plan is zero or more HTTP resolution steps followed by exactly one multipart
     # upload step carrying the bundle. Every header/query/body/field value declares
     # where it comes from via `source`:

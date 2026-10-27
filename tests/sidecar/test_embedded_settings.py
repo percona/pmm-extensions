@@ -19,8 +19,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from aioresponses import aioresponses
 from fastapi import status
+from pytest_mock import MockerFixture
 from sqlalchemy_celery_beat.models import Period
 
 from app import BASE_DIR
@@ -35,6 +37,7 @@ from app.extensions.apps.framework.registry import (
 )
 from app.extensions.bundle_upload.plan import (
     ConnectionDetail,
+    DeliveryPlan,
     DeliveryPlanExecutor,
     SecretValue,
 )
@@ -771,9 +774,8 @@ class TestBakedDeliveryProbeAndConnectionDetails:
     """Cover the two read-only steps the baked delivery plan declares.
 
     Every assertion observes the plan ``ExtensionsSettings()`` returns rather than the
-    profile's text: ``DeliveryPlan`` ignores keys it does not declare, so a
-    misspelled block name is dropped in silence and a file-content check would
-    pass on a plan carrying neither step.
+    profile's text, so it holds for what the plan parsed to and not merely for
+    what the file spells.
     """
 
     def test_the_baked_plan_declares_a_probe(self):
@@ -905,3 +907,49 @@ class TestBakedDeliveryProbeAndConnectionDetails:
 
         assert resolution.code is None
         assert resolution.plan is not None
+
+
+@pytest.mark.usefixtures("embedded_profile_cwd")
+class TestBakedDeliveryPlanSchema:
+    """Cover the baked delivery plan against the fields the plan models declare."""
+
+    @staticmethod
+    def _raw_plan() -> dict[str, Any]:
+        """Return the baked ``DIAGNOSTICS_DELIVERY`` block as the profile spells it."""
+        profile = yaml.safe_load(EMBEDDED_PROFILE.read_text(encoding="utf-8"))
+        return profile["default"]["EXTENSIONS"]["DIAGNOSTICS_DELIVERY"]
+
+    def test_the_baked_block_declares_no_undeclared_field(self):
+        """Parse the profile's own block directly, so no settings layer reshapes it."""
+        plan = DeliveryPlan.model_validate(self._raw_plan())
+
+        assert plan == ExtensionsSettings().DIAGNOSTICS_DELIVERY
+
+    def test_the_baked_plan_revalidates_from_its_dump(self):
+        """Rebuild an equal plan from ``model_dump``, as the resolver's merge does."""
+        plan = ExtensionsSettings().DIAGNOSTICS_DELIVERY
+        assert plan is not None
+
+        assert DeliveryPlan.model_validate(plan.model_dump()) == plan
+
+    def test_the_baked_plan_resolves_with_inputs_applied(self, mocker: MockerFixture):
+        """Carry every baked section through the merge, changing only the secrets."""
+        skeleton = ExtensionsSettings().DIAGNOSTICS_DELIVERY
+        assert skeleton is not None
+        mocker.patch.object(extensions_settings, "DIAGNOSTICS_DELIVERY", skeleton)
+        mocker.patch.object(
+            extensions_settings,
+            "DIAGNOSTICS_DELIVERY_INPUTS",
+            DeliveryPlanInputs(
+                secrets={"sn_api_key": "key-value", "client_token": "token-value"}
+            ),
+        )
+
+        plan = resolve_delivery_plan().plan
+
+        assert plan is not None
+        assert plan.model_dump(exclude={"secrets"}) == skeleton.model_dump(
+            exclude={"secrets"}
+        )
+        assert plan.secrets["sn_api_key"].get_secret_value() == "key-value"
+        assert plan.secrets["client_token"].get_secret_value() == "token-value"
