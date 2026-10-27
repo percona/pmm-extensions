@@ -24,6 +24,7 @@ from pydantic import SecretStr
 from app.core.config import PMMSettings
 from app.core.pmm import annotate_task_event, create_pmm_annotation
 from app.core.requests.remote_api import RemoteAPI
+from app.tasks.models import CELERY_LOCAL_TARGET
 
 
 @pytest.fixture
@@ -210,6 +211,62 @@ class TestAnnotateTaskEvent:
             tags=["pmm-extensions", "backup_data", "started"],
             service_names=[],
         )
+
+    @pytest.mark.asyncio
+    async def test_skips_a_task_that_ran_on_the_local_worker(self):
+        """Assert no annotation is sent for a node PMM does not know.
+
+        The Celery backend's scheduled jobs target ``local``; PMM answers
+        ``Node with name "local" not found`` to an annotation naming it.
+        """
+        with patch(
+            "app.core.pmm.create_pmm_annotation", new_callable=AsyncMock
+        ) as mock_create:
+            await annotate_task_event(
+                task_name="inventory-sync",
+                target=CELERY_LOCAL_TARGET,
+                meta={},
+                event="STARTED",
+            )
+
+        mock_create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_annotates_a_local_task_that_names_its_pmm_node(self):
+        """Assert ``_pmm_node_name`` still routes a local task to its PMM node."""
+        with patch(
+            "app.core.pmm.create_pmm_annotation", new_callable=AsyncMock
+        ) as mock_create:
+            await annotate_task_event(
+                task_name="archive",
+                target=CELERY_LOCAL_TARGET,
+                meta={"_pmm_node_name": "db-node-1"},
+                event="COMPLETED",
+            )
+
+        mock_create.assert_awaited_once()
+        assert mock_create.await_args.kwargs["node_name"] == "db-node-1"
+
+    @pytest.mark.asyncio
+    async def test_annotates_an_override_that_names_a_node_called_local(self):
+        """Assert an explicit ``_pmm_node_name`` of ``local`` is still annotated.
+
+        Only a task whose ``target`` is the local worker is skipped; an
+        override naming a real PMM node that happens to be called ``local``
+        must not be mistaken for it.
+        """
+        with patch(
+            "app.core.pmm.create_pmm_annotation", new_callable=AsyncMock
+        ) as mock_create:
+            await annotate_task_event(
+                task_name="archive",
+                target="executor-host",
+                meta={"_pmm_node_name": CELERY_LOCAL_TARGET},
+                event="COMPLETED",
+            )
+
+        mock_create.assert_awaited_once()
+        assert mock_create.await_args.kwargs["node_name"] == CELERY_LOCAL_TARGET
 
     @pytest.mark.asyncio
     async def test_reads_service_names_list_from_meta(self):

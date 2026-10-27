@@ -187,6 +187,11 @@ class TaskBackendEnum(StrEnum):
     CELERY = auto()
 
 
+#: The only target the Celery backend runs on: PMM Extensions' own worker, which
+#: is not a PMM node.
+CELERY_LOCAL_TARGET = "local"
+
+
 class TaskLogType(StrEnum):
     """Define the type of task log.
 
