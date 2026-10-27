@@ -25,6 +25,15 @@ import SettingRow from '../SettingRow';
 import { makeSetting, makeWrapper } from './fixtures';
 
 const PATCH_EXTENSIONS = 'http://localhost/api/extensions/admin/settings/ExtensionsSettings';
+const CROSS_FIELD_MSG = 'POLL_INTERVAL, TASK_TIMEOUT: POLL_INTERVAL must not exceed TASK_TIMEOUT';
+// The backend reports a broken rule once per field it spans, so each field's
+// row can claim the message.
+const CROSS_FIELD_DETAIL = ['POLL_INTERVAL', 'TASK_TIMEOUT'].map((field) => ({
+  loc: ['body', field],
+  msg: CROSS_FIELD_MSG,
+  type: 'cross_field',
+  ctx: { fields: ['POLL_INTERVAL', 'TASK_TIMEOUT'] },
+}));
 
 function renderRow(setting = makeSetting()) {
   return render(<SettingRow setting={setting} />, { wrapper: makeWrapper() });
@@ -81,6 +90,35 @@ describe('SettingRow', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(await screen.findByText('Input should be greater than 0')).toBeInTheDocument();
+  });
+
+  it('surfaces a cross-field refusal inline next to the edited field', async () => {
+    server.use(
+      http.patch(PATCH_EXTENSIONS, () =>
+        HttpResponse.json({ detail: CROSS_FIELD_DETAIL }, { status: 422 }),
+      ),
+    );
+    renderRow(makeSetting({ key: 'TASK_TIMEOUT', type: 'int', value: 180 }));
+
+    const input = screen.getByLabelText('TASK_TIMEOUT');
+    await userEvent.clear(input);
+    await userEvent.type(input, '1');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText(CROSS_FIELD_MSG)).toBeInTheDocument();
+  });
+
+  it('shows why a reset was refused instead of a bare status', async () => {
+    server.use(
+      http.delete(`${PATCH_EXTENSIONS}/TASK_TIMEOUT`, () =>
+        HttpResponse.json({ detail: CROSS_FIELD_DETAIL }, { status: 422 }),
+      ),
+    );
+    renderRow(makeSetting({ key: 'TASK_TIMEOUT', type: 'int', value: 30, has_override: true }));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reset to default' }));
+
+    expect(await screen.findByText(CROSS_FIELD_MSG)).toBeInTheDocument();
   });
 
   it('renders no edit affordance for NOT_OVERRIDABLE fields', () => {

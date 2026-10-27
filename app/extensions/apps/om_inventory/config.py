@@ -30,6 +30,7 @@ from typing import Annotated, ClassVar
 
 from annotated_types import Gt
 from pydantic import PositiveInt
+from pydantic_settings import SettingsConfigDict
 
 from app.core.celery.models import IntervalSchedule, Period
 from app.core.config import BaseYamlSettings
@@ -134,6 +135,7 @@ class OmInventorySettings(BaseYamlSettings):
         and reopens the single-flight race this check exists to close.
     """
 
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
     SETTINGS_PREFIXES: ClassVar[list[str]] = ["EXTENSIONS", "OM_INVENTORY"]
     CROSS_FIELD_RULES: ClassVar[tuple[CrossFieldRule, ...]] = (
         CrossFieldRule(

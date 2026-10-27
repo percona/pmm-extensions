@@ -165,9 +165,9 @@ def _declared_default(settings_cls: type[BaseYamlSettings], name: str) -> Any:
 
     :param settings_cls: The Pydantic settings class.
     :param name: The field name.
-    :return: The field's declared default.
+    :return: The field's declared default, from its factory when it has one.
     """
-    return settings_cls.model_fields[name].default
+    return settings_cls.model_fields[name].get_default(call_default_factory=True)
 
 
 def _apply_top_level_row(

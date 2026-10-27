@@ -435,16 +435,19 @@ async def _stored_overrides(session: AsyncSession) -> dict[str, Any]:
 
 
 def _cross_field_fields(response_json: dict[str, Any]) -> list[list[str]]:
-    """Return the field pairs of every cross-field entry in a 422 body.
+    """Return the field pairs of every cross-field relationship a 422 body reports.
+
+    A broken relationship yields one entry per field it spans, so the pairs are
+    deduplicated in order.
 
     :param response_json: The decoded 422 response.
     :return: One list of field names per violated relationship.
     """
-    return [
-        entry["ctx"]["fields"]
-        for entry in response_json["detail"]
-        if entry["type"] == "cross_field"
-    ]
+    pairs: list[list[str]] = []
+    for entry in response_json["detail"]:
+        if entry["type"] == "cross_field" and entry["ctx"]["fields"] not in pairs:
+            pairs.append(entry["ctx"]["fields"])
+    return pairs
 
 
 class TestPatchCrossFieldRules:
@@ -515,11 +518,28 @@ class TestPatchCrossFieldRules:
         """
         response = await api.patch(f"{BASE}/config", json={"POLL_INTERVAL": 9999})
 
-        (entry,) = response.json()["detail"]
-        assert entry["msg"] == (
+        assert {entry["msg"] for entry in response.json()["detail"]} == {
             "POLL_INTERVAL, TASK_TIMEOUT: POLL_INTERVAL must not exceed TASK_TIMEOUT"
-        )
-        assert "9999" not in entry["msg"]
+        }
+        assert "9999" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_is_located_on_each_field_of_the_relationship(
+        self, api: AsyncClient
+    ) -> None:
+        """Point an entry at every field, so whichever one the operator edited shows it.
+
+        The settings UI shows a 422 next to a field only when an entry's ``loc``
+        names that field.
+
+        :param api: The authenticated client.
+        """
+        response = await api.patch(f"{BASE}/config", json={"TASK_TIMEOUT": 1})
+
+        assert [entry["loc"] for entry in response.json()["detail"]] == [
+            ["body", "POLL_INTERVAL"],
+            ["body", "TASK_TIMEOUT"],
+        ]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -561,6 +581,25 @@ class TestPatchCrossFieldRules:
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert await _stored_overrides(session) == {}
         assert om_inventory_settings.RUN_RETENTION == DEFAULTS.RUN_RETENTION
+
+    @pytest.mark.asyncio
+    async def test_a_nested_key_does_not_shield_a_broken_rule_in_its_batch(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Judge the rule fields of a batch that also sets a schedule leaf.
+
+        :param api: The authenticated client.
+        :param session: The database session.
+        """
+        response = await api.patch(
+            f"{BASE}/config", json={"SCHEDULE__every": 5, "TASK_TIMEOUT": 1}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert _cross_field_fields(response.json()) == [
+            ["POLL_INTERVAL", "TASK_TIMEOUT"]
+        ]
+        assert await _stored_overrides(session) == {}
 
     @pytest.mark.asyncio
     async def test_a_per_field_error_is_reported_without_cross_field_noise(
@@ -609,6 +648,30 @@ class TestSharedSettingsRouterCrossFieldRules:
             ["POLL_INTERVAL", "TASK_TIMEOUT"]
         ]
         assert await _stored_overrides(session) == {}
+
+    @pytest.mark.asyncio
+    async def test_an_inconsistent_revert_is_refused(
+        self, admin_api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Refuse a revert there too, keeping both overrides in place.
+
+        :param admin_api: The authenticated admin client.
+        :param session: The database session.
+        """
+        await admin_api.patch(
+            ADMIN_SETTINGS, json={"POLL_INTERVAL": 300, "TASK_TIMEOUT": 600}
+        )
+
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/TASK_TIMEOUT")
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert _cross_field_fields(response.json()) == [
+            ["POLL_INTERVAL", "TASK_TIMEOUT"]
+        ]
+        assert await _stored_overrides(session) == {
+            "POLL_INTERVAL": 300,
+            "TASK_TIMEOUT": 600,
+        }
 
 
 class TestDeleteCrossFieldRules:
@@ -786,6 +849,22 @@ class TestChangesWhileStoredRowsAreIgnored:
         proxy = cast("OverridableSettingsProxy", om_inventory_settings)
         await publish_snapshot(proxy, session, OmInventorySettings)
         assert om_inventory_settings.TASK_TIMEOUT == DEFAULTS.TASK_TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_get_reports_the_value_in_effect_for_an_ignored_override(
+        self, api: AsyncClient
+    ) -> None:
+        """Show the base value in effect, while the row still counts as an override.
+
+        Pins today's report: ``has_override`` reflects the stored row, not whether
+        the snapshot honours it, so the value is the only sign it is ignored.
+
+        :param api: The authenticated client.
+        """
+        rows = {row["key"]: row for row in (await api.get(f"{BASE}/config")).json()}
+
+        assert rows["TASK_TIMEOUT"]["value"] == DEFAULTS.TASK_TIMEOUT
+        assert rows["TASK_TIMEOUT"]["has_override"] is True
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

@@ -28,7 +28,7 @@ import pytest
 import yaml
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
-from pydantic import AliasChoices, Field, SecretStr, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, ValidationError
 from pydantic_settings import (
     BaseSettings,
     NestedSecretsSettingsSource,
@@ -61,6 +61,7 @@ from app.core.config import (
 )
 from app.core.settings_override.registry import (
     field_reload_classification,
+    nested_overridable_field,
     ReloadClassification,
 )
 from app.core.utils.cross_field import CrossFieldRule
@@ -1591,6 +1592,7 @@ class _UnruledSettings(BaseYamlSettings):
 
 
 class _RuledSettings(BaseYamlSettings):
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
     SETTINGS_PREFIXES = ["CROSS_FIELD_TEST"]
     CROSS_FIELD_RULES = (
         CrossFieldRule(("LOW", "HIGH"), operator.le, "LOW must not exceed HIGH"),
@@ -1628,4 +1630,56 @@ class TestBaseYamlSettingsCrossFieldRules:
         with pytest.raises(ValidationError) as exc_info:
             _RuledSettings(LOW=60061, HIGH=5)
 
-        assert "60061" not in exc_info.value.errors()[0]["msg"]
+        assert "60061" not in str(exc_info.value)
+
+
+class _Window(BaseModel):
+    START: int = 0
+
+
+_LOW_NOT_ABOVE_HIGH = CrossFieldRule(
+    ("LOW", "HIGH"), operator.le, "LOW must not exceed HIGH"
+)
+
+
+class TestCrossFieldRuleDeclarations:
+    """Refuse at class definition a rule that some route could not enforce."""
+
+    def test_a_ruled_class_must_hide_inputs_in_errors(self) -> None:
+        """Refuse a class whose refused load would log every field's value."""
+        with pytest.raises(TypeError, match="hide_input_in_errors"):
+
+            class _Leaky(BaseYamlSettings):
+                CROSS_FIELD_RULES = (_LOW_NOT_ABOVE_HIGH,)
+                LOW: int = 1
+                HIGH: int = 5
+
+    def test_a_rule_naming_an_undeclared_field_is_refused(self) -> None:
+        """Fail loudly on a misspelt field instead of at the first load."""
+        with pytest.raises(TypeError, match="HIGH"):
+
+            class _Misspelt(BaseYamlSettings):
+                model_config = SettingsConfigDict(hide_input_in_errors=True)
+                CROSS_FIELD_RULES = (_LOW_NOT_ABOVE_HIGH,)
+                LOW: int = 1
+                HIHG: int = 5
+
+    def test_a_rule_naming_a_nested_overridable_field_is_refused(self) -> None:
+        """Refuse a field whose leaves the PATCH and DELETE checks never see."""
+        with pytest.raises(TypeError, match="WINDOW"):
+
+            class _Nested(BaseYamlSettings):
+                model_config = SettingsConfigDict(hide_input_in_errors=True)
+                CROSS_FIELD_RULES = (
+                    CrossFieldRule(("WINDOW", "HIGH"), lambda *_: True, "anything"),
+                )
+                WINDOW: _Window = nested_overridable_field(_Window())
+                HIGH: int = 5
+
+    def test_a_class_without_rules_needs_neither(self) -> None:
+        """Leave a class that declares no rules free of both requirements."""
+
+        class _Plain(BaseYamlSettings):
+            WINDOW: _Window = nested_overridable_field(_Window())
+
+        assert _Plain().WINDOW.START == 0

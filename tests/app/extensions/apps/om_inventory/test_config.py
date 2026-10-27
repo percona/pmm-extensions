@@ -16,11 +16,16 @@
 """Test the probe-timing relationships OmInventorySettings enforces on load."""
 
 from datetime import timedelta
+from functools import partial
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import ValidationError
+from pytest_mock import MockerFixture
 
+from app.core.config import YamlPrefixConfigSettingsSource
 from app.core.settings_override.registry import is_hot_reloadable
 from app.extensions.apps.om_inventory.config import OmInventorySettings
 from tests.app.extensions.apps.om_inventory.conftest import BEYOND_TIMEDELTA_SECONDS
@@ -143,6 +148,75 @@ class TestEnvironmentLoad:
         monkeypatch.setenv("EXTENSIONS__OM_INVENTORY__TASK_TIMEOUT", "30")
 
         assert "POLL_INTERVAL, TASK_TIMEOUT" in _refusal()
+
+
+def _write_timings(path: Path, *, poll_interval: int, task_timeout: int) -> None:
+    """Write a settings file holding the two probe timings under the default section.
+
+    :param path: The settings file to write.
+    :param poll_interval: The ``POLL_INTERVAL`` to write.
+    :param task_timeout: The ``TASK_TIMEOUT`` to write.
+    """
+    timings = {"POLL_INTERVAL": poll_interval, "TASK_TIMEOUT": task_timeout}
+    path.write_text(
+        yaml.safe_dump({"default": {"EXTENSIONS": {"OM_INVENTORY": timings}}})
+    )
+
+
+class TestYamlLoad:
+    """Group the checks that the YAML route is guarded as well."""
+
+    @pytest.fixture
+    def settings_file(self, tmp_path: Path, mocker: MockerFixture) -> Path:
+        """Point the YAML source at a temporary settings file.
+
+        The source binds the shipped file as a default argument at import, so the
+        class itself is swapped rather than the setting.
+
+        :param tmp_path: Fixture providing a temporary directory.
+        :param mocker: Fixture to patch the YAML source.
+        :return: The path of the settings file, for the test to write.
+        """
+        path = tmp_path / "settings.yaml"
+        mocker.patch(
+            "app.core.config.YamlPrefixConfigSettingsSource",
+            partial(YamlPrefixConfigSettingsSource, yaml_file=path),
+        )
+        return path
+
+    def test_an_inconsistent_settings_file_is_refused(
+        self, settings_file: Path
+    ) -> None:
+        """Refuse an inconsistent pair coming from the settings file.
+
+        :param settings_file: The temporary settings file.
+        """
+        _write_timings(settings_file, poll_interval=60, task_timeout=30)
+
+        assert "POLL_INTERVAL, TASK_TIMEOUT" in _refusal()
+
+    def test_a_consistent_settings_file_loads(self, settings_file: Path) -> None:
+        """Load a consistent pair from the settings file, proving it is read.
+
+        :param settings_file: The temporary settings file.
+        """
+        _write_timings(settings_file, poll_interval=30, task_timeout=30)
+
+        loaded = _load()
+
+        assert (loaded.POLL_INTERVAL, loaded.TASK_TIMEOUT) == (30, 30)
+
+
+class TestRefusalLeaksNoValues:
+    """Group the checks that a refused load is safe to log."""
+
+    def test_the_whole_error_text_carries_no_value(self) -> None:
+        """Keep every input value out of the error text the load failure logs."""
+        with pytest.raises(ValidationError) as exc_info:
+            _load(POLL_INTERVAL=60061, REPO_URL="https://repo-host-61007.example/")
+
+        assert "60061" not in str(exc_info.value)
+        assert "repo-host-61007" not in str(exc_info.value)
 
 
 class TestUnrelatedTimeoutsStayIndependent:

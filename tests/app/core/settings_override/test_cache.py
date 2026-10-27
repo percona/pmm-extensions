@@ -16,6 +16,7 @@
 """Tests for the snapshot-building cache layer."""
 
 import logging
+import operator
 from datetime import timedelta
 from functools import cached_property
 from string import Template
@@ -23,13 +24,14 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, computed_field, Field
+from pydantic_settings import SettingsConfigDict
 from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.alerts.config import AlertSettings
 from app.core.alerts.models import BaseAlertProvider
-from app.core.config import Settings
+from app.core.config import BaseYamlSettings, Settings
 from app.core.encryption import encrypt, mark_ciphertext
 from app.core.settings_override import cache
 from app.core.settings_override.cache import (
@@ -40,7 +42,8 @@ from app.core.settings_override.cache import (
 )
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import setting_class_token
-from app.core.settings_override.registry import MaterializerPurpose
+from app.core.settings_override.registry import hot_field, MaterializerPurpose
+from app.core.utils.cross_field import CrossFieldRule
 from app.core.utils.fields import LogLevel
 from app.extensions.config import CookieOptions, ExtensionsSettings
 from app.tasks.config import PreExecutionCheckMode, TasksSettings
@@ -961,6 +964,20 @@ async def test_materializer_backed_provider_secret_decrypted(
     assert provider.routing_key.get_secret_value() == ROUTING_KEY
 
 
+class _FactoryTimingSettings(BaseYamlSettings):
+    """Carry a rule field whose default comes from a factory."""
+
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
+    CROSS_FIELD_RULES = (
+        CrossFieldRule(
+            ("POLL", "TIMEOUT"), operator.le, "POLL must not exceed TIMEOUT"
+        ),
+    )
+
+    POLL: int = hot_field(3)
+    TIMEOUT: int = Field(default_factory=lambda: 180)
+
+
 class TestBuildSnapshotCrossFieldRules:
     """Group the snapshot fallback for stored overrides that break a cross-field rule.
 
@@ -1042,6 +1059,63 @@ class TestBuildSnapshotCrossFieldRules:
         snapshot = await build_snapshot(session, TimingSettings)
 
         assert dict(snapshot) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_factory_default_is_the_base_without_an_instance(
+        self, session: AsyncSession
+    ) -> None:
+        """Call a field's default factory rather than judge by the missing default.
+
+        :param session: The database session.
+        """
+        await insert_override_row(
+            session,
+            setting_class=setting_class_token(_FactoryTimingSettings),
+            key="POLL",
+            value=181,
+        )
+
+        snapshot = await build_snapshot(session, _FactoryTimingSettings)
+
+        assert dict(snapshot) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_base_that_breaks_a_rule_is_logged_and_left_alone(
+        self, session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Stop with an error when dropping overrides cannot repair the base.
+
+        The load-time check keeps such a base from existing, so this is the guard
+        against looping forever should one ever get through.
+
+        :param session: The database session.
+        :param caplog: Fixture capturing log records.
+        """
+        await self._store(session, BYSTANDER=7)
+        broken_base = TimingSettings.model_construct(POLL=200, TIMEOUT=100)
+
+        with caplog.at_level(logging.ERROR):
+            snapshot = await build_snapshot(session, TimingSettings, broken_base)
+
+        assert dict(snapshot) == {"BYSTANDER": 7}
+        assert "POLL, TIMEOUT: POLL must not exceed TIMEOUT" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_the_warning_repeats_on_every_build(
+        self, session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Warn again each refresh while the stored rows stay inconsistent.
+
+        :param session: The database session.
+        :param caplog: Fixture capturing log records.
+        """
+        await self._store(session, POLL=60, TIMEOUT=1)
+
+        with caplog.at_level(logging.WARNING, logger=cache.logger.name):
+            await build_snapshot(session, TimingSettings, TimingSettings())
+            await build_snapshot(session, TimingSettings, TimingSettings())
+
+        assert [r.levelno for r in caplog.records] == [logging.WARNING] * 2
 
     @pytest.mark.asyncio
     async def test_an_unrelated_override_survives(self, session: AsyncSession) -> None:

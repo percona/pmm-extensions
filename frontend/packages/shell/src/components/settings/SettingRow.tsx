@@ -109,7 +109,14 @@ export default function SettingRow({ setting }: SettingRowProps) {
       { settingClass: setting.setting_class, key: setting.key },
       {
         onSuccess: () => showSuccess(`Reset ${setting.key} to default`),
-        onError: (err) => showError(err.message || `Failed to reset ${setting.key}`),
+        // A refused reset has no inline field to land on, so its 422 reason
+        // goes in the toast rather than the bare status.
+        onError: (err) =>
+          showError(
+            settingErrorMessage(err, setting.key) ||
+              err.message ||
+              `Failed to reset ${setting.key}`,
+          ),
       },
     );
   };

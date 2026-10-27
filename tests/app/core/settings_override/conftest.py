@@ -23,6 +23,7 @@ from typing import ClassVar, Self
 
 import pytest
 import pytest_asyncio
+from pydantic_settings import SettingsConfigDict
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -294,6 +295,7 @@ class TimingSettings(BaseYamlSettings):
     enforcement without importing an app.
     """
 
+    model_config = SettingsConfigDict(hide_input_in_errors=True)
     CROSS_FIELD_RULES: ClassVar[tuple[CrossFieldRule, ...]] = (
         CrossFieldRule(
             ("POLL", "TIMEOUT"), operator.le, "POLL must not exceed TIMEOUT"

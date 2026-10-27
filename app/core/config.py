@@ -80,7 +80,12 @@ from app.core.middleware.security_headers import (
 from app.core.models import BaseCaseInsensitiveModel, BaseLowercaseModel
 from app.core.requests import BaseRemoteAPI, ClientRegistry, RemoteAPI
 from app.core.settings_override.proxy import OverridableSettingsProxy
-from app.core.settings_override.registry import hot_field, not_overridable_field
+from app.core.settings_override.registry import (
+    field_reload_classification,
+    hot_field,
+    not_overridable_field,
+    ReloadClassification,
+)
 from app.core.utils import deep_dict_update
 from app.core.utils.cross_field import CrossFieldRule, violated_rules
 from app.core.utils.fields import (
@@ -279,7 +284,6 @@ class BaseYamlSettings(BaseSettings):
     :vartype SETTINGS_PREFIXES: list[str]
     :cvar CROSS_FIELD_RULES: Relationships the class's top-level fields must
         satisfy together; a load that breaks one is refused.
-    :vartype CROSS_FIELD_RULES: tuple[CrossFieldRule, ...]
     :param FASTAPI_ENV: The environment used (e.g. development, production).
         Defaults to "development".
     :type FASTAPI_ENV: str
@@ -295,6 +299,42 @@ class BaseYamlSettings(BaseSettings):
     SETTINGS_PREFIXES: ClassVar[list[str]] = []
     CROSS_FIELD_RULES: ClassVar[tuple[CrossFieldRule, ...]] = ()
     FASTAPI_ENV: str = pre_env_settings.FASTAPI_ENV
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Refuse ``CROSS_FIELD_RULES`` that a load or override route cannot honour.
+
+        A ruled class must hide inputs in errors, because a refused load reports
+        the whole input and is logged. Every rule field must be a declared field
+        that is not nested-overridable, whose leaves the PATCH and DELETE checks
+        never see.
+
+        :param kwargs: Forwarded to the parent hook.
+        :raises TypeError: If the class declares a rule it cannot enforce safely.
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+        if not cls.CROSS_FIELD_RULES:
+            return
+        if not cls.model_config.get("hide_input_in_errors"):
+            raise TypeError(
+                f"{cls.__name__} declares CROSS_FIELD_RULES, so it must set "
+                "hide_input_in_errors"
+            )
+        for name in {name for rule in cls.CROSS_FIELD_RULES for name in rule.fields}:
+            field_info = cls.model_fields.get(name)
+            if field_info is None:
+                raise TypeError(
+                    f"{cls.__name__}.CROSS_FIELD_RULES names {name}, "
+                    "which is not a field"
+                )
+            if (
+                field_reload_classification(field_info)
+                is ReloadClassification.NESTED_ONLY
+            ):
+                raise TypeError(
+                    f"{cls.__name__}.CROSS_FIELD_RULES names {name}, "
+                    "which is nested-overridable"
+                )
 
     @model_validator(mode="after")
     def _check_cross_field_rules(self) -> Self:

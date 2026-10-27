@@ -1328,12 +1328,17 @@ async def _cross_field_errors(
     sets, or an override that is honoured today. An override already ignored
     stays the operator's to fix, so it never blocks an unrelated change.
 
+    The check reads the rows outside the write's transaction and takes no lock,
+    so two concurrent changes can each pass against the other's old value. That
+    is left to :func:`~app.core.settings_override.cache.build_snapshot`, which
+    ignores the resulting pair instead of acting on it.
+
     :param session: The sub-app's database session, read for stored overrides.
     :param settings_cls: The Pydantic settings class declaring the rules.
     :param proxy: The proxy wrapping it, for the YAML/env base values.
     :param setting: The materialized top-level values a PATCH would store.
     :param clearing: The key a DELETE would revert to its YAML/env value.
-    :return: Pydantic-style entries naming each violated rule's fields.
+    :return: Pydantic-style entries, one per field of each violated rule.
     """
     setting = setting or {}
     changed = {*setting, clearing}
@@ -1356,22 +1361,31 @@ async def _cross_field_errors(
         if key in setting or key in honoured
     }
     return [
-        _cross_field_error(rule) for rule in broken if not lost.isdisjoint(rule.fields)
+        entry
+        for rule in broken
+        if not lost.isdisjoint(rule.fields)
+        for entry in _cross_field_entries(rule)
     ]
 
 
-def _cross_field_error(rule: CrossFieldRule) -> dict[str, Any]:
-    """Return the 422 entry reporting ``rule`` as broken.
+def _cross_field_entries(rule: CrossFieldRule) -> list[dict[str, Any]]:
+    """Return the 422 entries reporting ``rule`` as broken, one per field.
+
+    Clients locate a 422 by the field in ``loc``, so each field the rule spans
+    gets its own entry and whichever one the caller edited can claim it.
 
     :param rule: The violated rule.
-    :return: A Pydantic-style entry naming the rule's fields and relationship.
+    :return: Pydantic-style entries naming the rule's fields and relationship.
     """
-    return {
-        "loc": ["body"],
-        "msg": rule.message,
-        "type": "cross_field",
-        "ctx": {"fields": list(rule.fields)},
-    }
+    return [
+        {
+            "loc": ["body", name],
+            "msg": rule.message,
+            "type": "cross_field",
+            "ctx": {"fields": list(rule.fields)},
+        }
+        for name in rule.fields
+    ]
 
 
 async def _delete_override_rows(
