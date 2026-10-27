@@ -35,15 +35,15 @@ from app.core.settings_override.constants import (
     SETTINGS,
     SNIPPETS_SETTINGS,
 )
+from app.core.settings_override.extensions_owned import (
+    apply_logging_dictconfig,
+    invalidate_pmm_clients,
+)
 from app.core.settings_override.lifecycle import is_fire_on_boot, SnapshotChange
 from app.extensions.config import extensions_settings
 from app.extensions.main import (
     _make_remote_api_rebinder,
     _reseed_system_periodic_tasks,
-)
-from app.extensions.settings_override import (
-    apply_logging_dictconfig,
-    invalidate_pmm_clients,
 )
 from app.extensions.snippets.config import snippets_settings
 from tests.app.core.requests.pending_close_helpers import patch_paused_close_when_idle
@@ -666,7 +666,7 @@ async def test_apply_logging_dictconfig_reapplies_new_level(
     stale level baked in at construction time would be re-applied.
     """
     dict_config = mocker.patch(
-        "app.extensions.settings_override.logging.config.dictConfig"
+        "app.core.settings_override.extensions_owned.logging.config.dictConfig"
     )
     settings._set_snapshot({"LOGGING": "DEBUG"})  # ty: ignore[unresolved-attribute]
     try:
@@ -686,7 +686,7 @@ async def test_apply_logging_dictconfig_swallows_failure(
 ) -> None:
     """Assert a malformed logging config is logged and swallowed, never crashing the app."""
     mocker.patch(
-        "app.extensions.settings_override.logging.config.dictConfig",
+        "app.core.settings_override.extensions_owned.logging.config.dictConfig",
         side_effect=ValueError("bad config"),
     )
     settings._set_snapshot({"LOGGING": "DEBUG"})  # ty: ignore[unresolved-attribute]

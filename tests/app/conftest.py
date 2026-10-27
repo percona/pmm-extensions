@@ -157,6 +157,17 @@ def daily_inventory_sync_schedules(*syncers: str) -> list[InventorySyncSchedule]
     ]
 
 
+def null_async_cm() -> MagicMock:
+    """Return a ``MagicMock`` that behaves as a no-op async context manager.
+
+    :return: A mock whose ``async with`` enters and exits without effect.
+    """
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=None)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
 class HealthProbeServer:
     """Drive a real HTTP listener on loopback answering the shared health path.
 
