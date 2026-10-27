@@ -294,12 +294,12 @@
 | app/extensions/apps/report/app.py                                                                                                   |       26 |        3 |       14 |        6 |     78% |47-\>49, 50, 51-\>53, 54, 56, 57-\>59 |
 | app/extensions/apps/report/app\_owned\_settings.py                                                                                  |        3 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/report/artifact\_store.py                                                                                       |       45 |        2 |       10 |        0 |     96% |   149-150 |
-| app/extensions/apps/report/celery.py                                                                                                |       78 |       18 |       12 |        3 |     74% |89-91, 117-118, 149, 216-218, 221, 224-225, 228-233, 255-257 |
+| app/extensions/apps/report/celery.py                                                                                                |       78 |       18 |       12 |        3 |     74% |89-91, 119-120, 151, 218-220, 223, 226-227, 230-235, 257-259 |
 | app/extensions/apps/report/config.py                                                                                                |       70 |        5 |       18 |        5 |     89% |137, 151, 155, 157, 159 |
 | app/extensions/apps/report/deps.py                                                                                                  |        1 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/report/job\_service.py                                                                                          |        8 |        1 |        2 |        0 |     90% |        43 |
 | app/extensions/apps/report/models.py                                                                                                |      117 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/report/service.py                                                                                               |      379 |       16 |      128 |       14 |     94% |147, 151, 352, 366-367, 428, 465-466, 468, 472, 473-\>476, 574, 579, 581-\>571, 587, 596, 659, 666 |
+| app/extensions/apps/report/service.py                                                                                               |      384 |       16 |      128 |       14 |     94% |149, 153, 354, 368-369, 430, 467-468, 470, 474, 475-\>478, 576, 581, 583-\>573, 589, 598, 661, 668 |
 | app/extensions/apps/shared/backups/columns.py                                                                                       |        5 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/shared/backups/edit\_form.py                                                                                    |       17 |        0 |       10 |        0 |    100% |           |
 | app/extensions/apps/shared/backups/responses.py                                                                                     |        3 |        0 |        0 |        0 |    100% |           |
@@ -319,7 +319,7 @@
 | app/extensions/apps/topology/topology.py                                                                                            |      173 |        7 |       58 |        8 |     94% |118-119, 122-\>114, 153, 156-157, 226-\>228, 229-\>231, 407, 491-\>501, 505 |
 | app/extensions/artifact\_constants.py                                                                                               |        8 |        0 |        0 |        0 |    100% |           |
 | app/extensions/bundle\_upload/factory.py                                                                                            |       37 |        1 |       10 |        1 |     96% |        71 |
-| app/extensions/bundle\_upload/plan.py                                                                                               |      317 |        2 |       92 |        2 |     99% |1130, 1279 |
+| app/extensions/bundle\_upload/plan.py                                                                                               |      341 |        1 |      104 |        1 |     99% |      1197 |
 | app/extensions/bundle\_upload/resolver.py                                                                                           |       56 |        0 |       14 |        0 |    100% |           |
 | app/extensions/bundle\_upload/seam.py                                                                                               |       12 |        0 |        0 |        0 |    100% |           |
 | app/extensions/clients/pmm.py                                                                                                       |      286 |        2 |       74 |        3 |     99% |558, 560, 926-\>928 |
@@ -387,7 +387,7 @@
 | app/extensions/sync/exceptions.py                                                                                                   |       36 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/fields.py                                                                                                       |       21 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/health.py                                                                                                       |       86 |        0 |       22 |        2 |     98% |234-\>238, 235-\>234 |
-| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 129-130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
+| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 128, 130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
 | app/extensions/sync/syncers/mysql/payload.py                                                                                        |      176 |       47 |       54 |        5 |     70% |158-\>166, 242-246, 251-256, 269-275, 279-302, 356-\>372, 375, 396-404, 423 |
 | app/extensions/sync/syncers/mysql/syncer.py                                                                                         |      241 |        2 |       94 |        5 |     98% |111, 604-\>605, 716, 819-\>823, 821-\>820 |
 | app/extensions/sync/syncers/pmm.py                                                                                                  |      176 |        4 |       48 |        1 |     97% |113-117, 151 |
@@ -543,7 +543,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35184** | **1755** | **8486** |  **692** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35213** | **1754** | **8498** |  **691** | **94%** |           |
 
 
 ## Setup coverage badge
