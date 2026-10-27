@@ -108,7 +108,9 @@ def upload_report_snapshot_job(
     :raises Ignore: When the snapshot fails validation.
     :raises HTTPException: Propagates the project exception mapped from an
         intake error status.
-    :raises DeliveryPlanError: When the rendered PDF exceeds the size cap.
+    :raises DeliveryPlanError: When the rendered PDF exceeds the size cap, or
+        the endpoint is not a valid upload target, such as one whose path
+        names another host.
     """
     try:
         report = ReportData.model_validate(report_json)

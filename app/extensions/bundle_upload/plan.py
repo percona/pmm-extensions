@@ -68,8 +68,8 @@ import asyncio
 import logging
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Self
-from urllib.parse import urlparse
+from typing import Annotated, Any, ClassVar, Literal, Self
+from urllib.parse import unquote, urljoin, urlparse
 
 import regex
 from fastapi import HTTPException
@@ -82,6 +82,7 @@ from pydantic import (
     PositiveInt,
     SecretStr,
 )
+from yarl import URL
 
 from app.core.requests.remote_api import is_non_json_success, RemoteAPI
 from app.core.utils import (
@@ -246,26 +247,75 @@ AnyStepValue = (
 )
 
 
-def _reject_off_origin_path(value: str, *, what: str) -> str:
-    """Keep a step on the receiver's own origin.
+def _resolve_dot_segments(segments: list[str]) -> list[str]:
+    """Return ``segments`` with every ``.`` dropped and every ``..`` applied.
 
-    A path carrying a scheme or an authority is not resolved *under* the
-    endpoint but *instead of* it, so the request, and the credentials it
-    carries, would reach a host the plan never named.
+    Percent-encoded dots count, since yarl resolves them as dot segments too.
 
-    :param value: The configured step path.
-    :param what: A label naming the step kind, used in the error message.
-    :return: The validated path.
-    :raises ValueError: When the path carries a scheme or an authority.
+    :param segments: The path's segments, in order.
+    :return: The segments left once the dot segments are resolved.
     """
-    parsed = urlparse(value)
-    if parsed.scheme or parsed.netloc or value.startswith("//"):
-        raise ValueError(
-            f"{what} path must be relative to the plan's endpoint: a path "
-            f"carrying a scheme or host would send the credentials it carries "
-            f"to another origin."
-        )
-    return value
+    resolved: list[str] = []
+    for segment in segments:
+        decoded = unquote(segment)
+        if decoded == "..":
+            if resolved:
+                resolved.pop()
+        elif decoded != ".":
+            resolved.append(segment)
+    return resolved
+
+
+def _names_an_origin(reference: str) -> bool:
+    """Tell whether ``reference`` carries a scheme or an authority of its own.
+
+    ``//`` with an empty authority leaves ``netloc`` falsy, hence the explicit
+    prefix check. yarl, which builds the URL actually requested, also reads a
+    scheme that does not start with a letter, such as ``..:``, which
+    ``urlparse`` leaves in the path, so the reference is read both ways. One
+    that either parser cannot read at all, such as an out-of-range port, cannot
+    be shown to stay on the endpoint, so it counts as naming an origin.
+
+    :param reference: A URL reference, as a join would produce it.
+    :return: Whether the reference names an origin rather than a path.
+    """
+    try:
+        parsed = urlparse(reference)
+        yarl_scheme = URL(reference).scheme
+    except ValueError:
+        return True
+    return (
+        bool(parsed.scheme or parsed.netloc)
+        or reference.startswith("//")
+        or bool(yarl_scheme)
+    )
+
+
+def _joins_to_another_origin(path: str) -> bool:
+    """Tell whether joining ``path`` under the plan endpoint can leave it.
+
+    The join resolves dot segments before anything reads the result, and
+    whether ``urljoin`` keeps the empty segments around them differs across
+    releases, so the path is judged in both shapes a join can give it. Under a
+    long enough endpoint path the root survives every ``..``, and ``/a/..//x``
+    can become ``//x``. Under a bare origin a ``..`` pops the root itself, and
+    ``/../http://x`` becomes ``http://x``.
+
+    Both shapes decode ``%2e%2e`` as ``..``, but the transport's first join,
+    ``urljoin`` in :meth:`RemoteAPI.prepare_path`, keeps it as an ordinary
+    segment, so the path is also judged as that join leaves it. Otherwise
+    ``/../http:/%2e%2e/..//%2e%2e/h`` would pass here and only be refused when
+    sent.
+
+    :param path: The step path, without a scheme or authority.
+    :return: Whether some join of the path names another origin.
+    """
+    segments = path.lstrip("/").split("/")
+    return (
+        _names_an_origin("/" + "/".join(_resolve_dot_segments(segments)))
+        or _names_an_origin("/".join(_resolve_dot_segments(["", *segments])))
+        or _names_an_origin(urljoin("/", path))
+    )
 
 
 class RequestStep(_PlanModel):
@@ -278,9 +328,12 @@ class RequestStep(_PlanModel):
 
     Subclasses narrow ``query`` to the value union their own kind admits. The
     base states only that the values are step values, which is what the
-    rebasing helper needs and all that it needs. It deliberately declares no
-    path validator: only some subclasses reject an off-origin path, and
-    reconciling that here would change which plans install.
+    rebasing helper needs and all that it needs.
+
+    The same-origin rule on ``path`` lives here, so a step kind added later is
+    held to it without opting in; a subclass only names itself for the error.
+
+    :cvar step_label: The step kind's name, used in validation errors.
 
     Every step kind rejects a field it does not declare when the plan is parsed.
     The keys inside its value maps are parameter names the plan author chooses,
@@ -290,8 +343,33 @@ class RequestStep(_PlanModel):
     :param query: Query-string parameters keyed by parameter name.
     """
 
+    step_label: ClassVar[str] = "Request step"
+
     path: NonEmptyStr
     query: Mapping[str, AnyStepValue] = {}
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        """Keep the request on the plan endpoint's own origin.
+
+        A path carrying a scheme or an authority is not resolved *under* the
+        endpoint but *instead of* it, so the request, and the credentials it
+        carries, would reach a host the plan never named.
+
+        :param value: The configured step path.
+        :return: The validated path.
+        :raises ValueError: When the path carries a scheme or an authority, or
+            resolves to one through its dot segments.
+        """
+        if _names_an_origin(value) or _joins_to_another_origin(urlparse(value).path):
+            raise ValueError(
+                f"{cls.step_label} path must be relative to the plan's endpoint: "
+                f"a path carrying a scheme or host, or resolving to one through "
+                f"its dot segments, would send the credentials it carries to "
+                f"another origin."
+            )
+        return value
 
 
 class ResolutionStep(RequestStep):
@@ -305,6 +383,8 @@ class ResolutionStep(RequestStep):
     :param body: A flat JSON object body keyed by field name.
     :param outputs: JSON Pointers into the response, keyed by output name.
     """
+
+    step_label: ClassVar[str] = "Resolution step"
 
     name: NonEmptyStr
     method: Literal["GET", "POST"]
@@ -326,6 +406,8 @@ class UploadStep(RequestStep):
         the value to surface as the upload reference; ``None`` extracts none.
     """
 
+    step_label: ClassVar[str] = "Upload step"
+
     headers: dict[str, PlanValue] = {}
     query: dict[str, PlanValue] = {}
     fields: dict[str, PlanValue] = {}
@@ -346,19 +428,10 @@ class ProbeStep(RequestStep):
     :param query: Query-string parameters keyed by parameter name.
     """
 
+    step_label: ClassVar[str] = "Probe step"
+
     headers: dict[str, ProbeValue] = {}
     query: dict[str, ProbeValue] = {}
-
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        """Keep the probe under the plan's own endpoint.
-
-        :param value: The configured probe path.
-        :return: The validated path.
-        :raises ValueError: When the path carries a scheme or an authority.
-        """
-        return _reject_off_origin_path(value, what="Probe step")
 
 
 class CaseSearchStep(RequestStep):
@@ -381,23 +454,14 @@ class CaseSearchStep(RequestStep):
         case title to show beside the reference.
     """
 
+    step_label: ClassVar[str] = "Case-search step"
+
     headers: dict[str, CaseSearchValue] = {}
     query: dict[str, CaseSearchValue] = {}
     term_pattern: NonEmptyStr
     results_pointer: JsonPointerStr
     reference_pointer: JsonPointerStr
     title_pointer: JsonPointerStr
-
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        """Keep the search under the plan's own endpoint.
-
-        :param value: The configured case-search path.
-        :return: The validated path.
-        :raises ValueError: When the path carries a scheme or an authority.
-        """
-        return _reject_off_origin_path(value, what="Case-search step")
 
     @field_validator("term_pattern")
     @classmethod
@@ -437,20 +501,11 @@ class ConnectionDetailsStep(RequestStep):
         it is rendered verbatim and a blank one would name nothing.
     """
 
+    step_label: ClassVar[str] = "Connection-details step"
+
     headers: dict[str, ProbeValue] = {}
     query: dict[str, ProbeValue] = {}
     details: dict[NonEmptyStr, JsonPointerStr] = {}
-
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        """Keep the connection-details read under the plan's own endpoint.
-
-        :param value: The configured connection-details path.
-        :return: The validated path.
-        :raises ValueError: When the path carries a scheme or an authority.
-        """
-        return _reject_off_origin_path(value, what="Connection-details step")
 
 
 def _check_value(
@@ -818,8 +873,9 @@ class DeliveryPlanExecutor:
             are ``None`` when the receiver answers with a non-mapping body.
         :raises DeliveryPlanError: When the bundle exceeds the configured size
             cap, the plan cites a send input the caller did not supply, the plan
-            reads a manifest key this send does not carry as a scalar, or a
-            declared output cannot be extracted from a step's response.
+            reads a manifest key this send does not carry as a scalar, a
+            declared output cannot be extracted from a step's response, or a
+            step's request URL would leave the plan's endpoint.
         :raises HTTPException: Propagates the project exception ``RemoteAPI``
             raises for an upstream error status, including a redirect the
             receiver answered with.
@@ -852,7 +908,8 @@ class DeliveryPlanExecutor:
         would otherwise report a healthy receiver's ``200 text/plain``
         acknowledgement as an upstream error, the way it does for an upload's.
 
-        :raises DeliveryPlanError: When the plan declares no probe step.
+        :raises DeliveryPlanError: When the plan declares no probe step, or its
+            request URL would leave the plan's endpoint.
         :raises HTTPException: Propagates the project exception ``RemoteAPI``
             raises for an upstream error status, including a redirect the
             receiver answered with.
@@ -873,7 +930,10 @@ class DeliveryPlanExecutor:
         ):
             try:
                 await self._api.request(
-                    "GET", step.path, allow_redirects=False, **request_kwargs
+                    "GET",
+                    self._path_on_the_endpoint(step),
+                    allow_redirects=False,
+                    **request_kwargs,
                 )
             except HTTPException as err:
                 if not is_non_json_success(err):
@@ -909,9 +969,9 @@ class DeliveryPlanExecutor:
         :return: The matched cases, in the order the receiver returned them.
         :raises DeliveryPlanError: When the plan declares no case-search step,
             the term does not match the pattern the plan declares or cannot be
-            held against it within its budget, or the response does not match
-            the pointers the plan declares. No message echoes the term or the
-            pattern.
+            held against it within its budget, its request URL would leave the
+            plan's endpoint, or the response does not match the pointers the
+            plan declares. No message echoes the term or the pattern.
         :raises HTTPException: Propagates the project exception ``RemoteAPI``
             raises for an upstream error status, including a redirect the
             receiver answered with.
@@ -944,7 +1004,10 @@ class DeliveryPlanExecutor:
             self._api.suppress_response_log(),
         ):
             response = await self._api.request(
-                "GET", step.path, allow_redirects=False, **request_kwargs
+                "GET",
+                self._path_on_the_endpoint(step),
+                allow_redirects=False,
+                **request_kwargs,
             )
         return self._extract_matches(step, response)
 
@@ -1020,7 +1083,8 @@ class DeliveryPlanExecutor:
 
         :return: The resolved facts, in the plan's declaration order.
         :raises DeliveryPlanError: When the plan declares no connection-details
-            step, or the response carries no body.
+            step, its request URL would leave the plan's endpoint, or the
+            response carries no body.
         :raises HTTPException: Propagates the project exception ``RemoteAPI``
             raises for an upstream error status, for a redirect the receiver
             answered with, and for a success carrying a non-JSON body.
@@ -1042,7 +1106,10 @@ class DeliveryPlanExecutor:
             self._api.suppress_response_log(),
         ):
             response = await self._api.request(
-                "GET", step.path, allow_redirects=False, **request_kwargs
+                "GET",
+                self._path_on_the_endpoint(step),
+                allow_redirects=False,
+                **request_kwargs,
             )
         return self._extract_connection_details(step, response)
 
@@ -1153,6 +1220,34 @@ class DeliveryPlanExecutor:
             )
         return resolved
 
+    def _path_on_the_endpoint(self, step: RequestStep) -> str:
+        """Return ``step``'s path once the URL it is requested at is shown on-origin.
+
+        The plan validator judges a path before the factory rebases it and the
+        transport joins it, by a model of what those joins do. This builds the
+        URL the way aiohttp will, from the transport's own base URL, so a join
+        that resolves differently from that model still cannot carry the step's
+        credentials to another origin.
+
+        :param step: The step about to be requested.
+        :return: The step's path, unchanged.
+        :raises DeliveryPlanError: When the request URL names another origin.
+        """
+        base = URL(self._api.session_base_url)
+        target = URL(self._api.prepare_path(step.path))
+        if not target.absolute:
+            target = base.join(target)
+        if (target.scheme, target.host, target.port) != (
+            base.scheme,
+            base.host,
+            base.port,
+        ):
+            raise DeliveryPlanError(
+                f"{step.step_label} path leaves the plan's endpoint once joined "
+                f"to it, so the request was not sent."
+            )
+        return step.path
+
     def _resolve_map(
         self,
         values: Mapping[str, AnyStepValue],
@@ -1227,7 +1322,7 @@ class DeliveryPlanExecutor:
             ):
                 response = await self._api.request(
                     step.method,
-                    step.path,
+                    self._path_on_the_endpoint(step),
                     allow_redirects=False,
                     **request_kwargs,
                 )
@@ -1357,7 +1452,7 @@ class DeliveryPlanExecutor:
                 self._api.suppress_response_log(),
             ):
                 response = await self._api.upload(
-                    step.path,
+                    self._path_on_the_endpoint(step),
                     files={
                         step.file_field: (
                             bundle.filename,
