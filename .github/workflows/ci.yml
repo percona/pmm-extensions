@@ -87,9 +87,10 @@ jobs:
             echo "::error::Could not resolve the head SHA of pull request #$PR_NUMBER."
             exit 1
           fi
-          if [ -z "$head_repo" ] || [ "$head_repo" = "null" ]; then
-            echo "::error::Could not resolve the head repository of pull request #$PR_NUMBER."
-            exit 1
+          # head.repo is null when the fork was deleted; typecheck_diff skips
+          # on an empty head_repo instead of failing this required job.
+          if [ "$head_repo" = "null" ]; then
+            head_repo=""
           fi
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
@@ -166,6 +167,10 @@ jobs:
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Live merge of head into the current base — not the replayed
+          # GITHUB_SHA. Empty number (workflow_dispatch) falls back to github.sha.
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       # Do not pass `base: ${{ github.event.pull_request.base.sha }}`: a re-run
       # replays the original event, so that SHA stays on the pre-retarget base.
@@ -240,6 +245,8 @@ jobs:
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
@@ -298,6 +305,8 @@ jobs:
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
@@ -336,6 +345,8 @@ jobs:
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Setup frontend job
         uses: ./.github/actions/setup-frontend-job
@@ -363,7 +374,8 @@ jobs:
     with:
       # Live merge of head into the current base — not the replayed GITHUB_SHA
       # (merge into the old base) that a gh run rerun after retarget would keep.
-      checkout_ref: refs/pull/${{ github.event.pull_request.number }}/merge
+      # Empty on workflow_dispatch so python.yaml falls back to github.sha.
+      checkout_ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
   # Advisory by design: intentionally omitted from `ci-success`'s `needs`. It
   # sits here rather than in python.yaml because a reusable workflow cannot make
@@ -376,6 +388,7 @@ jobs:
       ${{
         github.event_name == 'pull_request' &&
         github.event.pull_request.draft == false &&
+        needs.label-gate.outputs.head_repo != '' &&
         needs.changes.outputs.python == 'true' &&
         !contains(github.event.pull_request.labels.*.name, 'lint-fmt-only')
       }}
@@ -440,7 +453,8 @@ jobs:
     with:
       # Live merge of head into the current base — not the replayed GITHUB_SHA
       # (merge into the old base) that a gh run rerun after retarget would keep.
-      checkout_ref: refs/pull/${{ github.event.pull_request.number }}/merge
+      # Empty on workflow_dispatch so frontend.yaml falls back to github.sha.
+      checkout_ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
   build:
     # Runs concurrently with the python tests — the docker image build
@@ -467,7 +481,7 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@a0c73a10bb6782f082cd6714666c87911e4fc7d3 # v4.0.0
@@ -576,6 +590,8 @@ jobs:
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Parse Jenkins pipeline Groovy syntax
         run: |
