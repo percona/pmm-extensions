@@ -203,7 +203,7 @@ class TestDispatchedVariantCarriesItsProviders:
     The payload looks its provider up in a dict keyed by the strings the config's
     ``UPLOAD`` list carries. Those two sides live in different files and no other
     test spans them, so a rename on either one dispatches a payload that raises
-    ``Unsupported upload type`` only after the backup has been taken.
+    ``Unsupported upload:`` only after the backup has been taken.
     """
 
     @pytest.mark.parametrize("upload", [upload for upload, _ in _SELECTIONS], ids=str)

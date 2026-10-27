@@ -24,6 +24,14 @@ concurrency:
 jobs:
   label-gate:
     runs-on: ubuntu-latest
+    # base_sha / head_sha / head_repo are live from the API so re-runs after a
+    # retarget do not keep github.event.pull_request.* from the original
+    # event. typecheck_diff consumes all three; paths-filter does not need base_sha
+    # because it lists files via the Pull Request Files API (current base).
+    outputs:
+      base_sha: ${{ steps.verdict.outputs.base_sha }}
+      head_sha: ${{ steps.verdict.outputs.head_sha }}
+      head_repo: ${{ steps.verdict.outputs.head_repo }}
     permissions:
       contents: read
       pull-requests: read
@@ -49,20 +57,44 @@ jobs:
           if [ -z "$PR_NUMBER" ]; then
             echo "No pull-request context; nothing to gate."
             echo "protected=false" >> "$GITHUB_OUTPUT"
+            echo "base_sha=" >> "$GITHUB_OUTPUT"
+            echo "head_sha=" >> "$GITHUB_OUTPUT"
+            echo "head_repo=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # github.event replays the original event on a re-run, and freezes the
-          # label set at trigger time in every case: read both from the API.
+          # label set at trigger time in every case: read base, head, and labels
+          # from the API so a hand retarget is visible to the gate and to
+          # consumers of base_sha / head_sha (e.g. typecheck_diff).
           if ! pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"; then
             echo "::error::Could not read pull request #$PR_NUMBER."
             exit 1
           fi
           base_ref="$(jq -r '.base.ref' <<<"$pr")"
+          base_sha="$(jq -r '.base.sha' <<<"$pr")"
+          head_sha="$(jq -r '.head.sha' <<<"$pr")"
+          head_repo="$(jq -r '.head.repo.full_name' <<<"$pr")"
           labels="$(jq -r '.labels[].name' <<<"$pr")"
           if [ -z "$base_ref" ] || [ "$base_ref" = "null" ]; then
             echo "::error::Could not resolve the base branch of pull request #$PR_NUMBER."
             exit 1
           fi
+          if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
+            echo "::error::Could not resolve the base SHA of pull request #$PR_NUMBER."
+            exit 1
+          fi
+          if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
+            echo "::error::Could not resolve the head SHA of pull request #$PR_NUMBER."
+            exit 1
+          fi
+          # head.repo is null when the fork was deleted; typecheck_diff skips
+          # on an empty head_repo instead of failing this required job.
+          if [ "$head_repo" = "null" ]; then
+            head_repo=""
+          fi
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "head_repo=$head_repo" >> "$GITHUB_OUTPUT"
           if ! branches="$(gh api --paginate \
               "repos/$REPO/branches?protected=true&per_page=100" \
               --jq '.[].name')"; then
@@ -133,8 +165,14 @@ jobs:
       sidecar: ${{ steps.filter.outputs.sidecar }}
       pipeline: ${{ steps.filter.outputs.pipeline }}
     steps:
+      # Checkout uses the live PR merge ref (not replayed GITHUB_SHA) so a
+      # retarget re-run checks the current base; no PR number → github.sha.
+      # paths-filter omits `base:` and uses the PR Files API (current base),
+      # same live source as label-gate's base_sha — see label-gate outputs.
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Detect changed files
         id: filter
@@ -204,6 +242,8 @@ jobs:
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
@@ -262,6 +302,8 @@ jobs:
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
@@ -300,6 +342,8 @@ jobs:
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Setup frontend job
         uses: ./.github/actions/setup-frontend-job
@@ -324,6 +368,8 @@ jobs:
     needs:
       - label-gate
       - changes
+    with:
+      checkout_ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
   # Advisory by design: intentionally omitted from `ci-success`'s `needs`. It
   # sits here rather than in python.yaml because a reusable workflow cannot make
@@ -336,6 +382,7 @@ jobs:
       ${{
         github.event_name == 'pull_request' &&
         github.event.pull_request.draft == false &&
+        needs.label-gate.outputs.head_repo != '' &&
         needs.changes.outputs.python == 'true' &&
         !contains(github.event.pull_request.labels.*.name, 'lint-fmt-only')
       }}
@@ -346,11 +393,27 @@ jobs:
     env:
       POETRY: poetry
     steps:
-      - name: Checkout codebase
+      # Checkout the live PR head, not the replayed merge commit: a re-run keeps
+      # the original GITHUB_SHA (merge into the old base), so the default
+      # checkout would still analyze the wrong tree against the new BASE_SHA.
+      - name: Checkout PR head
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # The default depth of 1 cannot compute a merge-base.
+          repository: ${{ needs.label-gate.outputs.head_repo }}
+          ref: ${{ needs.label-gate.outputs.head_sha }}
+          # Full history so merge-base with the live base SHA can be computed.
           fetch-depth: 0
+
+      - name: Ensure live base SHA is fetchable for merge-base
+        env:
+          BASE_SHA: ${{ needs.label-gate.outputs.base_sha }}
+          # Head checkout may be a fork remote; fetch the base tip from this repo.
+          # Public fetch needs no token; keep credentials off the command line.
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          git fetch --no-tags \
+            "https://github.com/${BASE_REPO}.git" \
+            "$BASE_SHA"
 
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
@@ -365,7 +428,9 @@ jobs:
 
       - name: Report ty diagnostics the branch adds
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Live base from label-gate (API), not github.event — re-runs after a
+          # base retarget must not diff against the original event's base SHA.
+          BASE_SHA: ${{ needs.label-gate.outputs.base_sha }}
         run: make typecheck-diff
 
   frontend:
@@ -379,6 +444,8 @@ jobs:
     needs:
       - label-gate
       - changes
+    with:
+      checkout_ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
   build:
     # Runs concurrently with the python tests — the docker image build
@@ -402,6 +469,8 @@ jobs:
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@a0c73a10bb6782f082cd6714666c87911e4fc7d3 # v4.0.0
@@ -510,6 +579,8 @@ jobs:
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Parse Jenkins pipeline Groovy syntax
         run: |
