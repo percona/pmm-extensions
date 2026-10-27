@@ -573,6 +573,45 @@ class TestTaskExecutionRequest:
         req = TaskExecutionRequest(task="t", target="n")
         assert req.payload_content is None
 
+    def test_requirements_string_passes_through(self) -> None:
+        """Assert a newline-joined requirements string is stored unchanged."""
+        requirements = "PyMySQL\nfilelock"
+        req = TaskExecutionRequest(
+            task="run-python", target="n", meta={"requirements": requirements}
+        )
+        assert req.meta is not None
+        assert req.meta["requirements"] == requirements
+
+    def test_requirements_list_joins_with_newlines(self) -> None:
+        """Assert a requirements list is stored as a newline-joined string."""
+        req = TaskExecutionRequest(
+            task="run-python",
+            target="n",
+            meta={"requirements": ["PyMySQL", "filelock"]},
+        )
+        assert req.meta is not None
+        assert req.meta["requirements"] == "PyMySQL\nfilelock"
+
+    def test_requirements_empty_list_becomes_empty_string(self) -> None:
+        """Assert an empty requirements list normalizes to an empty string."""
+        req = TaskExecutionRequest(
+            task="run-python", target="n", meta={"requirements": []}
+        )
+        assert req.meta is not None
+        assert req.meta["requirements"] == ""
+
+    @pytest.mark.parametrize(
+        "requirements",
+        [42, ["PyMySQL", 1], ["PyMySQL", ""], None],
+        ids=["number", "non_string_item", "empty_string_item", "null"],
+    )
+    def test_requirements_rejects_invalid_values(self, requirements: Any) -> None:
+        """Assert non-string, non-list, or invalid list items raise ValidationError."""
+        with pytest.raises(ValidationError):
+            TaskExecutionRequest(
+                task="run-python", target="n", meta={"requirements": requirements}
+            )
+
 
 class TestTaskExecuteRequest:
     """Test TaskExecuteRequest model and validators."""
@@ -665,6 +704,32 @@ class TestTaskExecuteRequest:
         """Assert falsy form values normalize to False."""
         req = TaskExecuteRequest(chain_on_failure=value)
         assert req.chain_on_failure is False
+
+    def test_requirements_string_passes_through(self) -> None:
+        """Assert a newline-joined requirements string is kept byte-for-byte."""
+        requirements = "PyMySQL\nfilelock"
+        req = TaskExecuteRequest(meta={"requirements": requirements})
+        assert req.meta["requirements"] == requirements
+
+    def test_requirements_list_joins_with_newlines(self) -> None:
+        """Assert a requirements list is normalized to a newline-joined string."""
+        req = TaskExecuteRequest(meta={"requirements": ["PyMySQL", "filelock"]})
+        assert req.meta["requirements"] == "PyMySQL\nfilelock"
+
+    def test_requirements_empty_list_becomes_empty_string(self) -> None:
+        """Assert an empty requirements list normalizes to an empty string."""
+        req = TaskExecuteRequest(meta={"requirements": []})
+        assert req.meta["requirements"] == ""
+
+    @pytest.mark.parametrize(
+        "requirements",
+        [42, ["PyMySQL", 1], ["PyMySQL", ""], None],
+        ids=["number", "non_string_item", "empty_string_item", "null"],
+    )
+    def test_requirements_rejects_invalid_values(self, requirements: Any) -> None:
+        """Assert non-string, non-list, or invalid list items raise ValidationError."""
+        with pytest.raises(ValidationError):
+            TaskExecuteRequest(meta={"requirements": requirements})
 
 
 class TestTaskHistoryBase:
