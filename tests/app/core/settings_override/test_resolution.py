@@ -28,7 +28,6 @@ from app.core.middleware.security_headers import SecurityHeadersOptions
 from app.core.settings_override.constants import NESTED_VALUE_MISSING
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import (
-    chain_has_advanced,
     chain_has_explicit_not_overridable,
     coerce_nested_field_value,
     is_hot_reloadable,
@@ -39,7 +38,6 @@ from app.core.settings_override.registry import (
     not_overridable_field,
     ReloadClassification,
     rendered_leaf_keys,
-    resolve_nested_field_metadata,
 )
 from app.core.settings_override.resolution import (
     canonical_override_key,
@@ -316,29 +314,6 @@ def test_iter_nested_leaf_keys_descends_synthetic_submodel() -> None:
     assert leaves["NESTED__LOCKED_SUB__VALUE"] == ("NESTED", "LOCKED_SUB", "VALUE")
 
 
-def test_resolve_nested_field_metadata_reflects_chain_not_overridable() -> None:
-    """A leaf under a ``not_overridable_field`` intermediate reports NOT_OVERRIDABLE.
-
-    The enumerated-leaf reload classification must match the chain check that
-    gates PATCH/DELETE, so a leaf is never advertised as editable when an
-    intermediate in its chain is locked.
-    """
-    open_leaf = resolve_nested_field_metadata(_Outer, "NESTED__BARE")
-    locked_leaf = resolve_nested_field_metadata(_Outer, "NESTED__LOCKED_SUB__VALUE")
-    assert open_leaf is not None
-    assert locked_leaf is not None
-    assert open_leaf.reload is ReloadClassification.HOT
-    assert locked_leaf.reload is ReloadClassification.NOT_OVERRIDABLE
-
-
-def test_resolve_nested_field_metadata_unknown_leaf_returns_none() -> None:
-    """Return no metadata for an unresolvable nested key."""
-    assert (
-        resolve_nested_field_metadata(ExtensionsSettings, "SESSION_REFRESH__BOGUS")
-        is None
-    )
-
-
 @pytest.mark.asyncio
 async def test_override_provenance_for_nested_row_includes_all_prefixes(
     session: AsyncSession,
@@ -462,43 +437,6 @@ def test_resolve_nested_value_present_none_secret_leaf_returns_none() -> None:
     assert value is not NESTED_VALUE_MISSING
 
 
-class _OverlayLeafOwner(BaseModel):
-    """Define a submodel whose overlay promotes one bare leaf; a sibling stays unmarked.
-
-    Mirrors the ``NomadExecutor`` use case: the overlay lives on the class that
-    *owns* the resolved leaf, not on the top-level settings class.
-    """
-
-    INHERITED_MARKERS: ClassVar[dict[str, dict[str, object]]] = {
-        "MARKED": {"reload": ReloadClassification.HOT, "advanced": True},
-    }
-    MARKED: int = 1
-    PLAIN: int = 2
-
-
-class _OverlayParent(BaseModel):
-    """Define a top-level model nesting an overlay-bearing submodel; carries no overlay itself."""
-
-    CHILD: _OverlayLeafOwner = nested_overridable_field(_OverlayLeafOwner())
-
-
-def test_nested_leaf_uses_owning_class_overlay() -> None:
-    """Assert a nested leaf is classified against its owning submodel's overlay."""
-    assert chain_has_advanced(_OverlayParent, "CHILD__MARKED") is True
-    meta = resolve_nested_field_metadata(_OverlayParent, "CHILD__MARKED")
-    assert meta is not None
-    assert meta.is_advanced is True
-    assert meta.reload is ReloadClassification.HOT
-
-
-def test_nested_sibling_without_overlay_entry_stays_unmarked() -> None:
-    """Assert a sibling leaf with no overlay entry is not promoted (opt-in per field)."""
-    assert chain_has_advanced(_OverlayParent, "CHILD__PLAIN") is False
-    meta = resolve_nested_field_metadata(_OverlayParent, "CHILD__PLAIN")
-    assert meta is not None
-    assert meta.is_advanced is False
-
-
 class _OverlayNestedParent(BaseModel):
     """Define a model whose overlay promotes a bare submodel field to nested-overridable.
 
@@ -511,8 +449,8 @@ class _OverlayNestedParent(BaseModel):
     INHERITED_MARKERS: ClassVar[dict[str, dict[str, object]]] = {
         "PROMOTED": {"reload": ReloadClassification.NESTED_ONLY},
     }
-    PROMOTED: _OverlayLeafOwner = _OverlayLeafOwner()
-    UNMARKED: _OverlayLeafOwner = _OverlayLeafOwner()
+    PROMOTED: _Inner = _Inner()
+    UNMARKED: _Inner = _Inner()
 
 
 def test_overlay_promotes_field_to_nested_overridable_parent() -> None:

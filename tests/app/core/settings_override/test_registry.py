@@ -468,13 +468,13 @@ def test_non_advanced_nested_leaf_stays_false() -> None:
 
 
 class _MetadataItem(BaseModel):
-    """Element model that makes a list leaf complex."""
+    """Declare an element model that makes a list leaf complex."""
 
     name: str = "item"
 
 
 class _MetadataChild(BaseModel):
-    """Submodel whose leaves carry distinct annotations, defaults and descriptions."""
+    """Declare a submodel with distinct leaf annotations, defaults and descriptions."""
 
     TAGS: list[str] = Field(
         default_factory=lambda: ["first"], description="Tags applied to a run."
@@ -485,9 +485,48 @@ class _MetadataChild(BaseModel):
 
 
 class _MetadataParent(BaseModel):
-    """Root model nesting :class:`_MetadataChild`."""
+    """Declare a root model nesting :class:`_MetadataChild`."""
 
     CHILD: _MetadataChild = Field(default_factory=_MetadataChild)
+
+
+class _LockedChainLeaf(BaseModel):
+    """Declare a leaf model nested under a not-overridable intermediate."""
+
+    VALUE: int = 1
+
+
+class _LockedChainChild(BaseModel):
+    """Declare a submodel with an open leaf beside a locked intermediate."""
+
+    BARE: int = 1
+    LOCKED_SUB: _LockedChainLeaf = not_overridable_field(_LockedChainLeaf())
+
+
+class _LockedChainParent(BaseModel):
+    """Declare a root model nesting :class:`_LockedChainChild` as nested-overridable."""
+
+    NESTED: _LockedChainChild = nested_overridable_field(_LockedChainChild())
+
+
+class _OverlayLeafOwner(BaseModel):
+    """Define a submodel whose overlay promotes one bare leaf; a sibling stays unmarked.
+
+    Mirrors the ``NomadExecutor`` use case: the overlay lives on the class that
+    *owns* the resolved leaf, not on the top-level settings class.
+    """
+
+    INHERITED_MARKERS: ClassVar[dict[str, dict[str, object]]] = {
+        "MARKED": {"reload": ReloadClassification.HOT, "advanced": True},
+    }
+    MARKED: int = 1
+    PLAIN: int = 2
+
+
+class _OverlayParent(BaseModel):
+    """Define a top-level model nesting an overlay-bearing submodel; carries no overlay itself."""
+
+    CHILD: _OverlayLeafOwner = nested_overridable_field(_OverlayLeafOwner())
 
 
 class TestResolveNestedFieldMetadata:
@@ -512,6 +551,44 @@ class TestResolveNestedFieldMetadata:
         assert metadata.default == default
         assert metadata.description == leaf_info.description
         assert metadata.is_complex is is_complex
+
+    def test_reload_reflects_chain_not_overridable(self) -> None:
+        """Report NOT_OVERRIDABLE for a leaf under a ``not_overridable_field`` intermediate.
+
+        The enumerated-leaf reload classification must match the chain check that
+        gates PATCH/DELETE, so a leaf is never advertised as editable when an
+        intermediate in its chain is locked.
+        """
+        open_leaf = resolve_nested_field_metadata(_LockedChainParent, "NESTED__BARE")
+        locked_leaf = resolve_nested_field_metadata(
+            _LockedChainParent, "NESTED__LOCKED_SUB__VALUE"
+        )
+        assert open_leaf is not None
+        assert locked_leaf is not None
+        assert open_leaf.reload is ReloadClassification.HOT
+        assert locked_leaf.reload is ReloadClassification.NOT_OVERRIDABLE
+
+    def test_unknown_leaf_returns_none(self) -> None:
+        """Return no metadata for an unresolvable nested key."""
+        assert (
+            resolve_nested_field_metadata(ExtensionsSettings, "SESSION_REFRESH__BOGUS")
+            is None
+        )
+
+    def test_nested_leaf_uses_owning_class_overlay(self) -> None:
+        """Assert a nested leaf is classified against its owning submodel's overlay."""
+        assert chain_has_advanced(_OverlayParent, "CHILD__MARKED") is True
+        meta = resolve_nested_field_metadata(_OverlayParent, "CHILD__MARKED")
+        assert meta is not None
+        assert meta.is_advanced is True
+        assert meta.reload is ReloadClassification.HOT
+
+    def test_nested_sibling_without_overlay_entry_stays_unmarked(self) -> None:
+        """Assert a sibling leaf with no overlay entry is not promoted (opt-in per field)."""
+        assert chain_has_advanced(_OverlayParent, "CHILD__PLAIN") is False
+        meta = resolve_nested_field_metadata(_OverlayParent, "CHILD__PLAIN")
+        assert meta is not None
+        assert meta.is_advanced is False
 
 
 def test_advanced_does_not_change_reload_classification() -> None:

@@ -83,7 +83,7 @@ class _PlainCollections(BaseModel):
     names: list[str | None] = []
 
 
-class TaggedSecretSet(BaseModel):
+class _TaggedSecretSet(BaseModel):
     """Declare an unordered collection of secret-bearing models."""
 
     items: frozenset[TaggedSecret] = frozenset()
@@ -127,7 +127,7 @@ class TestCollectionOrderingContract:
 
     def test_get_dump_order_matches_patch_restore_order(self) -> None:
         """Assert both paths list a set of models in the same order."""
-        field_info = TaggedSecretSet.model_fields["items"]
+        field_info = _TaggedSecretSet.model_fields["items"]
         current = _tagged_set()
 
         dumped = dump_field_value(field_info, current)
@@ -138,7 +138,7 @@ class TestCollectionOrderingContract:
 
     def test_round_tripped_masks_restore_each_item_own_secret(self) -> None:
         """Restore every masked item from its own stored model, never a neighbour."""
-        field_info = TaggedSecretSet.model_fields["items"]
+        field_info = _TaggedSecretSet.model_fields["items"]
         current = _tagged_set()
 
         preserved = preserve_patch_secret_value(

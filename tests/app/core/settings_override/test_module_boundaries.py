@@ -465,7 +465,7 @@ class TestInternalImports:
         :param module_name: The importing module.
         :return: ``None``.
         """
-        unexported = []
+        unexported: list[str] = []
         for source_name, name in _imported_names(module_name):
             source = importlib.import_module(source_name)
             exports = getattr(source, "__all__", None)
