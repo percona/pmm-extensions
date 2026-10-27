@@ -165,18 +165,15 @@ jobs:
       sidecar: ${{ steps.filter.outputs.sidecar }}
       pipeline: ${{ steps.filter.outputs.pipeline }}
     steps:
+      # Checkout uses the live PR merge ref (not replayed GITHUB_SHA) so a
+      # retarget re-run checks the current base; no PR number → github.sha.
+      # paths-filter omits `base:` and uses the PR Files API (current base),
+      # same live source as label-gate's base_sha — see label-gate outputs.
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Live merge of head into the current base — not the replayed
-          # GITHUB_SHA. Empty number (workflow_dispatch) falls back to github.sha.
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
-      # Do not pass `base: ${{ github.event.pull_request.base.sha }}`: a re-run
-      # replays the original event, so that SHA stays on the pre-retarget base.
-      # With no `base` override, paths-filter lists files via the Pull Request
-      # Files API, which uses the PR's current base (same live source as
-      # label-gate's base_sha output).
       - name: Detect changed files
         id: filter
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
@@ -372,9 +369,6 @@ jobs:
       - label-gate
       - changes
     with:
-      # Live merge of head into the current base — not the replayed GITHUB_SHA
-      # (merge into the old base) that a gh run rerun after retarget would keep.
-      # Empty on workflow_dispatch so python.yaml falls back to github.sha.
       checkout_ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
   # Advisory by design: intentionally omitted from `ci-success`'s `needs`. It
@@ -451,9 +445,6 @@ jobs:
       - label-gate
       - changes
     with:
-      # Live merge of head into the current base — not the replayed GITHUB_SHA
-      # (merge into the old base) that a gh run rerun after retarget would keep.
-      # Empty on workflow_dispatch so frontend.yaml falls back to github.sha.
       checkout_ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
 
   build:
@@ -476,8 +467,6 @@ jobs:
       - label-gate
       - changes
     steps:
-      # Live merge of head into the current base — not the replayed GITHUB_SHA
-      # (merge into the old base) that a gh run rerun after retarget would keep.
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

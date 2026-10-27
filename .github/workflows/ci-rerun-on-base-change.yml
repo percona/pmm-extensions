@@ -121,9 +121,9 @@ jobs:
           status="$(jq -r '.status' <<<"$run_json")"
           echo "Found CI run $run_id (status=$status) for PR #$PR_NUMBER head $head_sha"
 
-          # gh run rerun is refused while the run is still active. ci.yml
-          # concurrency only cancels *new* runs in the group — it does not make
-          # an in-progress run re-runnable, so cancel-and-wait stays required.
+          # gh run rerun is refused while the run is still active, and ci.yml's
+          # cancel-in-progress only fires when a newer run joins its group, so
+          # this helper has to cancel the run and wait for it to finish itself.
           if [ "$status" != "completed" ]; then
             echo "Cancelling in-flight run $run_id before re-run"
             if ! gh run cancel "$run_id" --repo "$REPO"; then

@@ -5,10 +5,11 @@ name: Python
 on:
   workflow_call:
     inputs:
-      # Live PR merge ref from the caller so a CI re-run after base retarget
-      # does not keep testing the replayed GITHUB_SHA (merge into the old base).
       checkout_ref:
-        description: Git ref to check out (e.g. refs/pull/N/merge)
+        description: >-
+          Live PR merge ref (refs/pull/N/merge) so a CI re-run after base
+          retarget does not keep testing the replayed GITHUB_SHA. Empty falls
+          back to github.sha (workflow_dispatch / no caller ref).
         type: string
         required: false
         default: ''
@@ -32,7 +33,6 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Empty falls back to github.sha (workflow_dispatch / no caller ref).
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
@@ -51,7 +51,6 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Empty falls back to github.sha (workflow_dispatch / no caller ref).
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
@@ -76,7 +75,6 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Empty falls back to github.sha (workflow_dispatch / no caller ref).
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
@@ -95,7 +93,6 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Empty falls back to github.sha (workflow_dispatch / no caller ref).
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
@@ -113,7 +110,6 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Empty falls back to github.sha (workflow_dispatch / no caller ref).
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python 3.9 for the host-payload compatibility guard
         id: py39
@@ -172,7 +168,6 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Empty falls back to github.sha (workflow_dispatch / no caller ref).
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
@@ -194,7 +189,6 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Empty falls back to github.sha (workflow_dispatch / no caller ref).
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
