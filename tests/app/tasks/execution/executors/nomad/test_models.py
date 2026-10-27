@@ -50,8 +50,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 from yarl import URL
 
-from app.core.settings_override.registry import ReloadClassification
-from app.core.settings_override.resolution import resolve_nested_field_metadata
+from app.core.settings_override.registry import (
+    ReloadClassification,
+    resolve_nested_field_metadata,
+)
 from app.core.utils import slugify, utc_now
 from app.core.utils.fields import PRESERVE_CREDENTIALS_CONTEXT
 from app.extensions.apps.shared.om.task_failure import failed_step

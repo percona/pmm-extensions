@@ -56,10 +56,10 @@ from app.core.settings_override.registry import (
     iter_nested_leaf_keys,
     nested_overridable_field,
     ReloadClassification,
+    resolve_nested_field_metadata,
 )
 from app.core.settings_override.resolution import (
     override_provenance_for_rows,
-    resolve_nested_field_metadata,
     SettingProvenance,
 )
 from app.core.utils.date_time import utc_now

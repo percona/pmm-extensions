@@ -35,8 +35,8 @@ from app.core.settings_override.registry import (
     is_nested_overridable_parent,
     iter_class_fields,
     ReloadClassification,
+    resolve_nested_field_metadata,
 )
-from app.core.settings_override.resolution import resolve_nested_field_metadata
 from app.extensions.apps.alerts.config import AlertsSettings
 from app.extensions.config import ExtensionsSettings
 from app.tasks.config import TasksSettings
