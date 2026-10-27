@@ -33,7 +33,7 @@
 | app/core/celery/models.py                                                                                                           |       68 |        1 |        8 |        1 |     97% |       107 |
 | app/core/celery/schedules.py                                                                                                        |       44 |        1 |       16 |        1 |     97% |       178 |
 | app/core/celery/utils.py                                                                                                            |       35 |        0 |       12 |        0 |    100% |           |
-| app/core/config.py                                                                                                                  |      289 |        7 |       54 |        6 |     96% |259-\>exit, 336, 613, 839, 919, 993, 1006, 1045-\>1047, 1050 |
+| app/core/config.py                                                                                                                  |      310 |        7 |       66 |        6 |     97% |266-\>exit, 396, 673, 899, 979, 1053, 1066, 1105-\>1107, 1110 |
 | app/core/db/config.py                                                                                                               |       46 |        0 |       10 |        0 |    100% |           |
 | app/core/db/crud.py                                                                                                                 |      293 |        7 |       76 |        6 |     96% |250, 343-\>345, 345-\>347, 347-\>349, 356-\>372, 589-592, 1036-1039, 1285-1286 |
 | app/core/db/deps.py                                                                                                                 |        8 |        0 |        0 |        0 |    100% |           |
@@ -60,15 +60,15 @@
 | app/core/settings\_override/alembic\_ops.py                                                                                         |      154 |       15 |       56 |       14 |     86% |93, 96, 98, 100-\>102, 120, 122, 158, 160, 174, 176, 217, 261, 306, 335, 361-362 |
 | app/core/settings\_override/api/export.py                                                                                           |        9 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/api/models.py                                                                                           |       24 |        0 |        0 |        0 |    100% |           |
-| app/core/settings\_override/api/routes.py                                                                                           |      324 |       40 |      102 |        9 |     86% |332, 446, 492, 516, 648-655, 782, 811-821, 854-860, 868, 1002, 1032, 1186, 1421-\>1458, 1431-1442, 1446-1457, 1459, 1518, 1520-1521, 1578, 1580, 1582 |
-| app/core/settings\_override/cache.py                                                                                                |      127 |       13 |       46 |        6 |     87% |200-205, 218-223, 309, 372, 413, 417-424 |
+| app/core/settings\_override/api/routes.py                                                                                           |      350 |       45 |      108 |       11 |     85% |335, 449, 495, 519, 664-671, 798, 827-837, 870-876, 884, 1018, 1048-1049, 1202, 1354, 1356-1357, 1511-\>1548, 1521-1532, 1536-1547, 1549, 1610, 1612-1613, 1671, 1672-\>1674, 1673, 1675, 1677 |
+| app/core/settings\_override/cache.py                                                                                                |      140 |       13 |       50 |        6 |     88% |248-253, 266-271, 357, 420, 461, 465-472 |
 | app/core/settings\_override/constants.py                                                                                            |       12 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/extensions\_owned.py                                                                                    |       40 |        0 |        2 |        0 |    100% |           |
-| app/core/settings\_override/lifecycle.py                                                                                            |      133 |        1 |       38 |        0 |     99% |       562 |
+| app/core/settings\_override/lifecycle.py                                                                                            |      133 |        1 |       38 |        0 |     99% |       561 |
 | app/core/settings\_override/manager.py                                                                                              |        5 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/models.py                                                                                               |       43 |        0 |        6 |        1 |     98% |151-\>exit |
 | app/core/settings\_override/policy.py                                                                                               |       29 |        0 |        6 |        0 |    100% |           |
-| app/core/settings\_override/proxy.py                                                                                                |       20 |        0 |        2 |        0 |    100% |           |
+| app/core/settings\_override/proxy.py                                                                                                |       22 |        0 |        2 |        0 |    100% |           |
 | app/core/settings\_override/registry.py                                                                                             |      324 |        1 |      124 |        1 |     99% |      1342 |
 | app/core/settings\_override/resolution.py                                                                                           |      108 |        0 |       60 |        0 |    100% |           |
 | app/core/settings\_override/secret\_preservation.py                                                                                 |      256 |        0 |      148 |        0 |    100% |           |
@@ -76,6 +76,7 @@
 | app/core/settings\_override/worker.py                                                                                               |       59 |        1 |       14 |        1 |     97% |       214 |
 | app/core/utils/cache.py                                                                                                             |       90 |        4 |       18 |        1 |     94% |55-57, 195 |
 | app/core/utils/cli\_args.py                                                                                                         |       12 |        0 |        0 |        0 |    100% |           |
+| app/core/utils/cross\_field.py                                                                                                      |       28 |        0 |        6 |        0 |    100% |           |
 | app/core/utils/date\_time.py                                                                                                        |        8 |        0 |        2 |        0 |    100% |           |
 | app/core/utils/dict.py                                                                                                              |       29 |        4 |       12 |        0 |     85% |   165-168 |
 | app/core/utils/exceptions.py                                                                                                        |        4 |        0 |        0 |        0 |    100% |           |
@@ -277,7 +278,7 @@
 | app/extensions/apps/om\_inventory/app.py                                                                                            |       12 |        1 |        2 |        1 |     86% |        59 |
 | app/extensions/apps/om\_inventory/app\_owned\_settings.py                                                                           |        3 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/celery.py                                                                                         |       11 |        2 |        0 |        0 |     82% |     51-54 |
-| app/extensions/apps/om\_inventory/config.py                                                                                         |       26 |        0 |        0 |        0 |    100% |           |
+| app/extensions/apps/om\_inventory/config.py                                                                                         |       33 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/crud.py                                                                                           |      140 |        3 |       40 |        2 |     97% |373-\>377, 376, 456-462 |
 | app/extensions/apps/om\_inventory/dispatch.py                                                                                       |      213 |        9 |       56 |        7 |     94% |232, 234, 405-406, 408, 413-\>399, 439, 590, 656-661 |
 | app/extensions/apps/om\_inventory/enumeration.py                                                                                    |       50 |        1 |       16 |        1 |     97% |142-\>146, 155 |
@@ -543,7 +544,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35219** | **1754** | **8500** |  **691** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35316** | **1759** | **8528** |  **693** | **94%** |           |
 
 
 ## Setup coverage badge
