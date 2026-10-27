@@ -23,6 +23,7 @@ from typing import ClassVar, Self
 
 import pytest
 import pytest_asyncio
+from pydantic import BaseModel, SecretStr
 from pydantic_settings import SettingsConfigDict
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
@@ -111,6 +112,13 @@ CONNECTIVITY_CALLBACK_KEY = (
 #: SQLite round-trip and its real-PostgreSQL sibling write one this long to
 #: prove ``settingoverride.updated_by`` carries no width.
 LONG_USERNAME_LENGTH = 512
+
+
+class TaggedSecret(BaseModel, frozen=True):
+    """Declare a hashable secret-bearing model identified by a plain label."""
+
+    api_key: SecretStr
+    label: str = "same"
 
 
 def assert_entries_keyed_by_class_name(entries: Sequence[ClassEntry]) -> None:

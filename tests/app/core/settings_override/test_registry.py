@@ -29,8 +29,8 @@ from app.core.alerts.config import AlertSettings
 from app.core.alerts.models import BaseAlertProvider
 from app.core.config import BaseYamlSettings, Settings
 from app.core.settings_override.registry import (
-    _clear_cached_properties,
     chain_has_advanced,
+    clear_cached_properties,
     computed_field_info,
     field_materializer,
     field_reload_classification,
@@ -50,14 +50,16 @@ from app.core.settings_override.registry import (
     nested_overridable_field_names,
     not_overridable_field,
     ReloadClassification,
+    resolve_nested_field_metadata,
+    stable_collection_sort_key,
     unwrap_secrets_for_storage,
 )
-from app.core.settings_override.resolution import resolve_nested_field_metadata
 from app.core.utils.pydantic import CustomFieldMetadata, field_with_metadata
 from app.extensions.config import ExtensionsSettings
 from app.extensions.snippets.config import SnippetsSettings
 from app.inventory.config import InventorySettings
 from app.tasks.config import TasksSettings
+from tests.app.core.settings_override.conftest import TaggedSecret
 
 
 class _CachedModel(BaseModel):
@@ -71,20 +73,29 @@ class _CachedModel(BaseModel):
         return self.value * 10
 
 
-def test_clear_cached_properties_removes_memo() -> None:
-    """A populated ``cached_property`` memo is removed from ``__dict__``."""
-    instance = _CachedModel(value=2)
-    assert instance.derived == instance.value * 10  # populate the memo
-    assert "derived" in instance.__dict__
-    _clear_cached_properties(instance)
-    assert "derived" not in instance.__dict__
+class TestClearCachedProperties:
+    """Cover dropping ``cached_property`` memos from a model instance."""
 
+    def test_populated_memo_is_removed(self) -> None:
+        """Remove a populated ``cached_property`` memo from ``__dict__``."""
+        instance = _CachedModel(value=2)
+        assert instance.derived == instance.value * 10
+        assert "derived" in instance.__dict__
+        clear_cached_properties(instance)
+        assert "derived" not in instance.__dict__
 
-def test_clear_cached_properties_noop_when_unpopulated() -> None:
-    """Clearing an instance with no populated memo is a no-op."""
-    instance = _CachedModel(value=2)
-    _clear_cached_properties(instance)
-    assert "derived" not in instance.__dict__
+    def test_regular_fields_are_kept(self) -> None:
+        """Keep every declared field value while dropping the memo."""
+        instance = _CachedModel(value=2)
+        assert instance.derived == instance.value * 10
+        clear_cached_properties(instance)
+        assert instance.__dict__ == {"value": 2}
+
+    def test_unpopulated_instance_is_left_alone(self) -> None:
+        """Leave an instance with no populated memo unchanged."""
+        instance = _CachedModel(value=2)
+        clear_cached_properties(instance)
+        assert "derived" not in instance.__dict__
 
 
 def _ctx(settings_cls: type, field_name: str, raw: object) -> MaterializerContext:
@@ -454,6 +465,130 @@ def test_non_advanced_nested_leaf_stays_false() -> None:
     leaf = resolve_nested_field_metadata(ExtensionsSettings, "DATABASE__NAME")
     assert leaf is not None
     assert leaf.is_advanced is False
+
+
+class _MetadataItem(BaseModel):
+    """Declare an element model that makes a list leaf complex."""
+
+    name: str = "item"
+
+
+class _MetadataChild(BaseModel):
+    """Declare a submodel with distinct leaf annotations, defaults and descriptions."""
+
+    TAGS: list[str] = Field(
+        default_factory=lambda: ["first"], description="Tags applied to a run."
+    )
+    ITEMS: list[_MetadataItem] = Field(
+        default_factory=list, description="Items handed to a run."
+    )
+
+
+class _MetadataParent(BaseModel):
+    """Declare a root model nesting :class:`_MetadataChild`."""
+
+    CHILD: _MetadataChild = Field(default_factory=_MetadataChild)
+
+
+class _LockedChainLeaf(BaseModel):
+    """Declare a leaf model nested under a not-overridable intermediate."""
+
+    VALUE: int = 1
+
+
+class _LockedChainChild(BaseModel):
+    """Declare a submodel with an open leaf beside a locked intermediate."""
+
+    BARE: int = 1
+    LOCKED_SUB: _LockedChainLeaf = not_overridable_field(_LockedChainLeaf())
+
+
+class _LockedChainParent(BaseModel):
+    """Declare a root model nesting :class:`_LockedChainChild` as nested-overridable."""
+
+    NESTED: _LockedChainChild = nested_overridable_field(_LockedChainChild())
+
+
+class _OverlayLeafOwner(BaseModel):
+    """Define a submodel whose overlay promotes one bare leaf; a sibling stays unmarked.
+
+    Mirrors the ``NomadExecutor`` use case: the overlay lives on the class that
+    *owns* the resolved leaf, not on the top-level settings class.
+    """
+
+    INHERITED_MARKERS: ClassVar[dict[str, dict[str, object]]] = {
+        "MARKED": {"reload": ReloadClassification.HOT, "advanced": True},
+    }
+    MARKED: int = 1
+    PLAIN: int = 2
+
+
+class _OverlayParent(BaseModel):
+    """Define a top-level model nesting an overlay-bearing submodel; carries no overlay itself."""
+
+    CHILD: _OverlayLeafOwner = nested_overridable_field(_OverlayLeafOwner())
+
+
+class TestResolveNestedFieldMetadata:
+    """Cover the leaf attributes the nested metadata resolver reports."""
+
+    @pytest.mark.parametrize(
+        ("leaf_name", "default", "is_complex"),
+        [("TAGS", ["first"], False), ("ITEMS", [], True)],
+    )
+    def test_leaf_attributes_come_from_the_leaf_field(
+        self, leaf_name: str, default: list[object], *, is_complex: bool
+    ) -> None:
+        """Report the leaf's annotation, default, description and complexity."""
+        leaf_info = _MetadataChild.model_fields[leaf_name]
+        key = f"CHILD__{leaf_name}"
+
+        metadata = resolve_nested_field_metadata(_MetadataParent, key)
+
+        assert metadata is not None
+        assert metadata.key == key
+        assert metadata.annotation == leaf_info.annotation
+        assert metadata.default == default
+        assert metadata.description == leaf_info.description
+        assert metadata.is_complex is is_complex
+
+    def test_reload_reflects_chain_not_overridable(self) -> None:
+        """Report NOT_OVERRIDABLE for a leaf under a ``not_overridable_field`` intermediate.
+
+        The enumerated-leaf reload classification must match the chain check that
+        gates PATCH/DELETE, so a leaf is never advertised as editable when an
+        intermediate in its chain is locked.
+        """
+        open_leaf = resolve_nested_field_metadata(_LockedChainParent, "NESTED__BARE")
+        locked_leaf = resolve_nested_field_metadata(
+            _LockedChainParent, "NESTED__LOCKED_SUB__VALUE"
+        )
+        assert open_leaf is not None
+        assert locked_leaf is not None
+        assert open_leaf.reload is ReloadClassification.HOT
+        assert locked_leaf.reload is ReloadClassification.NOT_OVERRIDABLE
+
+    def test_unknown_leaf_returns_none(self) -> None:
+        """Return no metadata for an unresolvable nested key."""
+        assert (
+            resolve_nested_field_metadata(ExtensionsSettings, "SESSION_REFRESH__BOGUS")
+            is None
+        )
+
+    def test_nested_leaf_uses_owning_class_overlay(self) -> None:
+        """Assert a nested leaf is classified against its owning submodel's overlay."""
+        assert chain_has_advanced(_OverlayParent, "CHILD__MARKED") is True
+        meta = resolve_nested_field_metadata(_OverlayParent, "CHILD__MARKED")
+        assert meta is not None
+        assert meta.is_advanced is True
+        assert meta.reload is ReloadClassification.HOT
+
+    def test_nested_sibling_without_overlay_entry_stays_unmarked(self) -> None:
+        """Assert a sibling leaf with no overlay entry is not promoted (opt-in per field)."""
+        assert chain_has_advanced(_OverlayParent, "CHILD__PLAIN") is False
+        meta = resolve_nested_field_metadata(_OverlayParent, "CHILD__PLAIN")
+        assert meta is not None
+        assert meta.is_advanced is False
 
 
 def test_advanced_does_not_change_reload_classification() -> None:
@@ -863,3 +998,79 @@ class TestNotOverridableFieldTyping:
             timedelta()
         )
         assert mismatched is not None
+
+
+class _OtherSortKeyModel(BaseModel, frozen=True):
+    """Declare a second model class with the same fields as ``TaggedSecret``."""
+
+    api_key: SecretStr
+    label: str = "same"
+
+
+class TestStableCollectionSortKey:
+    """Cover the sort key shared by the GET dump and PATCH restore paths."""
+
+    def test_order_ignores_insertion_order(self) -> None:
+        """Sort the same items identically whatever order they arrive in."""
+        orders = [
+            sorted(
+                (TaggedSecret(api_key=SecretStr(token)) for token in tokens),
+                key=stable_collection_sort_key,
+            )
+            for tokens in ("bac", "cab")
+        ]
+
+        assert orders[0] == orders[1]
+        secrets = [item.api_key.get_secret_value() for item in orders[0]]
+        assert secrets == ["a", "b", "c"]
+
+    def test_models_differing_only_by_secret_get_distinct_keys(self) -> None:
+        """Key on the plaintext so two masked-identical models stay apart."""
+        first = TaggedSecret(api_key=SecretStr("one"))
+        second = TaggedSecret(api_key=SecretStr("two"))
+
+        assert stable_collection_sort_key(first) != stable_collection_sort_key(second)
+
+    def test_model_key_lists_fields_by_name_with_plaintext_secrets(self) -> None:
+        """Render model fields in name order, secrets unwrapped."""
+        item = TaggedSecret(api_key=SecretStr("plain"), label="tag")
+
+        assert stable_collection_sort_key(item) == (
+            "TaggedSecret",
+            (("api_key", "plain"), ("label", "'tag'")),
+        )
+
+    def test_model_classes_with_equal_fields_get_distinct_keys(self) -> None:
+        """Separate same-shaped models of different classes by qualified name."""
+        token = SecretStr("same")
+
+        assert stable_collection_sort_key(
+            TaggedSecret(api_key=token)
+        ) != stable_collection_sort_key(_OtherSortKeyModel(api_key=token))
+
+    @pytest.mark.parametrize(
+        ("item", "expected"),
+        [
+            (SecretStr("text"), ("SecretStr", "text")),
+            (SecretBytes(b"raw"), ("SecretBytes", b"raw")),
+        ],
+        ids=["secret-str", "secret-bytes"],
+    )
+    def test_secret_wrapper_keys_on_its_plaintext(
+        self, item: SecretStr | SecretBytes, expected: tuple[str, str | bytes]
+    ) -> None:
+        """Key a bare secret wrapper on its plaintext, never its mask."""
+        assert stable_collection_sort_key(item) == expected
+
+    def test_mapping_keys_are_ordered_with_secrets_unwrapped(self) -> None:
+        """Order mapping entries by stringified key, unwrapping secret values."""
+        item = {"b": SecretStr("hidden"), "a": 1}
+
+        assert stable_collection_sort_key(item) == (
+            "mapping",
+            (("a", "1"), ("b", "'hidden'")),
+        )
+
+    def test_scalar_keys_on_type_and_repr(self) -> None:
+        """Key a plain scalar on its type name and ``repr``."""
+        assert stable_collection_sort_key(3) == ("int", "3")

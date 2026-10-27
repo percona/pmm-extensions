@@ -22,6 +22,7 @@ __all__ = [
     "ProxyEntry",
     "ProxyRegistry",
     "RefreshCallback",
+    "SessionMakerFactory",
     "SnapshotChange",
     "bounded_refresh",
     "bounded_seed",
@@ -32,6 +33,7 @@ __all__ = [
     "previous_or_base",
     "publish_snapshot",
     "refresh_all",
+    "resolve_refresher_options",
     "settings_override_refresher",
     "start_refresh_task",
 ]
