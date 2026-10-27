@@ -103,6 +103,7 @@ from app.core.utils.openapi import (
     generate_tag_prefixed_unique_id,
     install_namespaced_openapi,
 )
+from app.core.utils.pydantic import annotation_pydantic_class
 
 
 def _sanitize_client_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -306,8 +307,9 @@ class BaseYamlSettings(BaseSettings):
 
         A ruled class must hide inputs in errors, because a refused load reports
         the whole input and is logged. Every rule field must be a declared field
-        that is not nested-overridable, whose leaves the PATCH and DELETE checks
-        never see.
+        that is not nested-overridable. A nested-model field marked ``HOT`` or
+        ``NESTED_ONLY`` accepts ``parent__leaf`` overrides, and the PATCH and
+        DELETE checks never see those leaves.
 
         :param kwargs: Forwarded to the parent hook.
         :raises TypeError: If the class declares a rule it cannot enforce safely.
@@ -327,10 +329,12 @@ class BaseYamlSettings(BaseSettings):
                     f"{cls.__name__}.CROSS_FIELD_RULES names {name}, "
                     "which is not a field"
                 )
-            if (
-                field_reload_classification(field_info)
-                is ReloadClassification.NESTED_ONLY
-            ):
+            if annotation_pydantic_class(
+                field_info.annotation
+            ) is not None and field_reload_classification(field_info) in {
+                ReloadClassification.HOT,
+                ReloadClassification.NESTED_ONLY,
+            }:
                 raise TypeError(
                     f"{cls.__name__}.CROSS_FIELD_RULES names {name}, "
                     "which is nested-overridable"

@@ -22,6 +22,8 @@ import operator
 import re
 import secrets
 import warnings
+from collections.abc import Callable
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -61,6 +63,7 @@ from app.core.config import (
 )
 from app.core.settings_override.registry import (
     field_reload_classification,
+    hot_field,
     nested_overridable_field,
     ReloadClassification,
 )
@@ -1664,7 +1667,14 @@ class TestCrossFieldRuleDeclarations:
                 LOW: int = 1
                 HIHG: int = 5
 
-    def test_a_rule_naming_a_nested_overridable_field_is_refused(self) -> None:
+    @pytest.mark.parametrize(
+        "declare",
+        [nested_overridable_field, hot_field],
+        ids=["nested_only", "hot"],
+    )
+    def test_a_rule_naming_a_nested_overridable_field_is_refused(
+        self, declare: Callable[[_Window], Any]
+    ) -> None:
         """Refuse a field whose leaves the PATCH and DELETE checks never see."""
         with pytest.raises(TypeError, match="WINDOW"):
 
@@ -1673,8 +1683,19 @@ class TestCrossFieldRuleDeclarations:
                 CROSS_FIELD_RULES = (
                     CrossFieldRule(("WINDOW", "HIGH"), lambda *_: True, "anything"),
                 )
-                WINDOW: _Window = nested_overridable_field(_Window())
+                WINDOW: _Window = declare(_Window())
                 HIGH: int = 5
+
+    def test_a_rule_naming_a_hot_scalar_field_is_accepted(self) -> None:
+        """Accept a hot field with no leaves, since its override is checked whole."""
+
+        class _Scalar(BaseYamlSettings):
+            model_config = SettingsConfigDict(hide_input_in_errors=True)
+            CROSS_FIELD_RULES = (_LOW_NOT_ABOVE_HIGH,)
+            LOW: int = hot_field(1)
+            HIGH: int = hot_field(5)
+
+        assert (_Scalar().LOW, _Scalar().HIGH) == (1, 5)
 
     def test_a_class_without_rules_needs_neither(self) -> None:
         """Leave a class that declares no rules free of both requirements."""
