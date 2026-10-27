@@ -105,6 +105,43 @@ def _encode_anonymize_mask(v: Any) -> Any:
 
 AnonymizeMask = Annotated[int, BeforeValidator(_encode_anonymize_mask)]
 
+#: ``meta`` key holding the pip requirements a Python task installs. The
+#: executor writes it verbatim into ``requirements.txt``, so it is dispatched as
+#: one newline-separated string.
+REQUIREMENTS_META_KEY = "requirements"
+
+#: Validation context for a :class:`TaskExecutionRequest` read back from
+#: storage, where a legacy ``meta.requirements`` must not stop the row loading.
+STORED_REQUEST_CONTEXT: dict[str, bool] = {"stored": True}
+
+
+def normalize_requirements_meta(meta: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return ``meta`` with ``requirements`` in the newline-joined string form.
+
+    A string passes through unchanged. A list of non-empty strings is joined with
+    newlines, the form the ``run-python`` job writes into ``requirements.txt``.
+    The input mapping is never mutated: a changed value comes back in a copy.
+
+    :param meta: The execution meta, possibly ``None``.
+    :return: ``meta`` itself when nothing changes, otherwise a copy carrying the
+        joined string.
+    :raises ValueError: If ``requirements`` is neither a string nor a list, or
+        the list holds anything but non-empty strings.
+    """
+    if not meta or REQUIREMENTS_META_KEY not in meta:
+        return meta
+    value = meta[REQUIREMENTS_META_KEY]
+    if isinstance(value, str):
+        return meta
+    if isinstance(value, list) and all(
+        isinstance(item, str) and item for item in value
+    ):
+        return {**meta, REQUIREMENTS_META_KEY: "\n".join(value)}
+    msg = (
+        f"meta.{REQUIREMENTS_META_KEY} must be a string or a list of non-empty strings"
+    )
+    raise ValueError(msg)
+
 
 class FileMetadata(BaseModel):
     """Represent file metadata for task artifacts."""
@@ -277,6 +314,34 @@ class TaskExecutionRequest(BaseModel):
     #: neither the stored document nor an API response.
     _unreadable_leaves: tuple[str, ...] = PrivateAttr(default=())
 
+    @field_validator("meta")
+    @classmethod
+    def normalize_requirements(
+        cls, v: dict[str, Any] | None, info: ValidationInfo
+    ) -> dict[str, Any] | None:
+        """Store and dispatch ``meta.requirements`` only as a newline-joined string.
+
+        Every execution path - an ad-hoc execute call, a stored task's merged
+        ``data.meta``, a chained task, an internal dispatch - builds this model
+        before the request is stored or handed to an executor, so normalizing
+        here keeps task history and Nomad dispatch meta to one shape.
+
+        A request read back from storage (validated with
+        :data:`STORED_REQUEST_CONTEXT`) keeps a value it cannot normalize rather
+        than failing: a row written before the value was checked must still load,
+        or one such row would fail every history page holding it.
+
+        :param v: The validated meta mapping.
+        :param info: The validation info carrying the optional context.
+        :return: The meta with ``requirements`` as a string.
+        """
+        try:
+            return normalize_requirements_meta(v)
+        except ValueError:
+            if info.context == STORED_REQUEST_CONTEXT:
+                return v
+            raise
+
     def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
         """Yield the fields ``repr`` and ``str`` render, protected leaves redacted.
 
@@ -376,7 +441,9 @@ class TaskExecutionRequestJSON(AutoJSON):
         if isinstance(value, dict):
             document, unreadable = decrypt_request_leaves(value)
         try:
-            request = TaskExecutionRequest(**document)
+            request = TaskExecutionRequest.model_validate(
+                document, context=STORED_REQUEST_CONTEXT
+            )
         except (ValidationError, TypeError):
             return value
         request.mark_unreadable_leaves(unreadable)
@@ -657,7 +724,9 @@ class TaskExecuteRequest(BaseModel):
     """Represent a request to execute a task with additional metadata and payload.
 
     :param meta: A dictionary of meta variables for the task execution.
-        Defaults to an empty dictionary.
+        Defaults to an empty dictionary. ``requirements`` may be a
+        newline-separated string or a list of non-empty requirement strings; a
+        list is joined with newlines.
     :type meta: dict[str, Any]
     :param payload: Optional payload data or file path for the task execution.
         Defaults to None.
@@ -675,12 +744,40 @@ class TaskExecuteRequest(BaseModel):
     :type chain_on_failure: bool
     """
 
-    meta: dict[str, Any] = Field(default={}, json_schema_extra=ARBITRARY_ARGS_SCHEMA)
+    meta: dict[str, Any] = Field(
+        default={},
+        description=(
+            "Meta variables for the task execution. For `run-python`, "
+            "`requirements` lists the pip requirements to install, either as one "
+            'newline-separated string (`"PyMySQL\\nfilelock"`) or as a list of '
+            'requirement strings (`["PyMySQL", "filelock"]`); a list is joined '
+            "into the string form before the task is stored and dispatched."
+        ),
+        examples=[
+            {"target": "node-1", "requirements": "PyMySQL\nfilelock"},
+            {"target": "node-1", "requirements": ["PyMySQL", "filelock"]},
+        ],
+        json_schema_extra=ARBITRARY_ARGS_SCHEMA,
+    )
     payload: str | None = None
     eta: datetime | EmptyStrToNone = None
     anonymize_mask: int | None = None
     chain_task_names: list[str] | None = None
     chain_on_failure: bool = False
+
+    @field_validator("meta")
+    @classmethod
+    def normalize_requirements(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """Join a list-form ``meta.requirements`` and reject any other shape.
+
+        Validating here turns a malformed value into a 422 before a task history
+        row exists; :class:`TaskExecutionRequest` applies the same rule to the
+        meta every execution path stores and dispatches.
+
+        :param v: The validated meta mapping.
+        :return: The meta with ``requirements`` as a string.
+        """
+        return normalize_requirements_meta(v) or {}
 
     @field_validator("chain_on_failure", mode="before")
     @classmethod
@@ -1260,11 +1357,12 @@ class TaskHistoryResponse(TaskHistoryBase, BaseSQLModel):
         :return: This response, carrying a redacted execution request.
         """
         if self.unreadable_request_leaves:
-            self.execution_request = TaskExecutionRequest(
-                **redact_request_leaves(
+            self.execution_request = TaskExecutionRequest.model_validate(
+                redact_request_leaves(
                     self.execution_request.model_dump(mode="json"),
                     self.unreadable_request_leaves,
-                )
+                ),
+                context=STORED_REQUEST_CONTEXT,
             )
         return self
 
@@ -1283,8 +1381,9 @@ class TaskHistoryResponse(TaskHistoryBase, BaseSQLModel):
         :return: This response, carrying no raw argument string.
         """
         if (self.execution_request.meta or {}).get(ARGS_META_KEY) is not None:
-            self.execution_request = TaskExecutionRequest(
-                **publish_masked_args(self.execution_request.model_dump(mode="json"))
+            self.execution_request = TaskExecutionRequest.model_validate(
+                publish_masked_args(self.execution_request.model_dump(mode="json")),
+                context=STORED_REQUEST_CONTEXT,
             )
         return self
 

@@ -667,6 +667,86 @@ class TestTaskExecuteRequest:
         assert req.chain_on_failure is False
 
 
+class TestRequirementsMeta:
+    """Test ``meta.requirements`` normalization on both execution request models."""
+
+    @pytest.mark.parametrize(
+        ("requirements", "expected"),
+        [
+            ("PyMySQL\nfilelock", "PyMySQL\nfilelock"),
+            (["PyMySQL", "filelock"], "PyMySQL\nfilelock"),
+            ([], ""),
+        ],
+        ids=["string", "list", "empty-list"],
+    )
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda meta: TaskExecuteRequest(meta=meta),
+            lambda meta: TaskExecutionRequest(task="run-python", target="n", meta=meta),
+        ],
+        ids=["execute-request", "execution-request"],
+    )
+    def test_requirements_normalized_to_string(
+        self, build: Any, requirements: Any, expected: str
+    ) -> None:
+        """Assert a string passes through and a list is joined with newlines."""
+        req = build({"target": "n", "requirements": requirements})
+        assert req.meta == {"target": "n", "requirements": expected}
+
+    def test_meta_prefixed_list_requirements_joined(self) -> None:
+        """Assert a ``meta_requirements`` form field gets the same normalization."""
+        req = TaskExecuteRequest.model_validate(
+            {"meta_requirements": ["PyMySQL", "filelock"]}
+        )
+        assert req.meta == {"requirements": "PyMySQL\nfilelock"}
+
+    def test_meta_without_requirements_untouched(self) -> None:
+        """Assert meta without ``requirements`` is left as given."""
+        req = TaskExecutionRequest(task="t", target="n", meta={"config": "{}"})
+        assert req.meta == {"config": "{}"}
+
+    def test_list_input_is_not_mutated(self) -> None:
+        """Assert the caller's meta mapping keeps its list."""
+        meta = {"requirements": ["PyMySQL"]}
+        TaskExecutionRequest(task="t", target="n", meta=meta)
+        assert meta == {"requirements": ["PyMySQL"]}
+
+    @pytest.mark.parametrize(
+        "requirements",
+        [5, None, {"PyMySQL": "1"}, ["PyMySQL", 1], ["PyMySQL", ""], [["PyMySQL"]]],
+        ids=["number", "null", "mapping", "non-string", "empty-string", "nested"],
+    )
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda meta: TaskExecuteRequest(meta=meta),
+            lambda meta: TaskExecutionRequest(task="run-python", target="n", meta=meta),
+        ],
+        ids=["execute-request", "execution-request"],
+    )
+    def test_invalid_requirements_rejected(self, build: Any, requirements: Any) -> None:
+        """Assert anything but a string or a list of non-empty strings is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            build({"requirements": requirements})
+        assert exc_info.value.errors()[0]["loc"] == ("meta",)
+
+    def test_stored_row_with_invalid_requirements_still_loads(self) -> None:
+        """Assert the storage read keeps a legacy value instead of dropping the row."""
+        request = TaskExecutionRequestJSON().process_result_value(
+            {"task": "t", "target": "n", "meta": {"requirements": ["a", ""]}}, None
+        )
+        assert isinstance(request, TaskExecutionRequest)
+        assert request.meta == {"requirements": ["a", ""]}
+
+    def test_stored_row_with_list_requirements_loads_joined(self) -> None:
+        """Assert a stored list-form value reads back as the joined string."""
+        request = TaskExecutionRequestJSON().process_result_value(
+            {"task": "t", "target": "n", "meta": {"requirements": ["a", "b"]}}, None
+        )
+        assert request.meta == {"requirements": "a\nb"}
+
+
 class TestTaskHistoryBase:
     """Test TaskHistoryBase computed fields."""
 

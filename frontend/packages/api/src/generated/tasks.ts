@@ -1030,7 +1030,19 @@ export interface components {
       eta?: string | null;
       /**
        * Meta
+       * @description Meta variables for the task execution. For `run-python`, `requirements` lists the pip requirements to install, either as one newline-separated string (`"PyMySQL\nfilelock"`) or as a list of requirement strings (`["PyMySQL", "filelock"]`); a list is joined into the string form before the task is stored and dispatched.
        * @default {}
+       * @example {
+       *       "requirements": "PyMySQL\nfilelock",
+       *       "target": "node-1"
+       *     }
+       * @example {
+       *       "requirements": [
+       *         "PyMySQL",
+       *         "filelock"
+       *       ],
+       *       "target": "node-1"
+       *     }
        */
       meta: {
         [key: string]: unknown;
@@ -1414,7 +1426,9 @@ export interface components {
      * @description Represent a request to execute a task with additional metadata and payload.
      *
      *     :param meta: A dictionary of meta variables for the task execution.
-     *         Defaults to an empty dictionary.
+     *         Defaults to an empty dictionary. ``requirements`` may be a
+     *         newline-separated string or a list of non-empty requirement strings; a
+     *         list is joined with newlines.
      *     :type meta: dict[str, Any]
      *     :param payload: Optional payload data or file path for the task execution.
      *         Defaults to None.
@@ -1445,7 +1459,19 @@ export interface components {
       eta?: string | null;
       /**
        * Meta
+       * @description Meta variables for the task execution. For `run-python`, `requirements` lists the pip requirements to install, either as one newline-separated string (`"PyMySQL\nfilelock"`) or as a list of requirement strings (`["PyMySQL", "filelock"]`); a list is joined into the string form before the task is stored and dispatched.
        * @default {}
+       * @example {
+       *       "requirements": "PyMySQL\nfilelock",
+       *       "target": "node-1"
+       *     }
+       * @example {
+       *       "requirements": [
+       *         "PyMySQL",
+       *         "filelock"
+       *       ],
+       *       "target": "node-1"
+       *     }
        */
       meta: {
         [key: string]: unknown;
