@@ -29,6 +29,7 @@ import pytest
 
 from app.tasks.execution.executors.nomad.log_follow import (
     LogCatchUpError,
+    LogFileStarts,
     LogFollowRegistry,
     SharedLogFollow,
     SUBSCRIBER_BACKLOG,
@@ -63,6 +64,7 @@ class ScriptedProducer:
 
     def __init__(self, *, slow_cancel: bool = False) -> None:
         self.starts: list[int] = []
+        self.sinks: list[SharedLogFollow] = []
         self.cancelled = 0
         self.ended = asyncio.Event()
         self.release_end = asyncio.Event()
@@ -96,6 +98,7 @@ class ScriptedProducer:
         :param start_offset: The raw offset the follow starts at.
         """
         self.starts.append(start_offset)
+        self.sinks.append(sink)
         position = start_offset
         try:
             while True:
@@ -129,21 +132,29 @@ class RangeReader:
         """
         self.calls: list[tuple[int, int]] = []
         self.flushed: list[bool] = []
+        self.files: list[LogFileStarts | None] = []
         self.failure: Exception | None = None
         self._withhold = withhold
 
     def __call__(
-        self, start: int, end: int, *, flush: bool = False
+        self,
+        start: int,
+        end: int,
+        *,
+        flush: bool = False,
+        files: LogFileStarts | None = None,
     ) -> AsyncGenerator[TaskLog]:
         """Record the range, then read it.
 
         :param start: The raw offset the range starts at.
         :param end: The raw offset the range ends at.
         :param flush: Whether a partial line at ``end`` is released.
+        :param files: The file starts the follow's producer recorded.
         :return: The range's text as one log line.
         """
         self.calls.append((start, end))
         self.flushed.append(flush)
+        self.files.append(files)
         return self._read(start, end, flush=flush)
 
     async def _read(
@@ -618,3 +629,66 @@ async def test_one_leaving_subscriber_does_not_disturb_the_rest() -> None:
     assert staying.text == RAW[: 2 * LINE]
     await staying.leave()
     assert producer.cancelled == 1
+
+
+async def test_every_catch_up_reads_with_the_follows_own_file_starts() -> None:
+    """Hand the joining, rejoining and finishing catch-ups the follow's file starts."""
+    registry, producer, reader = LogFollowRegistry(), ScriptedProducer(), RangeReader()
+    rejoining = _subscribe(registry, 0, producer, reader)
+    finishing = _subscribe(registry, 0, producer, reader)
+    await _settle()
+    rejoining.reading.clear()
+    finishing.reading.clear()
+    producer.emit(LINE)
+    await _until(lambda: rejoining.position == finishing.position == LINE)
+    releases = SUBSCRIBER_BACKLOG + 3
+    for index in range(2, releases + 2):
+        producer.emit(index * LINE)
+    frontier = (releases + 1) * LINE
+
+    joiner = _subscribe(registry, 0, producer, reader)
+    await _until(lambda: joiner.position == frontier)
+    rejoining.reading.set()
+    await _until(lambda: rejoining.position == frontier)
+    producer.finish()
+    await producer.ended.wait()
+    finishing.reading.set()
+    await _until(lambda: finishing.finished)
+
+    assert len(reader.files) == len(["join", "rejoin", "finish"])
+    assert all(files is producer.sinks[0].files for files in reader.files)
+    producer.release_end.set()
+    await joiner.leave()
+    await rejoining.leave()
+
+
+async def test_file_starts_from_zero_are_exact_for_every_file() -> None:
+    """Know each file's start when the follow read the log from its beginning."""
+    files = LogFileStarts(0)
+    for file, start in (("a", 0), ("b", LINE), ("c", 2 * LINE + 1)):
+        files.record(file, start)
+
+    assert [files.start_of(file) for file in "abc"] == [0, LINE, 2 * LINE + 1]
+    assert files.rotated
+
+
+async def test_file_starts_from_inside_a_file_leave_that_file_unplaced() -> None:
+    """Leave the start file unknown when the follow began inside it."""
+    start, next_start = LINE - 3, 2 * LINE
+    files = LogFileStarts(start)
+    files.record("a", start)
+    files.record("b", next_start)
+
+    assert files.start_of("a") is None
+    assert files.start_of("b") == next_start
+    assert files.start_of("never-seen") is None
+
+
+async def test_recording_the_same_file_again_adds_no_boundary() -> None:
+    """Keep a file's first start however many frames it is read in."""
+    files = LogFileStarts(0)
+    files.record("a", 0)
+    files.record("a", LINE)
+
+    assert files.start_of("a") == 0
+    assert not files.rotated

@@ -20,7 +20,9 @@ whose requests resolve the same key read one upstream request and one
 anonymization pass. Each viewer still starts at its own offset and reads at
 its own pace: one that starts behind the shared follow, or falls too far
 behind it, is caught up by a bounded read of the range it is missing and
-then rejoins the shared feed at a line boundary.
+then rejoins the shared feed at a line boundary. Once Nomad deletes an older
+rotated file, catch-ups translate their range past it, using the file
+boundaries the shared follow's producer observed.
 """
 
 import asyncio
@@ -53,11 +55,64 @@ class LogCatchUpError(Exception):
     """Signal that a catch-up read could not deliver its whole range."""
 
 
+class LogFileStarts:
+    """Record where each rotated file of a followed log starts.
+
+    Nomad counts request offsets from the oldest file it still holds, while a
+    follow counts them from where it started, so the two agree only until
+    Nomad deletes a rotated file. The cumulative start of the oldest retained
+    file is how far they have since drifted apart.
+
+    :param start_offset: The raw offset the follow started at. A follow from 0
+        knows where its first file starts; any other does not, since it began
+        inside that file.
+    """
+
+    def __init__(self, start_offset: int) -> None:
+        self._start_offset = start_offset
+        self._starts: dict[str, int] = {}
+        self._last: str | None = None
+
+    def record(self, file: str, start: int) -> None:
+        """Record the file a frame's data came from, if it is a new one.
+
+        :param file: The frame's ``File``.
+        :param start: The cumulative raw offset the frame's data starts at.
+        """
+        if file != self._last:
+            self._starts.setdefault(file, start)
+            self._last = file
+
+    def start_of(self, file: str) -> int | None:
+        """Return the cumulative offset ``file`` starts at.
+
+        :param file: A file name as Nomad's frames give it.
+        :return: The start, or ``None`` when the follow never saw the file
+            begin: it was never recorded, or the follow started inside it.
+        """
+        if self._start_offset and file == next(iter(self._starts), None):
+            return None
+        return self._starts.get(file)
+
+    @property
+    def rotated(self) -> bool:
+        """Return whether the follow has read from more than one file.
+
+        Nomad deletes only rotated files, so until then none can be gone.
+        """
+        return len(self._starts) > 1
+
+
 class RangeReader(Protocol):
     """Read a raw range of the followed log for one subscriber."""
 
     def __call__(
-        self, start: int, end: int, *, flush: bool = False
+        self,
+        start: int,
+        end: int,
+        *,
+        flush: bool = False,
+        files: LogFileStarts | None = None,
     ) -> AsyncGenerator[TaskLog]:
         """Read the raw range ``[start, end)`` as log lines, anonymized afresh.
 
@@ -65,6 +120,9 @@ class RangeReader(Protocol):
         :param end: The raw offset to read up to.
         :param flush: Whether ``end`` is where the stream ended, so a partial
             line there is released whole rather than withheld.
+        :param files: The file starts the follow's producer recorded, which
+            place the range once Nomad has deleted an older rotated file; or
+            ``None`` to read the cumulative offsets as they are.
         :return: The range's log lines, each carrying the raw offset it ends at.
         """
 
@@ -117,6 +175,7 @@ class SharedLogFollow:
 
     def __init__(self, start_offset: int, *, anonymized: bool = True) -> None:
         self.start_offset = start_offset
+        self.files = LogFileStarts(start_offset)
         self.frontier = start_offset
         self.frontier_aligned = start_offset == 0 or not anonymized
         self.ended = False
@@ -314,8 +373,8 @@ class SharedLogFollow:
             async for log in logs:
                 yield log
 
-    @staticmethod
     async def _catch_up(
+        self,
         subscriber: _Subscriber,
         end: int,
         read_range: RangeReader,
@@ -333,7 +392,9 @@ class SharedLogFollow:
         """
         if subscriber.position >= end:
             return
-        async with aclosing(read_range(subscriber.position, end, flush=flush)) as logs:
+        async with aclosing(
+            read_range(subscriber.position, end, flush=flush, files=self.files)
+        ) as logs:
             async for log in logs:
                 yield log
         subscriber.position = end
