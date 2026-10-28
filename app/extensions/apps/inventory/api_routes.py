@@ -48,11 +48,7 @@ from app.extensions.apps.inventory.deps import (
     InventorySyncTriggerWrite,
     SyncersDep,
 )
-from app.extensions.apps.inventory.models import (
-    INVENTORY_SYNC_TASK_NAME,
-    PluginTaskResponse,
-    SyncRunSummary,
-)
+from app.extensions.apps.inventory.models import PluginTaskResponse, SyncRunSummary
 from app.extensions.apps.inventory.sync import run_inventory_sync
 from app.extensions.crud import SyncInstanceManager, SyncItemManager
 from app.extensions.deps import (
@@ -63,7 +59,10 @@ from app.extensions.deps import (
 )
 from app.extensions.models import SyncInstance, SyncInventoryEntityTypeEnum
 from app.tasks.connectivity.models import ConnectivityCheckResponse
-from app.tasks.models import INVENTORY_COLLECTION_TASK_NAME
+from app.tasks.models import (
+    INVENTORY_COLLECTION_TASK_NAME,
+    INVENTORY_SYNC_TASK_NAME,
+)
 
 router = APIRouter()
 
