@@ -16,9 +16,10 @@
 """Tests for where the XtraBackup restore's "Restore my.cnf" step may write.
 
 The config files come out of the backup archive, which is untrusted input, and
-each one's destination is percent-decoded from its own filename. These tests drive the restore payload's real ``_restore_cnf_files``,
-``_cnf_destination`` and ``_edit_copy_my_cnf`` against a scratch filesystem, with
-the allowlist pointed at that scratch tree.
+each one's destination is percent-decoded from its own filename. These tests
+drive the restore payload's real ``_restore_cnf_files``, ``_cnf_destination`` and
+``_edit_copy_my_cnf`` against a scratch filesystem, with the allowlist pointed at
+that scratch tree.
 """
 
 import ast

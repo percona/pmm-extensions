@@ -1202,8 +1202,11 @@ class Backup(BaseBackup):
         }
 
     def get_default_mycnf(self) -> str:
-        """Return all my.cnf files found based on ps or default possible paths:
-        /etc/my.cnf, /etc/mysql/my.cnf, /usr/local/etc/my.cnf, ~/.my.cnf.
+        """Return the default my.cnf paths that exist on this host.
+
+        The candidates are /etc/my.cnf, /etc/mysql/my.cnf and /usr/local/etc/my.cnf,
+        plus ``<@@basedir>/my.cnf`` and ``<@@datadir>/mysqld-auto.cnf`` when the
+        server reports a basedir.
 
         :return: Comma-separated string of found my.cnf paths.
         """
@@ -1245,6 +1248,8 @@ class Backup(BaseBackup):
         Each copy is named by its percent-encoded source path, which the restore
         decodes, except ``auto.cnf`` and ``mysqld-auto.cnf``: they keep their name
         because copy-back puts them in the datadir, where the server reads them.
+        A file that cannot be named or copied (an encoded name over 255 bytes, a
+        name that is not valid UTF-8) is skipped and ``mycnf_copy_skipped`` is set.
 
         :param backup_dir: Path to the backup directory.
         """
@@ -1259,11 +1264,11 @@ class Backup(BaseBackup):
         for filename in self.all_cnf_files:
             src = Path(filename)
             if src.is_file():
-                dest_filename = backup_path / (src.name if src.name in ("auto.cnf", "mysqld-auto.cnf") else quote(filename, ""))
-                self.logger.info("Copy %s -> %s", src, dest_filename)
                 try:
+                    dest_filename = backup_path / (src.name if src.name in ("auto.cnf", "mysqld-auto.cnf") else quote(filename, ""))
+                    self.logger.info("Copy %s -> %s", src, dest_filename)
                     shutil.copy(str(src), str(dest_filename))
-                except (shutil.Error, OSError) as err:
+                except (OSError, ValueError) as err:
                     self.mycnf_copy_skipped = True
                     self.logger.exception("Copy of my.cnf failed: %s", err)
 

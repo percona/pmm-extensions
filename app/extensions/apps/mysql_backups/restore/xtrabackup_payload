@@ -2251,7 +2251,7 @@ class Xtrabackup(Restore):
         """Return the source and resolved destination of the datadir cnf entry ``ffile``.
 
         The destination is the entry's percent-decoded name. A name that decodes to
-        a NUL byte names no path, so it is refused as encoding no destination.
+        a NUL byte names no path, so it has no destination.
 
         :raises BackupError: If the entry or its decoded destination fails a check.
         """

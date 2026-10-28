@@ -38,7 +38,6 @@ from tests.app.extensions.apps.mysql_backups.restore.conftest import (
 )
 
 _BACKUP_METHODS = ("backup_mycnf", "get_included_config", "get_default_mycnf")
-_NAME_MAX = 255
 
 
 class _Backup(Protocol):
@@ -166,16 +165,21 @@ class TestRoundTrip:
 
         assert layout.snapshot() == before
 
-    def test_too_long_encoded_name_is_skipped_with_a_warning_flag(
-        self, layout: Layout
+    @pytest.mark.parametrize(
+        "basename",
+        [
+            pytest.param("x" * 240 + ".cnf", id="encoded-over-255-bytes"),
+            pytest.param(f"{chr(0xDCFF)}.cnf", id="not-utf-8"),
+        ],
+    )
+    def test_unnameable_source_is_skipped_with_a_warning_flag(
+        self, layout: Layout, basename: str
     ) -> None:
-        """Flag the copy as skipped and keep the others when a name exceeds 255 bytes."""
+        """Flag the copy as skipped and keep the others when a source cannot be named."""
         etc_my = layout.allowed_file
         conf_d = layout.allowed_dir / "conf.d"
         etc_my.write_text(f"[mysqld]\n!includedir {conf_d}\n")
-        long_cnf = conf_d / f"{'x' * 240}.cnf"
-        long_cnf.write_text("[mysqld]\n")
-        assert len(_archived(long_cnf)) > _NAME_MAX
+        (conf_d / basename).write_text("[mysqld]\n")
         backup = _backup(str(etc_my))
 
         backup.backup_mycnf(str(layout.datadir))
@@ -187,8 +191,10 @@ class TestRoundTrip:
 class TestDefaultMycnf:
     """Cover the config files a backup captures when none were configured."""
 
-    def test_adds_existing_basedir_and_datadir_files(self, layout: Layout) -> None:
-        """Capture the basedir my.cnf and datadir mysqld-auto.cnf that exist."""
+    def test_adds_only_basedir_and_datadir_files_that_exist(
+        self, layout: Layout
+    ) -> None:
+        """Capture an existing basedir my.cnf and leave out a missing mysqld-auto.cnf."""
         basedir = layout.root / "usr"
         basedir.mkdir()
         (basedir / "my.cnf").write_text("[mysqld]\n")
