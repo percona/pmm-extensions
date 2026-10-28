@@ -687,8 +687,10 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
     try:
         with engine.begin() as conn:
             insert_override(conn, "UNREGISTERED_SETTINGS")
+            insert_override(conn, "EXTENSIONS_SETTINGS")
             for token in _PRE_DROP_MEMBERS:
-                insert_override(conn, token)
+                if token != "SEP_SETTINGS":
+                    insert_override(conn, token)
     finally:
         engine.dispose()
 
