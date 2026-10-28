@@ -324,7 +324,7 @@ def test_per_file_mycnf_copy_failure_notifies_warning(tmp_path: Path) -> None:
     probe = _run_backup(
         tmp_path, fail_mycnf=True, enc_gpg=False, post_run_encrypt=False
     )
-    assert probe.errors == ["Copy of my.cnf failed: Permission denied"]
+    assert probe.errors == [f"Copy of {tmp_path / 'my.cnf'} failed: Permission denied"]
     assert probe.notify_calls == [
         (
             STATUS_WARNING,
