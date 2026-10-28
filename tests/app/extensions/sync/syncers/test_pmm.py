@@ -3438,9 +3438,10 @@ class TestPMMSyncerHoldsItsClient:
         endpoint = _pmm_endpoint()
 
         with aioresponses() as pmm:
-            pmm.get(re.compile(rf"{re.escape(endpoint)}/.*"), payload={})
+            pmm.get(re.compile(rf"{re.escape(endpoint)}/.*"), payload={}, repeat=True)
             async with pmm_syncer_on_registry as syncer:
                 client = syncer.pmm_api
+                await client.get("/v1/server/version")
                 await isolated_client_registry.invalidate(endpoint)
                 await client.get("/v1/server/version")
 
