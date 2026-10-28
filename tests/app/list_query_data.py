@@ -13,12 +13,13 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Provide the row type and specs the in-memory list-query suites drive.
+"""Provide the rows, table model and specs the list-query suites drive.
 
-Shared rather than copied per module because every suite exercising the applier, its
-dependency, or an adapter over it must assert against the same declaration; a spec
-that drifts in one copy leaves the others asserting a contract the subject no longer
-has.
+The in-memory suites use ``ListQueryRow`` and its specs; the SQL-backed suites use the
+``LQItem`` table model, its manager, ``make_lq_spec`` and ``SEED_NAMES``. Shared rather
+than copied per module because every suite exercising a spec, its dependency, or an
+adapter over it must assert against the same declaration; a spec that drifts in one
+copy leaves the others asserting a contract the subject no longer has.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from app.core.db.list_query import ListQuerySpec
 
 __all__ = [
     "LIST_QUERY_SPEC",
-    "NOSEARCH_SPEC",
+    "LQ_ITEM_NO_SEARCH_SPEC",
     "NO_SEARCH_LIST_QUERY_SPEC",
     "SEED_NAMES",
     "LQItem",
@@ -112,7 +113,7 @@ class LQItemManager(BaseSQLModelManager):
     )
 
 
-NOSEARCH_SPEC = ListQuerySpec(
+LQ_ITEM_NO_SEARCH_SPEC = ListQuerySpec(
     sortable={"name": col(LQItem.name)},
     default_sort="name",
     tie_breaker=col(LQItem.id),

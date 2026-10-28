@@ -54,11 +54,11 @@ from tests.app.db_schema import apply_schema
 from tests.app.list_query_data import (
     list_query_rows,
     LIST_QUERY_SPEC,
+    LQ_ITEM_NO_SEARCH_SPEC,
     LQItem,
     LQItemManager,
     make_lq_spec,
     NO_SEARCH_LIST_QUERY_SPEC,
-    NOSEARCH_SPEC,
     SEED_NAMES,
 )
 
@@ -385,7 +385,7 @@ class TestMakeListQueryDep:
 
     def test_bare_spec_source_builds_dep(self) -> None:
         """Accept a bare ``ListQuerySpec`` as the dependency source."""
-        assert callable(make_list_query_dep(NOSEARCH_SPEC))
+        assert callable(make_list_query_dep(LQ_ITEM_NO_SEARCH_SPEC))
 
     def test_manager_source_builds_dep(self) -> None:
         """Accept a manager class and read its ``list_query_spec``."""
@@ -504,7 +504,9 @@ class TestMakeQueryParamDep:
         [([col(LQItem.name)], {"sort", "search"}), ([], {"sort"})],
         ids=["search-enabled", "search-disabled"],
     )
-    def test_declares_only_the_enabled_params(self, searchable, expected) -> None:
+    def test_declares_only_the_enabled_params(
+        self, searchable: list[Any], expected: set[str]
+    ) -> None:
         """Declare ``search`` only for a spec whose searchable set is non-empty."""
         dep = make_query_param_dep(
             make_lq_spec(searchable=searchable), _record_build([])
@@ -537,7 +539,7 @@ class TestMakeQueryParamDep:
 _SESSION_SENTINEL_APP = FastAPI()
 
 _search_dep = make_list_query_dep(LQItemManager)
-_no_search_dep = make_list_query_dep(NOSEARCH_SPEC)
+_no_search_dep = make_list_query_dep(LQ_ITEM_NO_SEARCH_SPEC)
 
 
 async def _get_lq_session() -> AsyncSession:
