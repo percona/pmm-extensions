@@ -20,20 +20,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.core.requests import RemoteAPI
-from app.extensions.connectivity import (
-    _fetch_connectivity_result,
-    _LATEST_RESULTS,
-)
+from app.extensions.connectivity import _fetch_connectivity_result
 
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
-    """Clear the alru_cache and the latest-results snapshot between tests."""
+    """Clear the alru_cache between tests."""
     _fetch_connectivity_result.cache_clear()
-    _LATEST_RESULTS.clear()
     yield
     _fetch_connectivity_result.cache_clear()
-    _LATEST_RESULTS.clear()
 
 
 @pytest.fixture

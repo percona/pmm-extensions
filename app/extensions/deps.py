@@ -796,37 +796,6 @@ class ExecutorHostsContext:
             key=lambda item: item["value"],
         )
 
-    def as_form_hosts(self) -> frozenset[tuple[str, str]]:
-        """Return a frozenset of (value, label) tuples for cached snippet forms.
-
-        :return: Frozenset of tuples suitable for snippet form caching.
-        :rtype: frozenset[tuple[str, str]]
-        """
-        return frozenset((name, self.display_name(name)) for name in self._hosts)
-
-    def as_host_metrics(self) -> list[tuple[str, str]]:
-        """Return a sorted list of (display_name, address) tuples for host metrics.
-
-        :return: List of tuples with display name and address, sorted by display name.
-        :rtype: list[tuple[str, str]]
-        """
-        return sorted(
-            (self.display_name(name), address) for name, address in self._hosts.items()
-        )
-
-    def with_host(self, hostname: str) -> "ExecutorHostsContext":
-        """Return a new context with the additional host included.
-
-        :param hostname: The hostname to add to the context.
-        :type hostname: str
-        :return: A new context with the host added, or self if already present.
-        :rtype: ExecutorHostsContext
-        """
-        if hostname in self._hosts:
-            return self
-        new_hosts = {**self._hosts, hostname: ""}
-        return ExecutorHostsContext(hosts=new_hosts, display_names=self._display_names)
-
 
 async def get_executor_hosts_context(
     executor_hosts: "ExecutorHosts",

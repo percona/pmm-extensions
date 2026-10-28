@@ -20,7 +20,6 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy_celery_beat.models import Period
 
 from app.core.celery.models import CrontabSchedule, IntervalSchedule
-from app.extensions.utils.forms import parse_crontab_form_fields
 
 #: Five-field cron expressions the scheduler can run.
 RUNNABLE_CRONS = [
@@ -30,17 +29,14 @@ RUNNABLE_CRONS = [
     pytest.param("*/15 * * * *", id="quarter-hourly"),
 ]
 
-#: Five-field cron expressions the scheduler cannot run. Each has the field
-#: count both input paths require, so the only thing left to reject them on is
-#: the dialect.
+#: Five-field cron expressions the scheduler cannot run. Each has five fields,
+#: so the only thing left to reject them on is the dialect.
 UNRUNNABLE_CRONS = [
     pytest.param("not-a-cron 2 * * *", id="malformed-minute"),
     pytest.param("0 2 30 2 *", id="unsatisfiable-30-february"),
     pytest.param("0 99 * * *", id="hour-out-of-range"),
     pytest.param("0 2 * * BADDAY", id="unknown-day-name"),
 ]
-
-ALL_CRONS = RUNNABLE_CRONS + UNRUNNABLE_CRONS
 
 
 def _accepts_via_json_path(expression: str) -> bool:
@@ -63,25 +59,8 @@ def _accepts_via_json_path(expression: str) -> bool:
     return True
 
 
-def _accepts_via_form_path(expression: str) -> bool:
-    """Report whether the form path accepts ``expression``.
-
-    :param expression: A five-field cron expression.
-    :return: ``True`` when the parsed form fields build a
-        :class:`CrontabSchedule`.
-    """
-    fields = parse_crontab_form_fields(
-        {"cron_expression": expression, "cron_timezone": "UTC"}
-    )
-    try:
-        CrontabSchedule(**fields)
-    except ValidationError:
-        return False
-    return True
-
-
 class TestCrontabScheduleValidation:
-    """Cover the single cron parser both input paths now feed."""
+    """Cover the cron parser behind the JSON input path."""
 
     @pytest.mark.parametrize("expression", RUNNABLE_CRONS)
     def test_accepts_what_the_scheduler_can_run(self, expression: str) -> None:
@@ -92,15 +71,6 @@ class TestCrontabScheduleValidation:
     def test_rejects_what_the_scheduler_cannot_run(self, expression: str) -> None:
         """Assert an unrunnable expression is refused at the request boundary."""
         assert not _accepts_via_json_path(expression)
-
-    @pytest.mark.parametrize("expression", ALL_CRONS)
-    def test_both_input_paths_agree(self, expression: str) -> None:
-        """Assert the form path and the JSON path reach the same verdict.
-
-        The form path used to run ``croniter.is_valid``, a third cron dialect
-        agreeing with neither the response preview nor the scheduler.
-        """
-        assert _accepts_via_form_path(expression) is _accepts_via_json_path(expression)
 
     def test_cron_fields_are_normalised_to_what_beat_stores(self) -> None:
         """Assert whitespace and brackets are stripped as the beat store does."""
