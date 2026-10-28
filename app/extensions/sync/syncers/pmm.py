@@ -119,14 +119,10 @@ class PMMSyncer(BaseSyncer):
             self._pmm_api = await settings.get_remote_api(
                 PMMRemoteAPI, **settings.PMM.model_dump()
             )
-        holds = AsyncExitStack()
-        await holds.enter_async_context(self.pmm_api.hold())
-        try:
+        async with AsyncExitStack() as holds:
+            await holds.enter_async_context(self.pmm_api.hold())
             entered = await super().__aenter__()
-        except BaseException:
-            await holds.aclose()
-            raise
-        self._client_holds = holds
+            self._client_holds = holds.pop_all()
         return entered
 
     async def __aexit__(
