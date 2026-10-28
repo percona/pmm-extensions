@@ -176,9 +176,9 @@ async def _generate_health_report(
     requested but credentials are incomplete a warning is logged.  Upload
     failures are logged but do not prevent the task from completing.
 
-    The PMM client is held while the report is generated, so a settings rebind
-    that retires it between two of generation's requests defers its close until
-    generation ends.
+    The PMM client is held from the moment it is resolved until generation ends,
+    covering the cancellation check, so a settings rebind that retires it in
+    between defers its close until generation ends.
 
     :param since: Relative start of the report period.
     :param until: Relative end of the report period.
@@ -193,12 +193,12 @@ async def _generate_health_report(
         logger.warning("PMM not configured, skipping health report generation")
         return
 
-    if await should_cancel("report"):
-        logger.info("Report app disabling; skipping health report generation.")
-        return
+    async with pmm_api.hold():
+        if await should_cancel("report"):
+            logger.info("Report app disabling; skipping health report generation.")
+            return
 
-    try:
-        async with pmm_api.hold():
+        try:
             report = await generate_report(
                 pmm_api,
                 since=since,
@@ -207,15 +207,16 @@ async def _generate_health_report(
                 refresh=refresh,
                 sections=sections,
             )
-        logger.info(
-            "Health report generated: %s (%d nodes, %d services)",
-            report.metadata.title,
-            report.monitored.total_nodes,
-            report.monitored.total_services,
-        )
-    except (OSError, ValueError, LookupError, RuntimeError):
-        logger.exception("Failed to generate health report")
-        return
+        except (OSError, ValueError, LookupError, RuntimeError):
+            logger.exception("Failed to generate health report")
+            return
+
+    logger.info(
+        "Health report generated: %s (%d nodes, %d services)",
+        report.metadata.title,
+        report.monitored.total_nodes,
+        report.monitored.total_services,
+    )
 
     if not upload:
         return

@@ -224,3 +224,53 @@ async def test_generation_survives_rebind_between_pmm_requests(
     assert len(reads) == expected_reads
     [pmm_api] = used
     assert pmm_api._session is None
+
+
+@pytest.mark.asyncio
+async def test_generation_survives_rebind_during_cancel_check(
+    mocker, isolated_client_registry: ClientRegistry
+):
+    """Finish generating the report on the PMM client the cancellation check retired.
+
+    The cancellation check awaits a database read after the client is resolved. A PMM
+    override rebind landing during it retires the client; the task already holds it,
+    so the close waits for the report rather than failing its first read.
+    """
+    mocker.patch.object(
+        settings,
+        "PMM",
+        settings.PMM.model_copy(update={"api_key": SecretStr("test-key")}),
+    )
+    endpoint = str(settings.PMM.endpoint).rstrip("/")
+    reads: list[str] = []
+    used: list[PMMRemoteAPI] = []
+
+    async def rebind_during_check(_name: str) -> bool:
+        await isolated_client_registry.invalidate(endpoint)
+        return False
+
+    async def read_twice(pmm_api: PMMRemoteAPI, **_kwargs: Any) -> MagicMock:
+        used.append(pmm_api)
+        await pmm_api.get("/v1/inventory/nodes")
+        await pmm_api.get("/v1/inventory/services")
+        return TestGenerateHealthReportCooperativeCancel._mock_report()
+
+    def record_read(url: Any, **_kwargs: Any) -> CallbackResult:
+        reads.append(str(url))
+        return CallbackResult(payload={})
+
+    mocker.patch(
+        f"{MODULE}.should_cancel", new=AsyncMock(side_effect=rebind_during_check)
+    )
+    mocker.patch(f"{MODULE}.generate_report", new=read_twice)
+
+    with aioresponses() as pmm:
+        pmm.get(
+            re.compile(rf"{re.escape(endpoint)}/.*"), callback=record_read, repeat=True
+        )
+        await report_celery._generate_health_report()
+
+    expected_reads = 2
+    assert len(reads) == expected_reads
+    [pmm_api] = used
+    assert pmm_api._session is None
