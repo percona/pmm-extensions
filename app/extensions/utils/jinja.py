@@ -20,51 +20,12 @@ import time
 from datetime import datetime
 from typing import Any
 
-from markupsafe import Markup
 from pygments import highlight
 from pygments.formatters.html import HtmlFormatter
 from pygments.lexers import get_lexer_by_name, guess_lexer, TextLexer
 from pygments.util import ClassNotFound
 
 from app.core.utils import make_datetime_utc
-
-
-def syntax_highlight_css(
-    cssclass: str = "highlight",
-    *,
-    light_style: str = "sas",
-    dark_style: str = "monokai",
-    **fmt_options: Any,
-) -> Markup:
-    """Generate dual-theme CSS for syntax highlighting using Pygments.
-
-    Produce CSS rules scoped to ``[data-theme="light"]`` and
-    ``[data-theme="dark"]`` selectors so that code blocks render correctly
-    in both light and dark UI themes.
-
-    :param cssclass: The CSS class name applied to highlighted code blocks.
-    :type cssclass: str
-    :param light_style: Pygments style name for the light theme.
-    :type light_style: str
-    :param dark_style: Pygments style name for the dark theme.
-    :type dark_style: str
-    :param fmt_options: Additional keyword arguments forwarded to
-        :class:`pygments.formatters.HtmlFormatter`.
-    :type fmt_options: Any
-    :return: CSS style definitions containing both light-theme and dark-theme rules,
-        marked safe for Jinja2 autoescape.
-    :rtype: Markup
-    """
-    light_formatter = HtmlFormatter(style=light_style, cssclass=cssclass, **fmt_options)
-    dark_formatter = HtmlFormatter(style=dark_style, cssclass=cssclass, **fmt_options)
-
-    light_prefix = f'[data-theme="light"] .{cssclass}'
-    dark_prefix = f'[data-theme="dark"] .{cssclass}'
-
-    light_css = light_formatter.get_style_defs(light_prefix)
-    dark_css = dark_formatter.get_style_defs(dark_prefix)
-
-    return Markup(f"{light_css}\n{dark_css}")  # noqa: S704 # nosec B704
 
 
 def syntax_highlight(

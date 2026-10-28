@@ -15,14 +15,12 @@
 
 """Provide connectivity check helpers and an async LRU cache for task creation.
 
-These are the shared primitives — the memoized probe and the latest-result
-snapshot. The request-facing wrapper that turns a probe into a
-``ConnectivityWarning | None`` lives in
+These are the shared primitives — the memoized probe. The request-facing
+wrapper that turns a probe into a ``ConnectivityWarning | None`` lives in
 :mod:`app.extensions.apps.framework.connectivity`.
 """
 
 import logging
-from collections import OrderedDict
 from typing import Any, cast, NamedTuple
 
 from aiohttp import ClientError
@@ -45,8 +43,6 @@ CONNECTIVITY_META_HOST_KEY = "_connectivity_host"
 CONNECTIVITY_META_PORT_KEY = "_connectivity_port"
 CONNECTIVITY_META_SERVICE_TYPE_KEY = "_connectivity_service_type"
 
-_LATEST_RESULTS: OrderedDict[tuple[str, str], bool] = OrderedDict()
-
 
 class ConnectivityResult(NamedTuple):
     """Hold the outcome of a Tasks API connectivity check.
@@ -63,51 +59,16 @@ class ConnectivityResult(NamedTuple):
     task_history_id: int | None
 
 
-def _record_latest_result(target: str, service_type: str, *, success: bool) -> None:
-    """Record the most recent connectivity outcome for sync UI annotations.
-
-    Maintain a bounded LRU snapshot of the latest connectivity outcome per
-    ``(target, service_type)`` pair so a synchronous caller can read it without
-    consulting ``alru_cache`` (which exposes no public sync peek). The snapshot
-    has no TTL of its own; ``alru_cache`` remains the authoritative TTL store
-    and the snapshot is best-effort, refreshed each time
-    ``app.extensions.apps.framework.connectivity.record_connectivity_warning`` runs.
-
-    :param target: The Nomad node name.
-    :param service_type: The lowercase service type (e.g. ``mysql``).
-    :param success: Whether the most recent check succeeded.
-    """
-    key = (target, service_type)
-    _LATEST_RESULTS[key] = success
-    _LATEST_RESULTS.move_to_end(key)
-    while len(_LATEST_RESULTS) > CACHE_MAXSIZE:
-        _LATEST_RESULTS.popitem(last=False)
-
-
 def clear_connectivity_caches() -> None:
-    """Reset the connectivity ``alru_cache`` and the latest-results snapshot.
+    """Reset the connectivity ``alru_cache``.
 
-    Provide a single public entry point for tests to wipe both the
-    ``alru_cache`` on :func:`_fetch_connectivity_result` and the
-    ``_LATEST_RESULTS`` snapshot in one call. Production code does not need
-    this — ``alru_cache`` honors its own TTL and the snapshot is intentionally
-    process-lifetime state.
+    Provide a single public entry point for tests to wipe the ``alru_cache`` on
+    :func:`_fetch_connectivity_result`. Production code does not need this —
+    ``alru_cache`` honors its own TTL.
 
     :return: ``None``.
     """
     _fetch_connectivity_result.cache_clear()
-    _LATEST_RESULTS.clear()
-
-
-def get_latest_connectivity_result(target: str, service_type: str) -> bool | None:
-    """Return the latest connectivity outcome for a ``(target, service_type)`` pair.
-
-    :param target: The Nomad node name.
-    :param service_type: The lowercase service type (e.g. ``mysql``).
-    :return: ``True`` if the last recorded check succeeded, ``False`` if it
-        failed, or ``None`` when no result has been recorded for that pair.
-    """
-    return _LATEST_RESULTS.get((target, service_type))
 
 
 @alru_cache(maxsize=CACHE_MAXSIZE, ttl=CACHE_TTL)

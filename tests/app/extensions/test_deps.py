@@ -1264,47 +1264,6 @@ class TestExecutorHostsContext:
         result = ctx.as_template_list()
         assert result == [{"value": "nomad-node", "label": "nomad-node"}]
 
-    def test_as_form_hosts_returns_frozenset_of_tuples(self) -> None:
-        """Assert form hosts returns frozenset of (value, label) tuples."""
-        hosts = {"nomad-node": "10.0.0.1"}
-        display_names = {"10.0.0.1": "My DB"}
-        ctx = ExecutorHostsContext(hosts=hosts, display_names=display_names)
-        result = ctx.as_form_hosts()
-        assert result == frozenset({("nomad-node", "My DB")})
-
-    def test_as_host_metrics_returns_sorted_display_name_address_tuples(self) -> None:
-        """Assert host metrics returns sorted (display_name, address) tuples."""
-        hosts = {"beta-node": "10.0.0.2", "alpha-node": "10.0.0.1"}
-        display_names = {"10.0.0.1": "Alpha DB", "10.0.0.2": "Beta DB"}
-        ctx = ExecutorHostsContext(hosts=hosts, display_names=display_names)
-        result = ctx.as_host_metrics()
-        assert result == [("Alpha DB", "10.0.0.1"), ("Beta DB", "10.0.0.2")]
-
-    def test_as_host_metrics_falls_back_to_nomad_name(self) -> None:
-        """Assert host metrics uses nomad name when no inventory match."""
-        hosts = {"nomad-node": "10.0.0.1"}
-        ctx = ExecutorHostsContext(hosts=hosts, display_names={})
-        result = ctx.as_host_metrics()
-        assert result == [("nomad-node", "10.0.0.1")]
-
-    def test_with_host_adds_new_host(self) -> None:
-        """Assert with_host returns new context with the additional host."""
-        hosts = {"nomad-node": "10.0.0.1"}
-        display_names = {"10.0.0.1": "My DB"}
-        ctx = ExecutorHostsContext(hosts=hosts, display_names=display_names)
-        new_ctx = ctx.with_host("extra-host")
-        result = new_ctx.as_template_list()
-        values = [item["value"] for item in result]
-        assert "extra-host" in values
-        assert "nomad-node" in values
-
-    def test_with_host_returns_same_when_host_exists(self) -> None:
-        """Assert with_host returns same context when host already present."""
-        hosts = {"nomad-node": "10.0.0.1"}
-        ctx = ExecutorHostsContext(hosts=hosts, display_names={})
-        new_ctx = ctx.with_host("nomad-node")
-        assert new_ctx is ctx
-
     def test_hosts_property_returns_raw_dict(self) -> None:
         """Assert hosts property returns the raw hosts dictionary."""
         hosts = {"node-1": "10.0.0.1"}

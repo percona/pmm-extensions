@@ -85,17 +85,6 @@ def get_dipper_script_filename(
         raise HTTPNotFoundException from exc
 
 
-def has_pmm_script(service_type: ServiceTypeEnum) -> bool:
-    """Check if a PMM collector script exists for the given service type.
-
-    :param service_type: The service type enum.
-    :type service_type: ServiceTypeEnum
-    :return: True if a PMM script exists for the service type, False otherwise.
-    :rtype: bool
-    """
-    return service_type in DIPPER_PMM_SCRIPT_BY_SERVICE_TYPE
-
-
 async def load_dipper_script(
     service: CreatedService,
     collector_type: CollectorTypeEnum,

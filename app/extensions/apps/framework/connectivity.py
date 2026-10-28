@@ -22,7 +22,6 @@ from pydantic import BaseModel
 from app.core.requests import RemoteAPI
 from app.extensions.connectivity import (
     _fetch_connectivity_result,
-    _record_latest_result,
     CONNECTIVITY_META_HOST_KEY,
     CONNECTIVITY_META_PORT_KEY,
     CONNECTIVITY_META_SERVICE_TYPE_KEY,
@@ -72,11 +71,7 @@ async def record_connectivity_warning(
     """Run a connectivity check and return a JSON-friendly warning on failure.
 
     Delegate to :func:`app.extensions.connectivity._fetch_connectivity_result`
-    (cached via ``alru_cache``) and record the outcome in
-    :data:`app.extensions.connectivity._LATEST_RESULTS` via
-    :func:`app.extensions.connectivity._record_latest_result`, which
-    :func:`app.extensions.connectivity.get_latest_connectivity_result` reads back
-    synchronously.
+    (cached via ``alru_cache``).
 
     :param tasks_api: Authenticated Tasks API client.
     :param target: The Nomad node name.
@@ -88,7 +83,6 @@ async def record_connectivity_warning(
     success, error, task_history_id = await _fetch_connectivity_result(
         tasks_api, target, host, port, service_type
     )
-    _record_latest_result(target, service_type, success=success)
     if success:
         return None
     return ConnectivityWarning(
@@ -114,8 +108,8 @@ async def maybe_record_connectivity_warning(
 
     :param tasks_api: Authenticated Tasks API client.
     :param meta: The ``task.data["meta"]`` mapping from the created task.
-    :param check_connectivity: If ``False``, skip both the Tasks API call and
-        the snapshot write. Honors the per-task opt-out from the JSON API.
+    :param check_connectivity: If ``False``, skip the connectivity check and its
+        Tasks API call. Honors the per-task opt-out from the JSON API.
     :return: ``None`` when skipped or successful; ``ConnectivityWarning`` on failure.
     """
     if not check_connectivity:
