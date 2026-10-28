@@ -532,7 +532,7 @@ class TestMakeQueryParamDep:
         """
         dep = make_query_param_dep(make_lq_spec(), _record_build([]))
 
-        assert "__signature__" not in vars(dep)
+        assert not hasattr(dep, "__signature__")
         assert not hasattr(dep, "__wrapped__")
 
 
