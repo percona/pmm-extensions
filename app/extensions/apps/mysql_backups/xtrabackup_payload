@@ -1219,12 +1219,11 @@ class Backup(BaseBackup):
         :param cnf_paths: Comma-separated list of cnf file paths.
         """
         inc_dirs = []
-        for filename in cnf_paths.split(","):
+        for filename in map(os.path.abspath, cnf_paths.split(",")):
             if filename not in self.all_cnf_files:
                 self.all_cnf_files.append(filename)
-                fpath = Path(filename)
-                if fpath.is_file():
-                    with fpath.open() as f:
+                if Path(filename).is_file():
+                    with open(filename) as f:
                         for line in f:
                             line = line.strip()
                             if line.startswith("!includedir"):
@@ -1232,16 +1231,15 @@ class Backup(BaseBackup):
                             elif line.startswith("!include"):
                                 self.get_included_config(line.split(" ", 1)[1])
         for inc_dir in inc_dirs:
-            inc_dir_path = Path(inc_dir)
-            if inc_dir_path.is_dir():
-                for ffile in inc_dir_path.iterdir():
+            if Path(inc_dir).is_dir():
+                for ffile in Path(inc_dir).iterdir():
                     if ffile.suffix == ".cnf":
                         self.get_included_config(str(ffile))
 
     def backup_mycnf(self, backup_dir: str) -> None:
         """Copy my.cnf file(s) to the backup directory.
 
-        Each copy is named by its percent-encoded source path, which the restore
+        Each copy is named by its percent-encoded absolute source path, which the restore
         decodes, except ``auto.cnf`` and ``mysqld-auto.cnf``: they keep their name
         because copy-back puts them in the datadir, where the server reads them.
         A file that cannot be named or copied is skipped and ``mycnf_copy_skipped``

@@ -151,6 +151,30 @@ class TestRoundTrip:
         changed = {path for path in after if after[path] != before.get(path)}
         assert changed == {str(etc_my), str(custom), str(mysql_my)}
 
+    def test_relative_include_returns_to_its_absolute_source(
+        self, layout: Layout, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Record a relative ``!include`` by the absolute path the file was read from."""
+        etc_my = layout.allowed_file
+        custom = layout.allowed_dir / "conf.d" / "custom.cnf"
+        custom.write_text("[mysqld]\nserver-id=2\nport = 3307\n")
+        etc_my.write_text("[mysqld]\nserver-id=1\n!include conf.d/custom.cnf\n")
+        monkeypatch.chdir(layout.allowed_dir)
+        backup = _backup(str(etc_my))
+
+        backup.backup_mycnf(str(layout.datadir))
+
+        assert sorted(p.name for p in layout.datadir.iterdir()) == sorted(
+            map(_archived, (etc_my, custom))
+        )
+        custom.write_text("stale\n")
+
+        layout.restorer()._restore_cnf_files()
+
+        assert (
+            custom.read_text() == f"[mysqld]\nserver-id= {NEW_SERVER_ID}\nport = 3307\n"
+        )
+
     def test_included_file_outside_the_allowlist_blocks_the_restore(
         self, layout: Layout
     ) -> None:
