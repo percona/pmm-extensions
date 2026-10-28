@@ -30,6 +30,19 @@ _TASKS_PRE_ENUM_REVISION = "fafdb0445092"
 # downgrading to it runs exactly that revision's ``downgrade()``.
 _CHECK_DROP_PARENT_REVISION = "c8e4a2b91f70"
 
+#: Frozen copy of the members the CHECK enumerated right before the drop.
+_PRE_DROP_MEMBERS = (
+    "SEP_SETTINGS",
+    "TASKS_SETTINGS",
+    "SNIPPETS_SETTINGS",
+    "SETTINGS",
+    "ALERT_SETTINGS",
+    "ANONYMIZER_SETTINGS",
+    "ALERTS_SETTINGS",
+    "INVENTORY_SETTINGS",
+    "HEALTH_REPORT_SETTINGS",
+)
+
 
 def _insert_override(conn, setting_class: str) -> None:
     """Insert a minimal ``settingoverride`` row with the given setting_class."""
@@ -106,7 +119,8 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
     try:
         with engine.begin() as conn:
             _insert_override(conn, "UNREGISTERED_SETTINGS")
-            _insert_override(conn, "SEP_SETTINGS")
+            for token in _PRE_DROP_MEMBERS:
+                _insert_override(conn, token)
     finally:
         engine.dispose()
 
@@ -128,7 +142,7 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
             remaining = conn.exec_driver_sql(
                 "SELECT setting_class FROM settingoverride"
             ).fetchall()
-            assert remaining == [("SEP_SETTINGS",)]
+            assert sorted(row[0] for row in remaining) == sorted(_PRE_DROP_MEMBERS)
             with pytest.raises(IntegrityError):
                 _insert_override(conn, "UNREGISTERED_SETTINGS")
     finally:
