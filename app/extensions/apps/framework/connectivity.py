@@ -108,8 +108,8 @@ async def maybe_record_connectivity_warning(
 
     :param tasks_api: Authenticated Tasks API client.
     :param meta: The ``task.data["meta"]`` mapping from the created task.
-    :param check_connectivity: If ``False``, skip both the Tasks API call and
-        the snapshot write. Honors the per-task opt-out from the JSON API.
+    :param check_connectivity: If ``False``, skip the connectivity check and its
+        Tasks API call. Honors the per-task opt-out from the JSON API.
     :return: ``None`` when skipped or successful; ``ConnectivityWarning`` on failure.
     """
     if not check_connectivity:
