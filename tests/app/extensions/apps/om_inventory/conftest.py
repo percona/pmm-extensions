@@ -165,8 +165,12 @@ def run_sweep() -> RunSweep:
                 await on_host_done(result)
             return host_results
 
+        @asynccontextmanager
+        async def held_clients() -> AsyncIterator[tuple[MagicMock, MagicMock]]:
+            yield clients
+
         with (
-            patch(f"{SERVICE}._build_clients", AsyncMock(return_value=clients)),
+            patch(f"{SERVICE}._held_clients", held_clients),
             patch(f"{SERVICE}.get_internal_token", return_value="token"),
             patch(f"{SERVICE}.list_mongodb_services", AsyncMock(return_value=[])),
             # The host half of enumeration, stubbed empty for the same reason as the
