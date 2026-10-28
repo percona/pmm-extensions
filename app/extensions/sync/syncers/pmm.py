@@ -17,6 +17,7 @@
 
 import logging
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any, ClassVar, Self, TypeVar
 
@@ -98,6 +99,7 @@ class PMMSyncer(BaseSyncer):
     keepalive_api: bool = True
     missing_grace_generations: MissingGraceGenerations = 2
     _pmm_api: PMMRemoteAPI | None = None
+    _client_holds: AsyncExitStack | None = None
     _generation: PMMInventorySnapshot | None = None
     _service_moves: dict[str, CreatedService] | None = None
     _rehomed_ids: frozenset[int | None] = frozenset()
@@ -106,7 +108,10 @@ class PMMSyncer(BaseSyncer):
         """Enter the asynchronous context manager.
 
         Overrides from BaseSyncer to also get the PMMRemoteAPI instance from the global
-        client registry.
+        client registry, held for the whole session so a settings rebind that retires
+        it mid-run defers its close until the session ends. The hold is taken before
+        the run row is opened and released again if that fails, because a failing
+        ``__aenter__`` is never paired with an ``__aexit__``.
 
         :return: The `BaseRemoteAPI` instance.
         """
@@ -114,7 +119,15 @@ class PMMSyncer(BaseSyncer):
             self._pmm_api = await settings.get_remote_api(
                 PMMRemoteAPI, **settings.PMM.model_dump()
             )
-        return await super().__aenter__()
+        holds = AsyncExitStack()
+        await holds.enter_async_context(self.pmm_api.hold())
+        try:
+            entered = await super().__aenter__()
+        except BaseException:
+            await holds.aclose()
+            raise
+        self._client_holds = holds
+        return entered
 
     async def __aexit__(
         self,
@@ -124,8 +137,8 @@ class PMMSyncer(BaseSyncer):
     ) -> None:
         """Exit the asynchronous context manager.
 
-        Overrides from BaseSyncer to also close the PMMRemoteAPI instance if it was not
-        set to be kept alive.
+        Overrides from BaseSyncer to also release the session's hold on the
+        PMMRemoteAPI instance, then evict it if it was not set to be kept alive.
 
         :param exc_type: The type of exception raised, if any.
         :type exc_type: type[BaseException]
@@ -134,7 +147,12 @@ class PMMSyncer(BaseSyncer):
         :param exc_tb: The traceback of the exception raised, if any.
         :type exc_tb: TracebackType
         """
-        await super().__aexit__(exc_type, exc_val, exc_tb)
+        try:
+            await super().__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            if self._client_holds is not None:
+                await self._client_holds.aclose()
+                self._client_holds = None
         if not self.keepalive_api and self._pmm_api is not None:
             await settings.invalidate_client(str(self._pmm_api.endpoint))
             self._pmm_api = None
