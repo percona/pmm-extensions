@@ -22,6 +22,7 @@ import logging
 from datetime import datetime, timedelta, UTC
 from functools import partial
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2703,6 +2704,191 @@ async def test_execute_route_keeps_scheduled_at_out_of_meta(
     assert meta["target"] == "node1"
     assert meta["foo"] == "bar"
     assert "scheduled_at" not in meta
+
+
+class TestExecuteRouteRequirementsMeta:
+    """Cover ``meta.requirements`` normalization on ``POST /execute/{task_name}``."""
+
+    @staticmethod
+    def _capture_dispatch(mocker: MockerFixture) -> list[dict[str, Any]]:
+        """Stub dispatch at the executor edge and record the meta it receives.
+
+        :param mocker: The patching fixture standing in for the executor edge.
+        :return: The list each dispatched request's meta is appended to.
+        """
+        dispatched: list[dict[str, Any]] = []
+
+        async def fake_dispatch_queue_item(queue_item, passed_session):
+            dispatched.append(dict(queue_item.execution_request.meta))
+            queue_item.status = TaskHistoryStatusEnum.RUNNING
+            return await TaskHistoryManager.save(
+                passed_session,
+                queue_item,
+                flag_modified_fields=["execution_request"],
+            )
+
+        fake_executor = MagicMock(spec=BaseExecutor)
+        fake_executor.get_hosts.return_value = {"node1": "10.0.0.1"}
+        mocker.patch(
+            "app.tasks.routes.get_executor_for_task", return_value=fake_executor
+        )
+        mocker.patch(
+            "app.tasks.routes.dispatch_queue_item",
+            side_effect=fake_dispatch_queue_item,
+        )
+        return dispatched
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "requirements",
+        ["PyMySQL\nfilelock", ["PyMySQL", "filelock"]],
+        ids=["string", "list"],
+    )
+    async def test_stores_and_dispatches_the_joined_string(
+        self, test_client, session, mocker, requirements
+    ):
+        """Assert both forms are stored and dispatched as one joined string."""
+        task = await TaskManager.create(
+            session,
+            TaskWrite.model_validate(
+                TaskFactory.build(name="run-python-reqs", anonymize_mask=0)
+            ),
+        )
+        dispatched = self._capture_dispatch(mocker)
+
+        response = test_client.post(
+            f"/execute/{task.name}",
+            json={"meta": {"target": "node1", "requirements": requirements}},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert body["execution_request"]["meta"]["requirements"] == "PyMySQL\nfilelock"
+        assert [meta["requirements"] for meta in dispatched] == ["PyMySQL\nfilelock"]
+        stored = await stored_execution_request(session, body["id"])
+        assert stored["meta"]["requirements"] == "PyMySQL\nfilelock"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "requirements",
+        [5, ["PyMySQL", 1], ["PyMySQL", ""]],
+        ids=["number", "non-string-element", "empty-string-element"],
+    )
+    async def test_rejects_invalid_requirements_without_history(
+        self, test_client, session, mocker, requirements
+    ):
+        """Assert an invalid value is a 422 that creates no task history row."""
+        task = await TaskManager.create(
+            session,
+            TaskWrite.model_validate(
+                TaskFactory.build(name="run-python-bad-reqs", anonymize_mask=0)
+            ),
+        )
+        dispatched = self._capture_dispatch(mocker)
+
+        response = test_client.post(
+            f"/execute/{task.name}",
+            json={"meta": {"target": "node1", "requirements": requirements}},
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert await TaskHistoryManager.count(session) == 0
+        assert dispatched == []
+
+    async def _create_proxy(self, session, requirements) -> Task:
+        """Create a proxy task over a root whose ``data.meta`` carries requirements.
+
+        :param session: The database session.
+        :param requirements: The value stored under ``data.meta.requirements``.
+        :return: The created proxy task.
+        """
+        await TaskManager.create(
+            session,
+            TaskWrite.model_validate(
+                TaskFactory.build(
+                    name="run-python-root",
+                    backend=TaskBackendEnum.NOMAD,
+                    anonymize_mask=0,
+                )
+            ),
+        )
+        return await TaskManager.create(
+            session,
+            TaskWrite.model_validate(
+                TaskFactory.build(
+                    name="run-python-proxy",
+                    backend=TaskBackendEnum.PROXY,
+                    anonymize_mask=0,
+                    data={
+                        "task": "run-python-root",
+                        "meta": {"requirements": requirements},
+                    },
+                )
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_stored_task_list_requirements_execute_joined(
+        self, test_client, session, mocker
+    ):
+        """Assert a stored task's list-form ``data.meta.requirements`` is joined."""
+        task = await self._create_proxy(session, ["PyMySQL", "filelock"])
+        dispatched = self._capture_dispatch(mocker)
+
+        response = test_client.post(
+            f"/execute/{task.name}", json={"meta_target": "node1"}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert [meta["requirements"] for meta in dispatched] == ["PyMySQL\nfilelock"]
+        stored = await stored_execution_request(session, response.json()["id"])
+        assert stored["meta"]["requirements"] == "PyMySQL\nfilelock"
+
+    @pytest.mark.asyncio
+    async def test_stored_task_invalid_requirements_rejected(
+        self, test_client, session, mocker
+    ):
+        """Assert a stored task's invalid ``data.meta.requirements`` is a 422."""
+        task = await self._create_proxy(session, ["PyMySQL", 1])
+        dispatched = self._capture_dispatch(mocker)
+
+        response = test_client.post(
+            f"/execute/{task.name}", json={"meta_target": "node1"}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert await TaskHistoryManager.count(session) == 0
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_legacy_row_with_invalid_requirements_still_loads(
+        self, test_client, session
+    ):
+        """Assert a row stored before the check keeps loading on the history API."""
+        task = await TaskManager.create(
+            session,
+            TaskWrite.model_validate(
+                TaskFactory.build(name="run-python-legacy", anonymize_mask=0)
+            ),
+        )
+        history = await TaskHistoryManager.save(
+            session, build_task_history(task, status=TaskHistoryStatusEnum.FAILED)
+        )
+        await overwrite_execution_request(
+            session,
+            history.id,
+            {
+                "task": task.name,
+                "target": "node1",
+                "meta": {"requirements": ["PyMySQL", ""]},
+            },
+        )
+
+        response = test_client.get(f"/history/{history.id}")
+
+        assert response.status_code == status.HTTP_200_OK
+        meta = response.json()["execution_request"]["meta"]
+        assert meta["requirements"] == ["PyMySQL", ""]
 
 
 @pytest.mark.asyncio

@@ -972,6 +972,61 @@ class TestUpdatePeriodicTask:
         assert data["execute_request"]["chain_task_names"] == ["task-b"]
         assert data["description"] == "Updated description"
 
+    @pytest.mark.asyncio
+    async def test_update_without_execute_request_keeps_legacy_requirements(
+        self,
+        periodic_test_client,
+        celery_beat_session,
+        tasks_session,
+    ):
+        """Assert an update omitting execute_request keeps a legacy stored value."""
+        await TaskManager.create(
+            tasks_session,
+            TaskWrite.model_validate(
+                TaskFactory.build(
+                    name="task-a",
+                    owner="BACKUPS",
+                    data={"Constraints": [{"RTarget": "n"}]},
+                )
+            ),
+        )
+        schedule = IntervalSchedule(every=10, period=Period.MINUTES)
+        celery_beat_session.add(schedule)
+        await celery_beat_session.flush()
+        periodic_task = PeriodicTask(
+            name="legacy-requirements",
+            task=CELERY_TASK_NAME,
+            kwargs=json.dumps(
+                {
+                    "task_name": "task-a",
+                    "execution_data": {"meta": {"requirements": ["PyMySQL", ""]}},
+                }
+            ),
+            enabled=True,
+            description="A schedule stored before requirements were checked",
+            schedule_model=schedule,
+        )
+        celery_beat_session.add(periodic_task)
+        await celery_beat_session.commit()
+        await celery_beat_session.refresh(periodic_task)
+
+        response = periodic_test_client.put(
+            f"/periodic/{periodic_task.id}",
+            json={
+                "name": "legacy-requirements",
+                "task": "task-a",
+                "start_time": None,
+                "enabled": False,
+                "description": "Disabled",
+                "interval": {"every": 10, "period": "minutes"},
+            },
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["enabled"] is False
+        assert data["execute_request"]["meta"]["requirements"] == ["PyMySQL", ""]
+
 
 class TestCreatePeriodicTaskChainValidation:
     """Test chain_task_names validation on POST /{task_name}/periodic/."""

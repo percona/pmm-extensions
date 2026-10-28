@@ -34,6 +34,7 @@ from app.tasks.deps import (
     SessionDep,
     validate_chain_task_names,
 )
+from app.tasks.models import STORED_REQUEST_CONTEXT
 from app.tasks.periodic.crud import PeriodicTaskManager
 from app.tasks.periodic.deps import PeriodicTaskDep
 from app.tasks.periodic.models import (
@@ -172,8 +173,8 @@ async def update_periodic_task(
         updated_chain = unique_chain
 
     if updated_task.execute_request is None and existing_execution_data:
-        updated_task.execute_request = PeriodicTaskExecuteRequest(
-            **existing_execution_data
+        updated_task.execute_request = PeriodicTaskExecuteRequest.model_validate(
+            existing_execution_data, context=STORED_REQUEST_CONTEXT
         )
         kwargs_dict = json.loads(updated_task.kwargs)
         kwargs_dict["execution_data"] = existing_execution_data

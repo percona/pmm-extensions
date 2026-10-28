@@ -29,7 +29,11 @@ from starlette.requests import Request
 
 from app.api.deps import CurrentUserID
 from app.core.db import ListQuery, make_list_query_dep
-from app.core.exceptions import HTTPBadRequestException, HTTPNotFoundException
+from app.core.exceptions import (
+    HTTPBadRequestException,
+    HTTPNotFoundException,
+    HTTPUnprocessableEntityException,
+)
 from app.core.requests import BaseRemoteAPI
 from app.tasks.anonymizer.config import anonymizer_settings
 from app.tasks.config import tasks_settings
@@ -39,6 +43,7 @@ from app.tasks.execution.executors.celery.models import CeleryExecutor
 from app.tasks.execution.models import BaseExecutor
 from app.tasks.execution.nomad_lifecycle import normalize_nomad_config_value
 from app.tasks.models import (
+    normalize_requirements_meta,
     Task,
     TaskBackendEnum,
     TaskExecuteRequest,
@@ -248,22 +253,24 @@ async def prepare_task_history(
     """Prepare the history of a task execution request.
 
     :param task: The task to execute.
-    :type task: Task
     :param executed_by: The ID of the user executing the task.
-    :type executed_by: CurrentUserID
     :param session: The async database session for validation queries.
-    :type session: AsyncSession
     :param execution_data: Execution details and parameters, if any.
-    :type execution_data: TaskExecuteRequest | None
     :return: The logged TaskHistory entry.
-    :rtype: TaskHistory
     :raises HTTPNotFoundException: If the specified chain task does not exist.
+    :raises HTTPUnprocessableEntityException: If the merged ``meta.requirements``
+        is neither a string nor a list of non-empty strings, which a stored
+        task's ``data.meta`` can carry past request validation.
     """
     logger.debug("Preparing TaskHistory for %s", task.name)
     execution_data = TaskExecuteRequest() if execution_data is None else execution_data
     if task.backend == TaskBackendEnum.PROXY:
         execution_data.meta |= task.data.get("meta", {})
         execution_data.payload = task.data.get("payload", execution_data.payload)
+    try:
+        execution_data.meta = normalize_requirements_meta(execution_data.meta) or {}
+    except ValueError as exc:
+        raise HTTPUnprocessableEntityException(str(exc)) from exc
     if execution_data.chain_task_names:
         await validate_chain_task_names(session, execution_data.chain_task_names, task)
         execution_data.meta["_chain_task_names"] = execution_data.chain_task_names

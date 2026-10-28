@@ -16,6 +16,7 @@
 """Define models for periodic tasks in the Tasks app."""
 
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from functools import cached_property
 from typing import Any, Self
@@ -39,7 +40,11 @@ from app.core.celery.schedules import (
     schedule_timezone,
 )
 from app.core.utils.fields import EmptyStrToNone, UTCDatetime
-from app.tasks.models import TaskExecuteRequest, TaskHistoryStatusEnum
+from app.tasks.models import (
+    STORED_REQUEST_CONTEXT,
+    TaskExecuteRequest,
+    TaskHistoryStatusEnum,
+)
 
 
 def resolve_task_name(
@@ -264,6 +269,25 @@ class PeriodicTaskResponse(BasePeriodicTask):
         :return: The IANA zone name the schedule is defined in.
         """
         return schedule_timezone(self.interval, self.crontab)
+
+    @field_validator("execute_request", mode="before")
+    @classmethod
+    def _read_stored_execute_request(cls, v: Any) -> Any:
+        """Build a mapping-form execute request as a read of a stored schedule.
+
+        A response is rebuilt from the beat row's stored arguments, so the
+        request is validated with :data:`~app.tasks.models.STORED_REQUEST_CONTEXT`:
+        a legacy ``meta.requirements`` stays readable. Writes use other models
+        and stay strict.
+
+        :param v: The raw ``execute_request`` input.
+        :return: The built request for a mapping, otherwise the input unchanged.
+        """
+        if isinstance(v, Mapping):
+            return PeriodicTaskExecuteRequest.model_validate(
+                v, context=STORED_REQUEST_CONTEXT
+            )
+        return v
 
     @model_validator(mode="before")
     @classmethod
