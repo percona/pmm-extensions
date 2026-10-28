@@ -1429,21 +1429,16 @@ export interface components {
      *         Defaults to an empty dictionary. ``requirements`` may be a
      *         newline-separated string or a list of non-empty requirement strings; a
      *         list is joined with newlines.
-     *     :type meta: dict[str, Any]
      *     :param payload: Optional payload data or file path for the task execution.
-     *         Defaults to None.
-     *     :type payload: str | None
-     *     :param eta: The earliest time the task can be executed. Defaults to None, meaning
-     *         it will be executed as soon as possible.
-     *     :type eta: datetime | None
-     *     :param anonymize_mask: Bitmask of PII entities to anonymize. Defaults to None.
-     *     :type anonymize_mask: int | None
+     *         Defaults to ``None``.
+     *     :param eta: The earliest time the task can be executed. Defaults to ``None``,
+     *         meaning it will be executed as soon as possible.
+     *     :param anonymize_mask: Bitmask of PII entities to anonymize. Defaults to
+     *         ``None``.
      *     :param chain_task_names: Ordered list of task names to execute sequentially after
-     *         this one completes. Defaults to None.
-     *     :type chain_task_names: list[str] | None
+     *         this one completes. Defaults to ``None``.
      *     :param chain_on_failure: Whether the chain should continue when a task fails,
-     *         stops, or is lost. Defaults to False (chain only on success).
-     *     :type chain_on_failure: bool
+     *         stops, or is lost. Defaults to ``False`` (chain only on success).
      */
     TaskExecuteRequest: {
       /** Anonymize Mask */
@@ -1484,13 +1479,10 @@ export interface components {
      * @description Represent an execution request.
      *
      *     :param task: The task name.
-     *     :type task: str
      *     :param target: The target system or environment.
-     *     :type target: str
      *     :param meta: Additional metadata for the task. Defaults to an empty dictionary.
      *     :param payload: Optional payload or file path for parameterizing the task.
-     *         Defaults to None.
-     *     :type payload: str | None
+     *         Defaults to ``None``.
      *     :param tracking: Tracking information for task execution. Defaults to a dictionary
      *         with keys for allocation and evaluation IDs.
      */

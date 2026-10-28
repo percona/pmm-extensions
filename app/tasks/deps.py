@@ -253,15 +253,10 @@ async def prepare_task_history(
     """Prepare the history of a task execution request.
 
     :param task: The task to execute.
-    :type task: Task
     :param executed_by: The ID of the user executing the task.
-    :type executed_by: CurrentUserID
     :param session: The async database session for validation queries.
-    :type session: AsyncSession
     :param execution_data: Execution details and parameters, if any.
-    :type execution_data: TaskExecuteRequest | None
     :return: The logged TaskHistory entry.
-    :rtype: TaskHistory
     :raises HTTPNotFoundException: If the specified chain task does not exist.
     :raises HTTPUnprocessableEntityException: If the merged ``meta.requirements``
         is neither a string nor a list of non-empty strings, which a stored

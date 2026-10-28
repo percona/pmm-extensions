@@ -143,6 +143,30 @@ def normalize_requirements_meta(meta: dict[str, Any] | None) -> dict[str, Any] |
     raise ValueError(msg)
 
 
+def _normalize_requirements_field(
+    meta: dict[str, Any] | None, info: ValidationInfo
+) -> dict[str, Any] | None:
+    """Normalize ``meta`` for a ``meta`` field validator, sparing stored reads.
+
+    A model validated with :data:`STORED_REQUEST_CONTEXT` is a read of stored
+    data, so a value written before ``requirements`` was checked comes back
+    unchanged instead of failing the read.
+
+    :param meta: The validated meta mapping, possibly ``None``.
+    :param info: The validation info carrying the optional context.
+    :return: ``meta`` with ``requirements`` as a string, or ``meta`` unchanged
+        when a stored read holds a value that cannot be normalized.
+    :raises ValueError: If ``requirements`` cannot be normalized and the model is
+        not being validated as a stored read.
+    """
+    try:
+        return normalize_requirements_meta(meta)
+    except ValueError:
+        if info.context == STORED_REQUEST_CONTEXT:
+            return meta
+        raise
+
+
 class FileMetadata(BaseModel):
     """Represent file metadata for task artifacts."""
 
@@ -290,13 +314,10 @@ class TaskExecutionRequest(BaseModel):
     """Represent an execution request.
 
     :param task: The task name.
-    :type task: str
     :param target: The target system or environment.
-    :type target: str
     :param meta: Additional metadata for the task. Defaults to an empty dictionary.
     :param payload: Optional payload or file path for parameterizing the task.
-        Defaults to None.
-    :type payload: str | None
+        Defaults to ``None``.
     :param tracking: Tracking information for task execution. Defaults to a dictionary
         with keys for allocation and evaluation IDs.
     """
@@ -335,12 +356,7 @@ class TaskExecutionRequest(BaseModel):
         :param info: The validation info carrying the optional context.
         :return: The meta with ``requirements`` as a string.
         """
-        try:
-            return normalize_requirements_meta(v)
-        except ValueError:
-            if info.context == STORED_REQUEST_CONTEXT:
-                return v
-            raise
+        return _normalize_requirements_field(v, info)
 
     def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
         """Yield the fields ``repr`` and ``str`` render, protected leaves redacted.
@@ -709,9 +725,9 @@ class TaskWrite(TaskBase):
         :class:`TaskBase` so reading back a row whose stored path predates the
         allow-list keeps working.
 
-        :param value: The candidate ``"module:function"`` path, or None.
+        :param value: The candidate ``"module:function"`` path, or ``None``.
         :param info: The validation context, carrying the field name.
-        :return: The validated path, or None when the field is unset.
+        :return: The validated path, or ``None`` when the field is unset.
         :raises HookPathNotAllowedError: When the path is malformed or names a
             module outside the allow-listed namespace.
         """
@@ -727,21 +743,16 @@ class TaskExecuteRequest(BaseModel):
         Defaults to an empty dictionary. ``requirements`` may be a
         newline-separated string or a list of non-empty requirement strings; a
         list is joined with newlines.
-    :type meta: dict[str, Any]
     :param payload: Optional payload data or file path for the task execution.
-        Defaults to None.
-    :type payload: str | None
-    :param eta: The earliest time the task can be executed. Defaults to None, meaning
-        it will be executed as soon as possible.
-    :type eta: datetime | None
-    :param anonymize_mask: Bitmask of PII entities to anonymize. Defaults to None.
-    :type anonymize_mask: int | None
+        Defaults to ``None``.
+    :param eta: The earliest time the task can be executed. Defaults to ``None``,
+        meaning it will be executed as soon as possible.
+    :param anonymize_mask: Bitmask of PII entities to anonymize. Defaults to
+        ``None``.
     :param chain_task_names: Ordered list of task names to execute sequentially after
-        this one completes. Defaults to None.
-    :type chain_task_names: list[str] | None
+        this one completes. Defaults to ``None``.
     :param chain_on_failure: Whether the chain should continue when a task fails,
-        stops, or is lost. Defaults to False (chain only on success).
-    :type chain_on_failure: bool
+        stops, or is lost. Defaults to ``False`` (chain only on success).
     """
 
     meta: dict[str, Any] = Field(
@@ -784,12 +795,7 @@ class TaskExecuteRequest(BaseModel):
         :param info: The validation info carrying the optional context.
         :return: The meta with ``requirements`` as a string.
         """
-        try:
-            return normalize_requirements_meta(v) or {}
-        except ValueError:
-            if info.context == STORED_REQUEST_CONTEXT:
-                return v
-            raise
+        return _normalize_requirements_field(v, info) or {}
 
     @field_validator("chain_on_failure", mode="before")
     @classmethod

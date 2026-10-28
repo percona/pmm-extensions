@@ -1072,7 +1072,7 @@
         "type": "string"
       },
       "TaskExecuteRequest": {
-        "description": "Represent a request to execute a task with additional metadata and payload.\n\n:param meta: A dictionary of meta variables for the task execution.\n    Defaults to an empty dictionary. ``requirements`` may be a\n    newline-separated string or a list of non-empty requirement strings; a\n    list is joined with newlines.\n:type meta: dict[str, Any]\n:param payload: Optional payload data or file path for the task execution.\n    Defaults to None.\n:type payload: str | None\n:param eta: The earliest time the task can be executed. Defaults to None, meaning\n    it will be executed as soon as possible.\n:type eta: datetime | None\n:param anonymize_mask: Bitmask of PII entities to anonymize. Defaults to None.\n:type anonymize_mask: int | None\n:param chain_task_names: Ordered list of task names to execute sequentially after\n    this one completes. Defaults to None.\n:type chain_task_names: list[str] | None\n:param chain_on_failure: Whether the chain should continue when a task fails,\n    stops, or is lost. Defaults to False (chain only on success).\n:type chain_on_failure: bool",
+        "description": "Represent a request to execute a task with additional metadata and payload.\n\n:param meta: A dictionary of meta variables for the task execution.\n    Defaults to an empty dictionary. ``requirements`` may be a\n    newline-separated string or a list of non-empty requirement strings; a\n    list is joined with newlines.\n:param payload: Optional payload data or file path for the task execution.\n    Defaults to ``None``.\n:param eta: The earliest time the task can be executed. Defaults to ``None``,\n    meaning it will be executed as soon as possible.\n:param anonymize_mask: Bitmask of PII entities to anonymize. Defaults to\n    ``None``.\n:param chain_task_names: Ordered list of task names to execute sequentially after\n    this one completes. Defaults to ``None``.\n:param chain_on_failure: Whether the chain should continue when a task fails,\n    stops, or is lost. Defaults to ``False`` (chain only on success).",
         "properties": {
           "anonymize_mask": {
             "anyOf": [
@@ -1153,7 +1153,7 @@
       },
       "TaskExecutionRequest": {
         "additionalProperties": true,
-        "description": "Represent an execution request.\n\n:param task: The task name.\n:type task: str\n:param target: The target system or environment.\n:type target: str\n:param meta: Additional metadata for the task. Defaults to an empty dictionary.\n:param payload: Optional payload or file path for parameterizing the task.\n    Defaults to None.\n:type payload: str | None\n:param tracking: Tracking information for task execution. Defaults to a dictionary\n    with keys for allocation and evaluation IDs.",
+        "description": "Represent an execution request.\n\n:param task: The task name.\n:param target: The target system or environment.\n:param meta: Additional metadata for the task. Defaults to an empty dictionary.\n:param payload: Optional payload or file path for parameterizing the task.\n    Defaults to ``None``.\n:param tracking: Tracking information for task execution. Defaults to a dictionary\n    with keys for allocation and evaluation IDs.",
         "properties": {
           "eta": {
             "anyOf": [

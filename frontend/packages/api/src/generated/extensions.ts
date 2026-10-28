@@ -5357,13 +5357,10 @@ export interface components {
      * @description Represent an execution request.
      *
      *     :param task: The task name.
-     *     :type task: str
      *     :param target: The target system or environment.
-     *     :type target: str
      *     :param meta: Additional metadata for the task. Defaults to an empty dictionary.
      *     :param payload: Optional payload or file path for parameterizing the task.
-     *         Defaults to None.
-     *     :type payload: str | None
+     *         Defaults to ``None``.
      *     :param tracking: Tracking information for task execution. Defaults to a dictionary
      *         with keys for allocation and evaluation IDs.
      */
