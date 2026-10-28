@@ -15,14 +15,21 @@
 
 """Define tests for the app.extensions.apps.report.celery module."""
 
+import re
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aioresponses import aioresponses, CallbackResult
 from celery.exceptions import Ignore
+from pydantic import SecretStr
 
 import app.extensions.apps.report.celery as report_celery
+from app.core.config import settings
 from app.core.exceptions import HTTPInternalServerErrorException
+from app.core.requests.registry import ClientRegistry
 from app.extensions.bundle_upload.plan import DeliveryPlanError
+from app.extensions.clients.pmm import PMMRemoteAPI
 
 MODULE = "app.extensions.apps.report.celery"
 
@@ -171,3 +178,49 @@ class TestReportSnapshotJobs:
         assert kwargs["state"] == "FAILURE"
         assert kwargs["meta"]["error"] == "Invalid report snapshot"
         assert isinstance(kwargs["meta"]["errors"], list)
+
+
+@pytest.mark.asyncio
+async def test_generation_survives_rebind_between_pmm_requests(
+    mocker, isolated_client_registry: ClientRegistry
+):
+    """Finish generating the report on the PMM client its first read retired.
+
+    Generation makes many sequential PMM reads. The first one retires the client, as
+    a PMM override rebind would; the task holds it, so the close waits for the
+    report rather than failing the reads after it.
+    """
+    mocker.patch.object(
+        settings,
+        "PMM",
+        settings.PMM.model_copy(update={"api_key": SecretStr("test-key")}),
+    )
+    mocker.patch(f"{MODULE}.should_cancel", new=AsyncMock(return_value=False))
+    endpoint = str(settings.PMM.endpoint).rstrip("/")
+    reads: list[str] = []
+    used: list[PMMRemoteAPI] = []
+
+    async def read_twice(pmm_api: PMMRemoteAPI, **_kwargs: Any) -> MagicMock:
+        used.append(pmm_api)
+        await pmm_api.get("/v1/inventory/nodes")
+        await pmm_api.get("/v1/inventory/services")
+        return TestGenerateHealthReportCooperativeCancel._mock_report()
+
+    async def rebind_once(url: Any, **_kwargs: Any) -> CallbackResult:
+        if not reads:
+            await isolated_client_registry.invalidate(endpoint)
+        reads.append(str(url))
+        return CallbackResult(payload={})
+
+    mocker.patch(f"{MODULE}.generate_report", new=read_twice)
+
+    with aioresponses() as pmm:
+        pmm.get(
+            re.compile(rf"{re.escape(endpoint)}/.*"), callback=rebind_once, repeat=True
+        )
+        await report_celery._generate_health_report()
+
+    expected_reads = 2
+    assert len(reads) == expected_reads
+    [pmm_api] = used
+    assert pmm_api._session is None

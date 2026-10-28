@@ -176,6 +176,10 @@ async def _generate_health_report(
     requested but credentials are incomplete a warning is logged.  Upload
     failures are logged but do not prevent the task from completing.
 
+    The PMM client is held while the report is generated, so a settings rebind
+    that retires it between two of generation's requests defers its close until
+    generation ends.
+
     :param since: Relative start of the report period.
     :type since: str
     :param until: Relative end of the report period.
@@ -201,14 +205,15 @@ async def _generate_health_report(
         return
 
     try:
-        report = await generate_report(
-            pmm_api,
-            since=since,
-            until=until,
-            full=full,
-            refresh=refresh,
-            sections=sections,
-        )
+        async with pmm_api.hold():
+            report = await generate_report(
+                pmm_api,
+                since=since,
+                until=until,
+                full=full,
+                refresh=refresh,
+                sections=sections,
+            )
         logger.info(
             "Health report generated: %s (%d nodes, %d services)",
             report.metadata.title,
