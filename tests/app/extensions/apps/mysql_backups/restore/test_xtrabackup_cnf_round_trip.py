@@ -23,6 +23,7 @@ datadir copy-back fills.
 
 import shutil
 import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast, Protocol
 
@@ -38,6 +39,8 @@ from tests.app.extensions.apps.mysql_backups.restore.conftest import (
 )
 
 _BACKUP_METHODS = ("backup_mycnf", "get_included_config", "get_default_mycnf")
+#: The longest archive name that still fits 255 bytes once ``.xbcrypt`` is appended.
+_ENCRYPTABLE_NAME_MAX = 247
 
 
 class _Backup(Protocol):
@@ -168,18 +171,27 @@ class TestRoundTrip:
     @pytest.mark.parametrize(
         "basename",
         [
-            pytest.param("x" * 240 + ".cnf", id="encoded-over-255-bytes"),
-            pytest.param(f"{chr(0xDCFF)}.cnf", id="not-utf-8"),
+            pytest.param(
+                lambda _conf_d: "x" * 240 + ".cnf", id="encoded-over-255-bytes"
+            ),
+            pytest.param(
+                lambda conf_d: (
+                    "x" * (_ENCRYPTABLE_NAME_MAX + 1 - len(_archived(conf_d / ".cnf")))
+                    + ".cnf"
+                ),
+                id="no-room-for-xbcrypt-suffix",
+            ),
+            pytest.param(lambda _conf_d: f"{chr(0xDCFF)}.cnf", id="not-utf-8"),
         ],
     )
     def test_unnameable_source_is_skipped_with_a_warning_flag(
-        self, layout: Layout, basename: str
+        self, layout: Layout, basename: Callable[[Path], str]
     ) -> None:
         """Flag the copy as skipped and keep the others when a source cannot be named."""
         etc_my = layout.allowed_file
         conf_d = layout.allowed_dir / "conf.d"
         etc_my.write_text(f"[mysqld]\n!includedir {conf_d}\n")
-        (conf_d / basename).write_text("[mysqld]\n")
+        (conf_d / basename(conf_d)).write_text("[mysqld]\n")
         backup = _backup(str(etc_my))
 
         backup.backup_mycnf(str(layout.datadir))

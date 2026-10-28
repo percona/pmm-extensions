@@ -599,10 +599,6 @@ def is_free_space(
         if free_pct <= threshold_pct:
             space_ok = False
             output = f"Not enough disk space to pull binlogs: free {free_pct:.2f}%, needed {threshold_pct + 1:.2f}%"
-        elif logger:
-            logger.debug(
-                "Disk space OK: free %.2f%%, needed %.2f%%", free_pct, threshold_pct + 1
-            )
     else:
         free_mb = get_free_space(str(dir_p))
         max_backup_size = get_max_subdir_size(str(dir_p))
@@ -1248,8 +1244,9 @@ class Backup(BaseBackup):
         Each copy is named by its percent-encoded source path, which the restore
         decodes, except ``auto.cnf`` and ``mysqld-auto.cnf``: they keep their name
         because copy-back puts them in the datadir, where the server reads them.
-        A file that cannot be named or copied (an encoded name over 255 bytes, a
-        name that is not valid UTF-8) is skipped and ``mycnf_copy_skipped`` is set.
+        A file that cannot be named or copied is skipped and ``mycnf_copy_skipped``
+        is set: a name that is not valid UTF-8, or an encoded name over 247 bytes,
+        which leaves no room for the ``.xbcrypt`` suffix encryption appends.
 
         :param backup_dir: Path to the backup directory.
         """
@@ -1265,9 +1262,10 @@ class Backup(BaseBackup):
             src = Path(filename)
             if src.is_file():
                 try:
-                    dest_filename = backup_path / (src.name if src.name in ("auto.cnf", "mysqld-auto.cnf") else quote(filename, ""))
-                    self.logger.info("Copy %s -> %s", src, dest_filename)
-                    shutil.copy(str(src), str(dest_filename))
+                    name = src.name if src.name in ("auto.cnf", "mysqld-auto.cnf") else quote(filename, "")
+                    if len(name) > 247:
+                        raise OSError(36)
+                    shutil.copy(str(src), str(backup_path / name))
                 except (OSError, ValueError) as err:
                     self.mycnf_copy_skipped = True
                     self.logger.exception("Copy of my.cnf failed: %s", err)
