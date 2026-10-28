@@ -43,9 +43,9 @@ _ILIKE_ESCAPE = "\\"
 class UnknownSortKeyError(Exception):
     """Raise when a requested sort key is absent from a spec's allowlist.
 
-    :func:`app.core.db.deps.make_query_param_dep` maps it to an HTTP 422, so the dependency owns the
-    request-boundary error contract and every path that resolves a sort key against a
-    spec reports the same rejection.
+    :func:`~app.core.db.deps.make_query_param_dep` maps it to an HTTP 422, so the
+    dependency owns the request-boundary error contract and every path that resolves a
+    sort key against a spec reports the same rejection.
 
     :param key: The rejected public sort key (with any ``-`` prefix stripped).
     """
