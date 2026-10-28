@@ -66,12 +66,15 @@ class LogFileStarts:
     :param start_offset: The raw offset the follow started at. A follow from 0
         knows where its first file starts; any other does not, since it began
         inside that file.
+    :ivar unplaced_reported: Whether a read of this follow has already
+        reported that it could not be placed past a deleted file.
     """
 
     def __init__(self, start_offset: int) -> None:
         self._start_offset = start_offset
         self._starts: dict[str, int] = {}
         self._last: str | None = None
+        self.unplaced_reported = False
 
     def record(self, file: str, start: int) -> None:
         """Record the file a frame's data came from, if it is a new one.

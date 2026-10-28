@@ -842,6 +842,6 @@ async def test_a_deletion_mid_catch_up_drops_the_split_character_cleanly(
         await until(lambda: joiner.offset() == raw_length, within=RUN_TIMEOUT)
 
     assert joiner.text() == before + "after\n"
-    assert f"range={len(EVICTED) + chunk}-{retained_to}" in caplog.text
+    assert f"range={len(EVICTED) + chunk - 1}-{retained_to}" in caplog.text
     await first.leave()
     await joiner.leave()

@@ -300,16 +300,24 @@ def _warn_forced_flush(
 
 
 def _warn_unplaced_log_read(
-    alloc_id: str, step: str, log_type: TaskLogType, offset: int
+    alloc_id: str, step: str, log_type: TaskLogType, offset: int, files: LogFileStarts
 ) -> None:
-    """Warn that a read past a deleted rotated file proceeds untranslated.
+    """Warn, once per follow, that its reads after a rotation go untranslated.
+
+    A follow that started inside a file meets this on every catch-up and
+    reconnect once its log has rotated, whether or not Nomad deleted
+    anything, so later occurrences are logged at debug level.
 
     :param alloc_id: The Nomad allocation identifier.
     :param step: The Nomad task name within the allocation.
     :param log_type: The log stream type (stdout or stderr).
     :param offset: The cumulative raw offset the read starts at.
+    :param files: The file starts the follow's producer recorded.
     """
-    logger.warning(
+    level = logging.DEBUG if files.unplaced_reported else logging.WARNING
+    files.unplaced_reported = True
+    logger.log(
+        level,
         "Nomad log read cannot be placed at offset=%s alloc_id=%s step=%s "
         "log_type=%s; the follow never saw where Nomad's oldest retained file "
         "starts, so the offset is used as it is",
@@ -345,18 +353,6 @@ class _LogFrame(NamedTuple):
 
     file: str | None
     data: bytes
-
-
-class _LogRead(NamedTuple):
-    """Carry what one ``follow=false`` log request returned.
-
-    :param frames: The data frames, clipped at the requested end.
-    :param misplaced: Whether the request's confirmation found Nomad had
-        resolved it with a stale shift, so its data was dropped unread.
-    """
-
-    frames: list[_LogFrame]
-    misplaced: bool
 
 
 def _nomad_event_body_text(ev: dict) -> str:
@@ -3228,7 +3224,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         """
         shift = await self._resolve_log_shift(alloc_id, step, log_type, files)
         if shift is None:
-            _warn_unplaced_log_read(alloc_id, step, log_type, params["offset"])
+            _warn_unplaced_log_read(alloc_id, step, log_type, params["offset"], files)
             return None, None
 
         async def confirm() -> bool:
@@ -3238,7 +3234,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 logger.warning(
                     "Nomad log stream lost range=%s-%s alloc_id=%s step=%s "
                     "log_type=%s; Nomad deleted the rotated file holding it",
-                    params["offset"],
+                    params["offset"] - len(pending),
                     shift,
                     alloc_id,
                     step,
@@ -3539,6 +3535,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :return: Whether the frame was taken; ``False`` when ``confirm``
             refused the connection's first frame.
         :raises UnicodeDecodeError: When a non-anonymized frame is not UTF-8.
+        :raises TimeoutError: When ``confirm``'s shift probe times out.
+        :raises ClientError: When ``confirm``'s shift probe fails.
         """
         if first_since is not None and confirm is not None and not await confirm():
             return False
@@ -3625,9 +3623,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         log_type: TaskLogType,
         start: int,
         end: int,
-        *,
-        confirm: Callable[[], Awaitable[bool]] | None = None,
-    ) -> _LogRead:
+    ) -> list[_LogFrame]:
         """Read the frames of one bounded catch-up request from ``start``.
 
         The request is a ``follow=false`` short call, read at network speed and
@@ -3640,11 +3636,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param log_type: The type of log to read.
         :param start: The request offset to read from.
         :param end: The request offset to stop at.
-        :param confirm: Awaited once the first data frame has arrived, which is
-            when Nomad has placed the request; ``False`` drops the response
-            unread. ``None`` keeps every frame.
         :return: The frames in order, clipped at ``end``; empty when Nomad had
-            nothing past ``start`` or ``confirm`` refused the response.
+            nothing past ``start``.
         :raises TimeoutError: When no pooled connection or no data arrives in
             time.
         :raises ClientError: When the request fails.
@@ -3670,16 +3663,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 parsed, raw_data = _split_nomad_frames(raw_data + chunk)
                 for frame in parsed:
                     if msg := frame.get("Data"):
-                        if confirm is not None:
-                            if not await confirm():
-                                return _LogRead([], misplaced=True)
-                            confirm = None
                         data = b64decode(msg)[: end - position]
                         frames.append(_LogFrame(frame.get("File"), data))
                         position += len(data)
                         if position >= end or position - start >= _CATCH_UP_CHUNK_BYTES:
-                            return _LogRead(frames, misplaced=False)
-        return _LogRead(frames, misplaced=False)
+                            return frames
+        return frames
 
     async def _resolve_log_shift(
         self, alloc_id: str, step: str, log_type: TaskLogType, files: LogFileStarts
@@ -3699,57 +3688,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :raises TimeoutError: When the probe times out.
         :raises ClientError: When the probe fails.
         """
-        read = await self._read_log_frames(alloc_id, step, log_type, 0, 1)
-        if not read.frames or read.frames[0].file is None:
+        frames = await self._read_log_frames(alloc_id, step, log_type, 0, 1)
+        if not frames or frames[0].file is None:
             return None
-        return files.start_of(read.frames[0].file)
-
-    async def _read_sandwiched(
-        self,
-        alloc_id: str,
-        step: str,
-        log_type: TaskLogType,
-        files: LogFileStarts,
-        position: int,
-        end: int,
-        shift: int,
-    ) -> tuple[_LogRead, int | None]:
-        """Read one request translated by ``shift``, then probe the shift again.
-
-        The probe runs once Nomad has placed the request, which is when its
-        first data frame arrives, or after a response that carried none.
-
-        :param alloc_id: The Nomad allocation identifier.
-        :param step: The task step name.
-        :param log_type: The type of log to read.
-        :param files: The file starts the follow's producer recorded.
-        :param position: The cumulative raw offset to read from.
-        :param end: The cumulative raw offset to read up to.
-        :param shift: The shift the previous probe found.
-        :return: The read, misplaced when the probe found another shift, and
-            the shift the probe found.
-        :raises TimeoutError: When a request times out.
-        :raises ClientError: When a request fails.
-        """
-        probed: list[int | None] = []
-
-        async def confirm() -> bool:
-            probed.append(
-                await self._resolve_log_shift(alloc_id, step, log_type, files)
-            )
-            return probed[0] == shift
-
-        read = await self._read_log_frames(
-            alloc_id,
-            step,
-            log_type,
-            max(position, shift) - shift,
-            end - shift,
-            confirm=confirm,
-        )
-        if not probed:
-            await confirm()
-        return read, probed[0]
+        return files.start_of(frames[0].file)
 
     async def _read_placed_frames(
         self,
@@ -3763,11 +3705,13 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
     ) -> tuple[list[_LogFrame], int | None] | None:
         """Read one catch-up request, translated by ``shift`` and proven placed.
 
-        A probe after the request has been placed brackets it with the one
-        before: Nomad only ever deletes its oldest file, so equal shifts mean
-        nothing was deleted in between, and Nomad resolved the request with
-        that shift. A response the second probe contradicts is dropped unread
-        and requested again with the newer shift.
+        A probe once the request's response has closed brackets it with the
+        one before: Nomad only ever deletes its oldest file, so equal shifts
+        mean nothing was deleted in between, and Nomad resolved the request
+        with that shift. A response the second probe contradicts is dropped
+        unread and requested again with the newer shift. The probe waits for
+        the response to close so that a catch-up never holds one pooled
+        connection while it waits for another.
 
         :param alloc_id: The Nomad allocation identifier.
         :param step: The task step name.
@@ -3790,18 +3734,21 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         ):
             if shift >= end:
                 return [], shift
-            read, confirmed = await self._read_sandwiched(
-                alloc_id, step, log_type, files, position, end, shift
+            frames = await self._read_log_frames(
+                alloc_id, step, log_type, max(position, shift) - shift, end - shift
             )
-            if not read.misplaced and confirmed == shift:
-                return read.frames, shift
+            confirmed = await self._resolve_log_shift(alloc_id, step, log_type, files)
+            if confirmed == shift:
+                return frames, shift
             shift = confirmed
             changes += 1
         if shift is None:
-            if changes:
-                _warn_unplaced_log_read(alloc_id, step, log_type, position)
-            read = await self._read_log_frames(alloc_id, step, log_type, position, end)
-            return read.frames, None
+            if changes and files is not None:
+                _warn_unplaced_log_read(alloc_id, step, log_type, position, files)
+            frames = await self._read_log_frames(
+                alloc_id, step, log_type, position, end
+            )
+            return frames, None
         logger.warning(
             "Nomad log catch-up gave up at offset=%s alloc_id=%s step=%s "
             "log_type=%s; Nomad deleted rotated files %s times while it read, so "
@@ -3905,7 +3852,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 logger.warning(
                     "Nomad log catch-up lost range=%s-%s alloc_id=%s step=%s "
                     "log_type=%s; Nomad deleted the rotated file holding it",
-                    position,
+                    position - len(pending) - len(decoder.getstate()[0]),
                     shift,
                     alloc_id,
                     step,
@@ -3995,7 +3942,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             return None
         shift = await self._resolve_log_shift(alloc_id, step, log_type, files)
         if shift is None:
-            _warn_unplaced_log_read(alloc_id, step, log_type, start)
+            _warn_unplaced_log_read(alloc_id, step, log_type, start, files)
         return shift
 
     async def _decode_catch_up_frames(

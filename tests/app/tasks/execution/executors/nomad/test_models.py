@@ -86,7 +86,6 @@ from app.tasks.execution.executors.nomad.models import (
     _detect_unlaunchable,
     _LAUNCH_CHECK_TASK_NAME,
     _LogFrame,
-    _LogRead,
     _NOMAD_LOG_STREAM_CLIENT_ERROR,
     _NOMAD_LOG_STREAM_MISPLACED,
     _NOMAD_LOG_STREAM_SOCK_TIMEOUT,
@@ -8034,7 +8033,7 @@ class TestLogCatchUpReads:
                 "alloc-1", "setup", TaskLogType.STDOUT, start=0, end=len(payload)
             )
 
-        assert read == _LogRead([_LogFrame(None, payload)], misplaced=False)
+        assert read == [_LogFrame(None, payload)]
 
     @pytest.mark.asyncio
     async def test_read_log_range_yields_plain_text(self) -> None:
@@ -8103,7 +8102,7 @@ class TestLogCatchUpReads:
             patch.object(
                 executor,
                 "_read_log_frames",
-                AsyncMock(return_value=_LogRead([], misplaced=False)),
+                AsyncMock(return_value=[]),
             ),
             caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
         ):
@@ -8261,6 +8260,119 @@ class TestLogCatchUpReads:
         assert self._requested_offsets(request) == [0, 12, 0, 4, 0]
 
     @pytest.mark.asyncio
+    async def test_read_log_range_replaces_an_empty_read_a_deletion_misplaced(
+        self,
+    ) -> None:
+        """Re-request an empty response whose trailing probe found a newer shift."""
+        executor = _build_executor()
+        with self._serving(
+            executor,
+            self._probe(0),
+            [],
+            self._probe(1),
+            [self._file_frame(1, b"ined\n")],
+            self._probe(1),
+        ) as request:
+            logs = await self._read_range(executor, 12, 17, self._rotated(0, 8))
+
+        assert [(log.msg, log.offset) for log in logs] == [("ined\n", 17)]
+        assert self._requested_offsets(request) == [0, 12, 0, 4, 0]
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_stops_at_an_empty_read_its_probes_agree_on(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Treat an empty response between equal probes as the log's end."""
+        executor = _build_executor()
+        bodies = [self._probe(1), [], self._probe(1)]
+        with (
+            self._serving(executor, *bodies) as request,
+            caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
+        ):
+            logs = await self._read_range(executor, 12, 17, self._rotated(0, 8))
+
+        assert logs == []
+        assert request.call_count == len(bodies)
+        assert "reached the log's end" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_an_unplaceable_follow_warns_once_then_reads_untranslated(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Warn on a follow's first unplaceable read and log later ones at debug."""
+        executor = _build_executor()
+        files = self._rotated(5, 20, start_offset=5)
+        read = [self._file_frame(0, b"plain\n")]
+        with (
+            self._serving(executor, self._probe(0), read, self._probe(0), read),
+            caplog.at_level(logging.DEBUG, logger=NOMAD_MODELS_LOGGER),
+        ):
+            first = await self._read_range(executor, 9, 15, files)
+            second = await self._read_range(executor, 9, 15, files)
+
+        unplaced = [
+            record.levelno
+            for record in caplog.records
+            if "cannot be placed" in record.getMessage()
+        ]
+        assert unplaced == [logging.WARNING, logging.DEBUG]
+        assert [log.msg for log in first + second] == ["plain\n", "plain\n"]
+
+    @pytest.mark.asyncio
+    async def test_place_reconnect_resumes_past_files_deleted_while_disconnected(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Drop the withheld line and jump the follow's offset to the confirmed shift."""
+        executor = _build_executor()
+        position, shift = 12, 20
+        params = {"task": "setup", "type": "stdout", "offset": position}
+        pending = WithheldLineBuffer()
+        pending.append(b"mail ali")
+        with (
+            self._serving(executor, self._probe(2), self._probe(2)),
+            caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
+        ):
+            request_offset, confirm = await executor._place_reconnect(
+                "alloc-1",
+                "setup",
+                TaskLogType.STDOUT,
+                self._rotated(0, 8, shift),
+                params,
+                pending,
+            )
+            assert confirm is not None
+            placed = await confirm()
+
+        assert (request_offset, placed) == (0, True)
+        assert params["offset"] == shift
+        assert not pending
+        assert f"range={position - len('mail ali')}-{shift}" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_place_reconnect_leaves_the_follow_alone_when_refused(self) -> None:
+        """Change nothing when the trailing probe contradicts the leading one."""
+        executor = _build_executor()
+        position = 12
+        params = {"task": "setup", "type": "stdout", "offset": position}
+        pending = WithheldLineBuffer()
+        pending.append(b"mail ali")
+        with self._serving(executor, self._probe(1), self._probe(2)):
+            request_offset, confirm = await executor._place_reconnect(
+                "alloc-1",
+                "setup",
+                TaskLogType.STDOUT,
+                self._rotated(0, 8, 20),
+                params,
+                pending,
+            )
+            assert confirm is not None
+            placed = await confirm()
+
+        assert (request_offset, placed) == (position - 8, False)
+        assert params["offset"] == position
+        assert len(pending) == len("mail ali")
+
+    @pytest.mark.asyncio
     async def test_read_log_range_gives_up_when_deletions_outpace_it(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -8312,7 +8424,7 @@ class TestLogCatchUpReads:
             ("ok\n", 3),
             ("after\n", 30),
         ]
-        assert "range=14-24" in caplog.text
+        assert "range=3-24" in caplog.text
 
     @pytest.mark.asyncio
     async def test_read_log_range_resets_a_character_a_deletion_split(self) -> None:
