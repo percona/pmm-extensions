@@ -57,7 +57,7 @@ from tests.app.beat_autogenerate import (
     create_beat_tables,
     tables_mentioned,
 )
-from tests.app.settingoverride_rows import insert_override
+from tests.app.settingoverride_rows import insert_override, PRE_DROP_MEMBERS
 
 from .conftest import ALERTS_HEAD, UNKNOWN_REVISION
 
@@ -184,20 +184,6 @@ def test_version_skew_error_renders_as_single_greppable_line():
     assert "present on disk" in line
     assert "app.extensions.migrations._orphan_heads" in line
     assert "ERROR" in line
-
-
-#: Frozen copy of the members the CHECK enumerated right before the drop.
-_PRE_DROP_MEMBERS = (
-    "SEP_SETTINGS",
-    "TASKS_SETTINGS",
-    "SNIPPETS_SETTINGS",
-    "SETTINGS",
-    "ALERT_SETTINGS",
-    "ANONYMIZER_SETTINGS",
-    "ALERTS_SETTINGS",
-    "INVENTORY_SETTINGS",
-    "HEALTH_REPORT_SETTINGS",
-)
 
 
 def _insert_appstate_enabled(conn, app_key: str, enabled: int) -> None:
@@ -688,7 +674,7 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
         with engine.begin() as conn:
             insert_override(conn, "UNREGISTERED_SETTINGS")
             insert_override(conn, "EXTENSIONS_SETTINGS")
-            for token in _PRE_DROP_MEMBERS:
+            for token in PRE_DROP_MEMBERS:
                 if token != "SEP_SETTINGS":
                     insert_override(conn, token)
     finally:
@@ -712,7 +698,7 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
             remaining = conn.exec_driver_sql(
                 "SELECT setting_class FROM settingoverride"
             ).fetchall()
-            assert sorted(row[0] for row in remaining) == sorted(_PRE_DROP_MEMBERS)
+            assert sorted(row[0] for row in remaining) == sorted(PRE_DROP_MEMBERS)
             with pytest.raises(IntegrityError):
                 insert_override(conn, "UNREGISTERED_SETTINGS")
     finally:

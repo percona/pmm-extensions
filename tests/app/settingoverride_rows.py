@@ -15,9 +15,25 @@
 
 """Insert ``settingoverride`` rows for migration tests that probe the setting_class CHECK."""
 
-__all__ = ["insert_override"]
+__all__ = ["PRE_DROP_MEMBERS", "insert_override"]
 
 from sqlalchemy.engine import Connection
+
+#: Frozen copy of the members the CHECK enumerated right before the
+#: ``drop_setting_class_check_constraint`` revisions dropped it. Every track's
+#: downgrade must restore exactly this list, since on a shared database the
+#: first track to downgrade decides the restored CHECK.
+PRE_DROP_MEMBERS = (
+    "SEP_SETTINGS",
+    "TASKS_SETTINGS",
+    "SNIPPETS_SETTINGS",
+    "SETTINGS",
+    "ALERT_SETTINGS",
+    "ANONYMIZER_SETTINGS",
+    "ALERTS_SETTINGS",
+    "INVENTORY_SETTINGS",
+    "HEALTH_REPORT_SETTINGS",
+)
 
 
 def insert_override(conn: Connection, setting_class: str) -> None:

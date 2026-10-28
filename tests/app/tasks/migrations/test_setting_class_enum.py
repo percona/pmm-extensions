@@ -21,7 +21,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 
 from app.core.db.utils import check_constraint_name
-from tests.app.settingoverride_rows import insert_override
+from tests.app.settingoverride_rows import insert_override, PRE_DROP_MEMBERS
 
 # The add_setting_override_table revision on the Tasks track, before SETTINGS /
 # ALERT_SETTINGS were added to the setting_class CHECK constraint.
@@ -30,19 +30,6 @@ _TASKS_PRE_ENUM_REVISION = "fafdb0445092"
 # The revision immediately below drop_setting_class_check_constraint, so
 # downgrading to it runs exactly that revision's ``downgrade()``.
 _CHECK_DROP_PARENT_REVISION = "c8e4a2b91f70"
-
-#: Frozen copy of the members the CHECK enumerated right before the drop.
-_PRE_DROP_MEMBERS = (
-    "SEP_SETTINGS",
-    "TASKS_SETTINGS",
-    "SNIPPETS_SETTINGS",
-    "SETTINGS",
-    "ALERT_SETTINGS",
-    "ANONYMIZER_SETTINGS",
-    "ALERTS_SETTINGS",
-    "INVENTORY_SETTINGS",
-    "HEALTH_REPORT_SETTINGS",
-)
 
 
 def test_setting_class_accepts_unregistered_token_after_upgrade(tasks_alembic_config):
@@ -110,7 +97,7 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
     try:
         with engine.begin() as conn:
             insert_override(conn, "UNREGISTERED_SETTINGS")
-            for token in _PRE_DROP_MEMBERS:
+            for token in PRE_DROP_MEMBERS:
                 insert_override(conn, token)
     finally:
         engine.dispose()
@@ -133,7 +120,7 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
             remaining = conn.exec_driver_sql(
                 "SELECT setting_class FROM settingoverride"
             ).fetchall()
-            assert sorted(row[0] for row in remaining) == sorted(_PRE_DROP_MEMBERS)
+            assert sorted(row[0] for row in remaining) == sorted(PRE_DROP_MEMBERS)
             with pytest.raises(IntegrityError):
                 insert_override(conn, "UNREGISTERED_SETTINGS")
     finally:
