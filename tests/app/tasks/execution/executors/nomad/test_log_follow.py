@@ -692,3 +692,14 @@ async def test_recording_the_same_file_again_adds_no_boundary() -> None:
 
     assert files.start_of("a") == 0
     assert not files.rotated
+
+
+async def test_a_file_read_without_a_known_boundary_has_no_start() -> None:
+    """Count a file seen past an unknown boundary as rotated, with no start."""
+    files = LogFileStarts(0)
+    files.record("a", 0)
+    files.record("b", LINE, boundary=False)
+    files.record("c", 2 * LINE)
+
+    assert [files.start_of(file) for file in "abc"] == [0, None, 2 * LINE]
+    assert files.rotated

@@ -63,6 +63,10 @@ class LogFileStarts:
     Nomad deletes a rotated file. The cumulative start of the oldest retained
     file is how far they have since drifted apart.
 
+    A file can also be seen without its start being known: a reconnect Nomad
+    could not be asked for in its own numbering may land inside a file the
+    follow never saw begin, so that file is recorded with no start.
+
     :param start_offset: The raw offset the follow started at. A follow from 0
         knows where its first file starts; any other does not, since it began
         inside that file.
@@ -72,18 +76,20 @@ class LogFileStarts:
 
     def __init__(self, start_offset: int) -> None:
         self._start_offset = start_offset
-        self._starts: dict[str, int] = {}
+        self._starts: dict[str, int | None] = {}
         self._last: str | None = None
         self.unplaced_reported = False
 
-    def record(self, file: str, start: int) -> None:
+    def record(self, file: str, start: int, *, boundary: bool = True) -> None:
         """Record the file a frame's data came from, if it is a new one.
 
         :param file: The frame's ``File``.
         :param start: The cumulative raw offset the frame's data starts at.
+        :param boundary: Whether a new ``file`` is known to begin at ``start``;
+            when it is not, the file is recorded as seen with no start.
         """
         if file != self._last:
-            self._starts.setdefault(file, start)
+            self._starts.setdefault(file, start if boundary else None)
             self._last = file
 
     def start_of(self, file: str) -> int | None:
@@ -91,7 +97,8 @@ class LogFileStarts:
 
         :param file: A file name as Nomad's frames give it.
         :return: The start, or ``None`` when the follow never saw the file
-            begin: it was never recorded, or the follow started inside it.
+            begin: it was never recorded, the follow started inside it, or it
+            was first read where the follow could not tell it began.
         """
         if self._start_offset and file == next(iter(self._starts), None):
             return None

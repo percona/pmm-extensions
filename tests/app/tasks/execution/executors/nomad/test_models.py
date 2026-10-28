@@ -8393,6 +8393,35 @@ class TestLogCatchUpReads:
         assert "gave up" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_read_log_range_gives_up_without_flushing_a_withheld_line(
+        self,
+    ) -> None:
+        """Release no withheld prefix when a flushed read gives up before ``end``."""
+        executor = _build_executor()
+        stale = [self._file_frame(3, b"STALE\n")]
+        bodies = [self._probe(0), [self._file_frame(0, b"ok\nmail alice@")]]
+        bodies += [self._probe(0)]
+        for moved_to in (1, 2, 3):
+            bodies += [stale, self._probe(moved_to)]
+        with self._serving(executor, *bodies) as request:
+            logs = [
+                log
+                async for log in executor._read_log_range(
+                    "alloc-1",
+                    "run-script",
+                    TaskLogType.STDOUT,
+                    anonymize_entities={PIIEntity.EMAIL_ADDRESS},
+                    start=0,
+                    end=40,
+                    flush=True,
+                    files=self._rotated(0, 14, 24, 34),
+                )
+            ]
+
+        assert [(log.msg, log.offset) for log in logs] == [("ok\n", 3)]
+        assert request.call_count == len(bodies)
+
+    @pytest.mark.asyncio
     async def test_read_log_range_drops_a_withheld_line_a_deletion_split(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -8570,6 +8599,57 @@ class TestLogCatchUpReads:
         assert files.start_of(self._file_name(0)) == 0
         assert files.start_of(self._file_name(1)) == len("one\n")
         assert files.rotated
+
+    @pytest.mark.parametrize(
+        ("starts", "probes"),
+        [
+            pytest.param((0,), [], id="not-rotated"),
+            pytest.param((0, 8), [5], id="unplaceable-shift"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_an_unplaced_reconnect_leaves_its_first_file_start_unknown(
+        self, starts: tuple[int, ...], probes: list[int]
+    ) -> None:
+        """Record no start for the file an unplaced reconnect lands inside."""
+        executor = _build_executor()
+        files = self._rotated(*starts)
+        position = 17
+        params = {
+            "task": "setup",
+            "type": "stdout",
+            "follow": "true",
+            "offset": position,
+        }
+        reconnect = [self._file_frame(6, b"after\n"), self._file_frame(7, b"more\n")]
+        bodies = [self._probe(index) for index in probes] + [reconnect, self._probe(6)]
+        with self._serving(executor, *bodies) as request:
+            await executor._consume_placed_stream(
+                alloc={
+                    "ID": "alloc-1",
+                    "JobID": "job-1",
+                    "EvalID": "eval-1",
+                    "TaskStates": {"setup": {"State": "running", "StartedAt": "now"}},
+                },
+                step="setup",
+                log_type=TaskLogType.STDOUT,
+                queue=asyncio.Queue(),
+                params=params,
+                client_timeout=ClientTimeout(sock_read=NOMAD_DEFAULT_TIMEOUT),
+                anonymize_entities=None,
+                pending=WithheldLineBuffer(),
+                on_forced_flush=None,
+                files=files,
+                reconnecting=True,
+            )
+            shift = await executor._resolve_log_shift(
+                "alloc-1", "setup", TaskLogType.STDOUT, files
+            )
+
+        assert files.start_of(self._file_name(6)) is None
+        assert files.start_of(self._file_name(7)) == position + len("after\n")
+        assert shift is None
+        assert request.call_count == len(bodies)
 
     @pytest.mark.asyncio
     @patch.object(NomadExecutor, "_consume_nomad_log_stream", new_callable=AsyncMock)

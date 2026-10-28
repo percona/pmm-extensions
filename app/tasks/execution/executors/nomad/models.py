@@ -3140,6 +3140,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         cumulative offset as it is. A reconnect after a rotation is shifted
         past what Nomad deleted, and a reconnect a deletion misplaced is made
         again with the newer shift, up to :data:`_LOG_SHIFT_MAX_CHANGES` times.
+        A reconnect requested as it is, or one whose shift cannot be placed,
+        may land inside a file the follow never saw begin, so its first data
+        frame is not taken as where that file starts.
 
         :param alloc: Nomad allocation dictionary.
         :param step: Task step name.
@@ -3168,7 +3171,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             files=files,
         )
         if not reconnecting or files is None or not files.rotated:
-            return await stream(alloc=alloc, request_offset=None, confirm=None)
+            return await stream(
+                alloc=alloc,
+                request_offset=None,
+                confirm=None,
+                placed=not reconnecting,
+            )
         stream_start = None
         for _ in range(_LOG_SHIFT_MAX_CHANGES):
             try:
@@ -3178,7 +3186,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             except (TimeoutError, ClientError):
                 return (_NOMAD_LOG_STREAM_CLIENT_ERROR, alloc, stream_start)
             state, alloc, stream_start = await stream(
-                alloc=alloc, request_offset=request_offset, confirm=confirm
+                alloc=alloc,
+                request_offset=request_offset,
+                confirm=confirm,
+                placed=request_offset is not None,
             )
             if state != _NOMAD_LOG_STREAM_MISPLACED:
                 return (state, alloc, stream_start)
@@ -3364,6 +3375,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         files: LogFileStarts | None = None,
         request_offset: int | None = None,
         confirm: Callable[[], Awaitable[bool]] | None = None,
+        placed: bool = True,
     ) -> tuple[str, dict[str, Any], float | None]:
         """Perform a single Nomad log streaming HTTP request and consume chunks.
 
@@ -3400,6 +3412,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param confirm: Awaited before the first data frame is recorded or
             pushed; ``False`` drops the connection with nothing taken from it
             and returns ``_NOMAD_LOG_STREAM_MISPLACED``.
+        :param placed: Whether the request is known to land where the follow
+            counts it, so a new file its first data frame comes from begins
+            there; a later frame's new file always begins where it is counted.
         :return: Nomad task ``State`` string, ``running`` to continue the outer
             loop, or a ``_NOMAD_LOG_STREAM_*`` sentinel; the allocation dict (possibly
             refreshed); and monotonic time when response body reads began, or
@@ -3467,6 +3482,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                                 files=files,
                                 confirm=confirm,
                                 first_since=None if first_chunk_seen else stream_start,
+                                boundary=placed or first_chunk_seen,
                             ):
                                 return (
                                     _NOMAD_LOG_STREAM_MISPLACED,
@@ -3515,6 +3531,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         files: LogFileStarts | None,
         confirm: Callable[[], Awaitable[bool]] | None,
         first_since: float | None,
+        boundary: bool,
     ) -> bool:
         """Count, record and push one data frame of a live follow.
 
@@ -3532,6 +3549,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param confirm: Awaited before the connection's first frame is taken.
         :param first_since: When the response body began, for the connection's
             first frame; ``None`` for every later one.
+        :param boundary: Whether a new file the frame comes from is known to
+            begin where the follow counts the frame.
         :return: Whether the frame was taken; ``False`` when ``confirm``
             refused the connection's first frame.
         :raises UnicodeDecodeError: When a non-anonymized frame is not UTF-8.
@@ -3543,7 +3562,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         msg = data["Data"]
         raw = b64decode(msg)
         if files is not None and (file := data.get("File")):
-            files.record(file, params["offset"])
+            files.record(file, params["offset"], boundary=boundary)
         params["offset"] = offset = params["offset"] + len(raw)
         logger.debug(
             "Nomad log frame alloc_id=%s step=%s log_type=%s "
@@ -3786,7 +3805,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         Only whole lines and whole characters are read: what is still withheld
         at ``end`` is released only with ``flush``, which the shared follow
         passes once the stream has ended there. Any other ``end`` it hands over
-        is a line boundary, so nothing is withheld there.
+        is a line boundary, so nothing is withheld there. A read that gives up
+        before ``end`` (see :meth:`_read_placed_frames`) never releases what it
+        withheld, since the rest of that line was not read.
 
         Once Nomad deletes an older rotated file, every request offset shifts
         down by that file's size while ``start`` and ``end`` were counted
@@ -3846,7 +3867,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 end,
             )
             if placed is None:
-                break
+                return
             frames, shift = placed
             if shift is not None and shift > position:
                 logger.warning(
