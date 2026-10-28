@@ -52,18 +52,3 @@ SETTINGS = "Settings"
 ALERT_SETTINGS = "AlertSettings"
 ANONYMIZER_SETTINGS = "AnonymizerSettings"
 INVENTORY_SETTINGS = "InventorySettings"
-
-#: Member list the ``settingoverride.setting_class`` CHECK enumerated immediately
-#: before the drop migration widened the column. Downgrades re-add this exact
-#: list and delete rows naming a class outside it.
-SETTING_CLASS_CHECK_MEMBERS_LEGACY = (
-    "SEP_SETTINGS",
-    "TASKS_SETTINGS",
-    "SNIPPETS_SETTINGS",
-    "SETTINGS",
-    "ALERT_SETTINGS",
-    "ANONYMIZER_SETTINGS",
-    "ALERTS_SETTINGS",
-    "INVENTORY_SETTINGS",
-    "HEALTH_REPORT_SETTINGS",
-)

@@ -32,7 +32,6 @@ from app.core.db.utils import (
 )
 from app.core.encryption import DecryptionError, is_encrypted
 from app.core.settings_override.constants import (
-    SETTING_CLASS_CHECK_MEMBERS_LEGACY,
     SETTING_CLASS_MAX_LENGTH,
     SETTINGOVERRIDE_MIGRATION_LOCK_KEY,
     SETTINGOVERRIDE_UPDATED_BY_COLUMN,
@@ -62,8 +61,6 @@ _TABLE = "settingoverride"
 _COLUMN = "setting_class"
 _ENUM_NAME = "settingclassenum"
 _STRING_LENGTH = SETTING_CLASS_MAX_LENGTH
-_LEGACY_MEMBERS = SETTING_CLASS_CHECK_MEMBERS_LEGACY
-_LEGACY_VARCHAR_LENGTH = max(len(member) for member in _LEGACY_MEMBERS)
 
 
 def _locked_bind() -> Connection | None:
@@ -81,12 +78,15 @@ def _locked_bind() -> Connection | None:
     return bind if table_exists(bind, _TABLE) else None
 
 
-def upgrade_drop_setting_class_check() -> None:
+def upgrade_drop_setting_class_check(previous_members: tuple[str, ...]) -> None:
     """Drop the ``setting_class`` CHECK and widen the column to ``VARCHAR(255)``.
 
     Idempotent on a shared PostgreSQL database: the second track no-ops once
     the first has already dropped the constraint. A missing table is also a
     no-op, matching the other ``settingoverride`` guards.
+
+    :param previous_members: The members the CHECK enumerated before the drop;
+        the longest sets the pre-drop column width.
     """
     bind = _locked_bind()
     if bind is None:
@@ -94,6 +94,7 @@ def upgrade_drop_setting_class_check() -> None:
     name = check_constraint_name(bind, _TABLE, _COLUMN)
     if name is None:
         return
+    previous_length = max(len(member) for member in previous_members)
     if bind.dialect.name == "postgresql":
         op.execute(sa.text(f'ALTER TABLE {_TABLE} DROP CONSTRAINT IF EXISTS "{name}"'))
     with op.batch_alter_table(_TABLE, schema=None) as batch_op:
@@ -101,19 +102,20 @@ def upgrade_drop_setting_class_check() -> None:
             batch_op.drop_constraint(name, type_="check")
         batch_op.alter_column(
             _COLUMN,
-            existing_type=sa.String(length=_LEGACY_VARCHAR_LENGTH),
+            existing_type=sa.String(length=previous_length),
             type_=sa.String(length=_STRING_LENGTH),
             existing_nullable=False,
         )
 
 
-def downgrade_restore_setting_class_check() -> None:
+def downgrade_restore_setting_class_check(previous_members: tuple[str, ...]) -> None:
     """Restore the legacy CHECK, deleting rows that would violate it.
 
     Deletes every ``settingoverride`` row whose ``setting_class`` is not in
-    :data:`SETTING_CLASS_CHECK_MEMBERS_LEGACY` and logs how many rows
-    it removed. Re-enabling an app after this downgrade will not restore
-    those overrides.
+    ``previous_members`` and logs how many rows it removed. Re-enabling an
+    app after this downgrade will not restore those overrides.
+
+    :param previous_members: The members the restored CHECK enumerates.
     """
     bind = _locked_bind()
     if bind is None:
@@ -123,7 +125,7 @@ def downgrade_restore_setting_class_check() -> None:
     settingoverride = sa.table(_TABLE, sa.column(_COLUMN))
     result = bind.execute(
         settingoverride.delete().where(
-            settingoverride.c[_COLUMN].notin_(_LEGACY_MEMBERS)
+            settingoverride.c[_COLUMN].notin_(previous_members)
         )
     )
     logger.info(
@@ -136,7 +138,7 @@ def downgrade_restore_setting_class_check() -> None:
             _COLUMN,
             existing_type=sa.String(length=_STRING_LENGTH),
             type_=sa.Enum(
-                *_LEGACY_MEMBERS,
+                *previous_members,
                 name=_ENUM_NAME,
                 native_enum=False,
                 create_constraint=True,
