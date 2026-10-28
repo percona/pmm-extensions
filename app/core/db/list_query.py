@@ -25,33 +25,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
-from fastapi import params, Query
 from sqlalchemy import or_
 
 from app.core.db.utils import NullsLastOrdering
-from app.core.exceptions import HTTPUnprocessableEntityException
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Mapping, Sequence
 
     from sqlalchemy.sql import ColumnElement, ColumnExpressionArgument
 
-    from app.core.db.crud import BaseManager
-
 _ILIKE_ESCAPE = "\\"
-
-Q = TypeVar("Q")
-
-SORT_PARAM_DESCRIPTION = "Sort key; prefix with '-' for descending order."
-SEARCH_PARAM_DESCRIPTION = "Case-insensitive search across the searchable columns."
 
 
 class UnknownSortKeyError(Exception):
     """Raise when a requested sort key is absent from a spec's allowlist.
 
-    :func:`make_query_param_dep` maps it to an HTTP 422, so the dependency owns the
+    :func:`app.core.db.deps.make_query_param_dep` maps it to an HTTP 422, so the dependency owns the
     request-boundary error contract and every path that resolves a sort key against a
     spec reports the same rejection.
 
@@ -190,131 +181,3 @@ def build_search_predicate(
     )
     pattern = f"%{escaped}%"
     return or_(*(column.ilike(pattern, escape=_ILIKE_ESCAPE) for column in searchable))
-
-
-def sort_query_param(spec: ListQuerySpec) -> params.Query:
-    """Return the ``sort`` query-parameter declaration a spec's allowlist backs.
-
-    The allowlist is emitted into the schema as an ``enum`` covering both directions of
-    every public key, so a generated client carries the accepted values as a union
-    instead of a bare string and a typed caller fails to compile rather than getting a
-    runtime 422. The enum documents; :meth:`ListQuerySpec.resolve_sort` still validates,
-    so the 422 boundary is unchanged.
-
-    A fresh declaration is built per call because FastAPI binds one to each parameter it
-    reflects.
-
-    :param spec: The spec whose sortable allowlist and default seed the declaration.
-    :return: The ``sort`` parameter declaration.
-    """
-    return Query(
-        default=spec.default_sort,
-        description=SORT_PARAM_DESCRIPTION,
-        json_schema_extra={
-            "enum": [
-                value for key in sorted(spec.sortable) for value in (key, f"-{key}")
-            ]
-        },
-    )
-
-
-def search_query_param() -> params.Query:
-    """Return the ``search`` query-parameter declaration.
-
-    Carries no spec-derived detail — the searchable set is a server-side implementation
-    choice, not a client input — so only the description is declared.
-
-    :return: The ``search`` parameter declaration.
-    """
-    return Query(default=None, description=SEARCH_PARAM_DESCRIPTION)
-
-
-def make_query_param_dep(
-    spec: ListQuerySpec,
-    build: Callable[[ListQuerySpec, str, str | None], Q],
-) -> Callable[..., Q]:
-    """Create a FastAPI dependency declaring a spec's list-query request boundary.
-
-    Owns the boundary both list-query paths share: the enabled query parameters —
-    ``sort`` always, ``search`` only when the spec's searchable set is non-empty — and
-    the rejection of an out-of-allowlist sort key as an HTTP 422. The value object is
-    the caller's, built by ``build``, so a SQL-backed source and an in-memory one
-    present one contract while yielding different resolved types.
-
-    The two variants are statically defined rather than a dynamically built signature:
-    FastAPI reflects the parameters off the returned function, and synthesizing that
-    signature has silently dropped them from the generated OpenAPI.
-
-    :param spec: The spec whose allowlist and searchable set bound the request.
-    :param build: Resolves ``(spec, sort, search)`` into the value object the
-        dependency yields; may raise :class:`UnknownSortKeyError` to reject the sort.
-    :return: A dependency callable resolving the request through ``build``.
-    """
-
-    def resolve(sort: str, search: str | None) -> Q:
-        try:
-            return build(spec, sort, search)
-        except UnknownSortKeyError as exc:
-            raise HTTPUnprocessableEntityException(
-                detail=f"Invalid sort key: {exc.key!r}"
-            ) from exc
-
-    if spec.search_enabled:
-
-        def _list_query_dep(
-            sort: str = sort_query_param(spec),
-            search: str | None = search_query_param(),
-        ) -> Q:
-            return resolve(sort, search)
-
-        return _list_query_dep
-
-    def _list_query_dep_no_search(
-        sort: str = sort_query_param(spec),
-    ) -> Q:
-        return resolve(sort, None)
-
-    return _list_query_dep_no_search
-
-
-def make_list_query_dep(
-    source: type[BaseManager] | ListQuerySpec,
-) -> Callable[..., ListQuery]:
-    """Create a FastAPI dependency yielding a validated :class:`ListQuery`.
-
-    The request boundary is :func:`make_query_param_dep`'s; this adds only the
-    SQL-expression value object. Callers wrap the result in a module-scope
-    ``Annotated[ListQuery, Depends(...)]`` alias, mirroring
-    :func:`app.core.pagination.deps.make_pagination_dep`.
-
-    :param source: A :class:`ListQuerySpec` instance, or a manager class from which
-        the ``list_query_spec`` class attribute is read (duck-typed so no runtime
-        import of the manager type is needed).
-    :return: A dependency callable resolving the request into a :class:`ListQuery`.
-    :raises ValueError: When ``source`` is a manager class declaring no
-        ``list_query_spec``.
-    """
-    spec = source if isinstance(source, ListQuerySpec) else source.list_query_spec
-    if spec is None:
-        raise ValueError(f"{source!r} declares no list_query_spec")
-    return make_query_param_dep(spec, _build_list_query)
-
-
-def _build_list_query(
-    spec: ListQuerySpec,
-    sort: str,
-    search: str | None,
-) -> ListQuery:
-    """Resolve a request's sort and search into a :class:`ListQuery`.
-
-    :param spec: The spec whose allowlist and searchable columns bound the request.
-    :param sort: The requested public sort key (possibly ``-`` prefixed).
-    :param search: The raw search term, or ``None`` when search is disabled or unset.
-    :return: The resolved list query.
-    :raises UnknownSortKeyError: When ``sort`` is not in the allowlist; the dependency
-        maps it to a 422.
-    """
-    return ListQuery(
-        order_by=tuple(spec.resolve_sort(sort)),
-        search_predicate=build_search_predicate(search, spec.searchable),
-    )

@@ -26,15 +26,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import column
+from sqlmodel import col
 
+from app.core.db import BaseSQLModel
+from app.core.db.crud import BaseSQLModelManager
 from app.core.db.list_query import ListQuerySpec
 
 __all__ = [
     "LIST_QUERY_SPEC",
+    "NOSEARCH_SPEC",
     "NO_SEARCH_LIST_QUERY_SPEC",
+    "SEED_NAMES",
+    "LQItem",
+    "LQItemManager",
     "ListQueryRow",
     "list_query_rows",
+    "make_lq_spec",
 ]
+
+SEED_NAMES = ("alpha", "bravo", "charlie")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,3 +86,45 @@ def list_query_rows(*specs: tuple[str, str | None, int]) -> list[ListQueryRow]:
     :return: The rows to hand to the applier.
     """
     return [ListQueryRow(filename=f, title=t, created_at=c) for f, t, c in specs]
+
+
+class LQItem(BaseSQLModel, table=True):
+    """Represent a test row backing the list-query dependency and applier scenarios."""
+
+    __tablename__ = "test_list_query_item"
+
+    name: str
+    category: str
+
+
+class LQItemManager(BaseSQLModelManager):
+    """Manage ``LQItem`` rows through a search-enabled list-query spec."""
+
+    Model = LQItem
+    list_query_spec = ListQuerySpec(
+        sortable={
+            "name": col(LQItem.name),
+            "created_at": col(LQItem.created_at),
+        },
+        default_sort="name",
+        tie_breaker=col(LQItem.id),
+        searchable=[col(LQItem.name)],
+    )
+
+
+NOSEARCH_SPEC = ListQuerySpec(
+    sortable={"name": col(LQItem.name)},
+    default_sort="name",
+    tie_breaker=col(LQItem.id),
+)
+
+
+def make_lq_spec(**overrides: object) -> ListQuerySpec:
+    """Build a valid ``ListQuerySpec`` for ``LQItem``, applying field overrides."""
+    kwargs = {
+        "sortable": {"name": col(LQItem.name)},
+        "default_sort": "name",
+        "tie_breaker": col(LQItem.id),
+    }
+    kwargs.update(overrides)
+    return ListQuerySpec(**kwargs)
