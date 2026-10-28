@@ -21,6 +21,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 
 from app.core.db.utils import check_constraint_name
+from tests.app.settingoverride_rows import insert_override
 
 # The add_setting_override_table revision on the Tasks track, before SETTINGS /
 # ALERT_SETTINGS were added to the setting_class CHECK constraint.
@@ -44,16 +45,6 @@ _PRE_DROP_MEMBERS = (
 )
 
 
-def _insert_override(conn, setting_class: str) -> None:
-    """Insert a minimal ``settingoverride`` row with the given setting_class."""
-    conn.exec_driver_sql(
-        "INSERT INTO settingoverride "
-        "(created_at, setting_class, key, value, is_active) "
-        "VALUES ('2026-01-01 00:00:00', ?, 'X', 'true', 1)",
-        (setting_class,),
-    )
-
-
 def test_setting_class_accepts_unregistered_token_after_upgrade(tasks_alembic_config):
     """Accept a token never listed in the CHECK once ``upgrade heads`` has run."""
     cfg, sync_url = tasks_alembic_config
@@ -64,7 +55,7 @@ def test_setting_class_accepts_unregistered_token_after_upgrade(tasks_alembic_co
     try:
         with engine.begin() as conn:
             for member in unregistered:
-                _insert_override(conn, member)
+                insert_override(conn, member)
             count = conn.exec_driver_sql(
                 "SELECT COUNT(*) FROM settingoverride"
             ).scalar()
@@ -81,7 +72,7 @@ def test_setting_class_check_rejects_unlisted_token_before_drop(tasks_alembic_co
     engine = create_engine(sync_url)
     try:
         with engine.begin() as conn, pytest.raises(IntegrityError):
-            _insert_override(conn, "SETTINGS")
+            insert_override(conn, "SETTINGS")
     finally:
         engine.dispose()
 
@@ -99,7 +90,7 @@ def test_setting_class_check_is_dropped_after_upgrade(tasks_alembic_config):
                 check_constraint_name(conn, "settingoverride", "setting_class") is None
             )
             for token in unconstrained:
-                _insert_override(conn, token)
+                insert_override(conn, token)
             count = conn.exec_driver_sql(
                 "SELECT COUNT(*) FROM settingoverride"
             ).scalar()
@@ -118,9 +109,9 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
     engine = create_engine(sync_url)
     try:
         with engine.begin() as conn:
-            _insert_override(conn, "UNREGISTERED_SETTINGS")
+            insert_override(conn, "UNREGISTERED_SETTINGS")
             for token in _PRE_DROP_MEMBERS:
-                _insert_override(conn, token)
+                insert_override(conn, token)
     finally:
         engine.dispose()
 
@@ -144,6 +135,6 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
             ).fetchall()
             assert sorted(row[0] for row in remaining) == sorted(_PRE_DROP_MEMBERS)
             with pytest.raises(IntegrityError):
-                _insert_override(conn, "UNREGISTERED_SETTINGS")
+                insert_override(conn, "UNREGISTERED_SETTINGS")
     finally:
         engine.dispose()

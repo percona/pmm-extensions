@@ -21,6 +21,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 
 from app.core.db.utils import check_constraint_name
+from tests.app.settingoverride_rows import insert_override
 
 # The revision immediately below the drop, so downgrading to it runs exactly
 # that revision's ``downgrade()``.
@@ -40,16 +41,6 @@ _PRE_DROP_MEMBERS = (
 )
 
 
-def _insert_override(conn, setting_class: str) -> None:
-    """Insert a minimal ``settingoverride`` row with the given setting_class."""
-    conn.exec_driver_sql(
-        "INSERT INTO settingoverride "
-        "(created_at, setting_class, key, value, is_active) "
-        "VALUES ('2026-01-01 00:00:00', ?, 'X', 'true', 1)",
-        (setting_class,),
-    )
-
-
 def test_downgrade_keeps_pre_drop_tokens_and_restores_check(
     inventory_alembic_config, capsys
 ):
@@ -60,9 +51,9 @@ def test_downgrade_keeps_pre_drop_tokens_and_restores_check(
     engine = create_engine(sync_url)
     try:
         with engine.begin() as conn:
-            _insert_override(conn, "UNREGISTERED_SETTINGS")
+            insert_override(conn, "UNREGISTERED_SETTINGS")
             for token in _PRE_DROP_MEMBERS:
-                _insert_override(conn, token)
+                insert_override(conn, token)
     finally:
         engine.dispose()
 
@@ -84,6 +75,6 @@ def test_downgrade_keeps_pre_drop_tokens_and_restores_check(
             ).fetchall()
             assert sorted(row[0] for row in remaining) == sorted(_PRE_DROP_MEMBERS)
             with pytest.raises(IntegrityError):
-                _insert_override(conn, "UNREGISTERED_SETTINGS")
+                insert_override(conn, "UNREGISTERED_SETTINGS")
     finally:
         engine.dispose()
