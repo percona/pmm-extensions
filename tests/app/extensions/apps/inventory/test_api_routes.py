@@ -22,6 +22,7 @@ stay unregistered.
 """
 
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -31,6 +32,7 @@ from pydantic import SecretStr
 
 from app.core.config import settings
 from app.core.requests import RemoteAPI
+from app.core.utils.date_time import utc_now
 from app.core.utils.fields import UniqueList
 from app.extensions.apps.inventory.deps import get_syncers
 from app.extensions.config import extensions_settings, SyncOptions
@@ -48,6 +50,7 @@ from app.extensions.main import extensions_app
 from app.extensions.models import (
     SyncInstance,
     SyncInventoryEntityTypeEnum,
+    SyncItem,
     SyncStatusEnum,
 )
 from app.inventory.models import ServiceTypeEnum
@@ -503,12 +506,21 @@ class TestInventorySyncStatus:
             SyncItemManager, "sync_is_running", new=AsyncMock(return_value=False)
         )
         extensions_app.dependency_overrides[get_session] = lambda: session
-        await SyncInstanceManager.save(
+        run = await SyncInstanceManager.save(
             session,
             SyncInstance(
                 syncer=PMM_STUB_NAME,
                 status=SyncStatusEnum.SUCCESS,
                 snapshot_complete=True,
+            ),
+        )
+        await SyncItemManager.save(
+            session,
+            SyncItem(
+                entity_id=None,
+                entity_type=SyncInventoryEntityTypeEnum.INVENTORY,
+                sync_instance_id=run.id,
+                status=SyncStatusEnum.SUCCESS,
             ),
         )
 
@@ -519,6 +531,69 @@ class TestInventorySyncStatus:
             (run["syncer"], run["status"], run["snapshot_complete"])
             for run in response.json()["last_runs"]
         ] == [(PMM_STUB_NAME, SyncStatusEnum.SUCCESS.value, True)]
+
+    @pytest.mark.asyncio
+    async def test_last_runs_only_contains_latest_inventory_runs(
+        self, async_test_client, session, mocker
+    ):
+        """Exclude entity-only runs and retain the ten newest inventory-wide runs."""
+        mocker.patch.object(
+            SyncItemManager, "sync_is_running", new=AsyncMock(return_value=False)
+        )
+        extensions_app.dependency_overrides[get_session] = lambda: session
+        start = utc_now()
+        entity_types = (
+            SyncInventoryEntityTypeEnum.NODE,
+            SyncInventoryEntityTypeEnum.SERVICE,
+            SyncInventoryEntityTypeEnum.SCHEMA,
+            SyncInventoryEntityTypeEnum.TABLE,
+        )
+
+        for index in range(12):
+            run = await SyncInstanceManager.save(
+                session,
+                SyncInstance(
+                    syncer=f"inventory-{index:02}",
+                    status=SyncStatusEnum.SUCCESS,
+                    snapshot_complete=True,
+                    created_at=start + timedelta(seconds=index),
+                ),
+            )
+            await SyncItemManager.save(
+                session,
+                SyncItem(
+                    entity_id=None,
+                    entity_type=SyncInventoryEntityTypeEnum.INVENTORY,
+                    sync_instance_id=run.id,
+                    status=SyncStatusEnum.SUCCESS,
+                ),
+            )
+
+        for index in range(12):
+            run = await SyncInstanceManager.save(
+                session,
+                SyncInstance(
+                    syncer=f"entity-only-{index:02}",
+                    status=SyncStatusEnum.SUCCESS,
+                    created_at=start + timedelta(seconds=12 + index),
+                ),
+            )
+            await SyncItemManager.save(
+                session,
+                SyncItem(
+                    entity_id=index + 1,
+                    entity_type=entity_types[index % len(entity_types)],
+                    sync_instance_id=run.id,
+                    status=SyncStatusEnum.SUCCESS,
+                ),
+            )
+
+        response = await async_test_client.get("/api/apps/inventory/sync/status/")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert [run["syncer"] for run in response.json()["last_runs"]] == [
+            f"inventory-{index:02}" for index in range(11, 1, -1)
+        ]
 
     def test_returns_true_when_running(self, test_client, mocker):
         """Returns ``{"is_running": true}`` when ``SyncItemManager`` reports active."""
