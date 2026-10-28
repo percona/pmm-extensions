@@ -146,8 +146,9 @@ class Layout:
                 self.during_server_id()
             return NEW_SERVER_ID
 
-        server_id_attrs: dict[str, object] = {"_get_new_server_id": new_server_id}
-        if self.unreachable_master:
+        if not self.unreachable_master:
+            server_id_attrs = {"_get_new_server_id": new_server_id}
+        else:
 
             def refuse(*_args: object, **_kwargs: object) -> None:
                 raise backup_error("master unreachable")

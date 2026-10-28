@@ -201,13 +201,19 @@ class TestDefaultMycnf:
         assert f"{basedir}/my.cnf" in found
         assert f"{datadir}/mysqld-auto.cnf" not in found
 
-    def test_skips_basedir_and_datadir_without_a_basedir(self, layout: Layout) -> None:
-        """Look only at the fixed ``/etc`` paths when the server reports no basedir."""
+    @pytest.mark.parametrize(
+        "has_basedir", [True, False], ids=["with-basedir", "without-basedir"]
+    )
+    def test_datadir_file_is_captured_only_with_a_basedir(
+        self, layout: Layout, *, has_basedir: bool
+    ) -> None:
+        """Capture the datadir ``mysqld-auto.cnf`` only when the server reports a basedir."""
         datadir = layout.root / "var"
         datadir.mkdir()
         (datadir / "mysqld-auto.cnf").write_text("{}\n")
-        backup = _backup("", {"@@basedir": None, "@@datadir": str(datadir)})
+        basedir = str(layout.root / "usr") if has_basedir else None
+        backup = _backup("", {"@@basedir": basedir, "@@datadir": str(datadir)})
 
         found = backup.get_default_mycnf().split(",")
 
-        assert not any(path.startswith(str(layout.root)) for path in found)
+        assert (f"{datadir}/mysqld-auto.cnf" in found) is has_basedir
