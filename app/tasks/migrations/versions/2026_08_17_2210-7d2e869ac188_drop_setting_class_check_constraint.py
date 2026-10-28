@@ -33,6 +33,18 @@ from app.core.settings_override.alembic_ops import (
     upgrade_drop_setting_class_check,
 )
 
+_OLD_MEMBERS = (
+    "SEP_SETTINGS",
+    "TASKS_SETTINGS",
+    "SNIPPETS_SETTINGS",
+    "SETTINGS",
+    "ALERT_SETTINGS",
+    "ANONYMIZER_SETTINGS",
+    "ALERTS_SETTINGS",
+    "INVENTORY_SETTINGS",
+    "HEALTH_REPORT_SETTINGS",
+)
+
 # revision identifiers, used by Alembic.
 revision = "7d2e869ac188"
 down_revision = "c8e4a2b91f70"
@@ -42,9 +54,9 @@ depends_on = None
 
 def upgrade() -> None:
     """Drop the ``setting_class`` CHECK constraint."""
-    upgrade_drop_setting_class_check()
+    upgrade_drop_setting_class_check(_OLD_MEMBERS)
 
 
 def downgrade() -> None:
     """Re-add the CHECK, deleting rows whose ``setting_class`` is outside it."""
-    downgrade_restore_setting_class_check()
+    downgrade_restore_setting_class_check(_OLD_MEMBERS)
