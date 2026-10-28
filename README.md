@@ -533,7 +533,6 @@
 | app/tasks/migrations/versions/2026\_09\_24\_1200-afa9bedb3b0b\_rename\_ciphertext\_marker.py                                        |       10 |        0 |        0 |        0 |    100% |           |
 | app/tasks/migrations/versions/2026\_09\_24\_1300-f0ee5b600303\_rewrite\_persisted\_extensions\_module\_paths.py                     |       36 |        0 |       16 |        1 |     98% |  99-\>106 |
 | app/tasks/migrations/versions/2026\_09\_24\_2005-2e932d05a0d9\_merge\_tasks\_migration\_heads.py                                    |       12 |        0 |        0 |        0 |    100% |           |
-| app/tasks/migrations/versions/2026\_10\_28\_2300-5d3b7a9c1e44\_restore\_sqlite\_execution\_request\_indexes.py                      |       17 |        2 |        6 |        2 |     83% |    50, 63 |
 | app/tasks/models.py                                                                                                                 |      422 |        4 |       96 |        6 |     98% |505, 835-\>838, 842, 859-\>872, 1541-\>1543, 1552-\>1554, 1577-1578 |
 | app/tasks/periodic/crud.py                                                                                                          |       31 |        0 |        0 |        0 |    100% |           |
 | app/tasks/periodic/deps.py                                                                                                          |       11 |        0 |        0 |        0 |    100% |           |
@@ -545,7 +544,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35379** | **1751** | **8546** |  **695** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35362** | **1749** | **8540** |  **693** | **94%** |           |
 
 
 ## Setup coverage badge
