@@ -3053,7 +3053,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         }
         state = "running"
         pending = WithheldLineBuffer()
-        reconnecting = False
         while state == "running":
             alloc_id = alloc["ID"]
             stream_start = None
@@ -3069,7 +3068,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     pending=pending,
                     on_forced_flush=on_forced_flush,
                     files=files,
-                    reconnecting=reconnecting,
+                    reconnecting=params["offset"] != start_offset,
                 )
             except asyncio.CancelledError:
                 self._log_stream_cancelled(
@@ -3081,7 +3080,6 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     start_offset,
                 )
                 raise
-            reconnecting = True
 
             if state == _NOMAD_LOG_STREAM_SOCK_TIMEOUT:
                 self._log_stream_timeout(
@@ -3154,7 +3152,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param pending: Caller-owned withheld-line buffer.
         :param on_forced_flush: Called right before a forced release is pushed.
         :param files: Records where each rotated file starts, or ``None``.
-        :param reconnecting: Whether the follow has connected before.
+        :param reconnecting: Whether the follow has taken data on an earlier
+            connection; one that returned with nothing, such as a step that
+            had not started yet, does not make the next a reconnect.
         :return: What :meth:`_consume_nomad_log_stream` returns; a failed shift
             probe, or a reconnect misplaced every time, is a client error.
         """
@@ -3636,12 +3636,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             )
 
     async def _read_log_frames(
-        self,
-        alloc_id: str,
-        step: str,
-        log_type: TaskLogType,
-        start: int,
-        end: int,
+        self, alloc_id: str, step: str, log_type: TaskLogType, start: int, end: int
     ) -> list[_LogFrame]:
         """Read the frames of one bounded catch-up request from ``start``.
 
@@ -3741,9 +3736,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param end: The cumulative raw offset to read up to.
         :param shift: The shift the previous probe found, or ``None`` to read
             the cumulative offsets as they are.
-        :return: The frames and the shift they were placed with, ``None`` when
-            the read was not translated; or ``None`` once Nomad deleted files
-            under the read :data:`_LOG_SHIFT_MAX_CHANGES` times in a row.
+        :return: The frames and the shift they were placed with, as
+            ``(frames, None)`` when the read was not translated; or ``None``
+            itself once Nomad deleted files under the read
+            :data:`_LOG_SHIFT_MAX_CHANGES` times in a row.
         :raises TimeoutError: When a request times out.
         :raises ClientError: When a request fails.
         """
@@ -3874,7 +3870,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     "Nomad log catch-up lost range=%s-%s alloc_id=%s step=%s "
                     "log_type=%s; Nomad deleted the rotated file holding it",
                     position - len(pending) - len(decoder.getstate()[0]),
-                    shift,
+                    min(shift, end),
                     alloc_id,
                     step,
                     log_type,

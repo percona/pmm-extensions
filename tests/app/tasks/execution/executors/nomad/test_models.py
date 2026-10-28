@@ -26,7 +26,7 @@ import time
 from base64 import b64encode
 from binascii import b2a_base64
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Generator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, UTC
 from itertools import pairwise
@@ -8099,11 +8099,7 @@ class TestLogCatchUpReads:
         """Assert an empty catch-up read warns and rejoins without raising."""
         executor = _build_executor()
         with (
-            patch.object(
-                executor,
-                "_read_log_frames",
-                AsyncMock(return_value=[]),
-            ),
+            patch.object(executor, "_read_log_frames", AsyncMock(return_value=[])),
             caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
         ):
             logs = [
@@ -8277,6 +8273,22 @@ class TestLogCatchUpReads:
 
         assert [(log.msg, log.offset) for log in logs] == [("ined\n", 17)]
         assert self._requested_offsets(request) == [0, 12, 0, 4, 0]
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_names_only_its_own_range_as_lost(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Clip the lost range at ``end`` when the oldest retained file starts past it."""
+        executor = _build_executor()
+        with (
+            self._serving(executor, self._probe(2)) as request,
+            caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
+        ):
+            logs = await self._read_range(executor, 3, 9, self._rotated(0, 4, 12))
+
+        assert logs == []
+        assert request.call_count == 1
+        assert "lost range=3-9 " in caplog.text
 
     @pytest.mark.asyncio
     async def test_read_log_range_stops_at_an_empty_read_its_probes_agree_on(
@@ -8476,14 +8488,14 @@ class TestLogCatchUpReads:
             ("after\n", 16),
         ]
 
-    @pytest.mark.parametrize("rotations", [None, 1], ids=["no-files", "one-file"])
+    @pytest.mark.parametrize("starts", [None, (0,)], ids=["no-files", "one-file"])
     @pytest.mark.asyncio
     async def test_read_log_range_makes_no_probe_without_a_rotation(
-        self, rotations: int | None
+        self, starts: tuple[int, ...] | None
     ) -> None:
-        """Read as before, from the cumulative offset, when no file can be gone."""
+        """Read from the cumulative offset, with no probe, when no file can be gone."""
         executor = _build_executor()
-        files = None if rotations is None else self._rotated(0)
+        files = None if starts is None else self._rotated(*starts)
         with self._serving(executor, [self._file_frame(0, b"plain\n")]) as request:
             logs = await self._read_range(executor, 3, 9, files)
 
@@ -8658,7 +8670,7 @@ class TestLogCatchUpReads:
     ) -> None:
         """Treat a failed shift probe on reconnect as the stream's client error."""
         alloc = {"ID": "alloc-1", "JobID": "job-1", "EvalID": "eval-1"}
-        mock_consume.return_value = ("running", alloc, None)
+        mock_consume.side_effect = self._connections(alloc, ("running", 20))
         executor = _build_executor()
         queue: asyncio.Queue[TaskLog] = asyncio.Queue()
         with (
@@ -8682,10 +8694,8 @@ class TestLogCatchUpReads:
     ) -> None:
         """Reconnect at the shifted offset, ending after three misplaced reconnects."""
         alloc = {"ID": "alloc-1", "JobID": "job-1", "EvalID": "eval-1"}
-        outcomes = [("running", alloc, None)] + [
-            (_NOMAD_LOG_STREAM_MISPLACED, alloc, None)
-        ] * 3
-        mock_consume.side_effect = outcomes
+        outcomes = [("running", 20)] + [(_NOMAD_LOG_STREAM_MISPLACED, 0)] * 3
+        mock_consume.side_effect = self._connections(alloc, *outcomes)
         executor = _build_executor()
         queue: asyncio.Queue[TaskLog] = asyncio.Queue()
         with (
@@ -8693,12 +8703,7 @@ class TestLogCatchUpReads:
             patch.object(executor, "_log_stream_client_error") as log_client_error,
         ):
             await executor._push_logs_to_queue(
-                alloc,
-                "setup",
-                TaskLogType.STDOUT,
-                queue,
-                start_offset=20,
-                files=self._rotated(0, 8),
+                alloc, "setup", TaskLogType.STDOUT, queue, files=self._rotated(0, 8)
             )
 
         assert mock_consume.call_count == len(outcomes)
@@ -8707,6 +8712,53 @@ class TestLogCatchUpReads:
         ]
         assert offsets == [None, 12, 12, 12]
         log_client_error.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_push_logs_reconnects_only_once_the_follow_has_taken_data(
+        self,
+    ) -> None:
+        """Treat a follow whose connections took no data as not yet connected."""
+        alloc = {"ID": "alloc-1", "JobID": "job-1", "EvalID": "eval-1"}
+        executor = _build_executor()
+        with patch.object(
+            executor,
+            "_consume_placed_stream",
+            side_effect=self._connections(
+                alloc, ("running", 0), ("running", 5), ("dead", 0)
+            ),
+        ) as consume:
+            await executor._push_logs_to_queue(
+                alloc,
+                "setup",
+                TaskLogType.STDOUT,
+                asyncio.Queue(),
+                files=LogFileStarts(0),
+            )
+
+        reconnects = [entry.kwargs["reconnecting"] for entry in consume.call_args_list]
+        assert reconnects == [False, False, True]
+
+    @staticmethod
+    def _connections(
+        alloc: dict[str, Any], *outcomes: tuple[str, int]
+    ) -> Callable[..., Awaitable[tuple[str, dict[str, Any], None]]]:
+        """Return a stand-in for a follow's connections, one outcome per call.
+
+        :param alloc: The allocation each connection returns.
+        :param outcomes: Each connection's state and the bytes it takes.
+        :return: The stand-in, which advances ``params["offset"]`` by what each
+            connection takes.
+        """
+        remaining = iter(outcomes)
+
+        async def connect(
+            *, params: dict[str, Any], **_: Any
+        ) -> tuple[str, dict[str, Any], None]:
+            state, taken = next(remaining)
+            params["offset"] += taken
+            return (state, alloc, None)
+
+        return connect
 
 
 class TestIsDirectory:
