@@ -36,7 +36,7 @@ repos:
         description: "Regenerate [extensions] version_locations from app migration dirs"
         entry: python3 scripts/sync_alembic_version_locations.py
         language: system
-        files: ^app/extensions/apps/.*/migrations/versions/
+        files: ^(app/extensions/apps/.*/migrations/versions/|scripts/sync_alembic_version_locations\.py$|alembic\.ini$)
         pass_filenames: false
       - id: sync-labeler-apps
         name: Sync .github/labeler.yml app labels
