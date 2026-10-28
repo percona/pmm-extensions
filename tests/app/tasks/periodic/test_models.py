@@ -104,6 +104,26 @@ class TestPeriodicTaskExecuteRequest:
         with pytest.raises(ValidationError):
             PeriodicTaskExecuteRequest.model_validate({"meta": meta_value, "meta_x": 1})
 
+    def test_execute_request_rejects_invalid_requirements(self):
+        """Assert building the execute request directly stays strict."""
+        with pytest.raises(ValidationError):
+            PeriodicTaskExecuteRequest(meta={"requirements": ["a", ""]})
+
+    def test_create_rejects_invalid_requirements(self):
+        """Assert a schedule write still rejects an invalid requirements value."""
+        with pytest.raises(ValidationError):
+            PeriodicTaskCreate.model_validate(
+                {
+                    "name": "n",
+                    "task": "t",
+                    "start_time": None,
+                    "enabled": True,
+                    "description": "",
+                    "execute_request": {"meta": {"requirements": ["a", ""]}},
+                    "interval": {"every": 10, "period": "minutes"},
+                }
+            )
+
 
 class TestBasePeriodicTask:
     """Test the BasePeriodicTask model."""
@@ -201,6 +221,35 @@ class TestPeriodicTaskResponse:
         )
         with pytest.raises(ValidationError, match="task"):
             PeriodicTaskResponse.model_validate(data)
+
+    @pytest.mark.parametrize(
+        "requirements",
+        [["PyMySQL", ""], None, 5],
+        ids=["empty-string-item", "null", "number"],
+    )
+    def test_stored_legacy_requirements_stay_readable(self, requirements):
+        """Assert a schedule stored with a legacy requirements value still loads."""
+        data = _periodic_response_data(
+            args=json.dumps(
+                [
+                    "my-backup-task",
+                    {"meta": {"requirements": requirements}, "eta": "2030-01-01"},
+                ]
+            ),
+            model_intervalschedule=IntervalSchedule(every=1, period=Period.HOURS),
+        )
+        response = PeriodicTaskResponse.model_validate(data)
+        assert response.execute_request.meta == {"requirements": requirements}
+        assert response.execute_request.eta is None
+
+    def test_stored_list_requirements_read_back_joined(self):
+        """Assert a valid stored list is still normalized to a string."""
+        data = _periodic_response_data(
+            args=json.dumps(["t", {"meta": {"requirements": ["a", "b"]}}]),
+            model_intervalschedule=IntervalSchedule(every=1, period=Period.HOURS),
+        )
+        response = PeriodicTaskResponse.model_validate(data)
+        assert response.execute_request.meta == {"requirements": "a\nb"}
 
 
 class TestPeriodicTaskWrite:

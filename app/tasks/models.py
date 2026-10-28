@@ -16,7 +16,7 @@
 """Define models for the Task API."""
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from enum import auto, StrEnum
 from functools import cached_property
@@ -767,17 +767,29 @@ class TaskExecuteRequest(BaseModel):
 
     @field_validator("meta")
     @classmethod
-    def normalize_requirements(cls, v: dict[str, Any]) -> dict[str, Any]:
+    def normalize_requirements(
+        cls, v: dict[str, Any], info: ValidationInfo
+    ) -> dict[str, Any]:
         """Join a list-form ``meta.requirements`` and reject any other shape.
 
         Validating here turns a malformed value into a 422 before a task history
         row exists; :class:`TaskExecutionRequest` applies the same rule to the
         meta every execution path stores and dispatches.
 
+        A request rebuilt from stored data (validated with
+        :data:`STORED_REQUEST_CONTEXT`) keeps a value it cannot normalize rather
+        than failing, so a row written before the value was checked still loads.
+
         :param v: The validated meta mapping.
+        :param info: The validation info carrying the optional context.
         :return: The meta with ``requirements`` as a string.
         """
-        return normalize_requirements_meta(v) or {}
+        try:
+            return normalize_requirements_meta(v) or {}
+        except ValueError:
+            if info.context == STORED_REQUEST_CONTEXT:
+                return v
+            raise
 
     @field_validator("chain_on_failure", mode="before")
     @classmethod
@@ -1322,6 +1334,25 @@ class TaskHistoryResponse(TaskHistoryBase, BaseSQLModel):
     has_logs: bool = False
     log_capture: LogCaptureStatusEnum = LogCaptureStatusEnum.UNKNOWN
     unreadable_request_leaves: list[str] = []
+
+    @field_validator("execution_request", mode="before")
+    @classmethod
+    def _read_stored_execution_request(cls, v: Any) -> Any:
+        """Build a mapping-form execution request as a read of stored history.
+
+        A history response is by definition a read of a stored row, so the
+        request is validated with :data:`STORED_REQUEST_CONTEXT`: a legacy
+        ``meta.requirements`` that today's rule rejects stays readable instead of
+        failing every page that holds the row.
+
+        :param v: The raw ``execution_request`` input.
+        :return: The built request for a mapping, otherwise the input unchanged.
+        """
+        if isinstance(v, Mapping):
+            return TaskExecutionRequest.model_validate(
+                v, context=STORED_REQUEST_CONTEXT
+            )
+        return v
 
     @model_validator(mode="after")
     def _resolve_unreadable_request_leaves(self) -> Self:

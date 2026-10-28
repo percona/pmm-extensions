@@ -53,6 +53,7 @@ from app.tasks.models import (
     FileMetadata,
     LogCaptureStatusEnum,
     MAX_FAILURE_REASON_LENGTH,
+    STORED_REQUEST_CONTEXT,
     Task,
     TaskBackendEnum,
     TaskBase,
@@ -745,6 +746,51 @@ class TestRequirementsMeta:
             {"task": "t", "target": "n", "meta": {"requirements": ["a", "b"]}}, None
         )
         assert request.meta == {"requirements": "a\nb"}
+
+    @staticmethod
+    def _history_payload(requirements: Any) -> dict[str, Any]:
+        """Return a history response payload whose request carries ``requirements``."""
+        return {
+            "id": 1,
+            "status": TaskHistoryStatusEnum.SUCCESS,
+            "task": TaskFactory.build(id=1, name="test-task"),
+            "execution_request": {
+                "task": "test-task",
+                "target": "n",
+                "meta": {"requirements": requirements},
+            },
+        }
+
+    @pytest.mark.parametrize(
+        "requirements",
+        [["PyMySQL", ""], None, 5],
+        ids=["empty-string-item", "null", "number"],
+    )
+    def test_history_response_keeps_legacy_requirements(
+        self, requirements: Any
+    ) -> None:
+        """Assert a history response built from a mapping tolerates a legacy value."""
+        response = TaskHistoryResponse.model_validate(
+            self._history_payload(requirements)
+        )
+        assert response.execution_request.meta == {"requirements": requirements}
+
+    def test_history_response_joins_list_requirements(self) -> None:
+        """Assert a valid stored list still reads back as the joined string."""
+        response = TaskHistoryResponse.model_validate(self._history_payload(["a", "b"]))
+        assert response.execution_request.meta == {"requirements": "a\nb"}
+
+    def test_execute_request_stays_strict_without_context(self) -> None:
+        """Assert the execute path still rejects a value only a stored read keeps."""
+        with pytest.raises(ValidationError):
+            TaskExecuteRequest(meta={"requirements": ["a", ""]})
+
+    def test_execute_request_tolerates_stored_context(self) -> None:
+        """Assert the stored-data context keeps an invalid value on the execute model."""
+        request = TaskExecuteRequest.model_validate(
+            {"meta": {"requirements": ["a", ""]}}, context=STORED_REQUEST_CONTEXT
+        )
+        assert request.meta == {"requirements": ["a", ""]}
 
 
 class TestTaskHistoryBase:

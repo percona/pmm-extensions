@@ -237,6 +237,27 @@ class TestExtensionsTaskHistoryEndpoint:
             "Step 'run-script' failed (exit code 1)."
         )
 
+    def test_legacy_requirements_row_stays_readable(
+        self,
+        test_client: TestClient,
+        mock_task_api_dep,
+    ) -> None:
+        """Assert a stored row with an invalid requirements value is not a 500."""
+        page = _history_page(
+            item_id=1, started_at="2026-01-01T10:00:00+00:00", task_name="parent"
+        )
+        page["items"][0]["execution_request"]["meta"] = {"requirements": ["a", ""]}
+        mock_task_api_dep.get = AsyncMock(return_value=page)
+
+        response = test_client.get(
+            "/api/extensions/task-history/", params=[("task_names", "parent")]
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["items"][0]["execution_request"]["meta"] == {
+            "requirements": ["a", ""]
+        }
+
     def test_deduplicates_repeated_task_names(
         self,
         test_client: TestClient,
