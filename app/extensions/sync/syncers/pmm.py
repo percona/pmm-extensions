@@ -141,11 +141,8 @@ class PMMSyncer(BaseSyncer):
         PMMRemoteAPI instance, then evict it if it was not set to be kept alive.
 
         :param exc_type: The type of exception raised, if any.
-        :type exc_type: type[BaseException]
         :param exc_val: The exception instance raised, if any.
-        :type exc_val: BaseException
         :param exc_tb: The traceback of the exception raised, if any.
-        :type exc_tb: TracebackType
         """
         try:
             await super().__aexit__(exc_type, exc_val, exc_tb)
