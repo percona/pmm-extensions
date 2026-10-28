@@ -5676,7 +5676,8 @@ class TestPreDispatchPayloadCheck:
             unreadable = mocker.MagicMock()
             unreadable.read_text.side_effect = read_error
             mocker.patch(
-                "app.tasks.models.resolve_payload_reference", return_value=unreadable
+                "app.tasks.models.payloads.resolve_payload_reference",
+                return_value=unreadable,
             )
             task_history = test_loop.run_until_complete(
                 prepare_periodic_task_history(

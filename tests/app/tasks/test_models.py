@@ -479,7 +479,7 @@ class TestTask:
         default_entities = {PIIEntity.EMAIL_ADDRESS, PIIEntity.PHONE_NUMBER}
         mock_defaults = defaultdict(lambda: default_entities)
         task = TaskFactory.build(anonymize_mask=None, owner="BACKUPS")
-        with patch("app.tasks.models.anonymizer_settings") as mock_settings:
+        with patch("app.tasks.models.tables.anonymizer_settings") as mock_settings:
             mock_settings.DEFAULT_ENTITIES = mock_defaults
             result = task.anonymized_entities
         assert result == default_entities
@@ -531,7 +531,7 @@ class TestTaskResponseAnonymizedEntities:
             "owner": "CHECKSUMS",
             "anonymize_mask": None,
         }
-        with patch("app.tasks.models.anonymizer_settings") as mock_settings:
+        with patch("app.tasks.models.responses.anonymizer_settings") as mock_settings:
             mock_settings.DEFAULT_ENTITIES = mock_defaults
             response = TaskResponse.model_validate(fields)
             result = response.anonymized_entities
@@ -971,7 +971,7 @@ class TestTaskHistory:
             execution_request=execution_request,
             anonymize_mask=None,
         )
-        with patch("app.tasks.models.anonymizer_settings") as mock_settings:
+        with patch("app.tasks.models.tables.anonymizer_settings") as mock_settings:
             mock_settings.DEFAULT_ENTITIES = mock_defaults
             result = history.anonymized_entities
             assert result == default_entities

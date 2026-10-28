@@ -200,7 +200,7 @@ def schedule_annotation(
 
     Precondition: ``queue_item.execution_request`` must already be
     loaded. The column is declared ``deferred=True`` as a ``column_property``
-    (``app/tasks/models.py``); touching it here from sync code triggers a
+    (``app/tasks/models/tables.py``); touching it here from sync code triggers a
     lazy SELECT that raises :class:`sqlalchemy.exc.MissingGreenlet` on
     async drivers (asyncpg, aiosqlite) when the instance is still
     attached, and :class:`sqlalchemy.orm.exc.DetachedInstanceError` when

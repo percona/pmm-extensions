@@ -155,7 +155,7 @@ pip-audit: venv
 bandit: venv
 	@"${VENV_BIN}"/bandit -c pyproject.toml -r app
 
-makemigrations: venv alembic.ini app/tasks/models.py app/inventory/models.py app/extensions/models.py
+makemigrations: venv alembic.ini $(wildcard app/tasks/models/*.py) $(wildcard app/inventory/models/*.py) app/extensions/models.py
 	@"${VENV_BIN}"/python scripts/sync_alembic_version_locations.py
 	@for app in $(APPS); do \
 		capitalized=$$(echo $$app | sed 's/^./\U&/'); \

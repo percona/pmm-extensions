@@ -321,7 +321,8 @@ no-matching-overload = "ignore"
 # and what the sqlmodel stub's `type[Any]` annotation rejects.
 include = [
     "app/core/db/models.py",
-    "app/inventory/models.py",
+    "app/inventory/models/bases.py",
+    "app/inventory/models/tables.py",
     "app/extensions/apps/atw/models.py",
     "app/extensions/apps/mysql_backups/models.py",
     "app/extensions/apps/om_bootstrap/models.py",
