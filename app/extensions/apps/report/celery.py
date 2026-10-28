@@ -181,19 +181,12 @@ async def _generate_health_report(
     generation ends.
 
     :param since: Relative start of the report period.
-    :type since: str
     :param until: Relative end of the report period.
-    :type until: str
     :param full: Include all check results and full backup history.
-    :type full: bool
     :param refresh: Force advisor refresh before fetching results.
-    :type refresh: bool
     :param sections: Optional list of sections to include.
-    :type sections: list[str] | None
     :param upload: Upload generated report to ServiceNow.
-    :type upload: bool
     :return: None.
-    :rtype: None
     """
     pmm_api = await resolve_pmm_api()
     if pmm_api is None:
