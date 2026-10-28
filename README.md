@@ -55,7 +55,7 @@
 | app/core/pmm.py                                                                                                                     |       55 |        1 |       12 |        1 |     97% |        53 |
 | app/core/requests/connectivity.py                                                                                                   |       33 |        0 |        8 |        0 |    100% |           |
 | app/core/requests/registry.py                                                                                                       |       63 |        2 |       16 |        2 |     95% |  105, 116 |
-| app/core/requests/remote\_api.py                                                                                                    |      527 |        4 |      120 |        5 |     99% |402, 746, 824-\>829, 832-\>exit, 1500-\>1499, 1613, 1625 |
+| app/core/requests/remote\_api.py                                                                                                    |      527 |        4 |      120 |        6 |     98% |402, 746, 824-\>829, 832-\>exit, 994-\>exit, 1500-\>1499, 1613, 1625 |
 | app/core/security.py                                                                                                                |       13 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/alembic\_ops.py                                                                                         |      154 |       15 |       56 |       14 |     86% |93, 96, 98, 100-\>102, 120, 122, 158, 160, 174, 176, 217, 261, 306, 335, 361-362 |
 | app/core/settings\_override/api/export.py                                                                                           |        9 |        0 |        0 |        0 |    100% |           |
@@ -388,7 +388,7 @@
 | app/extensions/sync/exceptions.py                                                                                                   |       36 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/fields.py                                                                                                       |       21 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/health.py                                                                                                       |       86 |        0 |       22 |        2 |     98% |234-\>238, 235-\>234 |
-| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       17 |     90% |122-124, 129-130, 146, 165, 171-\>173, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
+| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 128, 130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
 | app/extensions/sync/syncers/mysql/payload.py                                                                                        |      176 |       47 |       54 |        5 |     70% |158-\>166, 242-246, 251-256, 269-275, 279-302, 356-\>372, 375, 396-404, 423 |
 | app/extensions/sync/syncers/mysql/syncer.py                                                                                         |      241 |        2 |       94 |        5 |     98% |111, 604-\>605, 716, 819-\>823, 821-\>820 |
 | app/extensions/sync/syncers/pmm.py                                                                                                  |      176 |        4 |       48 |        1 |     97% |113-117, 151 |
@@ -458,7 +458,7 @@
 | app/tasks/crud.py                                                                                                                   |      312 |        4 |       76 |        5 |     98% |200, 609-\>611, 612, 614, 919 |
 | app/tasks/db/engine.py                                                                                                              |        7 |        0 |        0 |        0 |    100% |           |
 | app/tasks/db/seed.py                                                                                                                |      150 |       11 |       40 |        7 |     88% |836-\>849, 850-\>866, 867-\>881, 1127-1148, 1159, 1171, 1204 |
-| app/tasks/deps.py                                                                                                                   |      110 |        0 |       30 |        0 |    100% |           |
+| app/tasks/deps.py                                                                                                                   |      114 |        0 |       30 |        0 |    100% |           |
 | app/tasks/execution/exceptions.py                                                                                                   |        9 |        0 |        0 |        0 |    100% |           |
 | app/tasks/execution/executors/celery/models.py                                                                                      |       76 |        0 |       12 |        0 |    100% |           |
 | app/tasks/execution/executors/nomad/constants.py                                                                                    |        2 |        0 |        0 |        0 |    100% |           |
@@ -533,18 +533,18 @@
 | app/tasks/migrations/versions/2026\_09\_24\_1200-afa9bedb3b0b\_rename\_ciphertext\_marker.py                                        |       10 |        0 |        0 |        0 |    100% |           |
 | app/tasks/migrations/versions/2026\_09\_24\_1300-f0ee5b600303\_rewrite\_persisted\_extensions\_module\_paths.py                     |       36 |        0 |       16 |        1 |     98% |  99-\>106 |
 | app/tasks/migrations/versions/2026\_09\_24\_2005-2e932d05a0d9\_merge\_tasks\_migration\_heads.py                                    |       12 |        0 |        0 |        0 |    100% |           |
-| app/tasks/models.py                                                                                                                 |      389 |        4 |       86 |        6 |     98% |422, 720-\>723, 727, 744-\>757, 1405-\>1407, 1416-\>1418, 1441-1442 |
+| app/tasks/models.py                                                                                                                 |      422 |        4 |       96 |        6 |     98% |505, 835-\>838, 842, 859-\>872, 1541-\>1543, 1552-\>1554, 1577-1578 |
 | app/tasks/periodic/crud.py                                                                                                          |       31 |        0 |        0 |        0 |    100% |           |
 | app/tasks/periodic/deps.py                                                                                                          |       11 |        0 |        0 |        0 |    100% |           |
-| app/tasks/periodic/models.py                                                                                                        |      124 |        4 |       26 |        4 |     95% |299, 346, 360, 407 |
-| app/tasks/periodic/routes.py                                                                                                        |       71 |        4 |       12 |        2 |     93% |96, 170-\>172, 192-195, 209 |
+| app/tasks/periodic/models.py                                                                                                        |      131 |        4 |       28 |        4 |     95% |323, 370, 384, 431 |
+| app/tasks/periodic/routes.py                                                                                                        |       72 |        4 |       12 |        2 |     93% |97, 171-\>173, 193-196, 210 |
 | app/tasks/periodic/utils.py                                                                                                         |       33 |        0 |        8 |        1 |     98% | 125-\>126 |
 | app/tasks/reference\_fence.py                                                                                                       |       47 |        2 |        2 |        0 |     96% |   157-158 |
 | app/tasks/routes.py                                                                                                                 |      245 |       17 |       46 |        5 |     92% |154-158, 245-\>249, 283, 333-342, 349, 462, 505, 520, 584-586, 663, 728, 739, 742, 775-\>777 |
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35316** | **1759** | **8528** |  **693** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35361** | **1759** | **8540** |  **693** | **94%** |           |
 
 
 ## Setup coverage badge
