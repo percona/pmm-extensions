@@ -62,6 +62,7 @@ class TestRecordConnectivityWarning:
         )
 
         assert result is None
+        mock_tasks_api.post.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_returns_warning_on_failure(self, mock_tasks_api):
