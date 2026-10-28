@@ -17,11 +17,13 @@
 
 import logging
 import re
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aioresponses import aioresponses, CallbackResult
 from kombu.exceptions import KombuError
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
@@ -29,7 +31,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 from app.celery import celery
 from app.core.config import settings
 from app.core.db.utils import get_async_session_maker_from_engine
+from app.core.requests.registry import ClientRegistry
 from app.core.utils.date_time import utc_now
+from app.core.utils.fields import UniqueList
 from app.extensions.apps.inventory.sync import (
     run_inventory_sync,
     run_node_sync,
@@ -39,6 +43,7 @@ from app.extensions.apps.inventory.sync import (
     run_table_sync,
     start_followers,
 )
+from app.extensions.config import extensions_settings, SyncOptions
 from app.extensions.crud import SyncInstanceManager, SyncItemManager
 from app.extensions.inventory import (
     CreatedNode,
@@ -202,6 +207,20 @@ async def test_run_table_sync(created_table, mock_base_syncer_factory):
     syncer2.sync_table.assert_awaited_once_with(created_table, refresh_at_start=True)
 
 
+def _serve_syncers(
+    mocker, list_syncers: Callable[[], Awaitable[list[BaseSyncer]]]
+) -> None:
+    """Stand in for ``standalone_syncers``, yielding what ``list_syncers`` returns."""
+
+    @asynccontextmanager
+    async def standalone_syncers() -> AsyncIterator[list[BaseSyncer]]:
+        yield await list_syncers()
+
+    mocker.patch(
+        "app.extensions.apps.inventory.sync.standalone_syncers", standalone_syncers
+    )
+
+
 @pytest.mark.asyncio
 async def test_run_scheduled_inventory_sync(mocker, mock_base_syncer_factory):
     """Assert run_scheduled_inventory_sync reads internal token and constructs syncers."""
@@ -209,10 +228,7 @@ async def test_run_scheduled_inventory_sync(mocker, mock_base_syncer_factory):
     mocker.patch.object(
         settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr("test-api-key")
     )
-    mocker.patch(
-        "app.extensions.apps.inventory.sync.get_syncers_standalone",
-        return_value=[syncer],
-    )
+    _serve_syncers(mocker, AsyncMock(return_value=[syncer]))
     mock_run = mocker.patch(
         "app.extensions.apps.inventory.sync.run_inventory_sync",
         new=AsyncMock(),
@@ -226,10 +242,7 @@ def _patch_scheduled_sync_env(mocker, syncers):
     mocker.patch.object(
         settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr("test-api-key")
     )
-    mocker.patch(
-        "app.extensions.apps.inventory.sync.get_syncers_standalone",
-        return_value=syncers,
-    )
+    _serve_syncers(mocker, AsyncMock(return_value=syncers))
     return mocker.patch(
         "app.extensions.apps.inventory.sync.run_inventory_sync",
         new=AsyncMock(),
@@ -378,9 +391,9 @@ class TestScheduledFollowerRun:
     def _follower_configured(self, extensions_maker, mocker, mock_remote_api) -> None:
         """Route sessions at the in-memory DB and configure only the follower."""
         _route_sessions(mocker, extensions_maker)
-        mocker.patch(
-            "app.extensions.apps.inventory.sync.get_syncers_standalone",
-            return_value=[_FollowerSyncer(inventory_api=mock_remote_api)],
+        _serve_syncers(
+            mocker,
+            AsyncMock(return_value=[_FollowerSyncer(inventory_api=mock_remote_api)]),
         )
 
     @pytest.mark.asyncio
@@ -450,10 +463,7 @@ def _claim_the_follower_before_listing(
         await _record_run(maker, _FOLLOWER, SyncStatusEnum.RUNNING)
         return [_FollowerSyncer(inventory_api=mock_remote_api)]
 
-    mocker.patch(
-        "app.extensions.apps.inventory.sync.get_syncers_standalone",
-        side_effect=_claim_then_list,
-    )
+    _serve_syncers(mocker, _claim_then_list)
 
 
 @pytest.mark.asyncio
@@ -682,12 +692,14 @@ def _configure_leader_and_follower(
     :return: The replaced ``send_task``.
     """
     _route_sessions(mocker, maker)
-    mocker.patch(
-        "app.extensions.apps.inventory.sync.get_syncers_standalone",
-        return_value=[
-            _LeaderSyncer(inventory_api=mock_remote_api),
-            _FollowerSyncer(inventory_api=mock_remote_api),
-        ],
+    _serve_syncers(
+        mocker,
+        AsyncMock(
+            return_value=[
+                _LeaderSyncer(inventory_api=mock_remote_api),
+                _FollowerSyncer(inventory_api=mock_remote_api),
+            ]
+        ),
     )
     return mocker.patch.object(celery, "send_task")
 
@@ -824,3 +836,71 @@ async def test_the_leader_run_leaves_a_caught_up_follower_on_postgres(
     await _assert_the_leader_run_leaves_a_caught_up_follower(
         postgres_session_maker, mocker, mock_remote_api
     )
+
+
+class _InventoryReadingSyncer(BaseSyncer):
+    """Read the inventory API once per pass, as a real syncer reads its target."""
+
+    SYNC_TO_LIMIT = SyncInventoryEntityTypeEnum.INVENTORY
+
+    async def perform_inventory_sync(self) -> None:
+        """Read one inventory page through the shared client."""
+        await self.inventory_api.get("/nodes/")
+
+
+class _FirstReadingSyncer(_InventoryReadingSyncer):
+    """Run first in a sync-all pass."""
+
+
+class _SecondReadingSyncer(_InventoryReadingSyncer):
+    """Run second in a sync-all pass, on the client the first one shared."""
+
+
+@pytest.mark.asyncio
+async def test_scheduled_sync_survives_rebind_between_syncers(
+    extensions_maker, mocker, isolated_client_registry: ClientRegistry
+):
+    """Run the second syncer on the Inventory client the first one's read retired.
+
+    The syncers of a sync-all pass share one client and run one after another, so
+    a rebind during the first must not close the client the second is handed.
+    """
+    _route_sessions(mocker, extensions_maker)
+    mocker.patch.object(
+        extensions_settings,
+        "SYNCERS",
+        UniqueList(
+            [
+                SyncOptions.model_construct(syncer=syncer_class.get_name())
+                for syncer_class in (_FirstReadingSyncer, _SecondReadingSyncer)
+            ]
+        ),
+    )
+    resolved = mocker.spy(isolated_client_registry, "get")
+    inventory = str(extensions_settings.INVENTORY_ENDPOINT).rstrip("/")
+    reads: list[str] = []
+
+    async def rebind_once(url, **_kwargs) -> CallbackResult:
+        if not reads:
+            await isolated_client_registry.invalidate(inventory)
+        reads.append(str(url))
+        return CallbackResult(body="[]")
+
+    with aioresponses() as upstream:
+        upstream.get(
+            re.compile(rf"{re.escape(inventory)}/nodes/"),
+            callback=rebind_once,
+            repeat=True,
+        )
+        await run_scheduled_inventory_sync()
+
+    assert len(reads) == len(extensions_settings.SYNCERS)
+    async with extensions_maker() as session:
+        runs = await SyncInstanceManager.list(session)
+    assert [run.status for run in runs] == [SyncStatusEnum.SUCCESS] * len(reads)
+    [inventory_api] = [
+        client
+        for client in resolved.spy_return_list
+        if str(client.endpoint).rstrip("/") == inventory
+    ]
+    assert inventory_api._session is None
