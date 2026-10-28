@@ -13,12 +13,13 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the request-boundary list-query framework: spec, dependency, applier inputs.
+"""Define the list-query framework's spec, value object and search-predicate builder.
 
 The capability lives in ``app.core.db`` so all three services can consume it. Import
-direction is one-way: this module never imports :mod:`app.core.db.crud` at runtime
-(the manager type is referenced under ``TYPE_CHECKING`` and resolved by duck-typed
-dispatch), so :mod:`app.core.db.crud` may import it directly without a cycle.
+direction is one-way: this module imports neither :mod:`app.core.db.crud` nor
+:mod:`app.core.db.deps`, so both import it directly without a cycle. The FastAPI
+dependencies that resolve a request into a :class:`ListQuery` live in
+:mod:`app.core.db.deps`.
 """
 
 from __future__ import annotations
