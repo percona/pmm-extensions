@@ -28,6 +28,7 @@ import tempfile
 from contextlib import suppress
 from filelock import FileLock, Timeout
 from pathlib import Path
+from urllib.parse import quote
 from typing import Any
 
 # GEN:UPLOAD-BEGIN s3
@@ -1206,23 +1207,12 @@ class Backup(BaseBackup):
 
         :return: Comma-separated string of found my.cnf paths.
         """
-        possible_files = []
-        found_files = []
-
         result = self._query_mysql("SELECT @@basedir, @@datadir")
+        possible_files = ["/etc/my.cnf", "/etc/mysql/my.cnf", "/usr/local/etc/my.cnf"]
         if result["@@basedir"]:
-            possible_files.append(str(Path(result["@@basedir"]) / "my.cnf"))
-            possible_files.append(str(Path(result["@@datadir"]) / "mysqld-auto.cnf"))
+            possible_files += [f"{result['@@basedir']}/my.cnf", f"{result['@@datadir']}/mysqld-auto.cnf"]
 
-        possible_files.append("/etc/my.cnf")
-        possible_files.append("/etc/mysql/my.cnf")
-        possible_files.append("/usr/local/etc/my.cnf")
-
-        for filen in possible_files:
-            if Path(filen).is_file():
-                found_files.append(filen)
-
-        return ",".join(found_files)
+        return ",".join(f for f in possible_files if Path(f).is_file())
 
     def get_included_config(self, cnf_paths: str) -> None:
         """Create a list of all included cnf files.
@@ -1252,6 +1242,10 @@ class Backup(BaseBackup):
     def backup_mycnf(self, backup_dir: str) -> None:
         """Copy my.cnf file(s) to the backup directory.
 
+        Each copy is named by its percent-encoded source path, which the restore
+        decodes, except ``auto.cnf`` and ``mysqld-auto.cnf``: they keep their name
+        because copy-back puts them in the datadir, where the server reads them.
+
         :param backup_dir: Path to the backup directory.
         """
         cnf_paths = self.mycnf_path if self.mycnf_path else self.get_default_mycnf()
@@ -1265,7 +1259,7 @@ class Backup(BaseBackup):
         for filename in self.all_cnf_files:
             src = Path(filename)
             if src.is_file():
-                dest_filename = backup_path / src.name.replace("/", "_").strip()
+                dest_filename = backup_path / (src.name if src.name in ("auto.cnf", "mysqld-auto.cnf") else quote(filename, ""))
                 self.logger.info("Copy %s -> %s", src, dest_filename)
                 try:
                     shutil.copy(str(src), str(dest_filename))

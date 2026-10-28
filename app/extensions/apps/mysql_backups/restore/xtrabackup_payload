@@ -22,6 +22,7 @@ import datetime
 import resource
 from getpass import getuser
 from pathlib import Path
+from urllib.parse import unquote
 import pymysql
 import pymysql.cursors
 import yaml
@@ -2249,10 +2250,15 @@ class Xtrabackup(Restore):
     def _cnf_destination(self, ffile, allowed_files, allowed_dirs):
         """Return the source and resolved destination of the datadir cnf entry ``ffile``.
 
+        The destination is the entry's percent-decoded name. A name that decodes to
+        a NUL byte names no path, so it is refused as encoding no destination.
+
         :raises BackupError: If the entry or its decoded destination fails a check.
         """
         src = os.path.join(self.datadir, ffile)
-        dst = ffile.replace('_', '/').strip()
+        dst = unquote(ffile)
+        if '\0' in dst:
+            dst = ''
         resolved = os.path.realpath(dst)
         if not is_lone_file(os.lstat(src)):
             reason = 'source is not a regular file with one link'
@@ -2271,7 +2277,7 @@ class Xtrabackup(Restore):
         raise BackupError('Refusing to restore %s to %s: %s' % (ffile, dst, reason))
 
     def _restore_cnf_files(self):
-        """Restore the datadir's cnf files to the paths their names encode.
+        """Restore the datadir's cnf files to the paths their names percent-encode.
 
         Every entry is checked before any is written, so a tampered backup fails
         the restore without leaving a partial set of config files behind.
