@@ -22,6 +22,7 @@ import logging
 from datetime import datetime, timedelta, UTC
 from functools import partial
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2709,13 +2710,13 @@ class TestExecuteRouteRequirementsMeta:
     """Cover ``meta.requirements`` normalization on ``POST /execute/{task_name}``."""
 
     @staticmethod
-    def _capture_dispatch(mocker: MockerFixture) -> list[dict]:
+    def _capture_dispatch(mocker: MockerFixture) -> list[dict[str, Any]]:
         """Stub dispatch at the executor edge and record the meta it receives.
 
         :param mocker: The patching fixture standing in for the executor edge.
         :return: The list each dispatched request's meta is appended to.
         """
-        dispatched: list[dict] = []
+        dispatched: list[dict[str, Any]] = []
 
         async def fake_dispatch_queue_item(queue_item, passed_session):
             dispatched.append(dict(queue_item.execution_request.meta))

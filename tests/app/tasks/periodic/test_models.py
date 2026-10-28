@@ -238,9 +238,10 @@ class TestPeriodicTaskResponse:
             ),
             model_intervalschedule=IntervalSchedule(every=1, period=Period.HOURS),
         )
-        response = PeriodicTaskResponse.model_validate(data)
-        assert response.execute_request.meta == {"requirements": requirements}
-        assert response.execute_request.eta is None
+        execute_request = PeriodicTaskResponse.model_validate(data).execute_request
+        assert execute_request is not None
+        assert execute_request.meta == {"requirements": requirements}
+        assert execute_request.eta is None
 
     def test_stored_list_requirements_read_back_joined(self):
         """Assert a valid stored list is still normalized to a string."""
@@ -248,8 +249,9 @@ class TestPeriodicTaskResponse:
             args=json.dumps(["t", {"meta": {"requirements": ["a", "b"]}}]),
             model_intervalschedule=IntervalSchedule(every=1, period=Period.HOURS),
         )
-        response = PeriodicTaskResponse.model_validate(data)
-        assert response.execute_request.meta == {"requirements": "a\nb"}
+        execute_request = PeriodicTaskResponse.model_validate(data).execute_request
+        assert execute_request is not None
+        assert execute_request.meta == {"requirements": "a\nb"}
 
 
 class TestPeriodicTaskWrite:
