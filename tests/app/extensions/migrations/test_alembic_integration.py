@@ -57,6 +57,7 @@ from tests.app.beat_autogenerate import (
     create_beat_tables,
     tables_mentioned,
 )
+from tests.app.settingoverride_rows import insert_override, PRE_DROP_MEMBERS
 
 from .conftest import ALERTS_HEAD, UNKNOWN_REVISION
 
@@ -183,16 +184,6 @@ def test_version_skew_error_renders_as_single_greppable_line():
     assert "present on disk" in line
     assert "app.extensions.migrations._orphan_heads" in line
     assert "ERROR" in line
-
-
-def _insert_override(conn, setting_class: str) -> None:
-    """Insert a minimal ``settingoverride`` row with the given setting_class."""
-    conn.exec_driver_sql(
-        "INSERT INTO settingoverride "
-        "(created_at, setting_class, key, value, is_active) "
-        "VALUES ('2026-01-01 00:00:00', ?, 'X', 'true', 1)",
-        (setting_class,),
-    )
 
 
 def _insert_appstate_enabled(conn, app_key: str, enabled: int) -> None:
@@ -625,7 +616,7 @@ def test_setting_class_accepts_unregistered_token_after_upgrade(
     try:
         with engine.begin() as conn:
             for member in unregistered:
-                _insert_override(conn, member)
+                insert_override(conn, member)
             count = conn.exec_driver_sql(
                 "SELECT COUNT(*) FROM settingoverride"
             ).scalar()
@@ -644,7 +635,7 @@ def test_setting_class_check_rejects_unlisted_token_before_drop(
     engine = create_engine(sync_url)
     try:
         with engine.begin() as conn, pytest.raises(IntegrityError):
-            _insert_override(conn, "SETTINGS")
+            insert_override(conn, "SETTINGS")
     finally:
         engine.dispose()
 
@@ -662,7 +653,7 @@ def test_setting_class_check_is_dropped_after_upgrade(extensions_alembic_config)
                 check_constraint_name(conn, "settingoverride", "setting_class") is None
             )
             for token in unconstrained:
-                _insert_override(conn, token)
+                insert_override(conn, token)
             count = conn.exec_driver_sql(
                 "SELECT COUNT(*) FROM settingoverride"
             ).scalar()
@@ -681,8 +672,11 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
     engine = create_engine(sync_url)
     try:
         with engine.begin() as conn:
-            _insert_override(conn, "UNREGISTERED_SETTINGS")
-            _insert_override(conn, "EXTENSIONS_SETTINGS")
+            insert_override(conn, "UNREGISTERED_SETTINGS")
+            insert_override(conn, "EXTENSIONS_SETTINGS")
+            for token in PRE_DROP_MEMBERS:
+                if token != "SEP_SETTINGS":
+                    insert_override(conn, token)
     finally:
         engine.dispose()
 
@@ -704,9 +698,9 @@ def test_setting_class_check_downgrade_deletes_unknown_rows(
             remaining = conn.exec_driver_sql(
                 "SELECT setting_class FROM settingoverride"
             ).fetchall()
-            assert remaining == [("SEP_SETTINGS",)]
+            assert sorted(row[0] for row in remaining) == sorted(PRE_DROP_MEMBERS)
             with pytest.raises(IntegrityError):
-                _insert_override(conn, "UNREGISTERED_SETTINGS")
+                insert_override(conn, "UNREGISTERED_SETTINGS")
     finally:
         engine.dispose()
 
@@ -738,8 +732,8 @@ def test_retoken_revision_moves_the_service_settings_rows_and_back(
     engine = create_engine(sync_url)
     try:
         with engine.begin() as conn:
-            _insert_override(conn, "SEP_SETTINGS")
-            _insert_override(conn, "TASKS_SETTINGS")
+            insert_override(conn, "SEP_SETTINGS")
+            insert_override(conn, "TASKS_SETTINGS")
     finally:
         engine.dispose()
 
