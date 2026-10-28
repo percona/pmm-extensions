@@ -186,7 +186,7 @@ async def _generate_health_report(
     :param refresh: Force advisor refresh before fetching results.
     :param sections: Optional list of sections to include.
     :param upload: Upload generated report to ServiceNow.
-    :return: None.
+    :return: ``None``.
     """
     pmm_api = await resolve_pmm_api()
     if pmm_api is None:
