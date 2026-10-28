@@ -36,12 +36,11 @@ from sqlmodel import col
 
 from app.core.exceptions import HTTPNotFoundException
 from app.core.requests import as_json_object, RemoteAPI
-from app.core.security import get_internal_token
 from app.core.utils.date_time import utc_now
 from app.core.utils.fields import UTCDatetime
 from app.extensions.apps.atw.crud import AtwIncidentExecutionManager
 from app.extensions.apps.atw.models import AtwIncidentExecution
-from app.extensions.apps.atw.send import get_tasks_api
+from app.extensions.apps.atw.send import tasks_api_session
 from app.extensions.db import get_async_session_maker
 from app.tasks.models import TaskHistoryStatusEnum
 
@@ -176,8 +175,7 @@ async def reconcile_executions(batch_size: int) -> None:
             )
     if not targets:
         return
-    client = await get_tasks_api()
-    with client.auth(get_internal_token()) as tasks_api:
+    async with tasks_api_session() as tasks_api:
         for execution_id, task_history_id in targets:
             await _reconcile_one(tasks_api, execution_id, task_history_id)
     logger.info("Examined %d unresolved ATW execution(s).", len(targets))

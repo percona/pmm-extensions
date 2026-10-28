@@ -18,6 +18,7 @@
 import io
 import json
 import os
+import re
 import zipfile
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -30,6 +31,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from aiohttp import ClientError
+from aioresponses import aioresponses, CallbackResult
 from pydantic import SecretStr
 from pytest_mock import MockerFixture
 from sqlalchemy.exc import SQLAlchemyError
@@ -42,6 +44,7 @@ from app.core.config import Settings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.exceptions import HTTPBadRequestException, HTTPConflictException
 from app.core.requests import RemoteAPI
+from app.core.requests.registry import ClientRegistry
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import SettingOverride
 from app.core.utils import json_serializer
@@ -57,6 +60,7 @@ from app.extensions.apps.atw.send import (
     get_tasks_api,
     purge_expired_bundles,
     run_send,
+    tasks_api_session,
 )
 from app.extensions.bundle_upload.plan import (
     DeliveryPlan,
@@ -1759,3 +1763,64 @@ async def test_get_tasks_api_requests_the_tasks_client_log_policy(
     ]
     assert len(tasks_calls) == 1
     assert tasks_calls[0]["withhold_body_log"] is True
+
+
+@pytest.mark.asyncio
+class TestTasksClientHeldForTheSend:
+    """Cover the Tasks client a send stages its bundle through being held."""
+
+    async def test_send_survives_rebind_mid_bundle(
+        self,
+        send_session: AsyncSession,
+        uploader: _FakeUploader,
+        isolated_client_registry: ClientRegistry,
+    ) -> None:
+        """Stage the second execution on the client the first one retired.
+
+        The first upstream read retires the Tasks client, as an override rebind
+        would. The send holds it, so its close waits for the bundle to finish
+        rather than failing the next execution's reads.
+        """
+        row = await _seed_send_log(send_session)
+        client = await get_tasks_api()
+        endpoint = str(extensions_settings.TASKS_ENDPOINT).rstrip("/")
+        rebinds: list[str] = []
+
+        async def upstream_reply(url: Any, **_kwargs: Any) -> CallbackResult:
+            if not rebinds:
+                rebinds.append(str(url))
+                await isolated_client_registry.invalidate(endpoint)
+            if url.path.endswith("/files/"):
+                return CallbackResult(payload={"out.txt": {"is_dir": False}})
+            if url.path.endswith("/file/"):
+                return CallbackResult(body=b"data!")
+            return CallbackResult(
+                payload={"status": TaskHistoryStatusEnum.RUNNING.value}
+            )
+
+        with aioresponses() as upstream:
+            upstream.get(
+                re.compile(rf"{re.escape(endpoint)}/history/.*"),
+                callback=upstream_reply,
+                repeat=True,
+            )
+            await run_send(row.id)
+
+        reloaded = await _reload(send_session, row.id)
+        assert reloaded.status is AtwSendStatusEnum.SUCCESS
+        assert reloaded.detail["file_count"] == len(row.detail["executions"])
+        assert client._session is None
+        assert await get_tasks_api() is not client
+
+    async def test_close_all_force_closes_a_held_run(
+        self, isolated_client_registry: ClientRegistry
+    ) -> None:
+        """Let shutdown end a held client, so a hold cannot outlive the process."""
+        endpoint = str(extensions_settings.TASKS_ENDPOINT).rstrip("/")
+
+        async with tasks_api_session() as tasks_api:
+            await isolated_client_registry.invalidate(endpoint)
+            await isolated_client_registry.close_all()
+
+            with pytest.raises(RuntimeError, match="is closed"):
+                await tasks_api.get("/history/1")

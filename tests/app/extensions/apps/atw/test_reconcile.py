@@ -15,11 +15,13 @@
 
 """Tests for the sweep that fills in run outcomes the recorder never observed."""
 
+import re
 from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aioresponses import aioresponses, CallbackResult
 from fastapi import HTTPException, status
 from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -29,10 +31,13 @@ from app.core.exceptions import (
     HTTPServiceUnavailableException,
 )
 from app.core.requests import RemoteAPI
+from app.core.requests.registry import ClientRegistry
 from app.core.utils.date_time import utc_now
 from app.extensions.apps.atw.crud import AtwIncidentExecutionManager, AtwIncidentManager
 from app.extensions.apps.atw.models import AtwIncident, AtwIncidentExecution
 from app.extensions.apps.atw.reconcile import reconcile_executions
+from app.extensions.apps.atw.send import get_tasks_api
+from app.extensions.config import extensions_settings
 from app.tasks.models import TaskHistoryStatusEnum
 
 _HISTORY_ID = 501
@@ -41,23 +46,29 @@ _TWO_ROWS = 2
 
 
 @pytest.fixture
-def tasks_api(mocker: MockerFixture, session: AsyncSession) -> AsyncMock:
-    """Point the sweep at a mock Tasks client and the test's in-memory session."""
-    api = AsyncMock(spec=RemoteAPI)
-    client = MagicMock()
-    client.auth.return_value.__enter__.return_value = api
-    mocker.patch(
-        "app.extensions.apps.atw.reconcile.get_tasks_api",
-        new=AsyncMock(return_value=client),
-    )
-    mocker.patch(
-        "app.extensions.apps.atw.reconcile.get_internal_token", return_value="token"
-    )
+def sweep_session(mocker: MockerFixture, session: AsyncSession) -> AsyncSession:
+    """Point the sweep at the test's in-memory session."""
     maker = MagicMock()
     maker.return_value.__aenter__ = AsyncMock(return_value=session)
     maker.return_value.__aexit__ = AsyncMock(return_value=False)
     mocker.patch(
         "app.extensions.apps.atw.reconcile.get_async_session_maker", return_value=maker
+    )
+    return session
+
+
+@pytest.fixture
+def tasks_api(mocker: MockerFixture, sweep_session: AsyncSession) -> AsyncMock:
+    """Point the sweep at a mock Tasks client and the test's in-memory session."""
+    api = AsyncMock(spec=RemoteAPI)
+    client = MagicMock()
+    client.auth.return_value.__enter__.return_value = api
+    mocker.patch(
+        "app.extensions.apps.atw.send.get_tasks_api",
+        new=AsyncMock(return_value=client),
+    )
+    mocker.patch(
+        "app.extensions.apps.atw.send.get_internal_token", return_value="token"
     )
     return api
 
@@ -362,3 +373,43 @@ class TestBatching:
         assert tasks_api.get.await_args.args[0].endswith(str(newer.task_history_id))
         await session.refresh(newer)
         assert newer.terminal_status == TaskHistoryStatusEnum.FAILED.value
+
+
+class TestRebindMidSweep:
+    """Check a settings rebind between two rows does not strand the sweep."""
+
+    @pytest.mark.asyncio
+    async def test_reconcile_survives_rebind_between_rows(
+        self, sweep_session: AsyncSession, isolated_client_registry: ClientRegistry
+    ) -> None:
+        """Ensure the second row resolves on the client the sweep started on.
+
+        The first upstream read retires the Tasks client, as an override rebind
+        would. The sweep holds it, so the close waits for the sweep to finish
+        rather than failing the next row's read.
+        """
+        first = await _seed_execution(sweep_session, task_history_id=1)
+        second = await _seed_execution(sweep_session, task_history_id=2)
+        client = await get_tasks_api()
+        endpoint = str(extensions_settings.TASKS_ENDPOINT).rstrip("/")
+        rebinds: list[str] = []
+
+        async def rebind_once(url: Any, **_kwargs: Any) -> CallbackResult:
+            if not rebinds:
+                rebinds.append(str(url))
+                await isolated_client_registry.invalidate(endpoint)
+            return CallbackResult(payload=_upstream_run())
+
+        with aioresponses() as upstream:
+            upstream.get(
+                re.compile(rf"{re.escape(endpoint)}/history/\d+"),
+                callback=rebind_once,
+                repeat=True,
+            )
+            await reconcile_executions(_BATCH_SIZE)
+
+        for execution in (first, second):
+            await sweep_session.refresh(execution)
+            assert execution.terminal_status == TaskHistoryStatusEnum.FAILED.value
+        assert client._session is None
+        assert await get_tasks_api() is not client
