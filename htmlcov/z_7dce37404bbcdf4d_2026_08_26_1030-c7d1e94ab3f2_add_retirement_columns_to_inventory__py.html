@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Coverage for app/inventory/migrations/versions/2026_08_26_1030-c7d1e94ab3f2_add_retirement_columns_to_inventory_.py: 57%</title>
+    <title>Coverage for app/inventory/migrations/versions/2026_08_26_1030-c7d1e94ab3f2_add_retirement_columns_to_inventory_.py: 100%</title>
     <link rel="icon" sizes="32x32" href="favicon_32_cb_c827f16f.png">
     <link rel="stylesheet" href="style_cb_4667309f.css" type="text/css">
     <script src="coverage_html_cb_54cfdca1.js" defer></script>
@@ -12,7 +12,7 @@
     <div class="content">
         <h1>
             <span class="text">Coverage for </span><b>app<span class="sep">/</span>inventory<span class="sep">/</span>migrations<span class="sep">/</span>versions<span class="sep">/</span>2026_08_26_1030-c7d1e94ab3f2_add_retirement_columns_to_inventory_.py</b>:
-            <span class="pc_cov">57%</span>
+            <span class="pc_cov">100%</span>
         </h1>
         <aside id="help_panel_wrapper">
             <input id="help_panel_state" type="checkbox">
@@ -56,8 +56,8 @@
         </aside>
         <h2>
             <span class="text">25 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">16<span class="text"> run</span></button>
-            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">9<span class="text"> missing</span></button>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">25<span class="text"> run</span></button>
+            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">0<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
             <button type="button" class="par run show_par button_toggle_par" value="par" data-shortcut="p" title="Toggle lines partially run">0<span class="text"> partial</span></button>
         </h2>
@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_7dce37404bbcdf4d_2026_08_26_1730-e4b8c2f7a915_require_pmm_origin_on_inventory_entities_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.0">coverage.py v7.17.0</a>,
-            created at 2026-10-28 22:59 +0000
+            created at 2026-10-28 23:34 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -170,15 +170,15 @@
     <p class="pln"><span class="n"><a id="t86" href="#t86">86</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t87" href="#t87">87</a></span><span class="t"><span class="key">def</span> <span class="nam">downgrade</span><span class="op">(</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t88" href="#t88">88</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Delete the tombstones, then restore the unique indexes and drop the columns.&quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t89" href="#t89">89</a></span><span class="t">    <span class="key">for</span> <span class="nam">table_name</span> <span class="key">in</span> <span class="nam">reversed</span><span class="op">(</span><span class="nam">_RETIRABLE_TABLES</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t90" href="#t90">90</a></span><span class="t">        <span class="nam">retirable</span> <span class="op">=</span> <span class="nam">sa</span><span class="op">.</span><span class="nam">table</span><span class="op">(</span><span class="nam">table_name</span><span class="op">,</span> <span class="nam">sa</span><span class="op">.</span><span class="nam">column</span><span class="op">(</span><span class="str">&quot;retired_at&quot;</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t91" href="#t91">91</a></span><span class="t">        <span class="nam">op</span><span class="op">.</span><span class="nam">execute</span><span class="op">(</span><span class="nam">sa</span><span class="op">.</span><span class="nam">delete</span><span class="op">(</span><span class="nam">retirable</span><span class="op">)</span><span class="op">.</span><span class="nam">where</span><span class="op">(</span><span class="nam">retirable</span><span class="op">.</span><span class="nam">c</span><span class="op">.</span><span class="nam">retired_at</span><span class="op">.</span><span class="nam">is_not</span><span class="op">(</span><span class="key">None</span><span class="op">)</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t92" href="#t92">92</a></span><span class="t">    <span class="key">for</span> <span class="nam">table_name</span><span class="op">,</span> <span class="nam">index_name</span><span class="op">,</span> <span class="nam">columns</span> <span class="key">in</span> <span class="nam">_UNIQUE_INDEXES</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t93" href="#t93">93</a></span><span class="t">        <span class="nam">op</span><span class="op">.</span><span class="nam">drop_index</span><span class="op">(</span><span class="nam">index_name</span><span class="op">,</span> <span class="nam">table_name</span><span class="op">=</span><span class="nam">table_name</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t94" href="#t94">94</a></span><span class="t">        <span class="nam">op</span><span class="op">.</span><span class="nam">create_index</span><span class="op">(</span><span class="nam">index_name</span><span class="op">,</span> <span class="nam">table_name</span><span class="op">,</span> <span class="nam">columns</span><span class="op">,</span> <span class="nam">unique</span><span class="op">=</span><span class="key">True</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t95" href="#t95">95</a></span><span class="t">    <span class="key">for</span> <span class="nam">table_name</span> <span class="key">in</span> <span class="nam">_RETIRABLE_TABLES</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t96" href="#t96">96</a></span><span class="t">        <span class="nam">op</span><span class="op">.</span><span class="nam">drop_column</span><span class="op">(</span><span class="nam">table_name</span><span class="op">,</span> <span class="str">&quot;retirement_key&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t97" href="#t97">97</a></span><span class="t">        <span class="nam">op</span><span class="op">.</span><span class="nam">drop_column</span><span class="op">(</span><span class="nam">table_name</span><span class="op">,</span> <span class="str">&quot;retired_at&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t89" href="#t89">89</a></span><span class="t">    <span class="key">for</span> <span class="nam">table_name</span> <span class="key">in</span> <span class="nam">reversed</span><span class="op">(</span><span class="nam">_RETIRABLE_TABLES</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t90" href="#t90">90</a></span><span class="t">        <span class="nam">retirable</span> <span class="op">=</span> <span class="nam">sa</span><span class="op">.</span><span class="nam">table</span><span class="op">(</span><span class="nam">table_name</span><span class="op">,</span> <span class="nam">sa</span><span class="op">.</span><span class="nam">column</span><span class="op">(</span><span class="str">&quot;retired_at&quot;</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t91" href="#t91">91</a></span><span class="t">        <span class="nam">op</span><span class="op">.</span><span class="nam">execute</span><span class="op">(</span><span class="nam">sa</span><span class="op">.</span><span class="nam">delete</span><span class="op">(</span><span class="nam">retirable</span><span class="op">)</span><span class="op">.</span><span class="nam">where</span><span class="op">(</span><span class="nam">retirable</span><span class="op">.</span><span class="nam">c</span><span class="op">.</span><span class="nam">retired_at</span><span class="op">.</span><span class="nam">is_not</span><span class="op">(</span><span class="key">None</span><span class="op">)</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t92" href="#t92">92</a></span><span class="t">    <span class="key">for</span> <span class="nam">table_name</span><span class="op">,</span> <span class="nam">index_name</span><span class="op">,</span> <span class="nam">columns</span> <span class="key">in</span> <span class="nam">_UNIQUE_INDEXES</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t93" href="#t93">93</a></span><span class="t">        <span class="nam">op</span><span class="op">.</span><span class="nam">drop_index</span><span class="op">(</span><span class="nam">index_name</span><span class="op">,</span> <span class="nam">table_name</span><span class="op">=</span><span class="nam">table_name</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t94" href="#t94">94</a></span><span class="t">        <span class="nam">op</span><span class="op">.</span><span class="nam">create_index</span><span class="op">(</span><span class="nam">index_name</span><span class="op">,</span> <span class="nam">table_name</span><span class="op">,</span> <span class="nam">columns</span><span class="op">,</span> <span class="nam">unique</span><span class="op">=</span><span class="key">True</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t95" href="#t95">95</a></span><span class="t">    <span class="key">for</span> <span class="nam">table_name</span> <span class="key">in</span> <span class="nam">_RETIRABLE_TABLES</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t96" href="#t96">96</a></span><span class="t">        <span class="nam">op</span><span class="op">.</span><span class="nam">drop_column</span><span class="op">(</span><span class="nam">table_name</span><span class="op">,</span> <span class="str">&quot;retirement_key&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t97" href="#t97">97</a></span><span class="t">        <span class="nam">op</span><span class="op">.</span><span class="nam">drop_column</span><span class="op">(</span><span class="nam">table_name</span><span class="op">,</span> <span class="str">&quot;retired_at&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -188,7 +188,7 @@
             <a class="nav" href="z_7dce37404bbcdf4d_2026_08_26_1730-e4b8c2f7a915_require_pmm_origin_on_inventory_entities_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.0">coverage.py v7.17.0</a>,
-            created at 2026-10-28 22:59 +0000
+            created at 2026-10-28 23:34 +0000
         </p>
     </div>
 </footer>

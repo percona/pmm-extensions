@@ -57,12 +57,12 @@
 | app/core/requests/registry.py                                                                                                       |       63 |        2 |       16 |        2 |     95% |  105, 116 |
 | app/core/requests/remote\_api.py                                                                                                    |      527 |        4 |      120 |        6 |     98% |402, 746, 824-\>829, 832-\>exit, 994-\>exit, 1500-\>1499, 1613, 1625 |
 | app/core/security.py                                                                                                                |       13 |        0 |        0 |        0 |    100% |           |
-| app/core/settings\_override/alembic\_ops.py                                                                                         |      154 |       15 |       56 |       14 |     86% |93, 96, 98, 100-\>102, 120, 122, 158, 160, 174, 176, 217, 261, 306, 335, 361-362 |
+| app/core/settings\_override/alembic\_ops.py                                                                                         |      153 |       15 |       56 |       14 |     86% |93, 96, 99, 101-\>103, 122, 124, 160, 162, 176, 178, 219, 263, 308, 337, 363-364 |
 | app/core/settings\_override/api/export.py                                                                                           |        9 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/api/models.py                                                                                           |       24 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/api/routes.py                                                                                           |      350 |       45 |      108 |       11 |     85% |335, 449, 495, 519, 664-671, 798, 827-837, 870-876, 884, 1018, 1048-1049, 1202, 1354, 1356-1357, 1511-\>1548, 1521-1532, 1536-1547, 1549, 1610, 1612-1613, 1671, 1672-\>1674, 1673, 1675, 1677 |
 | app/core/settings\_override/cache.py                                                                                                |      140 |       13 |       50 |        6 |     88% |248-253, 266-271, 357, 420, 461, 465-472 |
-| app/core/settings\_override/constants.py                                                                                            |       12 |        0 |        0 |        0 |    100% |           |
+| app/core/settings\_override/constants.py                                                                                            |       11 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/extensions\_owned.py                                                                                    |       40 |        0 |        2 |        0 |    100% |           |
 | app/core/settings\_override/lifecycle.py                                                                                            |      133 |        1 |       38 |        0 |     99% |       561 |
 | app/core/settings\_override/manager.py                                                                                              |        5 |        0 |        0 |        0 |    100% |           |
@@ -353,7 +353,7 @@
 | app/extensions/migrations/versions/2026\_07\_02\_1001-a2b3c4d5e6f7\_extend\_setting\_class\_enum\_inventory.py                      |       27 |        3 |        6 |        3 |     82% |63, 67, 94 |
 | app/extensions/migrations/versions/2026\_08\_08\_0306-cf94cc04be4b\_drop\_session\_and\_messages\_setting\_.py                      |       30 |        3 |        6 |        3 |     83% |73, 106, 110 |
 | app/extensions/migrations/versions/2026\_08\_12\_1200-d1e2f3a4b5c6\_extend\_setting\_class\_enum\_health\_report.py                 |       27 |        3 |        6 |        3 |     82% |63, 67, 94 |
-| app/extensions/migrations/versions/2026\_08\_17\_2210-74720aeda25b\_drop\_setting\_class\_check\_constraint.py                      |        9 |        0 |        0 |        0 |    100% |           |
+| app/extensions/migrations/versions/2026\_08\_17\_2210-74720aeda25b\_drop\_setting\_class\_check\_constraint.py                      |       10 |        0 |        0 |        0 |    100% |           |
 | app/extensions/migrations/versions/2026\_08\_25\_1902-867df844fe17\_add\_sync\_run\_state\_and\_entity\_absence\_.py                |       32 |        0 |        0 |        0 |    100% |           |
 | app/extensions/migrations/versions/2026\_09\_04\_1841-e4b3754984d8\_encrypt\_secret\_setting\_overrides.py                          |       51 |        0 |        0 |        0 |    100% |           |
 | app/extensions/migrations/versions/2026\_09\_04\_1852-c9880f0ac1bd\_add\_settingoverride\_updated\_by.py                            |        9 |        0 |        0 |        0 |    100% |           |
@@ -388,7 +388,7 @@
 | app/extensions/sync/exceptions.py                                                                                                   |       36 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/fields.py                                                                                                       |       21 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/health.py                                                                                                       |       86 |        0 |       22 |        2 |     98% |234-\>238, 235-\>234 |
-| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 129-130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
+| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 128, 130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
 | app/extensions/sync/syncers/mysql/payload.py                                                                                        |      176 |       47 |       54 |        5 |     70% |158-\>166, 242-246, 251-256, 269-275, 279-302, 356-\>372, 375, 396-404, 423 |
 | app/extensions/sync/syncers/mysql/syncer.py                                                                                         |      241 |        2 |       94 |        5 |     98% |111, 604-\>605, 716, 819-\>823, 821-\>820 |
 | app/extensions/sync/syncers/pmm.py                                                                                                  |      176 |        4 |       48 |        1 |     97% |113-117, 151 |
@@ -415,8 +415,8 @@
 | app/inventory/migrations/versions/2026\_07\_02\_1000-c4d5e6f7a8b9\_add\_setting\_override\_table.py                                 |       29 |        9 |        4 |        1 |     64% |63, 103-112 |
 | app/inventory/migrations/versions/2026\_08\_08\_0306-34e6108ea194\_drop\_messages\_setting\_overrides.py                            |       27 |        9 |        6 |        1 |     58% | 61, 90-99 |
 | app/inventory/migrations/versions/2026\_08\_12\_1200-f3a4b5c6d7e8\_extend\_setting\_class\_enum\_health\_report.py                  |       27 |        9 |        6 |        2 |     61% |63, 67, 89-99 |
-| app/inventory/migrations/versions/2026\_08\_17\_2210-a38607bba456\_drop\_setting\_class\_check\_constraint.py                       |        9 |        1 |        0 |        0 |     89% |        50 |
-| app/inventory/migrations/versions/2026\_08\_26\_1030-c7d1e94ab3f2\_add\_retirement\_columns\_to\_inventory\_.py                     |       25 |        9 |       10 |        0 |     57% |     89-97 |
+| app/inventory/migrations/versions/2026\_08\_17\_2210-a38607bba456\_drop\_setting\_class\_check\_constraint.py                       |       10 |        0 |        0 |        0 |    100% |           |
+| app/inventory/migrations/versions/2026\_08\_26\_1030-c7d1e94ab3f2\_add\_retirement\_columns\_to\_inventory\_.py                     |       25 |        0 |       10 |        0 |    100% |           |
 | app/inventory/migrations/versions/2026\_08\_26\_1730-e4b8c2f7a915\_require\_pmm\_origin\_on\_inventory\_entities.py                 |       38 |        0 |        6 |        0 |    100% |           |
 | app/inventory/migrations/versions/2026\_08\_26\_1800-d4f2a7c8b1e6\_add\_retirement\_collection\_indexes.py                          |       28 |        6 |       16 |        4 |     68% |74-76, 81-\>exit, 93-95, 98-\>exit |
 | app/inventory/migrations/versions/2026\_08\_27\_1655-7ac8bc62f65d\_drop\_narrowed\_service\_port\_uniqueness\_.py                   |       13 |        0 |        0 |        0 |    100% |           |
@@ -521,7 +521,7 @@
 | app/tasks/migrations/versions/2026\_08\_08\_0306-6a19d56d7985\_drop\_messages\_setting\_overrides.py                                |       27 |        9 |        6 |        1 |     58% | 61, 90-99 |
 | app/tasks/migrations/versions/2026\_08\_12\_1200-e2f3a4b5c6d7\_extend\_setting\_class\_enum\_health\_report.py                      |       27 |        9 |        6 |        2 |     61% |63, 67, 89-99 |
 | app/tasks/migrations/versions/2026\_08\_13\_2143-a19da5cf0bca\_add\_taskhistory\_log\_state\_capture\_status.py                     |       20 |        0 |        0 |        0 |    100% |           |
-| app/tasks/migrations/versions/2026\_08\_17\_2210-7d2e869ac188\_drop\_setting\_class\_check\_constraint.py                           |        9 |        0 |        0 |        0 |    100% |           |
+| app/tasks/migrations/versions/2026\_08\_17\_2210-7d2e869ac188\_drop\_setting\_class\_check\_constraint.py                           |       10 |        0 |        0 |        0 |    100% |           |
 | app/tasks/migrations/versions/2026\_09\_01\_1329-3a4dfc2a2be8\_add\_unlaunchable\_to\_taskhistory\_status\_enum.py                  |       18 |        0 |        0 |        0 |    100% |           |
 | app/tasks/migrations/versions/2026\_09\_04\_1842-8fdfa7869662\_encrypt\_secret\_setting\_overrides.py                               |       25 |        0 |        0 |        0 |    100% |           |
 | app/tasks/migrations/versions/2026\_09\_04\_1853-36a31fac9ef7\_add\_settingoverride\_updated\_by.py                                 |        9 |        0 |        0 |        0 |    100% |           |
@@ -544,7 +544,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35361** | **1759** | **8540** |  **693** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35362** | **1749** | **8540** |  **693** | **94%** |           |
 
 
 ## Setup coverage badge
