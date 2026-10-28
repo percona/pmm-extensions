@@ -94,7 +94,7 @@ def normalize_requirements_meta(meta: dict[str, Any] | None) -> dict[str, Any] |
     raise ValueError(msg)
 
 
-def _normalize_requirements_field(
+def normalize_requirements_field(
     meta: dict[str, Any] | None, info: ValidationInfo
 ) -> dict[str, Any] | None:
     """Normalize ``meta`` for a ``meta`` field validator, sparing stored reads.
@@ -246,7 +246,7 @@ class TaskExecutionRequest(BaseModel):
         :param info: The validation info carrying the optional context.
         :return: The meta with ``requirements`` as a string.
         """
-        return _normalize_requirements_field(v, info)
+        return normalize_requirements_field(v, info)
 
     def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
         """Yield the fields ``repr`` and ``str`` render, protected leaves redacted.

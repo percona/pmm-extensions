@@ -25,7 +25,7 @@ from app.core.utils.fields import ARBITRARY_ARGS_SCHEMA, EmptyStrToNone
 from app.tasks.hook_resolver import validate_hook_path
 from app.tasks.models.bases import TaskBase
 from app.tasks.models.constants import LATEST_HISTORY_STATUS_NAMES_MAX
-from app.tasks.models.payloads import _normalize_requirements_field
+from app.tasks.models.payloads import normalize_requirements_field
 
 
 class TaskWrite(TaskBase):
@@ -138,7 +138,7 @@ class TaskExecuteRequest(BaseModel):
         :param info: The validation info carrying the optional context.
         :return: The meta with ``requirements`` as a string.
         """
-        return _normalize_requirements_field(v, info) or {}
+        return normalize_requirements_field(v, info) or {}
 
     @field_validator("chain_on_failure", mode="before")
     @classmethod

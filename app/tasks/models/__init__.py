@@ -58,6 +58,7 @@ from app.tasks.models.payloads import (
     ExecutionEvent,
     ExecutorHostState,
     FileMetadata,
+    normalize_requirements_field,
     normalize_requirements_meta,
     TaskExecutionRequest,
     TaskExecutionRequestJSON,
@@ -128,5 +129,6 @@ __all__ = [
     "TaskResponse",
     "TaskStats",
     "TaskWrite",
+    "normalize_requirements_field",
     "normalize_requirements_meta",
 ]
