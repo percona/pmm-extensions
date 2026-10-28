@@ -16,9 +16,7 @@
 """Define the constants of the Task API models."""
 
 TASK_ALIAS_LENGTH = 100
-
 SYSTEM_USER = "SYSTEM"
-
 ANY_OWNER = "ANY"
 
 #: ``meta`` key holding the pip requirements a Python task installs. The
@@ -49,18 +47,13 @@ GENERIC_EXECUTOR_TASK_NAMES: frozenset[str] = frozenset(
 )
 
 INVENTORY_SYNC_TASK_NAME = "inventory-sync"
-
 #: The Celery task every seeded or kicked ``inventory-sync`` run goes through.
 EXECUTE_TASK_BY_NAME_TASK = "app.tasks.celery.execute_task_by_name"
-
 #: Meta key naming the per-syncer schedules this one starts after its first pass.
 INVENTORY_SYNC_FOLLOWERS_KEY = "follower_syncers"
-
 #: Meta key marking a leader-started run, which skips when its syncer is busy.
 INVENTORY_SYNC_FIRST_RUN_KEY = "first_run_only"
-
 INVENTORY_COLLECTION_TASK_NAME = "inventory-collection"
-
 SYNC_RUNNING_TASKS_TASK_NAME = "tasks__sync_running_tasks"
 
 #: Maintenance / system task names excluded from user-facing task lists.
