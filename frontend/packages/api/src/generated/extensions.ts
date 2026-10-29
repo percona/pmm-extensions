@@ -7814,7 +7814,8 @@ export interface components {
      *     :param description: Optional helper text describing the plugin's
      *         purpose. Defaults to ``None``.
      *     :param task_type: Optional task-type identifier used when creating tasks
-     *         via the shared task API. Defaults to ``None``.
+     *         via the shared task API. Rejected at construction when ``entities`` is
+     *         non-empty — entity records are not task runs. Defaults to ``None``.
      *     :param forms: Form sections for single-entity / task plugins. When
      *         ``entities`` is non-empty, root ``forms`` must be empty (declare
      *         forms on each entity instead); non-empty root ``forms`` are rejected
@@ -7822,12 +7823,16 @@ export interface components {
      *     :param capabilities: Optional plugin-level feature flags. Defaults to
      *         ``None``.
      *     :param list_view: List-view configuration when ``entities`` is unset
-     *         (single-entity / task plugins). Ignored when ``entities`` is set.
+     *         (single-entity / task plugins). Required when ``entities`` is unset or
+     *         empty; rejected at construction when ``entities`` is non-empty (declare
+     *         ``list_view`` on each entity instead).
      *     :param detail_view: Optional declarative layout for the task detail page's
-     *         section cards (task-style plugins only; ignored when ``entities`` is
-     *         set). Optional at the model layer for backwards compatibility. A
-     *         forward-looking guard refuses to load a plugin that sets
-     *         ``task_type`` without declaring ``detail_view``. Defaults to ``None``.
+     *         section cards (task-style plugins only; rejected at construction when
+     *         ``entities`` is non-empty, since ``AppEntitySchema`` declares no
+     *         ``detail_view``). Optional at the model layer for backwards
+     *         compatibility. A forward-looking guard refuses to load a task-style
+     *         plugin that sets ``task_type`` without declaring ``detail_view``.
+     *         Defaults to ``None``.
      *     :param entities: Optional list of CRUD entities for multi-resource plugins.
      *         When non-empty, the React shell renders one list/create/detail flow
      *         per entity. Defaults to ``None`` (legacy single-entity mode).
