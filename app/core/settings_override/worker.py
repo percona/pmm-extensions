@@ -21,6 +21,7 @@ __all__ = ["SEED_TIMEOUT_FRACTION", "WorkerRefresher"]
 
 import logging
 import time
+import weakref
 from typing import TYPE_CHECKING
 
 from app.core.settings_override.lifecycle import (
@@ -42,10 +43,35 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Fraction of the prefork pool's child-liveness deadline the inline seed may
-#: consume. Strictly below 1.0: ``process_initializer`` does more than the
-#: seed, and the child must still send ``WORKER_UP`` inside the same window.
+#: Fraction of the prefork pool's child-liveness deadline that all inline seeds
+#: on one event loop may consume together. Strictly below 1.0:
+#: ``process_initializer`` does more than the seeds, and the child must still
+#: send ``WORKER_UP`` inside the same window.
 SEED_TIMEOUT_FRACTION = 0.5
+
+_seed_deadlines: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, float] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _remaining_seed_budget(loop: asyncio.AbstractEventLoop, window: float) -> float:
+    """Return what is left of ``loop``'s shared inline-seed window.
+
+    The first bounded seed on ``loop`` opens a window of ``window`` seconds, and
+    every later seed on the same loop is bounded by what remains, so the seeds of
+    all refreshers in one prefork child together stay inside
+    :data:`SEED_TIMEOUT_FRACTION` of the liveness deadline. Keyed by loop because
+    each child gets a fresh loop at ``worker_process_init``; the entry is dropped
+    with the loop.
+
+    :param loop: The event loop the seed runs on.
+    :param window: The whole window in seconds, opened on the first call for
+        ``loop``.
+    :return: The seconds left in the window, never negative.
+    """
+    now = time.monotonic()
+    deadline = _seed_deadlines.setdefault(loop, now + window)
+    return max(0.0, deadline - now)
 
 
 class WorkerRefresher:
@@ -59,6 +85,8 @@ class WorkerRefresher:
     :meth:`maybe_refresh` rather than driven by a background
     ``asyncio.sleep`` loop: a prefork child's loop only runs inside
     ``run_until_complete`` windows, so a timer-based cycle could starve.
+    :meth:`prime` warms the proxies in the worker's main process before the
+    fork, so each child's seed skips the settings build.
 
     Every dependency is a zero-argument callable resolved at :meth:`start`
     time, never a value captured at construction: the instance is a
@@ -78,7 +106,7 @@ class WorkerRefresher:
     :param session_maker_factory: Returns the service-scoped
         ``async_sessionmaker`` the refresh cycle reads override rows through.
     :param proxies_factory: Composes the proxy registry to refresh, invoked
-        once per effective :meth:`start`.
+        once per effective :meth:`start` and once per effective :meth:`prime`.
     :param now: Returns the monotonic clock used for the due-check and
         last-refresh stamp. Defaults to :func:`time.monotonic`.
     """
@@ -115,11 +143,14 @@ class WorkerRefresher:
         method returns. No periodic ``asyncio.Task`` is created: subsequent
         refreshes are pulled from :meth:`maybe_refresh` at task boundaries.
 
-        When ``proc_alive_timeout`` is set, the inline seed is bounded to
-        :data:`SEED_TIMEOUT_FRACTION` of that deadline via
-        :func:`~app.core.settings_override.lifecycle.bounded_seed` so a hanging
-        database cannot push the child past the prefork pool's liveness window.
-        On seed-budget expiry the child is still armed — the next due
+        When ``proc_alive_timeout`` is set, the inline seed is bounded via
+        :func:`~app.core.settings_override.lifecycle.bounded_seed` by what
+        remains of the loop's shared seed window:
+        :data:`SEED_TIMEOUT_FRACTION` of that deadline, across every refresher
+        seeding on the same loop. A hanging database therefore cannot push the
+        child past the prefork pool's liveness window however many refreshers
+        it runs. A seed that starts after the window is spent runs with a 0s
+        budget and takes the expiry path. On seed-budget expiry the child is still armed — the next due
         ``task_prerun`` will refresh once any cancelled seed has finished
         unwinding — and may retain a possibly incomplete seed (proxies
         published before the hang keep DB overrides; others stay on their prior
@@ -140,8 +171,9 @@ class WorkerRefresher:
             marked with :func:`~app.core.settings_override.lifecycle.fire_on_boot`,
             for keys it published an override for.
         :param proc_alive_timeout: The prefork pool's child-liveness deadline
-            in seconds. ``None`` (the default) leaves the inline seed
-            unbounded.
+            in seconds; the seed is bounded by what remains of the loop's
+            shared window of :data:`SEED_TIMEOUT_FRACTION` of it. ``None`` (the
+            default) leaves the inline seed unbounded and opens no window.
         :raises Exception: Re-raises whatever ``proxies_factory()`` raises —
             it is evaluated before the refresh starts — and whatever an
             unbounded seed propagates, in practice limited to
@@ -156,12 +188,15 @@ class WorkerRefresher:
         if self._armed:
             return
         proxies = self._proxies_factory()
+        loop = self._loop_getter()
         seed_timeout = (
             None
             if proc_alive_timeout is None
-            else proc_alive_timeout * SEED_TIMEOUT_FRACTION
+            else _remaining_seed_budget(
+                loop, proc_alive_timeout * SEED_TIMEOUT_FRACTION
+            )
         )
-        seeded, pending = self._loop_getter().run_until_complete(
+        seeded, pending = loop.run_until_complete(
             bounded_seed(
                 self._session_maker_factory,
                 proxies,
@@ -178,6 +213,39 @@ class WorkerRefresher:
         self._proxies = proxies
         self._callbacks = callbacks
         self._armed = True
+
+    def prime(self, *, enabled: bool | None = None) -> None:
+        """Resolve every proxy's YAML/env settings before the prefork pool forks.
+
+        Intended for a ``worker_init`` receiver, which Celery dispatches in the
+        worker's main process after the include modules are imported and before
+        the pool forks. Each proxy caches its resolved instance, so the children
+        inherit it and their inline seed does not rebuild the settings class,
+        which re-reads the YAML profile, inside its seed budget. Nothing is
+        armed, and neither the event loop nor the session maker is resolved. A
+        proxy that fails to resolve stays unresolved; the child's seed retries
+        it and :func:`~app.core.settings_override.lifecycle.refresh_all` logs
+        the failure.
+
+        :param enabled: Whether the refresher will arm at all. When ``False``
+            nothing is resolved. ``None``, the default, reads
+            ``Settings.SETTINGS_OVERRIDE.REFRESHER_ENABLED``.
+        :raises Exception: Re-raises whatever ``proxies_factory()`` raises;
+            Celery logs an exception from a ``worker_init`` receiver and the
+            worker continues.
+        """
+        _, enabled = resolve_refresher_options(None, enabled=enabled)
+        if not enabled:
+            return
+        for setting_class, entry in self._proxies_factory().items():
+            try:
+                entry.proxy.get_base()
+            except Exception:
+                logger.debug(
+                    "Deferring %s settings resolution to the child seed",
+                    setting_class,
+                    exc_info=True,
+                )
 
     def maybe_refresh(self) -> None:
         """Refresh overrides when armed and the interval has elapsed.

@@ -60,6 +60,7 @@ from app.extensions.config import extensions_settings, ExtensionsSettings
 from app.extensions.deps import resolve_pmm_api
 from app.extensions.settings_override import (
     build_extensions_override_proxies,
+    prime_extensions_settings_override_refresher,
     refresh_extensions_overrides_if_due,
     republish_extensions_settings_snapshot,
     start_extensions_settings_override_refresher,
@@ -377,6 +378,16 @@ class TestExtensionsWorkerHandlers:
         refresh_extensions_overrides_if_due()
 
         maybe.assert_called_once_with()
+
+    def test_worker_init_receiver_primes_the_refresher(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Wire ``prime_extensions_settings_override_refresher`` to the pre-fork warm-up."""
+        prime = mocker.spy(extensions_worker._refresher, "prime")
+
+        prime_extensions_settings_override_refresher()
+
+        prime.assert_called_once_with()
 
     @pytest.mark.usefixtures("worker_loop_env")
     def test_init_registers_worker_override_callbacks(self) -> None:
