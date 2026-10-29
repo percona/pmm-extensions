@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Coverage for app/extensions/apps/inventory/models.py: 69%</title>
+    <title>Coverage for app/extensions/apps/inventory/models.py: 100%</title>
     <link rel="icon" sizes="32x32" href="favicon_32_cb_c827f16f.png">
     <link rel="stylesheet" href="style_cb_4667309f.css" type="text/css">
     <script src="coverage_html_cb_54cfdca1.js" defer></script>
@@ -12,7 +12,7 @@
     <div class="content">
         <h1>
             <span class="text">Coverage for </span><b>app<span class="sep">/</span>extensions<span class="sep">/</span>apps<span class="sep">/</span>inventory<span class="sep">/</span>models.py</b>:
-            <span class="pc_cov">69%</span>
+            <span class="pc_cov">100%</span>
         </h1>
         <aside id="help_panel_wrapper">
             <input id="help_panel_state" type="checkbox">
@@ -55,11 +55,11 @@
             </div>
         </aside>
         <h2>
-            <span class="text">31 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">24<span class="text"> run</span></button>
-            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">7<span class="text"> missing</span></button>
+            <span class="text">5 statements &nbsp;</span>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">5<span class="text"> run</span></button>
+            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">0<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
-            <button type="button" class="par run show_par button_toggle_par" value="par" data-shortcut="p" title="Toggle lines partially run">3<span class="text"> partial</span></button>
+            <button type="button" class="par run show_par button_toggle_par" value="par" data-shortcut="p" title="Toggle lines partially run">0<span class="text"> partial</span></button>
         </h2>
         <p class="text">
             <a id="prevFileLink" class="nav" href="z_acb7d923058cb12c_deps_py.html">&#xab; prev</a> &nbsp; &nbsp;
@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_acb7d923058cb12c_sync_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.0">coverage.py v7.17.0</a>,
-            created at 2026-10-28 23:46 +0000
+            created at 2026-10-29 00:09 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -99,130 +99,39 @@
     <p class="pln"><span class="n"><a id="t15" href="#t15">15</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t16" href="#t16">16</a></span><span class="t"><span class="str">&quot;&quot;&quot;Define Pydantic models for the Inventory plugin&#x27;s schedule UI and API responses.&quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t17" href="#t17">17</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t18" href="#t18">18</a></span><span class="t"><span class="key">from</span> <span class="nam">typing</span> <span class="key">import</span> <span class="nam">Any</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t18" href="#t18">18</a></span><span class="t"><span class="key">from</span> <span class="nam">pydantic</span> <span class="key">import</span> <span class="nam">BaseModel</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t19" href="#t19">19</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t20" href="#t20">20</a></span><span class="t"><span class="key">from</span> <span class="nam">pydantic</span> <span class="key">import</span> <span class="nam">BaseModel</span><span class="op">,</span> <span class="nam">model_validator</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t21" href="#t21">21</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t22" href="#t22">22</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">celery</span><span class="op">.</span><span class="nam">models</span> <span class="key">import</span> <span class="nam">CrontabSchedule</span><span class="op">,</span> <span class="nam">IntervalSchedule</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t23" href="#t23">23</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">utils</span><span class="op">.</span><span class="nam">fields</span> <span class="key">import</span> <span class="nam">EmptyStrToNone</span><span class="op">,</span> <span class="nam">NonEmptyStr</span><span class="op">,</span> <span class="nam">UTCDatetime</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t24" href="#t24">24</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">extensions</span><span class="op">.</span><span class="nam">models</span> <span class="key">import</span> <span class="nam">SyncStatusEnum</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t25" href="#t25">25</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">extensions</span><span class="op">.</span><span class="nam">utils</span><span class="op">.</span><span class="nam">forms</span> <span class="key">import</span> <span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t">    <span class="nam">parse_crontab_form_fields</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t27" href="#t27">27</a></span><span class="t">    <span class="nam">parse_interval_form_fields</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t28" href="#t28">28</a></span><span class="t"><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t29" href="#t29">29</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">tasks</span><span class="op">.</span><span class="nam">models</span> <span class="key">import</span> <span class="nam">INVENTORY_SYNC_TASK_NAME</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t30" href="#t30">30</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t31" href="#t31">31</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t32" href="#t32">32</a></span><span class="t"><span class="key">class</span> <span class="nam">SyncRunSummary</span><span class="op">(</span><span class="nam">BaseModel</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t33" href="#t33">33</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Summarize one recorded synchronization run for the sync-status endpoint.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t20" href="#t20">20</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">core</span><span class="op">.</span><span class="nam">utils</span><span class="op">.</span><span class="nam">fields</span> <span class="key">import</span> <span class="nam">NonEmptyStr</span><span class="op">,</span> <span class="nam">UTCDatetime</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t21" href="#t21">21</a></span><span class="t"><span class="key">from</span> <span class="nam">app</span><span class="op">.</span><span class="nam">extensions</span><span class="op">.</span><span class="nam">models</span> <span class="key">import</span> <span class="nam">SyncStatusEnum</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t22" href="#t22">22</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t23" href="#t23">23</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t24" href="#t24">24</a></span><span class="t"><span class="key">class</span> <span class="nam">SyncRunSummary</span><span class="op">(</span><span class="nam">BaseModel</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t25" href="#t25">25</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Summarize one recorded synchronization run for the sync-status endpoint.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t27" href="#t27">27</a></span><span class="t"><span class="str">    :param syncer: The fully qualified name of the synchronizer that ran.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t28" href="#t28">28</a></span><span class="t"><span class="str">    :param started_at: When the run was recorded.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t29" href="#t29">29</a></span><span class="t"><span class="str">    :param finished_at: When the run last changed, or ``None`` while it is open.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t30" href="#t30">30</a></span><span class="t"><span class="str">    :param status: The run-level outcome.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t31" href="#t31">31</a></span><span class="t"><span class="str">    :param snapshot_complete: Whether the run observed a complete generation of the</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t32" href="#t32">32</a></span><span class="t"><span class="str">        remote inventory, or ``None`` when the syncer does not produce one.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t33" href="#t33">33</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t34" href="#t34">34</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t35" href="#t35">35</a></span><span class="t"><span class="str">    :param syncer: The fully qualified name of the synchronizer that ran.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t36" href="#t36">36</a></span><span class="t"><span class="str">    :param started_at: When the run was recorded.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t37" href="#t37">37</a></span><span class="t"><span class="str">    :param finished_at: When the run last changed, or ``None`` while it is open.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t38" href="#t38">38</a></span><span class="t"><span class="str">    :param status: The run-level outcome.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t39" href="#t39">39</a></span><span class="t"><span class="str">    :param snapshot_complete: Whether the run observed a complete generation of the</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t40" href="#t40">40</a></span><span class="t"><span class="str">        remote inventory, or ``None`` when the syncer does not produce one.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t41" href="#t41">41</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t42" href="#t42">42</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t43" href="#t43">43</a></span><span class="t">    <span class="nam">syncer</span><span class="op">:</span> <span class="nam">NonEmptyStr</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t44" href="#t44">44</a></span><span class="t">    <span class="nam">started_at</span><span class="op">:</span> <span class="nam">UTCDatetime</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t45" href="#t45">45</a></span><span class="t">    <span class="nam">finished_at</span><span class="op">:</span> <span class="nam">UTCDatetime</span> <span class="op">|</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t46" href="#t46">46</a></span><span class="t">    <span class="nam">status</span><span class="op">:</span> <span class="nam">SyncStatusEnum</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t47" href="#t47">47</a></span><span class="t">    <span class="nam">snapshot_complete</span><span class="op">:</span> <span class="nam">bool</span> <span class="op">|</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t35" href="#t35">35</a></span><span class="t">    <span class="nam">syncer</span><span class="op">:</span> <span class="nam">NonEmptyStr</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t36" href="#t36">36</a></span><span class="t">    <span class="nam">started_at</span><span class="op">:</span> <span class="nam">UTCDatetime</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t37" href="#t37">37</a></span><span class="t">    <span class="nam">finished_at</span><span class="op">:</span> <span class="nam">UTCDatetime</span> <span class="op">|</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t38" href="#t38">38</a></span><span class="t">    <span class="nam">status</span><span class="op">:</span> <span class="nam">SyncStatusEnum</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t39" href="#t39">39</a></span><span class="t">    <span class="nam">snapshot_complete</span><span class="op">:</span> <span class="nam">bool</span> <span class="op">|</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t40" href="#t40">40</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t41" href="#t41">41</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t42" href="#t42">42</a></span><span class="t"><span class="key">class</span> <span class="nam">PluginTaskResponse</span><span class="op">(</span><span class="nam">BaseModel</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t43" href="#t43">43</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Represent a single plugin task entry returned by ``GET /api/apps/inventory/``.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t44" href="#t44">44</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t45" href="#t45">45</a></span><span class="t"><span class="str">    :param name: Machine-readable task identifier (e.g. ``&quot;inventory-sync&quot;``).</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t46" href="#t46">46</a></span><span class="t"><span class="str">    :param display_name: Human-readable label for the schedule UI.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t47" href="#t47">47</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t48" href="#t48">48</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t49" href="#t49">49</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t50" href="#t50">50</a></span><span class="t"><span class="key">class</span> <span class="nam">PluginTaskResponse</span><span class="op">(</span><span class="nam">BaseModel</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t51" href="#t51">51</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Represent a single plugin task entry returned by ``GET /api/apps/inventory/``.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t52" href="#t52">52</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t53" href="#t53">53</a></span><span class="t"><span class="str">    :param name: Machine-readable task identifier (e.g. ``&quot;inventory-sync&quot;``).</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t54" href="#t54">54</a></span><span class="t"><span class="str">    :param display_name: Human-readable label for the schedule UI.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t55" href="#t55">55</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t56" href="#t56">56</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t57" href="#t57">57</a></span><span class="t">    <span class="nam">name</span><span class="op">:</span> <span class="nam">str</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t58" href="#t58">58</a></span><span class="t">    <span class="nam">display_name</span><span class="op">:</span> <span class="nam">str</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t59" href="#t59">59</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t60" href="#t60">60</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t61" href="#t61">61</a></span><span class="t"><span class="key">class</span> <span class="nam">InventorySyncScheduleCreateForm</span><span class="op">(</span><span class="nam">BaseModel</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t62" href="#t62">62</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Define the form-data shape for attaching an inventory-sync schedule.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t63" href="#t63">63</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t64" href="#t64">64</a></span><span class="t"><span class="str">    Mirror the ``interval_every`` / ``interval_period`` / ``cron_expression``</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t65" href="#t65">65</a></span><span class="t"><span class="str">    / ``cron_timezone`` field names used by the schedule template</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t66" href="#t66">66</a></span><span class="t"><span class="str">    (``templates/inventory/partials/sync-schedule-edit-form.html.j2``) so the</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t67" href="#t67">67</a></span><span class="t"><span class="str">    existing template&#x27;s input names continue to work, and add a ``syncer``</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t68" href="#t68">68</a></span><span class="t"><span class="str">    field that gets persisted into ``execute_request.meta`` as</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t69" href="#t69">69</a></span><span class="t"><span class="str">    ``{&quot;syncer&quot;: &lt;fully qualified name&gt;}`` when set.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t70" href="#t70">70</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t71" href="#t71">71</a></span><span class="t"><span class="str">    :param syncer: Optional fully qualified syncer name (e.g.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t72" href="#t72">72</a></span><span class="t"><span class="str">        ``&quot;app.extensions.sync.syncers.pmm.PMMSyncer&quot;``). When set, the schedule</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t73" href="#t73">73</a></span><span class="t"><span class="str">        targets that syncer only; when unset, the schedule runs every</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t74" href="#t74">74</a></span><span class="t"><span class="str">        configured syncer.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t75" href="#t75">75</a></span><span class="t"><span class="str">    :type syncer: str | None</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t76" href="#t76">76</a></span><span class="t"><span class="str">    :param enabled: Whether the schedule is enabled.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t77" href="#t77">77</a></span><span class="t"><span class="str">    :type enabled: bool | EmptyStrToNone</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t78" href="#t78">78</a></span><span class="t"><span class="str">    :param interval: Populated by the validator from ``interval_every`` and</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t79" href="#t79">79</a></span><span class="t"><span class="str">        ``interval_period`` form fields.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t80" href="#t80">80</a></span><span class="t"><span class="str">    :type interval: IntervalSchedule | EmptyStrToNone</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t81" href="#t81">81</a></span><span class="t"><span class="str">    :param crontab: Populated by the validator from ``cron_expression`` and</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t82" href="#t82">82</a></span><span class="t"><span class="str">        ``cron_timezone`` form fields.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t83" href="#t83">83</a></span><span class="t"><span class="str">    :type crontab: CrontabSchedule | EmptyStrToNone</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t84" href="#t84">84</a></span><span class="t"><span class="str">    :param start_time: Optional UTC start time.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t85" href="#t85">85</a></span><span class="t"><span class="str">    :type start_time: UTCDatetime | EmptyStrToNone</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t86" href="#t86">86</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t87" href="#t87">87</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t88" href="#t88">88</a></span><span class="t">    <span class="nam">syncer</span><span class="op">:</span> <span class="nam">str</span> <span class="op">|</span> <span class="nam">EmptyStrToNone</span> <span class="op">=</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t89" href="#t89">89</a></span><span class="t">    <span class="nam">enabled</span><span class="op">:</span> <span class="nam">bool</span> <span class="op">|</span> <span class="nam">EmptyStrToNone</span> <span class="op">=</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t90" href="#t90">90</a></span><span class="t">    <span class="nam">interval</span><span class="op">:</span> <span class="nam">IntervalSchedule</span> <span class="op">|</span> <span class="nam">EmptyStrToNone</span> <span class="op">=</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t91" href="#t91">91</a></span><span class="t">    <span class="nam">crontab</span><span class="op">:</span> <span class="nam">CrontabSchedule</span> <span class="op">|</span> <span class="nam">EmptyStrToNone</span> <span class="op">=</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t92" href="#t92">92</a></span><span class="t">    <span class="nam">start_time</span><span class="op">:</span> <span class="nam">UTCDatetime</span> <span class="op">|</span> <span class="nam">EmptyStrToNone</span> <span class="op">=</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t93" href="#t93">93</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t94" href="#t94">94</a></span><span class="t">    <span class="op">@</span><span class="nam">model_validator</span><span class="op">(</span><span class="nam">mode</span><span class="op">=</span><span class="str">&quot;before&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t95" href="#t95">95</a></span><span class="t">    <span class="op">@</span><span class="nam">classmethod</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t96" href="#t96">96</a></span><span class="t">    <span class="key">def</span> <span class="nam">normalize_form</span><span class="op">(</span><span class="nam">cls</span><span class="op">,</span> <span class="nam">data</span><span class="op">:</span> <span class="nam">Any</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">Any</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t97" href="#t97">97</a></span><span class="t">        <span class="str">&quot;&quot;&quot;Transform flat form fields into structured ``interval`` / ``crontab``.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t98" href="#t98">98</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t99" href="#t99">99</a></span><span class="t"><span class="str">        Share the dict-construction helpers with</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t100" href="#t100">100</a></span><span class="t"><span class="str">        :class:`app.extensions.tasks.PeriodicTaskRequest.set_period` (both reach into</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t101" href="#t101">101</a></span><span class="t"><span class="str">        :mod:`app.extensions.utils.forms`) so the form accepts the exact same input</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t102" href="#t102">102</a></span><span class="t"><span class="str">        shape as the schedule template. Do not</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t103" href="#t103">103</a></span><span class="t"><span class="str">        validate that exactly one schedule mode is provided &#8212; the route</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t104" href="#t104">104</a></span><span class="t"><span class="str">        performs that check so a friendly HTTP 400 message can be raised.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t105" href="#t105">105</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t106" href="#t106">106</a></span><span class="t"><span class="str">        :param data: Raw input data from the form parser.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t107" href="#t107">107</a></span><span class="t"><span class="str">        :type data: Any</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t108" href="#t108">108</a></span><span class="t"><span class="str">        :return: The data with parsed ``interval`` / ``crontab`` keys added.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t109" href="#t109">109</a></span><span class="t"><span class="str">        :rtype: Any</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t110" href="#t110">110</a></span><span class="t"><span class="str">        &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="par run show_par"><span class="n"><a id="t111" href="#t111">111</a></span><span class="t">        <span class="key">if</span> <span class="key">not</span> <span class="nam">isinstance</span><span class="op">(</span><span class="nam">data</span><span class="op">,</span> <span class="nam">dict</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"><span class="annotate short">111&#x202F;&#x219B;&#x202F;112</span><span class="annotate long">line 111 didn't jump to line 112 because the condition on line 111 was never true</span></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t112" href="#t112">112</a></span><span class="t">            <span class="key">return</span> <span class="nam">data</span>&nbsp;</span><span class="r"></span></p>
-    <p class="par run show_par"><span class="n"><a id="t113" href="#t113">113</a></span><span class="t">        <span class="key">if</span> <span class="str">&quot;interval_every&quot;</span> <span class="key">in</span> <span class="nam">data</span> <span class="key">and</span> <span class="str">&quot;interval_period&quot;</span> <span class="key">in</span> <span class="nam">data</span><span class="op">:</span>&nbsp;</span><span class="r"><span class="annotate short">113&#x202F;&#x219B;&#x202F;114</span><span class="annotate long">line 113 didn't jump to line 114 because the condition on line 113 was never true</span></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t114" href="#t114">114</a></span><span class="t">            <span class="nam">data</span><span class="op">[</span><span class="str">&quot;interval&quot;</span><span class="op">]</span> <span class="op">=</span> <span class="nam">parse_interval_form_fields</span><span class="op">(</span><span class="nam">data</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="par run show_par"><span class="n"><a id="t115" href="#t115">115</a></span><span class="t">        <span class="key">if</span> <span class="str">&quot;cron_expression&quot;</span> <span class="key">in</span> <span class="nam">data</span> <span class="key">and</span> <span class="str">&quot;cron_timezone&quot;</span> <span class="key">in</span> <span class="nam">data</span><span class="op">:</span>&nbsp;</span><span class="r"><span class="annotate short">115&#x202F;&#x219B;&#x202F;117</span><span class="annotate long">line 115 didn't jump to line 117 because the condition on line 115 was always true</span></span></p>
-    <p class="run"><span class="n"><a id="t116" href="#t116">116</a></span><span class="t">            <span class="nam">data</span><span class="op">[</span><span class="str">&quot;crontab&quot;</span><span class="op">]</span> <span class="op">=</span> <span class="nam">parse_crontab_form_fields</span><span class="op">(</span><span class="nam">data</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t117" href="#t117">117</a></span><span class="t">        <span class="key">return</span> <span class="nam">data</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t118" href="#t118">118</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t119" href="#t119">119</a></span><span class="t">    <span class="key">def</span> <span class="nam">to_periodic_task_payload</span><span class="op">(</span><span class="nam">self</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">dict</span><span class="op">[</span><span class="nam">str</span><span class="op">,</span> <span class="nam">Any</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t120" href="#t120">120</a></span><span class="t">        <span class="str">&quot;&quot;&quot;Build the JSON payload for the Tasks API ``POST /&lt;task&gt;/periodic/``.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t121" href="#t121">121</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t122" href="#t122">122</a></span><span class="t"><span class="str">        Drop the ``syncer`` field from the top-level payload and place it inside</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t123" href="#t123">123</a></span><span class="t"><span class="str">        ``execute_request.meta`` instead so it is persisted on the periodic-task</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t124" href="#t124">124</a></span><span class="t"><span class="str">        row&#x27;s ``kwargs`` and forwarded to the callable when the schedule fires.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t125" href="#t125">125</a></span><span class="t"><span class="str">        Include ``task: &quot;inventory-sync&quot;`` so the autogenerated periodic-task</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t126" href="#t126">126</a></span><span class="t"><span class="str">        name (a hash over the encoded ``kwargs``) matches the value produced by</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t127" href="#t127">127</a></span><span class="t"><span class="str">        the generic ``/periodic/`` proxy and a duplicate-attach attempt</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t128" href="#t128">128</a></span><span class="t"><span class="str">        collides instead of silently creating a second row.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t129" href="#t129">129</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t130" href="#t130">130</a></span><span class="t"><span class="str">        :return: A JSON-serialisable payload ready to forward to the Tasks API.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t131" href="#t131">131</a></span><span class="t"><span class="str">        :rtype: dict[str, Any]</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t132" href="#t132">132</a></span><span class="t"><span class="str">        &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t133" href="#t133">133</a></span><span class="t">        <span class="nam">payload</span> <span class="op">=</span> <span class="nam">self</span><span class="op">.</span><span class="nam">model_dump</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t134" href="#t134">134</a></span><span class="t">            <span class="nam">exclude_none</span><span class="op">=</span><span class="key">True</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t135" href="#t135">135</a></span><span class="t">            <span class="nam">exclude_unset</span><span class="op">=</span><span class="key">True</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t136" href="#t136">136</a></span><span class="t">            <span class="nam">exclude</span><span class="op">=</span><span class="op">{</span><span class="str">&quot;syncer&quot;</span><span class="op">}</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t137" href="#t137">137</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t138" href="#t138">138</a></span><span class="t">        <span class="nam">payload</span><span class="op">[</span><span class="str">&quot;task&quot;</span><span class="op">]</span> <span class="op">=</span> <span class="nam">INVENTORY_SYNC_TASK_NAME</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t139" href="#t139">139</a></span><span class="t">        <span class="key">if</span> <span class="nam">self</span><span class="op">.</span><span class="nam">syncer</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t140" href="#t140">140</a></span><span class="t">            <span class="nam">payload</span><span class="op">[</span><span class="str">&quot;execute_request&quot;</span><span class="op">]</span> <span class="op">=</span> <span class="op">{</span><span class="str">&quot;meta&quot;</span><span class="op">:</span> <span class="op">{</span><span class="str">&quot;syncer&quot;</span><span class="op">:</span> <span class="nam">self</span><span class="op">.</span><span class="nam">syncer</span><span class="op">}</span><span class="op">}</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t141" href="#t141">141</a></span><span class="t">        <span class="key">return</span> <span class="nam">payload</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t49" href="#t49">49</a></span><span class="t">    <span class="nam">name</span><span class="op">:</span> <span class="nam">str</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t50" href="#t50">50</a></span><span class="t">    <span class="nam">display_name</span><span class="op">:</span> <span class="nam">str</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -232,7 +141,7 @@
             <a class="nav" href="z_acb7d923058cb12c_sync_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.0">coverage.py v7.17.0</a>,
-            created at 2026-10-28 23:46 +0000
+            created at 2026-10-29 00:09 +0000
         </p>
     </div>
 </footer>

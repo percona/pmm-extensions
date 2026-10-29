@@ -186,13 +186,13 @@
 | app/extensions/apps/checksums/app.py                                                                                                |        7 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/checksums/deps.py                                                                                               |       18 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/checksums/form\_backfill.py                                                                                     |       48 |        4 |       24 |        5 |     88% |61, 69, 76, 97, 115-\>114 |
-| app/extensions/apps/checksums/models.py                                                                                             |       75 |        4 |       20 |        4 |     92% |55, 57, 60, 316 |
+| app/extensions/apps/checksums/models.py                                                                                             |       57 |        4 |       20 |        4 |     90% |55, 57, 60, 245 |
 | app/extensions/apps/checksums/spec.py                                                                                               |       68 |        0 |       26 |        2 |     98% |115-\>123, 190-\>192 |
 | app/extensions/apps/checksums/views.py                                                                                              |        4 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/dipper/api\_routes.py                                                                                           |       67 |        4 |        4 |        1 |     93% |83-84, 140-141 |
 | app/extensions/apps/dipper/app.py                                                                                                   |        5 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/dipper/constants.py                                                                                             |       11 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/dipper/deps.py                                                                                                  |      120 |       14 |       34 |        8 |     83% |120-122, 143-144, 184-187, 188-\>195, 218, 219-\>221, 278, 280, 282, 391 |
+| app/extensions/apps/dipper/deps.py                                                                                                  |      118 |       14 |       34 |        8 |     83% |109-111, 132-133, 173-176, 177-\>184, 207, 208-\>210, 267, 269, 271, 380 |
 | app/extensions/apps/dipper/models.py                                                                                                |       17 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/dipper/schema.py                                                                                                |       36 |        1 |       10 |        1 |     96% |       239 |
 | app/extensions/apps/field\_names.py                                                                                                 |        6 |        0 |        0 |        0 |    100% |           |
@@ -201,7 +201,7 @@
 | app/extensions/apps/framework/base.py                                                                                               |       45 |        2 |        6 |        2 |     92% |  166, 173 |
 | app/extensions/apps/framework/cascade.py                                                                                            |      197 |        0 |       64 |        2 |     99% |133-\>135, 149-\>151 |
 | app/extensions/apps/framework/conformance.py                                                                                        |      117 |        6 |       56 |        7 |     92% |72, 216, 245-\>247, 358, 371, 375, 423 |
-| app/extensions/apps/framework/connectivity.py                                                                                       |       25 |        0 |        6 |        0 |    100% |           |
+| app/extensions/apps/framework/connectivity.py                                                                                       |       24 |        0 |        6 |        0 |    100% |           |
 | app/extensions/apps/framework/deps.py                                                                                               |       15 |        0 |        2 |        0 |    100% |           |
 | app/extensions/apps/framework/form\_audit.py                                                                                        |      146 |        1 |       28 |        1 |     99% |       410 |
 | app/extensions/apps/framework/form\_backfill.py                                                                                     |      189 |       37 |       30 |        4 |     79% |110, 115, 120, 125, 130, 135, 311-317, 343-349, 352-357, 377-383, 386, 470-\>477, 499-535, 590 |
@@ -232,8 +232,8 @@
 | app/extensions/apps/inventory/connectivity.py                                                                                       |       43 |        0 |        6 |        0 |    100% |           |
 | app/extensions/apps/inventory/constants.py                                                                                          |        2 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/deps.py                                                                                               |       78 |        0 |       12 |        0 |    100% |           |
-| app/extensions/apps/inventory/models.py                                                                                             |       31 |        7 |        8 |        3 |     69% |112, 114, 115-\>117, 133-141 |
-| app/extensions/apps/inventory/sync.py                                                                                               |       65 |        0 |       18 |        0 |    100% |           |
+| app/extensions/apps/inventory/models.py                                                                                             |        5 |        0 |        0 |        0 |    100% |           |
+| app/extensions/apps/inventory/sync.py                                                                                               |       48 |        0 |       10 |        0 |    100% |           |
 | app/extensions/apps/labels.py                                                                                                       |        1 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/meta\_keys.py                                                                                                   |        2 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/mysql\_backups/api\_routes.py                                                                                   |       23 |        0 |        2 |        0 |    100% |           |
@@ -325,11 +325,11 @@
 | app/extensions/bundle\_upload/seam.py                                                                                               |       12 |        0 |        0 |        0 |    100% |           |
 | app/extensions/clients/pmm.py                                                                                                       |      286 |        2 |       74 |        3 |     99% |558, 560, 926-\>928 |
 | app/extensions/config.py                                                                                                            |      263 |        3 |       66 |        3 |     98% |195, 455, 794 |
-| app/extensions/connectivity.py                                                                                                      |       39 |        4 |        2 |        1 |     88% |84, 163-169 |
+| app/extensions/connectivity.py                                                                                                      |       28 |        3 |        0 |        0 |     89% |   124-130 |
 | app/extensions/crud.py                                                                                                              |      169 |        0 |       32 |        0 |    100% |           |
 | app/extensions/db/engine.py                                                                                                         |        7 |        0 |        0 |        0 |    100% |           |
 | app/extensions/db/seed.py                                                                                                           |       52 |        0 |       16 |        0 |    100% |           |
-| app/extensions/deps.py                                                                                                              |      288 |        1 |       50 |        1 |     99% |727-\>732, 748 |
+| app/extensions/deps.py                                                                                                              |      279 |        1 |       48 |        1 |     99% |727-\>732, 748 |
 | app/extensions/inventory.py                                                                                                         |      103 |        4 |       12 |        1 |     96% |92, 103, 292, 329 |
 | app/extensions/main.py                                                                                                              |      148 |        6 |       18 |        3 |     95% |186-188, 446-\>exit, 467-\>476, 601-605 |
 | app/extensions/migrations/\_discovery.py                                                                                            |       41 |        2 |       20 |        3 |     92% |65, 97, 133-\>130 |
@@ -388,15 +388,13 @@
 | app/extensions/sync/exceptions.py                                                                                                   |       36 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/fields.py                                                                                                       |       21 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/health.py                                                                                                       |       86 |        0 |       22 |        2 |     98% |234-\>238, 235-\>234 |
-| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 128, 130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
+| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 129-130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
 | app/extensions/sync/syncers/mysql/payload.py                                                                                        |      176 |       47 |       54 |        5 |     70% |158-\>166, 242-246, 251-256, 269-275, 279-302, 356-\>372, 375, 396-404, 423 |
 | app/extensions/sync/syncers/mysql/syncer.py                                                                                         |      241 |        2 |       94 |        5 |     98% |111, 604-\>605, 716, 819-\>823, 821-\>820 |
 | app/extensions/sync/syncers/pmm.py                                                                                                  |      176 |        4 |       48 |        1 |     97% |113-117, 151 |
 | app/extensions/sync/syncers/system\_facts/payload.py                                                                                |      243 |       19 |       82 |        9 |     91% |54-\>60, 152-153, 181, 227-229, 236, 238-\>234, 249-256, 309-311, 317-319, 343, 442-\>444, 444-\>446, 549, 560 |
 | app/extensions/sync/syncers/system\_facts/syncer.py                                                                                 |      212 |        7 |       56 |        5 |     96% |127, 192-193, 268, 279-\>277, 384, 697, 716 |
-| app/extensions/tasks.py                                                                                                             |       31 |        0 |       12 |        2 |     95% |72-\>87, 76-\>79 |
-| app/extensions/utils/forms.py                                                                                                       |       16 |        0 |        4 |        0 |    100% |           |
-| app/extensions/utils/jinja.py                                                                                                       |       61 |       10 |       10 |        1 |     79% |105, 124, 135-140, 171-172 |
+| app/extensions/utils/jinja.py                                                                                                       |       52 |       10 |       10 |        1 |     76% |66, 85, 96-101, 132-133 |
 | app/inventory/config.py                                                                                                             |       11 |        0 |        0 |        0 |    100% |           |
 | app/inventory/constants.py                                                                                                          |       16 |        0 |        0 |        0 |    100% |           |
 | app/inventory/crud.py                                                                                                               |      420 |        6 |       84 |        3 |     98% |428, 597-599, 881-\>883, 1068, 1397, 1933-\>exit |
@@ -533,6 +531,7 @@
 | app/tasks/migrations/versions/2026\_09\_24\_1200-afa9bedb3b0b\_rename\_ciphertext\_marker.py                                        |       10 |        0 |        0 |        0 |    100% |           |
 | app/tasks/migrations/versions/2026\_09\_24\_1300-f0ee5b600303\_rewrite\_persisted\_extensions\_module\_paths.py                     |       36 |        0 |       16 |        1 |     98% |  99-\>106 |
 | app/tasks/migrations/versions/2026\_09\_24\_2005-2e932d05a0d9\_merge\_tasks\_migration\_heads.py                                    |       12 |        0 |        0 |        0 |    100% |           |
+| app/tasks/migrations/versions/2026\_10\_28\_2300-5d3b7a9c1e44\_restore\_sqlite\_execution\_request\_indexes.py                      |       17 |        2 |        6 |        2 |     83% |    50, 63 |
 | app/tasks/models.py                                                                                                                 |      422 |        4 |       96 |        6 |     98% |505, 835-\>838, 842, 859-\>872, 1541-\>1543, 1552-\>1554, 1577-1578 |
 | app/tasks/periodic/crud.py                                                                                                          |       31 |        0 |        0 |        0 |    100% |           |
 | app/tasks/periodic/deps.py                                                                                                          |       11 |        0 |        0 |        0 |    100% |           |
@@ -544,7 +543,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35362** | **1749** | **8540** |  **693** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35239** | **1743** | **8510** |  **689** | **94%** |           |
 
 
 ## Setup coverage badge
