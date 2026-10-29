@@ -190,6 +190,25 @@ class TestCasdoorBodyLog:
         assert WITHHELD_BODY_LOG in caplog.text
 
     @pytest.mark.asyncio
+    async def test_refresh_request_body_is_withheld(self, caplog):
+        """Log the refresh's method and path but not the posted refresh token."""
+        sdk = _sdk()
+        with aioresponses() as mock:
+            mock.post(
+                f"{_ENDPOINT}/api/login/oauth/refresh_token",
+                payload={"access_token": _SENTINEL, "token_type": "Bearer"},
+            )
+            with caplog.at_level(logging.DEBUG, logger=sdk.logger.name):
+                async with sdk:
+                    await sdk.refresh_token_request("refresh-token-value")
+
+        assert "refresh-token-value" not in caplog.text
+        assert "test-secret" not in caplog.text
+        assert _SENTINEL not in caplog.text
+        assert "/api/login/oauth/refresh_token" in caplog.text
+        assert WITHHELD_BODY_LOG in caplog.text
+
+    @pytest.mark.asyncio
     async def test_non_json_error_body_is_withheld(self, caplog):
         """Keep an upstream error page off the non-JSON ERROR record."""
         sdk = _sdk()
