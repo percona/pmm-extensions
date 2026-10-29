@@ -21,12 +21,14 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import suppress
 from datetime import timedelta
+from typing import Generic, TypeVar
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.pool import StaticPool
 
+from app.core.config import BaseYamlSettings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.settings_override.constants import (
     EXTENSIONS_SETTINGS,
@@ -65,6 +67,8 @@ INTERVAL = timedelta(seconds=30)
 SHORT_INTERVAL = timedelta(milliseconds=50)
 SHARED_WINDOW_CEILING = 0.9
 DRAWN_CEILING = 0.45
+
+SettingsT = TypeVar("SettingsT", bound=BaseYamlSettings)
 
 
 class _FakeClock:
@@ -117,14 +121,14 @@ class _CountingRegistry:
         return _make_registry()
 
 
-class _CountingFactory:
+class _CountingFactory(Generic[SettingsT]):
     """Build a settings instance through ``build``, counting each call."""
 
-    def __init__(self, build: Callable[[], object]) -> None:
+    def __init__(self, build: Callable[[], SettingsT]) -> None:
         self._build = build
         self.calls = 0
 
-    def __call__(self) -> object:
+    def __call__(self) -> SettingsT:
         self.calls += 1
         return self._build()
 
