@@ -44,8 +44,8 @@ Neither mechanism covers the text an error carries into the raised
 exception's ``detail``: :meth:`RemoteAPI.request` copies a JSON error body's
 ``error_detail_key`` field there, and :meth:`RemoteAPI.stream_chunks` copies a
 non-JSON error body's whole text, so a caller that logs the exception with its
-traceback logs that text. Log such an error from a withheld client without ``exc_info``, as
-``GrafanaSDK`` does when it verifies a service-account token.
+traceback logs that text. Log such an error from a withheld client without
+``exc_info``, as ``GrafanaSDK`` does when it verifies a service-account token.
 """
 
 __all__ = [
