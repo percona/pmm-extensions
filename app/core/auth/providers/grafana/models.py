@@ -519,9 +519,8 @@ class GrafanaUser(BaseUser):
 
         Every field :meth:`_from_org_user_record` reads is checked: a row
         without ``userId`` or with an unhashable ``role`` passes a narrower gate
-        and then crashes inside the mapping instead. The check
-        is strict, so a boolean ``userId`` is refused rather than read as an
-        integer.
+        and then crashes inside the mapping instead. The check is strict, so a
+        boolean ``userId`` is refused rather than read as an integer.
 
         A null ``email`` or ``role`` passes: the mapper already reads those
         fields as optional, so refusing them would reject a listing the provider

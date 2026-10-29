@@ -751,6 +751,10 @@ class TestSpaSessionExchange:
         )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert (
+            response.json()["detail"]
+            == "You don't have permission to perform this action"
+        )
 
 
 def test_spa_session_exchange_toggle_off_returns_401(test_client, grafana_mock):
