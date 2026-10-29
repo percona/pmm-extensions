@@ -150,7 +150,8 @@ class WorkerRefresher:
         seeding on the same loop. A hanging database therefore cannot push the
         child past the prefork pool's liveness window however many refreshers
         it runs. A seed that starts after the window is spent runs with a 0s
-        budget and takes the expiry path. On seed-budget expiry the child is still armed — the next due
+        budget, so it expires unless it completes without yielding. On
+        seed-budget expiry the child is still armed — the next due
         ``task_prerun`` will refresh once any cancelled seed has finished
         unwinding — and may retain a possibly incomplete seed (proxies
         published before the hang keep DB overrides; others stay on their prior
@@ -223,9 +224,8 @@ class WorkerRefresher:
         inherit it and their inline seed does not rebuild the settings class,
         which re-reads the YAML profile, inside its seed budget. Nothing is
         armed, and neither the event loop nor the session maker is resolved. A
-        proxy that fails to resolve stays unresolved; the child's seed retries
-        it and :func:`~app.core.settings_override.lifecycle.refresh_all` logs
-        the failure.
+        proxy that fails to resolve stays unresolved, and the child retries it
+        the next time it resolves that proxy.
 
         :param enabled: Whether the refresher will arm at all. When ``False``
             nothing is resolved. ``None``, the default, reads

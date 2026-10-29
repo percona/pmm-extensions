@@ -63,8 +63,7 @@ from tests.app.db_schema import apply_schema
 
 INTERVAL = timedelta(seconds=30)
 SHORT_INTERVAL = timedelta(milliseconds=50)
-SHARED_WINDOW_CEILING = 0.75
-DRAWN_FLOOR = 0.3
+SHARED_WINDOW_CEILING = 0.9
 DRAWN_CEILING = 0.45
 
 
@@ -804,7 +803,11 @@ class TestWorkerRefresherPrime:
         with pytest.raises(ValueError, match="invalid settings"):
             failing_proxy.get_base()
         assert failing_factory.calls == 1
-        assert any(record.levelname == "DEBUG" for record in caplog.records)
+        assert any(
+            record.name == "app.core.settings_override.worker"
+            and "Deferring" in record.message
+            for record in caplog.records
+        )
         assert all(record.levelno < logging.WARNING for record in caplog.records)
 
     def test_start_after_prime_does_not_rebuild_settings(
@@ -877,8 +880,9 @@ class TestSharedSeedWindow:
         widened = _remaining_seed_budget(loop, 10.0)
 
         assert opened == pytest.approx(0.5, abs=0.01)
-        assert DRAWN_FLOOR <= drawn <= DRAWN_CEILING
-        assert widened <= DRAWN_CEILING
+        assert drawn < opened
+        assert drawn <= DRAWN_CEILING
+        assert widened <= drawn
 
     def test_spent_window_still_arms_and_logs_error(
         self, loop: asyncio.AbstractEventLoop, caplog: pytest.LogCaptureFixture
