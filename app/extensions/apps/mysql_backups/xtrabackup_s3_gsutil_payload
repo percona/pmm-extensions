@@ -1730,7 +1730,7 @@ class S3UploadProvider:
             raise BackupError(msg)
 
         log_file = (
-            self.logging_dir
+            Path(self.logging_dir)
             / "s3cmd-{}-{}-{}.log".format(self.alias, self.backup_type, time.strftime("%Y%m%d"))
         )
         self.log_stream = log_file.open("a")
