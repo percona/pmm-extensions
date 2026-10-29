@@ -13,12 +13,13 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Provide the row type and specs the in-memory list-query suites drive.
+"""Provide the rows, table model and specs the list-query suites drive.
 
-Shared rather than copied per module because every suite exercising the applier, its
-dependency, or an adapter over it must assert against the same declaration; a spec
-that drifts in one copy leaves the others asserting a contract the subject no longer
-has.
+The in-memory suites use ``ListQueryRow`` and its specs; the SQL-backed suites use the
+``LQItem`` table model, its manager, ``make_lq_spec`` and ``SEED_NAMES``. Shared rather
+than copied per module because every suite exercising a spec, its dependency, or an
+adapter over it must assert against the same declaration; a spec that drifts in one
+copy leaves the others asserting a contract the subject no longer has.
 """
 
 from __future__ import annotations
@@ -26,15 +27,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import column
+from sqlmodel import col
 
+from app.core.db import BaseSQLModel
+from app.core.db.crud import BaseSQLModelManager
 from app.core.db.list_query import ListQuerySpec
 
 __all__ = [
     "LIST_QUERY_SPEC",
+    "LQ_ITEM_NO_SEARCH_SPEC",
     "NO_SEARCH_LIST_QUERY_SPEC",
+    "SEED_NAMES",
+    "LQItem",
+    "LQItemManager",
     "ListQueryRow",
     "list_query_rows",
+    "make_lq_spec",
 ]
+
+SEED_NAMES = ("alpha", "bravo", "charlie")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,3 +87,45 @@ def list_query_rows(*specs: tuple[str, str | None, int]) -> list[ListQueryRow]:
     :return: The rows to hand to the applier.
     """
     return [ListQueryRow(filename=f, title=t, created_at=c) for f, t, c in specs]
+
+
+class LQItem(BaseSQLModel, table=True):
+    """Represent a test row backing the list-query dependency and applier scenarios."""
+
+    __tablename__ = "test_list_query_item"
+
+    name: str
+    category: str
+
+
+class LQItemManager(BaseSQLModelManager):
+    """Manage ``LQItem`` rows through a search-enabled list-query spec."""
+
+    Model = LQItem
+    list_query_spec = ListQuerySpec(
+        sortable={
+            "name": col(LQItem.name),
+            "created_at": col(LQItem.created_at),
+        },
+        default_sort="name",
+        tie_breaker=col(LQItem.id),
+        searchable=[col(LQItem.name)],
+    )
+
+
+LQ_ITEM_NO_SEARCH_SPEC = ListQuerySpec(
+    sortable={"name": col(LQItem.name)},
+    default_sort="name",
+    tie_breaker=col(LQItem.id),
+)
+
+
+def make_lq_spec(**overrides: object) -> ListQuerySpec:
+    """Build a valid ``ListQuerySpec`` for ``LQItem``, applying field overrides."""
+    kwargs = {
+        "sortable": {"name": col(LQItem.name)},
+        "default_sort": "name",
+        "tie_breaker": col(LQItem.id),
+    }
+    kwargs.update(overrides)
+    return ListQuerySpec(**kwargs)
