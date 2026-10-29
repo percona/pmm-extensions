@@ -13,6 +13,6 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-from app.core.db.deps import make_in_memory_list_query_dep
-from app.core.db.list_query import ListQuery, ListQuerySpec, make_list_query_dep
+from app.core.db.deps import make_in_memory_list_query_dep, make_list_query_dep
+from app.core.db.list_query import ListQuery, ListQuerySpec
 from app.core.db.models import BaseSQLModel

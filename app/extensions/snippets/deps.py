@@ -27,7 +27,8 @@ from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.auth.exceptions import HTTPForbiddenException
-from app.core.db.list_query import ListQuery, make_list_query_dep
+from app.core.db.deps import make_list_query_dep
+from app.core.db.list_query import ListQuery
 from app.core.exceptions import HTTPBadRequestException, HTTPNotFoundException
 from app.extensions.apps.framework.script_helpers import build_execution_meta
 from app.extensions.deps import SessionDep

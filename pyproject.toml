@@ -345,7 +345,7 @@ call-non-callable = "ignore"
 # A FastAPI `Query(...)` marker stands in for the parameter's declared type until
 # the request is handled.
 include = [
-    "app/core/db/list_query.py",
+    "app/core/db/deps.py",
     "app/extensions/apps/inventory/list_query.py",
 ]
 [tool.ty.overrides.rules]

@@ -188,7 +188,7 @@ class ScriptSource(Generic[S, Q]):
         pushing them down to SQL. Selects which list-query dependency the framework
         builds for the app's :class:`~app.core.db.list_query.ListQuerySpec` — the
         in-memory dep (:func:`~app.core.db.deps.make_in_memory_list_query_dep`)
-        when ``True``, the SQL dep (:func:`~app.core.db.list_query.make_list_query_dep`)
+        when ``True``, the SQL dep (:func:`~app.core.db.deps.make_list_query_dep`)
         otherwise. Meaningful only on a source with no ``list_query_dep``, which
         supersedes it.
     """
