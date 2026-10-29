@@ -123,6 +123,9 @@ class PagerDutyEventsAlertProvider(BaseAlertProvider):
         :param alert: The alert to be sent, as an :class:`Alert`, a
             :class:`PagerDutyAlert`, or a mapping of either's fields.
         :raises ValidationError: If ``alert`` carries no PagerDuty severity.
+        :raises HTTPException: If PagerDuty answers with an error status.
+        :raises aiohttp.ClientError: If the request fails in transport.
+        :raises TimeoutError: If the request times out.
         """
         if not isinstance(alert, PagerDutyAlert):
             alert = PagerDutyAlert.model_validate(alert, from_attributes=True)
@@ -153,7 +156,10 @@ class PagerDutyEventsAlertProvider(BaseAlertProvider):
         202).
 
         :param dedup_key: The deduplication key of the alert to resolve.
-        :type dedup_key: NonEmptyStr
+        :raises ValidationError: If ``dedup_key`` is empty.
+        :raises HTTPException: If PagerDuty answers with an error status.
+        :raises aiohttp.ClientError: If the request fails in transport.
+        :raises TimeoutError: If the request times out.
         """
         pagerduty_api = await self.get_api()
         with pagerduty_api.redact_body_fields({"routing_key"}):

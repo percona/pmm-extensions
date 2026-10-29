@@ -700,9 +700,12 @@ class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
         """List all alert contact points configured in PMM.
 
         The response body is withheld from the log: each contact point's
-        ``settings`` carry integration keys, webhook URLs and passwords.
+        ``settings`` can carry integration keys, webhook URLs and passwords.
 
         :return: A list of contact point objects.
+        :raises HTTPException: If PMM answers with an error status.
+        :raises aiohttp.ClientError: If the request fails in transport.
+        :raises TimeoutError: If the request times out.
         """
         with self.suppress_response_log():
             data = as_json_array(
@@ -718,13 +721,17 @@ class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
     ) -> ContactPoint:
         """Create a new alert contact point in PMM.
 
-        The request and response bodies are withheld from the log: both carry
-        ``settings``, which hold the contact point's credentials.
+        The request and response bodies are withheld from the log: the request
+        carries the contact point's credentials in ``settings``, and the
+        response echoes ``settings`` back.
 
         :param name: The display name of the contact point.
         :param type_: The contact point type (e.g., "slack", "email").
         :param settings: Type-specific configuration settings.
         :return: The created contact point.
+        :raises HTTPException: If PMM answers with an error status.
+        :raises aiohttp.ClientError: If the request fails in transport.
+        :raises TimeoutError: If the request times out.
         """
         with self.suppress_request_log(), self.suppress_response_log():
             data = await self.post(
@@ -779,6 +786,9 @@ class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
         :param name: The new display name.
         :param type_: The contact point type.
         :param settings: Updated type-specific configuration settings.
+        :raises HTTPException: If PMM answers with an error status.
+        :raises aiohttp.ClientError: If the request fails in transport.
+        :raises TimeoutError: If the request times out.
         """
         with self.suppress_request_log():
             async with self._request(

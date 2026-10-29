@@ -40,10 +40,11 @@ Redacting named fields inside a response body is deliberately not offered: no
 list of names can anticipate where an upstream nests a credential, and a
 non-JSON error page has no fields to redact.
 
-Neither mechanism covers the ``error_detail_key`` field of a JSON error body.
-:meth:`RemoteAPI.request` copies that field into the raised exception's
-``detail``, so a caller that logs the exception with its traceback logs the
-field. Log such an error from a withheld client without ``exc_info``, as
+Neither mechanism covers the text an error carries into the raised
+exception's ``detail``: :meth:`RemoteAPI.request` copies a JSON error body's
+``error_detail_key`` field there, and :meth:`RemoteAPI.stream_chunks` copies a
+non-JSON error body's whole text, so a caller that logs the exception with its
+traceback logs that text. Log such an error from a withheld client without ``exc_info``, as
 ``GrafanaSDK`` does when it verifies a service-account token.
 """
 
@@ -621,7 +622,8 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     :param withhold_body_log: Whether this client keeps every request and
         response body out of its log, for an upstream whose bodies carry
         credentials. The method, path, sanitized headers and status are still
-        logged, but the upstream's own error page leaves the ERROR record too.
+        logged, and the upstream's non-JSON error page is withheld from the
+        ERROR record as well.
         The module docstring's response-body logging policy says which
         clients set it. Defaults to ``False``.
     :cvar CONNECTIVITY_CHECK_PATH: Lightweight route hit by
@@ -1169,7 +1171,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         other request bodies stay logged. The method, path and sanitized headers
         are still logged.
 
-        Guards the request-logging site in :meth:`request` and nothing else.
+        Guards the request-logging site in :meth:`_request` and nothing else.
 
         Like :meth:`suppress_response_log` and unlike :meth:`redact_headers`,
         this flag has nothing to union; an enclosing suppression survives an
