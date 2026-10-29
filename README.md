@@ -433,7 +433,11 @@
 | app/inventory/migrations/versions/2026\_09\_24\_2016-c5a72c6cdbf4\_merge\_inventory\_migration\_heads.py                            |       12 |        0 |        0 |        0 |    100% |           |
 | app/inventory/migrations/versions/2026\_09\_25\_2106-13204e7e1043\_merge\_inventory\_migration\_heads.py                            |       12 |        0 |        0 |        0 |    100% |           |
 | app/inventory/migrations/versions/2026\_09\_28\_1000-a7d3f1c95b26\_drop\_redundant\_external\_id\_indexes\_and\_.py                 |       28 |        0 |        0 |        0 |    100% |           |
-| app/inventory/models.py                                                                                                             |      163 |        0 |        8 |        0 |    100% |           |
+| app/inventory/models/bases.py                                                                                                       |       61 |        0 |        2 |        0 |    100% |           |
+| app/inventory/models/enums.py                                                                                                       |       21 |        0 |        0 |        0 |    100% |           |
+| app/inventory/models/responses.py                                                                                                   |       25 |        0 |        0 |        0 |    100% |           |
+| app/inventory/models/tables.py                                                                                                      |       38 |        0 |        0 |        0 |    100% |           |
+| app/inventory/models/writes.py                                                                                                      |       44 |        0 |        6 |        0 |    100% |           |
 | app/inventory/routes/collection.py                                                                                                  |       15 |        0 |        0 |        0 |    100% |           |
 | app/inventory/routes/nodes.py                                                                                                       |       82 |        2 |        4 |        0 |     95% |  358, 360 |
 | app/inventory/routes/schemas.py                                                                                                     |       46 |        0 |        0 |        0 |    100% |           |
@@ -532,7 +536,13 @@
 | app/tasks/migrations/versions/2026\_09\_24\_1300-f0ee5b600303\_rewrite\_persisted\_extensions\_module\_paths.py                     |       36 |        0 |       16 |        1 |     98% |  99-\>106 |
 | app/tasks/migrations/versions/2026\_09\_24\_2005-2e932d05a0d9\_merge\_tasks\_migration\_heads.py                                    |       12 |        0 |        0 |        0 |    100% |           |
 | app/tasks/migrations/versions/2026\_10\_28\_2300-5d3b7a9c1e44\_restore\_sqlite\_execution\_request\_indexes.py                      |       17 |        2 |        6 |        2 |     83% |    50, 63 |
-| app/tasks/models.py                                                                                                                 |      422 |        4 |       96 |        6 |     98% |505, 835-\>838, 842, 859-\>872, 1541-\>1543, 1552-\>1554, 1577-1578 |
+| app/tasks/models/bases.py                                                                                                           |       45 |        0 |        6 |        0 |    100% |           |
+| app/tasks/models/constants.py                                                                                                       |       16 |        0 |        0 |        0 |    100% |           |
+| app/tasks/models/enums.py                                                                                                           |       13 |        0 |        0 |        0 |    100% |           |
+| app/tasks/models/payloads.py                                                                                                        |       96 |        1 |       22 |        1 |     98% |       395 |
+| app/tasks/models/requests.py                                                                                                        |       67 |        1 |       20 |        3 |     95% |178-\>181, 185, 202-\>215 |
+| app/tasks/models/responses.py                                                                                                       |      122 |        2 |       34 |        2 |     97% |334-\>336, 345-\>347, 370-371 |
+| app/tasks/models/tables.py                                                                                                          |      104 |        0 |       14 |        0 |    100% |           |
 | app/tasks/periodic/crud.py                                                                                                          |       31 |        0 |        0 |        0 |    100% |           |
 | app/tasks/periodic/deps.py                                                                                                          |       11 |        0 |        0 |        0 |    100% |           |
 | app/tasks/periodic/models.py                                                                                                        |      131 |        4 |       28 |        4 |     95% |323, 370, 384, 431 |
@@ -543,7 +553,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35240** | **1743** | **8510** |  **689** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35307** | **1743** | **8510** |  **689** | **94%** |           |
 
 
 ## Setup coverage badge
