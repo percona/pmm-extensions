@@ -223,9 +223,7 @@ def schedule_annotation(
     never reach PMM.
 
     :param queue_item: The task history record.
-    :type queue_item: TaskHistory
     :param event: The event label (e.g. ``"STARTED"``, ``"COMPLETED"``).
-    :type event: str
     :raises RuntimeError: If ``execution_request`` is not loaded on
         ``queue_item``.
     """
