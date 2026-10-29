@@ -16,12 +16,27 @@
 """Define tests for the Casdoor SDK."""
 
 import base64
+import logging
+import re
 
 import pytest
-from pydantic import SecretStr
+from aioresponses import aioresponses
+from fastapi import HTTPException, status
+from pydantic import SecretStr, ValidationError
 
 from app.core.auth.providers.casdoor.sdk import CasdoorSDK
 from app.core.exceptions import HTTPBadGatewayException
+from tests.app.remote_api_log import WITHHELD_BODY_LOG
+
+_ENDPOINT = "https://casdoor.example.com"
+_SENTINEL = "casdoor-body-sentinel"
+
+
+def _sdk() -> CasdoorSDK:
+    """Build a ``CasdoorSDK`` with minimal config."""
+    return CasdoorSDK(
+        endpoint=_ENDPOINT, client_id="test-id", client_secret="test-secret"
+    )
 
 
 def test_casdoor_credentials_masked_in_repr():
@@ -138,3 +153,59 @@ async def test_get_users_raises_on_an_error_body_without_caching_it(mocker):
             await sdk.get_users()
 
     assert get_mock.await_count == attempts
+
+
+def test_casdoor_rejects_disabling_body_withholding():
+    """Refuse a client that would log Casdoor's token and user bodies."""
+    with pytest.raises(ValidationError):
+        CasdoorSDK(
+            endpoint=_ENDPOINT,
+            client_id="test-id",
+            client_secret="test-secret",
+            withhold_body_log=False,
+        )
+
+
+class TestCasdoorBodyLog:
+    """Cover Casdoor's bodies staying out of the transport's log records."""
+
+    @pytest.mark.asyncio
+    async def test_token_exchange_body_is_withheld(self, caplog):
+        """Log the exchange's method and path but neither body."""
+        sdk = _sdk()
+        with aioresponses() as mock:
+            mock.post(
+                f"{_ENDPOINT}/api/login/oauth/access_token",
+                payload={"access_token": _SENTINEL, "token_type": "Bearer"},
+            )
+            with caplog.at_level(logging.DEBUG, logger=sdk.logger.name):
+                async with sdk:
+                    token = await sdk.get_access_token(code="auth-code-value")
+
+        assert token["access_token"] == _SENTINEL
+        assert _SENTINEL not in caplog.text
+        assert "test-secret" not in caplog.text
+        assert "auth-code-value" not in caplog.text
+        assert "/api/login/oauth/access_token" in caplog.text
+        assert WITHHELD_BODY_LOG in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_non_json_error_body_is_withheld(self, caplog):
+        """Keep an upstream error page off the non-JSON ERROR record."""
+        sdk = _sdk()
+        with aioresponses() as mock:
+            mock.get(
+                re.compile(rf"{re.escape(_ENDPOINT)}/api/get-users.*"),
+                status=status.HTTP_502_BAD_GATEWAY,
+                body=f"<html>{_SENTINEL}</html>",
+                content_type="text/html",
+            )
+            with caplog.at_level(logging.DEBUG, logger=sdk.logger.name):
+                async with sdk:
+                    with pytest.raises(HTTPException):
+                        await sdk.get_users()
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert _SENTINEL not in caplog.text
+        assert len(errors) == 1
+        assert WITHHELD_BODY_LOG in errors[0].getMessage()

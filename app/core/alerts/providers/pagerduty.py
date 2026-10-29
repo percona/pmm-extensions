@@ -127,21 +127,22 @@ class PagerDutyEventsAlertProvider(BaseAlertProvider):
         if not isinstance(alert, PagerDutyAlert):
             alert = PagerDutyAlert.model_validate(alert, from_attributes=True)
         pagerduty_api = await self.get_api()
-        await pagerduty_api.post(
-            "enqueue",
-            json={
-                "routing_key": self.routing_key.get_secret_value(),
-                "event_action": "trigger",
-                **alert.model_dump(
-                    include={"dedup_key", "images", "links"}, exclude_none=True
-                ),
-                "payload": alert.model_dump(
-                    by_alias=True,
-                    exclude={"dedup_key", "images", "links"},
-                    exclude_none=True,
-                ),
-            },
-        )
+        with pagerduty_api.redact_body_fields({"routing_key"}):
+            await pagerduty_api.post(
+                "enqueue",
+                json={
+                    "routing_key": self.routing_key.get_secret_value(),
+                    "event_action": "trigger",
+                    **alert.model_dump(
+                        include={"dedup_key", "images", "links"}, exclude_none=True
+                    ),
+                    "payload": alert.model_dump(
+                        by_alias=True,
+                        exclude={"dedup_key", "images", "links"},
+                        exclude_none=True,
+                    ),
+                },
+            )
 
     @validate_call
     async def resolve_alert(self, dedup_key: NonEmptyStr) -> None:
@@ -155,11 +156,12 @@ class PagerDutyEventsAlertProvider(BaseAlertProvider):
         :type dedup_key: NonEmptyStr
         """
         pagerduty_api = await self.get_api()
-        await pagerduty_api.post(
-            "enqueue",
-            json={
-                "routing_key": self.routing_key.get_secret_value(),
-                "event_action": "resolve",
-                "dedup_key": dedup_key,
-            },
-        )
+        with pagerduty_api.redact_body_fields({"routing_key"}):
+            await pagerduty_api.post(
+                "enqueue",
+                json={
+                    "routing_key": self.routing_key.get_secret_value(),
+                    "event_action": "resolve",
+                    "dedup_key": dedup_key,
+                },
+            )

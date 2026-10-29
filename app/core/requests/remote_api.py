@@ -13,7 +13,39 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Manage remote API interactions."""
+"""Manage remote API interactions.
+
+:meth:`RemoteAPI.request` logs each parsed response body at DEBUG and, for a
+non-JSON response, the decoded text on an ERROR record. How a client keeps its
+bodies out of those records is its response-body logging policy, and there are
+three:
+
+- A client whose every body is sensitive sets ``withhold_body_log``, which
+  withholds request bodies too. ``CasdoorSDK`` and ``GrafanaSDK`` pin it to
+  ``True`` because their bodies carry tokens, secrets and identity data, and
+  the Tasks API clients set it through ``TASKS_CLIENT_LOG_POLICY``.
+- A client with only some sensitive calls wraps those calls in
+  :meth:`BaseRemoteAPI.suppress_response_log` or
+  :meth:`BaseRemoteAPI.suppress_request_log`. ``PMMRemoteAPI`` guards both
+  bodies of its alert contact-point calls this way, the bundle-upload delivery
+  plan withholds the response of every request it makes, and ``NomadExecutor``
+  withholds its job-dispatch request body.
+- The Inventory API, PMM annotations and PagerDuty Events clients log their
+  bodies, which are the main diagnostic for the call and carry no
+  credentials. A credential such a client posts in a top-level body field is
+  masked through :meth:`BaseRemoteAPI.redact_body_fields`, as PagerDuty's
+  ``routing_key`` is.
+
+Redacting named fields inside a response body is deliberately not offered: no
+list of names can anticipate where an upstream nests a credential, and a
+non-JSON error page has no fields to redact.
+
+Neither mechanism covers the ``error_detail_key`` field of a JSON error body.
+:meth:`RemoteAPI.request` copies that field into the raised exception's
+``detail``, so a caller that logs the exception with its traceback logs the
+field. Log such an error from a withheld client without ``exc_info``, as
+``GrafanaSDK`` does when it verifies a service-account token.
+"""
 
 __all__ = [
     "POOL_WAIT_WARN_SECONDS",
@@ -589,7 +621,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
     :param withhold_body_log: Whether this client keeps every request and
         response body out of its log, for an upstream whose bodies carry
         credentials. The method, path, sanitized headers and status are still
-        logged. Defaults to ``False``.
+        logged, but the upstream's own error page leaves the ERROR record too.
+        The module docstring's response-body logging policy says which
+        clients set it. Defaults to ``False``.
     :cvar CONNECTIVITY_CHECK_PATH: Lightweight route hit by
         :meth:`RemoteAPI.check_connectivity` for a reachability probe. Never
         enters the client-registry key or model serialization. Override per
@@ -1113,6 +1147,9 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         accumulate onto the set an enclosing block registered, this flag has
         nothing to union; an enclosing suppression survives an inner block's
         exit unchanged.
+
+        The module docstring's response-body logging policy says when to use
+        this rather than the client-level ``withhold_body_log``.
 
         :return: The instance with response logging withheld.
         """

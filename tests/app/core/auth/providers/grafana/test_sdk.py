@@ -33,6 +33,7 @@ from aiohttp import (
     ContentTypeError,
     web,
 )
+from aioresponses import aioresponses
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
@@ -40,6 +41,7 @@ from app.core.auth.exceptions import HTTPUnauthorizedException
 from app.core.auth.providers.grafana.sdk import GrafanaException, GrafanaSDK
 from app.core.requests import RemoteAPI
 from tests.app.conftest import GRAFANA_CALLER_SERVICE_ACCOUNT_TOKEN
+from tests.app.remote_api_log import WITHHELD_BODY_LOG
 
 _ENDPOINT = "https://grafana.example.com"
 _SERVICE_TOKEN = "test-service-account-token"
@@ -134,7 +136,7 @@ async def test_login_does_not_log_password(caplog):
         await sdk.login("alice", "super-secret-pw")
 
     assert "super-secret-pw" not in caplog.text
-    assert "****" in caplog.text
+    assert WITHHELD_BODY_LOG in caplog.text
 
 
 @pytest.mark.asyncio
@@ -760,3 +762,73 @@ async def test_get_service_accounts_refuses_an_unpaginable_payload():
     with pytest.raises(GrafanaException):
         await sdk.get_service_accounts()
     GrafanaSDK.get_service_accounts.cache_clear()
+
+
+def test_grafana_rejects_disabling_body_withholding():
+    """Refuse a client that would log Grafana's user and org records."""
+    with pytest.raises(ValidationError):
+        GrafanaSDK(
+            endpoint=_ENDPOINT,
+            service_account_token=_SERVICE_TOKEN,
+            withhold_body_log=False,
+        )
+
+
+class TestGrafanaBodyLog:
+    """Cover Grafana's bodies staying out of the transport's log records."""
+
+    _SENTINEL = "grafana-body-sentinel"
+
+    @pytest.mark.asyncio
+    async def test_user_record_body_is_withheld(self, caplog):
+        """Log the read's method and path but not the user record."""
+        sdk = _sdk()
+        with aioresponses() as mock:
+            mock.get(f"{_ENDPOINT}/api/user", payload={"email": self._SENTINEL})
+            with caplog.at_level(logging.DEBUG, logger=sdk.logger.name):
+                async with sdk:
+                    user = await sdk.get_current_user(_SESSION_VALUE)
+
+        assert user == {"email": self._SENTINEL}
+        assert self._SENTINEL not in caplog.text
+        assert "/api/user" in caplog.text
+        assert WITHHELD_BODY_LOG in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_non_json_error_body_is_withheld(self, caplog):
+        """Keep an upstream error page off the non-JSON ERROR record."""
+        sdk = _sdk()
+        with aioresponses() as mock:
+            mock.get(
+                f"{_ENDPOINT}/api/org/users",
+                status=status.HTTP_502_BAD_GATEWAY,
+                body=f"<html>{self._SENTINEL}</html>",
+                content_type="text/html",
+            )
+            with caplog.at_level(logging.DEBUG, logger=sdk.logger.name):
+                async with sdk:
+                    with pytest.raises(HTTPException):
+                        await sdk.get_org_users()
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert self._SENTINEL not in caplog.text
+        assert len(errors) == 1
+        assert WITHHELD_BODY_LOG in errors[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_verification_error_detail_is_not_logged(self, caplog):
+        """Keep Grafana's error ``message`` out of every record, tracebacks included."""
+        sdk = _sdk()
+        with aioresponses() as mock:
+            mock.get(
+                f"{_ENDPOINT}/api/user",
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                payload={"message": self._SENTINEL},
+            )
+            with caplog.at_level(logging.DEBUG, logger=sdk.logger.name):
+                async with sdk:
+                    with pytest.raises(GrafanaException):
+                        await sdk.verify_service_account_token("glsa_presented")
+
+        assert self._SENTINEL not in caplog.text
+        assert "/api/user" in caplog.text

@@ -699,15 +699,18 @@ class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
     async def list_contact_points(self) -> list[ContactPoint]:
         """List all alert contact points configured in PMM.
 
+        The response body is withheld from the log: each contact point's
+        ``settings`` carry integration keys, webhook URLs and passwords.
+
         :return: A list of contact point objects.
-        :rtype: list[ContactPoint]
         """
-        data = as_json_array(
-            await self.get(
-                "/graph/api/v1/provisioning/contact-points/",
-                headers=self.alerting_headers,
+        with self.suppress_response_log():
+            data = as_json_array(
+                await self.get(
+                    "/graph/api/v1/provisioning/contact-points/",
+                    headers=self.alerting_headers,
+                )
             )
-        )
         return [ContactPoint.model_validate(cp) for cp in data]
 
     async def create_contact_point(
@@ -715,20 +718,20 @@ class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
     ) -> ContactPoint:
         """Create a new alert contact point in PMM.
 
+        The request and response bodies are withheld from the log: both carry
+        ``settings``, which hold the contact point's credentials.
+
         :param name: The display name of the contact point.
-        :type name: str
         :param type_: The contact point type (e.g., "slack", "email").
-        :type type_: str
         :param settings: Type-specific configuration settings.
-        :type settings: dict[str, Any]
         :return: The created contact point.
-        :rtype: ContactPoint
         """
-        data = await self.post(
-            "/graph/api/v1/provisioning/contact-points/",
-            json={"name": name, "type": type_, "settings": settings},
-            headers=self.alerting_headers,
-        )
+        with self.suppress_request_log(), self.suppress_response_log():
+            data = await self.post(
+                "/graph/api/v1/provisioning/contact-points/",
+                json={"name": name, "type": type_, "settings": settings},
+                headers=self.alerting_headers,
+            )
         return ContactPoint.model_validate(data)
 
     @staticmethod
@@ -768,27 +771,26 @@ class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
         """Update an existing alert contact point in PMM.
 
         Use the raw `_request` context manager directly because the PUT
-        endpoint returns a 202 Accepted response with no JSON body.
+        endpoint returns a 202 Accepted response with no JSON body. The request
+        body is withheld from the log because ``settings`` hold the contact
+        point's credentials.
 
         :param uid: The UID of the contact point to update.
-        :type uid: str
         :param name: The new display name.
-        :type name: str
         :param type_: The contact point type.
-        :type type_: str
         :param settings: Updated type-specific configuration settings.
-        :type settings: dict[str, Any]
         """
-        async with self._request(
-            "PUT",
-            f"/graph/api/v1/provisioning/contact-points/{uid}",
-            json={"uid": uid, "name": name, "type": type_, "settings": settings},
-            headers=self.alerting_headers,
-        ) as response:
-            try:
-                response.raise_for_status()
-            except ClientResponseError as err:
-                self._raise_upstream_no_body_error(response, err)
+        with self.suppress_request_log():
+            async with self._request(
+                "PUT",
+                f"/graph/api/v1/provisioning/contact-points/{uid}",
+                json={"uid": uid, "name": name, "type": type_, "settings": settings},
+                headers=self.alerting_headers,
+            ) as response:
+                try:
+                    response.raise_for_status()
+                except ClientResponseError as err:
+                    self._raise_upstream_no_body_error(response, err)
 
     async def delete_contact_point(self, uid: str) -> None:
         """Delete an alert contact point by its UID.
