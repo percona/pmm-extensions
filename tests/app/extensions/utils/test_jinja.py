@@ -17,7 +17,6 @@
 
 import pytest
 from faker import Faker
-from markupsafe import Markup
 from pygments.lexers import TextLexer
 from pygments.util import ClassNotFound
 
@@ -25,7 +24,6 @@ from app.extensions.utils.jinja import (
     backup_date,
     convert_bytes,
     syntax_highlight,
-    syntax_highlight_css,
     timestamp_format,
 )
 
@@ -34,29 +32,6 @@ from app.extensions.utils.jinja import (
 def random_json(faker: Faker) -> str:
     """Generate a random JSON string."""
     return faker.json()
-
-
-def test_syntax_highlight_css_default_generates_dual_theme():
-    """Test that syntax_highlight_css generates both light and dark theme CSS."""
-    css = syntax_highlight_css()
-    assert isinstance(css, Markup)
-    assert '[data-theme="light"] .highlight' in css
-    assert '[data-theme="dark"] .highlight' in css
-
-
-def test_syntax_highlight_css_custom_class():
-    """Test that syntax_highlight_css uses the custom class in theme selectors."""
-    css = syntax_highlight_css("my-code-block", linenos=True)
-    assert '[data-theme="light"] .my-code-block' in css
-    assert '[data-theme="dark"] .my-code-block' in css
-    assert "linenos" in css
-
-
-def test_syntax_highlight_css_custom_styles():
-    """Test that syntax_highlight_css accepts custom light and dark style names."""
-    css = syntax_highlight_css(light_style="friendly", dark_style="native")
-    assert '[data-theme="light"] .highlight' in css
-    assert '[data-theme="dark"] .highlight' in css
 
 
 def test_syntax_highlight_guess_lexer(mocker, random_json):

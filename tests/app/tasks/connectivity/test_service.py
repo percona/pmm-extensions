@@ -185,7 +185,7 @@ class TestCheckConnectivityRealSession:
     """Exercise ``check_connectivity`` against a real ``AsyncSession``.
 
     ``TaskHistory.execution_request`` is declared ``deferred=True``
-    (``app/tasks/models.py``), so a plain ``session.refresh(instance)`` leaves
+    (``app/tasks/models/tables.py``), so a plain ``session.refresh(instance)`` leaves
     the attribute unloaded.
     If the executor's ``sync_task_history`` path then touches
     ``queue_item.execution_request`` from plain sync code, SQLAlchemy fires a

@@ -410,7 +410,11 @@ limits follow and are accepted. A diagnostic on a statement the branch edited
 always compares as new; a branch that swaps one diagnostic for another of the
 same rule within one unchanged statement is not reported; and identical
 statements in one file share a key, so a diagnostic moving between them is not
-reported either. A file that fails to parse on either side is compared by
+reported either. A file the branch deletes is checked at the merge-base only, and
+each of its statement-anchored diagnostics cancels one diagnostic of the same rule
+on an identical statement anywhere in the branch. A module split into a package
+therefore does not re-report what it already carried, at the cost of an identical
+statement elsewhere absorbing a cancellation meant for the moved one. A file that fails to parse on either side is compared by
 message, as is a diagnostic on a line with no code
 or no enclosing statement; those comparisons still report anything new, at the
 cost of reporting a rewritten message as new. `Diagnostic.fingerprint` itself is

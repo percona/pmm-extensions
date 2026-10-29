@@ -45,9 +45,9 @@ from typing import Annotated, Any, cast, TypeVar
 from fastapi import APIRouter, Depends, params, Query, status
 from pydantic import BaseModel
 
-from app.core.db.deps import make_in_memory_list_query_dep
+from app.core.db.deps import make_in_memory_list_query_dep, make_list_query_dep
 from app.core.db.in_memory_list_query import InMemoryListQueryApplier
-from app.core.db.list_query import ListQuerySpec, make_list_query_dep
+from app.core.db.list_query import ListQuerySpec
 from app.core.pagination import PaginatedResponse, Pagination, PaginationDependency
 from app.core.requests.remote_api import as_json_object, RemoteAPI
 from app.core.utils.fields import ArbitraryMapping
