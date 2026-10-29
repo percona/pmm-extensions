@@ -46,7 +46,6 @@ class CustomProviderUser(BaseUser):
     from_jwt = _unsupported
     from_token_payload = _unsupported
     get_oauth_token = _unsupported
-    get_user = _unsupported
     get_users = _unsupported
     invalidate_oauth_token = _unsupported
 
@@ -69,7 +68,6 @@ class TestBaseUserContract:
             "from_jwt",
             "from_token_payload",
             "get_oauth_token",
-            "get_user",
             "get_users",
             "invalidate_oauth_token",
         }
@@ -84,6 +82,7 @@ class TestBaseUserContract:
         class LegacyProviderUser(CustomProviderUser):
             from_code = _unsupported
             from_password = _unsupported
+            get_user = _unsupported
             invalidate_tokens_for_user = _unsupported
 
         user = LegacyProviderUser(id=uuid4(), username="legacy", role=UserRole.ADMIN)

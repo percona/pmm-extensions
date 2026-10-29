@@ -337,20 +337,6 @@ class BaseUser(BaseModel, ABC):
 
     @classmethod
     @abstractmethod
-    async def get_user(cls, username: NonEmptyStr) -> Self:
-        """Retrieve a user by username.
-
-        This method must be overridden in subclasses to provide specific logic for
-        retrieving a user from the data store.
-
-        :param username: The username of the user to retrieve.
-        :type username: NonEmptyStr
-        :return: An instance of the user model.
-        :rtype: Self
-        """
-
-    @classmethod
-    @abstractmethod
     async def get_users(cls) -> Sequence[Self]:
         """Retrieve all users.
 

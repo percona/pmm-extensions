@@ -260,17 +260,6 @@ class GrafanaSDK(RemoteAPI):
         with self.auth(self.service_account_token.get_secret_value()):
             return as_json_array(await self.get("/api/org/users"))
 
-    async def lookup_user(self, login: str) -> dict[str, Any]:
-        """Fetch a single user by login or email via the service account.
-
-        :param login: The login or email to look up.
-        :return: The Grafana ``/api/users/lookup`` record for the user.
-        """
-        with self.auth(self.service_account_token.get_secret_value()):
-            return as_json_object(
-                await self.get("/api/users/lookup", params={"loginOrEmail": login})
-            )
-
     @alru_cache(ttl=300)
     async def get_service_accounts(self) -> list[dict[str, Any]]:
         """Read every service account in PMM Extensions' org via the service-account token.

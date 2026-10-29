@@ -50,8 +50,6 @@ from app.core.auth.providers.grafana.sdk import (
     SERVICE_ACCOUNT_RECORDS,
 )
 from app.core.config import settings
-from app.core.exceptions import HTTPNotFoundException
-from app.core.utils.fields import NonEmptyStr
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +110,7 @@ def _rank_org_role(name: str | None) -> UserRole:
 
 
 class _GrafanaUserRecord(TypedDict):
-    """A Grafana ``/api/user`` or user-lookup record.
+    """A Grafana ``/api/user`` record.
 
     ``email`` and ``isGrafanaAdmin`` are ``NotRequired`` because Grafana omits
     them for some users; the reader accesses both via ``.get()``.
@@ -153,36 +151,6 @@ class _GrafanaOrgUserRecord(TypedDict):
 
 
 _ORG_USER_RECORDS: Final = TypeAdapter(list[_GrafanaOrgUserRecord])
-
-
-def _find_org_user(
-    records: list[_GrafanaOrgUserRecord], login_or_email: str
-) -> _GrafanaOrgUserRecord | None:
-    """Return the row a login or email names, ranking a login match first.
-
-    Grafana allows a login shaped like an email, so one user's login can equal
-    another's email; matching every login before any email keeps the result
-    independent of listing order. Comparison is case-folded because Grafana
-    treats logins case-insensitively, and a row whose field is absent or null is
-    skipped rather than compared, so a blank input matches nothing.
-
-    :param records: The org-users listing.
-    :param login_or_email: The login or email to match, in any case.
-    :return: The matching row, or ``None`` when the listing names neither.
-    """
-    wanted = login_or_email.casefold()
-    for field in ("login", "email"):
-        match = next(
-            (
-                row
-                for row in records
-                if (value := row.get(field)) and value.casefold() == wanted
-            ),
-            None,
-        )
-        if match is not None:
-            return match
-    return None
 
 
 def _active_grafana_sdk() -> GrafanaSDK:
@@ -321,7 +289,7 @@ class GrafanaUser(BaseUser):
     def _from_grafana_record(
         cls, record: _GrafanaUserRecord, orgs: Iterable[Mapping[str, Any]]
     ) -> Self:
-        """Build a user from a Grafana ``/api/user`` or user-lookup record.
+        """Build a user from a Grafana ``/api/user`` record.
 
         Grafana's numeric ``id`` is the stable subject: the PMM Extensions UUID is derived
         from it so a username change does not change the identity.
@@ -335,8 +303,6 @@ class GrafanaUser(BaseUser):
         :param record: A Grafana record carrying ``id``, ``login``, ``email``,
             and ``isGrafanaAdmin``.
         :param orgs: The memberships to rank, flattened to their highest role.
-            They may be every org the user belongs to or only the ones a single
-            org's listing proves.
         :return: The mapped ``GrafanaUser``.
         """
         if record.get("isGrafanaAdmin"):
@@ -544,63 +510,6 @@ class GrafanaUser(BaseUser):
         return
 
     @classmethod
-    async def get_user(cls, username: NonEmptyStr) -> Self:
-        """Fetch a single user by login or email.
-
-        The user-lookup endpoint needs Grafana's instance-scoped ``users:read``,
-        which only a Server Admin holds, so a service account scoped to a single
-        org is refused. That refusal alone falls back to the org-users listing the
-        same token already reads for :meth:`get_users`. Every other status
-        propagates: a 401 means the credential itself is bad and a 404 means the
-        user is genuinely absent, and re-reading a listing answers neither.
-        Nothing in this provider raises a PMM Extensions side 403, so the status is
-        unambiguous here.
-
-        The lookup endpoint carries the server-admin flag but no org memberships,
-        so the target's membership is read from the org-users listing -- the same
-        source :meth:`get_users` reads, so an org role reported there is reported
-        here too. A server admin still outranks that listing, which carries no
-        server-admin flag of its own, so its rows go unread. The listing is scoped
-        to the service account's own org, so a target whose only membership is in
-        another org is absent from it and ranks lowest.
-
-        The numeric id keys the match on this path: it is the identifier both
-        shapes agree on, while a login can differ in case or be given as an email.
-        The fallback has no lookup record to key on, so it matches on the login or
-        email instead, and reports the org role with no server-admin flag to
-        outrank it -- the same limitation :meth:`get_users` carries. Both paths
-        read the listing through :meth:`_org_user_records`, so they inherit its
-        cache, which can answer both stale and after the lookup has begun refusing.
-
-        :param username: The login or email to look up.
-        :return: The mapped ``GrafanaUser``.
-        :raises HTTPException: Whatever the lookup endpoint raised, for every
-            status other than 403, or whatever the org-users listing raised, on
-            either path -- so a role is never reported from membership data that
-            could not be read.
-        :raises HTTPNotFoundException: If the org-scoped fallback holds no such
-            user.
-        :raises GrafanaException: If the org-users listing breaks the record
-            contract.
-        """
-        try:
-            record = cast(
-                "_GrafanaUserRecord", await _active_grafana_sdk().lookup_user(username)
-            )
-        except HTTPException as exc:
-            if exc.status_code != status.HTTP_403_FORBIDDEN:
-                raise
-            return await cls._get_user_from_org_listing(username)
-        if record.get("isGrafanaAdmin"):
-            return cls._from_grafana_record(record, [])
-        orgs = [
-            row
-            for row in await cls._org_user_records()
-            if row["userId"] == record["id"]
-        ]
-        return cls._from_grafana_record(record, orgs)
-
-    @classmethod
     async def _org_user_records(cls) -> list[_GrafanaOrgUserRecord]:
         """Read the org-users listing, refusing a payload off contract.
 
@@ -608,13 +517,13 @@ class GrafanaUser(BaseUser):
         Grafana never promised surfaces as an upstream failure instead of
         escaping from inside the mapping as an unhandled key or attribute error.
 
-        Every field either mapper reads is checked, not only the ones the match
-        compares: a row without ``userId`` or with an unhashable ``role`` passes
-        a narrower gate and then crashes inside the mapping instead. The check
+        Every field :meth:`_from_org_user_record` reads is checked: a row
+        without ``userId`` or with an unhashable ``role`` passes a narrower gate
+        and then crashes inside the mapping instead. The check
         is strict, so a boolean ``userId`` is refused rather than read as an
         integer.
 
-        A null ``email`` or ``role`` passes: the mappers already read those
+        A null ``email`` or ``role`` passes: the mapper already reads those
         fields as optional, so refusing them would reject a listing the provider
         has always been able to map.
 
@@ -631,27 +540,6 @@ class GrafanaUser(BaseUser):
             raise GrafanaException(
                 detail="Grafana returned an unreadable user list."
             ) from None
-
-    @classmethod
-    async def _get_user_from_org_listing(cls, username: NonEmptyStr) -> Self:
-        """Resolve a user from the listing an org-scoped service account can read.
-
-        The listing accepts either field the lookup endpoint's ``loginOrEmail``
-        accepts, matched by :func:`_find_org_user`. A matched row ranks through
-        the same policy :meth:`get_users` applies, so holding no org role reports
-        the lowest role rather than failing: that is a state Grafana models, and
-        the two read paths must not disagree about one row.
-
-        :param username: The login or email to resolve.
-        :return: The mapped ``GrafanaUser``.
-        :raises HTTPException: Whatever the org-users listing raised.
-        :raises HTTPNotFoundException: If no org user matches ``username``.
-        :raises GrafanaException: If the listing breaks the record contract.
-        """
-        record = _find_org_user(await cls._org_user_records(), username)
-        if record is None:
-            raise HTTPNotFoundException(detail="User not found")
-        return cls._from_org_user_record(record)
 
     @classmethod
     async def get_users(cls) -> list[Self]:
