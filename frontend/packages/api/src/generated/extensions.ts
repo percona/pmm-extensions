@@ -7822,10 +7822,10 @@ export interface components {
      *         at construction. Defaults to an empty list.
      *     :param capabilities: Optional plugin-level feature flags. Defaults to
      *         ``None``.
-     *     :param list_view: List-view configuration when ``entities`` is unset
-     *         (single-entity / task plugins). Required when ``entities`` is unset or
-     *         empty; rejected at construction when ``entities`` is non-empty (declare
-     *         ``list_view`` on each entity instead).
+     *     :param list_view: List-view configuration when ``entities`` is unset or
+     *         empty (single-entity / task plugins), where it is required; rejected
+     *         at construction when ``entities`` is non-empty (declare ``list_view``
+     *         on each entity instead).
      *     :param detail_view: Optional declarative layout for the task detail page's
      *         section cards (task-style plugins only; rejected at construction when
      *         ``entities`` is non-empty, since ``AppEntitySchema`` declares no

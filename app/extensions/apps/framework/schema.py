@@ -1808,10 +1808,10 @@ class AppSchema(SchemaBaseModel):
         at construction. Defaults to an empty list.
     :param capabilities: Optional plugin-level feature flags. Defaults to
         ``None``.
-    :param list_view: List-view configuration when ``entities`` is unset
-        (single-entity / task plugins). Required when ``entities`` is unset or
-        empty; rejected at construction when ``entities`` is non-empty (declare
-        ``list_view`` on each entity instead).
+    :param list_view: List-view configuration when ``entities`` is unset or
+        empty (single-entity / task plugins), where it is required; rejected
+        at construction when ``entities`` is non-empty (declare ``list_view``
+        on each entity instead).
     :param detail_view: Optional declarative layout for the task detail page's
         section cards (task-style plugins only; rejected at construction when
         ``entities`` is non-empty, since ``AppEntitySchema`` declares no
@@ -2061,8 +2061,10 @@ class AppSchema(SchemaBaseModel):
     def _validate_form_configuration(self) -> Self:
         """Validate root-level form configuration for plugin schemas.
 
-        When ``entities`` is non-empty, five root keys must be unset. Root
-        ``forms``, ``cardinality_rules``, ``fail_when`` and ``list_view`` belong
+        When ``entities`` is non-empty, root ``forms``, ``cardinality_rules``
+        and ``fail_when`` must be unset or empty, and root ``list_view``,
+        ``detail_view`` and ``task_type`` must be unset. Root ``forms``,
+        ``cardinality_rules``, ``fail_when`` and ``list_view`` belong
         on the entity that owns them, so the error names the entities to move
         them to. Root ``detail_view`` and ``task_type`` have no equivalent on
         :class:`AppEntitySchema`, so the error says to remove them. A single
