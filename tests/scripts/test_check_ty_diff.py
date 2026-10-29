@@ -427,8 +427,8 @@ def test_test_paths_are_dropped():
     assert changed.base == ("app/core/db.py",)
 
 
-def test_deleted_paths_are_excluded_by_the_diff_filter(monkeypatch, tmp_path):
-    """Ask git for ``ACMR`` only, so no removed path is handed to ty."""
+def test_deletions_are_requested_from_git(monkeypatch, tmp_path):
+    """Ask git for deletions too, so a split file keeps its baseline."""
     recorded: list[tuple[str, ...]] = []
 
     def spy_git(*args, cwd=None):
@@ -439,7 +439,128 @@ def test_deleted_paths_are_excluded_by_the_diff_filter(monkeypatch, tmp_path):
     check_ty_diff.changed_files(MERGE_BASE)
 
     diff_args = next(args for args in recorded if args[0] == "diff")
-    assert "--diff-filter=ACMR" in diff_args
+    assert "--diff-filter=ACMRD" in diff_args
+
+
+def test_a_deleted_path_feeds_only_the_base_pass():
+    """Read a removed path at the merge-base only, never at head."""
+    changed = check_ty_diff.parse_name_status(
+        "D\tapp/tasks/models.py\nA\tapp/tasks/models/tables.py\n"
+        "D\ttests/app/tasks/test_old.py\n"
+    )
+
+    assert changed.head == ("app/tasks/models/tables.py",)
+    assert changed.base == ("app/tasks/models.py",)
+    assert changed.deleted == ("app/tasks/models.py",)
+
+
+SPLIT_BASE = """\
+from app.core import create_app, open_db
+
+
+def build():
+    return create_app(settings=None)
+
+
+def connect():
+    return open_db(url=None)
+"""
+SPLIT_HEAD_BUILD = """\
+from app.core import create_app
+
+
+def build():
+    return create_app(settings=None)
+"""
+SPLIT_HEAD_CONNECT = """\
+from app.core import open_db
+
+
+def connect():
+    return open_db(url=None)
+"""
+SPLIT_HEAD_CONNECT_EDITED = """\
+from app.core import open_db
+
+
+def connect():
+    return open_db(url=None, retries=None)
+"""
+SPLIT_STATUS = "D\tapp/old.py\nA\tapp/pkg/build.py\nA\tapp/pkg/connect.py\n"
+
+
+def test_a_split_file_does_not_make_its_existing_diagnostics_surplus(
+    monkeypatch, tmp_path
+):
+    """Match diagnostics a deleted file carried wherever the split put them."""
+    code, spy, _ = _run_main_with_sources(
+        monkeypatch,
+        tmp_path,
+        SPLIT_STATUS,
+        {
+            "app/pkg/build.py": SPLIT_HEAD_BUILD,
+            "app/pkg/connect.py": SPLIT_HEAD_CONNECT,
+        },
+        {"app/old.py": SPLIT_BASE},
+        _output(
+            _row("app/pkg/build.py", 5, 12, BASE_MESSAGE),
+            _row("app/pkg/connect.py", 5, 12, BASE_MESSAGE),
+        ),
+        _output(
+            _row("app/old.py", 5, 12, BASE_MESSAGE),
+            _row("app/old.py", 9, 12, BASE_MESSAGE),
+        ),
+    )
+
+    assert code == 0
+    assert spy.paths[1] == ["app/old.py"]
+
+
+def test_an_edited_statement_in_a_split_file_still_reports(
+    monkeypatch, tmp_path, capsys
+):
+    """Report a diagnostic whose statement the split changed."""
+    code, _, _ = _run_main_with_sources(
+        monkeypatch,
+        tmp_path,
+        SPLIT_STATUS,
+        {
+            "app/pkg/build.py": SPLIT_HEAD_BUILD,
+            "app/pkg/connect.py": SPLIT_HEAD_CONNECT_EDITED,
+        },
+        {"app/old.py": SPLIT_BASE},
+        _output(
+            _row("app/pkg/build.py", 5, 12, BASE_MESSAGE),
+            _row("app/pkg/connect.py", 5, 12, BASE_MESSAGE),
+        ),
+        _output(
+            _row("app/old.py", 5, 12, BASE_MESSAGE),
+            _row("app/old.py", 9, 12, BASE_MESSAGE),
+        ),
+    )
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "app/pkg/connect.py:5" in out
+    assert "app/pkg/build.py:5" not in out
+
+
+def test_copying_a_moved_defect_twice_reports_the_copy(monkeypatch, tmp_path):
+    """Cancel each deleted-file diagnostic once, so a duplicate still reports."""
+    code, _, _ = _run_main_with_sources(
+        monkeypatch,
+        tmp_path,
+        "D\tapp/old.py\nA\tapp/pkg/build.py\nA\tapp/pkg/copy.py\n",
+        {"app/pkg/build.py": SPLIT_HEAD_BUILD, "app/pkg/copy.py": SPLIT_HEAD_BUILD},
+        {"app/old.py": SPLIT_BASE},
+        _output(
+            _row("app/pkg/build.py", 5, 12, BASE_MESSAGE),
+            _row("app/pkg/copy.py", 5, 12, BASE_MESSAGE),
+        ),
+        _output(_row("app/old.py", 5, 12, BASE_MESSAGE)),
+    )
+
+    assert code == 1
 
 
 def test_renames_map_the_base_pass_back_to_the_old_path():
