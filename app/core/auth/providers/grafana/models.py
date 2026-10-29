@@ -110,7 +110,7 @@ def _rank_org_role(name: str | None) -> UserRole:
 
 
 class _GrafanaUserRecord(TypedDict):
-    """A Grafana ``/api/user`` record.
+    """Describe a Grafana ``/api/user`` record.
 
     ``email`` and ``isGrafanaAdmin`` are ``NotRequired`` because Grafana omits
     them for some users; the reader accesses both via ``.get()``.
