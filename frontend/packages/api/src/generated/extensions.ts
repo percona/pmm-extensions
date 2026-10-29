@@ -6004,9 +6004,9 @@ export interface components {
       total: number;
     };
     /** PaginatedResponse[ServiceResponse] */
-    app__PaginatedResponse_inventory__models__ServiceResponse_: {
+    app__PaginatedResponse_inventory__models__responses__ServiceResponse_: {
       /** Items */
-      items: components['schemas']['app__inventory__models__ServiceResponse'][];
+      items: components['schemas']['app__inventory__models__responses__ServiceResponse'][];
       /** Limit */
       limit: number;
       /** Offset */
@@ -6073,7 +6073,7 @@ export interface components {
      *         its outcome, or ``None`` if none has been reported, or the upgrade
      *         time for a row that was failing when the column was added.
      */
-    app__inventory__models__ServiceResponse: {
+    app__inventory__models__responses__ServiceResponse: {
       /** Cluster */
       cluster?: string | null;
       /**
@@ -17629,7 +17629,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          'application/json': components['schemas']['app__PaginatedResponse_inventory__models__ServiceResponse_'];
+          'application/json': components['schemas']['app__PaginatedResponse_inventory__models__responses__ServiceResponse_'];
         };
       };
       /** @description Validation Error */
