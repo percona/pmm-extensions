@@ -25,6 +25,7 @@ start a viewer at chosen offsets and to stop it reading mid-stream.
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack
@@ -43,7 +44,12 @@ from app.tasks.main import tasks_app
 from app.tasks.models import TaskHistory, TaskLogType
 from tests.app.asgi_stream import asgi_stream, ASGIStream
 from tests.app.tasks.live_log_viewer import attach, live_history, LiveViewer, until
-from tests.app.tasks.nomad_log_stub import FRAME_SIZE, NomadLogStub
+from tests.app.tasks.nomad_log_stub import (
+    appending,
+    evicting,
+    FRAME_SIZE,
+    NomadLogStub,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -65,6 +71,13 @@ RUN_TIMEOUT = 60.0
 
 #: A withheld-bytes ceiling small enough to force a flush mid-address.
 SMALL_CEILING = 24
+
+#: The rotated file the deletion tests have Nomad delete.
+EVICTED = "evicted\n"
+
+#: Seconds between the stub's heartbeats in the reconnect test, short enough
+#: that the executor's idle recheck reconnects the follow within a second.
+FAST_HEARTBEAT = 0.05
 
 
 @pytest_asyncio.fixture
@@ -592,5 +605,243 @@ async def test_offsets_are_data_ends_however_nomad_frames_the_log(
     assert len(raw_backlog) > FRAME_SIZE
     _assert_resumable(first, raw, 0)
     _assert_resumable(joiner, raw, 0)
+    await first.leave()
+    await joiner.leave()
+
+
+async def _rotate_past_evicted(nomad_stub: NomadLogStub, viewer: LiveViewer) -> None:
+    """Have ``viewer`` follow :data:`EVICTED` through, then rotate the file.
+
+    The shared follow reads the file that is later deleted, so it records
+    where the next file starts.
+
+    :param nomad_stub: The stub serving the run.
+    :param viewer: A viewer attached to the run's shared follow.
+    """
+    await nomad_stub.write(STDOUT, EVICTED.encode())
+    await until(lambda: viewer.offset() == len(EVICTED))
+    await nomad_stub.rotate(STDOUT)
+
+
+async def test_a_joiner_gets_output_written_during_its_catch_up_once(
+    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+) -> None:
+    """Clip a joiner's catch-up at the frontier however much Nomad holds past it.
+
+    Output written while the catch-up reads lies past the frontier, so the
+    joiner receives it from the shared follow, once.
+    """
+    history = live_history(nomad_stub)
+    first = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, first)
+    await _rotate_past_evicted(nomad_stub, first)
+    await nomad_stub.write(STDOUT, b"retained\n")
+    await until(lambda: first.offset() == len(EVICTED + "retained\n"))
+    await nomad_stub.evict_oldest(STDOUT)
+    await nomad_stub.before_request(STDOUT, appending(b"live\n"), follow=False, skip=1)
+
+    joiner = LiveViewer(live_executor, history, nomad_stub.step)
+    raw = EVICTED + "retained\nlive\n"
+    await until(lambda: joiner.offset() == len(raw))
+
+    assert joiner.text() == "retained\nlive\n"
+    _assert_resumable(joiner, raw, len(EVICTED))
+    _assert_resumable(first, raw, 0)
+    await first.leave()
+    await joiner.leave()
+
+
+async def _drop_a_stalled_viewer_past_a_deletion(
+    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+) -> tuple[LiveViewer, LiveViewer, str]:
+    """Keep one viewer from reading until it is dropped, then delete the oldest file.
+
+    :param nomad_stub: The stub serving the run.
+    :param live_executor: The executor both viewers read through.
+    :return: The stalled viewer, the viewer that kept reading, and the raw
+        stdout written so far.
+    """
+    history = live_history(nomad_stub)
+    stalled = LiveViewer(live_executor, history, nomad_stub.step)
+    reading = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, stalled, reading)
+    stalled.reading.clear()
+    await _rotate_past_evicted(nomad_stub, reading)
+    lines = [f"line-{index:03d}\n" for index in range(3 * SUBSCRIBER_BACKLOG)]
+    for line in lines:
+        await nomad_stub.write(STDOUT, line.encode())
+        await until(lambda line=line: reading.text().endswith(line))
+    await nomad_stub.evict_oldest(STDOUT)
+    return stalled, reading, EVICTED + "".join(lines)
+
+
+async def test_a_dropped_subscriber_rejoins_in_place_after_a_deletion(
+    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+) -> None:
+    """Resume a dropped viewer's catch-up at its own offset after a deletion."""
+    stalled, reading, raw = await _drop_a_stalled_viewer_past_a_deletion(
+        nomad_stub, live_executor
+    )
+    await nomad_stub.before_request(
+        STDOUT, appending(b"hooked-line\n"), follow=False, skip=1
+    )
+
+    stalled.reading.set()
+    raw += "hooked-line\n"
+    await until(lambda: stalled.offset() == len(raw))
+
+    _assert_resumable(stalled, raw, 0)
+    await stalled.leave()
+    await reading.leave()
+
+
+async def test_a_lagging_subscriber_catches_up_in_place_when_the_follow_ends_after_a_deletion(
+    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+) -> None:
+    """Catch a lagging viewer up to the frontier exactly once when the follow ends.
+
+    The write made during its catch-up lies past the final frontier, so the
+    viewer never receives it.
+    """
+    stalled, reading, raw = await _drop_a_stalled_viewer_past_a_deletion(
+        nomad_stub, live_executor
+    )
+    await nomad_stub.before_request(
+        STDOUT, appending(b"hooked-line\n"), follow=False, skip=1
+    )
+    await nomad_stub.finish()
+    await until(lambda: reading.finished)
+
+    stalled.reading.set()
+    await until(lambda: stalled.finished)
+
+    _assert_resumable(stalled, raw, 0)
+
+
+async def test_the_shared_follow_reconnects_in_place_after_a_deletion(
+    nomad_stub: NomadLogStub,
+) -> None:
+    """Resume the shared follow where it stopped when it reconnects past a deletion.
+
+    The follow idles long enough for the executor's recheck to reconnect it,
+    and output written just before the reconnect is served must reach the
+    viewer, with offsets that stay resumable.
+    """
+    nomad_stub.heartbeat_interval = FAST_HEARTBEAT
+    async with NomadExecutor(
+        endpoint=nomad_stub.endpoint, verify_ssl=False, log_socket_read_timeout=1
+    ) as executor:
+        viewer = LiveViewer(executor, live_history(nomad_stub), nomad_stub.step)
+        await attach(nomad_stub, viewer)
+        await _rotate_past_evicted(nomad_stub, viewer)
+        await nomad_stub.write(STDOUT, b"retained\n")
+        await until(lambda: viewer.offset() == len(EVICTED + "retained\n"))
+        await nomad_stub.evict_oldest(STDOUT)
+        await nomad_stub.before_request(STDOUT, appending(b"after\n"), follow=True)
+
+        raw = EVICTED + "retained\nafter\n"
+        await until(lambda: viewer.offset() == len(raw))
+
+        _assert_resumable(viewer, raw, 0)
+        await viewer.leave()
+
+
+async def test_an_anonymized_joiner_is_handed_off_whole_after_a_deletion(
+    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+) -> None:
+    """Hand an anonymized joiner off at the frontier, never inside the open line.
+
+    The rest of the address arrives while the joiner catches up; the catch-up
+    must stop at the frontier and leave the line to the shared follow, which
+    redacts it whole.
+    """
+    history = live_history(nomad_stub, EMAIL)
+    first = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, first)
+    await _rotate_past_evicted(nomad_stub, first)
+    await nomad_stub.write(STDOUT, b"ok\nmail alice@")
+    await until(lambda: first.offset() == len(EVICTED + "ok\n"))
+    await nomad_stub.evict_oldest(STDOUT)
+    await nomad_stub.before_request(
+        STDOUT, appending(b"example.com\n"), follow=False, skip=1
+    )
+
+    joiner = LiveViewer(live_executor, history, nomad_stub.step)
+    await until(lambda: joiner.text().endswith("<EMAIL_ADDRESS>\n"))
+
+    assert joiner.text() == "ok\nmail <EMAIL_ADDRESS>\n"
+    raw = EVICTED + "ok\nmail alice@example.com\n"
+    assert [log.offset for log in joiner.logs[STDOUT]] == [
+        len(EVICTED + "ok\n"),
+        len(raw),
+    ]
+    await first.leave()
+    await joiner.leave()
+
+
+async def test_a_deletion_between_probe_and_read_keeps_the_catch_up_in_place(
+    nomad_stub: NomadLogStub, live_executor: NomadExecutor
+) -> None:
+    """Re-read a catch-up that Nomad placed with a shift a deletion made stale.
+
+    The deletion lands after the catch-up has learned the shift and before its
+    read is served, so the stale offset still falls inside the retained file.
+    """
+    history = live_history(nomad_stub)
+    first = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, first)
+    await _rotate_past_evicted(nomad_stub, first)
+    retained = "".join(f"line-{index:02d}\n" for index in range(12))
+    await nomad_stub.write(STDOUT, retained.encode())
+    raw = EVICTED + retained
+    await until(lambda: first.offset() == len(raw))
+    await nomad_stub.before_request(STDOUT, evicting(), follow=False, skip=1)
+
+    joiner = LiveViewer(live_executor, history, nomad_stub.step, {STDOUT: 20})
+    await until(lambda: joiner.offset() == len(raw))
+
+    _assert_resumable(joiner, raw, 20)
+    await first.leave()
+    await joiner.leave()
+
+
+async def test_a_deletion_mid_catch_up_drops_the_split_character_cleanly(
+    nomad_stub: NomadLogStub,
+    live_executor: NomadExecutor,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Drop the character a deletion split mid catch-up rather than fail on it.
+
+    The joiner's first read stops one byte into a two-byte character; Nomad
+    then deletes the file holding the rest of it, so the partial character is
+    dropped and the catch-up resumes at the next retained file. The shared
+    follow reads the character in one frame, being written apart from the
+    text before it.
+    """
+    chunk = nomad_models._CATCH_UP_CHUNK_BYTES
+    before = "".join(f"{index:07d}\n" for index in range(chunk // 8 - 1)) + "x" * 7
+    split = "é tail\n"
+    assert len(before.encode()) == chunk - 1
+    history = live_history(nomad_stub)
+    first = LiveViewer(live_executor, history, nomad_stub.step)
+    await attach(nomad_stub, first)
+    await _rotate_past_evicted(nomad_stub, first)
+    await nomad_stub.write(STDOUT, before.encode())
+    await until(lambda: first.offset() == len(EVICTED) + chunk - 1, within=RUN_TIMEOUT)
+    await nomad_stub.write(STDOUT, split.encode())
+    await nomad_stub.rotate(STDOUT)
+    await nomad_stub.write(STDOUT, b"after\n")
+    retained_to = len(EVICTED) + chunk - 1 + len(split.encode())
+    raw_length = retained_to + len("after\n")
+    await until(lambda: first.offset() == raw_length)
+    await nomad_stub.evict_oldest(STDOUT)
+    await nomad_stub.before_request(STDOUT, evicting(), follow=False, skip=3)
+
+    with caplog.at_level(logging.WARNING):
+        joiner = LiveViewer(live_executor, history, nomad_stub.step)
+        await until(lambda: joiner.offset() == raw_length, within=RUN_TIMEOUT)
+
+    assert joiner.text() == before + "after\n"
+    assert f"range={len(EVICTED) + chunk - 1}-{retained_to}" in caplog.text
     await first.leave()
     await joiner.leave()

@@ -26,7 +26,7 @@ import time
 from base64 import b64encode
 from binascii import b2a_base64
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Generator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, UTC
 from itertools import pairwise
@@ -70,7 +70,10 @@ from app.tasks.execution.executors.nomad.exceptions import (
     JobNotFoundError,
     NomadRequestError,
 )
-from app.tasks.execution.executors.nomad.log_follow import LogCatchUpError
+from app.tasks.execution.executors.nomad.log_follow import (
+    LogCatchUpError,
+    LogFileStarts,
+)
 from app.tasks.execution.executors.nomad.models import (
     _alloc_step_state,
     _alloc_task_states,
@@ -82,7 +85,9 @@ from app.tasks.execution.executors.nomad.models import (
     _detect_stale_skip,
     _detect_unlaunchable,
     _LAUNCH_CHECK_TASK_NAME,
+    _LogFrame,
     _NOMAD_LOG_STREAM_CLIENT_ERROR,
+    _NOMAD_LOG_STREAM_MISPLACED,
     _NOMAD_LOG_STREAM_SOCK_TIMEOUT,
     _should_anonymize,
     _split_nomad_frames,
@@ -8024,11 +8029,11 @@ class TestLogCatchUpReads:
                 [self._frame_bytes(payload, offset=len(payload))]
             ),
         ):
-            frames = await executor._read_log_frames(
+            read = await executor._read_log_frames(
                 "alloc-1", "setup", TaskLogType.STDOUT, start=0, end=len(payload)
             )
 
-        assert frames == [payload]
+        assert read == [_LogFrame(None, payload)]
 
     @pytest.mark.asyncio
     async def test_read_log_range_yields_plain_text(self) -> None:
@@ -8142,6 +8147,618 @@ class TestLogCatchUpReads:
         assert len(logs) == 1
         assert logs[0].msg == "partial"
         assert logs[0].offset == len(payload)
+
+    @staticmethod
+    def _file_name(index: int) -> str:
+        return f"alloc/logs/setup.stdout.{index}"
+
+    def _file_frame(self, index: int, msg: bytes) -> bytes:
+        return json.dumps(
+            {
+                "File": self._file_name(index),
+                "Offset": 0,
+                "Data": b64encode(msg).decode(),
+            }
+        ).encode()
+
+    def _probe(self, index: int) -> list[bytes]:
+        """Return the body of a shift probe that finds file ``index`` oldest.
+
+        :param index: The rotation index of the oldest retained file.
+        :return: The probe response's chunks.
+        """
+        return [self._file_frame(index, b"x")]
+
+    def _rotated(self, *starts: int, start_offset: int = 0) -> LogFileStarts:
+        """Record one file per start, the way the shared follow's producer does.
+
+        :param starts: Each file's cumulative start, in rotation order.
+        :param start_offset: The raw offset the follow started at.
+        :return: The recorded file starts.
+        """
+        files = LogFileStarts(start_offset)
+        for index, start in enumerate(starts):
+            files.record(self._file_name(index), start)
+        return files
+
+    def _serving(self, executor: NomadExecutor, *bodies: list[bytes]) -> Any:
+        """Patch ``_request`` to answer each request with the next body.
+
+        :param executor: The executor whose requests are answered.
+        :param bodies: The chunks of each response, in request order.
+        :return: The patcher, whose mock records every request.
+        """
+        return patch.object(
+            executor,
+            "_request",
+            side_effect=[self._request_yielding(body) for body in bodies],
+        )
+
+    @staticmethod
+    def _requested_offsets(request: MagicMock) -> list[int]:
+        return [entry.kwargs["params"]["offset"] for entry in request.call_args_list]
+
+    @staticmethod
+    async def _read_range(
+        executor: NomadExecutor,
+        start: int,
+        end: int,
+        files: LogFileStarts | None,
+        *,
+        step: str = "setup",
+        anonymize_entities: set[PIIEntity] | None = None,
+    ) -> list[TaskLog]:
+        return [
+            log
+            async for log in executor._read_log_range(
+                "alloc-1",
+                step,
+                TaskLogType.STDOUT,
+                anonymize_entities=anonymize_entities,
+                start=start,
+                end=end,
+                files=files,
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_translates_past_a_deleted_file(self) -> None:
+        """Request a range shifted by the deleted file and clip it at ``end``."""
+        executor = _build_executor()
+        with self._serving(
+            executor,
+            self._probe(1),
+            [self._file_frame(1, b"ined\nlive\n")],
+            self._probe(1),
+        ) as request:
+            logs = await self._read_range(executor, 12, 17, self._rotated(0, 8))
+
+        assert [(log.msg, log.offset) for log in logs] == [("ined\n", 17)]
+        assert self._requested_offsets(request) == [0, 4, 0]
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_rereads_a_response_a_deletion_misplaced(
+        self,
+    ) -> None:
+        """Discard a response whose trailing probe moved and re-request it."""
+        executor = _build_executor()
+        with self._serving(
+            executor,
+            self._probe(0),
+            [self._file_frame(1, b"STALE\n")],
+            self._probe(1),
+            [self._file_frame(1, b"ined\n")],
+            self._probe(1),
+        ) as request:
+            logs = await self._read_range(executor, 12, 17, self._rotated(0, 8))
+
+        assert [(log.msg, log.offset) for log in logs] == [("ined\n", 17)]
+        assert self._requested_offsets(request) == [0, 12, 0, 4, 0]
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_replaces_an_empty_read_a_deletion_misplaced(
+        self,
+    ) -> None:
+        """Re-request an empty response whose trailing probe found a newer shift."""
+        executor = _build_executor()
+        with self._serving(
+            executor,
+            self._probe(0),
+            [],
+            self._probe(1),
+            [self._file_frame(1, b"ined\n")],
+            self._probe(1),
+        ) as request:
+            logs = await self._read_range(executor, 12, 17, self._rotated(0, 8))
+
+        assert [(log.msg, log.offset) for log in logs] == [("ined\n", 17)]
+        assert self._requested_offsets(request) == [0, 12, 0, 4, 0]
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_names_only_its_own_range_as_lost(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Clip the lost range at ``end`` when the oldest retained file starts past it."""
+        executor = _build_executor()
+        with (
+            self._serving(executor, self._probe(2)) as request,
+            caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
+        ):
+            logs = await self._read_range(executor, 3, 9, self._rotated(0, 4, 12))
+
+        assert logs == []
+        assert request.call_count == 1
+        assert "lost range=3-9 " in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_stops_at_an_empty_read_its_probes_agree_on(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Treat an empty response between equal probes as the log's end."""
+        executor = _build_executor()
+        bodies = [self._probe(1), [], self._probe(1)]
+        with (
+            self._serving(executor, *bodies) as request,
+            caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
+        ):
+            logs = await self._read_range(executor, 12, 17, self._rotated(0, 8))
+
+        assert logs == []
+        assert request.call_count == len(bodies)
+        assert "reached the log's end" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_an_unplaceable_follow_warns_once_then_reads_untranslated(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Warn on a follow's first unplaceable read and log later ones at debug."""
+        executor = _build_executor()
+        files = self._rotated(5, 20, start_offset=5)
+        read = [self._file_frame(0, b"plain\n")]
+        with (
+            self._serving(executor, self._probe(0), read, self._probe(0), read),
+            caplog.at_level(logging.DEBUG, logger=NOMAD_MODELS_LOGGER),
+        ):
+            first = await self._read_range(executor, 9, 15, files)
+            second = await self._read_range(executor, 9, 15, files)
+
+        unplaced = [
+            record.levelno
+            for record in caplog.records
+            if "cannot be placed" in record.getMessage()
+        ]
+        assert unplaced == [logging.WARNING, logging.DEBUG]
+        assert [log.msg for log in first + second] == ["plain\n", "plain\n"]
+
+    @pytest.mark.asyncio
+    async def test_place_reconnect_resumes_past_files_deleted_while_disconnected(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Drop the withheld line and jump the follow's offset to the confirmed shift."""
+        executor = _build_executor()
+        position, shift = 12, 20
+        params = {"task": "setup", "type": "stdout", "offset": position}
+        pending = WithheldLineBuffer()
+        pending.append(b"mail ali")
+        with (
+            self._serving(executor, self._probe(2), self._probe(2)),
+            caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
+        ):
+            request_offset, confirm = await executor._place_reconnect(
+                "alloc-1",
+                "setup",
+                TaskLogType.STDOUT,
+                self._rotated(0, 8, shift),
+                params,
+                pending,
+            )
+            assert confirm is not None
+            placed = await confirm()
+
+        assert (request_offset, placed) == (0, True)
+        assert params["offset"] == shift
+        assert not pending
+        assert f"range={position - len('mail ali')}-{shift}" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_place_reconnect_leaves_the_follow_alone_when_refused(self) -> None:
+        """Change nothing when the trailing probe contradicts the leading one."""
+        executor = _build_executor()
+        position = 12
+        params = {"task": "setup", "type": "stdout", "offset": position}
+        pending = WithheldLineBuffer()
+        pending.append(b"mail ali")
+        with self._serving(executor, self._probe(1), self._probe(2)):
+            request_offset, confirm = await executor._place_reconnect(
+                "alloc-1",
+                "setup",
+                TaskLogType.STDOUT,
+                self._rotated(0, 8, 20),
+                params,
+                pending,
+            )
+            assert confirm is not None
+            placed = await confirm()
+
+        assert (request_offset, placed) == (position - 8, False)
+        assert params["offset"] == position
+        assert len(pending) == len("mail ali")
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_gives_up_when_deletions_outpace_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """End the read with a warning after three moved probes in a row."""
+        executor = _build_executor()
+        data = [self._file_frame(3, b"STALE\n")]
+        bodies = [self._probe(0)]
+        for moved_to in (1, 2, 3):
+            bodies += [data, self._probe(moved_to)]
+        with (
+            self._serving(executor, *bodies) as request,
+            caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
+        ):
+            logs = await self._read_range(executor, 30, 40, self._rotated(0, 8, 16, 24))
+
+        assert logs == []
+        assert request.call_count == len(bodies)
+        assert "gave up" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_gives_up_without_flushing_a_withheld_line(
+        self,
+    ) -> None:
+        """Release no withheld prefix when a flushed read gives up before ``end``."""
+        executor = _build_executor()
+        stale = [self._file_frame(3, b"STALE\n")]
+        bodies = [self._probe(0), [self._file_frame(0, b"ok\nmail alice@")]]
+        bodies += [self._probe(0)]
+        for moved_to in (1, 2, 3):
+            bodies += [stale, self._probe(moved_to)]
+        with self._serving(executor, *bodies) as request:
+            logs = [
+                log
+                async for log in executor._read_log_range(
+                    "alloc-1",
+                    "run-script",
+                    TaskLogType.STDOUT,
+                    anonymize_entities={PIIEntity.EMAIL_ADDRESS},
+                    start=0,
+                    end=40,
+                    flush=True,
+                    files=self._rotated(0, 14, 24, 34),
+                )
+            ]
+
+        assert [(log.msg, log.offset) for log in logs] == [("ok\n", 3)]
+        assert request.call_count == len(bodies)
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_drops_a_withheld_line_a_deletion_split(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Discard the withheld prefix when the rest of its line was deleted."""
+        executor = _build_executor()
+        with (
+            self._serving(
+                executor,
+                self._probe(0),
+                [self._file_frame(0, b"ok\nmail alice@")],
+                self._probe(0),
+                [self._file_frame(1, b"example.com\n")],
+                self._probe(2),
+                [self._file_frame(2, b"after\n")],
+                self._probe(2),
+            ),
+            caplog.at_level(logging.WARNING, logger=NOMAD_MODELS_LOGGER),
+        ):
+            logs = await self._read_range(
+                executor,
+                0,
+                30,
+                self._rotated(0, 14, 24),
+                step="run-script",
+                anonymize_entities={PIIEntity.EMAIL_ADDRESS},
+            )
+
+        assert [(log.msg, log.offset) for log in logs] == [
+            ("ok\n", 3),
+            ("after\n", 30),
+        ]
+        assert "range=3-24" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_resets_a_character_a_deletion_split(self) -> None:
+        """Drop the partial character before a gap rather than fail on it."""
+        executor = _build_executor()
+        with self._serving(
+            executor,
+            self._probe(0),
+            [self._file_frame(0, b"ok \xc3")],
+            self._probe(0),
+            [self._file_frame(1, b"\xa9tc\n")],
+            self._probe(2),
+            [self._file_frame(2, b"after\n")],
+            self._probe(2),
+        ):
+            logs = await self._read_range(executor, 0, 16, self._rotated(0, 4, 10))
+
+        assert [(log.msg, log.offset) for log in logs] == [
+            ("ok ", 3),
+            ("after\n", 16),
+        ]
+
+    @pytest.mark.parametrize("starts", [None, (0,)], ids=["no-files", "one-file"])
+    @pytest.mark.asyncio
+    async def test_read_log_range_makes_no_probe_without_a_rotation(
+        self, starts: tuple[int, ...] | None
+    ) -> None:
+        """Read from the cumulative offset, with no probe, when no file can be gone."""
+        executor = _build_executor()
+        files = None if starts is None else self._rotated(*starts)
+        with self._serving(executor, [self._file_frame(0, b"plain\n")]) as request:
+            logs = await self._read_range(executor, 3, 9, files)
+
+        assert [(log.msg, log.offset) for log in logs] == [("plain\n", 9)]
+        assert self._requested_offsets(request) == [3]
+
+    @pytest.mark.asyncio
+    async def test_read_log_range_turns_a_failed_probe_into_a_catch_up_error(
+        self,
+    ) -> None:
+        """End the subscriber's read when the shift probe cannot be made."""
+        executor = _build_executor()
+        with (
+            patch.object(executor, "_request", side_effect=TimeoutError("timed out")),
+            pytest.raises(LogCatchUpError, match="timed out"),
+        ):
+            await self._read_range(executor, 12, 17, self._rotated(0, 8))
+
+    @pytest.mark.parametrize(
+        ("oldest", "expected"),
+        [
+            pytest.param(None, None, id="nothing-retained"),
+            pytest.param(0, None, id="start-never-read"),
+            pytest.param(1, 20, id="recorded-start"),
+            pytest.param(9, None, id="never-recorded"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_resolve_log_shift_places_only_a_file_whose_start_was_read(
+        self, oldest: int | None, expected: int | None
+    ) -> None:
+        """Return the oldest retained file's start only when the follow read it."""
+        executor = _build_executor()
+        body = [] if oldest is None else self._probe(oldest)
+        files = self._rotated(5, 20, start_offset=5)
+        with self._serving(executor, body):
+            shift = await executor._resolve_log_shift(
+                "alloc-1", "setup", TaskLogType.STDOUT, files
+            )
+
+        assert shift == expected
+
+    @staticmethod
+    def _consume(
+        executor: NomadExecutor,
+        params: dict[str, Any],
+        queue: asyncio.Queue,
+        files: LogFileStarts,
+        **kwargs: Any,
+    ) -> Any:
+        return executor._consume_nomad_log_stream(
+            alloc={
+                "ID": "alloc-1",
+                "JobID": "job-1",
+                "EvalID": "eval-1",
+                "TaskStates": {"setup": {"State": "running", "StartedAt": "now"}},
+            },
+            step="setup",
+            log_type=TaskLogType.STDOUT,
+            queue=queue,
+            params=params,
+            client_timeout=ClientTimeout(sock_read=NOMAD_DEFAULT_TIMEOUT),
+            anonymize_entities=None,
+            pending=WithheldLineBuffer(),
+            files=files,
+            **kwargs,
+        )
+
+    @pytest.mark.asyncio
+    async def test_consume_discards_a_reconnect_its_probe_finds_misplaced(
+        self,
+    ) -> None:
+        """Push and record nothing from a reconnect a deletion misplaced."""
+        executor = _build_executor()
+        files = self._rotated(0, 8)
+        position = 17
+        params = {
+            "task": "setup",
+            "type": "stdout",
+            "follow": "true",
+            "offset": position,
+        }
+        queue: asyncio.Queue[TaskLog] = asyncio.Queue()
+        with self._serving(executor, [self._file_frame(2, b"after\n")]) as request:
+            state, _alloc, _start = await self._consume(
+                executor,
+                params,
+                queue,
+                files,
+                request_offset=9,
+                confirm=AsyncMock(return_value=False),
+            )
+
+        assert state == _NOMAD_LOG_STREAM_MISPLACED
+        assert queue.empty()
+        assert params["offset"] == position
+        assert files.start_of(self._file_name(2)) is None
+        assert self._requested_offsets(request) == [9]
+
+    @pytest.mark.asyncio
+    async def test_consume_records_each_file_where_its_data_starts(self) -> None:
+        """Record a file the follow moves on to at the cumulative offset it starts."""
+        executor = _build_executor()
+        files = LogFileStarts(0)
+        params = {"task": "setup", "type": "stdout", "follow": "true", "offset": 0}
+        queue: asyncio.Queue[TaskLog] = asyncio.Queue()
+        with self._serving(
+            executor,
+            [self._file_frame(0, b"one\n"), self._file_frame(1, b"two\n")],
+        ):
+            await self._consume(executor, params, queue, files)
+
+        assert files.start_of(self._file_name(0)) == 0
+        assert files.start_of(self._file_name(1)) == len("one\n")
+        assert files.rotated
+
+    @pytest.mark.parametrize(
+        ("starts", "probes"),
+        [
+            pytest.param((0,), [], id="not-rotated"),
+            pytest.param((0, 8), [5], id="unplaceable-shift"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_an_unplaced_reconnect_leaves_its_first_file_start_unknown(
+        self, starts: tuple[int, ...], probes: list[int]
+    ) -> None:
+        """Record no start for the file an unplaced reconnect lands inside."""
+        executor = _build_executor()
+        files = self._rotated(*starts)
+        position = 17
+        params = {
+            "task": "setup",
+            "type": "stdout",
+            "follow": "true",
+            "offset": position,
+        }
+        reconnect = [self._file_frame(6, b"after\n"), self._file_frame(7, b"more\n")]
+        bodies = [self._probe(index) for index in probes] + [reconnect, self._probe(6)]
+        with self._serving(executor, *bodies) as request:
+            await executor._consume_placed_stream(
+                alloc={
+                    "ID": "alloc-1",
+                    "JobID": "job-1",
+                    "EvalID": "eval-1",
+                    "TaskStates": {"setup": {"State": "running", "StartedAt": "now"}},
+                },
+                step="setup",
+                log_type=TaskLogType.STDOUT,
+                queue=asyncio.Queue(),
+                params=params,
+                client_timeout=ClientTimeout(sock_read=NOMAD_DEFAULT_TIMEOUT),
+                anonymize_entities=None,
+                pending=WithheldLineBuffer(),
+                on_forced_flush=None,
+                files=files,
+                reconnecting=True,
+            )
+            shift = await executor._resolve_log_shift(
+                "alloc-1", "setup", TaskLogType.STDOUT, files
+            )
+
+        assert files.start_of(self._file_name(6)) is None
+        assert files.start_of(self._file_name(7)) == position + len("after\n")
+        assert shift is None
+        assert request.call_count == len(bodies)
+
+    @pytest.mark.asyncio
+    @patch.object(NomadExecutor, "_consume_nomad_log_stream", new_callable=AsyncMock)
+    async def test_push_logs_ends_the_follow_when_a_reconnect_probe_fails(
+        self, mock_consume: AsyncMock
+    ) -> None:
+        """Treat a failed shift probe on reconnect as the stream's client error."""
+        alloc = {"ID": "alloc-1", "JobID": "job-1", "EvalID": "eval-1"}
+        mock_consume.side_effect = self._connections(alloc, ("running", 20))
+        executor = _build_executor()
+        queue: asyncio.Queue[TaskLog] = asyncio.Queue()
+        with (
+            patch.object(
+                executor, "_resolve_log_shift", AsyncMock(side_effect=TimeoutError)
+            ),
+            patch.object(executor, "_log_stream_client_error") as log_client_error,
+        ):
+            await executor._push_logs_to_queue(
+                alloc, "setup", TaskLogType.STDOUT, queue, files=self._rotated(0, 8)
+            )
+
+        assert mock_consume.call_count == 1
+        log_client_error.assert_called_once()
+        assert (await queue.get()).msg is None
+
+    @pytest.mark.asyncio
+    @patch.object(NomadExecutor, "_consume_nomad_log_stream", new_callable=AsyncMock)
+    async def test_push_logs_reconnects_shifted_and_gives_up_on_misplacement(
+        self, mock_consume: AsyncMock
+    ) -> None:
+        """Reconnect at the shifted offset, ending after three misplaced reconnects."""
+        alloc = {"ID": "alloc-1", "JobID": "job-1", "EvalID": "eval-1"}
+        outcomes = [("running", 20)] + [(_NOMAD_LOG_STREAM_MISPLACED, 0)] * 3
+        mock_consume.side_effect = self._connections(alloc, *outcomes)
+        executor = _build_executor()
+        queue: asyncio.Queue[TaskLog] = asyncio.Queue()
+        with (
+            patch.object(executor, "_resolve_log_shift", AsyncMock(return_value=8)),
+            patch.object(executor, "_log_stream_client_error") as log_client_error,
+        ):
+            await executor._push_logs_to_queue(
+                alloc, "setup", TaskLogType.STDOUT, queue, files=self._rotated(0, 8)
+            )
+
+        assert mock_consume.call_count == len(outcomes)
+        offsets = [
+            entry.kwargs["request_offset"] for entry in mock_consume.call_args_list
+        ]
+        assert offsets == [None, 12, 12, 12]
+        log_client_error.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_push_logs_reconnects_only_once_the_follow_has_taken_data(
+        self,
+    ) -> None:
+        """Treat a follow whose connections took no data as not yet connected."""
+        alloc = {"ID": "alloc-1", "JobID": "job-1", "EvalID": "eval-1"}
+        executor = _build_executor()
+        with patch.object(
+            executor,
+            "_consume_placed_stream",
+            side_effect=self._connections(
+                alloc, ("running", 0), ("running", 5), ("dead", 0)
+            ),
+        ) as consume:
+            await executor._push_logs_to_queue(
+                alloc,
+                "setup",
+                TaskLogType.STDOUT,
+                asyncio.Queue(),
+                files=LogFileStarts(0),
+            )
+
+        reconnects = [entry.kwargs["reconnecting"] for entry in consume.call_args_list]
+        assert reconnects == [False, False, True]
+
+    @staticmethod
+    def _connections(
+        alloc: dict[str, Any], *outcomes: tuple[str, int]
+    ) -> Callable[..., Awaitable[tuple[str, dict[str, Any], None]]]:
+        """Return a stand-in for a follow's connections, one outcome per call.
+
+        :param alloc: The allocation each connection returns.
+        :param outcomes: Each connection's state and the bytes it takes.
+        :return: The stand-in, which advances ``params["offset"]`` by what each
+            connection takes.
+        """
+        remaining = iter(outcomes)
+
+        async def connect(
+            *, params: dict[str, Any], **_: Any
+        ) -> tuple[str, dict[str, Any], None]:
+            state, taken = next(remaining)
+            params["offset"] += taken
+            return (state, alloc, None)
+
+        return connect
 
 
 class TestIsDirectory:
