@@ -28,6 +28,7 @@ import time
 from contextlib import suppress
 from filelock import FileLock, Timeout
 from pathlib import Path
+from urllib.parse import quote
 from typing import Any
 
 import boto3
@@ -588,10 +589,6 @@ def is_free_space(
         if free_pct <= threshold_pct:
             space_ok = False
             output = f"Not enough disk space to pull binlogs: free {free_pct:.2f}%, needed {threshold_pct + 1:.2f}%"
-        elif logger:
-            logger.debug(
-                "Disk space OK: free %.2f%%, needed %.2f%%", free_pct, threshold_pct + 1
-            )
     else:
         free_mb = get_free_space(str(dir_p))
         max_backup_size = get_max_subdir_size(str(dir_p))
@@ -1191,28 +1188,20 @@ class Backup(BaseBackup):
         }
 
     def get_default_mycnf(self) -> str:
-        """Return all my.cnf files found based on ps or default possible paths:
-        /etc/my.cnf, /etc/mysql/my.cnf, /usr/local/etc/my.cnf, ~/.my.cnf.
+        """Return the default my.cnf paths that exist on this host.
+
+        The candidates are /etc/my.cnf, /etc/mysql/my.cnf and /usr/local/etc/my.cnf,
+        plus ``<@@basedir>/my.cnf`` and ``<@@datadir>/mysqld-auto.cnf`` when the
+        server reports a basedir.
 
         :return: Comma-separated string of found my.cnf paths.
         """
-        possible_files = []
-        found_files = []
-
         result = self._query_mysql("SELECT @@basedir, @@datadir")
+        possible_files = ["/etc/my.cnf", "/etc/mysql/my.cnf", "/usr/local/etc/my.cnf"]
         if result["@@basedir"]:
-            possible_files.append(str(Path(result["@@basedir"]) / "my.cnf"))
-            possible_files.append(str(Path(result["@@datadir"]) / "mysqld-auto.cnf"))
+            possible_files += [f"{result['@@basedir']}/my.cnf", f"{result['@@datadir']}/mysqld-auto.cnf"]
 
-        possible_files.append("/etc/my.cnf")
-        possible_files.append("/etc/mysql/my.cnf")
-        possible_files.append("/usr/local/etc/my.cnf")
-
-        for filen in possible_files:
-            if Path(filen).is_file():
-                found_files.append(filen)
-
-        return ",".join(found_files)
+        return ",".join(f for f in possible_files if Path(f).is_file())
 
     def get_included_config(self, cnf_paths: str) -> None:
         """Create a list of all included cnf files.
@@ -1220,12 +1209,11 @@ class Backup(BaseBackup):
         :param cnf_paths: Comma-separated list of cnf file paths.
         """
         inc_dirs = []
-        for filename in cnf_paths.split(","):
+        for filename in map(os.path.abspath, cnf_paths.split(",")):
             if filename not in self.all_cnf_files:
                 self.all_cnf_files.append(filename)
-                fpath = Path(filename)
-                if fpath.is_file():
-                    with fpath.open() as f:
+                if Path(filename).is_file():
+                    with open(filename) as f:
                         for line in f:
                             line = line.strip()
                             if line.startswith("!includedir"):
@@ -1233,14 +1221,20 @@ class Backup(BaseBackup):
                             elif line.startswith("!include"):
                                 self.get_included_config(line.split(" ", 1)[1])
         for inc_dir in inc_dirs:
-            inc_dir_path = Path(inc_dir)
-            if inc_dir_path.is_dir():
-                for ffile in inc_dir_path.iterdir():
+            if Path(inc_dir).is_dir():
+                for ffile in Path(inc_dir).iterdir():
                     if ffile.suffix == ".cnf":
                         self.get_included_config(str(ffile))
 
     def backup_mycnf(self, backup_dir: str) -> None:
         """Copy my.cnf file(s) to the backup directory.
+
+        Each copy is named by its percent-encoded absolute source path, which the restore
+        decodes, except ``auto.cnf`` and ``mysqld-auto.cnf``: they keep their name
+        because copy-back puts them in the datadir, where the server reads them.
+        A file that cannot be named or copied is skipped and ``mycnf_copy_skipped``
+        is set: a name that is not valid UTF-8, or an encoded name over 247 bytes,
+        which leaves no room for the ``.xbcrypt`` suffix encryption appends.
 
         :param backup_dir: Path to the backup directory.
         """
@@ -1255,13 +1249,14 @@ class Backup(BaseBackup):
         for filename in self.all_cnf_files:
             src = Path(filename)
             if src.is_file():
-                dest_filename = backup_path / src.name.replace("/", "_").strip()
-                self.logger.info("Copy %s -> %s", src, dest_filename)
                 try:
-                    shutil.copy(str(src), str(dest_filename))
-                except (shutil.Error, OSError) as err:
+                    name = src.name if src.name in ("auto.cnf", "mysqld-auto.cnf") else quote(filename, "")
+                    if len(name) > 247:
+                        raise OSError(36)
+                    shutil.copy(str(src), str(backup_path / name))
+                except (OSError, ValueError) as err:
                     self.mycnf_copy_skipped = True
-                    self.logger.exception("Copy of my.cnf failed: %s", err)
+                    self.logger.exception("Copy of %s failed: %s", src, err)
 
     def get_datadir(self) -> str:
         """Return the MySQL datadir path.
@@ -1799,7 +1794,7 @@ class S3UploadProvider:
             raise BackupError(msg)
 
         log_file = (
-            self.logging_dir
+            Path(self.logging_dir)
             / "s3cmd-{}-{}-{}.log".format(self.alias, self.backup_type, time.strftime("%Y%m%d"))
         )
         self.log_stream = log_file.open("a")
