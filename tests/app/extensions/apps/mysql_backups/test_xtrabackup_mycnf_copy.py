@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import shutil
 import types
+import urllib.parse
 from typing import Any, TYPE_CHECKING
 
 from tests.app.extensions.apps.mysql_backups.payload_harness import (
@@ -70,6 +71,11 @@ class _RunProbe:
         self.errors: list[str] = []
         self.report_options: dict[str, Any] = {}
         self.last_backup_dir: str = ""
+
+
+def _archived_cnf(tmp_path: Path) -> str:
+    """Return the name ``backup_mycnf`` gives the my.cnf ``_stage_copy_sources`` writes."""
+    return urllib.parse.quote(str(tmp_path / "my.cnf"), safe="")
 
 
 def _shutil_namespace(*, fail_mycnf: bool = False, fail_certs: bool = False) -> object:
@@ -123,6 +129,7 @@ def _extra_namespace(
         # path/size on ``STATUS_WARNING``.
         "Backup": object,
         "shutil": shutil_ns,
+        "quote": urllib.parse.quote,
         "RsyncUploadProvider": object(),
         "S3UploadProvider": object(),
         "GSUploadProvider": object(),
@@ -317,7 +324,7 @@ def test_per_file_mycnf_copy_failure_notifies_warning(tmp_path: Path) -> None:
     probe = _run_backup(
         tmp_path, fail_mycnf=True, enc_gpg=False, post_run_encrypt=False
     )
-    assert probe.errors == ["Copy of my.cnf failed: Permission denied"]
+    assert probe.errors == [f"Copy of {tmp_path / 'my.cnf'} failed: Permission denied"]
     assert probe.notify_calls == [
         (
             STATUS_WARNING,
@@ -344,7 +351,7 @@ def test_per_file_cert_copy_failure_warns_and_still_runs_gpg(tmp_path: Path) -> 
             "WARN my.cnf/cert copy skipped. Duration: 00:00:00. Size: 1 MB.",
         )
     ]
-    assert (tmp_path / "backups" / "host1" / "my.cnf").is_file()
+    assert (tmp_path / "backups" / "host1" / _archived_cnf(tmp_path)).is_file()
     assert not (tmp_path / "backups" / "host1" / "server-cert.pem").exists()
     assert len(probe.gpg_dirs) == 1
     assert probe.gpg_cfgs == [recipient]
@@ -360,7 +367,7 @@ def test_zero_size_warning_unchanged_when_copy_succeeds(tmp_path: Path) -> None:
         post_run_encrypt=False,
     )
     backup = tmp_path / "backups" / "host1"
-    assert (backup / "my.cnf").is_file()
+    assert (backup / _archived_cnf(tmp_path)).is_file()
     assert (backup / "server-cert.pem").is_file()
     assert probe.warnings == []
     assert probe.notify_calls == [
@@ -400,7 +407,7 @@ def test_successful_copy_path_notifies_ok(tmp_path: Path) -> None:
     """Assert a full my.cnf/certs copy finishes STATUS_OK with the artifacts."""
     probe = _run_backup(tmp_path, enc_gpg=False, post_run_encrypt=False)
     backup = tmp_path / "backups" / "host1"
-    assert (backup / "my.cnf").is_file()
+    assert (backup / _archived_cnf(tmp_path)).is_file()
     assert (backup / "server-cert.pem").is_file()
     assert probe.warnings == []
     assert probe.notify_calls == [
