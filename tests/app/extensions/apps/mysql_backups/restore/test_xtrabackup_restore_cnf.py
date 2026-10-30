@@ -16,52 +16,32 @@
 """Tests for where the XtraBackup restore's "Restore my.cnf" step may write.
 
 The config files come out of the backup archive, which is untrusted input, and
-each one's destination is decoded from its own filename (``_`` standing in for
-``/``). These tests drive the restore payload's real ``_restore_cnf_files``,
-``_cnf_destination`` and ``_edit_copy_my_cnf`` against a scratch filesystem, with
-the allowlist pointed at that scratch tree.
+each one's destination is percent-decoded from its own filename. These tests
+drive the restore payload's real ``_restore_cnf_files``, ``_cnf_destination`` and
+``_edit_copy_my_cnf`` against a scratch filesystem, with the allowlist pointed at
+that scratch tree.
 """
 
 import ast
 import os
-import shutil
 import stat
-import types
-import uuid
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
-from typing import cast, Protocol
+from typing import cast
 
 import pytest
 
-from tests.app.extensions.apps.mysql_backups.payload_harness import (
-    load_constant,
-    load_function,
-    payload_method,
-    Recorder,
-)
+from tests.app.extensions.apps.mysql_backups.payload_harness import load_constant
 from tests.app.extensions.apps.mysql_backups.restore.conftest import (
+    Layout,
+    NEW_SERVER_ID,
     RESTORE_PAYLOAD_PATH,
     restore_payload_tree,
 )
 
-_METHODS = ("_restore_cnf_files", "_cnf_destination", "_edit_copy_my_cnf")
-_NEW_SERVER_ID = 4242
 _NEW_FILE_MODE = 0o644
 _HOST_FILE_MODE = 0o640
-
-
-class _Restorer(Protocol):
-    """Type the synthetic object carrying the lifted restore methods."""
-
-    BackupError: type[Exception]
-    logger: Recorder
-
-    def _restore_cnf_files(self) -> None: ...
-
-    @staticmethod
-    def _edit_copy_my_cnf(src: str, dst: str, new_server_id: int) -> None: ...
 
 
 def _payload_constant(name: str) -> tuple[str, ...]:
@@ -72,143 +52,8 @@ def _payload_constant(name: str) -> tuple[str, ...]:
 
 
 def _encode(path: Path | str) -> str:
-    """Return the archive filename that decodes to ``path``.
-
-    The decode turns every ``_`` into ``/``, so a path holding ``_`` cannot be
-    encoded; refusing it here keeps a fixture typo from passing silently.
-    """
-    path = str(path)
-    assert "_" not in path, f"{path} is not encodable"
-    return path.replace("/", "_")
-
-
-@dataclass
-class Layout:
-    """Describe a scratch config tree and the datadir a restore reads from."""
-
-    root: Path
-    datadir: Path
-    cwd: Path
-    allowed_dir: Path
-    allowed_file: Path
-    absent_dir: Path
-    outside: Path
-    server_id_calls: list[None] = field(default_factory=list)
-    during_server_id: Callable[[], None] | None = None
-    unreachable_master: bool = False
-
-    def plant(self, name: str, content: str = "[mysqld]\nserver-id=1\n") -> Path:
-        """Write ``name`` into the datadir as a restored archive entry."""
-        src = self.datadir / name
-        src.write_text(content)
-        return src
-
-    def snapshot(self) -> dict[str, bytes | None]:
-        """Return every path under the scratch root and cwd with its file bytes."""
-        paths = sorted([*self.root.rglob("*"), *self.cwd.rglob("*")])
-        return {
-            str(path): None if path.is_dir() or path.is_symlink() else path.read_bytes()
-            for path in paths
-        }
-
-    def restorer(self) -> _Restorer:
-        """Return an object carrying the payload's real cnf-restore methods."""
-        # One shared error class, so a refusal from any lifted method matches it.
-        backup_error = type("BackupError", (Exception,), {})
-        namespace: dict[str, object] = {
-            "BackupError": backup_error,
-            "MYCNF_DIRS": (str(self.allowed_dir), str(self.absent_dir)),
-            "MYCNF_FILES": (str(self.allowed_file),),
-            "is_lone_file": load_function(
-                "is_lone_file", payload_path=RESTORE_PAYLOAD_PATH
-            ),
-        }
-        methods = {
-            name: payload_method(
-                "Xtrabackup",
-                name,
-                extra_namespace=namespace,
-                payload_path=RESTORE_PAYLOAD_PATH,
-            )
-            for name in _METHODS
-        }
-
-        def new_server_id(_self: object) -> int:
-            self.server_id_calls.append(None)
-            if self.during_server_id:
-                self.during_server_id()
-            return _NEW_SERVER_ID
-
-        server_id_attrs: dict[str, object] = {"_get_new_server_id": new_server_id}
-        if self.unreachable_master:
-
-            def refuse(*_args: object, **_kwargs: object) -> None:
-                raise backup_error("master unreachable")
-
-            server_id_attrs = {
-                "_get_new_server_id": payload_method(
-                    "Xtrabackup",
-                    "_get_new_server_id",
-                    extra_namespace={
-                        **namespace,
-                        "ProgrammingError": type("ProgrammingError", (Exception,), {}),
-                        "random": types.SimpleNamespace(
-                            randint=lambda _a, _b: _NEW_SERVER_ID
-                        ),
-                    },
-                    payload_path=RESTORE_PAYLOAD_PATH,
-                ),
-                "_query_mysql": refuse,
-                "master_ip": "10.0.0.5",
-                "master_port": 3306,
-            }
-
-        restorer = type(
-            "Restorer",
-            (),
-            {
-                **methods,
-                **server_id_attrs,
-                "BackupError": backup_error,
-                "datadir": str(self.datadir),
-                "logger": Recorder(),
-            },
-        )()
-        return cast("_Restorer", restorer)
-
-
-@pytest.fixture
-def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Layout]:
-    """Build a scratch config tree whose absolute path holds no ``_``.
-
-    ``tmp_path`` cannot host the config tree: its absolute path may hold ``_``,
-    which the filename encoding cannot carry. The working directory moves to an
-    empty scratch dir so a relative decode that slips through lands somewhere
-    the tests can see, never in the repository.
-    """
-    root = Path("/tmp") / f"cnfroot{uuid.uuid4().hex}"
-    allowed_dir = root / "etc" / "mysql"
-    (allowed_dir / "conf.d").mkdir(parents=True)
-    (root / "etc" / "mysql-evil").mkdir()
-    outside = root / "outside"
-    outside.mkdir()
-    datadir = tmp_path / "datadir"
-    datadir.mkdir()
-    cwd = tmp_path / "cwd"
-    cwd.mkdir()
-    monkeypatch.chdir(cwd)
-    try:
-        yield Layout(
-            root=root,
-            datadir=datadir,
-            cwd=cwd,
-            allowed_dir=allowed_dir,
-            allowed_file=root / "etc" / "my.cnf",
-            absent_dir=root / "etc" / "percona",
-            outside=outside,
-        )
-    finally:
-        shutil.rmtree(root)
+    """Return the archive filename that decodes to ``path``."""
+    return urllib.parse.quote(str(path), safe="")
 
 
 class TestAllowedDestination:
@@ -234,7 +79,7 @@ class TestAllowedDestination:
 
         layout.restorer()._restore_cnf_files()
 
-        assert dst.read_text() == f"[mysqld]\nserver-id= {_NEW_SERVER_ID}\n"
+        assert dst.read_text() == f"[mysqld]\nserver-id= {NEW_SERVER_ID}\n"
 
     def test_rewrites_server_id_and_keeps_other_lines(self, layout: Layout) -> None:
         """Replace only an active server-id line and copy the rest verbatim."""
@@ -248,7 +93,7 @@ class TestAllowedDestination:
 
         assert dst.read_text() == (
             "# server-id=9 stays commented\n"
-            f"[mysqld]\nserver-id= {_NEW_SERVER_ID}\nport = 3307\n"
+            f"[mysqld]\nserver-id= {NEW_SERVER_ID}\nport = 3307\n"
         )
 
     def test_truncates_previous_content(self, layout: Layout) -> None:
@@ -311,7 +156,9 @@ def _plant_outside(layout: Layout) -> str:
 
 
 def _plant_traversal(layout: Layout) -> str:
-    return layout.plant(_encode(layout.allowed_dir) + "_.._.._outside_probe.cnf").name
+    return layout.plant(
+        _encode(layout.allowed_dir / ".." / ".." / "outside" / "probe.cnf")
+    ).name
 
 
 def _plant_prefix_lookalike(layout: Layout) -> str:
@@ -335,7 +182,15 @@ def _plant_file_symlink_escape(layout: Layout) -> str:
 
 
 def _plant_relative(layout: Layout) -> str:
-    return layout.plant("conf_evil.cnf").name
+    return layout.plant(_encode("conf/evil.cnf")).name
+
+
+def _plant_nul_byte(layout: Layout) -> str:
+    return layout.plant(_encode(layout.allowed_dir / "my") + "%00.cnf").name
+
+
+def _plant_leading_whitespace(layout: Layout) -> str:
+    return layout.plant(" " + _encode(layout.allowed_dir / "my.cnf")).name
 
 
 def _plant_missing_parent(layout: Layout) -> str:
@@ -393,6 +248,10 @@ class TestRefusedDestination:
                 _plant_file_symlink_escape, _OUTSIDE, id="file-symlink-escape"
             ),
             pytest.param(_plant_relative, "no destination", id="relative-decode"),
+            pytest.param(
+                _plant_leading_whitespace, "no destination", id="leading-whitespace"
+            ),
+            pytest.param(_plant_nul_byte, "no destination", id="nul-byte"),
             pytest.param(_plant_missing_parent, _MISSING, id="missing-parent"),
             pytest.param(_plant_absent_allowed_dir, _MISSING, id="absent-allowed-dir"),
             pytest.param(_plant_directory_destination, _NOT_FILE, id="dst-is-dir"),
@@ -463,7 +322,7 @@ class TestFailClosed:
 
         layout.restorer()._restore_cnf_files()
 
-        assert dst.read_text() == f"[mysqld]\nserver-id= {_NEW_SERVER_ID}\n"
+        assert dst.read_text() == f"[mysqld]\nserver-id= {NEW_SERVER_ID}\n"
 
     def test_write_failure_keeps_the_files_already_written(
         self, layout: Layout
@@ -528,28 +387,32 @@ class TestSkippedEntries:
 class TestEdgeNames:
     """Cover entry names that decode to unusual but harmless paths."""
 
-    @pytest.mark.parametrize(
-        "name",
-        [
-            pytest.param(
-                lambda lay: " " + _encode(lay.allowed_dir / "my.cnf"),
-                id="leading-whitespace",
-            ),
-            pytest.param(
-                lambda lay: _encode(lay.allowed_dir) + "__my.cnf",
-                id="doubled-separator",
-            ),
-        ],
-    )
-    def test_name_is_normalised_before_the_check(
-        self, layout: Layout, name: Callable[[Layout], str]
-    ) -> None:
+    def test_name_is_normalised_before_the_check(self, layout: Layout) -> None:
         """Restore an entry whose decoded path only normalises into an allowed dir."""
-        layout.plant(name(layout))
+        layout.plant(_encode(layout.allowed_dir) + "%2F%2Fmy.cnf")
 
         layout.restorer()._restore_cnf_files()
 
         assert (layout.allowed_dir / "my.cnf").is_file()
+
+    @pytest.mark.parametrize(
+        "basename",
+        [
+            pytest.param("my_custom.cnf", id="underscore"),
+            pytest.param("50%.cnf", id="percent"),
+        ],
+    )
+    def test_decodes_characters_the_old_encoding_lost(
+        self, layout: Layout, basename: str
+    ) -> None:
+        """Restore to a path holding ``_`` or ``%``, decoded back exactly."""
+        dst = layout.allowed_dir / "conf.d" / basename
+        layout.plant(_encode(dst))
+
+        layout.restorer()._restore_cnf_files()
+
+        assert dst.read_text() == f"[mysqld]\nserver-id= {NEW_SERVER_ID}\n"
+        assert sorted(p.name for p in dst.parent.iterdir()) == [basename]
 
 
 class TestEditCopyMyCnf:
@@ -565,7 +428,7 @@ class TestEditCopyMyCnf:
         edit = layout.restorer()._edit_copy_my_cnf
 
         with pytest.raises(OSError, match="symbolic link"):
-            edit(str(src), str(link), _NEW_SERVER_ID)
+            edit(str(src), str(link), NEW_SERVER_ID)
 
         assert target.read_text() == "keep\n"
 
@@ -641,9 +504,10 @@ class TestEditCopyMyCnf:
 class TestBackupEncoderCompatibility:
     """Pin how the entries a real backup carries are handled.
 
-    A Percona Server 8.0.35 / XtraBackup 8.0.35 backup carries these names at its
+    A Percona Server 8.0.35 / XtraBackup 8.0.35 backup taken before config copies
+    were named by their percent-encoded source path carries these names at its
     root: ``backup-my.cnf`` from XtraBackup, and the basenames ``backup_mycnf``
-    copies (``my.cnf``, an ``!includedir`` file, ``mysqld-auto.cnf``).
+    copied (``my.cnf``, an ``!includedir`` file, ``mysqld-auto.cnf``).
     """
 
     @pytest.mark.parametrize("name", ["my.cnf", "docker.cnf"])
