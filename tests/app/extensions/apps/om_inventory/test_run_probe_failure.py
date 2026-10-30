@@ -26,9 +26,12 @@ persisted and finalised successfully is already done, and a pruning failure afte
 must not rewrite its terminal status.
 """
 
+import pickle
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
+from celery.utils.serialization import get_pickleable_exception
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.extensions.apps.om_inventory import service as service_module
@@ -176,4 +179,19 @@ class TestAFailureThatCannotBeWritten:
         assert (raised.value.run_id, raised.value.error) == (
             run.id,
             "tasks API answered 500",
+        )
+
+    def test_it_survives_celery_pickling_it(self) -> None:
+        """Keep the class, run, detail and message through Celery's pickling."""
+        unrecorded = FailureNotRecordedError(uuid4(), "tasks API answered 500")
+
+        pickled = get_pickleable_exception(unrecorded)
+
+        assert pickled is unrecorded
+        restored = pickle.loads(pickle.dumps(unrecorded))
+        assert type(restored) is FailureNotRecordedError
+        assert (restored.run_id, restored.error, str(restored)) == (
+            unrecorded.run_id,
+            unrecorded.error,
+            str(unrecorded),
         )

@@ -156,12 +156,22 @@ class FailureNotRecordedError(Exception):
     def __init__(self, run_id: UUID, error: str) -> None:
         """Carry what the retry has to write.
 
+        Both arguments go to ``Exception`` so the error pickles, as Celery does with
+        whatever a task raises.
+
         :param run_id: The run.
         :param error: The failure detail.
         """
-        super().__init__(f"could not record the failure of sweep {run_id}: {error}")
+        super().__init__(run_id, error)
         self.run_id = run_id
         self.error = error
+
+    def __str__(self) -> str:
+        """Name the run whose failure was not written.
+
+        :return: The run and the failure detail.
+        """
+        return f"could not record the failure of sweep {self.run_id}: {self.error}"
 
 
 UNCLAIMED_GRACE = timedelta(minutes=2)
