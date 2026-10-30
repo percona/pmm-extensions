@@ -32,14 +32,16 @@ live until there is a second caller to justify one.
 
 import asyncio
 import logging
+import socket
 from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from datetime import datetime, timedelta, UTC
-from typing import Any
-from uuid import UUID
+from typing import Any, ClassVar
+from uuid import UUID, uuid4
 
 from aiohttp import ClientConnectionError
+from sqlalchemy.exc import DBAPIError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
@@ -52,10 +54,13 @@ from app.extensions.apps.om_inventory.config import (
     OmInventorySettings,
 )
 from app.extensions.apps.om_inventory.crud import (
+    claim_run,
     conflict_detail,
     conflicting_run,
+    fail_running_run,
     ProbeRunManager,
     prune_runs,
+    reap_interrupted_runs,
     upsert_host,
     upsert_service,
 )
@@ -96,6 +101,84 @@ logger = logging.getLogger(__name__)
 
 SWITCHED_OFF_DETAIL = "Operations Inventory is switched off"
 """Why a sweep was refused while ``ENABLED`` is off, on the run row and the 503 alike."""
+
+#: PostgreSQL SQLSTATEs for a server that is shutting down or not yet accepting
+#: connections. Class ``08`` (connection exception) is matched by prefix.
+_SERVER_UNAVAILABLE_SQLSTATES = frozenset({"57P01", "57P02", "57P03"})
+
+
+def database_unreachable(exc: BaseException) -> bool:
+    """Return whether ``exc`` says PMM Extensions' database could not be reached.
+
+    True while PMM Server, which hosts the database, restarts: worth retrying, unlike
+    any other error. The cause chain is walked because the driver's error reaches
+    the caller wrapped, or raw when the connection was refused while opening.
+
+    :param exc: The error a database call raised.
+    :return: Whether retrying once the database is back could succeed.
+    """
+    link: BaseException | None = exc
+    seen: set[int] = set()
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        sqlstate = str(getattr(link, "sqlstate", None) or "")
+        if (
+            isinstance(link, ConnectionError | TimeoutError | socket.gaierror)
+            or (isinstance(link, DBAPIError) and link.connection_invalidated)
+            or sqlstate in _SERVER_UNAVAILABLE_SQLSTATES
+            or sqlstate.startswith("08")
+        ):
+            return True
+        link = link.__cause__ or getattr(link, "orig", None)
+    return False
+
+
+class FailureNotRecordedError(Exception):
+    """Signal that a run's failure could not be written, for the caller to retry.
+
+    :param run_id: The run.
+    :param error: The failure detail.
+    """
+
+    def __init__(self, run_id: UUID, error: str) -> None:
+        """Carry what the retry has to write.
+
+        :param run_id: The run.
+        :param error: The failure detail.
+        """
+        super().__init__(f"could not record the failure of sweep {run_id}: {error}")
+        self.run_id = run_id
+        self.error = error
+
+
+UNCLAIMED_GRACE = timedelta(minutes=2)
+"""How long a new worker leaves runs nobody claimed alone, so a scan whose message
+survived a restart of the worker alone is claimed before it can be failed."""
+
+
+@dataclass(frozen=True)
+class WorkerBoot:
+    """Identify one start of the Celery worker.
+
+    :param boot_id: Stored on every run this worker claims.
+    :param booted_at: When the worker started.
+    :cvar current: This process's boot, set by :meth:`start` in the worker's main
+        process before the pool forks, so every child shares it. ``None`` outside a
+        worker.
+    """
+
+    current: ClassVar["WorkerBoot | None"] = None
+    boot_id: UUID
+    booted_at: datetime
+
+    @classmethod
+    def start(cls) -> "WorkerBoot":
+        """Record a new boot as this process's.
+
+        :return: The boot.
+        """
+        cls.current = cls(boot_id=uuid4(), booted_at=utc_now())
+        return cls.current
 
 
 async def _build_clients() -> tuple[RemoteAPI, RemoteAPI]:
@@ -701,6 +784,7 @@ async def sweep(
     observed_at: str,
     node_ids: list[str] | None = None,
     progress: SweepProgress | None = None,
+    run_id: UUID | None = None,
 ) -> SweepOutcome:
     """Map, probe and collect, without touching the run row.
 
@@ -719,6 +803,7 @@ async def sweep(
         own; the run row and the entity freshness columns are stamped separately.
     :param node_ids: The hosts to refresh, or ``None`` for the whole estate.
     :param progress: Where to report how far the sweep has got, if anywhere.
+    :param run_id: The run sweeping, recorded on every probe it dispatches.
     :return: What the sweep reached, collected and saw per service.
     """
     progress = progress or SweepProgress()
@@ -749,6 +834,7 @@ async def sweep(
             mapped,
             executor_hosts=_probeable_hosts_per_executor(hosts),
             on_host_done=progress.host_done,
+            run_id=run_id,
         )
 
     outcome = SweepOutcome(total=len(mapped), hosts=hosts, dispatched=set(host_results))
@@ -1043,7 +1129,7 @@ async def finalise(
     :param outcome: What the sweep produced.
     :return: The stored row.
     """
-    # call-shape-dup-ok: the manager's own canonical accessor, and the three sites fetch the run for unrelated reasons — finalise, fail, resume — so a wrapper would name none of them and would hide the manager a reader expects to see.
+    # call-shape-dup-ok: the manager's own canonical accessor, and the sites fetch the run for unrelated reasons (finalise, progress, the pre-sweep checks), so a wrapper would name none of them and would hide the manager a reader expects to see.
     finished = await ProbeRunManager.get(session, id=run_id)
     finished.status = terminal_status(outcome)
     finished.finished_at = utc_now()
@@ -1168,19 +1254,122 @@ def terminal_status(outcome: SweepOutcome) -> ProbeRunStatus:
     return ProbeRunStatus.PARTIAL
 
 
-async def _fail_run(run_id: UUID, error: str) -> None:
-    """Drive a run to ``FAILED`` after the sweep raised.
+async def fail_run(run_id: UUID, error: str) -> None:
+    """Drive a run to ``FAILED`` after its sweep raised, unless it already finished.
 
     :param run_id: The run's id.
     :param error: The failure detail.
+    :raises OSError: When PMM Extensions' database cannot be reached.
+    :raises sqlalchemy.exc.SQLAlchemyError: When the write fails.
     """
-    session_maker = get_async_session_maker()
-    async with session_maker() as session:
-        failed = await ProbeRunManager.get(session, id=run_id)
-        failed.status = ProbeRunStatus.FAILED
-        failed.finished_at = utc_now()
-        failed.error = error
-        await ProbeRunManager.save(session, failed)
+    async with get_async_session_maker()() as session:
+        await fail_running_run(session, run_id, error)
+
+
+async def reap_after_restart(session: AsyncSession, boot: WorkerBoot) -> None:
+    """Fail the runs a worker restart interrupted, saying which.
+
+    A run nobody claimed and older than this boot is failed only once the worker
+    has been up for :data:`UNCLAIMED_GRACE`: until then its message may still be
+    on its way, having survived a restart of the worker alone.
+
+    :param session: The database session.
+    :param boot: This worker's boot.
+    """
+    settled = utc_now() - boot.booted_at >= UNCLAIMED_GRACE
+    reaped = await reap_interrupted_runs(
+        session, boot.boot_id, boot.booted_at if settled else None
+    )
+    if reaped:
+        logger.warning(
+            "OM inventory: failed sweep(s) %s -- PMM Extensions restarted during them",
+            ", ".join(str(run_id) for run_id in reaped),
+        )
+
+
+async def recover_interrupted_runs(boot: WorkerBoot) -> None:
+    """Fail the runs a worker restart interrupted, once the new worker is ready.
+
+    :param boot: This worker's boot.
+    :raises OSError: When PMM Extensions' database cannot be reached.
+    :raises sqlalchemy.exc.SQLAlchemyError: When the update fails.
+    """
+    async with get_async_session_maker()() as session:
+        await reap_after_restart(session, boot)
+
+
+async def _admit(
+    session: AsyncSession, run_id: UUID, node_ids: list[str] | None
+) -> bool:
+    """Decide whether a run may sweep, and record why when it may not.
+
+    The run is claimed for this worker boot first, so a run the startup task already
+    failed, or another boot took, is left alone. Runs earlier boots left running are
+    then failed, here as well as at startup, because the first scheduled sweep can
+    reach this before the startup task does.
+
+    :param session: The database session.
+    :param run_id: The run.
+    :param node_ids: The hosts it was asked to refresh.
+    :return: Whether to sweep.
+    """
+    boot = WorkerBoot.current
+    if boot is not None:
+        if not await claim_run(session, run_id, boot.boot_id):
+            logger.info(
+                "OM inventory: sweep %s not started -- it is no longer waiting for "
+                "a worker",
+                run_id,
+            )
+            return False
+        await reap_after_restart(session, boot)
+
+    # ``publish_snapshot`` fires no rebind callback, which is why this is safe
+    # here and not from a web process; see
+    # ``republish_extensions_settings_snapshot``.
+    # ``om_inventory_settings`` is annotated as the settings class it proxies,
+    # so passing it where a proxy is expected needs the same ignore
+    # ``app_owned_settings.py`` already carries for the identical hand-off.
+    await publish_snapshot(
+        om_inventory_settings,  # ty: ignore[invalid-argument-type]
+        session,
+        OmInventorySettings,
+    )
+    run = await ProbeRunManager.get(session, id=run_id)
+    if not om_inventory_settings.ENABLED:
+        run.status = ProbeRunStatus.SKIPPED
+        run.finished_at = utc_now()
+        run.error = SWITCHED_OFF_DETAIL
+        await ProbeRunManager.save(session, run)
+        logger.info("OM inventory: sweep %s skipped -- %s", run_id, run.error)
+        return False
+
+    # The same single-flight check the trigger endpoint makes, repeated here
+    # because **the schedule does not go through the endpoint**. Beat calls this
+    # task directly, so with the check only in the handler a scheduled sweep would
+    # start on top of one already dispatching. Both then enqueue the same job for
+    # the same host, the Tasks layer refuses the duplicate, and the loser records
+    # a 409 against a host that is perfectly healthy — moving its failure
+    # timestamps for a race rather than a fault. Measured happening on this
+    # workspace's sandbox: two full sweeps 31 seconds apart, four healthy hosts
+    # marked unanswered.
+    #
+    # Excluding this run's own row matters: the trigger endpoint creates it before
+    # dispatching, so without that the task would refuse itself every time.
+    blocking = await conflicting_run(
+        session,
+        node_ids,
+        exclude=run_id,
+        stale_after=om_inventory_settings.STALE_RUN_AFTER,
+    )
+    if blocking is not None:
+        run.status = ProbeRunStatus.SKIPPED
+        run.finished_at = utc_now()
+        run.error = await conflict_detail(session, blocking, node_ids)
+        await ProbeRunManager.save(session, run)
+        logger.info("OM inventory: sweep %s skipped -- %s", run_id, run.error)
+        return False
+    return True
 
 
 async def run_probe(
@@ -1189,7 +1378,9 @@ async def run_probe(
     """Run one probe sweep and write what it found into the estate.
 
     The run row is created before the work starts so a caller can be answered with an
-    id immediately, and only this function ever writes its terminal status.
+    id immediately. Its terminal status is written here, except for a run whose
+    worker was lost, which :func:`reap_interrupted_runs` or the trigger endpoint's
+    ``STALE_RUN_AFTER`` check fails instead.
 
     ``ENABLED`` is re-checked here rather than only at the trigger endpoint because
     beat calls this task directly. A sweep refused for either that or the
@@ -1198,15 +1389,12 @@ async def run_probe(
 
     The check reads the override **as stored**, republishing the snapshot first,
     because a worker's own snapshot advances only at task boundaries and at most
-    once per ``SETTINGS_OVERRIDE.REFRESH_INTERVAL``. Reading the snapshot alone is
-    sweep, so the estate is not empty for a whole ``SCHEDULE`` interval - and any
-    worker child that refreshed less than ``REFRESH_INTERVAL`` ago picks that sweep
-    up still holding the pre-change value, so the one sweep whose purpose is to
-    spare the wait is refused and a first-time user meets an error on the first
-    page they open. In the other
-    first-time user meets an error on the first page they open. In the other
-    direction a sweep enqueued shortly before the switch went off would run on a
-    stale yes.
+    once per ``SETTINGS_OVERRIDE.REFRESH_INTERVAL``. Reading the snapshot alone would
+    refuse the sweep triggered right after ``ENABLED`` is switched on, the one sweep
+    whose purpose is to spare a first-time user a whole ``SCHEDULE`` interval of
+    empty estate, in any worker child that refreshed less than ``REFRESH_INTERVAL``
+    ago. In the other direction a sweep enqueued shortly before the switch went off
+    would run on a stale yes.
 
     :param execution_id: An already-created run's id, passed by the trigger endpoint.
         ``None`` mints a fresh run.
@@ -1214,63 +1402,23 @@ async def run_probe(
         from the caller rather than read back off the run row so a scheduled sweep,
         which has no row until this function makes one, takes the same path.
     :return: The run's id.
+    :raises FailureNotRecordedError: When the sweep failed and PMM Extensions'
+        database could not be reached to say so.
     """
     session_maker = get_async_session_maker()
-    async with session_maker() as session:
-        if execution_id is None:
+    if execution_id is None:
+        async with session_maker() as session:
             run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids))
-        else:
-            run = await ProbeRunManager.get(session, id=execution_id)
         run_id = run.id
+    else:
+        run_id = execution_id
 
-        # ``publish_snapshot`` fires no rebind callback, which is why this is safe
-        # here and not from a web process; see
-        # ``republish_extensions_settings_snapshot``.
-        # ``om_inventory_settings`` is annotated as the settings class it proxies,
-        # so passing it where a proxy is expected needs the same ignore
-        # ``app_owned_settings.py`` already carries for the identical hand-off.
-        await publish_snapshot(
-            om_inventory_settings,  # ty: ignore[invalid-argument-type]
-            session,
-            OmInventorySettings,
-        )
-        if not om_inventory_settings.ENABLED:
-            run.status = ProbeRunStatus.SKIPPED
-            run.finished_at = utc_now()
-            run.error = SWITCHED_OFF_DETAIL
-            await ProbeRunManager.save(session, run)
-            logger.info("OM inventory: sweep %s skipped -- %s", run_id, run.error)
-            return run_id
-
-        # The same single-flight check the trigger endpoint makes, repeated here
-        # because **the schedule does not go through the endpoint**. Beat calls this
-        # task directly, so with the check only in the handler a scheduled sweep would
-        # start on top of one already dispatching. Both then enqueue the same job for
-        # the same host, the Tasks layer refuses the duplicate, and the loser records
-        # a 409 against a host that is perfectly healthy — moving its failure
-        # timestamps for a race rather than a fault. Measured happening on this
-        # workspace's sandbox: two full sweeps 31 seconds apart, four healthy hosts
-        # marked unanswered.
-        #
-        # Excluding this run's own row matters: the trigger endpoint creates it before
-        # dispatching, so without that the task would refuse itself every time.
-        blocking = await conflicting_run(
-            session,
-            node_ids,
-            exclude=run_id,
-            stale_after=om_inventory_settings.STALE_RUN_AFTER,
-        )
-        if blocking is not None:
-            run.status = ProbeRunStatus.SKIPPED
-            run.finished_at = utc_now()
-            run.error = await conflict_detail(session, blocking, node_ids)
-            await ProbeRunManager.save(session, run)
-            logger.info("OM inventory: sweep %s skipped -- %s", run_id, run.error)
-            return run_id
-
-    observed_at = utc_now().isoformat()
     try:
-        outcome = await sweep(observed_at, node_ids, RunProgress(run_id))
+        async with session_maker() as session:
+            if not await _admit(session, run_id, node_ids):
+                return run_id
+        observed_at = utc_now().isoformat()
+        outcome = await sweep(observed_at, node_ids, RunProgress(run_id), run_id)
         # The estate goes in before the run reaches a terminal status, so a reader
         # that sees a finished run always finds the rows that run produced. Covered
         # by the same try as the sweep itself: a raise here or in ``finalise`` has to
@@ -1281,7 +1429,13 @@ async def run_probe(
             await finalise(session, run_id, outcome)
     except Exception as exc:
         logger.exception("OM inventory: sweep %s failed", run_id)
-        await _fail_run(run_id, str(exc))
+        error = str(exc)
+        try:
+            await fail_run(run_id, error)
+        except Exception as write_error:
+            if not database_unreachable(write_error):
+                raise
+            raise FailureNotRecordedError(run_id, error) from write_error
         return run_id
 
     # Deliberately outside the failure path above: a run that persisted and

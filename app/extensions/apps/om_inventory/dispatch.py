@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
 from typing import Any, TypeVar
+from uuid import UUID
 
 from app.core.exceptions import HTTPConflictException, HTTPServiceUnavailableException
 from app.core.requests import RemoteAPI
@@ -74,6 +75,10 @@ PREPARE_ENV_STEP = NomadStep.PREPARE_ENV
 REQUIREMENTS = "pymongo>=4.6,<5"
 #: Prefix for this app's Nomad job ids, so a OM run is identifiable in Nomad.
 JOB_ID_PREFIX = "om"
+#: Meta key naming the run that dispatched a probe. The tasks API compares it when it
+#: refuses an identical request, so a sweep adopts only its own retried dispatch, never
+#: a probe left running by a run that did not finish. Nomad drops underscore keys.
+RUN_META_KEY = "_om_run"
 PROBE_PAYLOAD_PATH = Path(payload_pkg.__file__).parent / "probe.py"
 #: Marks where a failure detail was cut to ``MAX_ERROR_DETAIL``.
 TRUNCATION_MARK = "..."
@@ -450,21 +455,13 @@ async def _release(tasks_api: RemoteAPI, task_history_id: int) -> str | None:
     """Drive an abandoned dispatch to a terminal status.
 
     Giving up on a probe ends *this sweep's* wait; it does nothing to the queue item,
-    which stays ``RUNNING`` with nothing left to advance it. That matters more than it
-    sounds: the tasks API refuses to dispatch a queue item identical to one already in
-    flight, and every sweep dispatches the same ``run-python`` to the same host with
-    the same config — so one abandoned run makes that host answer ``409`` forever, and
-    its facts quietly stop refreshing while the sweep still reports itself partial.
-    Measured on the sandbox: seven such rows blocked their hosts for over an hour, and
-    the sweeps in between looked like unreachable nodes rather than a queue that needed
-    clearing.
+    which stays ``RUNNING`` with nothing left to advance it, and keeps its job running
+    on the node.
 
     Best-effort by design. The stop can legitimately fail — most sharply when the
     allocation is already gone, which is the case most likely to have caused the
     abandonment in the first place — and a sweep must not fail because its cleanup
-    did. The reason comes back so the caller can say the dispatch was left in flight,
-    because a queue item that could not be released is the one thing here that needs a
-    human.
+    did. The reason comes back so the caller can say the dispatch was left in flight.
 
     :param tasks_api: The tasks API client.
     :param task_history_id: The run to release.
@@ -579,9 +576,8 @@ async def _release_abandoned(tasks_api: RemoteAPI, result: HostProbeResult) -> N
 
     Only a dispatch that reached the queue can be left in it; one that failed before
     an id came back never became a queue item, and the callers only get here with an
-    id. A failed release outranks the failure that caused it, because it is the one
-    thing that will not clear on its own: the stuck run blocks every later scan of
-    this node until someone stops it.
+    id. A failed release outranks the failure that caused it: the scan is still
+    running on the node, which the failure that caused it does not say.
 
     :param tasks_api: The tasks API client.
     :param result: The host's outcome, already carrying its failure.
@@ -595,7 +591,7 @@ async def _release_abandoned(tasks_api: RemoteAPI, result: HostProbeResult) -> N
         # notice, or a long one would leave too little room for the notice itself.
         lead = (
             f" -- and task history {result.task_history_id} could not be released, "
-            "so it will block this node's next scan: "
+            "so it may still be running on this node: "
         )
         notice = lead + shorten_text(
             release_error,
@@ -608,7 +604,10 @@ async def _release_abandoned(tasks_api: RemoteAPI, result: HostProbeResult) -> N
 
 
 async def probe_host(
-    tasks_api: RemoteAPI, executor_host: str, entries: list[MappedService]
+    tasks_api: RemoteAPI,
+    executor_host: str,
+    entries: list[MappedService],
+    run_id: UUID | None = None,
 ) -> HostProbeResult:
     """Dispatch the probe to one executor host and collect its records.
 
@@ -618,6 +617,7 @@ async def probe_host(
     :param tasks_api: The tasks API client.
     :param executor_host: The host to run on.
     :param entries: The resolved services this host serves.
+    :param run_id: The run dispatching it, stored as :data:`RUN_META_KEY`.
     :return: The host's probe outcome.
     """
     result = HostProbeResult(executor_host=executor_host)
@@ -635,6 +635,7 @@ async def probe_host(
                             "config": build_config(entries),
                             "requirements": REQUIREMENTS,
                             "_job_id_prefix": JOB_ID_PREFIX,
+                            **({RUN_META_KEY: str(run_id)} if run_id else {}),
                         },
                         "payload": f"file://{PROBE_PAYLOAD_PATH}",
                         "anonymize_mask": 0,
@@ -738,6 +739,7 @@ async def probe_all(
     mapped: list[MappedService],
     executor_hosts: Iterable[str] = (),
     on_host_done: Callable[[HostProbeResult], Awaitable[None]] | None = None,
+    run_id: UUID | None = None,
 ) -> dict[str, HostProbeResult]:
     """Probe every executor host in reach, concurrently.
 
@@ -755,6 +757,7 @@ async def probe_all(
     :param executor_hosts: Executor hosts to probe even if they serve no service.
     :param on_host_done: Called with each host's result as it comes back, for a
         caller reporting progress.
+    :param run_id: The run dispatching the probes, passed to :func:`probe_host`.
     :return: One result per executor host, keyed by host.
     """
     grouped = group_by_executor(mapped)
@@ -771,7 +774,7 @@ async def probe_all(
 
     async def guarded(host: str, entries: list[MappedService]) -> HostProbeResult:
         async with semaphore:
-            result = await probe_host(tasks_api, host, entries)
+            result = await probe_host(tasks_api, host, entries, run_id=run_id)
         if on_host_done is not None:
             await on_host_done(result)
         return result

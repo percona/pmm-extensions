@@ -174,7 +174,7 @@ class TestProbeAllTargets:
         """
         seen: dict[str, list] = {}
 
-        async def fake_probe_host(_api, host, entries):
+        async def fake_probe_host(_api, host, entries, **_kwargs):
             seen[host] = entries
             return type("R", (), {"executor_host": host})()
 
@@ -205,7 +205,7 @@ class TestProbeAllTargets:
         db00_reported = asyncio.Event()
         landed: list[str] = []
 
-        async def fake_probe_host(_api, host, _entries):
+        async def fake_probe_host(_api, host, _entries, **_kwargs):
             if host == "db01":
                 await release_db01.wait()
             return type("R", (), {"executor_host": host})()
@@ -244,7 +244,7 @@ class TestProbeAllTargets:
         """
         seen: dict[str, list] = {}
 
-        async def fake_probe_host(_api, host, entries):
+        async def fake_probe_host(_api, host, entries, **_kwargs):
             seen[host] = entries
             return type("R", (), {"executor_host": host})()
 

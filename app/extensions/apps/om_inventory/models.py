@@ -149,8 +149,8 @@ class ScanFailure(StrEnum):
         could not be reached.
     :cvar NOT_STARTED: The scan was queued but had not started when the wait ran out.
     :cvar TIMED_OUT: The scan started but had not finished when the wait ran out.
-    :cvar BLOCKED: A scan given up on could not be stopped, and will block this
-        node's next one until it is.
+    :cvar BLOCKED: A scan given up on could not be stopped, and may still be running
+        on the node.
     :cvar ENVIRONMENT_SETUP_FAILED: The node could not prepare the scan's Python
         environment: no ``python3``, no ``venv`` module, or ``pip`` could not install
         the scan's one dependency.
@@ -428,6 +428,9 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
         the run was only ever asked about one host — and because the single-flight
         guard has nothing to compare against.
     :param error: The failure detail when the sweep itself raised.
+    :param worker_boot_id: The worker boot that claimed the run, or ``None`` while no
+        worker has started it. A running row claimed by another boot, or unclaimed
+        and older than this boot, lost its worker to a restart.
     """
 
     __tablename__ = "om_inventory_run"
@@ -509,6 +512,7 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
         ),
     )
     error: str | None = SQLField(default=None)
+    worker_boot_id: UUID | None = SQLField(default=None)
 
 
 # api_routes.py's request/response DTOs, moved here to match the sibling apps'

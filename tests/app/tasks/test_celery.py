@@ -1039,6 +1039,73 @@ class TestIdenticalTaskConflictDisplayOnlyMeta:
         )
 
 
+#: The underscore value on the run in flight against an incoming ``run-a``: the same,
+#: another, and none, as on a row written before the key was set.
+_UNDERSCORE_CASES = [("run-a", True), ("run-b", False), (None, False)]
+_UNDERSCORE_IDS = ["same-key", "different-key", "in-flight-lacks-key"]
+
+
+def _with_run(run: str | None) -> dict[str, object]:
+    """Return the shared meta with ``_run`` set to ``run``, or without it.
+
+    :param run: The value, or ``None`` to leave the key out.
+    :return: The meta.
+    """
+    return {**_UNMASKED_META, **({"_run": run} if run else {})}
+
+
+class TestIdenticalTaskConflictUnderscoreMeta:
+    """Pin that a caller's own underscore meta key still tells two requests apart.
+
+    Nomad never sees an underscore key, so a caller can put one in to scope what
+    counts as identical, such as the run a dispatch belongs to. The guard has to
+    compare it like any other plaintext key, on both meta predicate builders.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("in_flight_run", "refused"), _UNDERSCORE_CASES, ids=_UNDERSCORE_IDS
+    )
+    async def test_an_underscore_key_decides_identity(
+        self, session: AsyncSession, in_flight_run: str | None, *, refused: bool
+    ) -> None:
+        """Assert only a request with the same underscore value is a duplicate.
+
+        :param session: The async session fixture the guard queries.
+        :param in_flight_run: The underscore value on the run in flight, if any.
+        :param refused: Whether the dispatch is expected to be refused.
+        """
+        assert (
+            await _refused_behind(session, _with_run(in_flight_run), _with_run("run-a"))
+            is refused
+        )
+
+    @pytest.mark.postgres
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("in_flight_run", "refused"), _UNDERSCORE_CASES, ids=_UNDERSCORE_IDS
+    )
+    async def test_an_underscore_key_decides_identity_on_postgres(
+        self,
+        postgres_session: AsyncSession,
+        in_flight_run: str | None,
+        *,
+        refused: bool,
+    ) -> None:
+        """Assert the same through the ``jsonb`` containment path.
+
+        :param postgres_session: A session bound to a real PostgreSQL engine.
+        :param in_flight_run: The underscore value on the run in flight, if any.
+        :param refused: Whether the dispatch is expected to be refused.
+        """
+        assert (
+            await _refused_behind(
+                postgres_session, _with_run(in_flight_run), _with_run("run-a")
+            )
+            is refused
+        )
+
+
 class TestIdenticalTaskConflictEncryptedLeaves:
     """Exercise the dedup guard over the leaves that are stored encrypted.
 
