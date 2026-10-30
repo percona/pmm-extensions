@@ -32,7 +32,7 @@ live until there is a second caller to justify one.
 
 import asyncio
 import logging
-import socket
+import ssl
 from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field as dc_field
@@ -106,12 +106,25 @@ SWITCHED_OFF_DETAIL = "Operations Inventory is switched off"
 #: connections. Class ``08`` (connection exception) is matched by prefix.
 _SERVER_UNAVAILABLE_SQLSTATES = frozenset({"57P01", "57P02", "57P03"})
 
+#: ``OSError`` kinds that mean the connection is misconfigured, not that the database
+#: is away: retrying them only repeats the failure.
+_MISCONFIGURED = (
+    FileNotFoundError,
+    PermissionError,
+    IsADirectoryError,
+    NotADirectoryError,
+    ssl.SSLCertVerificationError,
+)
+
 
 def database_unreachable(exc: BaseException) -> bool:
     """Return whether ``exc`` says PMM Extensions' database could not be reached.
 
     True while PMM Server, which hosts the database, restarts: worth retrying, unlike
-    any other error. The cause chain is walked because the driver's error reaches
+    any other error. That is any network error, a refused connection, an unreachable
+    host or a failed lookup alike, except one that says the connection is
+    misconfigured; a connection SQLAlchemy found gone; or a PostgreSQL connection or
+    shutdown SQLSTATE. The cause chain is walked because the driver's error reaches
     the caller wrapped, or raw when the connection was refused while opening.
 
     :param exc: The error a database call raised.
@@ -123,7 +136,7 @@ def database_unreachable(exc: BaseException) -> bool:
         seen.add(id(link))
         sqlstate = str(getattr(link, "sqlstate", None) or "")
         if (
-            isinstance(link, ConnectionError | TimeoutError | socket.gaierror)
+            (isinstance(link, OSError) and not isinstance(link, _MISCONFIGURED))
             or (isinstance(link, DBAPIError) and link.connection_invalidated)
             or sqlstate in _SERVER_UNAVAILABLE_SQLSTATES
             or sqlstate.startswith("08")

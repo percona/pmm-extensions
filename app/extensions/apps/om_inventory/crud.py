@@ -516,20 +516,34 @@ async def prune_runs(session: AsyncSession, keep: int) -> int:
 
 
 async def claim_run(session: AsyncSession, run_id: UUID, boot_id: UUID) -> bool:
-    """Mark a running, unclaimed run as this worker boot's.
+    """Mark a run no worker has started as this worker boot's.
+
+    A run :func:`reap_interrupted_runs` failed while its message was still queued is
+    taken back and set running again: the delivery proves the scan is still wanted.
 
     :param session: The database session.
     :param run_id: The run to claim.
     :param boot_id: This worker's boot id.
-    :return: Whether the run was claimed. ``False`` when it already finished, was
-        failed by :func:`reap_interrupted_runs`, or another boot claimed it.
+    :return: Whether the run was claimed. ``False`` when another boot claimed it, or
+        it finished or failed for any other reason.
     """
     claimed = await ProbeRunManager.update_where(
         session,
-        {"worker_boot_id": boot_id},
+        {
+            "worker_boot_id": boot_id,
+            "status": ProbeRunStatus.RUNNING,
+            "finished_at": None,
+            "error": None,
+        },
         col(ProbeRun.id) == run_id,
-        col(ProbeRun.status) == ProbeRunStatus.RUNNING,
         col(ProbeRun.worker_boot_id).is_(None),
+        or_(
+            col(ProbeRun.status) == ProbeRunStatus.RUNNING,
+            and_(
+                col(ProbeRun.status) == ProbeRunStatus.FAILED,
+                col(ProbeRun.error) == RESTARTED_DETAIL,
+            ),
+        ),
         returning=["id"],
     )
     return bool(claimed)
@@ -543,7 +557,8 @@ async def reap_interrupted_runs(
     One worker serves every scan, so a running row claimed by another boot has no
     worker left. An unclaimed row is a scan whose message may still be queued: it
     survives a restart of the worker alone, so such a row is failed only once its
-    message has had time to be claimed.
+    message has had time to be claimed, and :func:`claim_run` takes it back if the
+    message arrives later still.
 
     :param session: The database session.
     :param boot_id: This worker's boot id.

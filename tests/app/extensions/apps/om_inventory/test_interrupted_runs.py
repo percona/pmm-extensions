@@ -21,7 +21,9 @@ every scan. When PMM Server, which holds the database, restarts instead, the fai
 the sweep could not write is retried by ``fail_om_run``.
 """
 
+import errno
 import socket
+import ssl
 from collections.abc import Iterator
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
@@ -215,10 +217,23 @@ class TestClaimRun:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("holder", "run_status"),
+        ("holder", "run_status", "error"),
         [
-            pytest.param(uuid4(), ProbeRunStatus.RUNNING, id="claimed-by-another-boot"),
-            pytest.param(None, ProbeRunStatus.FAILED, id="already-reaped"),
+            pytest.param(
+                uuid4(), ProbeRunStatus.RUNNING, None, id="claimed-by-another-boot"
+            ),
+            pytest.param(
+                uuid4(),
+                ProbeRunStatus.FAILED,
+                RESTARTED_DETAIL,
+                id="started-by-a-lost-boot",
+            ),
+            pytest.param(
+                None,
+                ProbeRunStatus.FAILED,
+                QUEUE_UNAVAILABLE_DETAIL,
+                id="failed-otherwise",
+            ),
         ],
     )
     async def test_a_run_not_waiting_is_left_alone(
@@ -227,6 +242,7 @@ class TestClaimRun:
         boot: WorkerBoot,
         holder: UUID | None,
         run_status: ProbeRunStatus,
+        error: str | None,
     ) -> None:
         """Refuse the claim and keep the row as it was.
 
@@ -234,15 +250,47 @@ class TestClaimRun:
         :param boot: This worker's boot.
         :param holder: The boot already holding it, if any.
         :param run_status: Its status.
+        :param error: Its failure detail, if any.
         """
         run = await ProbeRunManager.save(
-            session, ProbeRun(worker_boot_id=holder, status=run_status)
+            session, ProbeRun(worker_boot_id=holder, status=run_status, error=error)
         )
 
         assert not await claim_run(session, run.id, boot.boot_id)
 
         stored = await ProbeRunManager.get(session, id=run.id)
-        assert stored.worker_boot_id == holder
+        assert (stored.worker_boot_id, stored.status) == (holder, run_status)
+
+    @pytest.mark.asyncio
+    async def test_a_run_reaped_before_its_message_arrived_is_taken_back(
+        self, session: AsyncSession, boot: WorkerBoot
+    ) -> None:
+        """Claim a never-started run failed as restarted, and set it running again.
+
+        Its message survived a restart of the worker alone and arrived after the
+        reaper gave up on it: the delivery proves the scan is still wanted.
+
+        :param session: The database session.
+        :param boot: This worker's boot.
+        """
+        run = await ProbeRunManager.save(
+            session,
+            ProbeRun(
+                status=ProbeRunStatus.FAILED,
+                error=RESTARTED_DETAIL,
+                finished_at=utc_now(),
+            ),
+        )
+
+        assert await claim_run(session, run.id, boot.boot_id)
+
+        stored = await ProbeRunManager.get(session, id=run.id)
+        assert (stored.status, stored.error, stored.finished_at) == (
+            ProbeRunStatus.RUNNING,
+            None,
+            None,
+        )
+        assert stored.worker_boot_id == boot.boot_id
 
     @pytest.mark.postgres
     @pytest.mark.asyncio
@@ -388,27 +436,39 @@ class TestRunProbeRecoversBeforeItSweeps:
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("boot")
     @pytest.mark.parametrize(
-        ("run_status", "sweeps"),
+        ("run_status", "error", "sweeps"),
         [
-            pytest.param(ProbeRunStatus.RUNNING, 1, id="waiting"),
-            pytest.param(ProbeRunStatus.FAILED, 0, id="already-reaped"),
+            pytest.param(ProbeRunStatus.RUNNING, None, 1, id="waiting"),
+            pytest.param(
+                ProbeRunStatus.FAILED, RESTARTED_DETAIL, 1, id="reaped-before-delivery"
+            ),
+            pytest.param(
+                ProbeRunStatus.FAILED,
+                QUEUE_UNAVAILABLE_DETAIL,
+                0,
+                id="failed-otherwise",
+            ),
         ],
     )
-    async def test_a_triggered_run_sweeps_only_if_still_waiting(
+    async def test_a_triggered_run_sweeps_unless_it_failed_otherwise(
         self,
         service_session: AsyncSession,
         swept: AsyncMock,
         run_status: ProbeRunStatus,
+        error: str | None,
         sweeps: int,
     ) -> None:
-        """Sweep a run the trigger made, unless the reaper failed it first.
+        """Sweep a run the trigger made, even one the reaper failed before delivery.
 
         :param service_session: The session every sweep function opens.
         :param swept: The stubbed sweep.
         :param run_status: The run's status when its message arrives.
+        :param error: Its failure detail, if any.
         :param sweeps: How many sweeps are expected.
         """
-        run = await ProbeRunManager.save(service_session, ProbeRun(status=run_status))
+        run = await ProbeRunManager.save(
+            service_session, ProbeRun(status=run_status, error=error)
+        )
 
         await run_probe(execution_id=run.id)
 
@@ -642,6 +702,19 @@ class TestDatabaseUnreachable:
             pytest.param(ConnectionRefusedError(111, "refused"), True, id="refused"),
             pytest.param(TimeoutError(), True, id="timed-out"),
             pytest.param(socket.gaierror(-2, "unknown host"), True, id="no-dns"),
+            pytest.param(
+                OSError(errno.EHOSTUNREACH, "No route to host"), True, id="no-route"
+            ),
+            pytest.param(
+                OSError(errno.ENETUNREACH, "Network is unreachable"),
+                True,
+                id="no-network",
+            ),
+            pytest.param(
+                OSError("Multiple exceptions: [Errno 111], [Errno 99]"),
+                True,
+                id="every-address-failed",
+            ),
             pytest.param(_DriverError("57P03"), True, id="starting-up-raw"),
             pytest.param(_wrapped(_DriverError("57P01")), True, id="shut-down"),
             pytest.param(_wrapped(_DriverError("08006")), True, id="connection-lost"),
@@ -649,6 +722,12 @@ class TestDatabaseUnreachable:
                 _wrapped(Exception("closed"), invalidated=True), True, id="invalidated"
             ),
             pytest.param(FileNotFoundError("root.crt"), False, id="missing-cert"),
+            pytest.param(PermissionError("client.key"), False, id="unreadable-key"),
+            pytest.param(
+                ssl.SSLCertVerificationError("certificate verify failed"),
+                False,
+                id="untrusted-cert",
+            ),
             pytest.param(_wrapped(_DriverError("23505")), False, id="unique-violation"),
             pytest.param(
                 IntegrityError("UPDATE", {}, Exception("dup")), False, id="integrity"
