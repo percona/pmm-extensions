@@ -37,8 +37,8 @@ import json
 import logging
 import time
 import zipfile
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, cast
@@ -191,6 +191,22 @@ async def get_tasks_api() -> RemoteAPI:
         logger_name="tasks_api",
         **TASKS_CLIENT_LOG_POLICY,
     )
+
+
+@asynccontextmanager
+async def tasks_api_session() -> AsyncGenerator[RemoteAPI]:
+    """Yield the Tasks client, authenticated as the service principal and held for the block.
+
+    A worker path makes many requests on the one client it resolved. Holding it means a
+    settings rebind that retires the client between two of those requests defers the
+    close until the block exits, rather than failing every request after it.
+
+    :return: The Tasks API client, authenticated for the block.
+    """
+    client = await get_tasks_api()
+    async with client.hold():
+        with client.auth(get_internal_token()) as tasks_api:
+            yield tasks_api
 
 
 def _execution_prefix(execution: dict[str, Any]) -> str:
@@ -728,8 +744,7 @@ async def _run_send_for_row(session: AsyncSession, row: AtwSendLog) -> None:
     records: list[StepRecord] = []
     path = bundle_dir() / f"{row.id}-{uuid4().hex}{_BUNDLE_SUFFIX}"
     try:
-        client = await get_tasks_api()
-        with client.auth(get_internal_token()) as tasks_api:
+        async with tasks_api_session() as tasks_api:
             file_count, manifest = await _stage_bundle(
                 path, row, incident_name, tasks_api, plan.max_bundle_size_mb
             )

@@ -33,6 +33,8 @@ live until there is a second caller to justify one.
 import asyncio
 import logging
 from collections import Counter
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, AsyncExitStack
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from datetime import datetime, timedelta, UTC
@@ -98,25 +100,34 @@ SWITCHED_OFF_DETAIL = "Operations Inventory is switched off"
 """Why a sweep was refused while ``ENABLED`` is off, on the run row and the 503 alike."""
 
 
-async def _build_clients() -> tuple[RemoteAPI, RemoteAPI]:
-    """Construct the inventory and tasks API clients outside request context.
+@asynccontextmanager
+async def _held_clients() -> AsyncGenerator[tuple[RemoteAPI, RemoteAPI]]:
+    """Yield the inventory and tasks API clients, held for the block, outside request context.
+
+    A settings rebind that retires either client mid-sweep defers its close until the
+    block exits, rather than failing every request after it. Each client is held as
+    soon as it is resolved: resolving the second can wait on a session opening, and a
+    rebind in that window must not close the first.
 
     :return: The inventory and tasks API clients.
     """
-    inventory_api = await settings.get_remote_api(
-        endpoint=extensions_settings.INVENTORY_ENDPOINT,
-        ssl_cafile=settings.SSL_CAFILE,
-        ssl_keyfile=inventory_settings.SSL_KEYFILE,
-        ssl_certfile=inventory_settings.SSL_CERTFILE,
-        logger_name="inventory_api",
-    )
-    tasks_api = await settings.get_remote_api(
-        endpoint=extensions_settings.TASKS_ENDPOINT,
-        ssl_cafile=settings.SSL_CAFILE,
-        logger_name="tasks_api",
-        **TASKS_CLIENT_LOG_POLICY,
-    )
-    return inventory_api, tasks_api
+    async with AsyncExitStack() as stack:
+        inventory_api = await settings.get_remote_api(
+            endpoint=extensions_settings.INVENTORY_ENDPOINT,
+            ssl_cafile=settings.SSL_CAFILE,
+            ssl_keyfile=inventory_settings.SSL_KEYFILE,
+            ssl_certfile=inventory_settings.SSL_CERTFILE,
+            logger_name="inventory_api",
+        )
+        await stack.enter_async_context(inventory_api.hold())
+        tasks_api = await settings.get_remote_api(
+            endpoint=extensions_settings.TASKS_ENDPOINT,
+            ssl_cafile=settings.SSL_CAFILE,
+            logger_name="tasks_api",
+            **TASKS_CLIENT_LOG_POLICY,
+        )
+        await stack.enter_async_context(tasks_api.hold())
+        yield inventory_api, tasks_api
 
 
 def _dig(record: dict[str, Any], path: tuple[str, ...]) -> Any:
@@ -722,34 +733,36 @@ async def sweep(
     :return: What the sweep reached, collected and saw per service.
     """
     progress = progress or SweepProgress()
-    inventory_api, tasks_api = await _build_clients()
 
     # Both services authenticate; outside request context there is no user session to
     # borrow, so the sweep rides the internal service token the same way the scheduled
     # inventory sync does. ``auth`` is a sync context manager setting a header for its
     # block, so every call that needs it has to be made inside.
     token = get_internal_token()
-    with inventory_api.auth(token), tasks_api.auth(token):
-        services, nodes, executor_states = await enumerate_estate(
-            inventory_api, tasks_api
-        )
-        mapped = map_services(services, usable_executor_hosts(executor_states))
-        # Hosts are enumerated from nodes rather than derived from the services just
-        # mapped: a host with no database has no service to derive it from, and that
-        # is the host worth having a row for.
-        hosts = build_hosts(nodes, services, executor_states)
-        if node_ids:
-            hosts, services, mapped = narrow_to_scope(hosts, services, mapped, node_ids)
-        await progress.started(hosts)
-        # Every host with an executor is dispatched to, service or no service:
-        # a machine with a PMM client and no database is the one an install
-        # decision is about, and it has no service to be reached through.
-        host_results = await probe_all(
-            tasks_api,
-            mapped,
-            executor_hosts=_probeable_hosts_per_executor(hosts),
-            on_host_done=progress.host_done,
-        )
+    async with _held_clients() as (inventory_api, tasks_api):
+        with inventory_api.auth(token), tasks_api.auth(token):
+            services, nodes, executor_states = await enumerate_estate(
+                inventory_api, tasks_api
+            )
+            mapped = map_services(services, usable_executor_hosts(executor_states))
+            # Hosts are enumerated from nodes rather than derived from the services just
+            # mapped: a host with no database has no service to derive it from, and that
+            # is the host worth having a row for.
+            hosts = build_hosts(nodes, services, executor_states)
+            if node_ids:
+                hosts, services, mapped = narrow_to_scope(
+                    hosts, services, mapped, node_ids
+                )
+            await progress.started(hosts)
+            # Every host with an executor is dispatched to, service or no service:
+            # a machine with a PMM client and no database is the one an install
+            # decision is about, and it has no service to be reached through.
+            host_results = await probe_all(
+                tasks_api,
+                mapped,
+                executor_hosts=_probeable_hosts_per_executor(hosts),
+                on_host_done=progress.host_done,
+            )
 
     outcome = SweepOutcome(total=len(mapped), hosts=hosts, dispatched=set(host_results))
     # One document per host that answered, from the host's own record rather than

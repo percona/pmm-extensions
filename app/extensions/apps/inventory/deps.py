@@ -16,7 +16,8 @@
 """Define dependencies for the Inventory plugin."""
 
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager, AsyncExitStack
 from typing import Annotated, Any
 
 from fastapi import Depends
@@ -297,28 +298,39 @@ async def get_inventory_api_standalone() -> RemoteAPI:
     )
 
 
-async def get_syncers_standalone() -> list[BaseSyncer]:
-    """Initialize syncer instances with API clients constructed from settings.
+@asynccontextmanager
+async def standalone_syncers() -> AsyncGenerator[list[BaseSyncer]]:
+    """Build the configured syncers on clients constructed from settings and held for the block.
 
     Construct ``RemoteAPI`` clients for the inventory and tasks services from
     application settings, then build syncers the same way the request-context
     dependency does. Used by scheduled tasks that run outside of request
     context.
 
+    The syncers of a run share the two clients and run one after another, so the
+    clients are held for the whole block rather than per syncer: a settings rebind
+    that retires one mid-run defers its close until the run ends, instead of handing
+    the next syncer a closed client. Each client is held as soon as it is resolved,
+    because resolving the second can wait on a session opening, and a rebind in that
+    window must not close the first.
+
     :return: A list of initialized ``BaseSyncer`` instances.
     :raises SyncerConfigurationError: When a syncer refuses one of its settings; a
         scheduled run fails outright rather than syncing a subset.
     """
-    inventory_api = await get_inventory_api_standalone()
-    tasks_api = await settings.get_remote_api(
-        endpoint=extensions_settings.TASKS_ENDPOINT,
-        ssl_cafile=settings.SSL_CAFILE,
-        ssl_keyfile=tasks_settings.SSL_KEYFILE,
-        ssl_certfile=tasks_settings.SSL_CERTFILE,
-        logger_name="tasks_api",
-        **TASKS_CLIENT_LOG_POLICY,
-    )
-    return _build_syncers(inventory_api, tasks_api)
+    async with AsyncExitStack() as stack:
+        inventory_api = await get_inventory_api_standalone()
+        await stack.enter_async_context(inventory_api.hold())
+        tasks_api = await settings.get_remote_api(
+            endpoint=extensions_settings.TASKS_ENDPOINT,
+            ssl_cafile=settings.SSL_CAFILE,
+            ssl_keyfile=tasks_settings.SSL_KEYFILE,
+            ssl_certfile=tasks_settings.SSL_CERTFILE,
+            logger_name="tasks_api",
+            **TASKS_CLIENT_LOG_POLICY,
+        )
+        await stack.enter_async_context(tasks_api.hold())
+        yield _build_syncers(inventory_api, tasks_api)
 
 
 InternalTokenDep = Annotated[str, Depends(get_internal_token)]

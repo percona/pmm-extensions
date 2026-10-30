@@ -15,6 +15,7 @@
 
 """Define tests for the app.extensions.sync.syncers.pmm module."""
 
+import re
 from collections import defaultdict
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime
@@ -23,8 +24,9 @@ from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 import pytest_asyncio
+from aioresponses import aioresponses
 from httpx import ASGITransport, AsyncClient
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import (
@@ -33,6 +35,9 @@ from app.api.deps import (
     require_minimum_role_for_unsafe_methods,
 )
 from app.core.auth.providers.casdoor.models import CasdoorUser
+from app.core.config import settings
+from app.core.db.utils import get_async_session_maker_from_engine
+from app.core.requests.registry import ClientRegistry
 from app.core.utils.date_time import utc_now
 from app.extensions.clients.pmm import (
     PMMFetchDiagnostics,
@@ -49,11 +54,15 @@ from app.extensions.inventory import CreatedNode, CreatedService, Node
 from app.extensions.inventory import Service as ExtensionsService
 from app.extensions.models import (
     SyncInstance,
+    SyncInstanceWrite,
     SyncInventoryEntityTypeEnum,
     SyncItem,
     SyncStatusEnum,
 )
-from app.extensions.sync.exceptions import SyncFailError
+from app.extensions.sync.exceptions import (
+    SyncFailError,
+    SyncInstanceAlreadyInProgressError,
+)
 from app.extensions.sync.syncers.pmm import PMMSyncer
 from app.inventory.crud import NodeManager, SchemaManager, ServiceManager
 from app.inventory.deps import get_session
@@ -3385,6 +3394,129 @@ class TestPMMSyncerKeepalive:
 
         invalidate.assert_not_awaited()
         assert syncer._pmm_api is mock_pmm_api
+
+
+class _RunFailedError(Exception):
+    """Fail a syncer session from inside its body."""
+
+
+@pytest.fixture
+def pmm_syncer_on_registry(
+    session: AsyncSession,
+    mocker,
+    mock_remote_api: AsyncMock,
+    isolated_client_registry: ClientRegistry,
+) -> PMMSyncer:
+    """Build a PMMSyncer that resolves a real PMM client and opens real run rows."""
+    mocker.patch.object(
+        settings,
+        "PMM",
+        settings.PMM.model_copy(update={"api_key": SecretStr("test-key")}),
+    )
+    mocker.patch(
+        "app.extensions.sync.models.get_async_session_maker",
+        return_value=get_async_session_maker_from_engine(session.bind),
+    )
+    return PMMSyncer(inventory_api=mock_remote_api)
+
+
+def _pmm_endpoint() -> str:
+    """Return the PMM endpoint the syncer resolves its client from."""
+    return str(settings.PMM.endpoint).rstrip("/")
+
+
+class TestPMMSyncerHoldsItsClient:
+    """Verify the PMM client is held for the whole syncer session."""
+
+    @pytest.mark.asyncio
+    async def test_pmm_syncer_holds_pmm_client_for_the_session(
+        self,
+        pmm_syncer_on_registry: PMMSyncer,
+        isolated_client_registry: ClientRegistry,
+    ) -> None:
+        """Keep reading PMM through a client a rebind retired mid-session."""
+        endpoint = _pmm_endpoint()
+
+        with aioresponses() as pmm:
+            pmm.get(re.compile(rf"{re.escape(endpoint)}/.*"), payload={}, repeat=True)
+            async with pmm_syncer_on_registry as syncer:
+                client = syncer.pmm_api
+                await client.get("/v1/server/version")
+                await isolated_client_registry.invalidate(endpoint)
+                await client.get("/v1/server/version")
+
+        assert client._session is None
+
+    @pytest.mark.asyncio
+    async def test_pmm_syncer_releases_hold_when_enter_fails(
+        self,
+        session: AsyncSession,
+        pmm_syncer_on_registry: PMMSyncer,
+        isolated_client_registry: ClientRegistry,
+    ) -> None:
+        """Release the PMM client when the run is refused for overlapping another.
+
+        A refused ``__aenter__`` is never paired with an ``__aexit__``, so a hold it
+        kept would stop a later rebind from ever closing the client.
+        """
+        await SyncInstanceManager.create(
+            session,
+            SyncInstanceWrite(
+                syncer=PMMSyncer.get_name(), status=SyncStatusEnum.RUNNING
+            ),
+        )
+
+        with pytest.raises(SyncInstanceAlreadyInProgressError):
+            async with pmm_syncer_on_registry:
+                pass
+
+        client = pmm_syncer_on_registry.pmm_api
+        await isolated_client_registry.invalidate(_pmm_endpoint())
+        assert client._session is None
+
+    @pytest.mark.asyncio
+    async def test_pmm_syncer_releases_hold_when_the_run_fails(
+        self,
+        pmm_syncer_on_registry: PMMSyncer,
+        isolated_client_registry: ClientRegistry,
+    ) -> None:
+        """Release the PMM client when the syncer body raises."""
+        with pytest.raises(_RunFailedError):
+            async with pmm_syncer_on_registry as syncer:
+                raise _RunFailedError
+
+        client = syncer.pmm_api
+        await isolated_client_registry.invalidate(_pmm_endpoint())
+        assert client._session is None
+
+    @pytest.mark.asyncio
+    async def test_keepalive_false_closes_client_after_session(
+        self, pmm_syncer_on_registry: PMMSyncer
+    ) -> None:
+        """Close the evicted client as the session ends when nothing else holds it."""
+        pmm_syncer_on_registry.keepalive_api = False
+
+        async with pmm_syncer_on_registry as syncer:
+            client = syncer.pmm_api
+
+        assert client._session is None
+
+    @pytest.mark.asyncio
+    async def test_keepalive_false_defers_close_while_another_run_holds(
+        self, pmm_syncer_on_registry: PMMSyncer
+    ) -> None:
+        """Leave the evicted client open for a concurrent run still using it."""
+        pmm_syncer_on_registry.keepalive_api = False
+        client = await settings.get_remote_api(
+            PMMRemoteAPI, **settings.PMM.model_dump()
+        )
+
+        async with client.hold():
+            async with pmm_syncer_on_registry:
+                pass
+            assert client._session is not None
+
+        assert client._session is None
 
 
 class TestNodeIdentityIsNeverInferredFromANaturalKey:

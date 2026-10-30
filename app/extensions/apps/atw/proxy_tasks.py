@@ -52,10 +52,9 @@ from app.core.exceptions import (
     HTTPNotFoundException,
 )
 from app.core.requests import as_json_object, RemoteAPI
-from app.core.security import get_internal_token
 from app.core.utils.fields import NonEmptyStr
 from app.extensions.apps.atw.recorder import RUN_RESULT_RECORDER
-from app.extensions.apps.atw.send import get_tasks_api
+from app.extensions.apps.atw.send import tasks_api_session
 from app.extensions.deps import task_path
 from app.tasks.models import TaskBackendEnum, TaskWrite
 
@@ -421,8 +420,7 @@ async def resolve_atw_proxy_tasks(
         dispatch rather than splitting one request across two policies.
     :raises OSError: Propagated from the Tasks API when the transport itself fails.
     """
-    client = await get_tasks_api()
-    with client.auth(get_internal_token()) as tasks_api:
+    async with tasks_api_session() as tasks_api:
         return {
             root_task_name: await _resolve_one(tasks_api, root_task_name)
             for root_task_name in dict.fromkeys(root_task_names)

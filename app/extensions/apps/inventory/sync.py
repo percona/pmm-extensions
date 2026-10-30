@@ -24,7 +24,7 @@ from app.celery import celery
 from app.core.security import get_internal_token
 from app.extensions.apps.inventory.deps import (
     filter_syncers_by_name,
-    get_syncers_standalone,
+    standalone_syncers,
 )
 from app.extensions.crud import SyncInstanceManager, SyncItemManager
 from app.extensions.db import get_async_session_maker
@@ -50,7 +50,9 @@ async def run_scheduled_inventory_sync(
 
     Read the internal token from ``settings.EXTENSIONS_INTERNAL_TOKEN`` and construct
     syncers from application settings. When ``syncer`` is set, only that syncer
-    runs; when ``None`` or empty, every configured syncer runs.
+    runs; when ``None`` or empty, every configured syncer runs. The clients the
+    syncers share are held for the whole run, so a settings rebind mid-run closes
+    them only once the run ends.
 
     Designed for the CeleryExecutor: the executor forwards
     ``execution_request.meta`` from the periodic-task row as ``**kwargs``, so a
@@ -92,23 +94,23 @@ async def run_scheduled_inventory_sync(
         syncer.
     """
     del after_syncer
-    syncers = await get_syncers_standalone()
-    selected = filter_syncers_by_name(
-        syncers,
-        syncer,
-        lambda candidate: candidate.can_sync_inventory(),
-    )
-    try:
-        await run_inventory_sync(get_internal_token(), *selected)
-    except SyncInstanceAlreadyInProgressError:
-        if not first_run_only:
-            raise
-        return _report_skip(
-            f"Skipped the started run of {syncer}: another of its runs is already "
-            "in progress."
+    async with standalone_syncers() as syncers:
+        selected = filter_syncers_by_name(
+            syncers,
+            syncer,
+            lambda candidate: candidate.can_sync_inventory(),
         )
-    if syncer and follower_syncers:
-        await start_followers(syncer, follower_syncers, syncers)
+        try:
+            await run_inventory_sync(get_internal_token(), *selected)
+        except SyncInstanceAlreadyInProgressError:
+            if not first_run_only:
+                raise
+            return _report_skip(
+                f"Skipped the started run of {syncer}: another of its runs is "
+                "already in progress."
+            )
+        if syncer and follower_syncers:
+            await start_followers(syncer, follower_syncers, syncers)
     return None
 
 

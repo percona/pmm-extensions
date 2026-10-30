@@ -32,15 +32,20 @@ assert against; defining it once here keeps those copies from drifting away from
 the profile as apps are activated or dropped.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 from alembic.config import Config
 from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.config import Settings
+from app.core.requests import RemoteAPI
+from app.core.requests.registry import ClientRegistry
 from app.extensions.config import App, extensions_settings
 from app.extensions.snippets.crud import SnippetManager
 from app.extensions.snippets.models import Snippet
@@ -144,3 +149,29 @@ def request_less_session(session: AsyncSession, mocker: MockerFixture) -> AsyncS
         return_value=maker,
     )
     return session
+
+
+@pytest_asyncio.fixture
+async def isolated_client_registry(
+    mocker: MockerFixture,
+) -> AsyncGenerator[ClientRegistry]:
+    """Resolve and retire every settings-built client through a registry of the test's own.
+
+    A test that rebinds a client mid-run needs real clients whose retirement cannot
+    reach the process-wide registry other tests share. Only the registry is swapped;
+    the consumer under test still resolves its clients through ``settings``.
+    """
+    registry = ClientRegistry()
+
+    async def get_remote_api(
+        _settings: Settings, cls: type[RemoteAPI] = RemoteAPI, **kwargs: Any
+    ) -> RemoteAPI:
+        return await registry.get(cls, **kwargs)
+
+    async def invalidate_client(_settings: Settings, endpoint: str) -> None:
+        await registry.invalidate(endpoint)
+
+    mocker.patch.object(Settings, "get_remote_api", new=get_remote_api)
+    mocker.patch.object(Settings, "invalidate_client", new=invalidate_client)
+    yield registry
+    await registry.close_all()

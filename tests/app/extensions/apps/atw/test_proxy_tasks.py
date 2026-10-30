@@ -15,11 +15,13 @@
 
 """Tests for resolving the ATW-owned PROXY task that carries ATW's recorder."""
 
+import re
 from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aioresponses import aioresponses, CallbackResult
 from pytest_mock import MockerFixture
 
 from app.core.exceptions import (
@@ -30,6 +32,7 @@ from app.core.exceptions import (
     HTTPUnprocessableEntityException,
 )
 from app.core.requests import RemoteAPI
+from app.core.requests.registry import ClientRegistry
 from app.extensions.apps.atw.proxy_tasks import (
     _fetch_task,
     _sync_proxy_task,
@@ -38,6 +41,8 @@ from app.extensions.apps.atw.proxy_tasks import (
     resolve_atw_proxy_tasks,
 )
 from app.extensions.apps.atw.recorder import RUN_RESULT_RECORDER
+from app.extensions.apps.atw.send import get_tasks_api
+from app.extensions.config import extensions_settings
 from app.tasks.execution.executors.nomad.steps import RUN_SCRIPT_OUTPUT_FILES_PATH
 from app.tasks.models import ANY_OWNER, TaskBackendEnum, TaskWrite
 from tests.app.extensions.path_unsafe_task_names import PATH_UNSAFE_TASKS
@@ -111,11 +116,11 @@ def tasks_api(mocker: MockerFixture) -> AsyncMock:
     client = MagicMock()
     client.auth.return_value.__enter__.return_value = api
     mocker.patch(
-        "app.extensions.apps.atw.proxy_tasks.get_tasks_api",
+        "app.extensions.apps.atw.send.get_tasks_api",
         new=AsyncMock(return_value=client),
     )
     mocker.patch(
-        "app.extensions.apps.atw.proxy_tasks.get_internal_token",
+        "app.extensions.apps.atw.send.get_internal_token",
         return_value="token",
     )
     return api
@@ -598,3 +603,37 @@ class TestProxyTaskPathGuard:
             await _sync_proxy_task(tasks_api, "root", task_write)
 
         tasks_api.put.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_proxy_tasks_survives_rebind(
+    isolated_client_registry: ClientRegistry,
+) -> None:
+    """Read the proxy on the client whose root read retired it.
+
+    The root read retires the Tasks client, as an override rebind would. The
+    resolution holds it, so the close waits for the proxy read rather than failing it.
+    """
+    client = await get_tasks_api()
+    endpoint = str(extensions_settings.TASKS_ENDPOINT).rstrip("/")
+    rebinds: list[str] = []
+
+    async def upstream_reply(url: Any, **_kwargs: Any) -> CallbackResult:
+        if not rebinds:
+            rebinds.append(str(url))
+            await isolated_client_registry.invalidate(endpoint)
+        if url.path.endswith(_PROXY_NAME):
+            return CallbackResult(payload=_valid_proxy())
+        return CallbackResult(payload=_root_task())
+
+    with aioresponses() as upstream:
+        upstream.get(
+            re.compile(rf"{re.escape(endpoint)}/.*"),
+            callback=upstream_reply,
+            repeat=True,
+        )
+        resolved = await _resolve()
+
+    assert resolved == _PROXY_NAME
+    assert client._session is None
+    assert await get_tasks_api() is not client

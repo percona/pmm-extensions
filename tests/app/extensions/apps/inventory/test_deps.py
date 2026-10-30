@@ -15,6 +15,7 @@
 
 """Define tests for the app.extensions.apps.inventory.deps module."""
 
+import asyncio
 import logging
 import re
 from typing import cast
@@ -27,6 +28,7 @@ from pytest_mock import MockerFixture
 from app.core.config import Settings
 from app.core.exceptions import HTTPServiceUnavailableException
 from app.core.requests import RemoteAPI
+from app.core.requests.registry import ClientRegistry
 from app.core.utils.fields import UniqueList
 from app.extensions.apps.inventory.deps import (
     _get_syncer_qualified_name,
@@ -34,12 +36,15 @@ from app.extensions.apps.inventory.deps import (
     build_available_syncers,
     filter_syncers_by_name,
     get_syncers,
-    get_syncers_standalone,
+    standalone_syncers,
 )
 from app.extensions.config import extensions_settings, SyncOptions
 from app.extensions.sync.exceptions import SyncerConfigurationError
 from app.extensions.sync.models import BaseSyncer
 from app.extensions.sync.syncers.pmm import PMMSyncer
+
+_CLIENTS_PER_RUN = 2
+"""A scheduled run resolves one Inventory and one Tasks client."""
 
 _EXPECTED_DISAMBIGUATED_DISPLAY_NAMES = 2
 
@@ -296,26 +301,32 @@ class TestSyncerConstructionFailure:
         assert caplog.records[0].exc_info is not None
 
     @pytest.mark.asyncio
-    async def test_get_syncers_standalone_raises_configuration_error(
-        self, unusable_syncers: None, mocker: MockerFixture
+    async def test_standalone_syncers_releases_holds_on_configuration_error(
+        self,
+        unusable_syncers: None,
+        mocker: MockerFixture,
+        isolated_client_registry: ClientRegistry,
     ) -> None:
-        """Fail a scheduled run with a configuration error, not a pydantic error."""
-        mocker.patch(
-            "app.extensions.apps.inventory.deps.get_inventory_api_standalone",
-            new=AsyncMock(return_value=AsyncMock(spec=RemoteAPI)),
-        )
-        mocker.patch.object(
-            Settings,
-            "get_remote_api",
-            new=AsyncMock(return_value=AsyncMock(spec=RemoteAPI)),
-        )
+        """Fail a scheduled run with a configuration error, holding neither client.
+
+        A retired client that a failed run still held would stay open for good, so
+        a rebind after the failure has to close both clients at once.
+        """
+        resolved = mocker.spy(isolated_client_registry, "get")
 
         with pytest.raises(SyncerConfigurationError, match="STALE_RUN_AFTER"):
-            await get_syncers_standalone()
+            async with standalone_syncers():
+                pass
+
+        clients = resolved.spy_return_list
+        assert len(clients) == _CLIENTS_PER_RUN
+        for client in clients:
+            await isolated_client_registry.invalidate(str(client.endpoint))
+        assert all(client._session is None for client in clients)
 
 
 @pytest.mark.asyncio
-async def test_get_syncers_standalone_requests_the_tasks_client_log_policy(
+async def test_standalone_syncers_requests_the_tasks_client_log_policy(
     mocker: MockerFixture,
 ) -> None:
     """Assert the Tasks client is requested from the registry with both log settings.
@@ -331,7 +342,8 @@ async def test_get_syncers_standalone_requests_the_tasks_client_log_policy(
         new=AsyncMock(return_value=MagicMock(spec=RemoteAPI)),
     )
 
-    await get_syncers_standalone()
+    async with standalone_syncers():
+        pass
 
     tasks_calls = [
         awaited.kwargs
@@ -340,3 +352,50 @@ async def test_get_syncers_standalone_requests_the_tasks_client_log_policy(
     ]
     assert len(tasks_calls) == 1
     assert tasks_calls[0]["withhold_body_log"] is True
+
+
+@pytest.mark.asyncio
+async def test_standalone_syncers_holds_both_clients(
+    mocker: MockerFixture, isolated_client_registry: ClientRegistry
+) -> None:
+    """Keep both clients open across a rebind until the block exits, then close them."""
+    resolved = mocker.spy(isolated_client_registry, "get")
+
+    async with standalone_syncers():
+        clients = resolved.spy_return_list
+        for client in clients:
+            await isolated_client_registry.invalidate(str(client.endpoint))
+        assert all(client._session is not None for client in clients)
+
+    assert len(clients) == _CLIENTS_PER_RUN
+    assert all(client._session is None for client in clients)
+
+
+@pytest.mark.asyncio
+async def test_standalone_syncers_unwinds_first_hold_when_second_resolution_fails(
+    mocker: MockerFixture, isolated_client_registry: ClientRegistry
+) -> None:
+    """Release the Inventory client when resolving the Tasks client is cancelled.
+
+    The first client is held before the second is resolved, so a failure in
+    between must release it, or a later rebind could never close it.
+    """
+    resolved: list[RemoteAPI] = []
+
+    async def first_then_cancel(
+        _settings: Settings, cls: type[RemoteAPI] = RemoteAPI, **kwargs: object
+    ) -> RemoteAPI:
+        if resolved:
+            raise asyncio.CancelledError
+        resolved.append(await isolated_client_registry.get(cls, **kwargs))
+        return resolved[0]
+
+    mocker.patch.object(Settings, "get_remote_api", new=first_then_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        async with standalone_syncers():
+            pass
+
+    [inventory_api] = resolved
+    await isolated_client_registry.invalidate(str(inventory_api.endpoint))
+    assert inventory_api._session is None
