@@ -245,28 +245,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  '/api/users/': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /**
-     * List Users
-     * @description List users.
-     *
-     *     :return: The list of users.
-     */
-    get: operations['users_list_users_api_users__get'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   '/api/users/me': {
     parameters: {
       query?: never;
@@ -284,35 +262,6 @@ export interface paths {
      *     :rtype: User
      */
     get: operations['users_retrieve_current_user_api_users_me_get'];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  '/api/users/{username}': {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /**
-     * Retrieve User
-     * @description Retrieve a user by username.
-     *
-     *     :param current_user: The current authenticated user.
-     *     :type current_user: CurrentUser
-     *     :param username: The username of the user to retrieve.
-     *     :type username: str
-     *     :return: The requested user.
-     *     :rtype: User
-     *     :raises HTTPForbiddenException: If the current user is not an admin and tries to
-     *         access another user's information.
-     */
-    get: operations['users_retrieve_user_api_users__username__get'];
     put?: never;
     post?: never;
     delete?: never;
@@ -746,26 +695,6 @@ export interface operations {
       };
     };
   };
-  users_list_users_api_users__get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['CasdoorUser'][];
-        };
-      };
-    };
-  };
   users_retrieve_current_user_api_users_me_get: {
     parameters: {
       query?: never;
@@ -782,37 +711,6 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['CasdoorUser'];
-        };
-      };
-    };
-  };
-  users_retrieve_user_api_users__username__get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        username: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['CasdoorUser'];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
         };
       };
     };

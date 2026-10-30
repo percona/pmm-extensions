@@ -735,9 +735,9 @@ class TestSpaSessionExchange:
         """Assert a non-admin Grafana role gains no admin surface via the exchange.
 
         The admin-granted direction is asserted against ``get_current_admin`` in
-        ``tests/app/api/test_deps.py``: every admin-gated route under
-        ``app/api`` serializes through ``response_model=User``, which binds to
-        the Casdoor model at import and cannot represent a ``GrafanaUser``.
+        ``tests/app/api/test_deps.py``. ``app/api`` serves no admin-gated route,
+        so the refusal is asserted on the inventory admin settings, which are
+        gated by the same ``IsAdminDep``.
         """
         grafana_mock.get_current_user_orgs.return_value = [
             {**grafana_user_orgs[0], "role": role}
@@ -745,11 +745,16 @@ class TestSpaSessionExchange:
         test_client.cookies.set("grafana_session", "ambient")
         token = test_client.post(EXCHANGE_PATH).json()["access_token"]
 
-        listed = test_client.get(
-            "/api/users/", headers={"Authorization": f"Bearer {token}"}
+        response = test_client.get(
+            "/api/inventory/admin/settings/",
+            headers={"Authorization": f"Bearer {token}"},
         )
 
-        assert listed.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert (
+            response.json()["detail"]
+            == "You don't have permission to perform this action"
+        )
 
 
 def test_spa_session_exchange_toggle_off_returns_401(test_client, grafana_mock):

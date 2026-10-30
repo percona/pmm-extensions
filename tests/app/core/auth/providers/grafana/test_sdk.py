@@ -205,21 +205,6 @@ async def test_get_org_users_sends_service_account_bearer():
 
 
 @pytest.mark.asyncio
-async def test_lookup_user_sends_service_account_bearer():
-    """Verify lookup_user sends the bearer token and the loginOrEmail param."""
-    sdk = _sdk()
-    session = _attach_session(
-        sdk, _mock_response(status=200, json_data={"id": 7, "login": "bob"})
-    )
-
-    await sdk.lookup_user("bob")
-
-    call = session.request.call_args
-    assert call.kwargs["headers"]["Authorization"] == f"Bearer {_SERVICE_TOKEN}"
-    assert call.kwargs["params"] == {"loginOrEmail": "bob"}
-
-
-@pytest.mark.asyncio
 async def test_get_org_users_is_cached(mocker):
     """Verify get_org_users caches its result (``@alru_cache``)."""
     GrafanaSDK.get_org_users.cache_clear()
