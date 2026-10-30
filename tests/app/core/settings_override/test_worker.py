@@ -16,15 +16,19 @@
 """Tests for the reusable prefork-child settings-override boundary refresher."""
 
 import asyncio
-from collections.abc import Iterator
+import logging
+import time
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from datetime import timedelta
+from typing import Generic, TypeVar
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.pool import StaticPool
 
+from app.core.config import BaseYamlSettings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.settings_override.constants import (
     EXTENSIONS_SETTINGS,
@@ -39,7 +43,11 @@ from app.core.settings_override.lifecycle import (
     SnapshotChange,
 )
 from app.core.settings_override.proxy import OverridableSettingsProxy
-from app.core.settings_override.worker import SEED_TIMEOUT_FRACTION, WorkerRefresher
+from app.core.settings_override.worker import (
+    _remaining_seed_budget,
+    SEED_TIMEOUT_FRACTION,
+    WorkerRefresher,
+)
 from app.core.utils import json_serializer
 from app.extensions.config import ExtensionsSettings
 from app.tasks.config import TasksSettings
@@ -57,6 +65,10 @@ from tests.app.db_schema import apply_schema
 
 INTERVAL = timedelta(seconds=30)
 SHORT_INTERVAL = timedelta(milliseconds=50)
+SHARED_WINDOW_CEILING = 0.9
+DRAWN_CEILING = 0.45
+
+SettingsT = TypeVar("SettingsT", bound=BaseYamlSettings)
 
 
 class _FakeClock:
@@ -107,6 +119,36 @@ class _CountingRegistry:
     def __call__(self) -> ProxyRegistry:
         self.builds += 1
         return _make_registry()
+
+
+class _CountingFactory(Generic[SettingsT]):
+    """Build a settings instance through ``build``, counting each call."""
+
+    def __init__(self, build: Callable[[], SettingsT]) -> None:
+        self._build = build
+        self.calls = 0
+
+    def __call__(self) -> SettingsT:
+        self.calls += 1
+        return self._build()
+
+
+def _failing_settings() -> ExtensionsSettings:
+    """Stand in for a settings class whose YAML/env values fail validation."""
+    raise ValueError("invalid settings")
+
+
+def _unreachable_registry() -> ProxyRegistry:
+    """Fail the test if the refresher composes the proxy registry."""
+    raise AssertionError("the proxy registry must not be composed")
+
+
+def _drain(loop: asyncio.AbstractEventLoop, *refreshers: WorkerRefresher) -> None:
+    """Let every refresher's cancelled seed finish unwinding on ``loop``."""
+    for refresher in refreshers:
+        if refresher._pending_refresh is not None:
+            with suppress(asyncio.CancelledError):
+                loop.run_until_complete(refresher._pending_refresh)
 
 
 def _unreachable_loop() -> asyncio.AbstractEventLoop:
@@ -703,3 +745,205 @@ class TestWorkerRefresherStop:
         refresher.stop()
 
         assert not refresher._armed
+
+
+class TestWorkerRefresherPrime:
+    """Cover warming the proxies in the worker's main process before the fork."""
+
+    def test_prime_resolves_every_proxy_base(self) -> None:
+        """Build each proxy's settings once without arming the refresher."""
+        extensions_factory = _CountingFactory(ExtensionsSettings)
+        tasks_factory = _CountingFactory(TasksSettings)
+        registry = {
+            EXTENSIONS_SETTINGS: ProxyEntry(
+                OverridableSettingsProxy(extensions_factory), ExtensionsSettings
+            ),
+            TASKS_SETTINGS: ProxyEntry(
+                OverridableSettingsProxy(tasks_factory), TasksSettings
+            ),
+        }
+        refresher = WorkerRefresher(
+            _unreachable_loop, _unreachable_session_maker, lambda: registry
+        )
+
+        refresher.prime(enabled=True)
+
+        assert extensions_factory.calls == 1
+        assert tasks_factory.calls == 1
+        assert not refresher._armed
+
+    def test_prime_disabled_resolves_nothing(self) -> None:
+        """Leave the registry uncomposed when the refresher is disabled."""
+        refresher = WorkerRefresher(
+            _unreachable_loop, _unreachable_session_maker, _unreachable_registry
+        )
+
+        refresher.prime(enabled=False)
+
+        assert not refresher._armed
+
+    def test_prime_continues_past_a_failing_proxy(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Warm the remaining proxies and defer the failing one to the child seed."""
+        failing_factory = _CountingFactory(_failing_settings)
+        tasks_factory = _CountingFactory(TasksSettings)
+        failing_proxy = OverridableSettingsProxy(failing_factory)
+        registry = {
+            EXTENSIONS_SETTINGS: ProxyEntry(failing_proxy, ExtensionsSettings),
+            TASKS_SETTINGS: ProxyEntry(
+                OverridableSettingsProxy(tasks_factory), TasksSettings
+            ),
+        }
+        refresher = WorkerRefresher(
+            _unreachable_loop, _unreachable_session_maker, lambda: registry
+        )
+
+        with caplog.at_level("DEBUG", logger="app.core.settings_override.worker"):
+            refresher.prime(enabled=True)
+
+        assert tasks_factory.calls == 1
+        failing_factory.calls = 0
+        with pytest.raises(ValueError, match="invalid settings"):
+            failing_proxy.get_base()
+        assert failing_factory.calls == 1
+        assert any(
+            record.name == "app.core.settings_override.worker"
+            and "Deferring" in record.message
+            for record in caplog.records
+        )
+        assert all(record.levelno < logging.WARNING for record in caplog.records)
+
+    def test_start_after_prime_does_not_rebuild_settings(
+        self, loop: asyncio.AbstractEventLoop, session_maker: async_sessionmaker
+    ) -> None:
+        """Seed from the instances ``prime`` resolved instead of rebuilding them."""
+        extensions_factory = _CountingFactory(ExtensionsSettings)
+        tasks_factory = _CountingFactory(TasksSettings)
+        registry = {
+            EXTENSIONS_SETTINGS: ProxyEntry(
+                OverridableSettingsProxy(extensions_factory), ExtensionsSettings
+            ),
+            TASKS_SETTINGS: ProxyEntry(
+                OverridableSettingsProxy(tasks_factory), TasksSettings
+            ),
+        }
+        refresher = WorkerRefresher(
+            lambda: loop, lambda: session_maker, lambda: registry
+        )
+
+        refresher.prime(enabled=True)
+        refresher.start(INTERVAL, enabled=True)
+
+        try:
+            assert extensions_factory.calls == 1
+            assert tasks_factory.calls == 1
+            assert refresher._armed
+        finally:
+            refresher.stop()
+
+
+class TestSharedSeedWindow:
+    """Cover the one inline-seed window every refresher on a child's loop shares."""
+
+    def test_seeds_on_one_loop_share_the_window(
+        self, loop: asyncio.AbstractEventLoop, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Keep two hanging seeds inside one window and arm both children."""
+        first = WorkerRefresher(lambda: loop, lambda: HangingSession, _make_registry)
+        second = WorkerRefresher(lambda: loop, lambda: HangingSession, _make_registry)
+
+        with caplog.at_level("ERROR", logger="app.core.settings_override.lifecycle"):
+            started = time.monotonic()
+            first.start(INTERVAL, enabled=True, proc_alive_timeout=1.0)
+            second.start(INTERVAL, enabled=True, proc_alive_timeout=1.0)
+            elapsed = time.monotonic() - started
+
+        try:
+            assert elapsed < SHARED_WINDOW_CEILING
+            assert first._armed
+            assert second._armed
+            errors = [
+                record
+                for record in caplog.records
+                if record.levelname == "ERROR" and "incomplete" in record.message
+            ]
+            assert len(errors) == len((first, second))
+        finally:
+            _drain(loop, first, second)
+            first.stop()
+            second.stop()
+
+    def test_remaining_budget_draws_down_one_window(
+        self, loop: asyncio.AbstractEventLoop
+    ) -> None:
+        """Bound later seeds by what is left, without reopening the window."""
+        opened = _remaining_seed_budget(loop, 0.5)
+        time.sleep(0.1)
+        drawn = _remaining_seed_budget(loop, 0.5)
+        widened = _remaining_seed_budget(loop, 10.0)
+
+        assert opened == pytest.approx(0.5, abs=0.01)
+        assert drawn < opened
+        assert drawn <= DRAWN_CEILING
+        assert widened <= drawn
+
+    def test_spent_window_still_arms_and_logs_error(
+        self, loop: asyncio.AbstractEventLoop, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Run a seed that starts after the window is spent on the expiry path."""
+        _remaining_seed_budget(loop, 0.0)
+        refresher = WorkerRefresher(
+            lambda: loop, lambda: HangingSession, _make_registry
+        )
+
+        with caplog.at_level("ERROR", logger="app.core.settings_override.lifecycle"):
+            refresher.start(INTERVAL, enabled=True, proc_alive_timeout=1.0)
+
+        try:
+            assert refresher._armed
+            assert any(
+                record.levelname == "ERROR" and "0.00s" in record.message
+                for record in caplog.records
+            )
+            assert (
+                time.monotonic() - refresher._last_refresh >= INTERVAL.total_seconds()
+            )
+        finally:
+            _drain(loop, refresher)
+            refresher.stop()
+
+    def test_a_fresh_loop_seeds_within_its_own_window(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        session_maker: async_sessionmaker,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Give a replacement child's new loop a full window of its own."""
+        spent_loop = asyncio.new_event_loop()
+        try:
+            _remaining_seed_budget(spent_loop, 0.0)
+            refresher = WorkerRefresher(
+                lambda: loop, lambda: session_maker, _make_registry
+            )
+
+            with caplog.at_level(
+                "ERROR", logger="app.core.settings_override.lifecycle"
+            ):
+                refresher.start(INTERVAL, enabled=True, proc_alive_timeout=4.0)
+
+            try:
+                assert refresher._armed
+                assert not any(
+                    record.name == "app.core.settings_override.lifecycle"
+                    and record.levelname == "ERROR"
+                    for record in caplog.records
+                )
+                assert (
+                    time.monotonic() - refresher._last_refresh
+                    < INTERVAL.total_seconds()
+                )
+            finally:
+                refresher.stop()
+        finally:
+            spent_loop.close()

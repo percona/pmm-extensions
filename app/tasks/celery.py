@@ -36,6 +36,7 @@ from celery.app.task import Context
 from celery.signals import (
     task_prerun,
     task_revoked,
+    worker_init,
     worker_process_init,
     worker_process_shutdown,
 )
@@ -159,6 +160,20 @@ _refresher = WorkerRefresher(
 )
 
 
+@worker_init.connect
+def prime_settings_override_refresher(**kwargs: Any) -> None:
+    """Warm the Tasks-side proxies in the worker's main process.
+
+    Celery sends ``worker_init`` after importing the include modules and before
+    the prefork pool forks, so each child inherits the resolved settings
+    instances instead of building them inside its liveness window. See
+    :meth:`WorkerRefresher.prime`.
+
+    :param kwargs: The ``worker_init`` signal keyword arguments (unused).
+    """
+    _refresher.prime()
+
+
 @worker_process_init.connect
 def start_settings_override_refresher(**kwargs: Any) -> None:
     """Seed and arm the Tasks worker's DB-backed settings-override refresher.
@@ -170,9 +185,10 @@ def start_settings_override_refresher(**kwargs: Any) -> None:
     resolves it. The enabled gate, the idempotent early-return, the initial inline
     seed and the shutdown disarm all live in :class:`WorkerRefresher`; after the
     seed, refreshes are pulled from ``task_prerun`` via
-    :func:`refresh_tasks_overrides_if_due`. The inline seed is bounded by a
-    fraction of ``celery.conf.worker_proc_alive_timeout`` so a hanging database
-    cannot push the child past the prefork pool's liveness deadline; on expiry
+    :func:`refresh_tasks_overrides_if_due`. The inline seed shares the child's
+    seed window, a fraction of ``celery.conf.worker_proc_alive_timeout``, with
+    the PMM Extensions side refresher, so a hanging database cannot push the
+    child past the prefork pool's liveness deadline; on expiry
     the child is still armed and may retain a possibly incomplete seed until
     the next due task boundary.
 

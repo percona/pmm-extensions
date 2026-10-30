@@ -27,7 +27,12 @@ receivers register at worker startup even in an image that ships no app with a
 
 from typing import Any, cast
 
-from celery.signals import task_prerun, worker_process_init, worker_process_shutdown
+from celery.signals import (
+    task_prerun,
+    worker_init,
+    worker_process_init,
+    worker_process_shutdown,
+)
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -153,6 +158,24 @@ _refresher = WorkerRefresher(
 )
 
 
+@worker_init.connect
+def prime_extensions_settings_override_refresher(**_: Any) -> None:
+    """Warm the PMM Extensions side proxies in the worker's main process.
+
+    Celery sends ``worker_init`` after importing the include modules and before
+    the prefork pool forks, so each child inherits the resolved settings
+    instances instead of building them inside its seed budget. See
+    :meth:`WorkerRefresher.prime`.
+
+    :param _: The ``worker_init`` signal keyword arguments (unused).
+    :raises Exception: Propagates a malformed app-owned declaration from
+        composing the proxy registry. Celery logs it and the worker continues;
+        each child's :func:`start_extensions_settings_override_refresher` meets
+        the same failure.
+    """
+    _refresher.prime()
+
+
 @worker_process_init.connect
 def start_extensions_settings_override_refresher(**_: Any) -> None:
     """Seed and arm the worker's PMM Extensions side DB-backed settings-override refresher.
@@ -161,9 +184,10 @@ def start_extensions_settings_override_refresher(**_: Any) -> None:
     the two proxy sets resolve against different databases and ``refresh_all``
     opens one session per call, so one refresher serves exactly one database.
     After the inline seed, refreshes are pulled from ``task_prerun`` via
-    :func:`refresh_extensions_overrides_if_due`. The seed is bounded by a fraction of
-    ``celery.conf.worker_proc_alive_timeout`` so a hanging database cannot
-    push the child past the prefork pool's liveness deadline. On seed expiry
+    :func:`refresh_extensions_overrides_if_due`. The seed shares the child's seed
+    window, a fraction of ``celery.conf.worker_proc_alive_timeout``, with the
+    Tasks-side refresher, so a hanging database cannot push the child past the
+    prefork pool's liveness deadline. On seed expiry
     the child is still armed and may retain a possibly incomplete seed until
     the next due task boundary.
 

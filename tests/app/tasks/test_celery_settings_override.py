@@ -45,6 +45,7 @@ from app.tasks import celery as celery_module
 from app.tasks.anonymizer.config import anonymizer_settings, AnonymizerSettings
 from app.tasks.celery import (
     build_tasks_override_proxies,
+    prime_settings_override_refresher,
     refresh_tasks_overrides_if_due,
     start_settings_override_refresher,
     stop_settings_override_refresher,
@@ -389,6 +390,14 @@ class TestWorkerRefresherHandlers:
         refresh_tasks_overrides_if_due()
 
         maybe.assert_called_once_with()
+
+    def test_worker_init_receiver_primes_the_refresher(self, mocker) -> None:
+        """Wire ``prime_settings_override_refresher`` to the pre-fork warm-up."""
+        prime = mocker.spy(celery_module._refresher, "prime")
+
+        prime_settings_override_refresher()
+
+        prime.assert_called_once_with()
 
 
 class TestSyncRunningItemsRespectsOverriddenTtl:
