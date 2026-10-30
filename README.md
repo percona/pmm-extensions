@@ -12,17 +12,17 @@
 | app/celery.py                                                                                                                       |       35 |        1 |        2 |        0 |     97% |        65 |
 | app/core/alerts/config.py                                                                                                           |       42 |        0 |        4 |        0 |    100% |           |
 | app/core/alerts/models.py                                                                                                           |       57 |        0 |       10 |        0 |    100% |           |
-| app/core/alerts/providers/pagerduty.py                                                                                              |       38 |        0 |        2 |        1 |     98% | 130-\>132 |
+| app/core/alerts/providers/pagerduty.py                                                                                              |       36 |        1 |        2 |        1 |     95% |110, 127-\>129 |
 | app/core/auth/base.py                                                                                                               |       14 |        2 |        0 |        0 |     86% |    58, 76 |
 | app/core/auth/config.py                                                                                                             |       79 |        2 |       22 |        2 |     96% |  118, 161 |
 | app/core/auth/exceptions.py                                                                                                         |       11 |        0 |        0 |        0 |    100% |           |
 | app/core/auth/models.py                                                                                                             |       85 |        0 |        2 |        0 |    100% |           |
 | app/core/auth/providers/casdoor/models.py                                                                                           |       79 |        1 |       14 |        1 |     98% |       247 |
 | app/core/auth/providers/casdoor/provider.py                                                                                         |       13 |        0 |        0 |        0 |    100% |           |
-| app/core/auth/providers/casdoor/sdk.py                                                                                              |       94 |       28 |       12 |        3 |     65% |59, 117-118, 155-\>157, 177-178, 240-244, 249-252, 260, 279-287, 303-306, 314-315, 344-350 |
+| app/core/auth/providers/casdoor/sdk.py                                                                                              |       93 |       38 |       12 |        2 |     54% |59, 112-113, 150-\>152, 172-173, 192-199, 225-247, 255, 274-282, 298-301, 309-310, 339-345 |
 | app/core/auth/providers/grafana/models.py                                                                                           |      191 |        2 |       34 |        2 |     98% |  425, 679 |
 | app/core/auth/providers/grafana/provider.py                                                                                         |       24 |        0 |        4 |        0 |    100% |           |
-| app/core/auth/providers/grafana/sdk.py                                                                                              |      140 |        0 |       22 |        0 |    100% |           |
+| app/core/auth/providers/grafana/sdk.py                                                                                              |      138 |        0 |       22 |        0 |    100% |           |
 | app/core/auth/utils.py                                                                                                              |        4 |        0 |        0 |        0 |    100% |           |
 | app/core/celery/bootstrap.py                                                                                                        |      115 |        5 |       32 |        2 |     95% |198-200, 251, 378 |
 | app/core/celery/config.py                                                                                                           |       35 |        0 |        2 |        0 |    100% |           |
@@ -55,7 +55,7 @@
 | app/core/pmm.py                                                                                                                     |       55 |        1 |       12 |        1 |     97% |        53 |
 | app/core/requests/connectivity.py                                                                                                   |       33 |        0 |        8 |        0 |    100% |           |
 | app/core/requests/registry.py                                                                                                       |       63 |        2 |       16 |        2 |     95% |  105, 116 |
-| app/core/requests/remote\_api.py                                                                                                    |      527 |        4 |      120 |        6 |     98% |435, 782, 860-\>865, 868-\>exit, 1030-\>exit, 1539-\>1538, 1652, 1664 |
+| app/core/requests/remote\_api.py                                                                                                    |      527 |        4 |      120 |        6 |     98% |402, 746, 824-\>829, 832-\>exit, 994-\>exit, 1500-\>1499, 1613, 1625 |
 | app/core/security.py                                                                                                                |       13 |        0 |        0 |        0 |    100% |           |
 | app/core/settings\_override/alembic\_ops.py                                                                                         |      153 |       15 |       56 |       14 |     86% |93, 96, 99, 101-\>103, 122, 124, 160, 162, 176, 178, 219, 263, 308, 337, 363-364 |
 | app/core/settings\_override/api/export.py                                                                                           |        9 |        0 |        0 |        0 |    100% |           |
@@ -219,7 +219,7 @@
 | app/extensions/apps/framework/responses.py                                                                                          |       96 |        1 |       20 |        1 |     98% |        64 |
 | app/extensions/apps/framework/rules.py                                                                                              |      538 |        7 |      130 |        5 |     98% |323, 328, 333, 545, 861, 1350, 1370 |
 | app/extensions/apps/framework/scaffold.py                                                                                           |      445 |       29 |      152 |       20 |     91% |308, 319, 331, 450, 547, 550, 570-\>577, 573, 626-628, 662, 703, 707, 915, 1193-1196, 1222, 1224, 1238-1241, 1267, 1272-1275, 1296, 1336 |
-| app/extensions/apps/framework/schema.py                                                                                             |      497 |        3 |      156 |        6 |     99% |1375, 1579, 1583-\>1576, 1589-\>1576, 1592-\>1576, 2117 |
+| app/extensions/apps/framework/schema.py                                                                                             |      487 |        3 |      148 |        6 |     99% |1375, 1579, 1583-\>1576, 1589-\>1576, 1592-\>1576, 2083 |
 | app/extensions/apps/framework/script\_helpers.py                                                                                    |       46 |        0 |        6 |        0 |    100% |           |
 | app/extensions/apps/framework/script\_source.py                                                                                     |       63 |        0 |       14 |        0 |    100% |           |
 | app/extensions/apps/framework/spec.py                                                                                               |      151 |        0 |       68 |        0 |    100% |           |
@@ -323,7 +323,7 @@
 | app/extensions/bundle\_upload/plan.py                                                                                               |      341 |        1 |      104 |        1 |     99% |      1197 |
 | app/extensions/bundle\_upload/resolver.py                                                                                           |       56 |        0 |       14 |        0 |    100% |           |
 | app/extensions/bundle\_upload/seam.py                                                                                               |       12 |        0 |        0 |        0 |    100% |           |
-| app/extensions/clients/pmm.py                                                                                                       |      289 |        2 |       74 |        3 |     99% |558, 560, 938-\>940 |
+| app/extensions/clients/pmm.py                                                                                                       |      286 |        2 |       74 |        3 |     99% |558, 560, 926-\>928 |
 | app/extensions/config.py                                                                                                            |      263 |        3 |       66 |        3 |     98% |195, 455, 794 |
 | app/extensions/connectivity.py                                                                                                      |       28 |        3 |        0 |        0 |     89% |   124-130 |
 | app/extensions/crud.py                                                                                                              |      169 |        0 |       32 |        0 |    100% |           |
@@ -553,7 +553,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35280** | **1732** | **8504** |  **690** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35262** | **1743** | **8496** |  **689** | **94%** |           |
 
 
 ## Setup coverage badge
