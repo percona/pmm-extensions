@@ -1800,20 +1800,25 @@ class AppSchema(SchemaBaseModel):
     :param description: Optional helper text describing the plugin's
         purpose. Defaults to ``None``.
     :param task_type: Optional task-type identifier used when creating tasks
-        via the shared task API. Defaults to ``None``.
+        via the shared task API. Rejected at construction when ``entities`` is
+        non-empty — entity records are not task runs. Defaults to ``None``.
     :param forms: Form sections for single-entity / task plugins. When
         ``entities`` is non-empty, root ``forms`` must be empty (declare
         forms on each entity instead); non-empty root ``forms`` are rejected
         at construction. Defaults to an empty list.
     :param capabilities: Optional plugin-level feature flags. Defaults to
         ``None``.
-    :param list_view: List-view configuration when ``entities`` is unset
-        (single-entity / task plugins). Ignored when ``entities`` is set.
+    :param list_view: List-view configuration when ``entities`` is unset or
+        empty (single-entity / task plugins), where it is required; rejected
+        at construction when ``entities`` is non-empty (declare ``list_view``
+        on each entity instead).
     :param detail_view: Optional declarative layout for the task detail page's
-        section cards (task-style plugins only; ignored when ``entities`` is
-        set). Optional at the model layer for backwards compatibility. A
-        forward-looking guard refuses to load a plugin that sets
-        ``task_type`` without declaring ``detail_view``. Defaults to ``None``.
+        section cards (task-style plugins only; rejected at construction when
+        ``entities`` is non-empty, since ``AppEntitySchema`` declares no
+        ``detail_view``). Optional at the model layer for backwards
+        compatibility. A forward-looking guard refuses to load a task-style
+        plugin that sets ``task_type`` without declaring ``detail_view``.
+        Defaults to ``None``.
     :param entities: Optional list of CRUD entities for multi-resource plugins.
         When non-empty, the React shell renders one list/create/detail flow
         per entity. Defaults to ``None`` (legacy single-entity mode).
@@ -1913,10 +1918,16 @@ class AppSchema(SchemaBaseModel):
         declare it. Use ``DetailView(sections=[])`` to opt out of rendering
         any section cards.
 
+        Entity-style schemas (non-empty ``entities``) are skipped: they must not
+        declare ``task_type`` or ``detail_view`` at all, which
+        :meth:`_validate_form_configuration` reports.
+
         :return: The validated plugin schema instance.
         :raises ValueError: When ``task_type`` is set and ``detail_view``
-            is unset.
+            is unset on a task-style schema.
         """
+        if self.entities:
+            return self
         if self.task_type is not None and self.detail_view is None:
             raise ValueError(
                 "AppSchema.detail_view is required when task_type is set "
@@ -2050,34 +2061,57 @@ class AppSchema(SchemaBaseModel):
     def _validate_form_configuration(self) -> Self:
         """Validate root-level form configuration for plugin schemas.
 
-        When ``entities`` is non-empty, root ``forms``, ``cardinality_rules``,
-        and ``fail_when`` must be empty — those keys belong on the entity that
-        owns them. If any are set alongside non-empty ``entities``, construction
-        fails with a message naming the offending keys.
+        When ``entities`` is non-empty, root ``forms``, ``cardinality_rules``
+        and ``fail_when`` must be unset or empty, and root ``list_view``,
+        ``detail_view`` and ``task_type`` must be unset. Root ``forms``,
+        ``cardinality_rules``, ``fail_when`` and ``list_view`` belong
+        on the entity that owns them, so the error names the entities to move
+        them to. Root ``detail_view`` and ``task_type`` have no equivalent on
+        :class:`AppEntitySchema`, so the error says to remove them. A single
+        error carries both sentences when keys of both kinds are set.
 
         For task-style schemas (``entities`` unset or empty), requires
         ``list_view`` and validates field-name uniqueness across root ``forms``.
 
         :return: The validated plugin schema instance.
-        :raises ValueError: If root form config is set on an entity-style
-            schema, if duplicate field names appear, or if neither
+        :raises ValueError: If any of those root keys is set on an
+            entity-style schema, if duplicate field names appear, or if neither
             ``entities`` nor ``list_view`` is usable.
         """
         if self.entities:
-            conflicting: list[str] = []
+            relocatable: list[str] = []
             if self.forms:
-                conflicting.append("forms")
+                relocatable.append("forms")
             if self.cardinality_rules:
-                conflicting.append("cardinality_rules")
+                relocatable.append("cardinality_rules")
             if self.fail_when:
-                conflicting.append("fail_when")
-            if conflicting:
-                entity_names = ", ".join(repr(e.name) for e in self.entities)
-                raise ValueError(
-                    f"Root-level {', '.join(conflicting)} must not be set on an "
-                    f"entity-style schema — move the declaration onto the "
-                    f"relevant entity ({entity_names})."
+                relocatable.append("fail_when")
+            if self.list_view is not None:
+                relocatable.append("list_view")
+            unsupported = [
+                key
+                for key, value in (
+                    ("detail_view", self.detail_view),
+                    ("task_type", self.task_type),
                 )
+                if value is not None
+            ]
+            problems: list[str] = []
+            if relocatable:
+                entity_names = ", ".join(repr(e.name) for e in self.entities)
+                problems.append(
+                    f"Root-level {', '.join(relocatable)} must not be set on an "
+                    f"entity-style schema — move each onto the same-named field "
+                    f"of the relevant entity ({entity_names})."
+                )
+            if unsupported:
+                problems.append(
+                    f"Root-level {', '.join(unsupported)} must not be set on an "
+                    f"entity-style schema — AppEntitySchema declares no "
+                    f"equivalent, so remove the declaration."
+                )
+            if problems:
+                raise ValueError(" ".join(problems))
             return self
         if self.list_view is None:
             raise ValueError(

@@ -15,10 +15,13 @@
 
 """Define tests for the app.core.alerts.providers.pagerduty module."""
 
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from aiohttp import ClientError
+from aioresponses import aioresponses
 from pydantic import ValidationError
 
 from app.core.alerts.models import Alert, AlertSeverity
@@ -27,7 +30,11 @@ from app.core.alerts.providers.pagerduty import (
     PagerDutyAlertSeverity,
     PagerDutyEventsAlertProvider,
 )
+from app.core.config import settings
 from app.core.utils import utc_now
+
+_RECORDING_ENDPOINT = "https://pd-redact.example.org/v2/"
+_ROUTING_KEY = "routing-key-sentinel"
 
 
 @pytest.fixture
@@ -180,3 +187,50 @@ def test_pagerduty_alert_promotes_custom_details_extra_from_base_alert():
     )
     promoted = PagerDutyAlert.model_validate(base.model_dump())
     assert promoted.custom_details == {"description": "=== ERROR DETAILS ==="}
+
+
+@pytest_asyncio.fixture
+async def recorded_pagerduty(caplog):
+    """Yield a provider on a real registry client, logging its records at DEBUG."""
+    provider = PagerDutyEventsAlertProvider(
+        api_endpoint=_RECORDING_ENDPOINT, routing_key=_ROUTING_KEY
+    )
+    try:
+        with aioresponses() as mock:
+            mock.post(
+                f"{_RECORDING_ENDPOINT}enqueue",
+                payload={"status": "success", "message": "Event processed"},
+            )
+            with caplog.at_level(logging.DEBUG, logger="app.core.requests"):
+                yield provider
+    finally:
+        await settings.invalidate_client(_RECORDING_ENDPOINT)
+
+
+def _sending_records(caplog) -> list[str]:
+    """Return the transport's request-log lines."""
+    return [r.getMessage() for r in caplog.records if "Sending" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_send_alert_masks_routing_key(recorded_pagerduty, caplog, sample_alert):
+    """Mask the routing key while the rest of the event stays logged."""
+    await recorded_pagerduty.send_alert(sample_alert)
+
+    sending = _sending_records(caplog)
+    assert _ROUTING_KEY not in caplog.text
+    assert len(sending) == 1
+    assert "'routing_key': '****'" in sending[0]
+    assert sample_alert.summary in sending[0]
+
+
+@pytest.mark.asyncio
+async def test_resolve_alert_masks_routing_key(recorded_pagerduty, caplog):
+    """Mask the routing key on the resolve event as well."""
+    await recorded_pagerduty.resolve_alert("task:backup:node-1")
+
+    sending = _sending_records(caplog)
+    assert _ROUTING_KEY not in caplog.text
+    assert len(sending) == 1
+    assert "'routing_key': '****'" in sending[0]
+    assert "task:backup:node-1" in sending[0]

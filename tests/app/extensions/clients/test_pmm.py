@@ -15,14 +15,18 @@
 
 """Define tests for the alerting methods of app.extensions.clients.pmm."""
 
+import logging
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ClientResponse, ClientResponseError
+from aioresponses import aioresponses
 from fastapi import HTTPException
 from starlette.status import (
+    HTTP_202_ACCEPTED,
     HTTP_404_NOT_FOUND,
     HTTP_409_CONFLICT,
     HTTP_500_INTERNAL_SERVER_ERROR,
@@ -39,6 +43,7 @@ from app.extensions.clients.pmm import (
     NotificationPolicy,
     PMMRemoteAPI,
 )
+from tests.app.remote_api_log import WITHHELD_BODY_LOG
 
 ALERTING_HEADERS = {"X-Disable-Provenance": "true"}
 
@@ -1601,3 +1606,141 @@ class TestGetInventoryServicesWithAgents:
         result = await pmm_remote_api.get_inventory_services_with_agents()
 
         assert result == []
+
+
+class TestContactPointBodyLog:
+    """Cover contact-point settings staying out of the transport's log records."""
+
+    _URL = "http://localhost/graph/api/v1/provisioning/contact-points/"
+    _SENTINEL = "pagerduty-integration-key-sentinel"
+
+    def _contact_point(self) -> dict[str, Any]:
+        """Return a contact point whose settings carry the sentinel secret."""
+        return {
+            "uid": "cp-1",
+            "name": "PagerDuty",
+            "type": "pagerduty",
+            "settings": {"integrationKey": self._SENTINEL},
+        }
+
+    @pytest.mark.asyncio
+    async def test_list_withholds_response(
+        self, pmm_remote_api: PMMRemoteAPI, caplog
+    ) -> None:
+        """Keep listed contact-point settings off the response record."""
+        with aioresponses() as mock:
+            mock.get(self._URL, payload=[self._contact_point()])
+            with caplog.at_level(logging.DEBUG, logger=pmm_remote_api.logger.name):
+                async with pmm_remote_api:
+                    listed = await pmm_remote_api.list_contact_points()
+
+        assert listed[0].settings == {"integrationKey": self._SENTINEL}
+        assert self._SENTINEL not in caplog.text
+        assert WITHHELD_BODY_LOG in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_list_withholds_non_json_error(
+        self, pmm_remote_api: PMMRemoteAPI, caplog
+    ) -> None:
+        """Keep an upstream error page off the non-JSON ERROR record."""
+        with aioresponses() as mock:
+            mock.get(
+                self._URL,
+                status=HTTP_502_BAD_GATEWAY,
+                body=f"<html>{self._SENTINEL}</html>",
+                content_type="text/html",
+            )
+            with caplog.at_level(logging.DEBUG, logger=pmm_remote_api.logger.name):
+                async with pmm_remote_api:
+                    with pytest.raises(HTTPException):
+                        await pmm_remote_api.list_contact_points()
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert self._SENTINEL not in caplog.text
+        assert len(errors) == 1
+        assert WITHHELD_BODY_LOG in errors[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_create_withholds_request_and_response(
+        self, pmm_remote_api: PMMRemoteAPI, caplog
+    ) -> None:
+        """Keep the posted settings and their echo off both records."""
+        with aioresponses() as mock:
+            mock.post(self._URL, payload=self._contact_point())
+            with caplog.at_level(logging.DEBUG, logger=pmm_remote_api.logger.name):
+                async with pmm_remote_api:
+                    await pmm_remote_api.create_contact_point(
+                        name="PagerDuty",
+                        type_="pagerduty",
+                        settings={"integrationKey": self._SENTINEL},
+                    )
+
+        messages = [r.getMessage() for r in caplog.records]
+        sending = [m for m in messages if "Sending" in m]
+        assert self._SENTINEL not in caplog.text
+        assert len(sending) == 1
+        assert WITHHELD_BODY_LOG in sending[0]
+        assert any("response" in m and WITHHELD_BODY_LOG in m for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_create_withholds_non_json_error(
+        self, pmm_remote_api: PMMRemoteAPI, caplog
+    ) -> None:
+        """Keep an upstream error page off the create call's ERROR record."""
+        with aioresponses() as mock:
+            mock.post(
+                self._URL,
+                status=HTTP_502_BAD_GATEWAY,
+                body=f"<html>{self._SENTINEL}</html>",
+                content_type="text/html",
+            )
+            with caplog.at_level(logging.DEBUG, logger=pmm_remote_api.logger.name):
+                async with pmm_remote_api:
+                    with pytest.raises(HTTPException):
+                        await pmm_remote_api.create_contact_point(
+                            name="PagerDuty", type_="pagerduty", settings={}
+                        )
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert self._SENTINEL not in caplog.text
+        assert len(errors) == 1
+        assert WITHHELD_BODY_LOG in errors[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_update_withholds_request(
+        self, pmm_remote_api: PMMRemoteAPI, caplog
+    ) -> None:
+        """Keep the updated settings off the Sending record."""
+        with aioresponses() as mock:
+            mock.put(f"{self._URL}cp-1", status=HTTP_202_ACCEPTED)
+            with caplog.at_level(logging.DEBUG, logger=pmm_remote_api.logger.name):
+                async with pmm_remote_api:
+                    await pmm_remote_api.update_contact_point(
+                        uid="cp-1",
+                        name="PagerDuty",
+                        type_="pagerduty",
+                        settings={"integrationKey": self._SENTINEL},
+                    )
+
+        sending = [
+            r.getMessage() for r in caplog.records if "Sending" in r.getMessage()
+        ]
+        assert self._SENTINEL not in caplog.text
+        assert len(sending) == 1
+        assert WITHHELD_BODY_LOG in sending[0]
+
+    @pytest.mark.asyncio
+    async def test_other_calls_still_log_bodies(
+        self, pmm_remote_api: PMMRemoteAPI, caplog
+    ) -> None:
+        """Keep every other PMM response logged for diagnosis."""
+        with aioresponses() as mock:
+            mock.get(
+                "http://localhost/v1/version",
+                payload={"version": "3.1.0", "marker": self._SENTINEL},
+            )
+            with caplog.at_level(logging.DEBUG, logger=pmm_remote_api.logger.name):
+                async with pmm_remote_api:
+                    await pmm_remote_api.get_version()
+
+        assert self._SENTINEL in caplog.text

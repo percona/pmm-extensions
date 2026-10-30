@@ -162,6 +162,13 @@ class TestAuthSettingsResolution:
         )
         assert isinstance(settings.active_provider, StubAuthProvider)
 
+    def test_casdoor_provider_setting_cannot_disable_withholding(self):
+        """Verify the provider config cannot switch Casdoor body logging back on."""
+        with pytest.raises(ValidationError, match="Input should be True"):
+            IsolatedAuthSettings(
+                PROVIDER={"casdoor": {**_CASDOOR_CONFIG, "WITHHOLD_BODY_LOG": False}}
+            )
+
     def test_zero_providers_fails_fast(self):
         """Verify configuring no provider fails fast."""
         with pytest.raises(ValidationError, match="Exactly one auth provider"):

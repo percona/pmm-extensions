@@ -123,25 +123,29 @@ class PagerDutyEventsAlertProvider(BaseAlertProvider):
         :param alert: The alert to be sent, as an :class:`Alert`, a
             :class:`PagerDutyAlert`, or a mapping of either's fields.
         :raises ValidationError: If ``alert`` carries no PagerDuty severity.
+        :raises HTTPException: If PagerDuty answers with an error status.
+        :raises aiohttp.ClientError: If the request fails in transport.
+        :raises TimeoutError: If the request times out.
         """
         if not isinstance(alert, PagerDutyAlert):
             alert = PagerDutyAlert.model_validate(alert, from_attributes=True)
         pagerduty_api = await self.get_api()
-        await pagerduty_api.post(
-            "enqueue",
-            json={
-                "routing_key": self.routing_key.get_secret_value(),
-                "event_action": "trigger",
-                **alert.model_dump(
-                    include={"dedup_key", "images", "links"}, exclude_none=True
-                ),
-                "payload": alert.model_dump(
-                    by_alias=True,
-                    exclude={"dedup_key", "images", "links"},
-                    exclude_none=True,
-                ),
-            },
-        )
+        with pagerduty_api.redact_body_fields({"routing_key"}):
+            await pagerduty_api.post(
+                "enqueue",
+                json={
+                    "routing_key": self.routing_key.get_secret_value(),
+                    "event_action": "trigger",
+                    **alert.model_dump(
+                        include={"dedup_key", "images", "links"}, exclude_none=True
+                    ),
+                    "payload": alert.model_dump(
+                        by_alias=True,
+                        exclude={"dedup_key", "images", "links"},
+                        exclude_none=True,
+                    ),
+                },
+            )
 
     @validate_call
     async def resolve_alert(self, dedup_key: NonEmptyStr) -> None:
@@ -152,14 +156,18 @@ class PagerDutyEventsAlertProvider(BaseAlertProvider):
         202).
 
         :param dedup_key: The deduplication key of the alert to resolve.
-        :type dedup_key: NonEmptyStr
+        :raises ValidationError: If ``dedup_key`` is empty.
+        :raises HTTPException: If PagerDuty answers with an error status.
+        :raises aiohttp.ClientError: If the request fails in transport.
+        :raises TimeoutError: If the request times out.
         """
         pagerduty_api = await self.get_api()
-        await pagerduty_api.post(
-            "enqueue",
-            json={
-                "routing_key": self.routing_key.get_secret_value(),
-                "event_action": "resolve",
-                "dedup_key": dedup_key,
-            },
-        )
+        with pagerduty_api.redact_body_fields({"routing_key"}):
+            await pagerduty_api.post(
+                "enqueue",
+                json={
+                    "routing_key": self.routing_key.get_secret_value(),
+                    "event_action": "resolve",
+                    "dedup_key": dedup_key,
+                },
+            )

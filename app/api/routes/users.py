@@ -16,12 +16,10 @@
 """Define the API routes for User actions."""
 
 import logging
-from collections.abc import Sequence
 
 from fastapi import APIRouter
 
-from app.api.deps import CurrentUser, IsAdminDep
-from app.core.auth.exceptions import HTTPForbiddenException
+from app.api.deps import CurrentUser
 from app.core.auth.models import BaseUser
 from app.core.auth.utils import get_user_model
 
@@ -30,22 +28,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 User = get_user_model()
-
-
-@router.get(
-    "/",
-    dependencies=[IsAdminDep],
-    # pagination-ok: the provider SDK returns the whole organization in one call
-    # (Casdoor /api/get-users, Grafana /api/org/users), so there is no upstream
-    # window to page against; the cardinality is the operator's own user count.
-    response_model=list[User],  # ty: ignore[invalid-type-form]
-)
-async def list_users() -> Sequence[BaseUser]:
-    """List users.
-
-    :return: The list of users.
-    """
-    return await User.get_users()
 
 
 @router.get("/me", response_model=User)
@@ -58,23 +40,3 @@ async def retrieve_current_user(current_user: CurrentUser) -> BaseUser:
     :rtype: User
     """
     return current_user
-
-
-@router.get("/{username}", response_model=User)
-async def retrieve_user(current_user: CurrentUser, username: str) -> BaseUser:
-    """Retrieve a user by username.
-
-    :param current_user: The current authenticated user.
-    :type current_user: CurrentUser
-    :param username: The username of the user to retrieve.
-    :type username: str
-    :return: The requested user.
-    :rtype: User
-    :raises HTTPForbiddenException: If the current user is not an admin and tries to
-        access another user's information.
-    """
-    if current_user.username == username:
-        return current_user
-    if not current_user.is_admin:
-        raise HTTPForbiddenException
-    return await User.get_user(username)

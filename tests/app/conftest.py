@@ -588,10 +588,6 @@ def grafana_mock(
         "app.core.auth.providers.grafana.sdk.GrafanaSDK.get_org_users",
         new=mocker.AsyncMock(return_value=grafana_org_users),
     )
-    mocker.patch(
-        "app.core.auth.providers.grafana.sdk.GrafanaSDK.lookup_user",
-        new=mocker.AsyncMock(return_value=grafana_user_record),
-    )
     return grafana_provider
 
 

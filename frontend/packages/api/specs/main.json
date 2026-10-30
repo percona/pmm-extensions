@@ -580,37 +580,6 @@
         ]
       }
     },
-    "/api/users/": {
-      "get": {
-        "description": "List users.\n\n:return: The list of users.",
-        "operationId": "users_list_users_api_users__get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/CasdoorUser"
-                  },
-                  "title": "Response Users List Users Api Users  Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "summary": "List Users",
-        "tags": [
-          "users"
-        ]
-      }
-    },
     "/api/users/me": {
       "get": {
         "description": "Retrieve the current authenticated user.\n\n:param current_user: The current authenticated user.\n:type current_user: CurrentUser\n:return: The current authenticated user.\n:rtype: User",
@@ -633,54 +602,6 @@
           }
         ],
         "summary": "Retrieve Current User",
-        "tags": [
-          "users"
-        ]
-      }
-    },
-    "/api/users/{username}": {
-      "get": {
-        "description": "Retrieve a user by username.\n\n:param current_user: The current authenticated user.\n:type current_user: CurrentUser\n:param username: The username of the user to retrieve.\n:type username: str\n:return: The requested user.\n:rtype: User\n:raises HTTPForbiddenException: If the current user is not an admin and tries to\n    access another user's information.",
-        "operationId": "users_retrieve_user_api_users__username__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "username",
-            "required": true,
-            "schema": {
-              "title": "Username",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CasdoorUser"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          }
-        ],
-        "summary": "Retrieve User",
         "tags": [
           "users"
         ]
