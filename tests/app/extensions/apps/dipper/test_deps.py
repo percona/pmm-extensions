@@ -28,7 +28,6 @@ from app.extensions.apps.dipper.deps import (
     build_dipper_meta_from_args,
     fetch_pmm_node_service_names,
     get_dipper_script_filename,
-    has_pmm_script,
 )
 from app.extensions.apps.dipper.models import DipperScript
 from app.extensions.apps.field_names import RESERVED_EXECUTION_FIELD_NAMES
@@ -57,10 +56,6 @@ class TestValkeyScriptMapping:
             get_dipper_script_filename(ServiceTypeEnum.VALKEY, CollectorTypeEnum.PMM)
             == "pcs-collect-pmm-valkey.py"
         )
-
-    def test_has_pmm_script_is_true(self):
-        """Valkey is the second service type to carry a PMM collector."""
-        assert has_pmm_script(ServiceTypeEnum.VALKEY) is True
 
 
 def _make_script(

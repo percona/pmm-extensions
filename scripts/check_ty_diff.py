@@ -54,7 +54,7 @@ from typing import NamedTuple, TYPE_CHECKING
 from scripts.classify_ty_diagnostics import Diagnostic, parse_diagnostics
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 
 ANNOTATION_CAP = 50
 ALL_CHECKS_PASSED = "All checks passed!"
@@ -102,12 +102,15 @@ class ChangedFiles:
     :param renames: Old path to new path, for the files the branch moved within
         the checked non-test surface.
     :param tests: Changed Python files under ``tests/``, which neither pass checks.
+    :param deleted: Non-test paths the branch removed. Only the base pass reads
+        them, so the code a branch split out of them still has a baseline.
     """
 
     head: tuple[str, ...]
     base: tuple[str, ...]
     renames: Mapping[str, str]
     tests: tuple[str, ...] = ()
+    deleted: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,11 +292,17 @@ def parse_name_status(text: str) -> ChangedFiles:
     head: list[str] = []
     base: list[str] = []
     tests: list[str] = []
+    deleted: list[str] = []
     renames: dict[str, str] = {}
     for raw in text.splitlines():
         status, _, operands = raw.partition("\t")
         paths = operands.split("\t")
         if not status or not paths[0]:
+            continue
+        if status.startswith("D"):
+            if paths[0].endswith(".py") and not paths[0].startswith(TEST_ROOT):
+                base.append(paths[0])
+                deleted.append(paths[0])
             continue
         new = paths[-1] if status.startswith(("C", "R")) else paths[0]
         old = "" if status.startswith(("A", "C")) else paths[0]
@@ -308,15 +317,19 @@ def parse_name_status(text: str) -> ChangedFiles:
             if old != new:
                 renames[old] = new
     return ChangedFiles(
-        head=tuple(head), base=tuple(base), renames=renames, tests=tuple(tests)
+        head=tuple(head),
+        base=tuple(base),
+        renames=renames,
+        tests=tuple(tests),
+        deleted=tuple(deleted),
     )
 
 
 def changed_files(merge_base: str) -> ChangedFiles:
     """Return the Python files the branch changed since ``merge_base``.
 
-    ``--diff-filter=ACMR`` drops deletions, because handing ty a path that does
-    not exist is an ``error[io]`` rather than a diagnostic.
+    Deletions are kept for the base pass alone, because handing ty a path that
+    does not exist is an ``error[io]`` rather than a diagnostic.
 
     :param merge_base: The revision to diff from.
     :return: The head and base file lists.
@@ -327,7 +340,7 @@ def changed_files(merge_base: str) -> ChangedFiles:
         "diff",
         "--name-status",
         "-M",
-        "--diff-filter=ACMR",
+        "--diff-filter=ACMRD",
         merge_base,
         "HEAD",
         "--",
@@ -596,15 +609,40 @@ def delta_key(diagnostic: Diagnostic, source: Source | None) -> DeltaKey:
     )
 
 
-def surplus_diagnostics(head: CheckedPass, base: CheckedPass) -> list[Diagnostic]:
+def moved_key(
+    diagnostic: Diagnostic, sources: Mapping[str, Source]
+) -> tuple[str, str] | None:
+    """Return the path-free identity of a diagnostic anchored on a statement.
+
+    A file split into several can only be matched across paths, and only an
+    unchanged statement is evidence of a move: a message alone also matches a
+    new defect that happens to read the same.
+
+    :param diagnostic: One diagnostic from either pass.
+    :param sources: The files the same pass read.
+    :return: The rule and statement anchor, or ``None`` when the diagnostic
+        falls back to its message.
+    """
+    key = delta_key(diagnostic, sources.get(diagnostic.path))
+    if key.kind is not AnchorKind.STATEMENT:
+        return None
+    return key.rule, key.anchor
+
+
+def surplus_diagnostics(
+    head: CheckedPass, base: CheckedPass, deleted: Collection[str] = ()
+) -> list[Diagnostic]:
     """Return the head diagnostics the merge-base did not already carry.
 
     The difference is taken over :func:`delta_key` as a multiset, so duplicating
     a defect that already exists still reports. Each surplus key is mapped back
-    to a head diagnostic to recover the message and line the key drops.
+    to a head diagnostic to recover the message and line the key drops. A
+    diagnostic from a deleted file has no path to match on, so it cancels a
+    surplus diagnostic anywhere in the branch whose statement it shares, once.
 
     :param head: The branch's pass.
     :param base: The merge-base's pass, under head paths.
+    :param deleted: Base paths the branch removed.
     :return: The surplus, in head output order.
     """
     # A file keyed by statement on one side and by message on the other would
@@ -616,12 +654,24 @@ def surplus_diagnostics(head: CheckedPass, base: CheckedPass) -> list[Diagnostic
 
     head_keyed = [(item, key_of(item, head.sources)) for item in head.diagnostics]
     remaining = Counter(key for _, key in head_keyed) - Counter(
-        key_of(item, base.sources) for item in base.diagnostics
+        key_of(item, base.sources)
+        for item in base.diagnostics
+        if item.path not in deleted
     )
+    moved = Counter(
+        moved_key(item, base.sources)
+        for item in base.diagnostics
+        if item.path in deleted
+    )
+    moved.pop(None, None)
     extra: list[Diagnostic] = []
     for diagnostic, key in head_keyed:
         if remaining[key] > 0:
             remaining[key] -= 1
+            origin = moved_key(diagnostic, head.sources)
+            if moved[origin] > 0:
+                moved[origin] -= 1
+                continue
             extra.append(diagnostic)
     return extra
 
@@ -747,7 +797,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         base = base.rebased(changed.renames)
 
-    extra = surplus_diagnostics(head, base)
+    extra = surplus_diagnostics(head, base, frozenset(changed.deleted))
     if not extra:
         print(f"No new ty diagnostics across {len(changed.head)} changed file(s).")
         for line in notice:

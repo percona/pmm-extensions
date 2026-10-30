@@ -26,7 +26,7 @@ import time
 from base64 import b64decode
 from binascii import b2a_base64
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Callable, Collection
+from collections.abc import AsyncGenerator, Awaitable, Callable, Collection
 from contextlib import aclosing, asynccontextmanager
 from datetime import datetime, UTC
 from enum import StrEnum
@@ -34,7 +34,7 @@ from functools import cached_property, partial
 from itertools import product
 from pathlib import Path
 from types import TracebackType
-from typing import Any, cast, ClassVar, NamedTuple, Self
+from typing import Any, cast, ClassVar, NamedTuple, Self, TypeVar
 
 import requests
 from aiohttp import (
@@ -83,6 +83,7 @@ from app.tasks.execution.executors.nomad.exceptions import (
 )
 from app.tasks.execution.executors.nomad.log_follow import (
     LogCatchUpError,
+    LogFileStarts,
     LogFollowRegistry,
     LogSink,
     SharedLogFollow,
@@ -139,6 +140,7 @@ NODE_STATUS_READY = "ready"
 # Internal states returned by :meth:`NomadExecutor._consume_nomad_log_stream` (not Nomad task states).
 _NOMAD_LOG_STREAM_SOCK_TIMEOUT = "nomad-log-stream-sock-timeout"
 _NOMAD_LOG_STREAM_CLIENT_ERROR = "nomad-log-stream-client-error"
+_NOMAD_LOG_STREAM_MISPLACED = "nomad-log-stream-misplaced"
 _NOMAD_FRAME_DECODER = json.JSONDecoder()
 #: The decoder error for a string the end of the buffer cut off, wherever it began.
 _UNTERMINATED_STRING_ERROR = "Unterminated string starting at"
@@ -153,8 +155,13 @@ _CATCH_UP_CHUNK_BYTES = _ONE_MEBIBYTE
 #: Seconds a catch-up read waits for a pooled connection, as the short-call
 #: session's own default does.
 _CATCH_UP_CONNECT_TIMEOUT = 5
+#: Times in a row Nomad may delete a rotated file under one read before the
+#: read stops trying to place itself.
+_LOG_SHIFT_MAX_CHANGES = 3
 
 _ANONYMIZED_STEPS: frozenset[NomadStep] = NomadStep.anonymized()
+
+_T = TypeVar("_T")
 
 
 class StepLogDelta(NamedTuple):
@@ -292,6 +299,35 @@ def _warn_forced_flush(
     )
 
 
+def _warn_unplaced_log_read(
+    alloc_id: str, step: str, log_type: TaskLogType, offset: int, files: LogFileStarts
+) -> None:
+    """Warn, once per follow, that its reads after a rotation go untranslated.
+
+    A follow that started inside a file meets this on every catch-up and
+    reconnect once its log has rotated, whether or not Nomad deleted
+    anything, so later occurrences are logged at debug level.
+
+    :param alloc_id: The Nomad allocation identifier.
+    :param step: The Nomad task name within the allocation.
+    :param log_type: The log stream type (stdout or stderr).
+    :param offset: The cumulative raw offset the read starts at.
+    :param files: The file starts the follow's producer recorded.
+    """
+    level = logging.DEBUG if files.unplaced_reported else logging.WARNING
+    files.unplaced_reported = True
+    logger.log(
+        level,
+        "Nomad log read cannot be placed at offset=%s alloc_id=%s step=%s "
+        "log_type=%s; the follow never saw where Nomad's oldest retained file "
+        "starts, so the offset is used as it is",
+        offset,
+        alloc_id,
+        step,
+        log_type,
+    )
+
+
 class LiveRelease(NamedTuple):
     """Carry what one live log frame released for the viewer.
 
@@ -306,6 +342,17 @@ class LiveRelease(NamedTuple):
     text: str | None
     offset: int
     forced: bool
+
+
+class _LogFrame(NamedTuple):
+    """Carry one data frame of a ``follow=false`` log read.
+
+    :param file: The file the data came from, or ``None`` when Nomad named none.
+    :param data: The frame's raw bytes.
+    """
+
+    file: str | None
+    data: bytes
 
 
 def _nomad_event_body_text(ev: dict) -> str:
@@ -2970,6 +3017,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         *,
         on_forced_flush: Callable[[], None] | None = None,
         on_remainder: Callable[[], None] | None = None,
+        files: LogFileStarts | None = None,
     ) -> None:
         """Push logs to the asynchronous queue for processing.
 
@@ -2992,6 +3040,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             ceiling forced out is pushed, or ``None`` when nothing listens.
         :param on_remainder: Called right before the remainder the stream ended
             on is pushed, or ``None`` when nothing listens.
+        :param files: Records where each rotated file starts as the stream
+            reads it, which places a reconnect once Nomad has deleted an older
+            file; or ``None`` to reconnect at the cumulative offset as it is.
         """
         timeout = ClientTimeout(sock_read=self.log_socket_read_timeout)
         params = {
@@ -3006,7 +3057,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             alloc_id = alloc["ID"]
             stream_start = None
             try:
-                state, alloc, stream_start = await self._consume_nomad_log_stream(
+                state, alloc, stream_start = await self._consume_placed_stream(
                     alloc=alloc,
                     step=step,
                     log_type=log_type,
@@ -3016,6 +3067,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                     anonymize_entities=anonymize_entities,
                     pending=pending,
                     on_forced_flush=on_forced_flush,
+                    files=files,
+                    reconnecting=params["offset"] != start_offset,
                 )
             except asyncio.CancelledError:
                 self._log_stream_cancelled(
@@ -3063,6 +3116,146 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 )
             )
         await queue.put(TaskLog(step=step, type=log_type, msg=None))
+
+    async def _consume_placed_stream(
+        self,
+        *,
+        alloc: dict[str, Any],
+        step: str,
+        log_type: TaskLogType,
+        queue: LogSink,
+        params: dict[str, Any],
+        client_timeout: ClientTimeout,
+        anonymize_entities: set[PIIEntity] | None,
+        pending: WithheldLineBuffer,
+        on_forced_flush: Callable[[], None] | None,
+        files: LogFileStarts | None,
+        reconnecting: bool,
+    ) -> tuple[str, dict[str, Any], float | None]:
+        """Run one connection of a follow, placed past any deleted rotated file.
+
+        A first connection, or one to a log that has not rotated, requests the
+        cumulative offset as it is. A reconnect after a rotation is shifted
+        past what Nomad deleted, and a reconnect a deletion misplaced is made
+        again with the newer shift, up to :data:`_LOG_SHIFT_MAX_CHANGES` times.
+        A reconnect requested as it is, or one whose shift cannot be placed,
+        may land inside a file the follow never saw begin, so its first data
+        frame is not taken as where that file starts.
+
+        :param alloc: Nomad allocation dictionary.
+        :param step: Task step name.
+        :param log_type: ``stdout`` or ``stderr``.
+        :param queue: Sink to push log lines into.
+        :param params: Mutable request query parameters, ``offset`` cumulative.
+        :param client_timeout: aiohttp client timeout.
+        :param anonymize_entities: Optional PII entities to redact.
+        :param pending: Caller-owned withheld-line buffer.
+        :param on_forced_flush: Called right before a forced release is pushed.
+        :param files: Records where each rotated file starts, or ``None``.
+        :param reconnecting: Whether the follow has taken data on an earlier
+            connection; one that returned with nothing, such as a step that
+            had not started yet, does not make the next a reconnect.
+        :return: What :meth:`_consume_nomad_log_stream` returns; a failed shift
+            probe, or a reconnect misplaced every time, is a client error.
+        """
+        stream = partial(
+            self._consume_nomad_log_stream,
+            step=step,
+            log_type=log_type,
+            queue=queue,
+            params=params,
+            client_timeout=client_timeout,
+            anonymize_entities=anonymize_entities,
+            pending=pending,
+            on_forced_flush=on_forced_flush,
+            files=files,
+        )
+        if not reconnecting or files is None or not files.rotated:
+            return await stream(
+                alloc=alloc,
+                request_offset=None,
+                confirm=None,
+                placed=not reconnecting,
+            )
+        stream_start = None
+        for _ in range(_LOG_SHIFT_MAX_CHANGES):
+            try:
+                request_offset, confirm = await self._place_reconnect(
+                    alloc["ID"], step, log_type, files, params, pending
+                )
+            except (TimeoutError, ClientError):
+                return (_NOMAD_LOG_STREAM_CLIENT_ERROR, alloc, stream_start)
+            state, alloc, stream_start = await stream(
+                alloc=alloc,
+                request_offset=request_offset,
+                confirm=confirm,
+                placed=request_offset is not None,
+            )
+            if state != _NOMAD_LOG_STREAM_MISPLACED:
+                return (state, alloc, stream_start)
+        logger.warning(
+            "Nomad log stream gave up reconnecting at offset=%s alloc_id=%s "
+            "step=%s log_type=%s; Nomad deleted rotated files %s times while it "
+            "reconnected",
+            params["offset"],
+            alloc["ID"],
+            step,
+            log_type,
+            _LOG_SHIFT_MAX_CHANGES,
+        )
+        return (_NOMAD_LOG_STREAM_CLIENT_ERROR, alloc, stream_start)
+
+    async def _place_reconnect(
+        self,
+        alloc_id: str,
+        step: str,
+        log_type: TaskLogType,
+        files: LogFileStarts,
+        params: dict[str, Any],
+        pending: WithheldLineBuffer,
+    ) -> tuple[int | None, Callable[[], Awaitable[bool]] | None]:
+        """Shift a reconnect past the rotated files Nomad has deleted.
+
+        The returned confirmation probes the shift again once the reconnect's
+        first data frame has arrived, which proves Nomad placed it with the
+        same shift. Once proven, a shift past the follow's own position means
+        the files up to it were deleted while it was disconnected: the partial
+        line withheld before that gap is dropped and counting resumes there.
+
+        :param alloc_id: The Nomad allocation identifier.
+        :param step: The task step name.
+        :param log_type: The type of log followed.
+        :param files: The file starts the follow recorded.
+        :param params: The follow's request parameters, ``offset`` cumulative.
+        :param pending: The follow's withheld-line buffer.
+        :return: The offset to request and the confirmation to await, or
+            ``None`` for both when the shift cannot be placed.
+        :raises TimeoutError: When the probe times out.
+        :raises ClientError: When the probe fails.
+        """
+        shift = await self._resolve_log_shift(alloc_id, step, log_type, files)
+        if shift is None:
+            _warn_unplaced_log_read(alloc_id, step, log_type, params["offset"], files)
+            return None, None
+
+        async def confirm() -> bool:
+            if await self._resolve_log_shift(alloc_id, step, log_type, files) != shift:
+                return False
+            if shift > params["offset"]:
+                logger.warning(
+                    "Nomad log stream lost range=%s-%s alloc_id=%s step=%s "
+                    "log_type=%s; Nomad deleted the rotated file holding it",
+                    params["offset"] - len(pending),
+                    shift,
+                    alloc_id,
+                    step,
+                    log_type,
+                )
+                pending.drain()
+                params["offset"] = shift
+            return True
+
+        return max(params["offset"], shift) - shift, confirm
 
     async def _decode_live_frame(
         self,
@@ -3178,6 +3371,11 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         anonymize_entities: set[PIIEntity] | None,
         pending: WithheldLineBuffer,
         on_forced_flush: Callable[[], None] | None = None,
+        *,
+        files: LogFileStarts | None = None,
+        request_offset: int | None = None,
+        confirm: Callable[[], Awaitable[bool]] | None = None,
+        placed: bool = True,
     ) -> tuple[str, dict[str, Any], float | None]:
         """Perform a single Nomad log streaming HTTP request and consume chunks.
 
@@ -3207,6 +3405,16 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             withheld from anonymization; mutated in place and carried across
             reconnects so a token split at a frame boundary is redacted whole.
         :param on_forced_flush: Called right before a forced release is pushed.
+        :param files: Records the file each data frame came from at the
+            cumulative offset its data starts, or ``None``.
+        :param request_offset: The offset to request in Nomad's current
+            numbering, or ``None`` to request ``params["offset"]``.
+        :param confirm: Awaited before the first data frame is recorded or
+            pushed; ``False`` drops the connection with nothing taken from it
+            and returns ``_NOMAD_LOG_STREAM_MISPLACED``.
+        :param placed: Whether the request is known to land where the follow
+            counts it, so a new file its first data frame comes from begins
+            there; a later frame's new file always begins where it is counted.
         :return: Nomad task ``State`` string, ``running`` to continue the outer
             loop, or a ``_NOMAD_LOG_STREAM_*`` sentinel; the allocation dict (possibly
             refreshed); and monotonic time when response body reads began, or
@@ -3214,13 +3422,16 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         """
         alloc_id = alloc["ID"]
         stream_start = None
-        logger.debug("Requesting logs for %s with params %s", alloc_id, params)
+        request_params = params
+        if request_offset is not None:
+            request_params = params | {"offset": request_offset}
+        logger.debug("Requesting logs for %s with params %s", alloc_id, request_params)
         try:
             async with self._request(
                 "GET",
                 f"/v1/client/fs/logs/{alloc_id}",
                 long_lived=True,
-                params=params,
+                params=request_params,
                 timeout=client_timeout,
             ) as response:
                 logger.debug("Log response status: %s", response.status)
@@ -3257,47 +3468,29 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 async for chunk, _ in response.content.iter_chunks():
                     frames, raw_data = _split_nomad_frames(raw_data + chunk)
                     for data in frames:
-                        if msg := data.get("Data"):
-                            raw = b64decode(msg)
-                            params["offset"] = offset = params["offset"] + len(raw)
-                            logger.debug(
-                                "Nomad log frame alloc_id=%s step=%s log_type=%s "
-                                "offset=%s b64_chars=%s monotonic=%.3f",
-                                alloc_id,
-                                step,
-                                log_type,
-                                offset,
-                                len(msg),
-                                time.monotonic(),
-                            )
-                            empty_data_count = 0
-                            if not first_chunk_seen:
-                                first_chunk_seen = True
-                                elapsed = (
-                                    time.monotonic() - stream_start
-                                    if stream_start is not None
-                                    else 0
-                                )
-                                logger.debug(
-                                    "First log chunk received alloc_id=%s step=%s "
-                                    "log_type=%s offset=%s elapsed=%.2fs",
-                                    alloc_id,
-                                    step,
-                                    log_type,
-                                    offset,
-                                    elapsed,
-                                )
-                            await self._push_live_frame(
+                        if data.get("Data"):
+                            if not await self._take_live_frame(
+                                data,
                                 queue,
+                                params,
                                 pending,
-                                raw,
                                 step,
-                                offset,
                                 anonymize_entities,
                                 alloc_id=alloc_id,
                                 log_type=log_type,
                                 on_forced_flush=on_forced_flush,
-                            )
+                                files=files,
+                                confirm=confirm,
+                                first_since=None if first_chunk_seen else stream_start,
+                                boundary=placed or first_chunk_seen,
+                            ):
+                                return (
+                                    _NOMAD_LOG_STREAM_MISPLACED,
+                                    alloc,
+                                    stream_start,
+                                )
+                            first_chunk_seen = True
+                            empty_data_count = 0
                         else:
                             empty_data_count += 1
                     if empty_data_count > self.log_socket_read_timeout and not raw_data:
@@ -3322,6 +3515,87 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             return (_NOMAD_LOG_STREAM_SOCK_TIMEOUT, alloc, stream_start)
         except ClientError:
             return (_NOMAD_LOG_STREAM_CLIENT_ERROR, alloc, stream_start)
+
+    async def _take_live_frame(
+        self,
+        data: dict[str, Any],
+        queue: LogSink,
+        params: dict[str, Any],
+        pending: WithheldLineBuffer,
+        step: str,
+        anonymize_entities: set[PIIEntity] | None,
+        *,
+        alloc_id: str,
+        log_type: TaskLogType,
+        on_forced_flush: Callable[[], None] | None,
+        files: LogFileStarts | None,
+        confirm: Callable[[], Awaitable[bool]] | None,
+        first_since: float | None,
+        boundary: bool,
+    ) -> bool:
+        """Count, record and push one data frame of a live follow.
+
+        :param data: The frame, which carries ``Data``.
+        :param queue: The sink to push the released text into.
+        :param params: The follow's request parameters; ``offset`` advances by
+            the frame's data length.
+        :param pending: The withheld-remainder buffer, mutated in place.
+        :param step: The Nomad task name within the allocation.
+        :param anonymize_entities: PII entities to redact, or ``None``.
+        :param alloc_id: The Nomad allocation identifier.
+        :param log_type: The log stream type (stdout or stderr).
+        :param on_forced_flush: Called right before a forced release is pushed.
+        :param files: Records the file the frame came from, or ``None``.
+        :param confirm: Awaited before the connection's first frame is taken.
+        :param first_since: When the response body began, for the connection's
+            first frame; ``None`` for every later one.
+        :param boundary: Whether a new file the frame comes from is known to
+            begin where the follow counts the frame.
+        :return: Whether the frame was taken; ``False`` when ``confirm``
+            refused the connection's first frame.
+        :raises UnicodeDecodeError: When a non-anonymized frame is not UTF-8.
+        :raises TimeoutError: When ``confirm``'s shift probe times out.
+        :raises ClientError: When ``confirm``'s shift probe fails.
+        """
+        if first_since is not None and confirm is not None and not await confirm():
+            return False
+        msg = data["Data"]
+        raw = b64decode(msg)
+        if files is not None and (file := data.get("File")):
+            files.record(file, params["offset"], boundary=boundary)
+        params["offset"] = offset = params["offset"] + len(raw)
+        logger.debug(
+            "Nomad log frame alloc_id=%s step=%s log_type=%s "
+            "offset=%s b64_chars=%s monotonic=%.3f",
+            alloc_id,
+            step,
+            log_type,
+            offset,
+            len(msg),
+            time.monotonic(),
+        )
+        if first_since is not None:
+            logger.debug(
+                "First log chunk received alloc_id=%s step=%s "
+                "log_type=%s offset=%s elapsed=%.2fs",
+                alloc_id,
+                step,
+                log_type,
+                offset,
+                time.monotonic() - first_since,
+            )
+        await self._push_live_frame(
+            queue,
+            pending,
+            raw,
+            step,
+            offset,
+            anonymize_entities,
+            alloc_id=alloc_id,
+            log_type=log_type,
+            on_forced_flush=on_forced_flush,
+        )
+        return True
 
     async def _produce_shared_follow(
         self,
@@ -3358,11 +3632,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 anonymize_entities,
                 on_forced_flush=sink.mark_mid_line,
                 on_remainder=sink.mark_mid_line,
+                files=sink.files,
             )
 
     async def _read_log_frames(
         self, alloc_id: str, step: str, log_type: TaskLogType, start: int, end: int
-    ) -> list[bytes]:
+    ) -> list[_LogFrame]:
         """Read the frames of one bounded catch-up request from ``start``.
 
         The request is a ``follow=false`` short call, read at network speed and
@@ -3373,10 +3648,10 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param alloc_id: The Nomad allocation identifier.
         :param step: The task step name.
         :param log_type: The type of log to read.
-        :param start: The cumulative raw offset to read from.
-        :param end: The cumulative raw offset to stop at.
-        :return: Each frame's raw bytes in order, clipped at ``end``; empty
-            when Nomad had nothing past ``start``.
+        :param start: The request offset to read from.
+        :param end: The request offset to stop at.
+        :return: The frames in order, clipped at ``end``; empty when Nomad had
+            nothing past ``start``.
         :raises TimeoutError: When no pooled connection or no data arrives in
             time.
         :raises ClientError: When the request fails.
@@ -3388,7 +3663,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         timeout = ClientTimeout(
             connect=_CATCH_UP_CONNECT_TIMEOUT, sock_read=self.log_socket_read_timeout
         )
-        frames: list[bytes] = []
+        frames: list[_LogFrame] = []
         position = start
         async with self._request(
             "GET",
@@ -3403,11 +3678,103 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 for frame in parsed:
                     if msg := frame.get("Data"):
                         data = b64decode(msg)[: end - position]
-                        frames.append(data)
+                        frames.append(_LogFrame(frame.get("File"), data))
                         position += len(data)
                         if position >= end or position - start >= _CATCH_UP_CHUNK_BYTES:
                             return frames
         return frames
+
+    async def _resolve_log_shift(
+        self, alloc_id: str, step: str, log_type: TaskLogType, files: LogFileStarts
+    ) -> int | None:
+        """Return how far Nomad's request offsets have moved from the follow's.
+
+        Nomad's request offset 0 is the start of the oldest file it still
+        holds, so that file's cumulative start is the size of everything it
+        has deleted.
+
+        :param alloc_id: The Nomad allocation identifier.
+        :param step: The task step name.
+        :param log_type: The type of log to probe.
+        :param files: The file starts the follow's producer recorded.
+        :return: The shift, or ``None`` when Nomad holds nothing or the follow
+            never saw where its oldest retained file starts.
+        :raises TimeoutError: When the probe times out.
+        :raises ClientError: When the probe fails.
+        """
+        frames = await self._read_log_frames(alloc_id, step, log_type, 0, 1)
+        if not frames or frames[0].file is None:
+            return None
+        return files.start_of(frames[0].file)
+
+    async def _read_placed_frames(
+        self,
+        alloc_id: str,
+        step: str,
+        log_type: TaskLogType,
+        files: LogFileStarts | None,
+        position: int,
+        end: int,
+        shift: int | None,
+    ) -> tuple[list[_LogFrame], int | None] | None:
+        """Read one catch-up request, translated by ``shift`` and proven placed.
+
+        A probe once the request's response has closed brackets it with the
+        one before: Nomad only ever deletes its oldest file, so equal shifts
+        mean nothing was deleted in between, and Nomad resolved the request
+        with that shift. A response the second probe contradicts is dropped
+        unread and requested again with the newer shift. The probe waits for
+        the response to close so that a catch-up never holds one pooled
+        connection while it waits for another.
+
+        :param alloc_id: The Nomad allocation identifier.
+        :param step: The task step name.
+        :param log_type: The type of log to read.
+        :param files: The file starts the follow's producer recorded, or
+            ``None`` for a read that is not translated.
+        :param position: The cumulative raw offset to read from.
+        :param end: The cumulative raw offset to read up to.
+        :param shift: The shift the previous probe found, or ``None`` to read
+            the cumulative offsets as they are.
+        :return: The frames and the shift they were placed with, as
+            ``(frames, None)`` when the read was not translated; or ``None``
+            itself once Nomad deleted files under the read
+            :data:`_LOG_SHIFT_MAX_CHANGES` times in a row.
+        :raises TimeoutError: When a request times out.
+        :raises ClientError: When a request fails.
+        """
+        changes = 0
+        while (
+            files is not None and shift is not None and changes < _LOG_SHIFT_MAX_CHANGES
+        ):
+            if shift >= end:
+                return [], shift
+            frames = await self._read_log_frames(
+                alloc_id, step, log_type, max(position, shift) - shift, end - shift
+            )
+            confirmed = await self._resolve_log_shift(alloc_id, step, log_type, files)
+            if confirmed == shift:
+                return frames, shift
+            shift = confirmed
+            changes += 1
+        if shift is None:
+            if changes and files is not None:
+                _warn_unplaced_log_read(alloc_id, step, log_type, position, files)
+            frames = await self._read_log_frames(
+                alloc_id, step, log_type, position, end
+            )
+            return frames, None
+        logger.warning(
+            "Nomad log catch-up gave up at offset=%s alloc_id=%s step=%s "
+            "log_type=%s; Nomad deleted rotated files %s times while it read, so "
+            "the viewer rejoins the live follow there",
+            position,
+            alloc_id,
+            step,
+            log_type,
+            _LOG_SHIFT_MAX_CHANGES,
+        )
+        return None
 
     async def _read_log_range(
         self,
@@ -3419,6 +3786,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         end: int,
         *,
         flush: bool = False,
+        files: LogFileStarts | None = None,
     ) -> AsyncGenerator[TaskLog]:
         """Read the raw range ``[start, end)`` of a step's log for one viewer.
 
@@ -3433,18 +3801,26 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         Only whole lines and whole characters are read: what is still withheld
         at ``end`` is released only with ``flush``, which the shared follow
         passes once the stream has ended there. Any other ``end`` it hands over
-        is a line boundary, so nothing is withheld there.
+        is a line boundary, so nothing is withheld there. A read that gives up
+        before ``end`` (see :meth:`_read_placed_frames`) never releases what it
+        withheld, since the rest of that line was not read.
 
-        Nomad has nothing left before ``end`` once it has deleted an older
-        rotated file, because the deletion shifts every request offset down by
-        that file's size while ``start`` and ``end`` were counted before it.
-        The read then stops at Nomad's end rather than failing, so the viewer
-        rejoins the live follow instead of losing it. A ``start`` counted before
-        the deletion also lands that many bytes too far into the retained
-        files, so the viewer can miss text it had not yet been sent, or receive
-        some twice; only a read from offset 0 is unaffected. Neither ``start``
-        nor ``end`` is then a line boundary, which is why nothing withheld is
-        released.
+        Once Nomad deletes an older rotated file, every request offset shifts
+        down by that file's size while ``start`` and ``end`` were counted
+        before it. With ``files`` the read is translated: each request is
+        shifted by the cumulative start of the oldest file Nomad still holds,
+        and proven placed by a probe on either side of it (see
+        :meth:`_read_placed_frames`). Text that was only in a deleted file is
+        lost: the read warns, drops any partial line or character withheld
+        before the gap, and resumes at the oldest retained file.
+
+        A follow that started inside a file never learns where that file
+        starts, so once Nomad deletes it, or an older one, the shift cannot be
+        placed and the read uses its cumulative offsets as they are. That read
+        can land too far into the retained files, so the viewer can miss text
+        or receive some twice. A read Nomad has nothing more for stops there
+        rather than failing, so the viewer rejoins the live follow instead of
+        losing it.
 
         :param alloc_id: The Nomad allocation identifier.
         :param step: The task step name.
@@ -3454,6 +3830,8 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :param end: The cumulative raw offset to read up to.
         :param flush: Whether the stream ended at ``end``, so the partial line
             withheld there is anonymized whole and released.
+        :param files: The file starts the shared follow's producer recorded,
+            or ``None`` to read the cumulative offsets as they are.
         :return: The range's whole log lines, each carrying the raw offset it
             ends at.
         :raises LogCatchUpError: When a request fails or times out.
@@ -3462,54 +3840,173 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         :raises UnicodeDecodeError: When the frame stream, or a non-anonymized
             step's output, is not UTF-8.
         """
-        anonymized = _should_anonymize(step, anonymize_entities)
         pending = WithheldLineBuffer()
         decoder = codecs.getincrementaldecoder("utf-8")()
         position = start
+        shift = await self._catch_up_call(
+            self._initial_log_shift(alloc_id, step, log_type, files, start),
+            alloc_id,
+            step,
+            log_type,
+            start,
+            end,
+        )
         while position < end:
-            try:
-                frames = await self._read_log_frames(
-                    alloc_id, step, log_type, position, end
-                )
-            except (TimeoutError, ClientError) as error:
-                self._log_catch_up_failure(alloc_id, step, log_type, start, end, error)
-                raise LogCatchUpError(str(error)) from error
-            if not frames:
+            placed = await self._catch_up_call(
+                self._read_placed_frames(
+                    alloc_id, step, log_type, files, position, end, shift
+                ),
+                alloc_id,
+                step,
+                log_type,
+                start,
+                end,
+            )
+            if placed is None:
+                return
+            frames, shift = placed
+            if shift is not None and shift > position:
                 logger.warning(
-                    "Nomad log catch-up reached the log's end at offset=%s before "
-                    "%s alloc_id=%s step=%s log_type=%s; Nomad deleted an older "
-                    "rotated file, so the viewer rejoins the live follow there and "
-                    "may be missing text it had not yet been sent",
-                    position,
-                    end,
+                    "Nomad log catch-up lost range=%s-%s alloc_id=%s step=%s "
+                    "log_type=%s; Nomad deleted the rotated file holding it",
+                    position - len(pending) - len(decoder.getstate()[0]),
+                    min(shift, end),
                     alloc_id,
                     step,
                     log_type,
                 )
-                break
-            for raw in frames:
-                position += len(raw)
-                if anonymized:
-                    release = await self._decode_live_frame(
-                        pending,
-                        raw,
-                        step,
+                pending.drain()
+                decoder.reset()
+                position = shift
+            if not frames:
+                if position < end:
+                    logger.warning(
+                        "Nomad log catch-up reached the log's end at offset=%s "
+                        "before %s alloc_id=%s step=%s log_type=%s; the viewer "
+                        "rejoins the live follow there and may be missing text it "
+                        "had not yet been sent",
                         position,
-                        anonymize_entities,
-                        alloc_id=alloc_id,
-                        log_type=log_type,
+                        end,
+                        alloc_id,
+                        step,
+                        log_type,
                     )
-                    text, offset = release.text, release.offset
-                else:
-                    text = decoder.decode(raw)
-                    offset = position - len(decoder.getstate()[0])
-                if text:
-                    yield TaskLog(step=step, type=log_type, msg=text, offset=offset)
+                break
+            async for log in self._decode_catch_up_frames(
+                frames,
+                position,
+                pending,
+                decoder,
+                step,
+                log_type,
+                anonymize_entities,
+                alloc_id=alloc_id,
+            ):
+                yield log
+            position += sum(len(frame.data) for frame in frames)
         if flush and pending:
             text = await asyncio.to_thread(
                 _decode_and_anonymize, pending.drain(), anonymize_entities
             )
             yield TaskLog(step=step, type=log_type, msg=text, offset=position)
+
+    async def _catch_up_call(
+        self,
+        request: Awaitable[_T],
+        alloc_id: str,
+        step: str,
+        log_type: TaskLogType,
+        start: int,
+        end: int,
+    ) -> _T:
+        """Await one request of a catch-up, failing the catch-up if it fails.
+
+        :param request: The request to await.
+        :param alloc_id: The Nomad allocation identifier.
+        :param step: The task step name.
+        :param log_type: The type of log read.
+        :param start: The cumulative raw offset the range starts at.
+        :param end: The cumulative raw offset the range ends at.
+        :return: What the request returns.
+        :raises LogCatchUpError: When the request fails or times out.
+        """
+        try:
+            return await request
+        except (TimeoutError, ClientError) as error:
+            self._log_catch_up_failure(alloc_id, step, log_type, start, end, error)
+            raise LogCatchUpError(str(error)) from error
+
+    async def _initial_log_shift(
+        self,
+        alloc_id: str,
+        step: str,
+        log_type: TaskLogType,
+        files: LogFileStarts | None,
+        start: int,
+    ) -> int | None:
+        """Return the shift a catch-up starts with, probing only after a rotation.
+
+        :param alloc_id: The Nomad allocation identifier.
+        :param step: The task step name.
+        :param log_type: The type of log read.
+        :param files: The file starts the follow's producer recorded, or ``None``.
+        :param start: The cumulative raw offset the range starts at.
+        :return: The shift, or ``None`` when the read is not translated.
+        :raises TimeoutError: When the probe times out.
+        :raises ClientError: When the probe fails.
+        """
+        if files is None or not files.rotated:
+            return None
+        shift = await self._resolve_log_shift(alloc_id, step, log_type, files)
+        if shift is None:
+            _warn_unplaced_log_read(alloc_id, step, log_type, start, files)
+        return shift
+
+    async def _decode_catch_up_frames(
+        self,
+        frames: list[_LogFrame],
+        position: int,
+        pending: WithheldLineBuffer,
+        decoder: codecs.IncrementalDecoder,
+        step: str,
+        log_type: TaskLogType,
+        anonymize_entities: set[PIIEntity] | None,
+        *,
+        alloc_id: str,
+    ) -> AsyncGenerator[TaskLog]:
+        """Decode one request's frames into the log lines they complete.
+
+        :param frames: The frames, in order.
+        :param position: The cumulative raw offset the first frame starts at.
+        :param pending: The read's withheld-line buffer, mutated in place.
+        :param decoder: The read's strict UTF-8 decoder, carried across requests.
+        :param step: The task step name.
+        :param log_type: The type of log read.
+        :param anonymize_entities: PII entities to anonymize, or ``None``.
+        :param alloc_id: The Nomad allocation identifier.
+        :return: The completed log lines, each carrying the raw offset it ends at.
+        :raises UnicodeDecodeError: When a non-anonymized step's output is not
+            UTF-8.
+        """
+        anonymized = _should_anonymize(step, anonymize_entities)
+        for frame in frames:
+            position += len(frame.data)
+            if anonymized:
+                release = await self._decode_live_frame(
+                    pending,
+                    frame.data,
+                    step,
+                    position,
+                    anonymize_entities,
+                    alloc_id=alloc_id,
+                    log_type=log_type,
+                )
+                text, offset = release.text, release.offset
+            else:
+                text = decoder.decode(frame.data)
+                offset = position - len(decoder.getstate()[0])
+            if text:
+                yield TaskLog(step=step, type=log_type, msg=text, offset=offset)
 
     @staticmethod
     def _log_catch_up_failure(

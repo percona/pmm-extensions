@@ -35,7 +35,7 @@ duplicate that surface.
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Body, Response, status
-from sqlmodel import col
+from sqlmodel import col, select
 
 from app.core.exceptions import HTTPBadRequestException
 from app.extensions.apps.inventory.connectivity import probe_service_connectivity
@@ -48,11 +48,7 @@ from app.extensions.apps.inventory.deps import (
     InventorySyncTriggerWrite,
     SyncersDep,
 )
-from app.extensions.apps.inventory.models import (
-    INVENTORY_SYNC_TASK_NAME,
-    PluginTaskResponse,
-    SyncRunSummary,
-)
+from app.extensions.apps.inventory.models import PluginTaskResponse, SyncRunSummary
 from app.extensions.apps.inventory.sync import run_inventory_sync
 from app.extensions.crud import SyncInstanceManager, SyncItemManager
 from app.extensions.deps import (
@@ -61,9 +57,12 @@ from app.extensions.deps import (
     SessionDep,
     TaskAPI,
 )
-from app.extensions.models import SyncInstance, SyncInventoryEntityTypeEnum
+from app.extensions.models import SyncInstance, SyncInventoryEntityTypeEnum, SyncItem
 from app.tasks.connectivity.models import ConnectivityCheckResponse
-from app.tasks.models import INVENTORY_COLLECTION_TASK_NAME
+from app.tasks.models import (
+    INVENTORY_COLLECTION_TASK_NAME,
+    INVENTORY_SYNC_TASK_NAME,
+)
 
 router = APIRouter()
 
@@ -133,6 +132,12 @@ async def inventory_sync_status(session: SessionDep) -> InventorySyncStatusRespo
     )
     runs = await SyncInstanceManager.list(
         session,
+        select(SyncItem.id)
+        .where(
+            col(SyncItem.sync_instance_id) == col(SyncInstance.id),
+            col(SyncItem.entity_type) == SyncInventoryEntityTypeEnum.INVENTORY,
+        )
+        .exists(),
         order_by=[
             col(SyncInstance.created_at).desc(),
             col(SyncInstance.id).desc(),

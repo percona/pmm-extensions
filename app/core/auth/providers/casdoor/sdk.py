@@ -87,6 +87,10 @@ class CasdoorSDK(CredentialHeaderMixin, RemoteAPI):
         "message".
     :param error_code_key: The key to expect error codes to be, or None if no error
         code is expected. Defaults to "code".
+    :param withhold_body_log: Pinned to ``True``: Casdoor's bodies carry OAuth
+        tokens, client secrets and user records, so none of them may reach the
+        log. Not a switch, since the provider is built from settings and an
+        operator value of ``False`` would put tokens in the log.
     """
 
     model_config = ConfigDict(ignored_types=(_LRUCacheWrapper,))
@@ -99,6 +103,7 @@ class CasdoorSDK(CredentialHeaderMixin, RemoteAPI):
     allowed_issuers: set[StrHttpUrl] | Literal["*"] = set()
     error_detail_key: NonEmptyStr = "error_description"
     error_code_key: NonEmptyStr | None = "error"
+    withhold_body_log: Literal[True] = True
 
     @computed_field
     @cached_property

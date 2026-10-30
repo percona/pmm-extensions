@@ -21,7 +21,7 @@ from datetime import timedelta
 from functools import cached_property
 from hashlib import sha256
 from time import monotonic
-from typing import Annotated, Any, Final, NotRequired
+from typing import Annotated, Any, Final, Literal, NotRequired
 
 from aiohttp import (
     ClientConnectionError,
@@ -142,6 +142,11 @@ class GrafanaSDK(RemoteAPI):
         "message".
     :param session_cookie_name: The name of the cookie Grafana sets on a
         successful password login. Defaults to ``grafana_session``.
+    :param withhold_body_log: Pinned to ``True``: Grafana's bodies carry user
+        records, org memberships and service-account records, so none of them
+        may reach the log. Not a switch, since the provider is built from
+        settings and an operator value of ``False`` would put that identity
+        data in the log.
     """
 
     model_config = ConfigDict(ignored_types=(_LRUCacheWrapper,))
@@ -157,6 +162,7 @@ class GrafanaSDK(RemoteAPI):
     ] = timedelta(minutes=5)
     error_detail_key: NonEmptyStr = "message"
     session_cookie_name: NonEmptyStr = "grafana_session"
+    withhold_body_log: Literal[True] = True
 
     def _cookie_jar(self) -> AbstractCookieJar:
         """Return a jar that keeps no cookies.
@@ -259,17 +265,6 @@ class GrafanaSDK(RemoteAPI):
         """
         with self.auth(self.service_account_token.get_secret_value()):
             return as_json_array(await self.get("/api/org/users"))
-
-    async def lookup_user(self, login: str) -> dict[str, Any]:
-        """Fetch a single user by login or email via the service account.
-
-        :param login: The login or email to look up.
-        :return: The Grafana ``/api/users/lookup`` record for the user.
-        """
-        with self.auth(self.service_account_token.get_secret_value()):
-            return as_json_object(
-                await self.get("/api/users/lookup", params={"loginOrEmail": login})
-            )
 
     @alru_cache(ttl=300)
     async def get_service_accounts(self) -> list[dict[str, Any]]:
@@ -426,16 +421,7 @@ class GrafanaSDK(RemoteAPI):
         except HTTPException as exc:
             if _is_grafana_verdict(exc, refusal):
                 return None
-            self.logger.exception(
-                "Grafana answered HTTP %s to %s while verifying a service-account "
-                "token.",
-                exc.status_code,
-                path,
-            )
-            raise GrafanaException(
-                detail=f"Grafana could not verify the service-account token "
-                f"(HTTP {exc.status_code})."
-            ) from None
+            failed_status = exc.status_code
         except (TimeoutError, ClientError, ValueError):
             self.logger.warning(
                 "Grafana did not answer %s while verifying a service-account token.",
@@ -445,8 +431,18 @@ class GrafanaSDK(RemoteAPI):
             raise GrafanaException(
                 detail="Grafana could not verify the service-account token."
             ) from None
-        if not isinstance(payload, dict):
-            raise GrafanaException(
-                detail=f"Grafana returned an unreadable {path} response."
-            )
-        return payload
+        else:
+            if not isinstance(payload, dict):
+                raise GrafanaException(
+                    detail=f"Grafana returned an unreadable {path} response."
+                )
+            return payload
+        self.logger.error(
+            "Grafana answered HTTP %s to %s while verifying a service-account token.",
+            failed_status,
+            path,
+        )
+        raise GrafanaException(
+            detail=f"Grafana could not verify the service-account token "
+            f"(HTTP {failed_status})."
+        )

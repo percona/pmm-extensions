@@ -23,7 +23,7 @@ independent of how busy the loop under test is, which is what a latency
 assertion against it needs.
 """
 
-__all__ = ["NomadLogStub"]
+__all__ = ["NomadLogStub", "appending", "evicting"]
 
 import asyncio
 import json
@@ -32,7 +32,7 @@ import time
 from base64 import b64encode
 from collections.abc import Callable, Coroutine
 from contextlib import suppress
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from aiohttp import web
 
@@ -104,6 +104,46 @@ def _following_file(files: list[_LogFile], current: _LogFile) -> _LogFile | None
     return files[0]
 
 
+#: A change to one log type's files, made while the stub holds its lock.
+Change = Callable[[list[_LogFile]], None]
+
+
+def appending(data: bytes) -> Change:
+    """Return a change that writes ``data`` to the current file.
+
+    :param data: The raw bytes to write.
+    :return: The change.
+    """
+    return lambda files: files[-1].record(data)
+
+
+def evicting() -> Change:
+    """Return a change that deletes the oldest file.
+
+    :return: The change.
+    """
+
+    def evict(files: list[_LogFile]) -> None:
+        del files[0]
+
+    return evict
+
+
+class _RequestHook(NamedTuple):
+    """Hold a change waiting for one request of a log type.
+
+    :param log_type: The log type whose requests are counted.
+    :param follow: Whether follow or ``follow=false`` requests are counted.
+    :param change: The change made just before the chosen request is served.
+    :param skip: The counted requests still to let through unchanged first.
+    """
+
+    log_type: str
+    follow: bool
+    change: Change
+    skip: int
+
+
 def _locate(files: list[_LogFile], offset: int) -> tuple[int, int]:
     """Map a cumulative request offset to a file and a position within it.
 
@@ -136,6 +176,10 @@ class NomadLogStub:
     cumulative across the files, while a frame's ``Offset`` belongs to the file
     its ``File`` names and is not, in general, where the frame's data ends (see
     :meth:`_LogFile.frames`).
+
+    :meth:`before_request` makes a write or a deletion just before a chosen
+    later request is served, which is how a test lands output or a rotated
+    file's deletion exactly inside a catch-up or a reconnect.
 
     :param step: The Nomad task the allocation runs and the follows read.
     :param line_count: Lines :meth:`emit` writes to each log type.
@@ -175,6 +219,7 @@ class NomadLogStub:
         self.non_follow_requests = 0
         self.open_non_follows = 0
         self._files = {log_type.value: [_LogFile()] for log_type in TaskLogType}
+        self._hooks: list[_RequestHook] = []
         self._follow_transports: set[asyncio.BaseTransport] = set()
         self._done = False
         self._loop = asyncio.new_event_loop()
@@ -244,6 +289,26 @@ class NomadLogStub:
         :param log_type: The log type to evict from.
         """
         await self._on_stub_loop(self._evict_oldest(log_type))
+
+    async def before_request(
+        self, log_type: TaskLogType, change: Change, *, follow: bool, skip: int = 0
+    ) -> None:
+        """Make ``change`` just before a later request of one log type is served.
+
+        The change runs once, before the stub locates the request's offset, so
+        what it writes or deletes is part of what that request serves. Only
+        requests of ``log_type`` whose ``follow`` matches are counted; a shift
+        probe counts as a ``follow=false`` request like any other.
+
+        :param log_type: The log type whose requests are counted.
+        :param change: The change to make, from :func:`appending` or
+            :func:`evicting`.
+        :param follow: Whether to count follow or ``follow=false`` requests.
+        :param skip: How many counted requests to serve unchanged first.
+        """
+        await self._on_stub_loop(
+            self._add_hook(_RequestHook(log_type.value, follow, change, skip))
+        )
 
     async def finish(self) -> None:
         """Mark the step dead without writing anything more."""
@@ -335,6 +400,32 @@ class NomadLogStub:
             del self._files[log_type.value][0]
             self._changed.notify_all()
 
+    async def _add_hook(self, hook: _RequestHook) -> None:
+        """Register a request hook, on the stub's loop.
+
+        :param hook: The hook to register.
+        """
+        async with self._changed:
+            self._hooks.append(hook)
+
+    def _run_hooks(self, log_type: str, *, follow: bool) -> None:
+        """Count one request against the hooks, making any change now due.
+
+        Called with the lock held.
+
+        :param log_type: The requested log type.
+        :param follow: Whether the request is a follow.
+        """
+        waiting: list[_RequestHook] = []
+        for hook in self._hooks:
+            if (hook.log_type, hook.follow) != (log_type, follow):
+                waiting.append(hook)
+            elif hook.skip:
+                waiting.append(hook._replace(skip=hook.skip - 1))
+            else:
+                hook.change(self._files[log_type])
+        self._hooks = waiting
+
     async def _finish(self) -> None:
         """Mark the step dead, on the stub's loop."""
         async with self._changed:
@@ -406,6 +497,7 @@ class NomadLogStub:
             else:
                 self.non_follow_requests += 1
                 self.open_non_follows += 1
+            self._run_hooks(request.query["type"], follow=follow)
             self._changed.notify_all()
         try:
             if follow:

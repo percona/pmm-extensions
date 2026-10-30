@@ -331,6 +331,114 @@ def test_plugin_schema_entities_mode_accepts_empty_root_form_config():
     assert schema.fail_when is None
 
 
+def test_plugin_schema_entities_mode_rejects_root_list_view():
+    """Refuse a root ``list_view`` and point at the entity-level field."""
+    entity = _minimal_entity_schema()
+    with pytest.raises(
+        ValidationError,
+        match=(
+            r"Root-level list_view must not be set on an entity-style schema — "
+            r"move each onto the same-named field of the relevant entity "
+            r"\('things'\)"
+        ),
+    ):
+        AppSchema(
+            name="multi",
+            display_name="Multi",
+            entities=[entity],
+            list_view=_minimal_list_view(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("detail_view", DetailView(sections=[])),
+        ("task_type", "some-root-task"),
+    ],
+)
+def test_plugin_schema_entities_mode_rejects_unsupported_root_key(
+    key: str,
+    value: Any,
+) -> None:
+    """Refuse a root key ``AppEntitySchema`` has no equivalent for."""
+    entity = _minimal_entity_schema()
+    with pytest.raises(
+        ValidationError,
+        match=(
+            rf"Root-level {key} must not be set on an entity-style schema — "
+            r"AppEntitySchema declares no equivalent"
+        ),
+    ):
+        AppSchema(
+            name="multi",
+            display_name="Multi",
+            entities=[entity],
+            **{key: value},
+        )
+
+
+def test_plugin_schema_entities_mode_task_type_not_reported_as_missing_detail_view():
+    """Report the ``task_type`` rejection, not the task-style ``detail_view`` guard."""
+    entity = _minimal_entity_schema()
+    with pytest.raises(ValidationError) as exc:
+        AppSchema(
+            name="multi",
+            display_name="Multi",
+            entities=[entity],
+            task_type="some-root-task",
+        )
+    message = str(exc.value)
+    assert "Root-level task_type" in message
+    assert "detail_view is required" not in message
+
+
+def test_plugin_schema_entities_mode_reports_all_root_conflicts():
+    """Name every offending root key, grouped by whether it can be relocated."""
+    entity = _minimal_entity_schema()
+    with pytest.raises(
+        ValidationError,
+        match=(
+            r"Root-level forms, list_view must not be set on an entity-style "
+            r"schema — move each onto the same-named field of the relevant "
+            r"entity \('things'\)\. Root-level detail_view, task_type must not "
+            r"be set on an entity-style schema — AppEntitySchema declares no "
+            r"equivalent, so remove the declaration\."
+        ),
+    ):
+        AppSchema(
+            name="multi",
+            display_name="Multi",
+            entities=[entity],
+            forms=[
+                FormSection(
+                    title="Root",
+                    fields=[StringField(name="ignored", label="Ignored")],
+                )
+            ],
+            list_view=_minimal_list_view(),
+            detail_view=DetailView(sections=[]),
+            task_type="some-root-task",
+        )
+
+
+def test_plugin_schema_entities_mode_round_trips_through_model_dump():
+    """Treat the ``None`` root views a full dump emits as undeclared."""
+    schema = AppSchema(
+        name="multi",
+        display_name="Multi",
+        entities=[_minimal_entity_schema()],
+    )
+    dumped = schema.model_dump()
+    assert dumped["list_view"] is None
+    assert dumped["detail_view"] is None
+    assert dumped["task_type"] is None
+
+    restored = AppSchema.model_validate(dumped)
+
+    assert restored == schema
+
+
 def test_plugin_schema_task_style_root_forms_unaffected():
     """Confirm task-style root forms stay optional and duplicate-checked."""
     empty = AppSchema(
@@ -2482,6 +2590,18 @@ def test_plugin_schema_without_task_type_allows_missing_detail_view():
 
     assert schema.task_type is None
     assert schema.detail_view is None
+
+
+def test_plugin_schema_empty_entities_task_type_still_requires_detail_view():
+    """Keep ``entities=[]`` task-style, so ``task_type`` still needs ``detail_view``."""
+    with pytest.raises(ValidationError, match="detail_view is required"):
+        AppSchema(
+            name="task-plugin",
+            display_name="Task App",
+            task_type="some-root-task",
+            entities=[],
+            list_view=_minimal_list_view(),
+        )
 
 
 def test_plugin_schema_detail_view_round_trips_through_json():

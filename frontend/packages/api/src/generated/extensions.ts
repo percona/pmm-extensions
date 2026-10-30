@@ -6004,9 +6004,9 @@ export interface components {
       total: number;
     };
     /** PaginatedResponse[ServiceResponse] */
-    app__PaginatedResponse_inventory__models__ServiceResponse_: {
+    app__PaginatedResponse_inventory__models__responses__ServiceResponse_: {
       /** Items */
-      items: components['schemas']['app__inventory__models__ServiceResponse'][];
+      items: components['schemas']['app__inventory__models__responses__ServiceResponse'][];
       /** Limit */
       limit: number;
       /** Offset */
@@ -6073,7 +6073,7 @@ export interface components {
      *         its outcome, or ``None`` if none has been reported, or the upgrade
      *         time for a row that was failing when the column was added.
      */
-    app__inventory__models__ServiceResponse: {
+    app__inventory__models__responses__ServiceResponse: {
       /** Cluster */
       cluster?: string | null;
       /**
@@ -7814,20 +7814,25 @@ export interface components {
      *     :param description: Optional helper text describing the plugin's
      *         purpose. Defaults to ``None``.
      *     :param task_type: Optional task-type identifier used when creating tasks
-     *         via the shared task API. Defaults to ``None``.
+     *         via the shared task API. Rejected at construction when ``entities`` is
+     *         non-empty — entity records are not task runs. Defaults to ``None``.
      *     :param forms: Form sections for single-entity / task plugins. When
      *         ``entities`` is non-empty, root ``forms`` must be empty (declare
      *         forms on each entity instead); non-empty root ``forms`` are rejected
      *         at construction. Defaults to an empty list.
      *     :param capabilities: Optional plugin-level feature flags. Defaults to
      *         ``None``.
-     *     :param list_view: List-view configuration when ``entities`` is unset
-     *         (single-entity / task plugins). Ignored when ``entities`` is set.
+     *     :param list_view: List-view configuration when ``entities`` is unset or
+     *         empty (single-entity / task plugins), where it is required; rejected
+     *         at construction when ``entities`` is non-empty (declare ``list_view``
+     *         on each entity instead).
      *     :param detail_view: Optional declarative layout for the task detail page's
-     *         section cards (task-style plugins only; ignored when ``entities`` is
-     *         set). Optional at the model layer for backwards compatibility. A
-     *         forward-looking guard refuses to load a plugin that sets
-     *         ``task_type`` without declaring ``detail_view``. Defaults to ``None``.
+     *         section cards (task-style plugins only; rejected at construction when
+     *         ``entities`` is non-empty, since ``AppEntitySchema`` declares no
+     *         ``detail_view``). Optional at the model layer for backwards
+     *         compatibility. A forward-looking guard refuses to load a task-style
+     *         plugin that sets ``task_type`` without declaring ``detail_view``.
+     *         Defaults to ``None``.
      *     :param entities: Optional list of CRUD entities for multi-resource plugins.
      *         When non-empty, the React shell renders one list/create/detail flow
      *         per entity. Defaults to ``None`` (legacy single-entity mode).
@@ -17629,7 +17634,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          'application/json': components['schemas']['app__PaginatedResponse_inventory__models__ServiceResponse_'];
+          'application/json': components['schemas']['app__PaginatedResponse_inventory__models__responses__ServiceResponse_'];
         };
       };
       /** @description Validation Error */

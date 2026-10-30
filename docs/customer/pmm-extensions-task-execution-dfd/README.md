@@ -147,7 +147,7 @@ Commit the updated `.mmd` sources with any README/checklist changes. The PDF und
 | P10 PMM annotations | `app/core/pmm.py` |
 | P11 HTTP request context | `app/core/middleware/log_context.py`, `app/api/deps.py` |
 | D1 Snippet store | `app/extensions/snippets/`, snippet approval in DB |
-| D2 Tasks PostgreSQL | `app/tasks/models.py`, `app/tasks/db/` |
+| D2 Tasks PostgreSQL | `app/tasks/models/`, `app/tasks/db/` |
 | D3 Nomad runtime | Nomad allocation logs/files (fetched via Nomad API) |
 | mTLS / TLS transport | PMM's Nginx fronts PMM Extensions (HTTPS termination is PMM-owned). PMM Extensions-internal mTLS: `app/core/requests/remote_api.py` (SSL context builder); inter-service certs at `/data/certs/sep/*`. Nomad mTLS: client cert and CA at `/data/certs/nomad/`. For external-Nomad deployments these are customer-supplied. |
 
