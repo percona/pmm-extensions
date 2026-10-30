@@ -46,6 +46,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query, Request
 from fastapi import status as http_status
+from kombu.exceptions import KombuError
 from pydantic import ValidationError
 from sqlmodel import col
 
@@ -77,6 +78,7 @@ from app.extensions.apps.om_inventory.crud import (
     conflicting_run,
     delete_host,
     delete_service,
+    fail_running_run,
     get_host,
     get_run,
     get_service,
@@ -105,6 +107,12 @@ from app.extensions.apps.om_inventory.service import SWITCHED_OFF_DETAIL
 from app.extensions.deps import ApiCurrentUser, SessionDep
 
 logger = logging.getLogger(__name__)
+
+QUEUE_UNAVAILABLE_DETAIL = (
+    "Could not queue the scan: PMM Extensions' task queue is not answering"
+)
+"""Why a scan was refused before it started, on the run row and the 503 alike. The
+broker's own error stays in the log: it names internal addresses."""
 
 router = APIRouter()
 schema_endpoint(router=router, plugin_schema=om_inventory_schema)
@@ -583,7 +591,8 @@ async def trigger_probe(
     :param session: The database session.
     :param request: The optional scope. Absent, or an empty list, means everything.
     :raises HTTPServiceUnavailableException: When PMM's Operations for MongoDB
-        switch has ``ENABLED`` off.
+        switch has ``ENABLED`` off, or the sweep could not be queued, in which case
+        its run is recorded failed.
     :raises HTTPNotFoundException: When a requested node id is not in the estate.
     :raises HTTPConflictException: When a requested host is already being refreshed.
     :return: The queued sweep.
@@ -611,7 +620,12 @@ async def trigger_probe(
         )
 
     run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids or None))
-    run_om_probe.delay(str(run.id), node_ids or None)
+    try:
+        run_om_probe.delay(str(run.id), node_ids or None)
+    except (OSError, KombuError) as exc:
+        logger.exception("OM inventory: could not queue sweep %s", run.id)
+        await fail_running_run(session, run.id, QUEUE_UNAVAILABLE_DETAIL)
+        raise HTTPServiceUnavailableException(detail=QUEUE_UNAVAILABLE_DETAIL) from exc
     return ProbeRunAccepted(
         run_id=run.id,
         status=str(run.status),

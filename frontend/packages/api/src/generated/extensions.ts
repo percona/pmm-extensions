@@ -2594,7 +2594,8 @@ export interface paths {
      *     :param session: The database session.
      *     :param request: The optional scope. Absent, or an empty list, means everything.
      *     :raises HTTPServiceUnavailableException: When PMM's Operations for MongoDB
-     *         switch has ``ENABLED`` off.
+     *         switch has ``ENABLED`` off, or the sweep could not be queued, in which case
+     *         its run is recorded failed.
      *     :raises HTTPNotFoundException: When a requested node id is not in the estate.
      *     :raises HTTPConflictException: When a requested host is already being refreshed.
      *     :return: The queued sweep.
@@ -11342,8 +11343,8 @@ export interface components {
      *         could not be reached.
      *     :cvar NOT_STARTED: The scan was queued but had not started when the wait ran out.
      *     :cvar TIMED_OUT: The scan started but had not finished when the wait ran out.
-     *     :cvar BLOCKED: A scan given up on could not be stopped, and will block this
-     *         node's next one until it is.
+     *     :cvar BLOCKED: A scan given up on could not be stopped, and may still be running
+     *         on the node.
      *     :cvar ENVIRONMENT_SETUP_FAILED: The node could not prepare the scan's Python
      *         environment: no ``python3``, no ``venv`` module, or ``pip`` could not install
      *         the scan's one dependency.

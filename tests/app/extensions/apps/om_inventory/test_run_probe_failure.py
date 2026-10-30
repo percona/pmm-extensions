@@ -15,7 +15,7 @@
 
 """Test that ``run_probe`` marks a run failed for the whole width of its own work.
 
-Only ``sweep`` used to sit inside the ``try``/``except`` that calls ``_fail_run``.
+Only ``sweep`` used to sit inside the ``try``/``except`` that calls ``fail_run``.
 A raise while writing what the sweep found — ``persist_estate`` — or while closing
 the run out — ``finalise`` — propagated past both without anything marking the row
 failed, leaving it ``RUNNING`` forever: the one status a caller polling ``GET
@@ -26,63 +26,40 @@ persisted and finalised successfully is already done, and a pruning failure afte
 must not rewrite its terminal status.
 """
 
-from contextlib import nullcontext
+import pickle
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
+from celery.utils.serialization import get_pickleable_exception
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.extensions.apps.om_inventory import service as service_module
-from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.crud import ProbeRunManager
 from app.extensions.apps.om_inventory.models import ProbeRun, ProbeRunStatus
-from app.extensions.apps.om_inventory.service import run_probe
+from app.extensions.apps.om_inventory.service import (
+    FailureNotRecordedError,
+    run_probe,
+)
 from tests.app.extensions.apps.om_inventory.conftest import CLEAN_OUTCOME
 
-
-@pytest.fixture(autouse=True)
-def _enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Turn the sweep on, since ``run_probe`` refuses to run while it is off.
-
-    :param monkeypatch: Restores the real value after the test.
-    """
-    monkeypatch.setattr(om_inventory_settings, "ENABLED", True)
-
-
-def _session_maker(session: AsyncSession):
-    """Build the ``get_async_session_maker`` stand-in the sweep functions expect.
-
-    Every caller in ``service.py`` does ``async with session_maker() as session:``,
-    so the replacement has to be a zero-argument callable returning something
-    ``async with``-able. :class:`contextlib.nullcontext` supports the async
-    protocol as well as the sync one, and handing back the same test session on
-    every call is exactly what lets assertions see what ``run_probe`` wrote.
-
-    :param session: The test session every call should reuse.
-    :return: The stand-in callable.
-    """
-    return lambda: nullcontext(session)
+pytestmark = pytest.mark.usefixtures("enabled")
 
 
 class TestPersistOrFinaliseFailureMarksTheRunFailed:
-    """Route a raise after ``sweep`` returns to ``_fail_run``."""
+    """Route a raise after ``sweep`` returns to ``fail_run``."""
 
     @pytest.mark.asyncio
     async def test_a_persist_estate_failure_fails_the_run(
-        self, session: AsyncSession
+        self, service_session: AsyncSession
     ) -> None:
         """Mark the run ``FAILED``, not ``RUNNING``, when ``persist_estate`` raises.
 
-        :param session: The database session.
+        :param service_session: The session every sweep function opens.
         """
-        run = await ProbeRunManager.save(session, ProbeRun())
+        run = await ProbeRunManager.save(service_session, ProbeRun())
 
         with (
-            patch.object(
-                service_module,
-                "get_async_session_maker",
-                return_value=_session_maker(session),
-            ),
             patch.object(
                 service_module, "sweep", AsyncMock(return_value=CLEAN_OUTCOME)
             ),
@@ -95,14 +72,14 @@ class TestPersistOrFinaliseFailureMarksTheRunFailed:
             returned_id = await run_probe(execution_id=run.id, node_ids=[])
 
         assert returned_id == run.id
-        stored = await ProbeRunManager.get(session, id=run.id)
+        stored = await ProbeRunManager.get(service_session, id=run.id)
         assert stored.status == ProbeRunStatus.FAILED
         assert stored.finished_at is not None
         assert stored.error == "disk full"
 
     @pytest.mark.asyncio
     async def test_a_finalise_failure_fails_the_run(
-        self, session: AsyncSession
+        self, service_session: AsyncSession
     ) -> None:
         """Mark the run ``FAILED``, not ``RUNNING``, when ``finalise`` raises.
 
@@ -110,16 +87,11 @@ class TestPersistOrFinaliseFailureMarksTheRunFailed:
         ``CLEAN_OUTCOME`` carries no hosts or services) so this pins the *second*
         half of the widened window, not just the first.
 
-        :param session: The database session.
+        :param service_session: The session every sweep function opens.
         """
-        run = await ProbeRunManager.save(session, ProbeRun())
+        run = await ProbeRunManager.save(service_session, ProbeRun())
 
         with (
-            patch.object(
-                service_module,
-                "get_async_session_maker",
-                return_value=_session_maker(session),
-            ),
             patch.object(
                 service_module, "sweep", AsyncMock(return_value=CLEAN_OUTCOME)
             ),
@@ -132,7 +104,7 @@ class TestPersistOrFinaliseFailureMarksTheRunFailed:
             returned_id = await run_probe(execution_id=run.id, node_ids=[])
 
         assert returned_id == run.id
-        stored = await ProbeRunManager.get(session, id=run.id)
+        stored = await ProbeRunManager.get(service_session, id=run.id)
         assert stored.status == ProbeRunStatus.FAILED
         assert stored.finished_at is not None
         assert stored.error == "constraint violation"
@@ -143,7 +115,7 @@ class TestPruneFailureStaysOutsideTheFailurePath:
 
     @pytest.mark.asyncio
     async def test_a_prune_failure_does_not_touch_the_finished_run(
-        self, session: AsyncSession
+        self, service_session: AsyncSession
     ) -> None:
         """Leave pruning outside the ``try`` that covers persist and finalise.
 
@@ -153,16 +125,11 @@ class TestPruneFailureStaysOutsideTheFailurePath:
         must keep exactly what ``finalise`` wrote, and ``run_probe`` propagates the
         pruning exception rather than swallowing it.
 
-        :param session: The database session.
+        :param service_session: The session every sweep function opens.
         """
-        run = await ProbeRunManager.save(session, ProbeRun())
+        run = await ProbeRunManager.save(service_session, ProbeRun())
 
         with (
-            patch.object(
-                service_module,
-                "get_async_session_maker",
-                return_value=_session_maker(session),
-            ),
             patch.object(
                 service_module, "sweep", AsyncMock(return_value=CLEAN_OUTCOME)
             ),
@@ -175,7 +142,56 @@ class TestPruneFailureStaysOutsideTheFailurePath:
         ):
             await run_probe(execution_id=run.id, node_ids=[])
 
-        stored = await ProbeRunManager.get(session, id=run.id)
+        stored = await ProbeRunManager.get(service_session, id=run.id)
         assert stored.status == ProbeRunStatus.SUCCESS
         assert stored.finished_at is not None
         assert stored.error is None
+
+
+class TestAFailureThatCannotBeWritten:
+    """Hand back a failure the database refused, rather than drop it."""
+
+    @pytest.mark.asyncio
+    async def test_it_is_raised_for_the_caller_to_retry(
+        self, service_session: AsyncSession
+    ) -> None:
+        """Raise with the run and the detail when the failure write cannot connect.
+
+        :param service_session: The session every sweep function opens.
+        """
+        run = await ProbeRunManager.save(service_session, ProbeRun())
+
+        with (
+            patch.object(
+                service_module,
+                "sweep",
+                AsyncMock(side_effect=RuntimeError("tasks API answered 500")),
+            ),
+            patch.object(
+                service_module,
+                "fail_run",
+                AsyncMock(side_effect=ConnectionRefusedError(111, "refused")),
+            ),
+            pytest.raises(FailureNotRecordedError) as raised,
+        ):
+            await run_probe(execution_id=run.id)
+
+        assert (raised.value.run_id, raised.value.error) == (
+            run.id,
+            "tasks API answered 500",
+        )
+
+    def test_it_survives_celery_pickling_it(self) -> None:
+        """Keep the class, run, detail and message through Celery's pickling."""
+        unrecorded = FailureNotRecordedError(uuid4(), "tasks API answered 500")
+
+        pickled = get_pickleable_exception(unrecorded)
+
+        assert pickled is unrecorded
+        restored = pickle.loads(pickle.dumps(unrecorded))
+        assert type(restored) is FailureNotRecordedError
+        assert (restored.run_id, restored.error, str(restored)) == (
+            unrecorded.run_id,
+            unrecorded.error,
+            str(unrecorded),
+        )

@@ -16,7 +16,7 @@
 """Share the scaffolding more than one om_inventory test module needs."""
 
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, nullcontext
 from datetime import timedelta
 from typing import Protocol
@@ -29,6 +29,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
+from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.dispatch import HostProbeResult
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
@@ -124,6 +125,32 @@ def host(
             executor or name, "10.0.0.1", reachable=True, driver_healthy=True
         ),
     )
+
+
+@pytest.fixture
+def enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn the sweep on, since ``run_probe`` refuses to run while it is off.
+
+    :param monkeypatch: Restores the real value after the test.
+    """
+    monkeypatch.setattr(om_inventory_settings, "ENABLED", True)
+
+
+@pytest.fixture
+def service_session(session: AsyncSession) -> Iterator[AsyncSession]:
+    """Hand the test session to every session the sweep functions open.
+
+    They call ``get_async_session_maker()()`` and enter the result with
+    ``async with``; :class:`contextlib.nullcontext` supports that, and returning the
+    same session each time lets a test read back what was written.
+
+    :param session: The test session.
+    :return: The same session, while the patch is in place.
+    """
+    with patch(
+        f"{SERVICE}.get_async_session_maker", return_value=lambda: nullcontext(session)
+    ):
+        yield session
 
 
 @pytest.fixture

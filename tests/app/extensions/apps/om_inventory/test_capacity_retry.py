@@ -35,6 +35,7 @@ collision by waiting, however many attempts it spends.
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -44,6 +45,7 @@ from app.extensions.apps.om_inventory.dispatch import (
     CAPACITY_RETRY_ATTEMPTS,
     CAPACITY_RETRY_BUDGET_SECONDS,
     probe_host,
+    RUN_META_KEY,
     with_capacity_retry,
 )
 from app.extensions.apps.om_inventory.inventory import InventoryService
@@ -54,6 +56,8 @@ from tests.app.extensions.apps.om_inventory.conftest import HOST
 HISTORY_ID = 901
 #: The id the guard names in its 409, adopted rather than dispatched again.
 ADOPTED_ID = 130
+#: The run a dispatch is made for.
+RUN_ID = uuid4()
 #: ``_dispatch_queue_item``'s own stale-row threshold: it deletes a lock row only
 #: once it is older than this, so this is how long an orphaned lock can refuse an
 #: otherwise valid dispatch, and the floor the retry budget has to clear.
@@ -374,6 +378,37 @@ class TestProbeHostAdoptsAnInFlightItem:
         # and the one whose logs are read, not merely the one reported back.
         assert polled == [f"/history/{ADOPTED_ID}"]
         assert streamed == [f"/history/{ADOPTED_ID}/logs/"]
+
+
+class TestTheDispatchNamesItsRun:
+    """Put the run in the request, so only that run's own retry counts as identical."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("run_id", "named"),
+        [
+            pytest.param(RUN_ID, str(RUN_ID), id="in-a-run"),
+            pytest.param(None, None, id="outside-a-run"),
+        ],
+    )
+    async def test_the_run_is_in_the_request_meta(
+        self, run_id: UUID | None, named: str | None
+    ) -> None:
+        """Send the run's id under ``RUN_META_KEY``, and nothing outside a run.
+
+        The tasks API refuses a request identical to an active one, and compares
+        this key, so a probe left running by a run that did not finish is never
+        adopted by a later one.
+
+        :param run_id: The run dispatching, if any.
+        :param named: The value expected under the key.
+        """
+        api = MagicMock()
+        api.post = AsyncMock(side_effect=RuntimeError("stop here"))
+
+        await probe_host(api, HOST, entries(), run_id=run_id)
+
+        assert api.post.call_args.kwargs["json"]["meta"].get(RUN_META_KEY) == named
 
 
 class TestTheBudgetOutlastsAnOrphanedLock:
