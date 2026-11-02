@@ -21,14 +21,14 @@ from contextlib import asynccontextmanager, AsyncExitStack
 from typing import Annotated, Any
 
 from fastapi import Depends
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.exceptions import HTTPServiceUnavailableException
 from app.core.requests import RemoteAPI
 from app.core.security import get_internal_token
 from app.core.utils import import_var
-from app.extensions.apps.inventory.models import SyncRunSummary
+from app.extensions.apps.inventory.models import AvailableSyncer
 from app.extensions.config import extensions_settings, SyncOptions
 from app.extensions.deps import InventoryClient, TasksClient
 from app.extensions.sync.exceptions import SyncerConfigurationError
@@ -38,52 +38,6 @@ from app.tasks.config import tasks_settings
 from app.tasks.execution_request_secrets import TASKS_CLIENT_LOG_POLICY
 
 logger = logging.getLogger(__name__)
-
-
-class InventorySyncTriggerWrite(BaseModel):
-    """Carry the optional JSON body for the ad-hoc inventory sync trigger.
-
-    A ``None`` or empty ``syncer`` selects the sync-all path; a non-empty
-    string targets a single configured syncer by its fully qualified
-    ``"module.ClassName"`` identifier. Unknown fields are rejected with
-    HTTP 422 so a typo on the client never silently degrades to sync-all.
-
-    :param syncer: Fully qualified syncer name, or ``None`` for sync-all.
-    :type syncer: str | None
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    syncer: str | None = None
-
-
-class InventorySyncStatusResponse(BaseModel):
-    """Represent the inventory sync status response.
-
-    :param is_running: ``True`` when an inventory-wide sync is currently
-        in progress; ``False`` otherwise.
-    :param last_runs: The most recently recorded synchronization runs, newest first.
-    """
-
-    is_running: bool
-    last_runs: list[SyncRunSummary] = []
-
-
-class AvailableSyncer(BaseModel):
-    """Provide template-facing metadata for an available syncer.
-
-    :param name: The fully qualified ``"module.ClassName"`` identifier matching
-        ``BaseSyncer.get_name()`` and the value persisted in
-        ``SyncInstance.syncer``. Used as the wire identifier in form payloads.
-    :type name: str
-    :param display_name: The human-readable label rendered in the dropdown
-        (the syncer class's short name with any trailing ``Syncer`` suffix
-        stripped).
-    :type display_name: str
-    """
-
-    name: str
-    display_name: str
 
 
 def _get_syncer_qualified_name(syncer: BaseSyncer) -> str:

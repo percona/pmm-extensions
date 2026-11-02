@@ -32,12 +32,12 @@ from app.core.requests.registry import ClientRegistry
 from app.core.utils.fields import UniqueList
 from app.extensions.apps.inventory.deps import (
     _get_syncer_qualified_name,
-    AvailableSyncer,
     build_available_syncers,
     filter_syncers_by_name,
     get_syncers,
     standalone_syncers,
 )
+from app.extensions.apps.inventory.models import AvailableSyncer
 from app.extensions.config import extensions_settings, SyncOptions
 from app.extensions.sync.exceptions import SyncerConfigurationError
 from app.extensions.sync.models import BaseSyncer
