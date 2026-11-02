@@ -2594,7 +2594,8 @@ export interface paths {
      *     :param session: The database session.
      *     :param request: The optional scope. Absent, or an empty list, means everything.
      *     :raises HTTPServiceUnavailableException: When PMM's Operations for MongoDB
-     *         switch has ``ENABLED`` off.
+     *         switch has ``ENABLED`` off, or the sweep could not be queued, in which case
+     *         its run is recorded failed.
      *     :raises HTTPNotFoundException: When a requested node id is not in the estate.
      *     :raises HTTPConflictException: When a requested host is already being refreshed.
      *     :return: The queued sweep.

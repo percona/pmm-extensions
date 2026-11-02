@@ -56,8 +56,11 @@ from app.extensions.apps.om_inventory.config import (
 from app.extensions.apps.om_inventory.crud import (
     conflict_detail,
     conflicting_run,
+    fail_running_run,
     ProbeRunManager,
     prune_runs,
+    RUN_LEASE,
+    touch_run,
     upsert_host,
     upsert_service,
 )
@@ -98,6 +101,9 @@ logger = logging.getLogger(__name__)
 
 SWITCHED_OFF_DETAIL = "Operations Inventory is switched off"
 """Why a sweep was refused while ``ENABLED`` is off, on the run row and the 503 alike."""
+
+HEARTBEAT_INTERVAL = RUN_LEASE / 4
+"""How often a sweep writes its run to show it is alive."""
 
 
 @asynccontextmanager
@@ -699,6 +705,9 @@ class RunProgress(SweepProgress):
                 run.hosts_total = self._total
                 run.hosts_probeable = self._per_executor.total()
                 run.hosts_finished = self._finished
+                # Set here rather than by the column's ``now()``: the lease reads
+                # ``updated_at`` against this process's clock, not the database's.
+                run.updated_at = utc_now()
                 await ProbeRunManager.save(session, run)
         except Exception:
             logger.warning(
@@ -1056,10 +1065,12 @@ async def finalise(
     :param outcome: What the sweep produced.
     :return: The stored row.
     """
-    # call-shape-dup-ok: the manager's own canonical accessor, and the three sites fetch the run for unrelated reasons — finalise, fail, resume — so a wrapper would name none of them and would hide the manager a reader expects to see.
+    # call-shape-dup-ok: the manager's own canonical accessor, and the sites fetch the run for unrelated reasons (finalise, progress, the pre-sweep checks), so a wrapper would name none of them and would hide the manager a reader expects to see.
     finished = await ProbeRunManager.get(session, id=run_id)
     finished.status = terminal_status(outcome)
     finished.finished_at = utc_now()
+    # Cleared for a run the lease failed before this sweep finished after all.
+    finished.error = None
     finished.services_total = outcome.total
     finished.services_resolved = outcome.resolved
     finished.services_orphaned = outcome.orphaned
@@ -1181,19 +1192,77 @@ def terminal_status(outcome: SweepOutcome) -> ProbeRunStatus:
     return ProbeRunStatus.PARTIAL
 
 
+class RunLostError(Exception):
+    """Signal that a sweep's run was failed under it, so the sweep must stop.
+
+    :param run_id: The run.
+    """
+
+    def __init__(self, run_id: UUID) -> None:
+        """Name the run.
+
+        :param run_id: The run.
+        """
+        super().__init__(run_id)
+        self.run_id = run_id
+
+
+@asynccontextmanager
+async def _heartbeat(run_id: UUID) -> AsyncGenerator[None]:
+    """Write the run every :data:`HEARTBEAT_INTERVAL`, and stop the block if it is lost.
+
+    :func:`conflicting_run` fails a running run that goes :data:`RUN_LEASE` without a
+    write, so this is what tells a live sweep from one whose worker is gone. A write
+    that fails is logged and the next one still made, like :class:`RunProgress`'s.
+    A write that finds the run no longer running means the lease ran out while the
+    database was away and a newer scan may hold its hosts, so the block is cancelled
+    and :class:`RunLostError` raised in its place.
+
+    :param run_id: The run being swept.
+    :raises RunLostError: When the run was failed while the block ran.
+    """
+    block = asyncio.current_task()
+    lost = False
+
+    async def beat() -> None:
+        nonlocal lost
+        while True:
+            try:
+                async with get_async_session_maker()() as session:
+                    if not await touch_run(session, run_id):
+                        lost = True
+                        if block is not None:
+                            block.cancel()
+                        return
+            except Exception:
+                logger.warning(
+                    "OM inventory: could not mark sweep %s alive",
+                    run_id,
+                    exc_info=True,
+                )
+            await asyncio.sleep(HEARTBEAT_INTERVAL.total_seconds())
+
+    beating = asyncio.create_task(beat())
+    try:
+        yield
+    except asyncio.CancelledError:
+        # Only the cancellation the beat made becomes RunLostError; another is kept.
+        if not lost or block is None or block.uncancel() > 0:
+            raise
+        raise RunLostError(run_id) from None
+    finally:
+        beating.cancel()
+        await asyncio.wait({beating})
+
+
 async def _fail_run(run_id: UUID, error: str) -> None:
-    """Drive a run to ``FAILED`` after the sweep raised.
+    """Drive a run to ``FAILED`` after the sweep raised, unless it already finished.
 
     :param run_id: The run's id.
     :param error: The failure detail.
     """
-    session_maker = get_async_session_maker()
-    async with session_maker() as session:
-        failed = await ProbeRunManager.get(session, id=run_id)
-        failed.status = ProbeRunStatus.FAILED
-        failed.finished_at = utc_now()
-        failed.error = error
-        await ProbeRunManager.save(session, failed)
+    async with get_async_session_maker()() as session:
+        await fail_running_run(session, run_id, error)
 
 
 async def run_probe(
@@ -1202,12 +1271,14 @@ async def run_probe(
     """Run one probe sweep and write what it found into the estate.
 
     The run row is created before the work starts so a caller can be answered with an
-    id immediately, and only this function ever writes its terminal status.
+    id immediately. Its terminal status is written here, unless its sweep is lost:
+    :func:`conflicting_run` then fails it once the run's lease runs out. A run that
+    is no longer running when its message arrives is left as it is.
 
     ``ENABLED`` is re-checked here rather than only at the trigger endpoint because
     beat calls this task directly. A sweep refused for either that or the
     single-flight check is recorded ``SKIPPED`` with the reason named, never left
-    ``RUNNING``, where it would hold every host until ``STALE_RUN_AFTER`` reaps it.
+    ``RUNNING``, where it would hold every host until its lease runs out.
 
     The check reads the override **as stored**, republishing the snapshot first,
     because a worker's own snapshot advances only at task boundaries and at most
@@ -1233,6 +1304,14 @@ async def run_probe(
         if execution_id is None:
             run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids))
         else:
+            # Renews the run's lease as well as checking it, so the checks below
+            # cannot outlast it.
+            if not await touch_run(session, execution_id):
+                logger.info(
+                    "OM inventory: sweep %s not started -- it is no longer running",
+                    execution_id,
+                )
+                return execution_id
             run = await ProbeRunManager.get(session, id=execution_id)
         run_id = run.id
 
@@ -1283,15 +1362,23 @@ async def run_probe(
 
     observed_at = utc_now().isoformat()
     try:
-        outcome = await sweep(observed_at, node_ids, RunProgress(run_id))
-        # The estate goes in before the run reaches a terminal status, so a reader
-        # that sees a finished run always finds the rows that run produced. Covered
-        # by the same try as the sweep itself: a raise here or in ``finalise`` has to
-        # reach the failure path too, or nothing downstream of ``sweep`` can mark the
-        # run failed and it stays ``RUNNING`` forever.
-        await persist_estate(outcome, run_id)
+        async with _heartbeat(run_id):
+            outcome = await sweep(observed_at, node_ids, RunProgress(run_id))
+            # The estate goes in before the run reaches a terminal status, so a reader
+            # that sees a finished run always finds the rows that run produced. Covered
+            # by the same try as the sweep itself: a raise here or in ``finalise`` has
+            # to reach the failure path too, or the run is failed only when its lease
+            # runs out, without the error that ended it.
+            await persist_estate(outcome, run_id)
+        # Past the heartbeat, whose next write would take the finished run for lost.
         async with session_maker() as session:
             await finalise(session, run_id, outcome)
+    except RunLostError:
+        logger.warning(
+            "OM inventory: sweep %s stopped -- it was failed while it ran",
+            run_id,
+        )
+        return run_id
     except Exception as exc:
         logger.exception("OM inventory: sweep %s failed", run_id)
         await _fail_run(run_id, str(exc))
