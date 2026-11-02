@@ -17,6 +17,8 @@
 
 import sys
 
+import pytest
+
 from tests.scripts import load_script, write_file
 
 check_nomad_payload_size = load_script("check_nomad_payload_size")
@@ -32,6 +34,19 @@ def hello(name: str = "world") -> str:
 '''
 
 INVALID_SCRIPT = "def oops(:\n"
+USAGE_ERROR_EXIT_CODE = 2
+
+
+@pytest.mark.parametrize("argv", [[], ["--report"]], ids=["check", "report"])
+def test_main_rejects_empty_paths(argv, capsys):
+    """Exit with a usage error when no payload paths are provided in either mode."""
+    with pytest.raises(SystemExit) as exc_info:
+        check_nomad_payload_size.main(argv)
+    assert exc_info.value.code == USAGE_ERROR_EXIT_CODE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "usage:" in captured.err
+    assert "the following arguments are required: path" in captured.err
 
 
 def test_check_payload_uses_minified_text_for_size(tmp_path, monkeypatch):
