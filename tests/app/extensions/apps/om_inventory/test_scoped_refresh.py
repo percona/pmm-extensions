@@ -33,15 +33,19 @@ failed, which is worse than not having the feature.
 """
 
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
 from fastapi import status
 from httpx import AsyncClient
+from kombu.exceptions import OperationalError as KombuOperationalError
 from sqlalchemy import text
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.utils.date_time import utc_now
+from app.extensions.apps.om_inventory import celery as celery_module
+from app.extensions.apps.om_inventory.api_routes import QUEUE_UNAVAILABLE_DETAIL
 from app.extensions.apps.om_inventory.config import om_inventory_settings
 from app.extensions.apps.om_inventory.crud import (
     conflict_detail,
@@ -284,6 +288,28 @@ class TestTriggerScope:
         response = await api.post(f"{BASE}/runs")
 
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+
+    @pytest.mark.asyncio
+    async def test_a_scan_that_cannot_be_queued_is_failed(
+        self, api: AsyncClient, two_hosts: AsyncSession
+    ) -> None:
+        """Answer 503 and fail the run, rather than leave it running, without a broker.
+
+        :param api: The authenticated client.
+        :param two_hosts: The populated session.
+        """
+        with patch.object(
+            celery_module.run_om_probe,
+            "delay",
+            side_effect=KombuOperationalError("Connection refused"),
+        ):
+            response = await api.post(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        runs = await ProbeRunManager.list(two_hosts)
+        assert [(run.status, run.error) for run in runs] == [
+            (ProbeRunStatus.FAILED, QUEUE_UNAVAILABLE_DETAIL)
+        ]
 
     @pytest.mark.asyncio
     async def test_no_body_means_the_whole_estate(

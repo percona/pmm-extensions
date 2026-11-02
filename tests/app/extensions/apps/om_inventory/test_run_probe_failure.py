@@ -24,9 +24,14 @@ failed, leaving it ``RUNNING`` forever: the one status a caller polling ``GET
 Pruning (``prune_runs``) is deliberately excluded from that widened path: a run that
 persisted and finalised successfully is already done, and a pruning failure afterwards
 must not rewrite its terminal status.
+
+The run's heartbeat covers the sweep and the estate write, a run that is no longer
+running when its message arrives is not swept at all, and a sweep whose run was
+failed under it stops without writing over that failure.
 """
 
-from contextlib import nullcontext
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, nullcontext
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -34,9 +39,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.extensions.apps.om_inventory import service as service_module
 from app.extensions.apps.om_inventory.config import om_inventory_settings
-from app.extensions.apps.om_inventory.crud import ProbeRunManager
+from app.extensions.apps.om_inventory.crud import INTERRUPTED_DETAIL, ProbeRunManager
 from app.extensions.apps.om_inventory.models import ProbeRun, ProbeRunStatus
-from app.extensions.apps.om_inventory.service import run_probe
+from app.extensions.apps.om_inventory.service import run_probe, RunLostError
 from tests.app.extensions.apps.om_inventory.conftest import CLEAN_OUTCOME
 
 
@@ -179,3 +184,115 @@ class TestPruneFailureStaysOutsideTheFailurePath:
         assert stored.status == ProbeRunStatus.SUCCESS
         assert stored.finished_at is not None
         assert stored.error is None
+
+
+class TestTheRunIsHeldForItsWholeWidth:
+    """Sweep under the run's heartbeat, and never for a run no longer waiting."""
+
+    @pytest.mark.asyncio
+    async def test_the_sweep_runs_inside_the_heartbeat(
+        self, session: AsyncSession
+    ) -> None:
+        """Keep the run alive across the sweep and the estate write, then finalise.
+
+        ``finalise`` comes after the heartbeat stops, because its next write would
+        find the finished run and take it for lost.
+
+        :param session: The database session.
+        """
+        run = await ProbeRunManager.save(session, ProbeRun())
+        beating = [False]
+        seen: list[bool] = []
+
+        @asynccontextmanager
+        async def heartbeat(_run_id: object) -> AsyncIterator[None]:
+            beating[0] = True
+            yield
+            beating[0] = False
+
+        async def record(*_args: object, **_kwargs: object) -> object:
+            seen.append(beating[0])
+            return CLEAN_OUTCOME
+
+        with (
+            patch.object(
+                service_module,
+                "get_async_session_maker",
+                return_value=_session_maker(session),
+            ),
+            patch.object(service_module, "_heartbeat", heartbeat),
+            patch.object(service_module, "sweep", AsyncMock(side_effect=record)),
+            patch.object(
+                service_module, "persist_estate", AsyncMock(side_effect=record)
+            ),
+            patch.object(service_module, "finalise", AsyncMock(side_effect=record)),
+        ):
+            await run_probe(execution_id=run.id, node_ids=[])
+
+        assert seen == [True, True, False]
+
+    @pytest.mark.asyncio
+    async def test_a_lost_run_is_left_as_the_lease_failed_it(
+        self, session: AsyncSession
+    ) -> None:
+        """Stop without a failure write when the heartbeat finds the run gone.
+
+        :param session: The database session.
+        """
+        run = await ProbeRunManager.save(session, ProbeRun())
+        fail_run = AsyncMock()
+
+        with (
+            patch.object(
+                service_module,
+                "get_async_session_maker",
+                return_value=_session_maker(session),
+            ),
+            patch.object(
+                service_module, "sweep", AsyncMock(side_effect=RunLostError(run.id))
+            ),
+            patch.object(service_module, "_fail_run", fail_run),
+        ):
+            assert await run_probe(execution_id=run.id, node_ids=[]) == run.id
+
+        fail_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("run_status", "error"),
+        [
+            pytest.param(ProbeRunStatus.FAILED, INTERRUPTED_DETAIL, id="reaped"),
+            pytest.param(ProbeRunStatus.SUCCESS, None, id="finished"),
+        ],
+    )
+    async def test_a_run_no_longer_running_is_not_swept(
+        self, session: AsyncSession, run_status: ProbeRunStatus, error: str | None
+    ) -> None:
+        """Leave a run its message reached too late as it is, and sweep nothing.
+
+        The lease fails a run whose message waited longer than it, as one does while
+        the worker is down. Sweeping it then would overwrite that failure, after a
+        newer scan was already let through on the strength of it.
+
+        :param session: The database session.
+        :param run_status: The run's status when its message arrives.
+        :param error: Its failure detail.
+        """
+        run = await ProbeRunManager.save(
+            session, ProbeRun(status=run_status, error=error)
+        )
+        sweep = AsyncMock(return_value=CLEAN_OUTCOME)
+
+        with (
+            patch.object(
+                service_module,
+                "get_async_session_maker",
+                return_value=_session_maker(session),
+            ),
+            patch.object(service_module, "sweep", sweep),
+        ):
+            assert await run_probe(execution_id=run.id, node_ids=[]) == run.id
+
+        sweep.assert_not_awaited()
+        stored = await ProbeRunManager.get(session, id=run.id)
+        assert (stored.status, stored.error) == (run_status, error)
