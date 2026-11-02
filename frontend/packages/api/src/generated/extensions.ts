@@ -11348,8 +11348,8 @@ export interface components {
      *         could not be reached.
      *     :cvar NOT_STARTED: The scan was queued but had not started when the wait ran out.
      *     :cvar TIMED_OUT: The scan started but had not finished when the wait ran out.
-     *     :cvar BLOCKED: A scan given up on could not be stopped, and will block this
-     *         node's next one until it is.
+     *     :cvar BLOCKED: A scan given up on could not be stopped, and may still be running
+     *         on the node.
      *     :cvar ENVIRONMENT_SETUP_FAILED: The node could not prepare the scan's Python
      *         environment: no ``python3``, no ``venv`` module, or ``pip`` could not install
      *         the scan's one dependency.

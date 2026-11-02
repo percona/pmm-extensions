@@ -721,6 +721,7 @@ async def sweep(
     observed_at: str,
     node_ids: list[str] | None = None,
     progress: SweepProgress | None = None,
+    run_id: UUID | None = None,
 ) -> SweepOutcome:
     """Map, probe and collect, without touching the run row.
 
@@ -739,6 +740,7 @@ async def sweep(
         own; the run row and the entity freshness columns are stamped separately.
     :param node_ids: The hosts to refresh, or ``None`` for the whole estate.
     :param progress: Where to report how far the sweep has got, if anywhere.
+    :param run_id: The run sweeping, recorded on every probe it dispatches.
     :return: What the sweep reached, collected and saw per service.
     """
     progress = progress or SweepProgress()
@@ -771,6 +773,7 @@ async def sweep(
                 mapped,
                 executor_hosts=_probeable_hosts_per_executor(hosts),
                 on_host_done=progress.host_done,
+                run_id=run_id,
             )
 
     outcome = SweepOutcome(total=len(mapped), hosts=hosts, dispatched=set(host_results))
@@ -1363,7 +1366,7 @@ async def run_probe(
     observed_at = utc_now().isoformat()
     try:
         async with _heartbeat(run_id):
-            outcome = await sweep(observed_at, node_ids, RunProgress(run_id))
+            outcome = await sweep(observed_at, node_ids, RunProgress(run_id), run_id)
             # The estate goes in before the run reaches a terminal status, so a reader
             # that sees a finished run always finds the rows that run produced. Covered
             # by the same try as the sweep itself: a raise here or in ``finalise`` has
