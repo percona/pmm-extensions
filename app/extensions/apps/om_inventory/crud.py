@@ -62,6 +62,22 @@ NOT_STARTED_DETAIL = (
 """Why :func:`conflicting_run` failed a run no worker started."""
 
 
+def stuck_detail(stale_after: timedelta) -> str:
+    """Say why :func:`conflicting_run` failed a run older than ``stale_after``.
+
+    :param stale_after: The age the run reached.
+    :return: The failure detail.
+    """
+    seconds = int(stale_after.total_seconds())
+    count, unit = next(
+        (seconds // size, unit)
+        for size, unit in ((3600, "hour"), (60, "minute"), (1, "second"))
+        if seconds % size == 0
+    )
+    plural = "" if count == 1 else "s"
+    return f"stuck: the scan did not finish within {count} {unit}{plural}"
+
+
 class ProbeRunManager(BaseSQLModelManager):
     """Manage :class:`ProbeRun` CRUD operations.
 
@@ -69,6 +85,40 @@ class ProbeRunManager(BaseSQLModelManager):
     """
 
     Model = ProbeRun
+
+    @classmethod
+    async def fail_running(
+        cls,
+        session: AsyncSession,
+        run_id: UUID,
+        error: str,
+        *still: ColumnElement[bool],
+    ) -> bool:
+        """Fail a run, unless it already reached a terminal status or no longer matches.
+
+        :param session: The database session.
+        :param run_id: The run to fail.
+        :param error: The failure detail.
+        :param still: Further conditions the run must still meet, checked in the update.
+        :return: Whether the run was failed.
+        """
+        # Not ``update_where``: its session sync evaluates the conditions in Python,
+        # where SQLite's naive timestamps do not compare with an aware datetime.
+        result = await cls._exec(
+            session,
+            update(ProbeRun)
+            .where(
+                col(ProbeRun.id) == run_id,
+                col(ProbeRun.status) == ProbeRunStatus.RUNNING,
+                *still,
+            )
+            .values(status=ProbeRunStatus.FAILED, finished_at=utc_now(), error=error)
+            .returning(col(ProbeRun.id))
+            .execution_options(synchronize_session="fetch"),
+        )
+        failed = result.scalars().all()
+        await session.commit()
+        return bool(failed)
 
 
 class OmHostManager(BaseSQLModelManager):
@@ -548,33 +598,7 @@ async def touch_run(session: AsyncSession, run_id: UUID) -> bool:
     return bool(touched)
 
 
-async def fail_running_run(
-    session: AsyncSession, run_id: UUID, error: str, *still: ColumnElement[bool]
-) -> bool:
-    """Fail a run, unless it already reached a terminal status or no longer matches.
-
-    :param session: The database session.
-    :param run_id: The run to fail.
-    :param error: The failure detail.
-    :param still: Further conditions the run must still meet, checked in the update.
-    :return: Whether the run was failed.
-    """
-    # Not ``update_where``: its session sync evaluates the conditions in Python, where
-    # SQLite's naive timestamps do not compare with an aware datetime.
-    result = await session.exec(
-        update(ProbeRun)  # type: ignore[call-overload]
-        .where(
-            col(ProbeRun.id) == run_id,
-            col(ProbeRun.status) == ProbeRunStatus.RUNNING,
-            *still,
-        )
-        .values(status=ProbeRunStatus.FAILED, finished_at=utc_now(), error=error)
-        .returning(col(ProbeRun.id))
-        .execution_options(synchronize_session="fetch")
-    )
-    failed = result.scalars().all()
-    await session.commit()
-    return bool(failed)
+fail_running_run = ProbeRunManager.fail_running
 
 
 async def fail_lost_run(session: AsyncSession, run: ProbeRun, now: datetime) -> bool:
@@ -669,7 +693,7 @@ async def conflicting_run(
             await fail_running_run(
                 session,
                 in_flight.id,
-                "abandoned: no worker recorded a terminal status",
+                stuck_detail(stale_after),
             )
             continue
         if not in_flight.scope or not wanted or (set(in_flight.scope) & wanted):

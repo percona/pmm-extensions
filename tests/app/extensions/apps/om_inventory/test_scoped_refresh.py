@@ -53,6 +53,7 @@ from app.extensions.apps.om_inventory.crud import (
     ProbeRunManager,
     prune_runs,
     recent_runs,
+    stuck_detail,
     upsert_host,
 )
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
@@ -465,7 +466,28 @@ class TestConflict:
         assert response.status_code == status.HTTP_202_ACCEPTED
         reaped = await ProbeRunManager.get(two_hosts, id=stale.id)
         assert reaped.status == ProbeRunStatus.FAILED
-        assert "abandoned" in (reaped.error or "")
+        assert reaped.error == stuck_detail(om_inventory_settings.STALE_RUN_AFTER)
+
+    @pytest.mark.parametrize(
+        ("stale_after", "limit"),
+        [
+            (timedelta(hours=4), "4 hours"),
+            (timedelta(hours=1), "1 hour"),
+            (timedelta(minutes=90), "90 minutes"),
+            (timedelta(seconds=181), "181 seconds"),
+        ],
+    )
+    def test_the_stuck_detail_names_the_limit_in_its_largest_whole_unit(
+        self, stale_after: timedelta, limit: str
+    ) -> None:
+        """Name the limit a reaped run passed the way an operator would say it.
+
+        :param stale_after: The limit.
+        :param limit: How the detail should name it.
+        """
+        assert stuck_detail(stale_after) == (
+            f"stuck: the scan did not finish within {limit}"
+        )
 
 
 class TestHostCounters:
@@ -651,7 +673,7 @@ class TestTheScheduleRespectsSingleFlight:
         assert blocking is None
         reaped = await ProbeRunManager.get(session, id=stale.id)
         assert reaped.status is ProbeRunStatus.FAILED
-        assert reaped.error is not None
+        assert reaped.error == stuck_detail(timedelta(minutes=30))
 
     @pytest.mark.asyncio
     async def test_the_message_names_the_hosts_that_are_held(
