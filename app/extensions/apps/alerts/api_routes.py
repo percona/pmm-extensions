@@ -83,8 +83,10 @@ from app.extensions.apps.alerts.models import (
 )
 from app.extensions.apps.alerts.restore import (
     delete_conflicting_rules,
+    is_conflicting_rule,
     restore_from_backup,
 )
+from app.extensions.clients.pmm import PMMRemoteAPI
 from app.extensions.deps import SessionDep
 
 logger = logging.getLogger(__name__)
@@ -343,6 +345,40 @@ async def alerts_api_pagerduty_delete(
     return PagerDutyResponse(status="deleted")
 
 
+async def _has_conflicting_rule(
+    pmm_api: PMMRemoteAPI,
+    rule_name: str,
+    folder_uid: str,
+    *,
+    include_empty: bool = True,
+) -> bool:
+    """Return whether the folder currently holds a conflicting rule.
+
+    Read the rule listing fresh, so deletes made earlier in the request are
+    reflected. A listing failure counts as no collision.
+
+    :param pmm_api: The PMM API client.
+    :type pmm_api: PMMRemoteAPI
+    :param rule_name: The rule title being created.
+    :type rule_name: str
+    :param folder_uid: The alert folder UID.
+    :type folder_uid: str
+    :param include_empty: Treat empty-title rules as conflicting.
+    :type include_empty: bool
+    :return: ``True`` if a conflicting rule was observed.
+    :rtype: bool
+    """
+    try:
+        rules = await pmm_api.list_rules()
+    except (HTTPException, OSError):
+        logger.exception("Failed to list rules while classifying rule failure")
+        return False
+    return any(
+        is_conflicting_rule(r, rule_name, folder_uid, include_empty=include_empty)
+        for r in rules
+    )
+
+
 @router.post("/push")
 @require_minimum_role(UserRole.EDITOR)
 async def alerts_api_push(
@@ -354,7 +390,6 @@ async def alerts_api_push(
 ) -> PushResponse:
     """Push selected alert templates to PMM as rules.
 
-    Mirror :func:`app.extensions.apps.alerts.routes.alerts_push` over JSON.
     When the template is already present in PMM, report ``success`` if
     ``create_rule`` recreates a missing rule, ``skipped`` on a rule-title
     collision, and ``error`` for any other failure. When the template is not
@@ -397,7 +432,9 @@ async def alerts_api_push(
                 )
             except (HTTPException, OSError) as exc:
                 detail = exception_detail(exc)
-                if "conflicts with existing" in detail:
+                if await _has_conflicting_rule(
+                    pmm_api, name, folder.uid, include_empty=False
+                ):
                     logger.debug("Rule already exists for %s", name, exc_info=True)
                     results.append(
                         PushItemResult(
@@ -441,7 +478,7 @@ async def alerts_api_push(
             )
         except (HTTPException, OSError) as exc:
             detail = exception_detail(exc)
-            if "conflicts with existing" not in detail:
+            if not await _has_conflicting_rule(pmm_api, name, folder.uid):
                 results.append(
                     PushItemResult(
                         name=name,
