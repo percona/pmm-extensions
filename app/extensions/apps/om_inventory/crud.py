@@ -23,12 +23,13 @@ wipes it on the next sweep, and the test that catches that has to exist before t
 field does, not after.
 """
 
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import literal
-from sqlmodel import col, delete, select
+from sqlalchemy import ColumnElement, literal
+from sqlmodel import col, delete, select, update
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db.crud import BaseSQLModelManager
@@ -42,6 +43,41 @@ from app.extensions.apps.om_inventory.models import (
     ScanFailure,
 )
 
+RUN_LEASE = timedelta(minutes=2)
+"""How long a started run may go without a write before it is presumed dead."""
+
+START_WAIT = timedelta(minutes=15)
+"""How long a run may wait for a worker to start it. Longer than :data:`RUN_LEASE`,
+because its message waits out a restart of the worker alone, and a busy worker."""
+
+INTERRUPTED_DETAIL = (
+    "interrupted: the scan stopped reporting, most likely because PMM Extensions or "
+    "PMM Server restarted"
+)
+"""Why :func:`conflicting_run` failed a started run whose lease ran out."""
+
+NOT_STARTED_DETAIL = (
+    f"not started: no worker took the scan within "
+    f"{int(START_WAIT.total_seconds()) // 60} minutes"
+)
+"""Why :func:`conflicting_run` failed a run no worker started."""
+
+
+def stuck_detail(stale_after: timedelta) -> str:
+    """Say why :func:`conflicting_run` failed a run older than ``stale_after``.
+
+    :param stale_after: The age the run reached.
+    :return: The failure detail.
+    """
+    seconds = int(stale_after.total_seconds())
+    count, unit = next(
+        (seconds // size, unit)
+        for size, unit in ((3600, "hour"), (60, "minute"), (1, "second"))
+        if seconds % size == 0
+    )
+    plural = "" if count == 1 else "s"
+    return f"stuck: the scan did not finish within {count} {unit}{plural}"
+
 
 class ProbeRunManager(BaseSQLModelManager):
     """Manage :class:`ProbeRun` CRUD operations.
@@ -50,6 +86,64 @@ class ProbeRunManager(BaseSQLModelManager):
     """
 
     Model = ProbeRun
+
+    @classmethod
+    async def update_running(
+        cls,
+        session: AsyncSession,
+        run_id: UUID,
+        values: Mapping[str, Any],
+        *still: ColumnElement[bool],
+    ) -> bool:
+        """Write a run, unless it already reached a terminal status or no longer matches.
+
+        :param session: The database session.
+        :param run_id: The run to write.
+        :param values: The columns to write.
+        :param still: Further conditions the run must still meet, checked in the update.
+        :return: Whether the run was written.
+        """
+        # Not ``update_where``: its session sync evaluates the conditions in Python,
+        # where SQLite's naive timestamps do not compare with an aware datetime, and
+        # it would also update a loaded copy of a row the update did not match.
+        result = await cls._exec(
+            session,
+            update(ProbeRun)
+            .where(
+                col(ProbeRun.id) == run_id,
+                col(ProbeRun.status) == ProbeRunStatus.RUNNING,
+                *still,
+            )
+            .values(**values)
+            .returning(col(ProbeRun.id))
+            .execution_options(synchronize_session="fetch"),
+        )
+        written = result.scalars().all()
+        await session.commit()
+        return bool(written)
+
+    @classmethod
+    async def fail_running(
+        cls,
+        session: AsyncSession,
+        run_id: UUID,
+        error: str,
+        *still: ColumnElement[bool],
+    ) -> bool:
+        """Fail a run, unless it already reached a terminal status or no longer matches.
+
+        :param session: The database session.
+        :param run_id: The run to fail.
+        :param error: The failure detail.
+        :param still: Further conditions the run must still meet, checked in the update.
+        :return: Whether the run was failed.
+        """
+        return await cls.update_running(
+            session,
+            run_id,
+            {"status": ProbeRunStatus.FAILED, "finished_at": utc_now(), "error": error},
+            *still,
+        )
 
 
 class OmHostManager(BaseSQLModelManager):
@@ -512,6 +606,69 @@ async def prune_runs(session: AsyncSession, keep: int) -> int:
     return int(result.rowcount or 0)
 
 
+async def touch_run(session: AsyncSession, run_id: UUID, **counts: int) -> bool:
+    """Record that a running run's sweep is alive, for :func:`conflicting_run`.
+
+    ``updated_at`` is stamped here rather than by the column's ``now()``: the lease
+    reads it against this process's clock, not the database's.
+
+    :param session: The database session.
+    :param run_id: The run.
+    :param counts: Host counts to store with it.
+    :return: Whether the run is still running, and so still this sweep's.
+    """
+    return await ProbeRunManager.update_running(
+        session, run_id, {"updated_at": utc_now(), **counts}
+    )
+
+
+fail_running_run = ProbeRunManager.fail_running
+
+
+async def skip_running_run(session: AsyncSession, run_id: UUID, error: str) -> bool:
+    """Record a run as skipped, unless it already reached a terminal status.
+
+    :param session: The database session.
+    :param run_id: The run to skip.
+    :param error: Why it was skipped.
+    :return: Whether the run was skipped.
+    """
+    return await ProbeRunManager.update_running(
+        session,
+        run_id,
+        {"status": ProbeRunStatus.SKIPPED, "finished_at": utc_now(), "error": error},
+    )
+
+
+async def fail_lost_run(session: AsyncSession, run: ProbeRun, now: datetime) -> bool:
+    """Fail a running run that has gone too long without a write, as read and as stored.
+
+    A started run gets :data:`RUN_LEASE`, one no worker started :data:`START_WAIT`.
+    The expiry is checked again in the update, so a run renewed since ``run`` was
+    read, by its heartbeat or by a worker picking it up, keeps running.
+
+    :param session: The database session.
+    :param run: The run, as read.
+    :param now: The time its silence is measured to.
+    :return: Whether the run was failed.
+    """
+    if run.updated_at is None:
+        if now - make_datetime_utc(run.created_at) < START_WAIT:
+            return False
+        return await fail_running_run(
+            session,
+            run.id,
+            NOT_STARTED_DETAIL,
+            col(ProbeRun.updated_at).is_(None),
+            col(ProbeRun.created_at) <= now - START_WAIT,
+        )
+    if now - make_datetime_utc(run.updated_at) < RUN_LEASE:
+        return False
+    return await fail_running_run(
+        session, run.id, INTERRUPTED_DETAIL, col(ProbeRun.updated_at) <= now - RUN_LEASE
+    )
+
+
 async def conflicting_run(
     session: AsyncSession,
     node_ids: list[str] | None,
@@ -533,9 +690,13 @@ async def conflicting_run(
     and the Tasks layer would refuse the duplicate with a 409 recorded against a host
     that is perfectly healthy.
 
-    A run older than ``stale_after`` is reaped rather than honoured, because a crashed
-    worker leaves a row nothing else advances and it would otherwise wedge the app
-    permanently.
+    A started run with no write for :data:`RUN_LEASE` is reaped rather than
+    honoured: its sweep is gone, whether its worker was killed or restarted, or PMM
+    Server's restart took the database it would have written its failure to. A run
+    no worker started is reaped after :data:`START_WAIT`, and one older than
+    ``stale_after`` however alive, so a sweep that never ends cannot wedge the app
+    permanently. Every write checks the run again, so a run that finishes or is
+    renewed in between keeps its own status, and a renewed one still blocks.
 
     **The check is not atomic**, and where ``exclude`` is given it does not need to be.
     Creating the row and claiming the work are two statements, so two callers can both
@@ -561,15 +722,18 @@ async def conflicting_run(
     """
     wanted = set(node_ids or [])
     own = await session.get(ProbeRun, exclude) if exclude is not None else None
+    now = utc_now()
     for in_flight in await running_runs(session):
         if exclude is not None and in_flight.id == exclude:
             continue
-        age = utc_now() - make_datetime_utc(in_flight.started_at)
-        if age >= stale_after:
-            in_flight.status = ProbeRunStatus.FAILED
-            in_flight.finished_at = utc_now()
-            in_flight.error = "abandoned: no worker recorded a terminal status"
-            await ProbeRunManager.save(session, in_flight)
+        if await fail_lost_run(session, in_flight, now):
+            continue
+        if now - make_datetime_utc(in_flight.started_at) >= stale_after:
+            await fail_running_run(
+                session,
+                in_flight.id,
+                stuck_detail(stale_after),
+            )
             continue
         if not in_flight.scope or not wanted or (set(in_flight.scope) & wanted):
             if own is not None and _claimed_first(own, in_flight):

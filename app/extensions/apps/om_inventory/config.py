@@ -122,7 +122,9 @@ class OmInventorySettings(BaseYamlSettings):
     :param RUN_RETENTION: How many runs to keep. Each carries a per-host receipt, so
         this bounds the table rather than an operator having to.
     :param STALE_RUN_AFTER: How long a run may stay ``running`` before the trigger
-        endpoint concludes its worker is gone. Must comfortably exceed the slowest
+        endpoint concludes its worker is gone. A run whose sweep is lost is failed
+        sooner, once it goes ``crud.RUN_LEASE`` without a write, so this bounds a
+        sweep that is still alive. Must comfortably exceed the slowest
         legitimate sweep, which dispatches ``MAX_CONCURRENT_PROBES`` hosts at a time
         and can take up to ``TASK_TIMEOUT`` per batch: for an estate of ``N`` hosts
         that is roughly ``ceil(N / MAX_CONCURRENT_PROBES) * TASK_TIMEOUT``. Only

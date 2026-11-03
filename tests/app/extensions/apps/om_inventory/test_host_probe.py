@@ -31,6 +31,7 @@ import json
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+from uuid import UUID, uuid4
 
 import pytest
 from python_minifier import minify
@@ -174,7 +175,7 @@ class TestProbeAllTargets:
         """
         seen: dict[str, list] = {}
 
-        async def fake_probe_host(_api, host, entries):
+        async def fake_probe_host(_api, host, entries, **_kwargs):
             seen[host] = entries
             return type("R", (), {"executor_host": host})()
 
@@ -195,6 +196,32 @@ class TestProbeAllTargets:
         assert seen["pmm-client-node00"] == []
 
     @pytest.mark.asyncio
+    async def test_hands_the_run_to_every_dispatch(self) -> None:
+        """Pass the sweep's run to each host's dispatch, which names it in the request.
+
+        :return: Nothing.
+        """
+        run_id = uuid4()
+        handed: dict[str, UUID | None] = {}
+
+        async def fake_probe_host(_api, host, _entries, *, run_id=None):
+            handed[host] = run_id
+            return type("R", (), {"executor_host": host})()
+
+        with patch(
+            "app.extensions.apps.om_inventory.dispatch.probe_host",
+            AsyncMock(side_effect=fake_probe_host),
+        ):
+            await probe_all(
+                AsyncMock(),
+                [mapped("db00", "db00")],
+                executor_hosts=["db00", "pmm-client-node00"],
+                run_id=run_id,
+            )
+
+        assert handed == {"db00": run_id, "pmm-client-node00": run_id}
+
+    @pytest.mark.asyncio
     async def test_reports_each_host_as_it_comes_back(self) -> None:
         """Report a host as soon as it lands, while another is still running.
 
@@ -205,7 +232,7 @@ class TestProbeAllTargets:
         db00_reported = asyncio.Event()
         landed: list[str] = []
 
-        async def fake_probe_host(_api, host, _entries):
+        async def fake_probe_host(_api, host, _entries, **_kwargs):
             if host == "db01":
                 await release_db01.wait()
             return type("R", (), {"executor_host": host})()
@@ -244,7 +271,7 @@ class TestProbeAllTargets:
         """
         seen: dict[str, list] = {}
 
-        async def fake_probe_host(_api, host, entries):
+        async def fake_probe_host(_api, host, entries, **_kwargs):
             seen[host] = entries
             return type("R", (), {"executor_host": host})()
 

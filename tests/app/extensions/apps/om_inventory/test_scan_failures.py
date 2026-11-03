@@ -309,7 +309,7 @@ class TestTheDetailIsBounded:
         assert error.startswith(f"the scan on {HOST} failed: RuntimeError: xxx")
         assert error.endswith(
             f"{TRUNCATION_MARK} -- and task history {HISTORY_ID} could not be "
-            "released, so it will block this node's next scan: RuntimeError: stop "
+            "released, so it may still be running on this node: RuntimeError: stop "
             "refused"
         )
 
@@ -329,8 +329,8 @@ class TestTheDetailIsBounded:
         assert len(error) <= ERROR_DETAIL_CAP
         assert error.startswith(f"the scan on {HOST} failed: RuntimeError: xxx")
         assert (
-            f" -- and task history {HISTORY_ID} could not be released, so it will "
-            "block this node's next scan: RuntimeError: stop refused yyy"
+            f" -- and task history {HISTORY_ID} could not be released, so it may "
+            "still be running on this node: RuntimeError: stop refused yyy"
         ) in error
         assert error.endswith(TRUNCATION_MARK)
 

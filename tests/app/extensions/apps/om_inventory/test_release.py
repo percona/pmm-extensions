@@ -154,7 +154,7 @@ class TestReleaseOnAbandonedDispatch:
         assert f"task history {HISTORY_ID} could not be released" in (
             result.error or ""
         )
-        assert "block this node's next scan" in (result.error or "")
+        assert "may still be running on this node" in (result.error or "")
         assert "cancelled" not in (result.error or "")
         # The stuck run outranks the timeout: it is the part that will not clear.
         assert result.error_code == ScanFailure.BLOCKED
