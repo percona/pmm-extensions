@@ -96,6 +96,7 @@ from app.core.utils.fields import (
     RelativeFilePathField,
     StrCredentialHttpUrl,
     StrHttpUrl,
+    strip_credential_url_userinfo,
     TimedeltaSeconds,
     URL,
 )
@@ -435,7 +436,7 @@ class PMMSettings(BaseLowercaseModel):
 
     :param endpoint: The PMM server URL.
     :type endpoint: StrCredentialHttpUrl | None
-    :param frontend: The PMM frontend URL.
+    :param frontend: The PMM frontend URL; defaults to the endpoint without credentials.
     :type frontend: StrHttpUrl | None
     :param api_key: API key for PMM authentication.
     :type api_key: SecretStr | None
@@ -460,13 +461,13 @@ class PMMSettings(BaseLowercaseModel):
 
     @model_validator(mode="after")
     def _default_frontend_to_endpoint(self) -> Self:
-        """Set ``frontend`` to ``endpoint`` when not explicitly provided.
+        """Set ``frontend`` to ``endpoint`` without userinfo when not explicitly provided.
 
         :return: The updated settings instance.
         :rtype: Self
         """
         if "frontend" not in self.model_fields_set and self.endpoint is not None:
-            self.frontend = self.endpoint
+            self.frontend = strip_credential_url_userinfo(str(self.endpoint))
         return self
 
     @cached_property
