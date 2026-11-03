@@ -274,13 +274,13 @@
 | app/extensions/apps/om\_bootstrap/schema.py                                                                                         |        2 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_bootstrap/strategies/packages.py                                                                            |      205 |        3 |       38 |        3 |     98% |820, 994, 1323 |
 | app/extensions/apps/om\_bootstrap/strategy.py                                                                                       |       79 |        3 |       16 |        3 |     94% |151, 153, 155 |
-| app/extensions/apps/om\_inventory/api\_routes.py                                                                                    |      143 |       22 |       32 |        3 |     79% |346, 357-358, 370-372, 375, 390-391, 436, 449-451, 479-480, 497-498, 552, 600-\>599, 601, 608, 614-615 |
+| app/extensions/apps/om\_inventory/api\_routes.py                                                                                    |      151 |       26 |       32 |        3 |     78% |354, 365-366, 378-380, 383, 398-399, 444, 457-459, 487-488, 505-506, 560, 609-\>608, 610, 617, 623-626, 628-629 |
 | app/extensions/apps/om\_inventory/app.py                                                                                            |       12 |        1 |        2 |        1 |     86% |        59 |
 | app/extensions/apps/om\_inventory/app\_owned\_settings.py                                                                           |        3 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/celery.py                                                                                         |       11 |        2 |        0 |        0 |     82% |     51-54 |
 | app/extensions/apps/om\_inventory/config.py                                                                                         |       33 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/om\_inventory/crud.py                                                                                           |      140 |        3 |       40 |        2 |     97% |373-\>377, 376, 456-462 |
-| app/extensions/apps/om\_inventory/dispatch.py                                                                                       |      213 |        9 |       56 |        7 |     94% |232, 234, 405-406, 408, 413-\>399, 439, 590, 656-661 |
+| app/extensions/apps/om\_inventory/crud.py                                                                                           |      175 |        3 |       48 |        2 |     98% |467-\>471, 470, 550-556 |
+| app/extensions/apps/om\_inventory/dispatch.py                                                                                       |      215 |        9 |       56 |        7 |     94% |237, 239, 410-411, 413, 418-\>404, 444, 586, 657-662 |
 | app/extensions/apps/om\_inventory/enumeration.py                                                                                    |       50 |        0 |       16 |        1 |     98% | 142-\>146 |
 | app/extensions/apps/om\_inventory/inventory.py                                                                                      |       22 |        7 |        2 |        0 |     62% |     72-82 |
 | app/extensions/apps/om\_inventory/mapping.py                                                                                        |       46 |        1 |       14 |        1 |     97% |       115 |
@@ -290,7 +290,7 @@
 | app/extensions/apps/om\_inventory/models.py                                                                                         |      132 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/payload/probe.py                                                                                  |      337 |       73 |      134 |       18 |     76% |106-114, 137-139, 147-157, 267-\>269, 271-\>265, 275, 285-\>278, 287-\>278, 291, 311-335, 352-\>350, 424-429, 462, 466-468, 470, 473, 476, 499-\>513, 578-\>580, 623, 771-772, 936, 967-1022, 1026 |
 | app/extensions/apps/om\_inventory/schema.py                                                                                         |        2 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/om\_inventory/service.py                                                                                        |      358 |       13 |       92 |        6 |     95% |211, 616, 753, 956, 1007-1008, 1019, 1277-1282 |
+| app/extensions/apps/om\_inventory/service.py                                                                                        |      383 |       11 |      104 |        7 |     95% |218, 623, 767, 971, 1022-1029, 1240-\>1242, 1365-1368 |
 | app/extensions/apps/report/api\_routes.py                                                                                           |       68 |        2 |       18 |        3 |     94% |80, 86-\>90, 195-\>197, 231 |
 | app/extensions/apps/report/app.py                                                                                                   |       26 |        3 |       14 |        6 |     78% |47-\>49, 50, 51-\>53, 54, 56, 57-\>59 |
 | app/extensions/apps/report/app\_owned\_settings.py                                                                                  |        3 |        0 |        0 |        0 |    100% |           |
@@ -388,7 +388,7 @@
 | app/extensions/sync/exceptions.py                                                                                                   |       36 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/fields.py                                                                                                       |       21 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/health.py                                                                                                       |       86 |        0 |       22 |        2 |     98% |234-\>238, 235-\>234 |
-| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 129-130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
+| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 128, 130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
 | app/extensions/sync/syncers/mysql/payload.py                                                                                        |      176 |       47 |       54 |        5 |     70% |158-\>166, 242-246, 251-256, 269-275, 279-302, 356-\>372, 375, 396-404, 423 |
 | app/extensions/sync/syncers/mysql/syncer.py                                                                                         |      241 |        2 |       94 |        5 |     98% |111, 604-\>605, 716, 819-\>823, 821-\>820 |
 | app/extensions/sync/syncers/pmm.py                                                                                                  |      186 |        1 |       50 |        2 |     99% |118-\>122, 162 |
@@ -553,7 +553,7 @@
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35436** | **1722** | **8558** |  **690** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35506** | **1724** | **8578** |  **691** | **94%** |           |
 
 
 ## Setup coverage badge
