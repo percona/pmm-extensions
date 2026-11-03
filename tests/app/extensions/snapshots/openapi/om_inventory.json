@@ -174,15 +174,6 @@
         "title": "SettingResponse",
         "type": "object"
       },
-      "SettingsPatch": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Batch PATCH payload: a flat ``{field_name: new_value, ...}`` mapping.\n\nAn empty body is rejected as 422 because a no-op PATCH is a client bug, not\na valid request. The server coerces each value to the field's declared\ntype via :func:`coerce_field_value`; validation is all-or-nothing -- if any\nkey fails, nothing is written.",
-        "minProperties": 1,
-        "title": "SettingsPatch",
-        "type": "object"
-      },
       "TaskHistoryStatusEnum": {
         "description": "Define status codes for task executions.\n\n:cvar FAILED: Enum value for failed tasks.\n:cvar PENDING: Enum value for pending tasks.\n:cvar RUNNING: Enum value for running tasks.\n:cvar SUCCESS: Enum value for successfully completed tasks.\n:cvar STOPPED: Enum value for stopped tasks.\n:cvar LOST: Enum value for tasks that are lost.\n:cvar STALE: Enum value for tasks skipped because executor placement\n    exceeded the configured staleness threshold (for example a Nomad\n    allocation that never left the queue).\n:cvar UNLAUNCHABLE: Enum value for tasks the executor node could not\n    launch at all, because some command in the invocation does not\n    resolve there. The payload never ran, so this is not a script\n    failure.",
         "enum": [
@@ -4296,6 +4287,20 @@
         "title": "YamlField",
         "type": "object"
       },
+      "om_inventory__EnabledRequest": {
+        "description": "Set the app's ``ENABLED`` switch to PMM's Operations for MongoDB switch.\n\n:param enabled: Whether the sweep should run.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "EnabledRequest",
+        "type": "object"
+      },
       "om_inventory__HostResponse": {
         "description": "Report one host, with the services OM knows are on it.\n\nA host is a row whether or not any MongoDB was found on it: that is what makes\n\"which hosts have no database\" a query rather than an absence, and it is the only\nway a machine that has never run one appears at all.\n\n``observed`` (from :class:`FreshnessResponse`) additionally carries\n``unregistered_mongods`` here, where the probe found a database PMM has no\nservice for.\n\n:param node_id: PMM's node id.\n:param name: The node's registered name.\n:param address: The node's registered address.\n:param executor_host: The Nomad client serving it. ``None`` means nothing can be\n    run there, which is a fact about the estate rather than a probe failure.\n:param services: The services on it. Empty is a meaningful answer, not a gap.",
         "properties": {
@@ -5060,7 +5065,7 @@
   "paths": {
     "/api/apps/om_inventory/config": {
       "get": {
-        "description": "Return this app's configuration: every field, its value and its origin.\n\nServed here rather than pointing the caller at ``/api/extensions/admin/settings``\nbecause that router is admin-gated and PMM's principal is not an admin: the\nbearer of the pmm-managed ``--extensions-token`` flag resolves to the synthetic\n``extensions-service`` user, built with ``is_admin=False`` deliberately, since\nit is a deployment-level shared secret with no person behind it. An app-owned\nendpoint keeps a schedule change scoped to this app instead of requiring PMM\nExtensions wide administrative access.\n\nEvery field is listed, not only the overridden ones, and each row carries\nwhether an override is in effect - so \"why is it sweeping every 10 minutes\"\nis answerable without also reading the deployment's YAML.\n\n``CREDENTIALS_PATH`` is the one exception: its row is present, with ``value``\nforced to ``None`` regardless of the deployment's real setting. See\n:func:`_redact_config` for why the whole route is not gated instead.\n\n:param session: The database session.\n:return: One row per configuration field.",
+        "description": "Return this app's configuration: every field, its value and its origin.\n\nServed here as well as on ``/api/extensions/admin/settings`` because that router\nis admin-gated for reads too, and every PMM role may see this configuration.\nChanging it stays admin-only, on that router.\n\nEvery field is listed, not only the overridden ones, and each row carries\nwhether an override is in effect - so \"why is it sweeping every 10 minutes\"\nis answerable without also reading the deployment's YAML.\n\n``CREDENTIALS_PATH`` is the one exception: its row is present, with ``value``\nforced to ``None`` regardless of the deployment's real setting. See\n:func:`_redact_config` for why the whole route is not gated instead.\n\n:param session: The database session.\n:return: One row per configuration field.",
         "operationId": "om_inventory_get_config_api_apps_om_inventory_config_get",
         "responses": {
           "200": {
@@ -5082,15 +5087,17 @@
         "tags": [
           "om_inventory"
         ]
-      },
-      "patch": {
-        "description": "Update this app's configuration at runtime.\n\nThe batch is atomic: a single bad key rejects all of it with a per-key 422 and\nwrites nothing, so a caller never has to work out how far a partial apply got.\n\nOnly ``hot_field`` fields are accepted. ``CREDENTIALS_PATH`` is deliberately\nnot one: it names a file the payload reads on every database *host* and hands\nto a driver as a URI, so making it settable here would widen \"configure this\napp\" into \"read a chosen file across the estate\".\n\nAn ``ENABLED`` or ``SCHEDULE`` change lands without a restart -\n``periodic_task_schedules`` is a thunk re-read on registry rebuild - but beat\nruns as a forked side-car process, which reaches the new value through its own\nsettings refresher rather than through this request.\n\n``ENABLED`` is what PMM's Operations for MongoDB switch calls, via this same\nroute with the credential of the pmm-managed ``--extensions-token`` flag (see\n``require_minimum_role``'s service-principal bypass): it flips independently of\n``SCHEDULE``, so the configured cadence survives Operations for MongoDB being\nturned off and back on rather than being overwritten each time.\n\n:param request: The incoming request; its ``app.state`` carries the rebind\n    callbacks fired for the keys this changed.\n:param body: The ``{key: value, ...}`` batch.\n:param session: The database session.\n:param actor: The calling principal, whose username is recorded on every\n    row written. Not ``ApiAdminUsername``: this endpoint admits any\n    authenticated caller, PMM's non-admin service principal included.\n:return: One row per applied key, in input order.",
-        "operationId": "om_inventory_patch_config_api_apps_om_inventory_config_patch",
+      }
+    },
+    "/api/apps/om_inventory/enabled": {
+      "put": {
+        "description": "Follow PMM's Operations for MongoDB switch.\n\npmm-managed calls this at startup and whenever the switch changes, with no user\nbehind the call, so only the service principal may use it; a person changes\nthis app's configuration through ``/api/extensions/admin/settings`` instead.\n\nIt flips ``ENABLED`` independently of ``SCHEDULE``, so the configured cadence\nsurvives the switch being turned off and back on. The change lands without a\nrestart, the same way an admin's change on the settings router does.\n\n:param request: The incoming request; its ``app.state`` carries the rebind\n    callbacks fired for ``ENABLED``.\n:param body: The switch's new state.\n:param session: The database session.\n:param actor: The service principal, recorded on the row written.\n:return: The ``ENABLED`` row as written.",
+        "operationId": "om_inventory_set_enabled_api_apps_om_inventory_enabled_put",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SettingsPatch"
+                "$ref": "#/components/schemas/om_inventory__EnabledRequest"
               }
             }
           },
@@ -5101,11 +5108,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/SettingResponse"
-                  },
-                  "title": "Response Om Inventory Patch Config Api Apps Om Inventory Config Patch",
-                  "type": "array"
+                  "$ref": "#/components/schemas/SettingResponse"
                 }
               }
             },
@@ -5122,43 +5125,12 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Patch Config",
-        "tags": [
-          "om_inventory"
-        ]
-      }
-    },
-    "/api/apps/om_inventory/config/{key}": {
-      "delete": {
-        "description": "Put one field back to whatever the deployment configured.\n\nWithout this, an operator who once changed a value can only ever change it to\nanother one: \"no override\" stops being a reachable state, and the YAML the\ndeployment ships becomes unrecoverable through the API. Idempotent, so\nclearing a field that was never overridden is not an error.\n\n:param request: The incoming request; its ``app.state`` carries the rebind\n    callbacks fired for the reverted key.\n:param key: The field name, or a ``__``-delimited nested key such as\n    ``SCHEDULE__every``.\n:param session: The database session.",
-        "operationId": "om_inventory_delete_config_override_api_apps_om_inventory_config__key__delete",
-        "parameters": [
+        "security": [
           {
-            "in": "path",
-            "name": "key",
-            "required": true,
-            "schema": {
-              "title": "Key",
-              "type": "string"
-            }
+            "OAuth2PasswordBearer": []
           }
         ],
-        "responses": {
-          "204": {
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Delete Config Override",
+        "summary": "Set Enabled",
         "tags": [
           "om_inventory"
         ]

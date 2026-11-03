@@ -673,6 +673,15 @@ class TriggerRequest(BaseModel):
     node_ids: list[str] = Field(default_factory=list)
 
 
+class EnabledRequest(BaseModel):
+    """Set the app's ``ENABLED`` switch to PMM's Operations for MongoDB switch.
+
+    :param enabled: Whether the sweep should run.
+    """
+
+    enabled: bool
+
+
 class ProbeRunAccepted(BaseModel):
     """Return the id of a queued sweep.
 

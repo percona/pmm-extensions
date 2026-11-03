@@ -25,7 +25,6 @@ __all__ = [
     "apply_class_overrides",
     "build_settings_class_values",
     "build_settings_router",
-    "clear_class_override",
     "collect_class_setting_responses",
 ]
 
@@ -41,6 +40,5 @@ from app.core.settings_override.api.routes import (
     apply_class_overrides,
     AppOwnedClassEntry,
     build_settings_router,
-    clear_class_override,
     collect_class_setting_responses,
 )

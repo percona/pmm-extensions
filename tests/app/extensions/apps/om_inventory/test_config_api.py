@@ -13,36 +13,39 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Test the app's own ``/config``, and the two decisions that put it there.
+"""Test the app's configuration surface, and the decisions that shaped it.
 
-The app serves its configuration rather than pointing callers at
-``/api/extensions/admin/settings`` because that router is admin-gated and **PMM's principal
-is not an admin**: the principal behind the pmm-managed ``--extensions-token`` flag
-resolves to the synthetic ``extensions-service`` user, built with ``is_admin=False``
-on purpose since it is a deployment-level shared secret with nobody behind it. That
-is asserted here rather than described, because it is the whole reason this endpoint
-exists and a later change making the principal an admin would silently remove the
-reason.
+Every role reads the configuration through the app's own ``GET /config``; an admin
+changes it through ``/api/extensions/admin/settings`` like any other class. The one
+write served here is ``PUT /enabled``, because pmm-managed sets ``ENABLED`` from PMM's
+switch with no user behind the call, and **PMM's principal is not an admin**: the
+token resolves to the synthetic ``extensions-service`` user, so the settings router
+refuses it. That is asserted here rather than described, because a later change
+making the principal an admin would silently remove the reason.
 
-The second decision is ``CREDENTIALS_PATH`` staying cold. It names a file the payload
+The other decision is ``CREDENTIALS_PATH`` staying cold. It names a file the payload
 reads on every database *host* and hands to a driver as a URI, so an overridable one
 would turn "configure this app" into "read a chosen file across the estate". A test
 asserts it is refused, because the difference between "not hot" and "not yet hot" is
 invisible in the field list.
 """
 
+from collections.abc import AsyncIterator
 from datetime import timedelta
 from typing import Any, cast
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI, status
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
+from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import (
-    SERVICE_PRINCIPAL,
-)
+from app.api.deps import get_current_user as resolve_bearer
+from app.api.deps import SERVICE_PRINCIPAL
+from app.core.auth.providers.casdoor.models import CasdoorUser
+from app.core.config import settings
 from app.core.settings_override.lifecycle import publish_snapshot
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import setting_class_token, SettingOverride
@@ -53,6 +56,7 @@ from app.extensions.apps.om_inventory.config import (
     om_inventory_settings,
     OmInventorySettings,
 )
+from app.extensions.deps import get_session
 from app.extensions.main import extensions_app, extensions_overrides_lifespan
 from tests.app.extensions.apps.om_inventory.conftest import (
     BASE,
@@ -63,27 +67,131 @@ from tests.app.extensions.apps.om_inventory.conftest import (
 #: default change moves the assertions with it rather than silently passing.
 DEFAULTS = OmInventorySettings()
 
+#: The shared, admin-gated settings router's path for this class.
+ADMIN_SETTINGS = f"/api/extensions/admin/settings/{OmInventorySettings.__name__}"
 
-class TestWhyThisEndpointExists:
-    """Assert the premise: the settings router is closed to PMM's principal."""
+#: The ``EXTENSIONS_INTERNAL_TOKEN`` the real-gate tests present.
+INTERNAL_TOKEN = "internal-test-token"
+
+
+async def _active_rows(session: AsyncSession) -> list[SettingOverride]:
+    """Return this class's active override rows.
+
+    :param session: The database session.
+    :return: The stored rows.
+    """
+    return await SettingsOverrideManager.list(
+        session,
+        setting_class=setting_class_token(OmInventorySettings),
+        is_active=True,
+    )
+
+
+@pytest_asyncio.fixture
+async def gated_api(
+    session: AsyncSession, mocker: MockerFixture
+) -> AsyncIterator[AsyncClient]:
+    """Yield a client whose requests pass the real authentication and role gate.
+
+    Only the database session is overridden, and ``EXTENSIONS_INTERNAL_TOKEN`` is set
+    so that ``INTERNAL_TOKEN`` resolves to PMM Extensions' service principal.
+
+    :param session: The database session the routes should use.
+    :param mocker: Sets the internal token for the test's duration.
+    :return: The client.
+    """
+    mocker.patch.object(
+        settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(INTERNAL_TOKEN)
+    )
+    extensions_app.dependency_overrides[get_session] = lambda: session
+    client = AsyncClient(
+        transport=ASGITransport(app=extensions_app), base_url="http://test"
+    )
+    try:
+        yield client
+    finally:
+        await client.aclose()
+        extensions_app.dependency_overrides = {}
+
+
+class TestSetEnabled:
+    """Follow PMM's Operations for MongoDB switch through ``PUT /enabled``."""
 
     def test_the_extensions_token_principal_is_not_an_admin(self) -> None:
-        """Confirm the ``--extensions-token`` principal is shut out of admin settings.
+        """Confirm PMM's principal is shut out of the admin settings router.
 
         Not a statement about the current deployment's configuration — the service
         principal is constructed in code with no ``is_admin`` argument, so this holds
-        in every deployment. If it ever stops holding, the argument for an app-owned
-        ``/config`` weakens and this test is where that gets noticed.
+        in every deployment. If it ever stops holding, the argument for a route of
+        its own weakens and this test is where that gets noticed.
         """
         assert SERVICE_PRINCIPAL.is_admin is False
+
+    @pytest.mark.asyncio
+    async def test_the_service_token_flips_the_switch(
+        self, gated_api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Store and apply the new state, recording the principal as its author.
+
+        :param gated_api: The client passing the real gate.
+        :param session: The database session.
+        """
+        response = await gated_api.put(
+            f"{BASE}/enabled",
+            json={"enabled": not DEFAULTS.ENABLED},
+            headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["value"] is not DEFAULTS.ENABLED
+        assert om_inventory_settings.ENABLED is not DEFAULTS.ENABLED
+        assert [(row.key, row.updated_by) for row in await _active_rows(session)] == [
+            ("ENABLED", SERVICE_PRINCIPAL.username)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_person_is_refused_even_as_an_admin(
+        self, admin_api: AsyncClient, admin_user: CasdoorUser
+    ) -> None:
+        """Refuse every human caller; an admin uses the settings router instead.
+
+        The shared client stubs the role gate out, so the refusal is the
+        service-principal check's own.
+
+        :param admin_api: The authenticated admin client.
+        :param admin_user: The admin it is authenticated as.
+        """
+        extensions_app.dependency_overrides[resolve_bearer] = lambda: admin_user
+
+        response = await admin_api.put(
+            f"{BASE}/enabled", json={"enabled": not DEFAULTS.ENABLED}
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert om_inventory_settings.ENABLED is DEFAULTS.ENABLED
+
+
+class TestConfigWritesAreNotServedHere:
+    """Keep writes on the admin settings router, the one place that gates them."""
+
+    @pytest.mark.asyncio
+    async def test_patching_config_is_not_allowed(self, admin_api: AsyncClient) -> None:
+        """Refuse ``PATCH /config``; only reads are served on that path.
+
+        :param admin_api: The authenticated admin client.
+        """
+        response = await admin_api.patch(f"{BASE}/config", json={"RUN_RETENTION": 5})
+
+        assert response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+        assert om_inventory_settings.RUN_RETENTION == DEFAULTS.RUN_RETENTION
 
 
 class TestTheAppIsActuallyWiredIn:
     """Assert the registration a unit test of the endpoint cannot see.
 
-    ``/config`` answers correctly with none of this in place: ``GET`` reads override
-    rows straight from the database, and ``PATCH`` republishes the proxy snapshot
-    inline, so a request appears to work end to end. What breaks is the *next
+    The settings API answers correctly with none of this in place: a read takes
+    override rows straight from the database, and a write republishes the proxy
+    snapshot inline, so a request appears to work end to end. What breaks is the *next
     process*: without the collection below the refresher never republishes, and an
     override silently reverts to YAML on restart. Measured happening in the sandbox —
     a 25-minute sweep that went back to 10 after ``./om restart extensions-backend``.
@@ -191,12 +299,27 @@ class TestGetConfig:
         assert rows["CREDENTIALS_PATH"]["value"] is None
 
 
-class TestPatchConfig:
-    """Update the app's configuration at runtime."""
+class TestChangeConfig:
+    """Update the app's configuration at runtime, through the admin settings router."""
+
+    @pytest.mark.asyncio
+    async def test_a_change_records_the_admin_who_made_it(
+        self, admin_api: AsyncClient, admin_user: CasdoorUser, session: AsyncSession
+    ) -> None:
+        """Stamp the row with the admin's own name, not PMM's service principal.
+
+        :param admin_api: The authenticated admin client.
+        :param admin_user: The admin it is authenticated as.
+        :param session: The database session.
+        """
+        await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 5})
+
+        rows = await _active_rows(session)
+        assert [row.updated_by for row in rows] == [admin_user.username]
 
     @pytest.mark.asyncio
     async def test_a_schedule_change_takes_effect_on_the_proxy(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Apply a PATCH to the settings proxy immediately, without a restart.
 
@@ -204,10 +327,10 @@ class TestPatchConfig:
         immediately, because the handler republishes the snapshot inline rather than
         waiting for the background refresher.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(
-            f"{BASE}/config", json={"SCHEDULE": {"every": 2, "period": "minutes"}}
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"SCHEDULE": {"every": 2, "period": "minutes"}}
         )
 
         assert response.status_code == status.HTTP_200_OK
@@ -215,7 +338,7 @@ class TestPatchConfig:
 
     @pytest.mark.asyncio
     async def test_a_single_schedule_leaf_can_be_changed_on_its_own(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Accept the leaf spelling GET returns as a PATCH key too.
 
@@ -223,9 +346,9 @@ class TestPatchConfig:
         form can express ``null``. A UI driven off the GET key set therefore needs the
         parent key too, which is the one thing it cannot discover from GET.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(f"{BASE}/config", json={"SCHEDULE__every": 30})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"SCHEDULE__every": 30})
 
         assert response.status_code == status.HTTP_200_OK
         assert om_inventory_settings.SCHEDULE.every == 30  # noqa: PLR2004
@@ -235,7 +358,7 @@ class TestPatchConfig:
 
     @pytest.mark.asyncio
     async def test_a_null_schedule_unregisters_the_sweep(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Treat ``SCHEDULE: null`` as a legitimate value, not a missing one.
 
@@ -243,47 +366,43 @@ class TestPatchConfig:
         shape a coercion layer is most likely to mishandle — so it is asserted rather
         than assumed to fall out of the type.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(f"{BASE}/config", json={"SCHEDULE": None})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"SCHEDULE": None})
 
         assert response.status_code == status.HTTP_200_OK
         assert om_inventory_settings.SCHEDULE is None
 
     @pytest.mark.asyncio
     async def test_a_change_is_persisted_as_an_override_row(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Persist a change as an override row that survives the process.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        await api.patch(f"{BASE}/config", json={"RUN_RETENTION": 5})
+        await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 5})
 
-        rows = await SettingsOverrideManager.list(
-            session,
-            setting_class=setting_class_token(OmInventorySettings),
-            is_active=True,
-        )
+        rows = await _active_rows(session)
         assert [(row.key, row.value) for row in rows] == [("RUN_RETENTION", 5)]
 
     @pytest.mark.asyncio
     async def test_the_wire_class_name_differs_from_the_stored_token(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Answer with the class ``__name__`` while storing ``setting_class_token``.
 
         A caller that queries ``settingoverride`` by the ``setting_class`` the
         response handed back finds nothing; the row is keyed by the token.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
         token = setting_class_token(OmInventorySettings)
         assert token != OmInventorySettings.__name__
 
-        response = await api.patch(f"{BASE}/config", json={"RUN_RETENTION": 5})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 5})
 
         assert response.status_code == status.HTTP_200_OK
         assert [row["setting_class"] for row in response.json()] == [
@@ -299,16 +418,18 @@ class TestPatchConfig:
 
     @pytest.mark.asyncio
     async def test_a_bad_value_is_refused_by_the_field_constraint(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Enforce ``PositiveInt`` on the way in, not at the next sweep.
 
         A zero here would make ``MAX_CONCURRENT_PROBES`` a semaphore that never admits
         anyone, and the sweep would hang rather than fail.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(f"{BASE}/config", json={"MAX_CONCURRENT_PROBES": 0})
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"MAX_CONCURRENT_PROBES": 0}
+        )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert (
@@ -318,7 +439,7 @@ class TestPatchConfig:
 
     @pytest.mark.asyncio
     async def test_repo_url_is_restricted_to_http_and_https(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Refuse a ``file:`` URL rather than handing it to ``urllib.request`` as-is.
 
@@ -327,40 +448,44 @@ class TestPatchConfig:
         understands, including ``file:`` and ``ftp:``, which is not a repository
         reachability check at all.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(
-            f"{BASE}/config", json={"REPO_URL": "file:///etc/passwd"}
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"REPO_URL": "file:///etc/passwd"}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert om_inventory_settings.REPO_URL == DEFAULTS.REPO_URL
 
     @pytest.mark.asyncio
-    async def test_one_bad_key_rejects_the_whole_batch(self, api: AsyncClient) -> None:
+    async def test_one_bad_key_rejects_the_whole_batch(
+        self, admin_api: AsyncClient
+    ) -> None:
         """Write nothing when any key fails, so no partial apply is reachable.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(
-            f"{BASE}/config", json={"RUN_RETENTION": 5, "POLL_INTERVAL": -1}
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"RUN_RETENTION": 5, "POLL_INTERVAL": -1}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert om_inventory_settings.RUN_RETENTION == DEFAULTS.RUN_RETENTION
 
     @pytest.mark.asyncio
-    async def test_credentials_path_is_not_settable(self, api: AsyncClient) -> None:
+    async def test_credentials_path_is_not_settable(
+        self, admin_api: AsyncClient
+    ) -> None:
         """Reject a write to a cold field rather than silently ignoring it.
 
         ``CREDENTIALS_PATH`` names a file read on every database host and handed to a
         driver as a URI. Overridable, it would widen "configure this app" into "read a
         chosen file across the estate", so it stays YAML/env only.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(
-            f"{BASE}/config", json={"CREDENTIALS_PATH": "/etc/passwd"}
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"CREDENTIALS_PATH": "/etc/passwd"}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -370,7 +495,7 @@ class TestPatchConfig:
 
     @pytest.mark.asyncio
     async def test_an_override_can_be_cleared_back_to_the_deployment_value(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """DELETE restores the YAML value, so "no override" stays reachable.
 
@@ -378,46 +503,38 @@ class TestPatchConfig:
         another one, and whatever the deployment ships becomes unrecoverable through
         the API.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        await api.patch(f"{BASE}/config", json={"RUN_RETENTION": 5})
+        await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 5})
 
-        response = await api.delete(f"{BASE}/config/RUN_RETENTION")
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/RUN_RETENTION")
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
         assert om_inventory_settings.RUN_RETENTION == DEFAULTS.RUN_RETENTION
-        assert not await SettingsOverrideManager.list(
-            session,
-            setting_class=setting_class_token(OmInventorySettings),
-            is_active=True,
-        )
+        assert not await _active_rows(session)
 
     @pytest.mark.asyncio
     async def test_clearing_a_field_that_was_never_set_is_not_an_error(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """DELETE is idempotent, so a revert-everything sweep needs no bookkeeping.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.delete(f"{BASE}/config/RUN_RETENTION")
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/RUN_RETENTION")
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
     @pytest.mark.asyncio
-    async def test_an_unknown_key_is_refused(self, api: AsyncClient) -> None:
+    async def test_an_unknown_key_is_refused(self, admin_api: AsyncClient) -> None:
         """Refuse an unknown key rather than storing it as a row nobody reads.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(f"{BASE}/config", json={"SCHEDUEL": 1})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"SCHEDUEL": 1})
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-
-
-#: The shared, admin-gated settings router's path for this class.
-ADMIN_SETTINGS = f"/api/extensions/admin/settings/{OmInventorySettings.__name__}"
 
 
 async def _stored_overrides(session: AsyncSession) -> dict[str, Any]:
@@ -426,12 +543,7 @@ async def _stored_overrides(session: AsyncSession) -> dict[str, Any]:
     :param session: The database session.
     :return: The stored overrides.
     """
-    rows = await SettingsOverrideManager.list(
-        session,
-        setting_class=setting_class_token(OmInventorySettings),
-        is_active=True,
-    )
-    return {row.key: row.value for row in rows}
+    return {row.key: row.value for row in await _active_rows(session)}
 
 
 def _cross_field_fields(response_json: dict[str, Any]) -> list[list[str]]:
@@ -459,16 +571,16 @@ class TestPatchCrossFieldRules:
 
     @pytest.mark.asyncio
     async def test_lowering_the_timeout_below_a_stored_poll_is_refused(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Judge a one-field PATCH against the other field's stored override.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        await api.patch(f"{BASE}/config", json={"POLL_INTERVAL": 100})
+        await admin_api.patch(ADMIN_SETTINGS, json={"POLL_INTERVAL": 100})
 
-        response = await api.patch(f"{BASE}/config", json={"TASK_TIMEOUT": 90})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 90})
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert _cross_field_fields(response.json()) == [
@@ -479,15 +591,15 @@ class TestPatchCrossFieldRules:
 
     @pytest.mark.asyncio
     async def test_a_timeout_below_the_deployment_poll_is_refused(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Judge a one-field PATCH against the other field's YAML value too.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        response = await api.patch(
-            f"{BASE}/config", json={"TASK_TIMEOUT": DEFAULTS.POLL_INTERVAL - 1}
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"TASK_TIMEOUT": DEFAULTS.POLL_INTERVAL - 1}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -495,13 +607,13 @@ class TestPatchCrossFieldRules:
 
     @pytest.mark.asyncio
     async def test_a_stale_threshold_inside_the_timeout_is_refused(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Refuse a threshold that could only ever reap a probe still in flight.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(f"{BASE}/config", json={"STALE_RUN_AFTER": 1})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"STALE_RUN_AFTER": 1})
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert _cross_field_fields(response.json()) == [
@@ -510,13 +622,13 @@ class TestPatchCrossFieldRules:
 
     @pytest.mark.asyncio
     async def test_the_refusal_names_both_fields_and_the_relationship(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Say which two fields disagree and how, without echoing the values.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(f"{BASE}/config", json={"POLL_INTERVAL": 9999})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"POLL_INTERVAL": 9999})
 
         assert {entry["msg"] for entry in response.json()["detail"]} == {
             "POLL_INTERVAL, TASK_TIMEOUT: POLL_INTERVAL must not exceed TASK_TIMEOUT"
@@ -525,16 +637,16 @@ class TestPatchCrossFieldRules:
 
     @pytest.mark.asyncio
     async def test_the_refusal_is_located_on_each_field_of_the_relationship(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Point an entry at every field, so whichever one the operator edited shows it.
 
         The settings UI shows a 422 next to a field only when an entry's ``loc``
         names that field.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(f"{BASE}/config", json={"TASK_TIMEOUT": 1})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 1})
 
         assert [entry["loc"] for entry in response.json()["detail"]] == [
             ["body", "POLL_INTERVAL"],
@@ -552,29 +664,29 @@ class TestPatchCrossFieldRules:
         ids=["raise-poll-and-timeout", "lower-timeout-and-stale", "all-three"],
     )
     async def test_a_consistent_batch_is_accepted_whatever_the_key_order(
-        self, api: AsyncClient, batch: dict[str, int]
+        self, admin_api: AsyncClient, batch: dict[str, int]
     ) -> None:
         """Judge a batch by its end state; some single-key orders would fail midway.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param batch: Fields moved together into a consistent combination.
         """
-        response = await api.patch(f"{BASE}/config", json=batch)
+        response = await admin_api.patch(ADMIN_SETTINGS, json=batch)
 
         assert response.status_code == status.HTTP_200_OK
         assert batch["TASK_TIMEOUT"] == om_inventory_settings.TASK_TIMEOUT
 
     @pytest.mark.asyncio
     async def test_an_inconsistent_batch_writes_nothing(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Refuse the whole batch, including its keys outside any relationship.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        response = await api.patch(
-            f"{BASE}/config",
+        response = await admin_api.patch(
+            ADMIN_SETTINGS,
             json={"RUN_RETENTION": 5, "POLL_INTERVAL": 60, "TASK_TIMEOUT": 30},
         )
 
@@ -584,15 +696,15 @@ class TestPatchCrossFieldRules:
 
     @pytest.mark.asyncio
     async def test_a_nested_key_does_not_shield_a_broken_rule_in_its_batch(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Judge the rule fields of a batch that also sets a schedule leaf.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        response = await api.patch(
-            f"{BASE}/config", json={"SCHEDULE__every": 5, "TASK_TIMEOUT": 1}
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"SCHEDULE__every": 5, "TASK_TIMEOUT": 1}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -603,14 +715,14 @@ class TestPatchCrossFieldRules:
 
     @pytest.mark.asyncio
     async def test_a_per_field_error_is_reported_without_cross_field_noise(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Skip the relationship check when a value is not even valid on its own.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(
-            f"{BASE}/config", json={"POLL_INTERVAL": 9999, "TASK_TIMEOUT": -1}
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"POLL_INTERVAL": 9999, "TASK_TIMEOUT": -1}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -618,42 +730,25 @@ class TestPatchCrossFieldRules:
 
     @pytest.mark.asyncio
     async def test_a_field_outside_the_relationships_is_unaffected(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Leave a PATCH that touches no rule field alone.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(f"{BASE}/config", json={"CONNECT_TIMEOUT": 600})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"CONNECT_TIMEOUT": 600})
 
         assert response.status_code == status.HTTP_200_OK
 
 
-class TestSharedSettingsRouterCrossFieldRules:
-    """Enforce the same relationships through the admin settings router."""
+class TestDeleteCrossFieldRules:
+    """Refuse a revert that would leave the relationships broken."""
 
     @pytest.mark.asyncio
-    async def test_an_inconsistent_patch_is_refused(
+    async def test_reverting_a_field_into_an_inconsistent_set_is_refused(
         self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
-        """Refuse it on the second route that can set these fields.
-
-        :param admin_api: The authenticated admin client.
-        :param session: The database session.
-        """
-        response = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 1})
-
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-        assert _cross_field_fields(response.json()) == [
-            ["POLL_INTERVAL", "TASK_TIMEOUT"]
-        ]
-        assert await _stored_overrides(session) == {}
-
-    @pytest.mark.asyncio
-    async def test_an_inconsistent_revert_is_refused(
-        self, admin_api: AsyncClient, session: AsyncSession
-    ) -> None:
-        """Refuse a revert there too, keeping both overrides in place.
+        """Keep the override when its YAML value would undercut the other field.
 
         :param admin_api: The authenticated admin client.
         :param session: The database session.
@@ -672,51 +767,23 @@ class TestSharedSettingsRouterCrossFieldRules:
             "POLL_INTERVAL": 300,
             "TASK_TIMEOUT": 600,
         }
-
-
-class TestDeleteCrossFieldRules:
-    """Refuse a revert that would leave the relationships broken."""
-
-    @pytest.mark.asyncio
-    async def test_reverting_a_field_into_an_inconsistent_set_is_refused(
-        self, api: AsyncClient, session: AsyncSession
-    ) -> None:
-        """Keep the override when its YAML value would undercut the other field.
-
-        :param api: The authenticated client.
-        :param session: The database session.
-        """
-        await api.patch(
-            f"{BASE}/config", json={"POLL_INTERVAL": 300, "TASK_TIMEOUT": 600}
-        )
-
-        response = await api.delete(f"{BASE}/config/TASK_TIMEOUT")
-
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-        assert _cross_field_fields(response.json()) == [
-            ["POLL_INTERVAL", "TASK_TIMEOUT"]
-        ]
-        assert await _stored_overrides(session) == {
-            "POLL_INTERVAL": 300,
-            "TASK_TIMEOUT": 600,
-        }
         assert om_inventory_settings.TASK_TIMEOUT == 600  # noqa: PLR2004
 
     @pytest.mark.asyncio
     async def test_the_other_order_reverts_both(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Leave a way back: reverting the dependent field first always works.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        await api.patch(
-            f"{BASE}/config", json={"POLL_INTERVAL": 300, "TASK_TIMEOUT": 600}
+        await admin_api.patch(
+            ADMIN_SETTINGS, json={"POLL_INTERVAL": 300, "TASK_TIMEOUT": 600}
         )
 
-        first = await api.delete(f"{BASE}/config/POLL_INTERVAL")
-        second = await api.delete(f"{BASE}/config/TASK_TIMEOUT")
+        first = await admin_api.delete(f"{ADMIN_SETTINGS}/POLL_INTERVAL")
+        second = await admin_api.delete(f"{ADMIN_SETTINGS}/TASK_TIMEOUT")
 
         assert (first.status_code, second.status_code) == (
             status.HTTP_204_NO_CONTENT,
@@ -726,43 +793,43 @@ class TestDeleteCrossFieldRules:
 
     @pytest.mark.asyncio
     async def test_reverting_a_rule_field_that_has_no_override_is_still_idempotent(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Answer 204 when the field already holds its consistent YAML value.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.delete(f"{BASE}/config/TASK_TIMEOUT")
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/TASK_TIMEOUT")
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
     @pytest.mark.asyncio
     async def test_reverting_a_nested_leaf_is_unaffected(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Skip the check for a ``__``-delimited key no relationship names.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        await api.patch(f"{BASE}/config", json={"SCHEDULE__every": 30})
+        await admin_api.patch(ADMIN_SETTINGS, json={"SCHEDULE__every": 30})
 
-        response = await api.delete(f"{BASE}/config/SCHEDULE__every")
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/SCHEDULE__every")
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
     @pytest.mark.asyncio
     async def test_a_stale_threshold_override_cannot_be_orphaned(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Refuse reverting a lowered timeout under a stale threshold that needs it.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        await api.patch(
-            f"{BASE}/config", json={"TASK_TIMEOUT": 30, "STALE_RUN_AFTER": 60}
+        await admin_api.patch(
+            ADMIN_SETTINGS, json={"TASK_TIMEOUT": 30, "STALE_RUN_AFTER": 60}
         )
 
-        response = await api.delete(f"{BASE}/config/TASK_TIMEOUT")
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/TASK_TIMEOUT")
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert timedelta(seconds=60) == om_inventory_settings.STALE_RUN_AFTER
@@ -798,17 +865,17 @@ class TestRulesJudgedAgainstStoredRows:
 
     @pytest.mark.asyncio
     async def test_a_patch_is_judged_against_a_row_this_process_has_not_seen(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Refuse a timeout below a poll interval another worker just stored.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
         await _store(session, POLL_INTERVAL=100)
         assert om_inventory_settings.POLL_INTERVAL == DEFAULTS.POLL_INTERVAL
 
-        response = await api.patch(f"{BASE}/config", json={"TASK_TIMEOUT": 90})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 90})
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert _cross_field_fields(response.json()) == [
@@ -818,16 +885,16 @@ class TestRulesJudgedAgainstStoredRows:
 
     @pytest.mark.asyncio
     async def test_a_revert_is_judged_against_a_row_this_process_has_not_seen(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Refuse a revert that would orphan a poll interval stored elsewhere.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
         await _store(session, POLL_INTERVAL=300, TASK_TIMEOUT=600)
 
-        response = await api.delete(f"{BASE}/config/TASK_TIMEOUT")
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/TASK_TIMEOUT")
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert await _stored_overrides(session) == {
@@ -877,19 +944,19 @@ class TestChangesWhileStoredRowsAreIgnored:
     )
     async def test_a_value_the_next_snapshot_would_ignore_is_refused(
         self,
-        api: AsyncClient,
+        admin_api: AsyncClient,
         session: AsyncSession,
         change: dict[str, int],
         rule: list[str],
     ) -> None:
         """Refuse a value that would be stored only to be ignored with the pair.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         :param change: The one-field PATCH.
         :param rule: The fields of the relationship it would break.
         """
-        response = await api.patch(f"{BASE}/config", json=change)
+        response = await admin_api.patch(ADMIN_SETTINGS, json=change)
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert _cross_field_fields(response.json()) == [rule]
@@ -900,24 +967,26 @@ class TestChangesWhileStoredRowsAreIgnored:
 
     @pytest.mark.asyncio
     async def test_a_field_outside_the_broken_rule_can_still_be_set(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Leave unrelated fields writable rather than blocking on the pair.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(f"{BASE}/config", json={"RUN_RETENTION": 5})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 5})
 
         assert response.status_code == status.HTTP_200_OK
 
     @pytest.mark.asyncio
-    async def test_fixing_one_side_restores_the_other(self, api: AsyncClient) -> None:
+    async def test_fixing_one_side_restores_the_other(
+        self, admin_api: AsyncClient
+    ) -> None:
         """Accept the repair, after which the stored timeout applies again.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        response = await api.patch(
-            f"{BASE}/config", json={"POLL_INTERVAL": DEFAULTS.POLL_INTERVAL}
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"POLL_INTERVAL": DEFAULTS.POLL_INTERVAL}
         )
 
         assert response.status_code == status.HTTP_200_OK
@@ -926,14 +995,14 @@ class TestChangesWhileStoredRowsAreIgnored:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("key", ["POLL_INTERVAL", "TASK_TIMEOUT"])
     async def test_either_side_can_be_reverted(
-        self, api: AsyncClient, key: str
+        self, admin_api: AsyncClient, key: str
     ) -> None:
         """Let a revert clear the pair, since the result is consistent either way.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param key: The side being reverted.
         """
-        response = await api.delete(f"{BASE}/config/{key}")
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/{key}")
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
@@ -947,15 +1016,15 @@ class TestStaleRunAfterRoundTrip:
 
     @pytest.mark.asyncio
     async def test_a_margin_the_api_rounds_away_is_refused(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Refuse a threshold that would read back as the timeout itself.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        response = await api.patch(
-            f"{BASE}/config", json={"STALE_RUN_AFTER": DEFAULTS.TASK_TIMEOUT + 0.5}
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"STALE_RUN_AFTER": DEFAULTS.TASK_TIMEOUT + 0.5}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -966,19 +1035,21 @@ class TestStaleRunAfterRoundTrip:
 
     @pytest.mark.asyncio
     async def test_an_accepted_threshold_patches_back_as_read(
-        self, api: AsyncClient
+        self, admin_api: AsyncClient
     ) -> None:
         """Accept the value GET returns for a fractional threshold PATCH accepted.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         """
-        accepted = await api.patch(
-            f"{BASE}/config", json={"STALE_RUN_AFTER": DEFAULTS.TASK_TIMEOUT + 0.6}
+        accepted = await admin_api.patch(
+            ADMIN_SETTINGS, json={"STALE_RUN_AFTER": DEFAULTS.TASK_TIMEOUT + 0.6}
         )
-        rows = {row["key"]: row for row in (await api.get(f"{BASE}/config")).json()}
+        rows = {
+            row["key"]: row for row in (await admin_api.get(f"{BASE}/config")).json()
+        }
 
-        response = await api.patch(
-            f"{BASE}/config",
+        response = await admin_api.patch(
+            ADMIN_SETTINGS,
             json={"STALE_RUN_AFTER": rows["STALE_RUN_AFTER"]["value"]},
         )
 
@@ -993,15 +1064,15 @@ class TestTimeoutBeyondTheDurationRange:
 
     @pytest.mark.asyncio
     async def test_a_patch_is_refused(
-        self, api: AsyncClient, session: AsyncSession
+        self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Refuse it through the stale-run relationship and store nothing.
 
-        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        response = await api.patch(
-            f"{BASE}/config", json={"TASK_TIMEOUT": BEYOND_TIMEDELTA_SECONDS}
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"TASK_TIMEOUT": BEYOND_TIMEDELTA_SECONDS}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY

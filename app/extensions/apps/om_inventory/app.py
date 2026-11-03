@@ -45,7 +45,7 @@ def _om_inventory_periodic_tasks() -> list[AppPeriodicTask]:
     would commit to a fixed set at ``BaseApp(...)`` construction.
 
     That the checks live *inside* the thunk is what makes both settings genuinely hot
-    in both directions: turning the sweep back on over ``PATCH /config`` re-registers
+    in both directions: turning the sweep back on over ``PUT /enabled`` re-registers
     the task on the next registry rebuild, where a literal guarded by an import-time
     ``if`` would have decided once and stayed decided.
 
