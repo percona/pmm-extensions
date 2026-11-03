@@ -408,7 +408,9 @@ class TestTheDispatchNamesItsRun:
 
         await probe_host(api, HOST, entries(), run_id=run_id)
 
-        assert api.post.call_args.kwargs["json"]["meta"].get(RUN_META_KEY) == named
+        meta = api.post.call_args.kwargs["json"]["meta"]
+        assert meta.get(RUN_META_KEY) == named
+        assert (RUN_META_KEY in meta) is (named is not None)
 
 
 class TestTheBudgetOutlastsAnOrphanedLock:

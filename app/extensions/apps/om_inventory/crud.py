@@ -23,6 +23,7 @@ wipes it on the next sweep, and the test that catches that has to exist before t
 field does, not after.
 """
 
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -87,6 +88,41 @@ class ProbeRunManager(BaseSQLModelManager):
     Model = ProbeRun
 
     @classmethod
+    async def update_running(
+        cls,
+        session: AsyncSession,
+        run_id: UUID,
+        values: Mapping[str, Any],
+        *still: ColumnElement[bool],
+    ) -> bool:
+        """Write a run, unless it already reached a terminal status or no longer matches.
+
+        :param session: The database session.
+        :param run_id: The run to write.
+        :param values: The columns to write.
+        :param still: Further conditions the run must still meet, checked in the update.
+        :return: Whether the run was written.
+        """
+        # Not ``update_where``: its session sync evaluates the conditions in Python,
+        # where SQLite's naive timestamps do not compare with an aware datetime, and
+        # it would also update a loaded copy of a row the update did not match.
+        result = await cls._exec(
+            session,
+            update(ProbeRun)
+            .where(
+                col(ProbeRun.id) == run_id,
+                col(ProbeRun.status) == ProbeRunStatus.RUNNING,
+                *still,
+            )
+            .values(**values)
+            .returning(col(ProbeRun.id))
+            .execution_options(synchronize_session="fetch"),
+        )
+        written = result.scalars().all()
+        await session.commit()
+        return bool(written)
+
+    @classmethod
     async def fail_running(
         cls,
         session: AsyncSession,
@@ -102,23 +138,12 @@ class ProbeRunManager(BaseSQLModelManager):
         :param still: Further conditions the run must still meet, checked in the update.
         :return: Whether the run was failed.
         """
-        # Not ``update_where``: its session sync evaluates the conditions in Python,
-        # where SQLite's naive timestamps do not compare with an aware datetime.
-        result = await cls._exec(
+        return await cls.update_running(
             session,
-            update(ProbeRun)
-            .where(
-                col(ProbeRun.id) == run_id,
-                col(ProbeRun.status) == ProbeRunStatus.RUNNING,
-                *still,
-            )
-            .values(status=ProbeRunStatus.FAILED, finished_at=utc_now(), error=error)
-            .returning(col(ProbeRun.id))
-            .execution_options(synchronize_session="fetch"),
+            run_id,
+            {"status": ProbeRunStatus.FAILED, "finished_at": utc_now(), "error": error},
+            *still,
         )
-        failed = result.scalars().all()
-        await session.commit()
-        return bool(failed)
 
 
 class OmHostManager(BaseSQLModelManager):
@@ -581,24 +606,38 @@ async def prune_runs(session: AsyncSession, keep: int) -> int:
     return int(result.rowcount or 0)
 
 
-async def touch_run(session: AsyncSession, run_id: UUID) -> bool:
+async def touch_run(session: AsyncSession, run_id: UUID, **counts: int) -> bool:
     """Record that a running run's sweep is alive, for :func:`conflicting_run`.
+
+    ``updated_at`` is stamped here rather than by the column's ``now()``: the lease
+    reads it against this process's clock, not the database's.
 
     :param session: The database session.
     :param run_id: The run.
+    :param counts: Host counts to store with it.
     :return: Whether the run is still running, and so still this sweep's.
     """
-    touched = await ProbeRunManager.update_where(
-        session,
-        {"updated_at": utc_now()},
-        col(ProbeRun.id) == run_id,
-        col(ProbeRun.status) == ProbeRunStatus.RUNNING,
-        returning=["id"],
+    return await ProbeRunManager.update_running(
+        session, run_id, {"updated_at": utc_now(), **counts}
     )
-    return bool(touched)
 
 
 fail_running_run = ProbeRunManager.fail_running
+
+
+async def skip_running_run(session: AsyncSession, run_id: UUID, error: str) -> bool:
+    """Record a run as skipped, unless it already reached a terminal status.
+
+    :param session: The database session.
+    :param run_id: The run to skip.
+    :param error: Why it was skipped.
+    :return: Whether the run was skipped.
+    """
+    return await ProbeRunManager.update_running(
+        session,
+        run_id,
+        {"status": ProbeRunStatus.SKIPPED, "finished_at": utc_now(), "error": error},
+    )
 
 
 async def fail_lost_run(session: AsyncSession, run: ProbeRun, now: datetime) -> bool:

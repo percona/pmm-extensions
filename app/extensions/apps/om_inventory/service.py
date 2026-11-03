@@ -60,6 +60,7 @@ from app.extensions.apps.om_inventory.crud import (
     ProbeRunManager,
     prune_runs,
     RUN_LEASE,
+    skip_running_run,
     touch_run,
     upsert_host,
     upsert_service,
@@ -698,17 +699,19 @@ class RunProgress(SweepProgress):
             await self._write()
 
     async def _write(self) -> None:
-        """Store the counts on the run row, logging rather than raising on failure."""
+        """Store the counts on the run row, logging rather than raising on failure.
+
+        A run no longer running keeps the counts it ended with.
+        """
         try:
             async with get_async_session_maker()() as session:
-                run = await ProbeRunManager.get(session, id=self._run_id)
-                run.hosts_total = self._total
-                run.hosts_probeable = self._per_executor.total()
-                run.hosts_finished = self._finished
-                # Set here rather than by the column's ``now()``: the lease reads
-                # ``updated_at`` against this process's clock, not the database's.
-                run.updated_at = utc_now()
-                await ProbeRunManager.save(session, run)
+                await touch_run(
+                    session,
+                    self._run_id,
+                    hosts_total=self._total,
+                    hosts_probeable=self._per_executor.total(),
+                    hosts_finished=self._finished,
+                )
         except Exception:
             logger.warning(
                 "OM inventory: could not record progress of sweep %s",
@@ -1310,6 +1313,7 @@ async def run_probe(
             run = await ProbeRunManager.save(
                 session, ProbeRun(scope=node_ids, updated_at=utc_now())
             )
+            run_id = run.id
         else:
             # Renews the run's lease as well as checking it, so the checks below
             # cannot outlast it.
@@ -1319,8 +1323,7 @@ async def run_probe(
                     execution_id,
                 )
                 return execution_id
-            run = await ProbeRunManager.get(session, id=execution_id)
-        run_id = run.id
+            run_id = execution_id
 
         # ``publish_snapshot`` fires no rebind callback, which is why this is safe
         # here and not from a web process; see
@@ -1334,11 +1337,10 @@ async def run_probe(
             OmInventorySettings,
         )
         if not om_inventory_settings.ENABLED:
-            run.status = ProbeRunStatus.SKIPPED
-            run.finished_at = utc_now()
-            run.error = SWITCHED_OFF_DETAIL
-            await ProbeRunManager.save(session, run)
-            logger.info("OM inventory: sweep %s skipped -- %s", run_id, run.error)
+            if await skip_running_run(session, run_id, SWITCHED_OFF_DETAIL):
+                logger.info(
+                    "OM inventory: sweep %s skipped -- %s", run_id, SWITCHED_OFF_DETAIL
+                )
             return run_id
 
         # The same single-flight check the trigger endpoint makes, repeated here
@@ -1360,11 +1362,9 @@ async def run_probe(
             stale_after=om_inventory_settings.STALE_RUN_AFTER,
         )
         if blocking is not None:
-            run.status = ProbeRunStatus.SKIPPED
-            run.finished_at = utc_now()
-            run.error = await conflict_detail(session, blocking, node_ids)
-            await ProbeRunManager.save(session, run)
-            logger.info("OM inventory: sweep %s skipped -- %s", run_id, run.error)
+            detail = await conflict_detail(session, blocking, node_ids)
+            if await skip_running_run(session, run_id, detail):
+                logger.info("OM inventory: sweep %s skipped -- %s", run_id, detail)
             return run_id
 
     observed_at = utc_now().isoformat()

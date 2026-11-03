@@ -26,10 +26,11 @@ what was written rather than what an ORM update painted onto the object in memor
 """
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import nullcontext
 from datetime import datetime, timedelta, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from sqlmodel import col
@@ -46,6 +47,7 @@ from app.extensions.apps.om_inventory.crud import (
     NOT_STARTED_DETAIL,
     ProbeRunManager,
     RUN_LEASE,
+    skip_running_run,
     START_WAIT,
     touch_run,
 )
@@ -56,7 +58,7 @@ from app.extensions.apps.om_inventory.service import (
     RunLostError,
     RunProgress,
 )
-from tests.app.extensions.apps.om_inventory.conftest import CLEAN_OUTCOME
+from tests.app.extensions.apps.om_inventory.conftest import CLEAN_OUTCOME, host
 
 #: Far longer than any run in these tests, so only the lease can reap one.
 STALE_AFTER = timedelta(hours=4)
@@ -567,13 +569,78 @@ class TestOneClock:
                 "get_async_session_maker",
                 return_value=lambda: nullcontext(session),
             ),
-            patch.object(service_module, "utc_now", return_value=then),
+            patch.object(crud_module, "utc_now", return_value=then),
         ):
             await RunProgress(run.id).started([])
 
         stored = await _stored(session, run)
         assert stored.updated_at is not None
         assert make_datetime_utc(stored.updated_at) == then
+
+
+class TestAnEndedRunKeepsItsRecord:
+    """Leave a run that reached a terminal status as it ended, whatever writes late."""
+
+    @pytest.mark.asyncio
+    async def test_a_late_progress_write_is_dropped(
+        self, session: AsyncSession
+    ) -> None:
+        """Keep the counts a run had when the lease failed it.
+
+        :param session: The database session.
+        """
+        run = await ProbeRunManager.save(
+            session, ProbeRun(status=ProbeRunStatus.FAILED, error=INTERRUPTED_DETAIL)
+        )
+
+        with patch.object(
+            service_module,
+            "get_async_session_maker",
+            return_value=lambda: nullcontext(session),
+        ):
+            await RunProgress(run.id).started([host("db00")])
+
+        stored = await _stored(session, run)
+        assert (stored.status, stored.hosts_total, stored.updated_at) == (
+            ProbeRunStatus.FAILED,
+            0,
+            None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_late_skip_is_dropped(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keep the failure the lease gave a run while ``run_probe`` was checking it.
+
+        :param session: The database session.
+        :param monkeypatch: Turns the sweep off, so ``run_probe`` skips the run.
+        """
+        monkeypatch.setattr(om_inventory_settings, "ENABLED", False)
+        run = await ProbeRunManager.save(session, ProbeRun())
+
+        async def failed_meanwhile(*_args: object) -> None:
+            await fail_running_run(session, run.id, INTERRUPTED_DETAIL)
+
+        with (
+            patch.object(
+                service_module,
+                "get_async_session_maker",
+                return_value=lambda: nullcontext(session),
+            ),
+            patch.object(
+                service_module,
+                "publish_snapshot",
+                AsyncMock(side_effect=failed_meanwhile),
+            ),
+        ):
+            await run_probe(execution_id=run.id, node_ids=[])
+
+        stored = await _stored(session, run)
+        assert (stored.status, stored.error) == (
+            ProbeRunStatus.FAILED,
+            INTERRUPTED_DETAIL,
+        )
 
 
 class TestFinaliseAfterTheLease:
@@ -597,43 +664,63 @@ class TestFinaliseAfterTheLease:
         assert (stored.status, stored.error) == (ProbeRunStatus.SUCCESS, None)
 
 
-class TestFailRunningRun:
-    """Fail a run only while it is still running."""
+#: Each way a run is ended while it runs, and the status it ends with.
+ENDINGS = [
+    pytest.param(fail_running_run, ProbeRunStatus.FAILED, id="fail"),
+    pytest.param(skip_running_run, ProbeRunStatus.SKIPPED, id="skip"),
+]
+
+
+class TestEndARunningRun:
+    """End a run only while it is still running."""
 
     @pytest.mark.asyncio
-    async def test_a_running_run_is_failed(self, session: AsyncSession) -> None:
-        """Record the failure on a run still in flight.
+    @pytest.mark.parametrize(("end", "ended"), ENDINGS)
+    async def test_a_running_run_is_ended(
+        self,
+        session: AsyncSession,
+        end: Callable[[AsyncSession, UUID, str], Awaitable[bool]],
+        ended: ProbeRunStatus,
+    ) -> None:
+        """Record the ending on a run still in flight.
 
         :param session: The database session.
+        :param end: How the run is ended.
+        :param ended: The status it ends with.
         """
         run = await ProbeRunManager.save(session, ProbeRun())
 
-        await fail_running_run(session, run.id, "connection refused")
+        assert await end(session, run.id, "connection refused")
 
         stored = await _stored(session, run)
-        assert (stored.status, stored.error) == (
-            ProbeRunStatus.FAILED,
-            "connection refused",
-        )
+        assert (stored.status, stored.error) == (ended, "connection refused")
+        assert stored.finished_at is not None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "end", [fail_running_run, skip_running_run], ids=["fail", "skip"]
+    )
     @pytest.mark.parametrize(
         "run_status",
         [ProbeRunStatus.SUCCESS, ProbeRunStatus.PARTIAL, ProbeRunStatus.FAILED],
     )
     async def test_a_finished_run_is_not_rewritten(
-        self, session: AsyncSession, run_status: ProbeRunStatus
+        self,
+        session: AsyncSession,
+        end: Callable[[AsyncSession, UUID, str], Awaitable[bool]],
+        run_status: ProbeRunStatus,
     ) -> None:
         """Leave a run that already reached a terminal status as it is.
 
         :param session: The database session.
+        :param end: How the run would be ended.
         :param run_status: Its terminal status.
         """
         run = await ProbeRunManager.save(
             session, ProbeRun(status=run_status, error="its own")
         )
 
-        await fail_running_run(session, run.id, "late")
+        assert not await end(session, run.id, "late")
 
         stored = await _stored(session, run)
         assert (stored.status, stored.error) == (run_status, "its own")
