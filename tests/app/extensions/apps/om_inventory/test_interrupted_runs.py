@@ -460,6 +460,44 @@ class TestTheScheduledScanReapsALostRun:
         swept = await ProbeRunManager.get(session, id=scheduled)
         assert swept.status is ProbeRunStatus.SUCCESS
 
+    @pytest.mark.asyncio
+    async def test_a_scan_lost_before_its_first_beat_is_given_the_lease(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reap a scheduled run lost before its heartbeat after the lease, not the wait.
+
+        Its worker created the run, so the run was started, though not yet written.
+
+        :param session: The database session.
+        :param monkeypatch: Turns the sweep on for the test.
+        """
+        monkeypatch.setattr(om_inventory_settings, "ENABLED", True)
+        refused = OSError("connection refused")
+
+        with (
+            patch.object(
+                service_module,
+                "get_async_session_maker",
+                return_value=lambda: nullcontext(session),
+            ),
+            patch.object(
+                service_module, "publish_snapshot", AsyncMock(side_effect=refused)
+            ),
+            pytest.raises(OSError, match="connection refused"),
+        ):
+            await run_probe()
+
+        [lost] = await crud_module.running_runs(session)
+        later = utc_now() + RUN_LEASE + timedelta(seconds=1)
+        with patch.object(crud_module, "utc_now", return_value=later):
+            assert await conflicting_run(session, None, stale_after=STALE_AFTER) is None
+
+        stored = await _stored(session, lost)
+        assert (stored.status, stored.error) == (
+            ProbeRunStatus.FAILED,
+            INTERRUPTED_DETAIL,
+        )
+
 
 class TestALostFailureWriteIsLeftToTheLease:
     """Reap a run whose failure write was lost while the database was away."""

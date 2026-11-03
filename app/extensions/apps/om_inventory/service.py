@@ -1305,7 +1305,11 @@ async def run_probe(
     session_maker = get_async_session_maker()
     async with session_maker() as session:
         if execution_id is None:
-            run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids))
+            # Written now, as this worker starts it, so it is on the lease from the
+            # start and not given the wait for a worker to start it.
+            run = await ProbeRunManager.save(
+                session, ProbeRun(scope=node_ids, updated_at=utc_now())
+            )
         else:
             # Renews the run's lease as well as checking it, so the checks below
             # cannot outlast it.
