@@ -150,6 +150,32 @@ class TestSetEnabled:
         ]
 
     @pytest.mark.asyncio
+    async def test_flipping_the_switch_fires_its_rebind_callback(
+        self, gated_api: AsyncClient, mocker: MockerFixture
+    ) -> None:
+        """Re-seed beat from the request, not only on the next refresher cycle.
+
+        :param gated_api: The client passing the real gate.
+        :param mocker: Supplies the spy callback.
+        """
+        reseed = mocker.AsyncMock()
+        original = getattr(extensions_app.state, "override_callbacks", None)
+        extensions_app.state.override_callbacks = {
+            (OmInventorySettings.__name__, "ENABLED"): reseed
+        }
+        try:
+            response = await gated_api.put(
+                f"{BASE}/enabled",
+                json={"enabled": not DEFAULTS.ENABLED},
+                headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
+            )
+        finally:
+            extensions_app.state.override_callbacks = original
+
+        assert response.status_code == status.HTTP_200_OK
+        reseed.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_a_person_is_refused_even_as_an_admin(
         self, admin_api: AsyncClient, admin_user: CasdoorUser
     ) -> None:
@@ -211,24 +237,24 @@ class TestTheAppIsActuallyWiredIn:
         }
 
     @pytest.mark.asyncio
-    async def test_a_schedule_change_re_seeds_the_beat_row(self) -> None:
-        """Wire ``SCHEDULE`` to the beat re-seed callback.
+    @pytest.mark.parametrize("key", ["SCHEDULE", "ENABLED"])
+    async def test_a_change_re_seeds_the_beat_row(self, key: str) -> None:
+        """Wire ``SCHEDULE`` and ``ENABLED`` to the beat re-seed callback.
 
         The proxy holding a new interval is not the same thing as beat running on it:
         beat reads ``celery_periodictask``, which only changes when
         ``_reseed_system_periodic_tasks`` runs. Without this entry a schedule change
         is visible over the API and has no effect on when the sweep actually fires —
         the worst shape a configuration bug can take.
+
+        :param key: The field whose change must re-seed beat.
         """
         original = getattr(extensions_app.state, "override_callbacks", None)
         try:
             async with extensions_overrides_lifespan(FastAPI()):
                 callbacks = extensions_app.state.override_callbacks
 
-            assert (
-                OmInventorySettings.__name__,
-                "SCHEDULE",
-            ) in callbacks
+            assert (OmInventorySettings.__name__, key) in callbacks
         finally:
             extensions_app.state.override_callbacks = original
 
