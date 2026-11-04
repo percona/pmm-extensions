@@ -52,6 +52,7 @@ from app.core.settings_override.models import setting_class_token, SettingOverri
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import hot_field_names
 from app.extensions.apps.framework.registry import collect_app_owned_settings_classes
+from app.extensions.apps.om_inventory.app import app as om_inventory_app
 from app.extensions.apps.om_inventory.config import (
     om_inventory_settings,
     OmInventorySettings,
@@ -174,6 +175,49 @@ class TestSetEnabled:
 
         assert response.status_code == status.HTTP_200_OK
         reseed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_switching_on_registers_the_sweep(
+        self, gated_api: AsyncClient
+    ) -> None:
+        """Register the periodic sweep once PMM turns the switch on.
+
+        This is what the re-seed callback rebuilds beat from.
+
+        :param gated_api: The client passing the real gate.
+        """
+        schedules = om_inventory_app.periodic_task_schedules
+        assert schedules is not None
+        assert not isinstance(schedules, list)
+        assert DEFAULTS.SCHEDULE is not None
+        assert schedules() == []
+
+        await gated_api.put(
+            f"{BASE}/enabled",
+            json={"enabled": True},
+            headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
+        )
+
+        assert [task.name for task in schedules()] == ["extensions__run_om_probe"]
+
+    @pytest.mark.asyncio
+    async def test_a_body_without_the_switch_is_refused(
+        self, gated_api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Refuse a body that omits ``enabled`` rather than default the switch.
+
+        :param gated_api: The client passing the real gate.
+        :param session: The database session.
+        """
+        response = await gated_api.put(
+            f"{BASE}/enabled",
+            json={},
+            headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert om_inventory_settings.ENABLED is DEFAULTS.ENABLED
+        assert await _active_rows(session) == []
 
     @pytest.mark.asyncio
     async def test_a_person_is_refused_even_as_an_admin(
