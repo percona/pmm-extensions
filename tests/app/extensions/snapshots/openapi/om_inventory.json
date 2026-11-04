@@ -4287,7 +4287,7 @@
         "title": "YamlField",
         "type": "object"
       },
-      "om_inventory__EnabledRequest": {
+      "om_inventory__EnabledWrite": {
         "description": "Set the app's ``ENABLED`` switch to PMM's Operations for MongoDB switch.\n\n:param enabled: Whether the sweep should run.",
         "properties": {
           "enabled": {
@@ -4298,7 +4298,7 @@
         "required": [
           "enabled"
         ],
-        "title": "EnabledRequest",
+        "title": "EnabledWrite",
         "type": "object"
       },
       "om_inventory__HostResponse": {
@@ -5097,7 +5097,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/om_inventory__EnabledRequest"
+                "$ref": "#/components/schemas/om_inventory__EnabledWrite"
               }
             }
           },

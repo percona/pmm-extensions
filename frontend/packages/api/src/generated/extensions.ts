@@ -10986,12 +10986,12 @@ export interface components {
       replica_set_name: string;
     };
     /**
-     * EnabledRequest
+     * EnabledWrite
      * @description Set the app's ``ENABLED`` switch to PMM's Operations for MongoDB switch.
      *
      *     :param enabled: Whether the sweep should run.
      */
-    om_inventory__EnabledRequest: {
+    om_inventory__EnabledWrite: {
       /** Enabled */
       enabled: boolean;
     };
@@ -15902,7 +15902,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['om_inventory__EnabledRequest'];
+        'application/json': components['schemas']['om_inventory__EnabledWrite'];
       };
     };
     responses: {

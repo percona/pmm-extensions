@@ -92,7 +92,7 @@ from app.extensions.apps.om_inventory.crud import (
     recent_runs,
 )
 from app.extensions.apps.om_inventory.models import (
-    EnabledRequest,
+    EnabledWrite,
     HostResponse,
     OmHost,
     OmService,
@@ -672,7 +672,7 @@ async def get_config(session: SessionDep) -> list[SettingResponse]:
 @router.put("/enabled")
 async def set_enabled(
     request: Request,
-    body: EnabledRequest,
+    body: EnabledWrite,
     session: SessionDep,
     actor: Annotated[BaseUser, IsServicePrincipalDep],
 ) -> SettingResponse:

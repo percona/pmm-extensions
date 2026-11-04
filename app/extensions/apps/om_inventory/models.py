@@ -673,7 +673,7 @@ class TriggerRequest(BaseModel):
     node_ids: list[str] = Field(default_factory=list)
 
 
-class EnabledRequest(BaseModel):
+class EnabledWrite(BaseModel):
     """Set the app's ``ENABLED`` switch to PMM's Operations for MongoDB switch.
 
     :param enabled: Whether the sweep should run.
