@@ -29,7 +29,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-from unittest.mock import call, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from app.extensions.apps.om_inventory.payload import probe as payload
 from app.extensions.apps.om_inventory.payload.probe import (
@@ -84,44 +84,30 @@ CONFIGURED_TIMEOUTS = (
 )
 
 
-def fake_pymongo(command: MagicMock) -> dict[str, ModuleType]:
-    """Build ``pymongo`` and ``pymongo.errors`` modules around one command mock.
+def fake_pymongo(
+    command: MagicMock, anonymous: MagicMock | None = None
+) -> dict[str, ModuleType]:
+    """Build ``pymongo`` and ``pymongo.errors`` modules around command mocks.
 
     :param command: What ``client.admin.command`` does.
+    :param anonymous: What it does instead for a URI without credentials, if given.
     :return: The modules, keyed as ``sys.modules`` holds them.
     """
     errors = ModuleType("pymongo.errors")
     errors.PyMongoError = PyMongoError  # ty: ignore[unresolved-attribute]
     module = ModuleType("pymongo")
-    client = MagicMock()
-    client.admin.command = command
-    mongo_client = MagicMock(return_value=client)
-    module.MongoClient = mongo_client  # ty: ignore[unresolved-attribute]
-    module.errors = errors  # ty: ignore[unresolved-attribute]
-    return {"pymongo": module, "pymongo.errors": errors}
-
-
-def fake_pymongo_per_login(
-    with_credentials: MagicMock, without_credentials: MagicMock
-) -> dict[str, ModuleType]:
-    """Build stand-in modules whose server answers by whether the URI logs in.
-
-    :param with_credentials: What ``client.admin.command`` does for a URI with
-        credentials.
-    :param without_credentials: What it does for a URI without them.
-    :return: The modules, keyed as ``sys.modules`` holds them.
-    """
-    modules = fake_pymongo(with_credentials)
 
     def connect(uri: str) -> MagicMock:
         client = MagicMock()
-        client.admin.command = with_credentials if "@" in uri else without_credentials
+        logs_in = anonymous is None or "@" in uri
+        client.admin.command = command if logs_in else anonymous
         return client
 
-    modules["pymongo"].MongoClient = MagicMock(  # ty: ignore[unresolved-attribute]
+    module.MongoClient = MagicMock(  # ty: ignore[unresolved-attribute]
         side_effect=connect
     )
-    return modules
+    module.errors = errors  # ty: ignore[unresolved-attribute]
+    return {"pymongo": module, "pymongo.errors": errors}
 
 
 def rejecting() -> MagicMock:
@@ -153,22 +139,14 @@ def unauthenticated(*, arbiter: bool) -> MagicMock:
     return MagicMock(side_effect=answer)
 
 
-def collect(command: MagicMock) -> dict[str, Any]:
+def collect(command: MagicMock, anonymous: MagicMock | None = None) -> dict[str, Any]:
     """Run :func:`collect_database_facts` against the stand-in driver.
 
     :param command: What ``client.admin.command`` does.
+    :param anonymous: What it does instead for a URI without credentials, if given.
     :return: The summarised facts.
     """
-    return collect_with(fake_pymongo(command))
-
-
-def collect_with(modules: Mapping[str, ModuleType]) -> dict[str, Any]:
-    """Run :func:`collect_database_facts` with ``modules`` imported.
-
-    :param modules: What ``sys.modules`` holds for ``pymongo`` and its errors.
-    :return: The summarised facts.
-    """
-    with patch.dict(sys.modules, modules):
+    with patch.dict(sys.modules, fake_pymongo(command, anonymous)):
         return collect_database_facts(TARGET, "root:wrong@", "admin", 500)
 
 
@@ -201,46 +179,28 @@ class TestCollectDatabaseFacts:
 
     def test_a_rejected_password_is_the_target_s_error(self) -> None:
         """Report an authentication failure as the error, with its type and code."""
-        command = MagicMock(
-            side_effect=OperationFailure(
-                "Authentication failed.", AUTHENTICATION_FAILED
-            )
-        )
+        command = rejecting()
 
-        facts = collect(command)
+        facts = collect(command, unauthenticated(arbiter=False))
 
         assert facts["error"] == "the credentials for user root were rejected"
         assert facts["error_type"] == "OperationFailure"
         assert facts["error_code"] == AUTHENTICATION_FAILED
         # Not four command errors restating it.
         assert "command_errors" not in facts
-        # Once with the credentials, once without them in case it is an arbiter.
-        assert command.call_args_list == [call("ping"), call("ping")]
+        command.assert_called_once_with("ping")
 
-    def test_an_arbiter_that_rejects_the_credentials_is_read_without_them(
-        self,
-    ) -> None:
-        """Keep what an arbiter answers unauthenticated, and its refusals as such."""
-        facts = collect_with(
-            fake_pymongo_per_login(rejecting(), unauthenticated(arbiter=True))
-        )
+    def test_an_arbiter_is_read_without_the_credentials(self) -> None:
+        """Never offer an arbiter the login it would reject, and keep its refusals."""
+        command = rejecting()
+
+        facts = collect(command, unauthenticated(arbiter=True))
 
         assert "error" not in facts
         assert facts["is_arbiter"] is True
         assert facts["db_version"] == "7.0.45-24"
         assert sorted(facts["command_errors"]) == ["cmd_line_opts", "repl_set_status"]
-
-    def test_another_member_that_rejects_the_credentials_stays_the_error(
-        self,
-    ) -> None:
-        """Report rejected credentials on a member that holds data, after all."""
-        facts = collect_with(
-            fake_pymongo_per_login(rejecting(), unauthenticated(arbiter=False))
-        )
-
-        assert facts["error"] == "the credentials for user root were rejected"
-        assert facts["error_code"] == AUTHENTICATION_FAILED
-        assert facts["is_arbiter"] is None
+        command.assert_not_called()
 
     def test_an_unreachable_server_is_the_target_s_error(self) -> None:
         """Report a refused connection as the error, and wait for it only once."""
@@ -253,7 +213,7 @@ class TestCollectDatabaseFacts:
         assert facts["error"] == "could not connect to node00:27017: Connection refused"
         assert facts["error_type"] == "ServerSelectionTimeoutError"
         assert facts["error_code"] is None
-        command.assert_called_once_with("ping")
+        command.assert_called_once_with("hello")
 
     def test_one_failing_command_on_a_reachable_server_is_not_an_error(self) -> None:
         """Keep a standalone's refused ``replSetGetStatus`` a command error only."""
@@ -332,8 +292,8 @@ class TestDescribeDatabaseError:
         """Report the server's own message, not the reply document around it."""
         err = OperationFailure(
             "Unauthorized, full error: {...}",
-            13,
-            {"errmsg": "command ping requires authentication", "code": 13},
+            UNAUTHORIZED,
+            {"errmsg": "command ping requires authentication", "code": UNAUTHORIZED},
         )
 
         described = describe_database_error(err, TARGET, "", None, 5000)
@@ -348,13 +308,9 @@ class TestProbeRecord:
         self, tmp_path: Path
     ) -> None:
         """Mark the record failed, with the type and code beside the message."""
-        command = MagicMock(
-            side_effect=OperationFailure(
-                "Authentication failed.", AUTHENTICATION_FAILED
-            )
-        )
+        modules = fake_pymongo(rejecting(), unauthenticated(arbiter=False))
 
-        record, credentials = build_record(fake_pymongo(command), tmp_path)
+        record, credentials = build_record(modules, tmp_path)
 
         assert record["status"] == STATUS_FAILED
         assert record["error"] == (
@@ -373,18 +329,6 @@ class TestProbeRecord:
         assert record["error_type"] == "ModuleNotFoundError"
         assert record["error_code"] is None
         assert record["database"] is None
-
-    def test_an_arbiter_that_rejects_the_credentials_leaves_the_record_ok(
-        self, tmp_path: Path
-    ) -> None:
-        """Count an arbiter read without credentials as collected."""
-        modules = fake_pymongo_per_login(rejecting(), unauthenticated(arbiter=True))
-
-        record, _ = build_record(modules, tmp_path)
-
-        assert record["status"] == STATUS_OK
-        assert "error" not in record
-        assert record["database"]["is_arbiter"] is True
 
     def test_a_queried_database_leaves_the_record_ok(self, tmp_path: Path) -> None:
         """Leave a record whose database answered unmarked."""

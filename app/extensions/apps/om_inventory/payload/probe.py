@@ -521,20 +521,21 @@ def collect_database_facts(
 ):
     """Return facts read from the database for one target, or why there are none.
 
-    The database is reached and authenticated against once, up front. Failing that
-    is a target-level failure: the result carries ``error`` (see
-    :func:`describe_database_error`), ``error_type`` (the exception class name) and
-    ``error_code`` (the server's error code, ``None`` where there is none), and no
-    facts.
+    An arbiter holds no data and therefore no users, so it rejects any login. With
+    credentials to offer, the server is first asked ``hello``, which needs no login:
+    an arbiter is then read without the credentials, any other server with them.
+
+    Failing to reach the database, or a rejected login, is a target-level failure:
+    the result carries ``error`` (see :func:`describe_database_error`),
+    ``error_type`` (the exception class name) and ``error_code`` (the server's error
+    code, ``None`` where there is none), and no facts.
 
     Once connected, each command is run independently so one failure does not lose
     the others — ``replSetGetStatus`` legitimately fails against a mongos or a
     standalone, and that must not discard the ``buildInfo`` that came back fine.
-    Those failures go to ``command_errors`` and do not fail the target.
-
-    An arbiter holds no data and therefore no users, so it rejects any credentials.
-    A rejected login is retried once without them, and that answer is kept only if
-    ``hello`` says ``arbiterOnly``: on any other member the rejection is the error.
+    Those failures go to ``command_errors`` and do not fail the target. An arbiter
+    read over the network refuses ``getCmdLineOpts`` and ``replSetGetStatus`` that
+    way.
 
     :param target: The target mapping carrying ``host`` and ``port``.
     :param userinfo: The credentials prefix.
@@ -548,14 +549,11 @@ def collect_database_facts(
     from pymongo.errors import PyMongoError
 
     try:
-        facts = query_database(
-            build_uri(target, userinfo, auth_source, connect_timeout_ms)
-        )
+        uri = build_uri(target, "", "", connect_timeout_ms)
+        if userinfo and not is_arbiter(uri):
+            uri = build_uri(target, userinfo, auth_source, connect_timeout_ms)
+        facts = query_database(uri)
     except PyMongoError as err:
-        if userinfo and getattr(err, "code", None) == AUTHENTICATION_FAILED:
-            arbiter = query_arbiter(target, connect_timeout_ms)
-            if arbiter is not None:
-                return summarise_database_facts(arbiter)
         facts = {
             "error": describe_database_error(
                 err, target, userinfo, credentials_file, connect_timeout_ms
@@ -603,26 +601,20 @@ def query_database(uri):
     return facts
 
 
-def query_arbiter(target, connect_timeout_ms):
-    """Return what a server answers without credentials, if it is an arbiter.
+def is_arbiter(uri):
+    """Return whether the server at ``uri`` is an arbiter, asked without a login.
 
-    Commands it refuses unauthenticated, such as ``getCmdLineOpts`` over the network,
-    go to ``command_errors`` like any other refused command.
-
-    :param target: The target mapping carrying ``host`` and ``port``.
-    :param connect_timeout_ms: Connect and server-selection timeout.
-    :return: The facts, or ``None`` when the server is not an arbiter or cannot be
-        queried without credentials either.
+    :param uri: The server's connection URI without credentials.
+    :return: Whether ``hello`` reports ``arbiterOnly``.
+    :raises PyMongoError: When the server cannot be reached.
     """
-    from pymongo.errors import PyMongoError
+    from pymongo import MongoClient
 
+    client = MongoClient(uri)
     try:
-        facts = query_database(build_uri(target, "", "", connect_timeout_ms))
-    except PyMongoError:
-        return None
-    if not (facts.get("hello") or {}).get("arbiterOnly"):
-        return None
-    return facts
+        return bool(client.admin.command("hello").get("arbiterOnly"))
+    finally:
+        client.close()
 
 
 def describe_database_error(err, target, userinfo, credentials_file, connect_timeout_ms):
