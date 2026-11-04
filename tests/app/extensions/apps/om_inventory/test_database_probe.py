@@ -130,7 +130,7 @@ def unauthenticated(*, arbiter: bool) -> MagicMock:
     def answer(name: str) -> dict[str, Any]:
         if name in ("getCmdLineOpts", "replSetGetStatus"):
             raise OperationFailure("Unauthorized", UNAUTHORIZED)
-        if name == "hello":
+        if name in ("hello", "isMaster"):
             return {"arbiterOnly": True} if arbiter else {"isWritablePrimary": True}
         if name == "buildInfo":
             return {"version": "7.0.45-24"}
@@ -202,6 +202,16 @@ class TestCollectDatabaseFacts:
         assert sorted(facts["command_errors"]) == ["cmd_line_opts", "repl_set_status"]
         command.assert_not_called()
 
+    def test_a_host_without_credentials_connects_once(self) -> None:
+        """Skip the arbiter question when there is no login to withhold."""
+        modules = fake_pymongo(unauthenticated(arbiter=True))
+
+        with patch.dict(sys.modules, modules):
+            facts = collect_database_facts(TARGET, "", "admin", 500)
+
+        assert facts["is_arbiter"] is True
+        assert modules["pymongo"].MongoClient.call_count == 1
+
     def test_an_unreachable_server_is_the_target_s_error(self) -> None:
         """Report a refused connection as the error, and wait for it only once."""
         command = MagicMock(
@@ -213,7 +223,7 @@ class TestCollectDatabaseFacts:
         assert facts["error"] == "could not connect to node00:27017: Connection refused"
         assert facts["error_type"] == "ServerSelectionTimeoutError"
         assert facts["error_code"] is None
-        command.assert_called_once_with("hello")
+        command.assert_called_once_with("isMaster")
 
     def test_one_failing_command_on_a_reachable_server_is_not_an_error(self) -> None:
         """Keep a standalone's refused ``replSetGetStatus`` a command error only."""

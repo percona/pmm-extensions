@@ -522,7 +522,7 @@ def collect_database_facts(
     """Return facts read from the database for one target, or why there are none.
 
     An arbiter holds no data and therefore no users, so it rejects any login. With
-    credentials to offer, the server is first asked ``hello``, which needs no login:
+    credentials to offer, the server is first asked ``isMaster``, which needs no login:
     an arbiter is then read without the credentials, any other server with them.
 
     Failing to reach the database, or a rejected login, is a target-level failure:
@@ -605,14 +605,15 @@ def is_arbiter(uri):
     """Return whether the server at ``uri`` is an arbiter, asked without a login.
 
     :param uri: The server's connection URI without credentials.
-    :return: Whether ``hello`` reports ``arbiterOnly``.
+    :return: Whether ``isMaster`` reports ``arbiterOnly``.
     :raises PyMongoError: When the server cannot be reached.
     """
     from pymongo import MongoClient
 
     client = MongoClient(uri)
     try:
-        return bool(client.admin.command("hello").get("arbiterOnly"))
+        # Not ``hello``, which MongoDB before 4.4.2 does not have.
+        return bool(client.admin.command("isMaster").get("arbiterOnly"))
     finally:
         client.close()
 
