@@ -48,7 +48,6 @@ GATED_APPS: Final = {
 NON_ADMIN_MINIMUMS: Final = {
     ("extensions", "POST", "/api/apps/alerts/restore"): UserRole.EDITOR,
     ("extensions", "POST", "/api/apps/alerts/push"): UserRole.EDITOR,
-    ("extensions", "POST", "/api/apps/om_inventory/runs"): UserRole.EDITOR,
     ("tasks", "POST", "/history/latest"): UserRole.NONE,
 }
 

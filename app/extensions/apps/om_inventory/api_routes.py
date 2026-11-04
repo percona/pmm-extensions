@@ -32,11 +32,15 @@ Auth is applied at the mount level: ``/api/apps`` carries the ``IsApiAuthenticat
 router guard, and unsafe methods additionally require a bearer and the rank
 :func:`app.api.deps.require_minimum_role` registers per route. An unregistered route
 resolves to ``DEFAULT_MINIMUM_ROLE`` (admin), so every unsafe route here registers its
-rank explicitly rather than inheriting one: the estate deletes and the configuration
-writes are admin, and refreshing is **editor**, because a refresh runs a fixed payload
-and is the button beside a row — requiring admin would put the routine question behind
-the rarest role. pmm-managed's service principal is admitted by identity at that gate,
-so PMM reaches all of these with its deployment token whatever rank a human needs.
+rank explicitly rather than inheriting one, except ``PUT /enabled``, which only the
+service principal may call. Every other one is admin: in Operations for MongoDB
+admins act and every other role only reads. pmm-managed calls on a user's
+behalf with that user's own credential, so these ranks hold for PMM's callers too.
+
+Configuration writes are not served here: an admin changes ``OmInventorySettings``
+through ``/api/extensions/admin/settings`` like any other class. The exception is
+``ENABLED``, which pmm-managed sets from PMM's own switch with no user behind the call,
+so it has a route of its own that only the service principal may use.
 """
 
 import logging
@@ -50,8 +54,8 @@ from kombu.exceptions import KombuError
 from pydantic import ValidationError
 from sqlmodel import col
 
-from app.api.deps import require_minimum_role
-from app.core.auth.models import UserRole
+from app.api.deps import IsServicePrincipalDep, require_minimum_role
+from app.core.auth.models import BaseUser, UserRole
 from app.core.exceptions import (
     HTTPConflictException,
     HTTPNotFoundException,
@@ -61,7 +65,6 @@ from app.core.exceptions import (
 from app.core.pagination import PaginatedResponse, PaginationDep
 from app.core.settings_override.api import (
     apply_class_overrides,
-    clear_class_override,
     collect_class_setting_responses,
     SettingResponse,
     SettingsPatch,
@@ -89,6 +92,7 @@ from app.extensions.apps.om_inventory.crud import (
     recent_runs,
 )
 from app.extensions.apps.om_inventory.models import (
+    EnabledWrite,
     HostResponse,
     OmHost,
     OmService,
@@ -104,7 +108,7 @@ from app.extensions.apps.om_inventory.models import (
 )
 from app.extensions.apps.om_inventory.schema import om_inventory_schema
 from app.extensions.apps.om_inventory.service import SWITCHED_OFF_DETAIL
-from app.extensions.deps import ApiCurrentUser, SessionDep
+from app.extensions.deps import SessionDep
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +131,9 @@ def _redact_config(responses: list[SettingResponse]) -> list[SettingResponse]:
     """Redact fields too sensitive for this route's viewer-readable audience.
 
     ``GET /config`` is gated only by ``IsApiAuthenticated`` — any logged-in PMM Extensions
-    user — because that is what the principal behind the pmm-managed
-    ``--extensions-token`` flag needs to reach the rest of this settings class.
-    ``CREDENTIALS_PATH`` is the one field that same audience must not see: it names
+    user — because every PMM role may see Operations for MongoDB's configuration,
+    while the admin settings router serves the same class to admins only.
+    ``CREDENTIALS_PATH`` is the one field that wider audience must not see: it names
     a file a MongoDB driver reads as a URI, and the settings class docstring already
     calls it too sensitive to make writable, let alone world-readable to any
     signed-in viewer.
@@ -566,7 +570,7 @@ async def get_probe_run(run_id: UUID, session: SessionDep) -> ProbeRunDetail:
     "/runs",
     status_code=http_status.HTTP_202_ACCEPTED,
 )
-@require_minimum_role(UserRole.EDITOR)
+@require_minimum_role(UserRole.ADMIN)
 async def trigger_probe(
     session: SessionDep, request: TriggerRequest | None = None
 ) -> ProbeRunAccepted:
@@ -640,13 +644,9 @@ async def trigger_probe(
 async def get_config(session: SessionDep) -> list[SettingResponse]:
     """Return this app's configuration: every field, its value and its origin.
 
-    Served here rather than pointing the caller at ``/api/extensions/admin/settings``
-    because that router is admin-gated and PMM's principal is not an admin: the
-    bearer of the pmm-managed ``--extensions-token`` flag resolves to the synthetic
-    ``extensions-service`` user, built with ``is_admin=False`` deliberately, since
-    it is a deployment-level shared secret with no person behind it. An app-owned
-    endpoint keeps a schedule change scoped to this app instead of requiring PMM
-    Extensions wide administrative access.
+    Served here as well as on ``/api/extensions/admin/settings`` because that router
+    is admin-gated for reads too, and every PMM role may see this configuration.
+    Changing it stays admin-only, on that router.
 
     Every field is listed, not only the overridden ones, and each row carries
     whether an override is in effect - so "why is it sweeping every 10 minutes"
@@ -669,79 +669,37 @@ async def get_config(session: SessionDep) -> list[SettingResponse]:
     )
 
 
-@router.patch("/config")
-@require_minimum_role(UserRole.ADMIN)
-# pagination-ok: one row per key in the request body, so the caller already bounds it.
-async def patch_config(
+@router.put("/enabled")
+async def set_enabled(
     request: Request,
-    body: SettingsPatch,
+    body: EnabledWrite,
     session: SessionDep,
-    actor: ApiCurrentUser,
-) -> list[SettingResponse]:
-    """Update this app's configuration at runtime.
+    actor: Annotated[BaseUser, IsServicePrincipalDep],
+) -> SettingResponse:
+    """Follow PMM's Operations for MongoDB switch.
 
-    The batch is atomic: a single bad key rejects all of it with a per-key 422 and
-    writes nothing, so a caller never has to work out how far a partial apply got.
+    pmm-managed calls this at startup and whenever the switch changes, with no user
+    behind the call, so only the service principal may use it; a person changes
+    this app's configuration through ``/api/extensions/admin/settings`` instead.
 
-    Only ``hot_field`` fields are accepted. ``CREDENTIALS_PATH`` is deliberately
-    not one: it names a file the payload reads on every database *host* and hands
-    to a driver as a URI, so making it settable here would widen "configure this
-    app" into "read a chosen file across the estate".
-
-    An ``ENABLED`` or ``SCHEDULE`` change lands without a restart -
-    ``periodic_task_schedules`` is a thunk re-read on registry rebuild - but beat
-    runs as a forked side-car process, which reaches the new value through its own
-    settings refresher rather than through this request.
-
-    ``ENABLED`` is what PMM's Operations for MongoDB switch calls, via this same
-    route with the credential of the pmm-managed ``--extensions-token`` flag (see
-    ``require_minimum_role``'s service-principal bypass): it flips independently of
-    ``SCHEDULE``, so the configured cadence survives Operations for MongoDB being
-    turned off and back on rather than being overwritten each time.
+    It flips ``ENABLED`` independently of ``SCHEDULE``, so the configured cadence
+    survives the switch being turned off and back on. The change lands without a
+    restart, the same way an admin's change on the settings router does.
 
     :param request: The incoming request; its ``app.state`` carries the rebind
-        callbacks fired for the keys this changed.
-    :param body: The ``{key: value, ...}`` batch.
+        callbacks fired for ``ENABLED``.
+    :param body: The switch's new state.
     :param session: The database session.
-    :param actor: The calling principal, whose username is recorded on every
-        row written. Not ``ApiAdminUsername``: this endpoint admits any
-        authenticated caller, PMM's non-admin service principal included.
-    :return: One row per applied key, in input order.
+    :param actor: The service principal, recorded on the row written.
+    :return: The ``ENABLED`` row as written.
     """
-    return await apply_class_overrides(
+    (row,) = await apply_class_overrides(
         request=request,
         session=session,
         setting_class=OmInventorySettings.__name__,
         settings_cls=OmInventorySettings,
         proxy=om_inventory_settings,  # ty: ignore[invalid-argument-type]
-        body=body,
+        body=SettingsPatch({"ENABLED": body.enabled}),
         actor=actor.username,
     )
-
-
-@router.delete("/config/{key}", status_code=http_status.HTTP_204_NO_CONTENT)
-@require_minimum_role(UserRole.ADMIN)
-async def delete_config_override(
-    request: Request, key: str, session: SessionDep
-) -> None:
-    """Put one field back to whatever the deployment configured.
-
-    Without this, an operator who once changed a value can only ever change it to
-    another one: "no override" stops being a reachable state, and the YAML the
-    deployment ships becomes unrecoverable through the API. Idempotent, so
-    clearing a field that was never overridden is not an error.
-
-    :param request: The incoming request; its ``app.state`` carries the rebind
-        callbacks fired for the reverted key.
-    :param key: The field name, or a ``__``-delimited nested key such as
-        ``SCHEDULE__every``.
-    :param session: The database session.
-    """
-    await clear_class_override(
-        request=request,
-        session=session,
-        setting_class=OmInventorySettings.__name__,
-        settings_cls=OmInventorySettings,
-        proxy=om_inventory_settings,  # ty: ignore[invalid-argument-type]
-        key=key,
-    )
+    return row

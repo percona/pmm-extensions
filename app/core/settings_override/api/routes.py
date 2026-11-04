@@ -21,7 +21,6 @@ __all__ = [
     "RemoteClassEntry",
     "apply_class_overrides",
     "build_settings_router",
-    "clear_class_override",
     "collect_class_setting_responses",
 ]
 
@@ -1169,7 +1168,7 @@ def build_settings_router(
             )
             return
         settings_cls, proxy = _resolve(setting_class)
-        await clear_class_override(
+        await _clear_class_override(
             request=request,
             session=session,
             setting_class=setting_class,
@@ -1566,10 +1565,9 @@ async def apply_class_overrides(
     routing and the remote-class branch. It exists as a function — not only
     inlined in :func:`build_settings_router`'s ``patch_settings`` closure —
     because an app that owns its settings class (:class:`AppOwnedClassEntry`)
-    may also need to serve its *own* narrower ``/config`` endpoint: the shared
-    settings router is admin-gated, and not every caller of an app's
-    configuration is a PMM Extensions admin (e.g. the principal behind the
-    pmm-managed ``--extensions-token`` flag). A second implementation of
+    may also need a narrower write of its own that the admin-gated shared router
+    cannot serve, such as om_inventory's ``PUT /enabled``, which only PMM
+    Extensions' service principal may call. A second implementation of
     "validate the batch, write it atomically, republish the snapshot, rebind"
     is exactly the kind of duplicate that drifts into two different validation
     rules.
@@ -1624,7 +1622,7 @@ async def apply_class_overrides(
     ]
 
 
-async def clear_class_override(
+async def _clear_class_override(
     *,
     request: Request,
     session: AsyncSession,
@@ -1635,10 +1633,9 @@ async def clear_class_override(
 ) -> None:
     """Revert one override row for a local class to its YAML/env value.
 
-    The counterpart to :func:`apply_class_overrides`, extracted for the same
-    reason: an app serving its own ``/config`` needs "put this back the way the
-    deployment configured it", and without it an operator who once set a value can
-    only ever set another one — "no override" stops being reachable.
+    The body of the router's ``DELETE /{setting_class}/{key}`` for a local class:
+    without it an operator who once set a value can only ever set another one —
+    "no override" stops being reachable.
 
     Idempotent: clearing a key with no row succeeds. A ``NOT_OVERRIDABLE`` field
     with no row answers 409, because the intent cannot be satisfied rather than
