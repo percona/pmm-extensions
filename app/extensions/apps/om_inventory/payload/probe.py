@@ -604,16 +604,22 @@ def query_database(uri):
 def is_arbiter(uri):
     """Return whether the server at ``uri`` is an arbiter, asked without a login.
 
+    A server that refuses the question is not an arbiter, which answers it before any
+    login, so it is read with the credentials as before.
+
     :param uri: The server's connection URI without credentials.
     :return: Whether ``isMaster`` reports ``arbiterOnly``.
     :raises PyMongoError: When the server cannot be reached.
     """
     from pymongo import MongoClient
+    from pymongo.errors import OperationFailure
 
     client = MongoClient(uri)
     try:
         # Not ``hello``, which MongoDB before 4.4.2 does not have.
         return bool(client.admin.command("isMaster").get("arbiterOnly"))
+    except OperationFailure:
+        return False
     finally:
         client.close()
 

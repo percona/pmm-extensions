@@ -45,6 +45,8 @@ TARGET = {"service": "rs0-0", "service_id": "svc-1", "host": "node00", "port": 2
 NO_REPLICATION = 76
 #: MongoDB's ``Unauthorized``, for a command a client that did not log in may not run.
 UNAUTHORIZED = 13
+#: MongoDB's ``CommandNotFound``.
+NO_SUCH_COMMAND = 59
 
 
 class PyMongoError(Exception):
@@ -95,6 +97,7 @@ def fake_pymongo(
     """
     errors = ModuleType("pymongo.errors")
     errors.PyMongoError = PyMongoError  # ty: ignore[unresolved-attribute]
+    errors.OperationFailure = OperationFailure  # ty: ignore[unresolved-attribute]
     module = ModuleType("pymongo")
 
     def connect(uri: str) -> MagicMock:
@@ -201,6 +204,22 @@ class TestCollectDatabaseFacts:
         assert facts["db_version"] == "7.0.45-24"
         assert sorted(facts["command_errors"]) == ["cmd_line_opts", "repl_set_status"]
         command.assert_not_called()
+
+    def test_a_server_that_refuses_the_question_is_read_with_the_credentials(
+        self,
+    ) -> None:
+        """Log in as before when the unauthenticated ``isMaster`` is refused."""
+        anonymous = MagicMock(
+            side_effect=OperationFailure("no such command: 'isMaster'", NO_SUCH_COMMAND)
+        )
+        command = MagicMock(
+            side_effect=lambda name: {"version": "4.2.8"} if name == "buildInfo" else {}
+        )
+
+        facts = collect(command, anonymous)
+
+        assert "error" not in facts
+        assert facts["db_version"] == "4.2.8"
 
     def test_a_host_without_credentials_connects_once(self) -> None:
         """Skip the arbiter question when there is no login to withhold."""
