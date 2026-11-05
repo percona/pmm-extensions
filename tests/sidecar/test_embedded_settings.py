@@ -107,7 +107,7 @@ ceilings by this, so an unpinned worker (one child per host CPU) would void it.
 EMBEDDED_POOL_SIZING = {"POOL_SIZE": 3, "MAX_OVERFLOW": 2, "POOL_TIMEOUT": 10.0}
 """The pool keys the profile writes into its shared database block."""
 
-ALLOWLIST_SIZE = 25
+ALLOWLIST_SIZE = 26
 """How many entries the embedded override allowlist ships.
 
 ``sidecar/settings.yaml``'s ``ALLOWED_KEYS`` is the list itself. A field missing
