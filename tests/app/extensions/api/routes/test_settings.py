@@ -2177,6 +2177,7 @@ class TestExtensionsOverridesLifespanWiring:
                 ("InventoryAppSettings", "COLLECTION_INTERVAL"),
                 (EXTENSIONS_SETTINGS, "APP_DRAIN"),
                 ("OmInventorySettings", "ENABLED"),
+                ("OmInventorySettings", "AUTO_SCAN"),
                 ("OmInventorySettings", "SCHEDULE"),
             }
         finally:

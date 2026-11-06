@@ -750,18 +750,20 @@ class TestCollectAppOwnedSettingsClasses:
         with pytest.raises(TypeError, match="AppOwnedClassEntry"):
             collect_app_owned_settings_classes([App(module_name="checksums")])
 
-    def test_rejects_unknown_reseed_key(self, mocker: MockerFixture) -> None:
-        """Fail when ``reseed_keys`` names a field absent from ``settings_cls``.
+    @pytest.mark.parametrize("keys", ["reseed_keys", "service_only_keys"])
+    def test_rejects_unknown_key(self, mocker: MockerFixture, keys: str) -> None:
+        """Fail when ``reseed_keys`` or ``service_only_keys`` names an absent field.
 
         A typo'd or renamed field must fail collection rather than silently
-        registering a beat-reseed callback that can never fire.
+        registering a callback that can never fire, or leaving the real field
+        open to admins.
         """
         fake_entry = AppOwnedClassEntry(
             setting_class=AlertsSettings.__name__,
             settings_cls=AlertsSettings,
             proxy=alerts_settings,
             app_key="checksums",
-            reseed_keys=frozenset({"BACKUP_INTERVL"}),
+            **{keys: frozenset({"BACKUP_INTERVL"})},
         )
         _checksums_declaring(mocker, [fake_entry])
         with pytest.raises(ValueError, match="not a hot-reloadable field"):

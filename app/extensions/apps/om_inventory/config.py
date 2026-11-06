@@ -84,10 +84,14 @@ class OmInventorySettings(BaseYamlSettings):
         and back on rather than being overwritten each time. Defaults to ``False``,
         matching PMM's own default for that switch, so a fresh deployment's estate
         does not start sweeping until Operations for MongoDB is actually turned on
-        somewhere.
-    :param SCHEDULE: How often the probe sweeps the estate, while ``ENABLED``. ``None``
-        unregisters the periodic job regardless of ``ENABLED``, leaving the trigger
-        endpoint as the only way facts are refreshed.
+        somewhere. Only the service principal may change it.
+    :param AUTO_SCAN: Whether the app sweeps on its own: on ``SCHEDULE``, and once
+        when PMM turns ``ENABLED`` on. Off leaves sweeping to requests: a triggered
+        sweep still runs while ``ENABLED``, and ``SCHEDULE`` keeps its value for when
+        it is turned back on.
+    :param SCHEDULE: How often the probe sweeps the estate, while ``ENABLED`` and
+        ``AUTO_SCAN``. ``None`` unregisters the periodic job regardless of either,
+        leaving the trigger endpoint as the only way facts are refreshed.
     :param PROBE_DATABASE: Whether the payload connects to mongod and runs database
         commands. ``False`` collects process and OS facts only, which needs no credentials
         — and still yields ``installed_version``, the field this app exists for.
@@ -153,6 +157,7 @@ class OmInventorySettings(BaseYamlSettings):
     )
 
     ENABLED: bool = hot_field(default=False)
+    AUTO_SCAN: bool = hot_field(default=True)
     SCHEDULE: IntervalSchedule | None = hot_field(
         IntervalSchedule(every=10, period=Period.MINUTES)
     )

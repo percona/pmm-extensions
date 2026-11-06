@@ -27,12 +27,16 @@ from app.extensions.apps.om_inventory.config import (
     OmInventorySettings,
 )
 
+SERVICE_ONLY_KEYS = frozenset({"ENABLED"})
+"""Set by pmm-managed alone, through ``PUT /enabled``, from PMM's own switch."""
+
 APP_OWNED_SETTINGS_CLASSES: list[AppOwnedClassEntry] = [
     AppOwnedClassEntry(
         setting_class=OmInventorySettings.__name__,
         settings_cls=OmInventorySettings,
         proxy=om_inventory_settings,  # ty: ignore[invalid-argument-type]
         app_key="om_inventory",
-        reseed_keys=frozenset({"ENABLED", "SCHEDULE"}),
+        reseed_keys=frozenset({"ENABLED", "AUTO_SCAN", "SCHEDULE"}),
+        service_only_keys=SERVICE_ONLY_KEYS,
     ),
 ]

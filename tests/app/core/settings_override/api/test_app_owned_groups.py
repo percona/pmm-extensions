@@ -100,6 +100,7 @@ def app_owned_client_fixture(
             settings_cls=AlertsSettings,
             proxy=alerts_settings,
             app_key="alerts",
+            service_only_keys=frozenset({"BACKUP_INTERVAL"}),
         ),
     ]
     router = build_settings_router(
@@ -229,6 +230,56 @@ class TestBuildSettingsRouterAppOwned:
                 ],
                 resolve_app_metadata=_mock_resolve_app_metadata,
             )
+
+
+class TestServiceOnlyKeys:
+    """Withhold an app-owned class's ``service_only_keys`` from the router."""
+
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        [
+            ("PATCH", "", {"backup_interval__every": 5}),
+            ("DELETE", "/BACKUP_INTERVAL__every", None),
+        ],
+        ids=["patch-a-nested-leaf-in-any-casing", "delete"],
+    )
+    def test_writes_are_refused(
+        self,
+        app_owned_client: TestClient,
+        method: str,
+        path: str,
+        body: dict[str, int] | None,
+    ) -> None:
+        """Refuse changing or clearing a reserved field, judged by its top level."""
+        response = app_owned_client.request(
+            method, f"/settings/{AlertsSettings.__name__}{path}", json=body
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert [entry["type"] for entry in response.json()["detail"]] == [
+            "not_overridable"
+        ]
+
+    def test_reads_report_it_not_overridable(
+        self, app_owned_client: TestClient
+    ) -> None:
+        """Tell a client not to offer the field, while its siblings stay editable."""
+        groups = app_owned_client.get(LIST_URL).json()["groups"]
+        (alerts,) = [g for g in groups if g["setting_class"] == AlertsSettings.__name__]
+        reload_by_key = {row["key"]: row["reload"] for row in alerts["settings"]}
+        detail = app_owned_client.get(
+            f"/settings/{AlertsSettings.__name__}/BACKUP_INTERVAL__every"
+        ).json()
+
+        reserved = {
+            key: reload
+            for key, reload in reload_by_key.items()
+            if key.startswith("BACKUP_INTERVAL")
+        }
+        assert reserved
+        assert set(reserved.values()) == {"not_overridable"}
+        assert "hot" in set(reload_by_key.values()) - set(reserved.values())
+        assert detail["reload"] == "not_overridable"
 
 
 class TestBuildSettingsRouterWiring:

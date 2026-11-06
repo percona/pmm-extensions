@@ -103,6 +103,9 @@ logger = logging.getLogger(__name__)
 SWITCHED_OFF_DETAIL = "Operations Inventory is switched off"
 """Why a sweep was refused while ``ENABLED`` is off, on the run row and the 503 alike."""
 
+AUTO_SCAN_OFF_DETAIL = "Automatic scans are off"
+"""Why a scheduled sweep was skipped while ``AUTO_SCAN`` is off."""
+
 HEARTBEAT_INTERVAL = RUN_LEASE / 4
 """How often a sweep writes its run to show it is alive."""
 
@@ -1271,8 +1274,25 @@ async def _fail_run(run_id: UUID, error: str) -> None:
         await fail_running_run(session, run_id, error)
 
 
+def _refusal(*, automatic: bool) -> str | None:
+    """Say why a sweep must not start now, by the freshly published snapshot.
+
+    :param automatic: Whether beat or switching on started it, rather than a request.
+    :return: The reason, or ``None`` when it may start.
+    """
+    if not om_inventory_settings.ENABLED:
+        return SWITCHED_OFF_DETAIL
+    if automatic and not om_inventory_settings.AUTO_SCAN:
+        # A queued message can outlive the AUTO_SCAN it was queued under.
+        return AUTO_SCAN_OFF_DETAIL
+    return None
+
+
 async def run_probe(
-    execution_id: UUID | None = None, node_ids: list[str] | None = None
+    execution_id: UUID | None = None,
+    node_ids: list[str] | None = None,
+    *,
+    automatic: bool = False,
 ) -> UUID:
     """Run one probe sweep and write what it found into the estate.
 
@@ -1303,6 +1323,8 @@ async def run_probe(
     :param node_ids: The hosts to refresh, or ``None`` for the whole estate. Taken
         from the caller rather than read back off the run row so a scheduled sweep,
         which has no row until this function makes one, takes the same path.
+    :param automatic: Whether switching on queued it, so ``AUTO_SCAN`` applies as it
+        does to a scheduled sweep.
     :return: The run's id.
     """
     session_maker = get_async_session_maker()
@@ -1336,11 +1358,10 @@ async def run_probe(
             session,
             OmInventorySettings,
         )
-        if not om_inventory_settings.ENABLED:
-            if await skip_running_run(session, run_id, SWITCHED_OFF_DETAIL):
-                logger.info(
-                    "OM inventory: sweep %s skipped -- %s", run_id, SWITCHED_OFF_DETAIL
-                )
+        off = _refusal(automatic=automatic or execution_id is None)
+        if off is not None:
+            if await skip_running_run(session, run_id, off):
+                logger.info("OM inventory: sweep %s skipped -- %s", run_id, off)
             return run_id
 
         # The same single-flight check the trigger endpoint makes, repeated here

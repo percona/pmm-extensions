@@ -99,8 +99,8 @@ export interface paths {
      *         batch writes and reported back on each response.
      *     :return: One :class:`SettingResponse` per applied key, in input order.
      *     :raises HTTPNotFoundException: If the class isn't exposed.
-     *     :raises HTTPUnprocessableEntityException: If any key fails validation;
-     *         no rows are written.
+     *     :raises HTTPUnprocessableEntityException: If any key fails validation
+     *         or is one of the class's ``service_only_keys``; no rows are written.
      *     :raises HTTPBadGatewayException: For a remote class, when the owning
      *         sub-app returns a server error (status >= 500) or is unreachable.
      *     :raises IntegrityError: When the replay of a batch that lost the
@@ -168,7 +168,8 @@ export interface paths {
      *         no row to delete.
      *     :raises HTTPUnprocessableEntityException: If ``key`` names a
      *         ``NESTED_ONLY`` parent (the whole parent cannot be overridden;
-     *         target an individual ``parent__leaf`` instead).
+     *         target an individual ``parent__leaf`` instead), or one of the
+     *         class's ``service_only_keys``.
      *     :raises HTTPBadGatewayException: For a remote class, when the owning
      *         sub-app returns a server error (status >= 500) or is unreachable.
      */
