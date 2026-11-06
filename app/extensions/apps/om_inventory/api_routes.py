@@ -53,6 +53,7 @@ from fastapi import status as http_status
 from kombu.exceptions import KombuError
 from pydantic import ValidationError
 from sqlmodel import col
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import IsServicePrincipalDep, require_minimum_role
 from app.core.auth.models import BaseUser, UserRole
@@ -623,19 +624,36 @@ async def trigger_probe(
             detail=await conflict_detail(session, blocking, node_ids)
         )
 
-    run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids or None))
-    try:
-        run_om_probe.delay(str(run.id), node_ids or None)
-    except (OSError, KombuError) as exc:
-        logger.exception("OM inventory: could not queue sweep %s", run.id)
-        await fail_running_run(session, run.id, QUEUE_UNAVAILABLE_DETAIL)
-        raise HTTPServiceUnavailableException(detail=QUEUE_UNAVAILABLE_DETAIL) from exc
+    run = await _queue_sweep(session, node_ids)
     return ProbeRunAccepted(
         run_id=run.id,
         status=str(run.status),
         started_at=run.started_at,
         scope=run.scope,
     )
+
+
+async def _queue_sweep(
+    session: AsyncSession, node_ids: list[str], *, automatic: bool = False
+) -> ProbeRun:
+    """Record a sweep and hand it to Celery.
+
+    :param session: The database session.
+    :param node_ids: The hosts to sweep; empty means the whole estate.
+    :param automatic: Whether the app starts it on its own, so the worker re-checks
+        ``AUTO_SCAN`` before sweeping.
+    :raises HTTPServiceUnavailableException: When the broker cannot take it, in which
+        case the run is recorded failed.
+    :return: The queued run.
+    """
+    run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids or None))
+    try:
+        run_om_probe.delay(str(run.id), node_ids or None, automatic=automatic)
+    except (OSError, KombuError) as exc:
+        logger.exception("OM inventory: could not queue sweep %s", run.id)
+        await fail_running_run(session, run.id, QUEUE_UNAVAILABLE_DETAIL)
+        raise HTTPServiceUnavailableException(detail=QUEUE_UNAVAILABLE_DETAIL) from exc
+    return run
 
 
 @router.get("/config")
@@ -678,13 +696,20 @@ async def set_enabled(
 ) -> SettingResponse:
     """Follow PMM's Operations for MongoDB switch.
 
-    pmm-managed calls this at startup and whenever the switch changes, with no user
-    behind the call, so only the service principal may use it; a person changes
-    this app's configuration through ``/api/extensions/admin/settings`` instead.
+    pmm-managed calls this at startup, whenever the switch changes, and whenever it
+    finds ``ENABLED`` differing from the switch, with no user behind the call, so only
+    the service principal may use it; a person changes this app's configuration
+    through ``/api/extensions/admin/settings`` instead.
 
     It flips ``ENABLED`` independently of ``SCHEDULE``, so the configured cadence
     survives the switch being turned off and back on. The change lands without a
     restart, the same way an admin's change on the settings router does.
+
+    Switching on also sweeps the whole estate at once, so it need not wait out a
+    ``SCHEDULE`` interval, unless another sweep is in flight or ``AUTO_SCAN`` is off:
+    pmm-managed switches on at every start, and an admin who stopped automatic
+    scans should not get one from a restart. A sweep that cannot be started does not
+    fail the switch, which has already landed.
 
     :param request: The incoming request; its ``app.state`` carries the rebind
         callbacks fired for ``ENABLED``.
@@ -702,4 +727,15 @@ async def set_enabled(
         body=SettingsPatch({"ENABLED": body.enabled}),
         actor=actor.username,
     )
+    if body.enabled and om_inventory_settings.AUTO_SCAN:
+        try:
+            blocking = await conflicting_run(
+                session, [], stale_after=om_inventory_settings.STALE_RUN_AFTER
+            )
+            if blocking is None:
+                await _queue_sweep(session, [], automatic=True)
+        except HTTPServiceUnavailableException:
+            pass
+        except Exception:
+            logger.exception("OM inventory: could not start the switch-on sweep")
     return row

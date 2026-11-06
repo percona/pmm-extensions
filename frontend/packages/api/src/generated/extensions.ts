@@ -2407,13 +2407,20 @@ export interface paths {
      * Set Enabled
      * @description Follow PMM's Operations for MongoDB switch.
      *
-     *     pmm-managed calls this at startup and whenever the switch changes, with no user
-     *     behind the call, so only the service principal may use it; a person changes
-     *     this app's configuration through ``/api/extensions/admin/settings`` instead.
+     *     pmm-managed calls this at startup, whenever the switch changes, and whenever it
+     *     finds ``ENABLED`` differing from the switch, with no user behind the call, so only
+     *     the service principal may use it; a person changes this app's configuration
+     *     through ``/api/extensions/admin/settings`` instead.
      *
      *     It flips ``ENABLED`` independently of ``SCHEDULE``, so the configured cadence
      *     survives the switch being turned off and back on. The change lands without a
      *     restart, the same way an admin's change on the settings router does.
+     *
+     *     Switching on also sweeps the whole estate at once, so it need not wait out a
+     *     ``SCHEDULE`` interval, unless another sweep is in flight or ``AUTO_SCAN`` is off:
+     *     pmm-managed switches on at every start, and an admin who stopped automatic
+     *     scans should not get one from a restart. A sweep that cannot be started does not
+     *     fail the switch, which has already landed.
      *
      *     :param request: The incoming request; its ``app.state`` carries the rebind
      *         callbacks fired for ``ENABLED``.

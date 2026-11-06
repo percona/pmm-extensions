@@ -19,7 +19,7 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, nullcontext
 from datetime import timedelta
-from typing import Protocol
+from typing import Any, Protocol
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,10 +29,18 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
+from app.core.settings_override.manager import SettingsOverrideManager
+from app.core.settings_override.models import setting_class_token, SettingOverride
+from app.extensions.apps.om_inventory.config import OmInventorySettings
+from app.extensions.apps.om_inventory.crud import ProbeRunManager
 from app.extensions.apps.om_inventory.dispatch import HostProbeResult
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
-from app.extensions.apps.om_inventory.models import NodeResolution
+from app.extensions.apps.om_inventory.models import (
+    NodeResolution,
+    ProbeRun,
+    ProbeRunStatus,
+)
 from app.extensions.apps.om_inventory.service import (
     sweep,
     SweepOutcome,
@@ -258,3 +266,35 @@ async def admin_api(
     """
     async with _client_as(admin_user, session) as client:
         yield client
+
+
+async def start_run(session: AsyncSession, scope: list[str] | None) -> ProbeRun:
+    """Put a run in flight with the given scope.
+
+    :param session: The database session.
+    :param scope: Its scope, or ``None`` for the whole estate.
+    :return: The run.
+    """
+    return await ProbeRunManager.save(
+        session, ProbeRun(scope=scope, status=ProbeRunStatus.RUNNING)
+    )
+
+
+async def store_overrides(session: AsyncSession, **values: Any) -> None:
+    """Write ``OmInventorySettings`` override rows straight to the table.
+
+    The proxy's snapshot is left as it was, as another worker's write would leave it,
+    so a test can make the stored rows and this process's view disagree.
+
+    :param session: The database session.
+    :param values: The overrides to store, by field name.
+    """
+    for key, value in values.items():
+        await SettingsOverrideManager.create(
+            session,
+            SettingOverride(
+                setting_class=setting_class_token(OmInventorySettings),
+                key=key,
+                value=value,
+            ),
+        )

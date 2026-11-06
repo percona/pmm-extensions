@@ -40,21 +40,26 @@ from app.extensions.apps.om_inventory.schema import om_inventory_schema
 def _om_inventory_periodic_tasks() -> list[AppPeriodicTask]:
     """Contribute the periodic sweep while it is enabled and configured.
 
-    A callable rather than a list literal because ``ENABLED``/``SCHEDULE`` may make
-    the sweep unregistered, so the contribution is variable-length and a literal
-    would commit to a fixed set at ``BaseApp(...)`` construction.
+    A callable rather than a list literal because ``ENABLED``/``AUTO_SCAN``/``SCHEDULE``
+    may make the sweep unregistered, so the contribution is variable-length and a
+    literal would commit to a fixed set at ``BaseApp(...)`` construction.
 
-    That the checks live *inside* the thunk is what makes both settings genuinely hot
+    That the checks live *inside* the thunk is what makes these settings genuinely hot
     in both directions: turning the sweep back on over ``PUT /enabled`` re-registers
     the task on the next registry rebuild, where a literal guarded by an import-time
     ``if`` would have decided once and stayed decided.
 
     The sweep is what keeps the estate current at all: no endpoint probes, so with no
-    schedule a row only changes when someone posts to ``/runs``.
+    schedule a row only changes when someone posts to ``/runs`` or, with ``AUTO_SCAN``
+    on, PMM switches ``ENABLED`` on over ``PUT /enabled``.
 
     :return: The sweep contribution, or an empty list when disabled or unconfigured.
     """
-    if not om_inventory_settings.ENABLED or om_inventory_settings.SCHEDULE is None:
+    if (
+        not om_inventory_settings.ENABLED
+        or not om_inventory_settings.AUTO_SCAN
+        or om_inventory_settings.SCHEDULE is None
+    ):
         return []
     return [
         AppPeriodicTask(
