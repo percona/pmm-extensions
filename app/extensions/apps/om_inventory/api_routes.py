@@ -40,9 +40,11 @@ behalf with that user's own credential, so these ranks hold for PMM's callers to
 Configuration writes are not served here: an admin changes ``OmInventorySettings``
 through ``/api/extensions/admin/settings`` like any other class. The exception is
 ``ENABLED``, which pmm-managed sets from PMM's own switch with no user behind the call,
-so it has a route of its own that only the service principal may use.
+so it has a route of its own that only the service principal may use, and the settings
+router refuses it.
 """
 
+import contextlib
 import logging
 from collections.abc import Iterable
 from typing import Annotated
@@ -53,6 +55,7 @@ from fastapi import status as http_status
 from kombu.exceptions import KombuError
 from pydantic import ValidationError
 from sqlmodel import col
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import IsServicePrincipalDep, require_minimum_role
 from app.core.auth.models import BaseUser, UserRole
@@ -71,6 +74,7 @@ from app.core.settings_override.api import (
 )
 from app.core.utils.fields import UTCDatetime
 from app.extensions.apps.framework.api import schema_endpoint
+from app.extensions.apps.om_inventory.app_owned_settings import SERVICE_ONLY_KEYS
 from app.extensions.apps.om_inventory.celery import run_om_probe
 from app.extensions.apps.om_inventory.config import (
     om_inventory_settings,
@@ -623,19 +627,36 @@ async def trigger_probe(
             detail=await conflict_detail(session, blocking, node_ids)
         )
 
-    run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids or None))
-    try:
-        run_om_probe.delay(str(run.id), node_ids or None)
-    except (OSError, KombuError) as exc:
-        logger.exception("OM inventory: could not queue sweep %s", run.id)
-        await fail_running_run(session, run.id, QUEUE_UNAVAILABLE_DETAIL)
-        raise HTTPServiceUnavailableException(detail=QUEUE_UNAVAILABLE_DETAIL) from exc
+    run = await _queue_sweep(session, node_ids)
     return ProbeRunAccepted(
         run_id=run.id,
         status=str(run.status),
         started_at=run.started_at,
         scope=run.scope,
     )
+
+
+async def _queue_sweep(
+    session: AsyncSession, node_ids: list[str], *, automatic: bool = False
+) -> ProbeRun:
+    """Record a sweep and hand it to Celery.
+
+    :param session: The database session.
+    :param node_ids: The hosts to sweep; empty means the whole estate.
+    :param automatic: Whether the app starts it on its own, so the worker re-checks
+        ``AUTO_SCAN`` before sweeping.
+    :raises HTTPServiceUnavailableException: When the broker cannot take it, in which
+        case the run is recorded failed.
+    :return: The queued run.
+    """
+    run = await ProbeRunManager.save(session, ProbeRun(scope=node_ids or None))
+    try:
+        run_om_probe.delay(str(run.id), node_ids or None, automatic=automatic)
+    except (OSError, KombuError) as exc:
+        logger.exception("OM inventory: could not queue sweep %s", run.id)
+        await fail_running_run(session, run.id, QUEUE_UNAVAILABLE_DETAIL)
+        raise HTTPServiceUnavailableException(detail=QUEUE_UNAVAILABLE_DETAIL) from exc
+    return run
 
 
 @router.get("/config")
@@ -650,7 +671,8 @@ async def get_config(session: SessionDep) -> list[SettingResponse]:
 
     Every field is listed, not only the overridden ones, and each row carries
     whether an override is in effect - so "why is it sweeping every 10 minutes"
-    is answerable without also reading the deployment's YAML.
+    is answerable without also reading the deployment's YAML. ``ENABLED`` reads as
+    not overridable, since only PMM's own switch changes it.
 
     ``CREDENTIALS_PATH`` is the one exception: its row is present, with ``value``
     forced to ``None`` regardless of the deployment's real setting. See
@@ -665,6 +687,7 @@ async def get_config(session: SessionDep) -> list[SettingResponse]:
             setting_class=OmInventorySettings.__name__,
             settings_cls=OmInventorySettings,
             proxy=om_inventory_settings,  # ty: ignore[invalid-argument-type]
+            service_only_keys=SERVICE_ONLY_KEYS,
         )
     )
 
@@ -686,6 +709,12 @@ async def set_enabled(
     survives the switch being turned off and back on. The change lands without a
     restart, the same way an admin's change on the settings router does.
 
+    Switching on also sweeps the whole estate at once, so it need not wait out a
+    ``SCHEDULE`` interval, unless another sweep is in flight or ``AUTO_SCAN`` is off:
+    pmm-managed switches on at every start, and an admin who stopped automatic
+    scans should not get one from a restart. A sweep that cannot be queued does not
+    fail the switch, which has already landed.
+
     :param request: The incoming request; its ``app.state`` carries the rebind
         callbacks fired for ``ENABLED``.
     :param body: The switch's new state.
@@ -702,4 +731,14 @@ async def set_enabled(
         body=SettingsPatch({"ENABLED": body.enabled}),
         actor=actor.username,
     )
+    if (
+        body.enabled
+        and om_inventory_settings.AUTO_SCAN
+        and await conflicting_run(
+            session, [], stale_after=om_inventory_settings.STALE_RUN_AFTER
+        )
+        is None
+    ):
+        with contextlib.suppress(HTTPServiceUnavailableException):
+            await _queue_sweep(session, [], automatic=True)
     return row

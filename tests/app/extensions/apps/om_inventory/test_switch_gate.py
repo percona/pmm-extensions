@@ -33,6 +33,7 @@ from contextlib import nullcontext
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -47,27 +48,32 @@ from app.extensions.apps.om_inventory.config import (
 )
 from app.extensions.apps.om_inventory.crud import ProbeRunManager
 from app.extensions.apps.om_inventory.models import ProbeRun, ProbeRunStatus
-from app.extensions.apps.om_inventory.service import run_probe, SWITCHED_OFF_DETAIL
+from app.extensions.apps.om_inventory.service import (
+    AUTO_SCAN_OFF_DETAIL,
+    run_probe,
+    SWITCHED_OFF_DETAIL,
+)
 from tests.app.extensions.apps.om_inventory.conftest import CLEAN_OUTCOME
 
 
-async def _store_enabled(session: AsyncSession, *, enabled: bool) -> None:
-    """Write the ``ENABLED`` override row ``run_probe`` republishes from.
+async def _store(session: AsyncSession, **values: bool) -> None:
+    """Write the override rows ``run_probe`` republishes from.
 
-    The row, not the proxy, is what the gate must obey, so every test below sets
-    this and leaves the in-process snapshot saying the opposite.
+    The rows, not the proxy, are what the gate must obey, so every test below sets
+    them and leaves the in-process snapshot saying the opposite.
 
-    :param session: The session the override is written on.
-    :param enabled: The stored value of the switch.
+    :param session: The session the overrides are written on.
+    :param values: The stored values, by field name.
     """
-    await SettingsOverrideManager.create(
-        session,
-        SettingOverride(
-            setting_class=setting_class_token(OmInventorySettings),
-            key="ENABLED",
-            value=enabled,
-        ),
-    )
+    for key, value in values.items():
+        await SettingsOverrideManager.create(
+            session,
+            SettingOverride(
+                setting_class=setting_class_token(OmInventorySettings),
+                key=key,
+                value=value,
+            ),
+        )
 
 
 @pytest.fixture
@@ -102,7 +108,7 @@ class TestRunProbeReadsTheStoredSwitch:
         :param monkeypatch: Leaves the snapshot stale at on.
         """
         monkeypatch.setattr(om_inventory_settings, "ENABLED", True)
-        await _store_enabled(session, enabled=False)
+        await _store(session, ENABLED=False)
         run = await ProbeRunManager.save(session, ProbeRun(scope=None))
 
         returned_id = await run_probe(execution_id=run.id, node_ids=None)
@@ -123,7 +129,7 @@ class TestRunProbeReadsTheStoredSwitch:
         :param monkeypatch: Leaves the snapshot stale at on.
         """
         monkeypatch.setattr(om_inventory_settings, "ENABLED", True)
-        await _store_enabled(session, enabled=False)
+        await _store(session, ENABLED=False)
 
         returned_id = await run_probe(execution_id=None, node_ids=None)
 
@@ -149,7 +155,7 @@ class TestRunProbeReadsTheStoredSwitch:
         :param monkeypatch: Leaves the snapshot stale at off.
         """
         monkeypatch.setattr(om_inventory_settings, "ENABLED", False)
-        await _store_enabled(session, enabled=True)
+        await _store(session, ENABLED=True)
         run = await ProbeRunManager.save(session, ProbeRun(scope=None))
 
         returned_id = await run_probe(execution_id=run.id, node_ids=None)
@@ -158,3 +164,57 @@ class TestRunProbeReadsTheStoredSwitch:
         stored = await ProbeRunManager.get(session, id=run.id)
         assert stored.status is ProbeRunStatus.SUCCESS
         assert stored.error is None
+
+
+@pytest.mark.usefixtures("_sweep_on_the_test_session")
+class TestRunProbeHonoursAutoScan:
+    """Skip an automatic sweep while ``AUTO_SCAN`` is off, never a requested one."""
+
+    @pytest_asyncio.fixture(autouse=True)
+    async def _auto_scan_off(self, session: AsyncSession) -> None:
+        """Store the switch on and automatic scans off.
+
+        :param session: The database session.
+        """
+        await _store(session, ENABLED=True, AUTO_SCAN=False)
+
+    @pytest.mark.asyncio
+    async def test_a_scheduled_run_is_skipped(self, session: AsyncSession) -> None:
+        """Skip a beat message that was queued before automatic scans went off.
+
+        :param session: The database session.
+        """
+        returned_id = await run_probe(execution_id=None, node_ids=None)
+
+        stored = await ProbeRunManager.get(session, id=returned_id)
+        assert stored.status is ProbeRunStatus.SKIPPED
+        assert stored.error == AUTO_SCAN_OFF_DETAIL
+
+    @pytest.mark.asyncio
+    async def test_a_queued_switch_on_run_is_skipped(
+        self, session: AsyncSession
+    ) -> None:
+        """Skip a switch-on sweep still queued when automatic scans went off.
+
+        :param session: The database session.
+        """
+        run = await ProbeRunManager.save(session, ProbeRun(scope=None))
+
+        await run_probe(execution_id=run.id, node_ids=None, automatic=True)
+
+        stored = await ProbeRunManager.get(session, id=run.id)
+        assert stored.status is ProbeRunStatus.SKIPPED
+        assert stored.error == AUTO_SCAN_OFF_DETAIL
+
+    @pytest.mark.asyncio
+    async def test_a_requested_run_still_sweeps(self, session: AsyncSession) -> None:
+        """Run a scan someone asked for, which ``AUTO_SCAN`` does not cover.
+
+        :param session: The database session.
+        """
+        run = await ProbeRunManager.save(session, ProbeRun(scope=None))
+
+        await run_probe(execution_id=run.id, node_ids=None)
+
+        stored = await ProbeRunManager.get(session, id=run.id)
+        assert stored.status is ProbeRunStatus.SUCCESS

@@ -2377,7 +2377,8 @@ export interface paths {
      *
      *     Every field is listed, not only the overridden ones, and each row carries
      *     whether an override is in effect - so "why is it sweeping every 10 minutes"
-     *     is answerable without also reading the deployment's YAML.
+     *     is answerable without also reading the deployment's YAML. ``ENABLED`` reads as
+     *     not overridable, since only PMM's own switch changes it.
      *
      *     ``CREDENTIALS_PATH`` is the one exception: its row is present, with ``value``
      *     forced to ``None`` regardless of the deployment's real setting. See
@@ -2414,6 +2415,12 @@ export interface paths {
      *     It flips ``ENABLED`` independently of ``SCHEDULE``, so the configured cadence
      *     survives the switch being turned off and back on. The change lands without a
      *     restart, the same way an admin's change on the settings router does.
+     *
+     *     Switching on also sweeps the whole estate at once, so it need not wait out a
+     *     ``SCHEDULE`` interval, unless another sweep is in flight or ``AUTO_SCAN`` is off:
+     *     pmm-managed switches on at every start, and an admin who stopped automatic
+     *     scans should not get one from a restart. A sweep that cannot be queued does not
+     *     fail the switch, which has already landed.
      *
      *     :param request: The incoming request; its ``app.state`` carries the rebind
      *         callbacks fired for ``ENABLED``.
@@ -3528,8 +3535,8 @@ export interface paths {
      *         batch writes and reported back on each response.
      *     :return: One :class:`SettingResponse` per applied key, in input order.
      *     :raises HTTPNotFoundException: If the class isn't exposed.
-     *     :raises HTTPUnprocessableEntityException: If any key fails validation;
-     *         no rows are written.
+     *     :raises HTTPUnprocessableEntityException: If any key fails validation
+     *         or is one of the class's ``service_only_keys``; no rows are written.
      *     :raises HTTPBadGatewayException: For a remote class, when the owning
      *         sub-app returns a server error (status >= 500) or is unreachable.
      *     :raises IntegrityError: When the replay of a batch that lost the
@@ -3597,7 +3604,8 @@ export interface paths {
      *         no row to delete.
      *     :raises HTTPUnprocessableEntityException: If ``key`` names a
      *         ``NESTED_ONLY`` parent (the whole parent cannot be overridden;
-     *         target an individual ``parent__leaf`` instead).
+     *         target an individual ``parent__leaf`` instead), or one of the
+     *         class's ``service_only_keys``.
      *     :raises HTTPBadGatewayException: For a remote class, when the owning
      *         sub-app returns a server error (status >= 500) or is unreachable.
      */

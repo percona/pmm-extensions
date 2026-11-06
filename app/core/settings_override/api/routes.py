@@ -110,6 +110,9 @@ class AppOwnedClassEntry:
     :param reseed_keys: Field names on this class whose HOT override must
         re-seed the periodic-task schedule. Empty by default, so an app whose
         settings drive no beat entry declares nothing.
+    :param service_only_keys: Field names this router reports as not
+        overridable and refuses to change or clear, because the app sets them
+        through a route of its own that only the service principal may call.
     """
 
     setting_class: str
@@ -117,6 +120,7 @@ class AppOwnedClassEntry:
     proxy: OverridableSettingsProxy
     app_key: str
     reseed_keys: frozenset[str] = frozenset()
+    service_only_keys: frozenset[str] = frozenset()
 
 
 #: One ``(class_name, remote_base_path)`` pair per settings class whose
@@ -313,6 +317,7 @@ async def collect_class_setting_responses(
     settings_cls: type[BaseYamlSettings],
     proxy: OverridableSettingsProxy,
     applicability: ApplicabilityPredicate | None = None,
+    service_only_keys: frozenset[str] = frozenset(),
 ) -> list[SettingResponse]:
     """Return every LIST-projection entry for one wired settings class.
 
@@ -326,6 +331,8 @@ async def collect_class_setting_responses(
     :param proxy: The proxy whose attribute access yields current values.
     :param applicability: Optional predicate deciding whether each field applies
         under current runtime state; ``None`` marks every field applicable.
+    :param service_only_keys: Fields to report as not overridable; see
+        :class:`AppOwnedClassEntry`.
     :return: One :class:`SettingResponse` per LIST row for the class.
     """
     rows = await SettingsOverrideManager.list(
@@ -333,7 +340,7 @@ async def collect_class_setting_responses(
     )
     provenance_by_key = override_provenance_for_rows(settings_cls, rows)
     return [
-        response
+        _withhold_service_only(response, service_only_keys)
         for field_meta in iter_class_fields(settings_cls)
         for response in _field_responses(
             setting_class=setting_class,
@@ -344,6 +351,20 @@ async def collect_class_setting_responses(
             applicability=applicability,
         )
     ]
+
+
+def _withhold_service_only(
+    response: SettingResponse, service_only_keys: frozenset[str]
+) -> SettingResponse:
+    """Report a field reserved for the service principal as not overridable.
+
+    :param response: One LIST or DETAIL row.
+    :param service_only_keys: The class's reserved top-level fields.
+    :return: The row, reclassified when its top-level field is reserved.
+    """
+    if response.key.split("__", 1)[0] not in service_only_keys:
+        return response
+    return response.model_copy(update={"reload": ReloadClassification.NOT_OVERRIDABLE})
 
 
 def _enum_options(field_info: FieldInfo) -> list[SettingOption] | None:
@@ -801,6 +822,33 @@ def _merge_app_owned_into_lookup(
         class_lookup[class_id] = (entry.settings_cls, entry.proxy)
 
 
+def _refuse_service_only_keys(
+    settings_cls: type[BaseYamlSettings],
+    reserved: frozenset[str],
+    keys: Mapping[str, list[str]],
+) -> None:
+    """Refuse a change to a field the owning app reserves for the service principal.
+
+    A nested key is judged by its top-level field, after canonicalizing its casing.
+
+    :param settings_cls: The Pydantic settings class the keys belong to.
+    :param reserved: The class's ``service_only_keys``.
+    :param keys: Each key the request changes, mapped to its error location.
+    :raises HTTPUnprocessableEntityException: If any key is reserved.
+    """
+    errors = [
+        {
+            "loc": loc,
+            "msg": "Setting can only be changed by the service principal.",
+            "type": "not_overridable",
+        }
+        for key, loc in keys.items()
+        if canonical_override_key(settings_cls, key).split("__", 1)[0] in reserved
+    ]
+    if errors:
+        raise HTTPUnprocessableEntityException(detail=errors)
+
+
 async def _collect_app_owned_list_groups(
     session: AsyncSession,
     app_owned: list[AppOwnedClassEntry],
@@ -821,6 +869,7 @@ async def _collect_app_owned_list_groups(
             setting_class=class_id,
             settings_cls=entry.settings_cls,
             proxy=entry.proxy,
+            service_only_keys=entry.service_only_keys,
         )
         metadata = await resolve_app_metadata(session, entry.app_key)
         groups.append(
@@ -951,7 +1000,9 @@ def build_settings_router(
         -- it never blocks PATCH/DELETE.
     :param app_owned_classes: Optional app-owned settings classes declared by
         PMM Extensions plugins. Appended after core and remote groups on LIST; merged into
-        the local class lookup so GET / PATCH / DELETE work unchanged.
+        the local class lookup so GET / PATCH / DELETE work unchanged, except for
+        each entry's ``service_only_keys``: reported as not overridable, and
+        refused by PATCH and DELETE.
     :param resolve_app_metadata: Async callback that resolves app identity and
         enabled state for one ``app_key``. Required when ``app_owned_classes``
         is non-empty; ignored otherwise. Injected by the PMM Extensions wiring so this
@@ -968,6 +1019,7 @@ def build_settings_router(
     class_lookup = {str(member): (cls, proxy) for member, cls, proxy in classes}
     remote_lookup, remote_dep = _remote_wiring(remote_classes, remote_api_dep)
     _merge_app_owned_into_lookup(class_lookup, remote_lookup, app_owned)
+    service_only = {entry.setting_class: entry.service_only_keys for entry in app_owned}
 
     def _resolve(
         setting_class: str,
@@ -1045,13 +1097,16 @@ def build_settings_router(
             session, setting_class=setting_class_token(settings_cls), is_active=True
         )
         provenance_by_key = override_provenance_for_rows(settings_cls, rows)
-        return _settings_response_from_field(
+        response = _settings_response_from_field(
             setting_class=setting_class,
             settings_cls=settings_cls,
             proxy=proxy,
             field_meta=field_meta,
             provenance=provenance_by_key.get(key),
             applicability=applicability,
+        )
+        return _withhold_service_only(
+            response, service_only.get(setting_class, frozenset())
         )
 
     @router.patch("/{setting_class}", dependencies=mutation_deps or [])
@@ -1088,8 +1143,8 @@ def build_settings_router(
             batch writes and reported back on each response.
         :return: One :class:`SettingResponse` per applied key, in input order.
         :raises HTTPNotFoundException: If the class isn't exposed.
-        :raises HTTPUnprocessableEntityException: If any key fails validation;
-            no rows are written.
+        :raises HTTPUnprocessableEntityException: If any key fails validation
+            or is one of the class's ``service_only_keys``; no rows are written.
         :raises HTTPBadGatewayException: For a remote class, when the owning
             sub-app returns a server error (status >= 500) or is unreachable.
         :raises IntegrityError: When the replay of a batch that lost the
@@ -1100,6 +1155,11 @@ def build_settings_router(
                 remote_api, remote_lookup[setting_class], setting_class, body
             )
         settings_cls, proxy = _resolve(setting_class)
+        _refuse_service_only_keys(
+            settings_cls,
+            service_only.get(setting_class, frozenset()),
+            {key: ["body", key] for key in body.root},
+        )
         return await apply_class_overrides(
             request=request,
             session=session,
@@ -1157,7 +1217,8 @@ def build_settings_router(
             no row to delete.
         :raises HTTPUnprocessableEntityException: If ``key`` names a
             ``NESTED_ONLY`` parent (the whole parent cannot be overridden;
-            target an individual ``parent__leaf`` instead).
+            target an individual ``parent__leaf`` instead), or one of the
+            class's ``service_only_keys``.
         :raises HTTPBadGatewayException: For a remote class, when the owning
             sub-app returns a server error (status >= 500) or is unreachable.
         """
@@ -1168,6 +1229,11 @@ def build_settings_router(
             )
             return
         settings_cls, proxy = _resolve(setting_class)
+        _refuse_service_only_keys(
+            settings_cls,
+            service_only.get(setting_class, frozenset()),
+            {key: ["path", "key"]},
+        )
         await _clear_class_override(
             request=request,
             session=session,

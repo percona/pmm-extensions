@@ -33,11 +33,13 @@ invisible in the field list.
 from collections.abc import AsyncIterator
 from datetime import timedelta
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI, status
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
+from kombu.exceptions import OperationalError as KombuOperationalError
 from pydantic import SecretStr
 from pytest_mock import MockerFixture
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -52,16 +54,21 @@ from app.core.settings_override.models import setting_class_token, SettingOverri
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import hot_field_names
 from app.extensions.apps.framework.registry import collect_app_owned_settings_classes
+from app.extensions.apps.om_inventory.api_routes import QUEUE_UNAVAILABLE_DETAIL
 from app.extensions.apps.om_inventory.app import app as om_inventory_app
+from app.extensions.apps.om_inventory.celery import run_om_probe
 from app.extensions.apps.om_inventory.config import (
     om_inventory_settings,
     OmInventorySettings,
 )
+from app.extensions.apps.om_inventory.crud import ProbeRunManager
+from app.extensions.apps.om_inventory.models import ProbeRunStatus
 from app.extensions.deps import get_session
 from app.extensions.main import extensions_app, extensions_overrides_lifespan
 from tests.app.extensions.apps.om_inventory.conftest import (
     BASE,
     BEYOND_TIMEDELTA_SECONDS,
+    start_run,
 )
 
 #: The YAML-configured values these tests assert against, taken from the class so a
@@ -115,8 +122,31 @@ async def gated_api(
         extensions_app.dependency_overrides = {}
 
 
+async def _switch(client: AsyncClient, *, enabled: bool = True) -> Response:
+    """Set PMM's switch as pmm-managed does, which turns it on at every start.
+
+    :param client: The client passing the real gate.
+    :param enabled: The switch's new state.
+    :return: The response.
+    """
+    return await client.put(
+        f"{BASE}/enabled",
+        json={"enabled": enabled},
+        headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
+    )
+
+
 class TestSetEnabled:
     """Follow PMM's Operations for MongoDB switch through ``PUT /enabled``."""
+
+    @pytest.fixture(autouse=True)
+    def delay(self, mocker: MockerFixture) -> MagicMock:
+        """Stand in for the broker, which switching on reaches.
+
+        :param mocker: Patches the task's ``delay``.
+        :return: The stand-in.
+        """
+        return mocker.patch.object(run_om_probe, "delay")
 
     def test_the_extensions_token_principal_is_not_an_admin(self) -> None:
         """Confirm PMM's principal is shut out of the admin settings router.
@@ -137,11 +167,7 @@ class TestSetEnabled:
         :param gated_api: The client passing the real gate.
         :param session: The database session.
         """
-        response = await gated_api.put(
-            f"{BASE}/enabled",
-            json={"enabled": not DEFAULTS.ENABLED},
-            headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
-        )
+        response = await _switch(gated_api, enabled=not DEFAULTS.ENABLED)
 
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["value"] is not DEFAULTS.ENABLED
@@ -165,11 +191,7 @@ class TestSetEnabled:
             (OmInventorySettings.__name__, "ENABLED"): reseed
         }
         try:
-            response = await gated_api.put(
-                f"{BASE}/enabled",
-                json={"enabled": not DEFAULTS.ENABLED},
-                headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
-            )
+            response = await _switch(gated_api, enabled=not DEFAULTS.ENABLED)
         finally:
             extensions_app.state.override_callbacks = original
 
@@ -192,13 +214,87 @@ class TestSetEnabled:
         assert DEFAULTS.SCHEDULE is not None
         assert schedules() == []
 
-        await gated_api.put(
-            f"{BASE}/enabled",
-            json={"enabled": True},
-            headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
-        )
+        await _switch(gated_api)
 
         assert [task.name for task in schedules()] == ["extensions__run_om_probe"]
+
+    @pytest.mark.asyncio
+    async def test_switching_on_sweeps_at_once(
+        self, gated_api: AsyncClient, session: AsyncSession, delay: MagicMock
+    ) -> None:
+        """Queue a sweep of the whole estate rather than wait out ``SCHEDULE``.
+
+        :param gated_api: The client passing the real gate.
+        :param session: The database session.
+        :param delay: The broker's stand-in.
+        """
+        response = await _switch(gated_api)
+
+        assert response.status_code == status.HTTP_200_OK
+        (run,) = await ProbeRunManager.list(session)
+        delay.assert_called_once_with(str(run.id), None, automatic=True)
+
+    @pytest.mark.asyncio
+    async def test_switching_on_with_auto_scan_off_does_not_sweep(
+        self, gated_api: AsyncClient, session: AsyncSession, delay: MagicMock
+    ) -> None:
+        """Leave the estate alone when an admin stopped automatic scans.
+
+        pmm-managed switches on at every start, so this is what keeps a restart
+        from scanning.
+
+        :param gated_api: The client passing the real gate.
+        :param session: The database session.
+        :param delay: The broker's stand-in.
+        """
+        await _store(session, AUTO_SCAN=False)
+        proxy = cast("OverridableSettingsProxy", om_inventory_settings)
+        await publish_snapshot(proxy, session, OmInventorySettings)
+
+        response = await _switch(gated_api)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert om_inventory_settings.ENABLED is True
+        delay.assert_not_called()
+        assert await ProbeRunManager.list(session) == []
+
+    @pytest.mark.asyncio
+    async def test_switching_on_during_a_sweep_starts_no_other(
+        self, gated_api: AsyncClient, session: AsyncSession, delay: MagicMock
+    ) -> None:
+        """Let the sweep in flight stand for the one switching on would start.
+
+        :param gated_api: The client passing the real gate.
+        :param session: The database session.
+        :param delay: The broker's stand-in.
+        """
+        running = await start_run(session, None)
+
+        response = await _switch(gated_api)
+
+        assert response.status_code == status.HTTP_200_OK
+        delay.assert_not_called()
+        assert [run.id for run in await ProbeRunManager.list(session)] == [running.id]
+
+    @pytest.mark.asyncio
+    async def test_a_sweep_that_cannot_be_queued_does_not_fail_the_switch(
+        self, gated_api: AsyncClient, session: AsyncSession, delay: MagicMock
+    ) -> None:
+        """Keep the switch on and record the sweep failed when the broker is down.
+
+        :param gated_api: The client passing the real gate.
+        :param session: The database session.
+        :param delay: The broker's stand-in.
+        """
+        delay.side_effect = KombuOperationalError("Connection refused")
+
+        response = await _switch(gated_api)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert om_inventory_settings.ENABLED is True
+        assert [
+            (run.status, run.error) for run in await ProbeRunManager.list(session)
+        ] == [(ProbeRunStatus.FAILED, QUEUE_UNAVAILABLE_DETAIL)]
 
     @pytest.mark.asyncio
     async def test_a_body_without_the_switch_is_refused(
@@ -241,6 +337,70 @@ class TestSetEnabled:
         assert om_inventory_settings.ENABLED is DEFAULTS.ENABLED
 
 
+class TestSchedulingIsAnAdminsAndTheSwitchIsPMMs:
+    """Let an admin stop the schedule with ``AUTO_SCAN``, never PMM's ``ENABLED``."""
+
+    @pytest.mark.asyncio
+    async def test_an_admin_cannot_change_the_switch(
+        self, admin_api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Refuse ``ENABLED`` on the settings router, and the rest of its batch.
+
+        :param admin_api: The authenticated admin client.
+        :param session: The database session.
+        """
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"ENABLED": not DEFAULTS.ENABLED, "RUN_RETENTION": 5}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert [
+            (entry["loc"], entry["type"]) for entry in response.json()["detail"]
+        ] == [(["body", "ENABLED"], "not_overridable")]
+        assert om_inventory_settings.ENABLED is DEFAULTS.ENABLED
+        assert await _active_rows(session) == []
+
+    @pytest.mark.asyncio
+    async def test_an_admin_cannot_reset_the_switch(
+        self, admin_api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Refuse clearing ``ENABLED``, which would turn scanning off by default.
+
+        :param admin_api: The authenticated admin client.
+        :param session: The database session.
+        """
+        await _store(session, ENABLED=True)
+
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/ENABLED")
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        assert [row.key for row in await _active_rows(session)] == ["ENABLED"]
+
+    @pytest.mark.asyncio
+    async def test_auto_scan_off_unregisters_the_sweep_only(
+        self, admin_api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Drop the periodic sweep while PMM's switch and the schedule stay as they are.
+
+        :param admin_api: The authenticated admin client.
+        :param session: The database session.
+        """
+        await _store(session, ENABLED=True)
+        proxy = cast("OverridableSettingsProxy", om_inventory_settings)
+        await publish_snapshot(proxy, session, OmInventorySettings)
+        schedules = om_inventory_app.periodic_task_schedules
+        assert schedules is not None
+        assert not isinstance(schedules, list)
+        assert [task.name for task in schedules()] == ["extensions__run_om_probe"]
+
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"AUTO_SCAN": False})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert schedules() == []
+        assert om_inventory_settings.ENABLED is True
+        assert om_inventory_settings.SCHEDULE == DEFAULTS.SCHEDULE
+
+
 class TestConfigWritesAreNotServedHere:
     """Keep writes on the admin settings router, the one place that gates them."""
 
@@ -281,9 +441,9 @@ class TestTheAppIsActuallyWiredIn:
         }
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("key", ["SCHEDULE", "ENABLED"])
+    @pytest.mark.parametrize("key", ["SCHEDULE", "ENABLED", "AUTO_SCAN"])
     async def test_a_change_re_seeds_the_beat_row(self, key: str) -> None:
-        """Wire ``SCHEDULE`` and ``ENABLED`` to the beat re-seed callback.
+        """Wire ``SCHEDULE``, ``ENABLED`` and ``AUTO_SCAN`` to the beat re-seed callback.
 
         The proxy holding a new interval is not the same thing as beat running on it:
         beat reads ``celery_periodictask``, which only changes when
@@ -320,6 +480,18 @@ class TestGetConfig:
         keys = {row["key"] for row in response.json()}
         scalars = set(OmInventorySettings.model_fields) - {"SCHEDULE"}
         assert scalars <= keys
+
+    @pytest.mark.asyncio
+    async def test_the_switch_reads_as_not_overridable(self, api: AsyncClient) -> None:
+        """Keep a form from offering ``ENABLED``, while ``AUTO_SCAN`` stays editable.
+
+        :param api: The authenticated client.
+        """
+        response = await api.get(f"{BASE}/config")
+
+        reload_by_key = {row["key"]: row["reload"] for row in response.json()}
+        assert reload_by_key["ENABLED"] == "not_overridable"
+        assert reload_by_key["AUTO_SCAN"] == "hot"
 
     @pytest.mark.asyncio
     async def test_the_schedule_is_listed_as_leaves_not_as_one_object(

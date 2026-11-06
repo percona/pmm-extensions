@@ -29,10 +29,15 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
+from app.extensions.apps.om_inventory.crud import ProbeRunManager
 from app.extensions.apps.om_inventory.dispatch import HostProbeResult
 from app.extensions.apps.om_inventory.enumeration import InventoryHost
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
-from app.extensions.apps.om_inventory.models import NodeResolution
+from app.extensions.apps.om_inventory.models import (
+    NodeResolution,
+    ProbeRun,
+    ProbeRunStatus,
+)
 from app.extensions.apps.om_inventory.service import (
     sweep,
     SweepOutcome,
@@ -258,3 +263,15 @@ async def admin_api(
     """
     async with _client_as(admin_user, session) as client:
         yield client
+
+
+async def start_run(session: AsyncSession, scope: list[str] | None) -> ProbeRun:
+    """Put a run in flight with the given scope.
+
+    :param session: The database session.
+    :param scope: Its scope, or ``None`` for the whole estate.
+    :return: The run.
+    """
+    return await ProbeRunManager.save(
+        session, ProbeRun(scope=scope, status=ProbeRunStatus.RUNNING)
+    )
