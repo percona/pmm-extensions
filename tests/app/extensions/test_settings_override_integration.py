@@ -808,11 +808,10 @@ async def test_enabled_override_registers_the_om_probe_beat_row(
     beat_maker: async_sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An ``ENABLED`` override creates the ``extensions__run_om_probe`` beat row.
+    """Create the ``extensions__run_om_probe`` beat row once ``ENABLED`` is overridden on.
 
-    The row is absent while the switch is off, because the app's schedule thunk
-    contributes nothing then. Only its existence is asserted: its ``enabled`` flag is
-    the app-gating pass's to decide, and no app state is seeded here.
+    Only the row's existence is asserted: its ``enabled`` flag is the app-gating
+    pass's to decide, and no app state is seeded here.
     """
     monkeypatch.setattr(
         "app.core.celery.utils.get_async_session_maker",
@@ -828,17 +827,14 @@ async def test_enabled_override_registers_the_om_probe_beat_row(
             ),
         )
 
-    try:
-        await refresh_all(
-            lambda: override_session_maker,
-            _om_inventory_proxies(),
-            _om_inventory_enabled_callbacks(),
-        )
-        async with beat_maker() as session:
-            task = await BasePeriodicTaskManager.first(session, name=OM_PROBE_TASK)
-    finally:
-        om_inventory_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
+    await refresh_all(
+        lambda: override_session_maker,
+        _om_inventory_proxies(),
+        _om_inventory_enabled_callbacks(),
+    )
 
+    async with beat_maker() as session:
+        task = await BasePeriodicTaskManager.first(session, name=OM_PROBE_TASK)
     assert task is not None
 
 
@@ -848,7 +844,7 @@ async def test_clearing_the_enabled_override_drops_the_om_probe_beat_row(
     beat_maker: async_sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Deactivating the ``ENABLED`` override deletes the ``extensions__run_om_probe`` row.
+    """Drop the ``extensions__run_om_probe`` row once the ``ENABLED`` override goes.
 
     The orphan cleanup in ``init_periodic_tasks_db`` removes a task the rebuilt set
     no longer contains, so the row is gone rather than left disabled.
@@ -867,34 +863,31 @@ async def test_clearing_the_enabled_override_drops_the_om_probe_beat_row(
             ),
         )
 
-    try:
-        await refresh_all(
-            lambda: override_session_maker,
-            _om_inventory_proxies(),
-            _om_inventory_enabled_callbacks(),
+    await refresh_all(
+        lambda: override_session_maker,
+        _om_inventory_proxies(),
+        _om_inventory_enabled_callbacks(),
+    )
+    async with beat_maker() as session:
+        assert (
+            await BasePeriodicTaskManager.first(session, name=OM_PROBE_TASK) is not None
         )
-        async with beat_maker() as session:
-            assert (
-                await BasePeriodicTaskManager.first(session, name=OM_PROBE_TASK)
-                is not None
-            )
-        async with override_session_maker() as session:
-            await SettingsOverrideManager.update_where(
-                session,
-                {"is_active": False},
-                setting_class=setting_class_token(OmInventorySettings),
-                key="ENABLED",
-            )
-        await refresh_all(
-            lambda: override_session_maker,
-            _om_inventory_proxies(),
-            _om_inventory_enabled_callbacks(),
+    async with override_session_maker() as session:
+        await SettingsOverrideManager.update_where(
+            session,
+            {"is_active": False},
+            setting_class=setting_class_token(OmInventorySettings),
+            key="ENABLED",
         )
-        async with beat_maker() as session:
-            task = await BasePeriodicTaskManager.first(session, name=OM_PROBE_TASK)
-    finally:
-        om_inventory_settings._set_snapshot({})  # ty: ignore[unresolved-attribute]
 
+    await refresh_all(
+        lambda: override_session_maker,
+        _om_inventory_proxies(),
+        _om_inventory_enabled_callbacks(),
+    )
+
+    async with beat_maker() as session:
+        task = await BasePeriodicTaskManager.first(session, name=OM_PROBE_TASK)
     assert task is None
 
 
