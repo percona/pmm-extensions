@@ -25,7 +25,7 @@ permissions:
 jobs:
   lint-typecheck:
     name: Lint & typecheck
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
@@ -58,7 +58,7 @@ jobs:
 
   unit-test:
     name: Unit tests (Vitest)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
@@ -76,7 +76,7 @@ jobs:
 
   build:
     name: Build & Storybook
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
@@ -97,7 +97,7 @@ jobs:
 
   e2e:
     name: E2E (Playwright / Chromium)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [lint-typecheck]
     defaults:
       run:
