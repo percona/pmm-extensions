@@ -194,7 +194,7 @@ class TestCollectDatabaseFacts:
         command.assert_called_once_with("ping")
 
     def test_an_arbiter_is_read_without_the_credentials(self) -> None:
-        """Never offer an arbiter the login it would reject, and keep its refusals."""
+        """Read an arbiter without the credentials, and keep what it refuses."""
         command = rejecting()
 
         facts = collect(command, unauthenticated(arbiter=True))
