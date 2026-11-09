@@ -2371,13 +2371,9 @@ export interface paths {
      * Get Config
      * @description Return this app's configuration: every field, its value and its origin.
      *
-     *     Served here rather than pointing the caller at ``/api/extensions/admin/settings``
-     *     because that router is admin-gated and PMM's principal is not an admin: the
-     *     bearer of the pmm-managed ``--extensions-token`` flag resolves to the synthetic
-     *     ``extensions-service`` user, built with ``is_admin=False`` deliberately, since
-     *     it is a deployment-level shared secret with no person behind it. An app-owned
-     *     endpoint keeps a schedule change scoped to this app instead of requiring PMM
-     *     Extensions wide administrative access.
+     *     Served here as well as on ``/api/extensions/admin/settings`` because that router
+     *     is admin-gated for reads too, and every PMM role may see this configuration.
+     *     Changing it stays admin-only, on that router.
      *
      *     Every field is listed, not only the overridden ones, and each row carries
      *     whether an override is in effect - so "why is it sweeping every 10 minutes"
@@ -2396,42 +2392,10 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /**
-     * Patch Config
-     * @description Update this app's configuration at runtime.
-     *
-     *     The batch is atomic: a single bad key rejects all of it with a per-key 422 and
-     *     writes nothing, so a caller never has to work out how far a partial apply got.
-     *
-     *     Only ``hot_field`` fields are accepted. ``CREDENTIALS_PATH`` is deliberately
-     *     not one: it names a file the payload reads on every database *host* and hands
-     *     to a driver as a URI, so making it settable here would widen "configure this
-     *     app" into "read a chosen file across the estate".
-     *
-     *     An ``ENABLED`` or ``SCHEDULE`` change lands without a restart -
-     *     ``periodic_task_schedules`` is a thunk re-read on registry rebuild - but beat
-     *     runs as a forked side-car process, which reaches the new value through its own
-     *     settings refresher rather than through this request.
-     *
-     *     ``ENABLED`` is what PMM's Operations for MongoDB switch calls, via this same
-     *     route with the credential of the pmm-managed ``--extensions-token`` flag (see
-     *     ``require_minimum_role``'s service-principal bypass): it flips independently of
-     *     ``SCHEDULE``, so the configured cadence survives Operations for MongoDB being
-     *     turned off and back on rather than being overwritten each time.
-     *
-     *     :param request: The incoming request; its ``app.state`` carries the rebind
-     *         callbacks fired for the keys this changed.
-     *     :param body: The ``{key: value, ...}`` batch.
-     *     :param session: The database session.
-     *     :param actor: The calling principal, whose username is recorded on every
-     *         row written. Not ``ApiAdminUsername``: this endpoint admits any
-     *         authenticated caller, PMM's non-admin service principal included.
-     *     :return: One row per applied key, in input order.
-     */
-    patch: operations['om_inventory_patch_config_api_apps_om_inventory_config_patch'];
+    patch?: never;
     trace?: never;
   };
-  '/api/apps/om_inventory/config/{key}': {
+  '/api/apps/om_inventory/enabled': {
     parameters: {
       query?: never;
       header?: never;
@@ -2439,24 +2403,28 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    put?: never;
-    post?: never;
     /**
-     * Delete Config Override
-     * @description Put one field back to whatever the deployment configured.
+     * Set Enabled
+     * @description Follow PMM's Operations for MongoDB switch.
      *
-     *     Without this, an operator who once changed a value can only ever change it to
-     *     another one: "no override" stops being a reachable state, and the YAML the
-     *     deployment ships becomes unrecoverable through the API. Idempotent, so
-     *     clearing a field that was never overridden is not an error.
+     *     pmm-managed calls this at startup and whenever the switch changes, with no user
+     *     behind the call, so only the service principal may use it; a person changes
+     *     this app's configuration through ``/api/extensions/admin/settings`` instead.
+     *
+     *     It flips ``ENABLED`` independently of ``SCHEDULE``, so the configured cadence
+     *     survives the switch being turned off and back on. The change lands without a
+     *     restart, the same way an admin's change on the settings router does.
      *
      *     :param request: The incoming request; its ``app.state`` carries the rebind
-     *         callbacks fired for the reverted key.
-     *     :param key: The field name, or a ``__``-delimited nested key such as
-     *         ``SCHEDULE__every``.
+     *         callbacks fired for ``ENABLED``.
+     *     :param body: The switch's new state.
      *     :param session: The database session.
+     *     :param actor: The service principal, recorded on the row written.
+     *     :return: The ``ENABLED`` row as written.
      */
-    delete: operations['om_inventory_delete_config_override_api_apps_om_inventory_config__key__delete'];
+    put: operations['om_inventory_set_enabled_api_apps_om_inventory_enabled_put'];
+    post?: never;
+    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -11018,6 +10986,16 @@ export interface components {
       replica_set_name: string;
     };
     /**
+     * EnabledWrite
+     * @description Set the app's ``ENABLED`` switch to PMM's Operations for MongoDB switch.
+     *
+     *     :param enabled: Whether the sweep should run.
+     */
+    om_inventory__EnabledWrite: {
+      /** Enabled */
+      enabled: boolean;
+    };
+    /**
      * HostResponse
      * @description Report one host, with the services OM knows are on it.
      *
@@ -15915,7 +15893,7 @@ export interface operations {
       };
     };
   };
-  om_inventory_patch_config_api_apps_om_inventory_config_patch: {
+  om_inventory_set_enabled_api_apps_om_inventory_enabled_put: {
     parameters: {
       query?: never;
       header?: never;
@@ -15924,7 +15902,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        'application/json': components['schemas']['SettingsPatch'];
+        'application/json': components['schemas']['om_inventory__EnabledWrite'];
       };
     };
     responses: {
@@ -15934,37 +15912,8 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          'application/json': components['schemas']['SettingResponse'][];
+          'application/json': components['schemas']['SettingResponse'];
         };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          'application/json': components['schemas']['HTTPValidationError'];
-        };
-      };
-    };
-  };
-  om_inventory_delete_config_override_api_apps_om_inventory_config__key__delete: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        key: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      204: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
       };
       /** @description Validation Error */
       422: {
