@@ -36,6 +36,7 @@ from app.api.deps import (
     get_current_user,
     get_service_principal_exempt_caller,
     IsAuthenticatedDep,
+    IsServicePrincipalDep,
     require_minimum_role_for_unsafe_methods,
     requires_service_principal,
     SERVICE_PRINCIPAL_ID,
@@ -904,25 +905,72 @@ class TestRequireMinimumRoleForUnsafeMethods:
             await require_minimum_role_for_unsafe_methods(request)
 
     @pytest.mark.asyncio
-    async def test_service_principal_is_admitted_by_identity(self, mocker):
-        """Verify ``EXTENSIONS_INTERNAL_TOKEN``'s principal passes the gate.
+    async def test_service_principal_is_admitted_a_route_registered_for_it(
+        self, mocker
+    ):
+        """Verify ``EXTENSIONS_INTERNAL_TOKEN``'s principal passes on its own routes.
 
-        Scheduled inventory sync and scheduled execution authenticate with this
-        token and write through the gated services. The principal holds
-        ``VIEWER``, so only the identity check keeps them working.
+        The sweep and scheduled inventory sync dispatch executions with this
+        token. The principal holds ``VIEWER``, so only the registration keeps
+        them working.
         """
         mocker.patch.object(
             settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(SERVICE_TOKEN)
         )
-        request = make_request("POST", authorization=f"Bearer {SERVICE_TOKEN}")
+        request = make_request(
+            "POST", authorization=f"Bearer {SERVICE_TOKEN}", endpoint=execute_task_name
+        )
 
         assert await require_minimum_role_for_unsafe_methods(request) is None
+
+    @pytest.mark.asyncio
+    async def test_service_principal_is_admitted_a_route_requiring_it(self, mocker):
+        """Verify a route accepting nobody but the principal needs no registration.
+
+        Refusing it there would leave the route unreachable, so requiring the
+        principal is the opt-in.
+        """
+        mocker.patch.object(
+            settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(SERVICE_TOKEN)
+        )
+        router = APIRouter()
+
+        @router.post("/", dependencies=[IsServicePrincipalDep])
+        async def write() -> None: ...
+
+        request = make_request("POST", authorization=f"Bearer {SERVICE_TOKEN}")
+        request.scope["route"] = _only_route(router.routes)
+
+        assert await require_minimum_role_for_unsafe_methods(request) is None
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [None, alerts_api_restore, alerts_api_pagerduty_save],
+        ids=["unmatched", "editor", "admin"],
+    )
+    @pytest.mark.asyncio
+    async def test_service_principal_is_ranked_on_any_other_route(
+        self, mocker, endpoint
+    ):
+        """Verify the principal's ``VIEWER`` meets every other route's minimum.
+
+        A leaked token must not act as an administrator.
+        """
+        mocker.patch.object(
+            settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(SERVICE_TOKEN)
+        )
+        request = make_request(
+            "POST", authorization=f"Bearer {SERVICE_TOKEN}", endpoint=endpoint
+        )
+
+        with pytest.raises(HTTPForbiddenException):
+            await require_minimum_role_for_unsafe_methods(request)
 
     @pytest.mark.asyncio
     async def test_service_principal_gains_nothing_beyond_this_gate(self, mocker):
         """Verify the principal is still refused by every ``is_admin`` check.
 
-        The bypass is scoped to this gate and keyed on identity, not on rank:
+        Admitting it is scoped to this gate and keyed on identity, not on rank:
         the principal holds ``VIEWER``, so ``get_current_admin`` rejects it as
         before.
         """

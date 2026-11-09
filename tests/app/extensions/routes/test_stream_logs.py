@@ -141,7 +141,7 @@ def test_sync_hop_is_authenticated_as_the_service_principal(
     it issues at stream end is a mutating request on the Tasks API — which is
     admin-gated. Carrying the viewing user's own bearer there ends a non-admin's
     stream in an error frame instead of the finish frame, so the hop is
-    authenticated as the service principal the gate admits by identity.
+    authenticated as the service principal, which the gate admits there.
 
     Evidence stops at the credential the request carries; whether the gate then
     admits that identity is asserted elsewhere, not here.

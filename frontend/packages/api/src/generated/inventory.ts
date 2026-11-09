@@ -397,9 +397,9 @@ export interface paths {
      *     The path names the **predecessor** — the survivor of a confirmation, and the
      *     row the operator is acting on in all three decisions.
      *
-     *     Open to an admin as well as the service principal, unlike the other node
-     *     writes: an identity link is an operator judgement, not a row the syncer
-     *     owns.
+     *     Open to an admin, unlike the other node writes, which only the service
+     *     principal makes: an identity link is an operator judgement, not a row the
+     *     syncer owns.
      *
      *     :param session: The async database session.
      *     :param node: The predecessor addressed by the path, retired or not.
@@ -867,8 +867,8 @@ export interface paths {
      *
      *     The path names the **predecessor** — the survivor of a confirmation.
      *
-     *     Open to an admin as well as the service principal, unlike the other
-     *     service writes: an identity link is an operator judgement, not a row the
+     *     Open to an admin, unlike the other service writes, which only the service
+     *     principal makes: an identity link is an operator judgement, not a row the
      *     syncer owns.
      *
      *     :param session: The async database session.

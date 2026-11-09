@@ -36,6 +36,8 @@ rank explicitly rather than inheriting one, except ``PUT /enabled``, which only 
 service principal may call. Every other one is admin: in Operations for MongoDB
 admins act and every other role only reads. pmm-managed calls on a user's
 behalf with that user's own credential, so these ranks hold for PMM's callers too.
+``POST /runs`` also admits the service principal, for the scan pmm-managed starts
+after an install.
 
 Configuration writes are not served here: an admin changes ``OmInventorySettings``
 through ``/api/extensions/admin/settings`` like any other class. The exception is
@@ -54,7 +56,11 @@ from kombu.exceptions import KombuError
 from pydantic import ValidationError
 from sqlmodel import col
 
-from app.api.deps import IsServicePrincipalDep, require_minimum_role
+from app.api.deps import (
+    admit_service_principal,
+    IsServicePrincipalDep,
+    require_minimum_role,
+)
 from app.core.auth.models import BaseUser, UserRole
 from app.core.exceptions import (
     HTTPConflictException,
@@ -571,6 +577,7 @@ async def get_probe_run(run_id: UUID, session: SessionDep) -> ProbeRunDetail:
     status_code=http_status.HTTP_202_ACCEPTED,
 )
 @require_minimum_role(UserRole.ADMIN)
+@admit_service_principal
 async def trigger_probe(
     session: SessionDep, request: TriggerRequest | None = None
 ) -> ProbeRunAccepted:
