@@ -46,6 +46,40 @@ vulnerabilities:
       apply. No upstream fix. Remove when Debian ships one, or if PMM Extensions starts
       opening a SQLite file supplied from outside the container.
     expired_at: 2027-02-19
+  - id: CVE-2026-119373
+    purls:
+      - pkg:deb/debian/libsqlite3-0
+    statement: >-
+      libsqlite3-0. Heap buffer overflow in fts5MergeRowidLists(), CVSS 7.8
+      AV:L/AC:L/PR:N/UI:R. Reaching it requires a detail=none FTS5 table and a
+      prefix MATCH query against it, and PMM Extensions declares no FTS5 table:
+      the same argument as CVE-2026-11822, independent of the engine. No
+      upstream fix (fixed in SQLite 3.54.0). Remove when Debian ships one, or if
+      PMM Extensions starts declaring FTS5 tables.
+    expired_at: 2027-02-19
+  - id: CVE-2026-119374
+    purls:
+      - pkg:deb/debian/libsqlite3-0
+    statement: >-
+      libsqlite3-0. Heap buffer overflow in fts5DoSecureDelete(), CVSS 7.8
+      AV:L/AC:L/PR:N/UI:R. The vector is a supplied database file carrying a
+      corrupted FTS5 index. Both arguments above apply: PMM Extensions declares
+      no FTS5 table, and opens no SQLite file supplied from outside the
+      container. No upstream fix (fixed in SQLite 3.54.0). Remove when Debian
+      ships one, or if either of those stops holding.
+    expired_at: 2027-02-19
+  - id: CVE-2026-119379
+    purls:
+      - pkg:deb/debian/libsqlite3-0
+    statement: >-
+      libsqlite3-0. Heap buffer overflow in sqlite3changeset_apply() in the
+      session extension, CVSS 7.8 AV:L/AC:L/PR:N/UI:R. Reaching it requires
+      applying a changeset. CPython's sqlite3 module binds no session or
+      changeset API, nothing in the tree calls one or depends on a binding that
+      does (such as APSW), and the slim base image ships no sqlite3 CLI. No
+      upstream fix (fixed in SQLite 3.54.0). Remove when Debian ships one, or if
+      PMM Extensions starts applying SQLite changesets.
+    expired_at: 2027-02-19
 
   # --- ncurses (libtinfo6) ----------------------------------------------------
   - id: CVE-2025-69720

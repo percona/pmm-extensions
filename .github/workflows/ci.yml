@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   label-gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # base_sha / head_sha / head_repo are live from the API so re-runs after a
     # retarget do not keep github.event.pull_request.* from the original
     # event. typecheck_diff consumes all three; paths-filter does not need base_sha
@@ -156,7 +156,7 @@ jobs:
   # .pre-commit-config.yaml separately to trigger precommit-python / precommit-frontend.
   changes:
     if: ${{ github.event.pull_request.draft == false }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       python: ${{ steps.filter.outputs.python }}
       precommit: ${{ steps.filter.outputs.precommit }}
@@ -238,7 +238,7 @@ jobs:
     if: ${{ github.event.pull_request.draft == false }}
     needs:
       - label-gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -298,7 +298,7 @@ jobs:
     needs:
       - label-gate
       - changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -338,7 +338,7 @@ jobs:
     needs:
       - label-gate
       - changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -386,7 +386,7 @@ jobs:
         needs.changes.outputs.python == 'true' &&
         !contains(github.event.pull_request.labels.*.name, 'lint-fmt-only')
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - label-gate
       - changes
@@ -462,7 +462,7 @@ jobs:
         needs.changes.outputs.sidecar == 'true' &&
         !contains(github.event.pull_request.labels.*.name, 'lint-fmt-only')
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - label-gate
       - changes
@@ -575,7 +575,7 @@ jobs:
     needs:
       - label-gate
       - changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -609,7 +609,7 @@ jobs:
       - frontend
       - build
       - pipeline-syntax
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Fail if any dependency failed or was cancelled
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
