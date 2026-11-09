@@ -61,7 +61,7 @@ default:
       - OmInventorySettings.RUN_RETENTION
       - OmInventorySettings.STALE_RUN_AFTER
       # PMM's Operations for MongoDB switch reaches ENABLED through the app's own
-      # PATCH /config, which this allowlist gates like any other caller: left
+      # PUT /enabled, which this allowlist gates like any other caller: left
       # out, the sweep can never be turned on.
       - OmInventorySettings.ENABLED
 
