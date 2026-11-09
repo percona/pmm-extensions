@@ -26,7 +26,7 @@ jobs:
   bandit:
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         python: ["3.11.9"]
     runs-on: ${{ matrix.os }}
     steps:
@@ -44,7 +44,7 @@ jobs:
   typecheck:
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         python: ["3.11.9"]
     runs-on: ${{ matrix.os }}
     steps:
@@ -68,7 +68,7 @@ jobs:
   lock_check:
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         python: ["3.11.9"]
     runs-on: ${{ matrix.os }}
     steps:
@@ -86,7 +86,7 @@ jobs:
   check_migrations:
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         python: ["3.11.9"]
     runs-on: ${{ matrix.os }}
     steps:
@@ -105,7 +105,7 @@ jobs:
         run: AUTH__PROVIDER__CASDOOR__CLIENT_SECRET=notatoken AUTH__PROVIDER__CASDOOR__CLIENT_ID=notatoken ENCRYPTION_KEY="$(make -s encryption-key)" make checkmigrations
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout codebase
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -150,7 +150,7 @@ jobs:
 
   test_postgres:
     name: test (postgres)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16-alpine
@@ -182,7 +182,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         python: ["3.11.9"]
     runs-on: ${{ matrix.os }}
     steps:
