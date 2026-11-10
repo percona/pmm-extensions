@@ -435,20 +435,13 @@ class PMMSettings(BaseLowercaseModel):
     """Define core PMM connection and authentication configuration.
 
     :param endpoint: The PMM server URL.
-    :type endpoint: StrCredentialHttpUrl | None
     :param frontend: The PMM frontend URL; defaults to the endpoint without credentials.
-    :type frontend: StrHttpUrl | None
     :param api_key: API key for PMM authentication.
-    :type api_key: SecretStr | None
     :param verify_ssl: Whether to verify SSL certificates.
-    :type verify_ssl: bool
     :param execution_target: Explicit execution target name or address for PMM tasks.
-    :type execution_target: str | None
     :param annotations_enabled: Whether to create PMM annotations for task lifecycle
         events.
-    :type annotations_enabled: bool
     :param annotations_timeout: Timeout in seconds for PMM annotation API calls.
-    :type annotations_timeout: PositiveInt
     """
 
     endpoint: StrCredentialHttpUrl | None = None
@@ -464,10 +457,9 @@ class PMMSettings(BaseLowercaseModel):
         """Set ``frontend`` to ``endpoint`` without userinfo when not explicitly provided.
 
         :return: The updated settings instance.
-        :rtype: Self
         """
         if "frontend" not in self.model_fields_set and self.endpoint is not None:
-            self.frontend = strip_credential_url_userinfo(str(self.endpoint))
+            self.frontend = strip_credential_url_userinfo(self.endpoint)
         return self
 
     @cached_property
