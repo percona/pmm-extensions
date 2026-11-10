@@ -1851,8 +1851,10 @@ class Xtrabackup(Restore):
 
         An absent ``<source>_incrementals`` location is an empty chain; any other
         listing failure raises ``BackupError``. Each tool reports absence its own
-        way: aws exits 1, s3cmd and the guarded ssh command exit 0, and gcloud
-        exits 1 with "matched no objects" (it exits 1 on real errors too).
+        way: aws exits 1, s3cmd exits 0, and gcloud exits 1 with "matched no
+        objects" (it exits 1 on real errors too). SSH lists through ``sudo rsync``
+        as the copy does, and reads absence off the full's parent dir, because
+        rsync exits 23 for a missing and an unreadable dir alike.
         """
         inc_dir = source + '_incrementals'
         regex = BACKUP_DIR_REGEX[self.backup_code]
@@ -1865,36 +1867,41 @@ class Xtrabackup(Restore):
                 raise BackupError('Listing %s failed: %s' % (inc_dir, err))
             return sorted(name for name in names if re.match(regex, name))
 
-        absent = lambda returncode, stderr: False
+        def listing(argv):
+            try:
+                proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except OSError as err:
+                raise BackupError('Listing %s failed: %s' % (inc_dir, err))
+            out, err = proc.communicate()
+            err = err.decode(errors='replace').strip()
+            if proc.returncode == 0:
+                return out.decode(errors='replace').splitlines()
+            if (source.startswith('s3:') and self.s3_tool == 'awscli' and proc.returncode == 1) \
+                    or (source.startswith('gs:') and 'matched no objects' in err):
+                return None
+            raise BackupError('Listing %s failed (exit %s): %s' % (inc_dir, proc.returncode, err))
+
         if source.startswith('s3:'):
             if self.s3_tool == 'awscli':
-                argv = [AWS_BIN, 's3', 'ls', inc_dir + '/']
-                absent = lambda returncode, stderr: returncode == 1
+                lines = listing([AWS_BIN, 's3', 'ls', inc_dir + '/'])
             else:
-                argv = ['%s/bin/s3cmd' % INSTALL_DIR, 'ls', inc_dir + '/']
+                lines = listing(['%s/bin/s3cmd' % INSTALL_DIR, 'ls', inc_dir + '/'])
         elif source.startswith('gs:'):
-            argv = [GCLOUD_BIN, 'storage', 'ls', inc_dir + '/']
-            absent = lambda returncode, stderr: b'matched no objects' in stderr
+            lines = listing([GCLOUD_BIN, 'storage', 'ls', inc_dir + '/'])
         else:
             host, path = source.split(':', 1)
-            quoted = shlex.quote(path + '_incrementals')
-            argv = ['ssh', '-p', str(self.ssh_port), '-l', self.ssh_user,
-                    '-i', '/home/%s/.ssh/id_rsa' % self.ssh_user, host,
-                    'sudo -n test ! -e %s || sudo -n ls -1 %s' % (quoted, quoted)]
-
-        try:
-            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except OSError as err:
-            raise BackupError('Listing %s failed: %s' % (inc_dir, err))
-        out, err = proc.communicate()
-        if proc.returncode != 0:
-            if absent(proc.returncode, err):
+            rsync = ['rsync', '--list-only', '--rsync-path=sudo rsync', '-e',
+                     'ssh -t -p %s -i %s' % (self.ssh_port,
+                                             shlex.quote('/home/%s/.ssh/id_rsa' % self.ssh_user))]
+            remote = '%s@%s:' % (self.ssh_user, host)
+            parent = listing(rsync + [remote + os.path.join(os.path.dirname(path), '')])
+            entries = [line.split(None, 4)[-1] for line in parent if line.strip()]
+            if os.path.basename(inc_dir) not in entries:
                 return []
-            raise BackupError('Listing %s failed (exit %s): %s'
-                              % (inc_dir, proc.returncode, err.decode(errors='replace').strip()))
+            lines = listing(rsync + [remote + inc_dir.split(':', 1)[1] + '/'])
 
         names = [line.split()[-1].rstrip('/').rsplit('/', 1)[-1]
-                 for line in out.decode(errors='replace').splitlines() if line.strip()]
+                 for line in lines or [] if line.strip()]
         return sorted(name for name in names if re.match(regex, name))
 
     def _backup_chain(self):
@@ -1942,8 +1949,8 @@ class Xtrabackup(Restore):
             except configparser.Error as err:
                 raise BackupError('Cannot read xtrabackup_info of %s: %s' % (path, err))
             if self.backup_is_incremental != (index > 0):
-                raise BackupError('%s is %s backup' % (
-                    path, 'an incremental' if index == 0 else 'not an incremental'))
+                raise BackupError('%s is %s backup' % (path, 'an incremental backup; pick its full'
+                                                         if index == 0 else 'not an incremental'))
         self.backup_source = backup_path_list[0]
 
     def set_slave(self):

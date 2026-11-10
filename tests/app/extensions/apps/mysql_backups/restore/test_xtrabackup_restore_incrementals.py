@@ -32,7 +32,6 @@ import os
 import pathlib
 import shlex
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -81,22 +80,30 @@ class StubBin:
         self.bin_dir.mkdir(parents=True, exist_ok=True)
         self.record = root / "argv.jsonl"
 
-    def install(self, name: str, stub: Stub) -> pathlib.Path:
+    def install(self, name: str, *answers: Stub) -> pathlib.Path:
         """Write ``name`` into the stub bin dir and return its path.
 
         :param name: The executable's file name.
-        :param stub: What the executable prints and how it exits.
+        :param answers: What each successive run prints and how it exits; runs past
+            the last answer repeat it.
         :return: The path of the written executable.
         """
         path = self.bin_dir / name
+        script = [(a.stdout, a.stderr, a.returncode) for a in answers]
+        counter = self.root / f"{name}.count"
         path.write_text(
             f"#!{sys.executable}\n"
-            "import json, sys\n"
+            "import json, os, sys\n"
             f"with open({str(self.record)!r}, 'a') as fh:\n"
             "    fh.write(json.dumps(sys.argv) + '\\n')\n"
-            f"sys.stdout.write({stub.stdout!r})\n"
-            f"sys.stderr.write({stub.stderr!r})\n"
-            f"sys.exit({stub.returncode})\n"
+            f"counter = {str(counter)!r}\n"
+            "n = int(open(counter).read()) if os.path.exists(counter) else 0\n"
+            "open(counter, 'w').write(str(n + 1))\n"
+            f"script = {script!r}\n"
+            "out, err, code = script[min(n, len(script) - 1)]\n"
+            "sys.stdout.write(out)\n"
+            "sys.stderr.write(err)\n"
+            "sys.exit(code)\n"
         )
         path.chmod(0o755)
         return path
@@ -169,47 +176,89 @@ def _make_local_chain(root: pathlib.Path, *incs: str) -> pathlib.Path:
     return full
 
 
+def _rsync_line(name: str, *, is_dir: bool = True) -> str:
+    """Return one ``rsync --list-only`` line for ``name``."""
+    mode = "drwxr-xr-x" if is_dir else "-rw-r--r--"
+    return f"{mode}          4,096 2026/01/05 10:00:00 {name}\n"
+
+
 # Each scheme's listing, rendered the way its tool prints it, with noise the
 # parser has to drop: a gcloud folder placeholder, a stray file, a non-timestamp dir.
+# SSH answers twice: first the full's parent dir, then the chain dir.
 _UNORDERED = (_INCS[2], _INCS[0], _INCS[1])
-_PRESENT_OUTPUT = {
-    "s3/awscli": "".join(f"                           PRE {i}/\n" for i in _UNORDERED)
-    + "2026-01-05 10:00:00        12 notes.txt\n"
-    + "                           PRE scratch/\n",
-    "s3/s3cmd": "".join(
-        f"                          DIR  s3://b/p/{_FULL}_incrementals/{i}/\n"
-        for i in _UNORDERED
-    )
-    + f"2026-01-05 10:00        12  s3://b/p/{_FULL}_incrementals/notes.txt\n",
-    "gs": "".join(f"gs://b/p/{_FULL}_incrementals/{i}/\n" for i in _UNORDERED)
-    + f"gs://b/p/{_FULL}_incrementals/{_INCS[0]}_$folder$\n"
-    + f"gs://b/p/{_FULL}_incrementals/scratch/\n",
-    "ssh": "".join(f"{i}\n" for i in _UNORDERED) + "notes.txt\nscratch\n",
+_INC_DIR_NAME = f"{_FULL}_incrementals"
+_SSH_PARENT_WITH_CHAIN = Stub(
+    stdout=_rsync_line(".") + _rsync_line(_FULL) + _rsync_line(_INC_DIR_NAME)
+)
+_PRESENT = {
+    "s3/awscli": (
+        Stub(
+            stdout="".join(f"                           PRE {i}/\n" for i in _UNORDERED)
+            + "2026-01-05 10:00:00        12 notes.txt\n"
+            + "                           PRE scratch/\n"
+        ),
+    ),
+    "s3/s3cmd": (
+        Stub(
+            stdout="".join(
+                f"                          DIR  s3://b/p/{_INC_DIR_NAME}/{i}/\n"
+                for i in _UNORDERED
+            )
+            + f"2026-01-05 10:00        12  s3://b/p/{_INC_DIR_NAME}/notes.txt\n"
+        ),
+    ),
+    "gs": (
+        Stub(
+            stdout="".join(f"gs://b/p/{_INC_DIR_NAME}/{i}/\n" for i in _UNORDERED)
+            + f"gs://b/p/{_INC_DIR_NAME}/{_INCS[0]}_$folder$\n"
+            + f"gs://b/p/{_INC_DIR_NAME}/scratch/\n"
+        ),
+    ),
+    "ssh": (
+        _SSH_PARENT_WITH_CHAIN,
+        Stub(
+            stdout=_rsync_line(".")
+            + "".join(_rsync_line(i) for i in _UNORDERED)
+            + _rsync_line("notes.txt", is_dir=False)
+            + _rsync_line("scratch")
+        ),
+    ),
 }
 _ABSENT = {
-    "s3/awscli": Stub(returncode=1),
-    "s3/s3cmd": Stub(),
-    "gs": Stub(
-        stderr="ERROR: (gcloud.storage.ls) One or more URLs matched no objects.\n",
-        returncode=1,
+    "s3/awscli": (Stub(returncode=1),),
+    "s3/s3cmd": (Stub(),),
+    "gs": (
+        Stub(
+            stderr="ERROR: (gcloud.storage.ls) One or more URLs matched no objects.\n",
+            returncode=1,
+        ),
     ),
-    "ssh": Stub(),
+    "ssh": (Stub(stdout=_rsync_line(".") + _rsync_line(_FULL)),),
 }
 _FAILED = {
-    "s3/awscli": Stub(
-        stderr="An error occurred (AccessDenied) when calling the "
-        "ListObjectsV2 operation: Access Denied\n",
-        returncode=255,
+    "s3/awscli": (
+        Stub(
+            stderr="An error occurred (AccessDenied) when calling the "
+            "ListObjectsV2 operation: Access Denied\n",
+            returncode=255,
+        ),
     ),
-    "s3/s3cmd": Stub(stderr="ERROR: Access to bucket 'b' was denied\n", returncode=77),
-    "gs": Stub(
-        stderr="ERROR: (gcloud.storage.ls) gs://b not found: 404.\n", returncode=1
+    "s3/s3cmd": (
+        Stub(stderr="ERROR: Access to bucket 'b' was denied\n", returncode=77),
     ),
-    "ssh": Stub(
-        stderr="ssh: connect to host backuphost: Connection refused\n", returncode=255
+    "gs": (
+        Stub(
+            stderr="ERROR: (gcloud.storage.ls) gs://b not found: 404.\n", returncode=1
+        ),
+    ),
+    "ssh": (
+        Stub(
+            stderr="ssh: connect to host backuphost port 2222: Connection refused\n",
+            returncode=255,
+        ),
     ),
 }
-_TOOL = {"s3/awscli": "aws", "s3/s3cmd": "s3cmd", "gs": "gcloud", "ssh": "ssh"}
+_TOOL = {"s3/awscli": "aws", "s3/s3cmd": "s3cmd", "gs": "gcloud", "ssh": "rsync"}
 _SOURCE = {
     "s3/awscli": f"s3://b/p/{_FULL}",
     "s3/s3cmd": f"s3://b/p/{_FULL}",
@@ -220,10 +269,10 @@ _REMOTE_SCHEMES = tuple(_TOOL)
 
 
 def _remote_restorer(
-    stub_bin: StubBin, scheme: str, stub: Stub
+    stub_bin: StubBin, scheme: str, answers: tuple[Stub, ...]
 ) -> types.SimpleNamespace:
-    """Install ``scheme``'s listing tool answering ``stub`` and return a restorer."""
-    stub_bin.install(_TOOL[scheme], stub)
+    """Install ``scheme``'s listing tool giving ``answers`` and return a restorer."""
+    stub_bin.install(_TOOL[scheme], *answers)
     return _restorer(stub_bin, s3_tool="s3cmd" if scheme == "s3/s3cmd" else "awscli")
 
 
@@ -235,7 +284,7 @@ class TestListIncrementalsRemote:
         self, stubs: StubBin, scheme: str
     ) -> None:
         """Return the timestamp dirs as sorted ``str`` names, dropping the rest."""
-        restorer = _remote_restorer(stubs, scheme, Stub(stdout=_PRESENT_OUTPUT[scheme]))
+        restorer = _remote_restorer(stubs, scheme, _PRESENT[scheme])
 
         assert restorer.list_incrementals(_SOURCE[scheme]) == list(_INCS)
 
@@ -251,15 +300,15 @@ class TestListIncrementalsRemote:
     @pytest.mark.parametrize("scheme", _REMOTE_SCHEMES)
     def test_raises_on_a_failed_listing(self, stubs: StubBin, scheme: str) -> None:
         """Fail loudly, naming the listed location and the tool's error."""
-        stub = _FAILED[scheme]
-        restorer = _remote_restorer(stubs, scheme, stub)
+        answers = _FAILED[scheme]
+        restorer = _remote_restorer(stubs, scheme, answers)
 
         with pytest.raises(_BackupError) as exc_info:
             restorer.list_incrementals(_SOURCE[scheme])
 
         message = str(exc_info.value)
-        assert f"{_FULL}_incrementals" in message
-        assert stub.stderr.strip() in message
+        assert _INC_DIR_NAME in message
+        assert answers[0].stderr.strip() in message
 
     @pytest.mark.parametrize("scheme", ["s3/awscli", "s3/s3cmd", "gs"])
     def test_lists_the_prefix_children_with_a_trailing_slash(
@@ -274,7 +323,7 @@ class TestListIncrementalsRemote:
 
     def test_lists_a_gs_source_with_gcloud_not_ssh(self, stubs: StubBin) -> None:
         """Send a ``gs://`` source to gcloud, never down the ``host:path`` branch."""
-        stubs.install("ssh", Stub())
+        stubs.install("rsync", *_PRESENT["ssh"])
         restorer = _remote_restorer(stubs, "gs", _ABSENT["gs"])
 
         restorer.list_incrementals(_SOURCE["gs"])
@@ -285,51 +334,52 @@ class TestListIncrementalsRemote:
         """Turn a listing binary that does not exist into a ``BackupError``."""
         restorer = _restorer(stubs)
 
-        with pytest.raises(_BackupError, match=f"{_FULL}_incrementals"):
+        with pytest.raises(_BackupError, match=_INC_DIR_NAME):
             restorer.list_incrementals(_SOURCE["s3/awscli"])
 
 
 class TestListIncrementalsSsh:
-    """Cover the SSH listing's remote command."""
+    """Cover the SSH listing, which goes through ``sudo rsync`` like the copy."""
 
-    def _remote_command(self, stubs: StubBin, path: str) -> str:
-        """List ``host:path`` over the ssh stub and return the remote command."""
-        restorer = _remote_restorer(stubs, "ssh", Stub())
-        restorer.list_incrementals(f"{_SSH_HOST}:{path}")
-        argv = stubs.calls()[0]
-        assert argv[1:-1] == [
-            "-p",
-            str(_SSH_PORT),
-            "-l",
-            _SSH_USER,
-            "-i",
-            f"/home/{_SSH_USER}/.ssh/id_rsa",
-            _SSH_HOST,
-        ]
-        return argv[-1]
-
-    def test_quotes_a_path_containing_a_space(self, stubs: StubBin) -> None:
-        """Quote the remote path so a space cannot split it into two arguments."""
-        command = self._remote_command(stubs, "/backups/my dir/F")
-
-        assert shlex.quote("/backups/my dir/F_incrementals") in command
-
-    def test_a_refused_sudo_cannot_read_as_an_absent_chain(
-        self, stubs: StubBin, tmp_path: pathlib.Path
+    def test_lists_the_parent_then_the_chain_through_sudo_rsync(
+        self, stubs: StubBin
     ) -> None:
-        """Exit non-zero when ``sudo -n`` is refused, even for a missing dir."""
-        command = self._remote_command(stubs, str(tmp_path / "missing" / "F"))
-        stubs.install(
-            "sudo", Stub(stderr="sudo: a password is required\n", returncode=1)
-        )
+        """Use the copy's privilege path, listing the parent dir before the chain."""
+        restorer = _remote_restorer(stubs, "ssh", _PRESENT["ssh"])
 
-        result = subprocess.run(
-            ["/bin/sh", "-c", command], capture_output=True, check=False
-        )
+        restorer.list_incrementals(_SOURCE["ssh"])
 
-        assert "sudo -n test ! -e" in command
-        assert "sudo -n ls -1" in command
-        assert result.returncode != 0
+        rsync_args = [
+            "--list-only",
+            "--rsync-path=sudo rsync",
+            "-e",
+            f"ssh -t -p {_SSH_PORT} -i /home/{_SSH_USER}/.ssh/id_rsa",
+        ]
+        remote = f"{_SSH_USER}@{_SSH_HOST}:/backups/"
+        assert [argv[1:] for argv in stubs.calls()] == [
+            [*rsync_args, remote],
+            [*rsync_args, f"{remote}{_INC_DIR_NAME}/"],
+        ]
+
+    def test_does_not_list_a_chain_the_parent_lacks(self, stubs: StubBin) -> None:
+        """Stop after the parent listing when it has no ``_incrementals`` entry."""
+        restorer = _remote_restorer(stubs, "ssh", _ABSENT["ssh"])
+
+        restorer.list_incrementals(_SOURCE["ssh"])
+
+        assert len(stubs.calls()) == 1
+
+    def test_raises_when_a_listed_chain_cannot_be_read(self, stubs: StubBin) -> None:
+        """Fail, not report an empty chain, when the chain dir exists but is unreadable."""
+        denied = Stub(
+            stderr=f'rsync: [sender] change_dir "/backups/{_INC_DIR_NAME}" failed: '
+            "Permission denied (13)\n",
+            returncode=23,
+        )
+        restorer = _remote_restorer(stubs, "ssh", (_SSH_PARENT_WITH_CHAIN, denied))
+
+        with pytest.raises(_BackupError, match="Permission denied"):
+            restorer.list_incrementals(_SOURCE["ssh"])
 
 
 class TestListIncrementalsLocal:
@@ -396,7 +446,7 @@ class TestBackupChain:
         self, stubs: StubBin
     ) -> None:
         """Strip the S3 catalog's trailing ``/`` before deriving the chain prefix."""
-        stubs.install("aws", Stub(stdout=_PRESENT_OUTPUT["s3/awscli"]))
+        stubs.install("aws", *_PRESENT["s3/awscli"])
         full = _SOURCE["s3/awscli"]
 
         chain = _chain_restorer(stubs, full + "/").backup_chain()
@@ -418,7 +468,7 @@ class TestBackupChain:
         self, stubs: StubBin
     ) -> None:
         """Detect an S3 catalog incremental source despite its trailing ``/``."""
-        stubs.install("aws", Stub(stdout=_PRESENT_OUTPUT["s3/awscli"]))
+        stubs.install("aws", *_PRESENT["s3/awscli"])
         full = _SOURCE["s3/awscli"]
 
         chain = _chain_restorer(
@@ -596,6 +646,21 @@ class TestCheckBackupChain:
             restorer.check_backup_chain(paths)
 
 
+class _NoRlimit:
+    """Stand in for ``resource`` so ``run`` does not change the test process's limits."""
+
+    RLIMIT_NOFILE = 7
+
+    @staticmethod
+    def setrlimit(_which: int, _limits: list[int]) -> None:
+        """Accept the limit without applying it."""
+
+
+def _copy_back_reached() -> None:
+    """Fail the restore the moment ``run`` gets as far as copying data back."""
+    raise _BackupError("copy_back reached")
+
+
 @pytest.mark.usefixtures("_pxb_info_lock")
 class TestRunChecksTheChainFirst:
     """Cover ``run`` refusing a bad chain before it stops mysqld."""
@@ -603,10 +668,17 @@ class TestRunChecksTheChainFirst:
     def test_does_not_stop_mysqld_for_a_broken_chain(
         self, stubs: StubBin, tmp_path: pathlib.Path
     ) -> None:
-        """Raise before ``signal_mysqld`` runs when a later element is unreadable."""
+        """Raise before ``signal_mysqld`` runs when a later element is unreadable.
+
+        The restorer carries everything ``run`` needs to reach ``signal_mysqld`` for
+        the full backup, so only the pre-flight stands between the two.
+        """
         restorer, paths = _info_restorer(tmp_path, [False, True, None])
         signals: list[str] = []
         restorer.signal_mysqld = signals.append
+        restorer.datadir = str(tmp_path / "datadir")
+        restorer.from_commandline = False
+        restorer.copy_back = _copy_back_reached
         restorer.logging_dir = str(tmp_path)
         restorer.pre_script = None
         restorer.continue_replication = False
@@ -615,9 +687,10 @@ class TestRunChecksTheChainFirst:
         restorer.list_incrementals = _restorer(stubs).list_incrementals
         restorer._backup_chain = functools.partial(_lift("_backup_chain"), restorer)
         restorer._check_backup_chain = restorer.check_backup_chain
-        run = _lift("run", {"time": time})
+        run = _lift("run", {"time": time, "resource": _NoRlimit})
 
-        with pytest.raises(_BackupError, match=paths[2]):
+        with pytest.raises(_BackupError) as exc_info:
             run(restorer)
 
         assert signals == []
+        assert paths[2] in str(exc_info.value)
