@@ -117,7 +117,11 @@ from app.core.utils.cross_field import (
 )
 from app.core.utils.date_time import utc_now
 from app.core.utils.exceptions import exception_detail
-from app.core.utils.pydantic import annotation_pydantic_class
+from app.core.utils.pydantic import (
+    annotation_pydantic_class,
+    bound_metadata,
+    numeric_bounds,
+)
 
 ClassEntry = tuple[str, type[BaseYamlSettings], OverridableSettingsProxy]
 
@@ -392,6 +396,21 @@ def _enum_options(field_info: FieldInfo) -> list[SettingOption] | None:
     ]
 
 
+def _inclusive_bounds(field_info: FieldInfo) -> tuple[Any, Any]:
+    """Return a field's inclusive lower and upper bound, dumped like its value.
+
+    :param field_info: The Pydantic field metadata for the target attribute.
+    :return: ``(minimum, maximum)``, each ``None`` when the field declares no
+        ``Ge`` or ``Le`` bound.
+    """
+    bounds = numeric_bounds(bound_metadata(field_info))
+    minimum, maximum = (
+        None if bound is None else dump_field_value(field_info, bound)
+        for bound in (bounds["ge"], bounds["le"])
+    )
+    return minimum, maximum
+
+
 def _settings_response_from_field(
     *,
     setting_class: str,
@@ -434,6 +453,7 @@ def _settings_response_from_field(
         current_value = getattr(proxy, field_meta.key)
         key_path = [field_meta.key]
         serialized_value = dump_field_value(field_info, current_value)
+    minimum, maximum = _inclusive_bounds(field_info)
     return SettingResponse(
         setting_class=setting_class,
         key=field_meta.key,
@@ -456,6 +476,8 @@ def _settings_response_from_field(
             else True
         ),
         options=_enum_options(field_info),
+        minimum=minimum,
+        maximum=maximum,
     )
 
 

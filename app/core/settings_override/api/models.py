@@ -89,6 +89,11 @@ class SettingResponse(BaseModel):
         PATCH/DELETE server-side; the runtime gate is the real enforcement.
     :param options: Selectable enum members for dropdown UIs, or ``None`` when
         the field is not an ``Enum`` annotation. Aliased members are excluded.
+    :param minimum: The field's inclusive lower bound, dumped like ``value``, or
+        ``None`` when it declares none. An exclusive bound, such as
+        ``PositiveInt``'s, is not reported.
+    :param maximum: The field's inclusive upper bound, dumped like ``value``, or
+        ``None`` when it declares none.
     :param updated_at: When the override applying to this key was last saved,
         falling back to the row's creation time for a row written before the
         stamp was recorded. ``None`` when ``has_override`` is ``False``.
@@ -129,6 +134,8 @@ class SettingResponse(BaseModel):
     is_advanced: bool = False
     is_applicable: bool = True
     options: list[SettingOption] | None = None
+    minimum: Any = None
+    maximum: Any = None
     updated_at: UTCDatetime | None = None
     updated_by: str | None = None
     override_ignored_reason: str | None = None
