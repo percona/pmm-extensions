@@ -152,8 +152,8 @@ def stored_overrides_from_rows(
     """Return every usable override among ``rows``, coerced, before cross-field rules apply.
 
     The row-processing half of :func:`load_stored_overrides`, for a caller that
-    already holds the class's active rows and must not read them again. Unusable
-    rows are logged and skipped exactly as there.
+    already holds the class's active rows and must not read them again. Each
+    unusable row is logged and skipped.
 
     :param settings_cls: The Pydantic settings class being read.
     :param rows: The class's active override rows.

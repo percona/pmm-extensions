@@ -400,7 +400,7 @@ def _settings_response_from_field(
     :param applicability: Optional predicate deciding whether the field applies
         under current runtime state; ``None`` marks the field applicable.
     :param ignored_reason: Why the snapshot ignores the field's stored
-        override, or ``None`` when it is honoured or absent.
+        override for breaking a cross-field rule, or ``None`` otherwise.
     :return: The structured response for the field.
     """
     if "__" in field_meta.key:
@@ -1343,9 +1343,10 @@ def _ignored_override_reasons(
     """Map each field whose stored override the snapshot ignores to why.
 
     Judged from ``rows`` against the YAML/env base, exactly as the snapshot
-    judges them, so a read needs no second query. A field names only the rules
-    that dropped its override, not one that broke after it fell back to its
-    base value.
+    judges them, so a read needs no second query. Only rows for a field some
+    rule names are decoded: the rules read no other field, so the rest cannot
+    change the result. A field names only the rules that dropped its override,
+    not one that broke after it fell back to its base value.
 
     :param settings_cls: The Pydantic settings class declaring the rules.
     :param proxy: The proxy wrapping it, for the YAML/env base values.
@@ -1356,8 +1357,11 @@ def _ignored_override_reasons(
     rules = settings_cls.CROSS_FIELD_RULES
     if not rules:
         return {}
+    rule_fields = {name for rule in rules for name in rule.fields}
     base = proxy.get_base()
-    stored = stored_overrides_from_rows(settings_cls, rows, base)
+    stored = stored_overrides_from_rows(
+        settings_cls, (row for row in rows if row.key in rule_fields), base
+    )
     causes = dropped_override_causes(rules, stored, partial(getattr, base))
     return {
         name: "; ".join(rule.message for rule in dropped_by)

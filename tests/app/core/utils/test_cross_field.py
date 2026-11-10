@@ -174,26 +174,27 @@ class TestDroppedOverrideCauses:
         assert causes == {"A": (LE,), "B": (LE,)}
 
     @pytest.mark.parametrize(
-        ("overrides", "expected"),
+        ("rules", "overrides", "expected"),
         [
-            ({"B": 25}, {"B": (LT,)}),
-            ({"A": 30, "B": 25}, {"A": (LE,), "B": (LE, LT)}),
+            ((LE, LT), {"B": 25}, {"B": (LT,)}),
+            ((LE, LT), {"A": 30, "B": 25}, {"A": (LE,), "B": (LE, LT)}),
+            ((LT, LE), {"A": 30, "B": 25}, {"A": (LE,), "B": (LT, LE)}),
         ],
-        ids=["one-rule-broken", "both-rules-broken"],
+        ids=["one-rule-broken", "both-rules-broken", "reversed-declaration"],
     )
     def test_a_field_names_every_rule_broken_in_its_round_in_declaration_order(
         self,
+        rules: tuple[CrossFieldRule, ...],
         overrides: dict[str, int],
         expected: dict[str, tuple[CrossFieldRule, ...]],
     ) -> None:
         """Name only the rules that round broke, in the order they were declared.
 
+        :param rules: The rules, in declaration order.
         :param overrides: The stored overrides.
         :param expected: The rules each dropped field is attributed to.
         """
-        assert dropped_override_causes((LE, LT), overrides, BASE.__getitem__) == (
-            expected
-        )
+        assert dropped_override_causes(rules, overrides, BASE.__getitem__) == (expected)
 
     def test_the_cascade_names_only_the_round_that_dropped_each_field(self) -> None:
         """Leave ``B`` off ``GT``, which broke only once ``B`` was already gone."""

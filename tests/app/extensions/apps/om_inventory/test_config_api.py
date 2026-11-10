@@ -30,6 +30,7 @@ asserts it is refused, because the difference between "not hot" and "not yet hot
 invisible in the field list.
 """
 
+import logging
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -49,6 +50,7 @@ from app.api.deps import SERVICE_PRINCIPAL
 from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.config import settings
 from app.core.requests.remote_api import RemoteAPI
+from app.core.settings_override import cache
 from app.core.settings_override.lifecycle import publish_snapshot
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import setting_class_token, SettingOverride
@@ -1315,6 +1317,30 @@ class TestIgnoredOverrideAttribution:
         entry = {row["key"]: row for row in response.json()}["TASK_TIMEOUT"]
         assert entry["has_override"] is True
         assert entry["override_ignored_reason"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_field_no_rule_names_is_not_decoded_on_read(
+        self,
+        api: AsyncClient,
+        session: AsyncSession,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Leave an unusable row outside every rule to the refresher's warning.
+
+        Judging the rules reads only the fields they name, so a read does not
+        repeat, once per request, the loader's warning for any other bad row.
+
+        :param api: The authenticated client.
+        :param session: The database session.
+        :param caplog: Fixture capturing log records.
+        """
+        await _store(session, RUN_RETENTION="not-a-number")
+
+        with caplog.at_level(logging.WARNING, logger=cache.logger.name):
+            response = await api.get(f"{BASE}/config")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert "RUN_RETENTION" not in caplog.text
 
 
 class TestStaleRunAfterRoundTrip:
