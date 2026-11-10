@@ -1345,8 +1345,11 @@ def _ignored_override_reasons(
     Judged from ``rows`` against the YAML/env base, exactly as the snapshot
     judges them, so a read needs no second query. Only rows for a field some
     rule names are decoded: the rules read no other field, so the rest cannot
-    change the result. A field names only the rules that dropped its override,
-    not one that broke after it fell back to its base value.
+    change the result. Matching ``row.key`` exactly finds them all, because
+    :class:`BaseYamlSettings` refuses a rule naming a nested-overridable field,
+    so no ``parent__leaf`` row carries a rule field's value. A field names only
+    the rules that dropped its override, not one that broke after it fell back
+    to its base value.
 
     :param settings_cls: The Pydantic settings class declaring the rules.
     :param proxy: The proxy wrapping it, for the YAML/env base values.
