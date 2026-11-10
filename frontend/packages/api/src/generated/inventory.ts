@@ -2453,6 +2453,13 @@ export interface components {
      *         indistinguishable by timestamp, and the pair reported is then whichever
      *         contributing row was created later, which need not be the one written
      *         later.
+     *     :param override_ignored_reason: The ``"; "``-joined messages of the
+     *         cross-field rules whose violation makes the snapshot ignore this field's
+     *         stored override, or ``None`` when the override is honoured or absent.
+     *         It names fields and their relationship only, never a value. It is
+     *         judged from the stored rows while ``value`` comes from this worker's
+     *         snapshot, so the two can disagree for one refresh cycle after another
+     *         worker's write.
      */
     SettingResponse: {
       /** Default Value */
@@ -2481,6 +2488,8 @@ export interface components {
       key_path?: string[];
       /** Options */
       options?: components['schemas']['SettingOption'][] | null;
+      /** Override Ignored Reason */
+      override_ignored_reason?: string | null;
       reload: components['schemas']['ReloadClassification'];
       /** Setting Class */
       setting_class: string;

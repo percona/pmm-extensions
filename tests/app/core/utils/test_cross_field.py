@@ -153,9 +153,12 @@ class TestDropBrokenOverrides:
 
 
 class TestDroppedOverrideCauses:
-    """Group the checks of :func:`dropped_override_causes`."""
+    """Group the checks of :func:`dropped_override_causes`.
 
-    #: Round 1 drops A and B for ``LE``; restoring B's base 10 then breaks ``GT``.
+    :cvar CASCADE: Overrides that ``LE`` drops ``A`` and ``B`` from in round
+        one, after which restoring ``B``'s base 10 breaks ``GT`` for ``D``.
+    """
+
     CASCADE = {"A": 9, "B": 5, "D": 8}
 
     def test_a_consistent_set_drops_nothing(self) -> None:
