@@ -521,16 +521,21 @@ def collect_database_facts(
 ):
     """Return facts read from the database for one target, or why there are none.
 
-    The database is reached and authenticated against once, up front. Failing that
-    is a target-level failure: the result carries ``error`` (see
-    :func:`describe_database_error`), ``error_type`` (the exception class name) and
-    ``error_code`` (the server's error code, ``None`` where there is none), and no
-    facts.
+    An arbiter holds no data and therefore no users, so it rejects any login. With
+    credentials to offer, the server is first asked ``isMaster``, which needs no login:
+    an arbiter is then read without the credentials, any other server with them.
+
+    Failing to reach the database, or a rejected login, is a target-level failure:
+    the result carries ``error`` (see :func:`describe_database_error`),
+    ``error_type`` (the exception class name) and ``error_code`` (the server's error
+    code, ``None`` where there is none), and no facts.
 
     Once connected, each command is run independently so one failure does not lose
     the others — ``replSetGetStatus`` legitimately fails against a mongos or a
     standalone, and that must not discard the ``buildInfo`` that came back fine.
-    Those failures go to ``command_errors`` and do not fail the target.
+    Those failures go to ``command_errors`` and do not fail the target. An arbiter
+    read over the network refuses ``getCmdLineOpts`` and ``replSetGetStatus`` that
+    way.
 
     :param target: The target mapping carrying ``host`` and ``port``.
     :param userinfo: The credentials prefix.
@@ -541,14 +546,40 @@ def collect_database_facts(
     :return: A mapping of database facts and per-command errors, or of the
         target-level ``error``, ``error_type`` and ``error_code``.
     """
+    from pymongo.errors import PyMongoError
+
+    try:
+        uri = build_uri(target, "", "", connect_timeout_ms)
+        if userinfo and not is_arbiter(uri):
+            uri = build_uri(target, userinfo, auth_source, connect_timeout_ms)
+        facts = query_database(uri)
+    except PyMongoError as err:
+        facts = {
+            "error": describe_database_error(
+                err, target, userinfo, credentials_file, connect_timeout_ms
+            ),
+            # Structured beside the text, so the orchestrator can tell a rejected
+            # password (``OperationFailure``, code 18) from an unreachable server
+            # (``ServerSelectionTimeoutError``, no code) without parsing the message.
+            "error_type": type(err).__name__,
+            "error_code": getattr(err, "code", None),
+        }
+    return summarise_database_facts(facts)
+
+
+def query_database(uri):
+    """Run every fact command against one server.
+
+    :param uri: The server's connection URI, from :func:`build_uri`.
+    :return: The command output, and ``command_errors`` for the commands that failed.
+    :raises PyMongoError: When the server cannot be queried at all.
+    """
     from pymongo import MongoClient
     from pymongo.errors import PyMongoError
 
     facts: dict[str, Any] = {}
-    uri = build_uri(target, userinfo, auth_source, connect_timeout_ms)
-    client = None
+    client = MongoClient(uri)
     try:
-        client = MongoClient(uri)
         admin = client.admin
         # Ping first: ``MongoClient`` is lazy, so an unreachable server or a
         # rejected password would otherwise surface only as per-command errors and
@@ -565,19 +596,32 @@ def collect_database_facts(
                 facts[key] = json.loads(json.dumps(admin.command(command), default=str))
             except PyMongoError as err:
                 facts.setdefault("command_errors", {})[key] = str(err)
-    except PyMongoError as err:
-        facts["error"] = describe_database_error(
-            err, target, userinfo, credentials_file, connect_timeout_ms
-        )
-        # Structured beside the text, so the orchestrator can tell a rejected
-        # password (``OperationFailure``, code 18) from an unreachable server
-        # (``ServerSelectionTimeoutError``, no code) without parsing the message.
-        facts["error_type"] = type(err).__name__
-        facts["error_code"] = getattr(err, "code", None)
     finally:
-        if client is not None:
-            client.close()
-    return summarise_database_facts(facts)
+        client.close()
+    return facts
+
+
+def is_arbiter(uri):
+    """Return whether the server at ``uri`` is an arbiter, asked without a login.
+
+    A server that refuses the question is not an arbiter, which answers it before any
+    login, so it is read with the credentials as before.
+
+    :param uri: The server's connection URI without credentials.
+    :return: Whether ``isMaster`` reports ``arbiterOnly``.
+    :raises PyMongoError: When the server cannot be reached.
+    """
+    from pymongo import MongoClient
+    from pymongo.errors import OperationFailure
+
+    client = MongoClient(uri)
+    try:
+        # Not ``hello``, which MongoDB before 4.4.2 does not have.
+        return bool(client.admin.command("isMaster").get("arbiterOnly"))
+    except OperationFailure:
+        return False
+    finally:
+        client.close()
 
 
 def describe_database_error(err, target, userinfo, credentials_file, connect_timeout_ms):

@@ -18,8 +18,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.extensions.apps.inventory.deps import AvailableSyncer
-from app.extensions.apps.inventory.models import PluginTaskResponse
+from app.extensions.apps.inventory.models import AvailableSyncer, PluginTaskResponse
 
 
 class TestPluginTaskResponse:

@@ -23,7 +23,7 @@ concurrency:
 jobs:
   evaluate:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.actor.login != 'dependabot[bot]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The environment only admits the default branch, so the read:org token never
     # reaches a workflow a branch could have edited.
     environment: core-approval

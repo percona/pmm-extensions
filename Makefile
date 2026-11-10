@@ -252,7 +252,12 @@ smoke-xtrabackup-variants: venv
 	@$(DARWIN_DYLD) "${VENV_BIN}"/python scripts/smoke_xtrabackup_variants.py $(ARGS)
 
 check-nomad-payload-size: venv
+ifeq ($(strip $(ARGS)),)
+	@SSL_CERT_FILE=$$("${VENV_BIN}"/python -c 'import certifi; print(certifi.where())') \
+		"${VENV_BIN}"/pre-commit run check-nomad-payload-size --all-files
+else
 	@$(DARWIN_DYLD) "${VENV_BIN}"/python scripts/check_nomad_payload_size.py $(ARGS)
+endif
 
 check-sidecar-purge: venv
 	@$(DARWIN_DYLD) "${VENV_BIN}"/python scripts/check_sidecar_purge.py $(ARGS)
