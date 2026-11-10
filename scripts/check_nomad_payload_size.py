@@ -108,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
 
     :param argv: CLI arguments (defaults to ``sys.argv[1:]``).
     :return: Process exit code.
+    :raises SystemExit: With usage status 2 when no payload paths are provided.
     """
     parser = argparse.ArgumentParser(
         description="Check Nomad dispatch payload sizes after minify+gzip.",
@@ -119,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "paths",
-        nargs="*",
+        nargs="+",
         metavar="path",
         help="Payload file path(s) to check.",
     )
