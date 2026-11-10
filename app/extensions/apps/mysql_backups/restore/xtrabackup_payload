@@ -1896,7 +1896,7 @@ class Xtrabackup(Restore):
             remote = '%s@%s:' % (self.ssh_user, host)
             parent = listing(rsync + [remote + os.path.join(os.path.dirname(path), '')])
             entries = [line.split(None, 4)[-1] for line in parent if line.strip()]
-            if os.path.basename(inc_dir) not in entries:
+            if os.path.basename(path) + '_incrementals' not in entries:
                 return []
             lines = listing(rsync + [remote + inc_dir.split(':', 1)[1] + '/'])
 
@@ -1916,7 +1916,7 @@ class Xtrabackup(Restore):
         full = head[:-len('_incrementals')]
         target = None
         if head.endswith('_incrementals') and re.match(regex, name) \
-                and re.match(regex, os.path.basename(full)):
+                and re.match(regex, os.path.basename(full.split(':', 1)[-1])):
             source, target = full, name
 
         if self.skip_incrementals:

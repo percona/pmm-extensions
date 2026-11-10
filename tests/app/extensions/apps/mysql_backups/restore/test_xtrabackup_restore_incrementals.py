@@ -361,6 +361,19 @@ class TestListIncrementalsSsh:
             [*rsync_args, f"{remote}{_INC_DIR_NAME}/"],
         ]
 
+    def test_finds_the_chain_of_a_home_relative_source(self, stubs: StubBin) -> None:
+        """Match the parent listing against the remote name, not ``host:name``."""
+        restorer = _remote_restorer(stubs, "ssh", _PRESENT["ssh"])
+
+        chain = restorer.list_incrementals(f"{_SSH_HOST}:{_FULL}")
+
+        remote = f"{_SSH_USER}@{_SSH_HOST}:"
+        assert chain == list(_INCS)
+        assert [argv[-1] for argv in stubs.calls()] == [
+            remote,
+            f"{remote}{_INC_DIR_NAME}/",
+        ]
+
     def test_does_not_list_a_chain_the_parent_lacks(self, stubs: StubBin) -> None:
         """Stop after the parent listing when it has no ``_incrementals`` entry."""
         restorer = _remote_restorer(stubs, "ssh", _ABSENT["ssh"])
@@ -476,6 +489,17 @@ class TestBackupChain:
         ).backup_chain()
 
         assert chain == [full, f"{full}_incrementals/{_INCS[0]}"]
+
+    def test_home_relative_ssh_incremental_source_keeps_the_host(
+        self, stubs: StubBin
+    ) -> None:
+        """Truncate a ``host:path`` incremental source and keep the host in each path."""
+        stubs.install("rsync", *_PRESENT["ssh"])
+        full = f"{_SSH_HOST}:{_FULL}"
+
+        chain = _chain_restorer(stubs, f"{full}_incrementals/{_INCS[1]}").backup_chain()
+
+        assert chain == [full, *(f"{full}_incrementals/{inc}" for inc in _INCS[:2])]
 
     def test_incremental_source_missing_from_the_listing_raises(
         self, stubs: StubBin, tmp_path: pathlib.Path
