@@ -1601,16 +1601,11 @@ class Xtrabackup(Restore):
         except  AttributeError as exc:
             raise BackupError("BACKUP_SOURCE not defined") from exc
 
-        # check for incrementals
-        incremental_dirs = []
-        if not self.skip_incrementals and not self.is_stream:
-            incremental_dirs = self.list_incrementals()
-
-        backup_path_list = []
-        backup_path_list.append(self.backup_source)
-
-        for incremental in incremental_dirs:
-            backup_path_list.append(os.path.join("%s_incrementals" % self.backup_source, incremental))
+        if self.is_stream:
+            backup_path_list = [self.backup_source]
+        else:
+            backup_path_list = self._backup_chain()
+            self._check_backup_chain(backup_path_list)
 
         restore_iteration = 0
         for this_backup in backup_path_list:
@@ -1851,28 +1846,105 @@ class Xtrabackup(Restore):
         if proc.returncode != 0:
             raise BackupError('Stream failed')
 
-    def list_incrementals(self):
+    def list_incrementals(self, source):
+        """Return the sorted incremental dir names stored beside full backup ``source``.
 
-        # TODO: Implement ls_cmd for incrementals in S3, blocked by MSP-450
-        # ls_cmd = '/usr/local/percona/msp/backup/bin/s3cmd ls %s_incrementals/
-        # | grep -Eo "[^/]+/$" | tr -d\/' % (self.backup_source)
+        An absent ``<source>_incrementals`` location is an empty chain; any other
+        listing failure raises ``BackupError``. Each tool reports absence its own
+        way: aws exits 1, s3cmd and the guarded ssh command exit 0, and gcloud
+        exits 1 with "matched no objects" (it exits 1 on real errors too).
+        """
+        inc_dir = source + '_incrementals'
+        regex = BACKUP_DIR_REGEX[self.backup_code]
+        if ':' not in source:
+            try:
+                names = os.listdir(inc_dir)
+            except FileNotFoundError:
+                return []
+            except OSError as err:
+                raise BackupError('Listing %s failed: %s' % (inc_dir, err))
+            return sorted(name for name in names if re.match(regex, name))
 
-        if ':' in self.backup_source and not self.backup_source.startswith('s3:'):
-            host, path = self.backup_source.split(':')
-            ls_cmd = 'ssh -p %s -l %s -i /home/%s/.ssh/id_rsa %s ls -1 %s_incrementals' \
-                      % (self.ssh_port, self.ssh_user, self.ssh_user, host, path)
+        absent = lambda returncode, stderr: False
+        if source.startswith('s3:'):
+            if self.s3_tool == 'awscli':
+                argv = [AWS_BIN, 's3', 'ls', inc_dir + '/']
+                absent = lambda returncode, stderr: returncode == 1
+            else:
+                argv = ['%s/bin/s3cmd' % INSTALL_DIR, 'ls', inc_dir + '/']
+        elif source.startswith('gs:'):
+            argv = [GCLOUD_BIN, 'storage', 'ls', inc_dir + '/']
+            absent = lambda returncode, stderr: b'matched no objects' in stderr
         else:
-            ls_cmd = 'ls -1 %s_incrementals' % (self.backup_source)
+            host, path = source.split(':', 1)
+            quoted = shlex.quote(path + '_incrementals')
+            argv = ['ssh', '-p', str(self.ssh_port), '-l', self.ssh_user,
+                    '-i', '/home/%s/.ssh/id_rsa' % self.ssh_user, host,
+                    'sudo -n test ! -e %s || sudo -n ls -1 %s' % (quoted, quoted)]
 
-        if self.backup_source.startswith('s3:'):
-            out = []
-        else:
-            proc = subprocess.Popen(ls_cmd, stdout=subprocess.PIPE, shell=True)
-            (out, err) = proc.communicate()
-            out = out.split(b'\n')
-            out = [x for x in out if x]
+        try:
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as err:
+            raise BackupError('Listing %s failed: %s' % (inc_dir, err))
+        out, err = proc.communicate()
+        if proc.returncode != 0:
+            if absent(proc.returncode, err):
+                return []
+            raise BackupError('Listing %s failed (exit %s): %s'
+                              % (inc_dir, proc.returncode, err.decode(errors='replace').strip()))
 
-        return out
+        names = [line.split()[-1].rstrip('/').rsplit('/', 1)[-1]
+                 for line in out.decode(errors='replace').splitlines() if line.strip()]
+        return sorted(name for name in names if re.match(regex, name))
+
+    def _backup_chain(self):
+        """Return the backup paths to restore in order, the full backup first.
+
+        A source naming an incremental run restores its full backup plus the chain
+        up to and including that run.
+        """
+        source = self.backup_source.rstrip('/')
+        regex = BACKUP_DIR_REGEX[self.backup_code]
+        head, name = os.path.split(source)
+        full = head[:-len('_incrementals')]
+        target = None
+        if head.endswith('_incrementals') and re.match(regex, name) \
+                and re.match(regex, os.path.basename(full)):
+            source, target = full, name
+
+        if self.skip_incrementals:
+            if target:
+                raise BackupError('Skip incrementals cannot restore incremental %s; '
+                                  'pick its full backup' % self.backup_source)
+            return [source]
+
+        incrementals = self.list_incrementals(source)
+        if target:
+            if target not in incrementals:
+                raise BackupError('Incremental %s not found in %s_incrementals'
+                                  % (target, source))
+            incrementals = incrementals[:incrementals.index(target) + 1]
+
+        self.logger.info('Restoring %s with %d incremental(s)%s', source,
+                         len(incrementals), ' up to %s' % target if target else '')
+        return [source] + [os.path.join(source + '_incrementals', inc) for inc in incrementals]
+
+    def _check_backup_chain(self, backup_path_list):
+        """Raise ``BackupError`` unless every chain element can be applied in order.
+
+        Runs before mysqld is stopped: the first element has to be a full backup and
+        every later one an incremental, each with a readable ``xtrabackup_info``.
+        """
+        for index, path in enumerate(backup_path_list):
+            self.backup_source = path
+            try:
+                self.backup_info()
+            except configparser.Error as err:
+                raise BackupError('Cannot read xtrabackup_info of %s: %s' % (path, err))
+            if self.backup_is_incremental != (index > 0):
+                raise BackupError('%s is %s backup' % (
+                    path, 'an incremental' if index == 0 else 'not an incremental'))
+        self.backup_source = backup_path_list[0]
 
     def set_slave(self):
 
