@@ -24,7 +24,7 @@ __all__ = [
     "collect_class_setting_responses",
 ]
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from functools import partial
@@ -53,7 +53,10 @@ from app.core.settings_override.api.models import (
     SettingsListResponse,
     SettingsPatch,
 )
-from app.core.settings_override.cache import load_stored_overrides
+from app.core.settings_override.cache import (
+    load_stored_overrides,
+    stored_overrides_from_rows,
+)
 from app.core.settings_override.constants import NESTED_VALUE_MISSING
 from app.core.settings_override.lifecycle import (
     fire_change_callbacks,
@@ -92,7 +95,11 @@ from app.core.settings_override.secret_preservation import (
     preserve_patch_credential_url_value,
 )
 from app.core.settings_override.secret_storage import encrypt_secret_leaves
-from app.core.utils.cross_field import CrossFieldRule, drop_broken_overrides
+from app.core.utils.cross_field import (
+    CrossFieldRule,
+    drop_broken_overrides,
+    dropped_override_causes,
+)
 from app.core.utils.date_time import utc_now
 from app.core.utils.exceptions import exception_detail
 
@@ -318,7 +325,9 @@ async def collect_class_setting_responses(
 
     Loads active override rows, expands nested-overridable parents into their
     leaf keys via :func:`_field_responses`, and dumps each value through
-    :func:`dump_field_value` so the key set matches ``GET /settings/``.
+    :func:`dump_field_value` so the key set matches ``GET /settings/``. A stored
+    override the snapshot ignores for breaking a cross-field rule carries the
+    reason, judged from those same rows.
 
     :param session: The sub-app's database session.
     :param setting_class: The settings class identifier (Pydantic class ``__name__``).
@@ -332,6 +341,7 @@ async def collect_class_setting_responses(
         session, setting_class=setting_class_token(settings_cls), is_active=True
     )
     provenance_by_key = override_provenance_for_rows(settings_cls, rows)
+    ignored_reasons = _ignored_override_reasons(settings_cls, proxy, rows)
     return [
         response
         for field_meta in iter_class_fields(settings_cls)
@@ -341,6 +351,7 @@ async def collect_class_setting_responses(
             proxy=proxy,
             field_meta=field_meta,
             provenance_by_key=provenance_by_key,
+            ignored_reasons=ignored_reasons,
             applicability=applicability,
         )
     ]
@@ -373,6 +384,7 @@ def _settings_response_from_field(
     field_meta: FieldMetadata,
     provenance: SettingProvenance | None,
     applicability: ApplicabilityPredicate | None = None,
+    ignored_reason: str | None = None,
 ) -> SettingResponse:
     """Build a :class:`SettingResponse` for one field on a settings class.
 
@@ -387,6 +399,8 @@ def _settings_response_from_field(
         cannot disagree.
     :param applicability: Optional predicate deciding whether the field applies
         under current runtime state; ``None`` marks the field applicable.
+    :param ignored_reason: Why the snapshot ignores the field's stored
+        override, or ``None`` when it is honoured or absent.
     :return: The structured response for the field.
     """
     if "__" in field_meta.key:
@@ -418,6 +432,7 @@ def _settings_response_from_field(
         has_override=provenance is not None,
         updated_at=provenance.updated_at if provenance is not None else None,
         updated_by=provenance.updated_by if provenance is not None else None,
+        override_ignored_reason=ignored_reason,
         is_advanced=field_meta.is_advanced,
         is_applicable=(
             applicability(setting_class, field_meta)
@@ -456,6 +471,7 @@ def _field_responses(
     proxy: OverridableSettingsProxy,
     field_meta: FieldMetadata,
     provenance_by_key: dict[str, SettingProvenance],
+    ignored_reasons: Mapping[str, str],
     applicability: ApplicabilityPredicate | None = None,
 ) -> list[SettingResponse]:
     """Return one response for a plain field, or one per leaf for a nested parent.
@@ -471,6 +487,9 @@ def _field_responses(
     :param field_meta: The introspected metadata for the top-level field.
     :param provenance_by_key: The last-written stamp per canonical key (and
         prefix) carrying an override; an absent key carries no override.
+    :param ignored_reasons: Why the snapshot ignores each top-level field's
+        stored override, by field name. Leaves never appear in it, since a
+        cross-field rule cannot span a nested-overridable field.
     :param applicability: Optional predicate deciding whether each field applies
         under current runtime state; ``None`` marks every field applicable.
     :return: One or more responses for the field.
@@ -485,6 +504,7 @@ def _field_responses(
                 field_meta=field_meta,
                 provenance=provenance_by_key.get(field_meta.key),
                 applicability=applicability,
+                ignored_reason=ignored_reasons.get(field_meta.key),
             )
         ]
     responses = []
@@ -1045,6 +1065,7 @@ def build_settings_router(
             session, setting_class=setting_class_token(settings_cls), is_active=True
         )
         provenance_by_key = override_provenance_for_rows(settings_cls, rows)
+        ignored_reasons = _ignored_override_reasons(settings_cls, proxy, rows)
         return _settings_response_from_field(
             setting_class=setting_class,
             settings_cls=settings_cls,
@@ -1052,6 +1073,7 @@ def build_settings_router(
             field_meta=field_meta,
             provenance=provenance_by_key.get(key),
             applicability=applicability,
+            ignored_reason=ignored_reasons.get(key),
         )
 
     @router.patch("/{setting_class}", dependencies=mutation_deps or [])
@@ -1311,6 +1333,36 @@ def _assert_key_deletable(
             f"Setting {settings_cls.__name__}.{field_meta.key} cannot be"
             " overridden; no row to delete.",
         )
+
+
+def _ignored_override_reasons(
+    settings_cls: type[BaseYamlSettings],
+    proxy: OverridableSettingsProxy,
+    rows: Iterable[SettingOverride],
+) -> dict[str, str]:
+    """Map each field whose stored override the snapshot ignores to why.
+
+    Judged from ``rows`` against the YAML/env base, exactly as the snapshot
+    judges them, so a read needs no second query. A field names only the rules
+    that dropped its override, not one that broke after it fell back to its
+    base value.
+
+    :param settings_cls: The Pydantic settings class declaring the rules.
+    :param proxy: The proxy wrapping it, for the YAML/env base values.
+    :param rows: The class's active override rows.
+    :return: Each ignored field's name mapped to the ``"; "``-joined messages of
+        the rules that dropped it; empty for a class declaring no rules.
+    """
+    rules = settings_cls.CROSS_FIELD_RULES
+    if not rules:
+        return {}
+    base = proxy.get_base()
+    stored = stored_overrides_from_rows(settings_cls, rows, base)
+    causes = dropped_override_causes(rules, stored, partial(getattr, base))
+    return {
+        name: "; ".join(rule.message for rule in dropped_by)
+        for name, dropped_by in causes.items()
+    }
 
 
 async def _cross_field_errors(
