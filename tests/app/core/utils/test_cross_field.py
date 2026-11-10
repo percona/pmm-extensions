@@ -194,7 +194,7 @@ class TestDroppedOverrideCauses:
         :param overrides: The stored overrides.
         :param expected: The rules each dropped field is attributed to.
         """
-        assert dropped_override_causes(rules, overrides, BASE.__getitem__) == (expected)
+        assert dropped_override_causes(rules, overrides, BASE.__getitem__) == expected
 
     def test_the_cascade_names_only_the_round_that_dropped_each_field(self) -> None:
         """Leave ``B`` off ``GT``, which broke only once ``B`` was already gone."""
