@@ -24,7 +24,8 @@ __all__ = [
     "collect_class_setting_responses",
 ]
 
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from contextlib import asynccontextmanager, AsyncExitStack
 from dataclasses import dataclass
 from enum import Enum
 from functools import partial
@@ -38,10 +39,16 @@ from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import BaseYamlSettings
+from app.core.db.utils import (
+    advisory_lock_key,
+    AdvisoryLockTimeoutError,
+    pg_advisory_xact_lock,
+)
 from app.core.exceptions import (
     HTTPBadGatewayException,
     HTTPConflictException,
     HTTPNotFoundException,
+    HTTPServiceUnavailableException,
     HTTPUnprocessableEntityException,
 )
 from app.core.requests.remote_api import RemoteAPI
@@ -57,7 +64,11 @@ from app.core.settings_override.cache import (
     load_stored_overrides,
     stored_overrides_from_rows,
 )
-from app.core.settings_override.constants import NESTED_VALUE_MISSING
+from app.core.settings_override.constants import (
+    CROSS_FIELD_LOCK_NAMESPACE,
+    CROSS_FIELD_LOCK_TIMEOUT,
+    NESTED_VALUE_MISSING,
+)
 from app.core.settings_override.lifecycle import (
     fire_change_callbacks,
     publish_snapshot,
@@ -1386,10 +1397,9 @@ async def _cross_field_errors(
     sets, or an override that is honoured today. An override already ignored
     stays the operator's to fix, so it never blocks an unrelated change.
 
-    The check reads the rows outside the write's transaction and takes no lock,
-    so two concurrent changes can each pass against the other's old value. That
-    is left to :func:`~app.core.settings_override.cache.build_snapshot`, which
-    ignores the resulting pair instead of acting on it.
+    The caller runs this and its write inside :func:`_cross_field_lock`, so a
+    concurrent change to the same class's rule fields is judged against the rows
+    this one commits rather than against the ones it replaces.
 
     :param session: The sub-app's database session, read for stored overrides.
     :param settings_cls: The Pydantic settings class declaring the rules.
@@ -1399,10 +1409,9 @@ async def _cross_field_errors(
     :return: Pydantic-style entries, one per field of each violated rule.
     """
     setting = setting or {}
-    changed = {*setting, clearing}
-    rules = settings_cls.CROSS_FIELD_RULES
-    if all(changed.isdisjoint(rule.fields) for rule in rules):
+    if not _names_rule_field(settings_cls, {*setting, clearing}):
         return []
+    rules = settings_cls.CROSS_FIELD_RULES
     base = proxy.get_base()
     base_value_of = partial(getattr, base)
     # Read the stored rows rather than this process's snapshot: it can lag a
@@ -1424,6 +1433,74 @@ async def _cross_field_errors(
         if not lost.isdisjoint(rule.fields)
         for entry in _cross_field_entries(rule)
     ]
+
+
+def _names_rule_field(
+    settings_cls: type[BaseYamlSettings], keys: Iterable[str | None]
+) -> bool:
+    """Return whether a change to ``keys`` touches a field a cross-field rule names.
+
+    Shared by the rule check and its lock, so a change the check would judge is
+    always one the lock serializes. Exact names suffice: a rule names only
+    top-level fields, and both write paths reach here with canonical keys.
+
+    :param settings_cls: The Pydantic settings class declaring the rules.
+    :param keys: The keys the change sets or clears; ``None`` entries are ignored.
+    :return: ``True`` when some rule names one of ``keys``.
+    """
+    changed = set(keys)
+    return any(
+        not changed.isdisjoint(rule.fields) for rule in settings_cls.CROSS_FIELD_RULES
+    )
+
+
+@asynccontextmanager
+async def _cross_field_lock(
+    session: AsyncSession,
+    settings_cls: type[BaseYamlSettings],
+    keys: Iterable[str | None],
+) -> AsyncIterator[None]:
+    """Serialize a write's cross-field check and commit against its class's peers.
+
+    Without it, two changes to related fields can each pass the check against
+    the other's old value and commit a pair that breaks a rule together, which
+    the snapshot then ignores while both callers were told it applied. Under the
+    lock the later change is judged against the rows the earlier one committed.
+
+    The lock is exclusive per settings class, on a connection of its own (see
+    :func:`~app.core.db.utils.pg_advisory_xact_lock`), so it outlives the
+    session's commit and the rollback before the ``IntegrityError`` replay. It
+    is released when the block exits; the snapshot publish and rebind callbacks
+    belong after it, so a slow rebind does not hold back the next writer. A
+    change naming no rule field takes no lock and opens no connection, and the
+    lock is a no-op on SQLite.
+
+    :param session: The sub-app's database session, whose engine the lock
+        connection is drawn from.
+    :param settings_cls: The Pydantic settings class being written.
+    :param keys: The keys the change sets or clears.
+    :return: Nothing; the check and the write run inside the block.
+    :raises HTTPServiceUnavailableException: If a concurrent write holds the lock
+        beyond :data:`CROSS_FIELD_LOCK_TIMEOUT`. Raised before the block is
+        entered, so nothing is written.
+    """
+    async with AsyncExitStack() as stack:
+        if _names_rule_field(settings_cls, keys):
+            try:
+                await stack.enter_async_context(
+                    pg_advisory_xact_lock(
+                        session,
+                        CROSS_FIELD_LOCK_NAMESPACE,
+                        advisory_lock_key(setting_class_token(settings_cls)),
+                        max_wait=CROSS_FIELD_LOCK_TIMEOUT,
+                    )
+                )
+            except AdvisoryLockTimeoutError as exc:
+                raise HTTPServiceUnavailableException(
+                    f"Another change to {settings_cls.__name__} is in progress;"
+                    " retry shortly."
+                ) from exc
+        yield
 
 
 def _cross_field_entries(rule: CrossFieldRule) -> list[dict[str, Any]]:
@@ -1495,7 +1572,9 @@ async def _persist_overrides(
     :class:`sqlalchemy.exc.IntegrityError`. The handler catches that case,
     rolls back the failed transaction, and replays the batch against the
     rows the winning writer left in place so the second PATCH still applies
-    its values cleanly.
+    its values cleanly. A batch naming a cross-field rule's field runs inside
+    :func:`_cross_field_lock`, whose connection the rollback does not touch, so
+    the replay commits under the same lock the rule check passed under.
 
     :param session: The sub-app's database session.
     :param settings_cls: The Pydantic settings class whose storage token
@@ -1655,15 +1734,19 @@ async def apply_class_overrides(
     :return: One :class:`SettingResponse` per applied key, in input order.
     :raises HTTPUnprocessableEntityException: If any key fails validation or the
         batch breaks a cross-field rule; no rows are written.
+    :raises HTTPServiceUnavailableException: If the batch names a cross-field
+        rule's field and a concurrent change to the class holds its lock too
+        long; no rows are written.
     :raises IntegrityError: When the replay of a batch that lost the
         unique-index race conflicts again, which leaves nothing written.
     """
-    to_apply = await _validate_patch_body(
-        session=session, settings_cls=settings_cls, proxy=proxy, body=body
-    )
-    provenance_by_key = await _persist_overrides(
-        session=session, settings_cls=settings_cls, to_apply=to_apply, actor=actor
-    )
+    async with _cross_field_lock(session, settings_cls, body.root):
+        to_apply = await _validate_patch_body(
+            session=session, settings_cls=settings_cls, proxy=proxy, body=body
+        )
+        provenance_by_key = await _persist_overrides(
+            session=session, settings_cls=settings_cls, to_apply=to_apply, actor=actor
+        )
     previous = proxy.get_snapshot()
     await publish_snapshot(proxy, session, settings_cls)
     await _fire_inline_rebind_callbacks(request, setting_class, proxy, previous)
@@ -1714,20 +1797,29 @@ async def _clear_class_override(
     :raises HTTPConflictException: If the field is NOT_OVERRIDABLE and has no row.
     :raises HTTPUnprocessableEntityException: If ``key`` names a NESTED_ONLY
         parent, or reverting it would break a cross-field rule.
+    :raises HTTPServiceUnavailableException: If ``key`` names a cross-field
+        rule's field and a concurrent change to the class holds its lock too
+        long; nothing is deleted.
     """
     key = canonical_override_key(settings_cls, key)
     field_meta = _field_meta_or_404(settings_cls, key)
     token = setting_class_token(settings_cls)
-    rows = await override_rows_for_key(
-        session,
-        settings_cls=settings_cls,
-        setting_class=token,
-        key=key,
-    )
-    _assert_key_deletable(settings_cls, field_meta, has_override_row=bool(rows))
-    if errors := await _cross_field_errors(session, settings_cls, proxy, clearing=key):
-        raise HTTPUnprocessableEntityException(detail=errors)
-    await _delete_override_rows(session, token, rows)
+    # Read the rows under the lock too: a row loaded before it would stay in the
+    # session's identity map with the value it had then, and the check would
+    # judge the rule against that rather than a concurrent writer's commit.
+    async with _cross_field_lock(session, settings_cls, (key,)):
+        rows = await override_rows_for_key(
+            session,
+            settings_cls=settings_cls,
+            setting_class=token,
+            key=key,
+        )
+        _assert_key_deletable(settings_cls, field_meta, has_override_row=bool(rows))
+        if errors := await _cross_field_errors(
+            session, settings_cls, proxy, clearing=key
+        ):
+            raise HTTPUnprocessableEntityException(detail=errors)
+        await _delete_override_rows(session, token, rows)
     previous = proxy.get_snapshot()
     await publish_snapshot(proxy, session, settings_cls)
     await _fire_inline_rebind_callbacks(request, setting_class, proxy, previous)

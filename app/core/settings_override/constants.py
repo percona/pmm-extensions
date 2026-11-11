@@ -15,6 +15,9 @@
 
 """Define constants shared by settings-override modules."""
 
+from datetime import timedelta
+from typing import Final
+
 #: Sentinel returned by
 #: :func:`app.core.settings_override.resolution.resolve_nested_value` when a
 #: segment along the chain is absent. Distinct from a present intermediate or
@@ -29,6 +32,18 @@ NESTED_VALUE_MISSING = object()
 # so they serialize against each other on a shared PostgreSQL database. Any fixed
 # bigint unused elsewhere works; no other advisory lock exists in the repo.
 SETTINGOVERRIDE_MIGRATION_LOCK_KEY = 0x5E770438
+
+#: Advisory-lock space serializing the settings writes a cross-field rule judges,
+#: keyed per class by ``advisory_lock_key(setting_class_token(cls))``. Pair locks
+#: live apart from the single-``bigint`` ``SETTINGOVERRIDE_MIGRATION_LOCK_KEY``;
+#: distinct from ``SYNC_RUN_LOCK_NAMESPACE`` and ``REFERENCE_FENCE_LOCK_NAMESPACE``,
+#: the other two-key namespaces.
+CROSS_FIELD_LOCK_NAMESPACE: Final = 0x5E7C4652
+
+#: The longest a settings write waits for a concurrent one on the same class's
+#: rule fields. The guarded sequence is a rule check and a commit, a handful of
+#: statements, so a longer wait means something is stuck rather than busy.
+CROSS_FIELD_LOCK_TIMEOUT: Final = timedelta(seconds=5)
 
 #: Name of the ``settingoverride`` column recording which admin last saved an
 #: override, shared by the migration helpers that add and drop it and by the
