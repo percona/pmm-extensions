@@ -31,7 +31,6 @@ from typing import Annotated, ClassVar
 
 from annotated_types import Gt
 from pydantic import PositiveInt
-from pydantic_settings import SettingsConfigDict
 
 from app.core.celery.models import IntervalSchedule, Period
 from app.core.config import BaseYamlSettings
@@ -44,13 +43,6 @@ class AtwSettings(BaseYamlSettings):
     :cvar SETTINGS_PREFIXES: The prefixes for ATW-plugin settings in the
         configuration file. Set to ``["EXTENSIONS", "ATW"]`` so the section lives under
         ``EXTENSIONS.ATW``.
-    :cvar model_config: The base YAML configuration plus ``env_parse_none_str``,
-        without which the ``null`` opt-out both intervals document is unreachable
-        from an environment variable. They are optional models, so
-        pydantic-settings classifies them complex, JSON-decodes the raw value and
-        then drops the resulting ``None`` from the environment source — which
-        reads as "unset" and silently restores the compiled-in default. The YAML
-        path never needed it: a native ``null`` scalar arrives as ``None`` already.
     :param bundle_dir: Directory where diagnostics bundles are staged while a send
         runs. Written and read by the Celery worker that builds and uploads them.
     :param bundle_ttl: Maximum age (seconds) of a staged bundle before the cleanup
@@ -72,9 +64,6 @@ class AtwSettings(BaseYamlSettings):
         least-recently-attempted first.
     """
 
-    model_config = SettingsConfigDict(
-        **{**BaseYamlSettings.model_config, "env_parse_none_str": "null"}
-    )
     SETTINGS_PREFIXES: ClassVar[list[str]] = ["EXTENSIONS", "ATW"]
     bundle_dir: StrRelativePath = "data/atw-bundles"
     bundle_ttl: PositiveInt = 3600

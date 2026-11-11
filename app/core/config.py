@@ -281,6 +281,9 @@ class YamlPrefixConfigSettingsSource(YamlConfigSettingsSource):
 class BaseYamlSettings(BaseSettings):
     """Base settings class for YAML config.
 
+    An environment or dotenv value of ``null`` means ``None``, as a YAML ``null``
+    does, and outranks the YAML value. Secret files are not covered.
+
     :cvar SETTINGS_PREFIXES: Tuple of settings prefixes.
     :vartype SETTINGS_PREFIXES: list[str]
     :cvar CROSS_FIELD_RULES: Relationships the class's top-level fields must
@@ -296,6 +299,7 @@ class BaseYamlSettings(BaseSettings):
         yaml_file=pre_env_settings.SETTINGS_FILE,
         secrets_dir=pre_env_settings.SECRETS_DIR,
         extra="ignore",
+        env_parse_none_str="null",
     )
     SETTINGS_PREFIXES: ClassVar[list[str]] = []
     CROSS_FIELD_RULES: ClassVar[tuple[CrossFieldRule, ...]] = ()
