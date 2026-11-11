@@ -435,13 +435,9 @@ export interface paths {
      * @description Restore alert configuration from a backup snapshot.
      *
      *     :param payload: Restore request body identifying the backup to apply.
-     *     :type payload: RestoreRequest
      *     :param pmm_api: The PMM API client. Raises 503 if PMM is not configured.
-     *     :type pmm_api: PMMRemoteAPI
      *     :param session: The async database session.
-     *     :type session: SessionDep
      *     :return: A ``RestoreResponse`` with the per-section restore counts.
-     *     :rtype: RestoreResponse
      *     :raises HTTPNotFoundException: If the backup is not found.
      *     :raises HTTPBadGatewayException: If the PMM upstream call fails in
      *         transport (``OSError`` or ``aiohttp.ClientError``).
