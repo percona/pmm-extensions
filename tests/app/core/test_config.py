@@ -395,9 +395,10 @@ class TestPMMSettings:
 
     def test_frontend_default_strips_endpoint_userinfo(self):
         """Assert the defaulted ``frontend`` carries no userinfo; ``endpoint`` keeps it."""
-        pmm = PMMSettings(endpoint="http://" + "pmm-user:pmm-pass-UI" + "@127.0.0.1:19411")
+        endpoint = "http://pmm-user:pmm-pass-UI@127.0.0.1:19411"
+        pmm = PMMSettings(endpoint=endpoint)
         assert pmm.frontend == "http://127.0.0.1:19411"
-        assert "pmm-pass" in pmm.endpoint
+        assert pmm.endpoint == endpoint
 
     def test_frontend_not_overridden_when_set(self):
         """Assert ``frontend`` is not overridden when explicitly set."""
