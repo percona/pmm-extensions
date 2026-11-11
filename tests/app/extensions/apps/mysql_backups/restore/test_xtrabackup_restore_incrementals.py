@@ -43,6 +43,7 @@ from typing import cast
 import pytest
 
 from tests.app.extensions.apps.mysql_backups.payload_harness import (
+    load_function,
     payload_method,
     Recorder,
 )
@@ -144,6 +145,13 @@ def _lift(
     )
 
 
+def _rsync_rsh() -> Callable[..., str]:
+    """Return the payload's module-level ``rsync_rsh``, with ``shlex`` supplied."""
+    rsync_rsh = load_function("rsync_rsh", payload_path=RESTORE_PAYLOAD_PATH)
+    rsync_rsh.__globals__["shlex"] = shlex
+    return cast("Callable[..., str]", rsync_rsh)
+
+
 def _restorer(stub_bin: StubBin, *, s3_tool: str = "awscli") -> types.SimpleNamespace:
     """Return a restorer whose ``list_incrementals`` is the real lifted method."""
     restorer = types.SimpleNamespace(
@@ -161,6 +169,7 @@ def _restorer(stub_bin: StubBin, *, s3_tool: str = "awscli") -> types.SimpleName
             "GCLOUD_BIN": str(stub_bin.bin_dir / "gcloud"),
             "INSTALL_DIR": str(stub_bin.root),
             "shlex": shlex,
+            "rsync_rsh": _rsync_rsh(),
         },
     )
     restorer.list_incrementals = functools.partial(list_incrementals, restorer)
@@ -310,6 +319,19 @@ class TestListIncrementalsRemote:
         assert _INC_DIR_NAME in message
         assert answers[0].stderr.strip() in message
 
+    def test_raises_on_an_awscli_exit_1_with_an_error_message(
+        self, stubs: StubBin
+    ) -> None:
+        """Read awscli's exit 1 as an absent chain only when stderr is empty."""
+        restorer = _remote_restorer(
+            stubs,
+            "s3/awscli",
+            (Stub(stderr="Could not connect to the endpoint URL\n", returncode=1),),
+        )
+
+        with pytest.raises(_BackupError, match=_INC_DIR_NAME):
+            restorer.list_incrementals(_SOURCE["s3/awscli"])
+
     @pytest.mark.parametrize("scheme", ["s3/awscli", "s3/s3cmd", "gs"])
     def test_lists_the_prefix_children_with_a_trailing_slash(
         self, stubs: StubBin, scheme: str
@@ -395,6 +417,22 @@ class TestListIncrementalsSsh:
             restorer.list_incrementals(_SOURCE["ssh"])
 
 
+@pytest.fixture
+def unreadable_chain(tmp_path: pathlib.Path) -> Iterator[pathlib.Path]:
+    """Build a local chain whose ``_incrementals`` dir cannot be listed.
+
+    :param tmp_path: Where the chain is created.
+    :yield: The full backup's path.
+    """
+    full = _make_local_chain(tmp_path, *_INCS)
+    inc_dir = tmp_path / f"{_FULL}_incrementals"
+    inc_dir.chmod(0o000)
+    try:
+        yield full
+    finally:
+        inc_dir.chmod(0o755)
+
+
 class TestListIncrementalsLocal:
     """Cover ``list_incrementals`` on a local source."""
 
@@ -417,17 +455,11 @@ class TestListIncrementalsLocal:
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 dir")
     def test_raises_on_an_unreadable_chain(
-        self, stubs: StubBin, tmp_path: pathlib.Path
+        self, stubs: StubBin, unreadable_chain: pathlib.Path
     ) -> None:
         """Fail loudly on a chain dir that exists but cannot be listed."""
-        full = _make_local_chain(tmp_path, *_INCS)
-        inc_dir = tmp_path / f"{_FULL}_incrementals"
-        inc_dir.chmod(0o000)
-        try:
-            with pytest.raises(_BackupError, match=f"{_FULL}_incrementals"):
-                _restorer(stubs).list_incrementals(str(full))
-        finally:
-            inc_dir.chmod(0o755)
+        with pytest.raises(_BackupError, match=f"{_FULL}_incrementals"):
+            _restorer(stubs).list_incrementals(str(unreadable_chain))
 
 
 def _chain_restorer(
@@ -513,16 +545,12 @@ class TestBackupChain:
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 dir")
     def test_skip_incrementals_restores_the_full_without_listing(
-        self, stubs: StubBin, tmp_path: pathlib.Path
+        self, stubs: StubBin, unreadable_chain: pathlib.Path
     ) -> None:
         """Restore the full alone and never list, as an unreadable chain proves."""
-        full = str(_make_local_chain(tmp_path, *_INCS))
-        inc_dir = tmp_path / f"{_FULL}_incrementals"
-        inc_dir.chmod(0o000)
-        try:
-            chain = _chain_restorer(stubs, full, skip_incrementals=True).backup_chain()
-        finally:
-            inc_dir.chmod(0o755)
+        full = str(unreadable_chain)
+
+        chain = _chain_restorer(stubs, full, skip_incrementals=True).backup_chain()
 
         assert chain == [full]
 
@@ -685,6 +713,33 @@ def _copy_back_reached() -> None:
     raise _BackupError("copy_back reached")
 
 
+def _run_restorer(
+    stubs: StubBin, tmp_path: pathlib.Path, chain: list[bool | None]
+) -> tuple[types.SimpleNamespace, list[str], list[str]]:
+    """Build a restorer carrying everything ``run`` needs to reach ``signal_mysqld``.
+
+    :param stubs: The stub bin dir the lifted listing runs against.
+    :param tmp_path: Where the chain is created.
+    :param chain: Per element, its ``incremental`` flag, or ``None`` for no info file.
+    :return: The restorer, the chain's paths and the recorded ``signal_mysqld`` calls.
+    """
+    restorer, paths = _info_restorer(tmp_path, chain)
+    signals: list[str] = []
+    restorer.signal_mysqld = signals.append
+    restorer.datadir = str(tmp_path / "datadir")
+    restorer.from_commandline = False
+    restorer.copy_back = _copy_back_reached
+    restorer.logging_dir = str(tmp_path)
+    restorer.pre_script = None
+    restorer.continue_replication = False
+    restorer.is_stream = False
+    restorer.skip_incrementals = False
+    restorer.list_incrementals = _restorer(stubs).list_incrementals
+    restorer._backup_chain = functools.partial(_lift("_backup_chain"), restorer)
+    restorer._check_backup_chain = restorer.check_backup_chain
+    return restorer, paths, signals
+
+
 @pytest.mark.usefixtures("_pxb_info_lock")
 class TestRunChecksTheChainFirst:
     """Cover ``run`` refusing a bad chain before it stops mysqld."""
@@ -696,21 +751,9 @@ class TestRunChecksTheChainFirst:
 
         The restorer carries everything ``run`` needs to reach ``signal_mysqld`` for
         the full backup, so only the pre-flight stands between the two.
+        ``test_stops_mysqld_once_the_chain_is_valid`` is the positive control.
         """
-        restorer, paths = _info_restorer(tmp_path, [False, True, None])
-        signals: list[str] = []
-        restorer.signal_mysqld = signals.append
-        restorer.datadir = str(tmp_path / "datadir")
-        restorer.from_commandline = False
-        restorer.copy_back = _copy_back_reached
-        restorer.logging_dir = str(tmp_path)
-        restorer.pre_script = None
-        restorer.continue_replication = False
-        restorer.is_stream = False
-        restorer.skip_incrementals = False
-        restorer.list_incrementals = _restorer(stubs).list_incrementals
-        restorer._backup_chain = functools.partial(_lift("_backup_chain"), restorer)
-        restorer._check_backup_chain = restorer.check_backup_chain
+        restorer, paths, signals = _run_restorer(stubs, tmp_path, [False, True, None])
         run = _lift("run", {"time": time, "resource": _NoRlimit})
 
         with pytest.raises(_BackupError) as exc_info:
@@ -718,3 +761,15 @@ class TestRunChecksTheChainFirst:
 
         assert signals == []
         assert paths[2] in str(exc_info.value)
+
+    def test_stops_mysqld_once_the_chain_is_valid(
+        self, stubs: StubBin, tmp_path: pathlib.Path
+    ) -> None:
+        """Get past the pre-flight and stop mysqld when every element checks out."""
+        restorer, _, signals = _run_restorer(stubs, tmp_path, [False, True, True])
+        run = _lift("run", {"time": time, "resource": _NoRlimit})
+
+        with pytest.raises(_BackupError, match="copy_back reached"):
+            run(restorer)
+
+        assert signals == ["stop"]

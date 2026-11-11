@@ -123,6 +123,12 @@ def readlink_argv_for_backup_source(
     return ["readlink", "-n", "--", backup_source]
 
 
+def rsync_rsh(ssh_port, ssh_user, ssh_identity_path=None):
+    """Return the rsync ``-e`` ssh command string."""
+    identity = ssh_identity_path or f"/home/{ssh_user}/.ssh/id_rsa"
+    return f"ssh -t -p {ssh_port} -i {shlex.quote(identity)}"
+
+
 def rsync_remote_restore_argv(
     *,
     include_args: list[str],
@@ -133,9 +139,7 @@ def rsync_remote_restore_argv(
     destination: str,
     ssh_identity_path: str | None = None,
 ) -> list[str]:
-    identity = ssh_identity_path or f"/home/{ssh_user}/.ssh/id_rsa"
-    identity_quoted = shlex.quote(identity)
-    rsh = f"ssh -t -p {ssh_port} -i {identity_quoted}"
+    rsh = rsync_rsh(ssh_port, ssh_user, ssh_identity_path)
     remote_spec = f"{ssh_user}@{remote_source}"
     return [
         "rsync",
@@ -1876,7 +1880,7 @@ class Xtrabackup(Restore):
             err = err.decode(errors='replace').strip()
             if proc.returncode == 0:
                 return out.decode(errors='replace').splitlines()
-            if (source.startswith('s3:') and self.s3_tool == 'awscli' and proc.returncode == 1) \
+            if (source.startswith('s3:') and self.s3_tool == 'awscli' and proc.returncode == 1 and not err) \
                     or (source.startswith('gs:') and 'matched no objects' in err):
                 return None
             raise BackupError('Listing %s failed (exit %s): %s' % (inc_dir, proc.returncode, err))
@@ -1891,8 +1895,7 @@ class Xtrabackup(Restore):
         else:
             host, path = source.split(':', 1)
             rsync = ['rsync', '--list-only', '--rsync-path=sudo rsync', '-e',
-                     'ssh -t -p %s -i %s' % (self.ssh_port,
-                                             shlex.quote('/home/%s/.ssh/id_rsa' % self.ssh_user))]
+                     rsync_rsh(self.ssh_port, self.ssh_user)]
             remote = '%s@%s:' % (self.ssh_user, host)
             parent = listing(rsync + [remote + os.path.join(os.path.dirname(path), '')])
             entries = [line.split(None, 4)[-1] for line in parent if line.strip()]
@@ -2386,7 +2389,7 @@ class MyConfigParser(configparser.ConfigParser):
             pass
         else:
             file = io.StringIO("[dummy]\n" + text)
-            self.readfp(file, filename)
+            self.read_file(file, filename)
 
 def main():
     """Main"""
