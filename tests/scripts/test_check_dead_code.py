@@ -32,7 +32,6 @@ check_dead_code = load_script("check_dead_code")
 
 BASELINE = "scripts/dead_code_baseline.toml"
 HOOK_RUN = "pre-commit run check-dead-code --hook-stage manual --all-files"
-COMMITTED_ENTRY_COUNT = 5
 
 
 def write(root: Path, relpath: str, text: str) -> Path:
@@ -240,6 +239,24 @@ def test_module_scope_walrus_bindings_reported(
         assert f"'{name}'" not in output
 
 
+def test_nested_scope_in_module_scope_position_not_reported(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Skip bindings of a comprehension or lambda that itself sits where module scope evaluates."""
+    write(
+        tree,
+        "app/m.py",
+        "rows = [0 for outer in [0 for inner in range(2)]]\n"
+        "\n\n@(lambda fn: (w_deco := fn))\ndef f(arg=[0 for in_default in range(2)]):\n"
+        "    return arg\n",
+    )
+    write(tree, "tests/test_m.py", "from app.m import f, rows\n\nprint(f, rows)\n")
+
+    status, output = run_check(tree, capsys)
+
+    assert status == 0, output
+
+
 def test_migrations_are_references_not_findings(
     tree: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -288,16 +305,35 @@ def test_dipper_payloads_excluded(
     assert status == 0, output
 
 
-def test_vulture_noqa_under_app_fails(
-    tree: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    "comment",
+    ["# noqa: V103", "# noqa", "# noqa: F841", "# NoQA: E501,V103"],
+)
+def test_vulture_honoured_noqa_under_app_fails(
+    tree: Path, capsys: pytest.CaptureFixture[str], comment: str
 ) -> None:
-    """Fail a vulture noqa code under app/, which vulture itself would honour."""
-    write(tree, "app/m.py", "def orphan():  # noqa: V103\n    return 1\n")
+    """Fail a noqa under app/ that vulture would honour for a reported finding."""
+    write(tree, "app/m.py", f"def orphan():  {comment}\n    return 1\n")
 
     status, output = run_check(tree, capsys)
 
     assert status == 1
-    assert "app/m.py:1: a '# noqa: V…' comment hides a finding" in output
+    assert (
+        "app/m.py:1: a '# noqa' comment that vulture honours hides a finding" in output
+    )
+
+
+@pytest.mark.parametrize("comment", ["# noqa: BLE001", "# noqa: F401"])
+def test_noqa_vulture_ignores_for_reported_kinds_passes(
+    tree: Path, capsys: pytest.CaptureFixture[str], comment: str
+) -> None:
+    """Pass a noqa under app/ whose codes cannot hide a reported finding."""
+    write(tree, "app/m.py", f"def used():  {comment}\n    return 1\n")
+    write(tree, "tests/test_m.py", "from app.m import used\n\nused()\n")
+
+    status, output = run_check(tree, capsys)
+
+    assert status == 0, output
 
 
 @pytest.mark.parametrize(
@@ -312,6 +348,18 @@ def test_vulture_noqa_under_app_fails(
             entry_text("app/m.py", "function", "hook", reason=""),
             "entry 0",
             id="empty-reason",
+        ),
+        pytest.param(
+            entry_text("app/m.py", "function", "hook", reason="   "),
+            "entry 0",
+            id="blank-reason",
+        ),
+        pytest.param(
+            entry_text(
+                "app/m.py", "function", "hook", reason="Reached by name.\\nTwice."
+            ),
+            "entry 0",
+            id="multi-line-reason",
         ),
         pytest.param(
             entry_text("app/m.py", "function", "hook") + 'line = "3"\n',
@@ -471,8 +519,17 @@ def test_ci_runs_hook_on_both_pins_and_baseline() -> None:
 
 
 def test_committed_baseline_is_well_formed() -> None:
-    """Load the committed baseline and confirm it keeps only categorised entries."""
+    """Load the committed baseline and confirm it keeps the two framework hooks as dynamic."""
     entries = check_dead_code.load_baseline(PROJECT_ROOT / BASELINE)
+    dynamic = {entry.finding for entry in entries if entry.category == "dynamic"}
 
-    assert len(entries) == COMMITTED_ENTRY_COUNT
-    assert {entry.category for entry in entries} <= {"catalog", "dynamic"}
+    assert (
+        check_dead_code.Finding("app/core/config.py", "method", "get_field_value")
+        in dynamic
+    )
+    assert (
+        check_dead_code.Finding(
+            "app/tasks/execution/executors/nomad/__init__.py", "function", "__dir__"
+        )
+        in dynamic
+    )

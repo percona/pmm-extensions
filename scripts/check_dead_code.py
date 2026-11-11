@@ -51,8 +51,10 @@ Keep a finding by adding an entry by hand::
     category = "dynamic"
     reason = "Abstract on PydanticBaseSettingsSource; instantiation needs it."
 
-A ``# noqa: V1xx`` comment under ``app/`` is rejected: it would hide a finding
-from this check without a category or a reason.
+A ``# noqa`` comment under ``app/`` that vulture honours for a reported kind is
+rejected: it would hide a finding from this check without a category or a
+reason. That is a bare ``# noqa``, a ``V`` code for one of those kinds, or
+``F841``, which vulture reads as its unused-variable code.
 """
 
 import argparse
@@ -61,7 +63,6 @@ import contextlib
 import importlib.metadata
 import io
 import json
-import re
 import tomllib
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
@@ -69,6 +70,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 import vulture
+from vulture.core import ERROR_CODES
+from vulture.noqa import parse_noqa
 from vulture.utils import ExitCode
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -100,7 +103,7 @@ REPORTED_KINDS = frozenset({"function", "method", "class", "property", "variable
 CATALOG_MODULES = frozenset({"app/core/utils/fields.py"})
 CATEGORIES = frozenset({"catalog", "dynamic"})
 ENTRY_KEYS = frozenset({"path", "kind", "name", "category", "reason"})
-VULTURE_NOQA = re.compile(r"#\s*noqa:[^#\n]*\bV\d{3}\b", re.IGNORECASE)
+HIDING_NOQA_CODES = frozenset({"all", *(ERROR_CODES[kind] for kind in REPORTED_KINDS)})
 DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 BASELINE_HEADER = (
@@ -177,23 +180,24 @@ def _comprehension_walrus_targets(node: ast.AST) -> Iterator[ast.AST]:
 
 
 def _module_scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
-    """Yield ``node`` and every descendant evaluated in the same scope.
+    """Yield the nodes under ``node`` that the enclosing scope evaluates.
 
     A definition contributes only what runs when it is defined. A comprehension
-    contributes its first iterable and its walrus targets.
+    contributes its first iterable and its walrus targets. Any other node
+    contributes itself and its children, under the same rules.
 
-    :param node: The node to start from.
-    :return: The nodes whose bindings belong to ``node``'s scope.
+    :param node: A node evaluated in the enclosing scope.
+    :return: The nodes whose bindings belong to that scope.
     """
-    yield node
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, COMPREHENSIONS):
-            yield from _module_scope_nodes(child.generators[0].iter)
-            yield from _comprehension_walrus_targets(child)
-        elif isinstance(child, DEFINITIONS):
-            for part in _definition_time_parts(child):
-                yield from _module_scope_nodes(part)
-        else:
+    if isinstance(node, COMPREHENSIONS):
+        yield from _module_scope_nodes(node.generators[0].iter)
+        yield from _comprehension_walrus_targets(node)
+    elif isinstance(node, DEFINITIONS):
+        for part in _definition_time_parts(node):
+            yield from _module_scope_nodes(part)
+    else:
+        yield node
+        for child in ast.iter_child_nodes(node):
             yield from _module_scope_nodes(child)
 
 
@@ -255,11 +259,16 @@ def _shape_problem(raw: Mapping[str, object]) -> str | None:
     keys = set(raw)
     if keys != ENTRY_KEYS:
         return f"must have exactly the keys {sorted(ENTRY_KEYS)}, has {sorted(keys)}"
-    empty = sorted(
-        key for key, value in raw.items() if not isinstance(value, str) or not value
+    blank = sorted(
+        key
+        for key, value in raw.items()
+        if not isinstance(value, str) or not value.strip()
     )
-    if empty:
-        return f"has empty or non-string values for {empty}"
+    if blank:
+        return f"has blank or non-string values for {blank}"
+    multi_line = sorted(key for key, value in raw.items() if "\n" in str(value))
+    if multi_line:
+        return f"has multi-line values for {multi_line}; each value is one line"
     return None
 
 
@@ -365,20 +374,20 @@ def render_baseline(entries: Iterable[Entry]) -> str:
 
 
 def vulture_noqa_lines(root: Path) -> list[str]:
-    """Return ``path:line`` for every vulture ``noqa`` comment under ``app/``.
+    """Return ``path:line`` for every ``noqa`` under ``app/`` that hides a reported kind.
+
+    The comments are read with vulture's own parser, so a line counts exactly
+    when vulture would skip a reported finding on it.
 
     :param root: The repository root.
     :return: The offending locations, sorted.
     """
     hits: list[str] = []
     for path in sorted((root / "app").rglob("*.py")):
-        text = path.read_text(encoding="utf-8")
+        noqa_lines = parse_noqa(path.read_text(encoding="utf-8").splitlines())
         relpath = path.relative_to(root).as_posix()
-        hits.extend(
-            f"{relpath}:{number}"
-            for number, line in enumerate(text.splitlines(), start=1)
-            if VULTURE_NOQA.search(line)
-        )
+        numbers = set().union(*(noqa_lines[code] for code in HIDING_NOQA_CODES))
+        hits.extend(f"{relpath}:{number}" for number in sorted(numbers))
     return hits
 
 
@@ -490,8 +499,8 @@ def main(argv: list[str] | None = None) -> int:
     failures = [_new_finding_message(finding) for finding in new]
     failures.extend(_stale_entry_message(finding) for finding in stale)
     failures.extend(
-        f"{location}: a '# noqa: V…' comment hides a finding from this check. Remove it and "
-        "use a baseline entry instead."
+        f"{location}: a '# noqa' comment that vulture honours hides a finding from this "
+        "check. Remove it, or name only codes vulture ignores, and use a baseline entry instead."
         for location in vulture_noqa_lines(root)
     )
     running = importlib.metadata.version("vulture")
