@@ -443,8 +443,8 @@ export interface paths {
      *     :return: A ``RestoreResponse`` with the per-section restore counts.
      *     :rtype: RestoreResponse
      *     :raises HTTPNotFoundException: If the backup is not found.
-     *     :raises HTTPBadGatewayException: If the PMM upstream call fails with
-     *         ``OSError``.
+     *     :raises HTTPBadGatewayException: If the PMM upstream call fails in
+     *         transport (``OSError`` or ``aiohttp.ClientError``).
      */
     post: operations['alerts_alerts_api_restore_api_apps_alerts_restore_post'];
     delete?: never;

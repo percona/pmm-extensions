@@ -242,8 +242,8 @@ async def alerts_api_restore(
     :return: A ``RestoreResponse`` with the per-section restore counts.
     :rtype: RestoreResponse
     :raises HTTPNotFoundException: If the backup is not found.
-    :raises HTTPBadGatewayException: If the PMM upstream call fails with
-        ``OSError``.
+    :raises HTTPBadGatewayException: If the PMM upstream call fails in
+        transport (``OSError`` or ``aiohttp.ClientError``).
     """
     backup = await AlertBackupManager.first(session, id=payload.backup_id)
     if backup is None:
@@ -253,7 +253,7 @@ async def alerts_api_restore(
     except HTTPException:
         logger.exception("Failed to restore alert configuration from backup")
         raise
-    except OSError:
+    except (OSError, ClientError):
         logger.exception("Failed to restore alert configuration from backup")
         raise HTTPBadGatewayException(detail="Upstream PMM error") from None
     return RestoreResponse(status="success", details=details)
@@ -296,7 +296,7 @@ async def alerts_api_pagerduty_save(
             response = PagerDutyResponse(status="created")
 
         await ensure_pagerduty_notification_route(pmm_api, PAGERDUTY_CONTACT_POINT_NAME)
-    except (HTTPException, OSError):
+    except (HTTPException, OSError, ClientError):
         logger.exception("Failed to save PagerDuty contact point")
         raise HTTPBadGatewayException(
             detail="Failed to save PagerDuty configuration"
@@ -319,7 +319,7 @@ async def alerts_api_pagerduty_delete(
     """
     try:
         contact_points = await pmm_api.list_contact_points()
-    except (HTTPException, OSError):
+    except (HTTPException, OSError, ClientError):
         logger.exception("Failed to delete PagerDuty contact point")
         raise HTTPBadGatewayException(
             detail="Failed to delete PagerDuty configuration"
@@ -336,7 +336,7 @@ async def alerts_api_pagerduty_delete(
         ]
         await pmm_api.update_notification_policy(policy)
         await pmm_api.delete_contact_point(pd_cp.uid)
-    except (HTTPException, OSError):
+    except (HTTPException, OSError, ClientError):
         logger.exception("Failed to delete PagerDuty contact point")
         raise HTTPBadGatewayException(
             detail="Failed to delete PagerDuty configuration"
@@ -425,7 +425,7 @@ async def alerts_api_push(
                     for_duration=DEFAULT_FOR_DURATION,
                     group=alerts_settings.ALERT_FOLDER_NAME,
                 )
-            except (HTTPException, OSError) as exc:
+            except (HTTPException, OSError, ClientError) as exc:
                 detail = exception_detail(exc)
                 if await _has_conflicting_rule(
                     pmm_api, name, folder.uid, include_empty=False
@@ -453,7 +453,7 @@ async def alerts_api_push(
         try:
             pmm_yaml = to_pmm_template_yaml(template)
             await pmm_api.create_template(pmm_yaml)
-        except (HTTPException, OSError) as exc:
+        except (HTTPException, OSError, ClientError) as exc:
             detail = exception_detail(exc)
             results.append(PushItemResult(name=name, status="error", message=detail))
             continue
@@ -471,7 +471,7 @@ async def alerts_api_push(
                     name=name, status="success", message="Pushed successfully"
                 )
             )
-        except (HTTPException, OSError) as exc:
+        except (HTTPException, OSError, ClientError) as exc:
             detail = exception_detail(exc)
             if not await _has_conflicting_rule(pmm_api, name, folder.uid):
                 results.append(
@@ -498,7 +498,7 @@ async def alerts_api_push(
                         message="Pushed successfully (replaced conflicting rule)",
                     )
                 )
-            except (HTTPException, OSError) as retry_exc:
+            except (HTTPException, OSError, ClientError) as retry_exc:
                 retry_detail = exception_detail(retry_exc)
                 results.append(
                     PushItemResult(

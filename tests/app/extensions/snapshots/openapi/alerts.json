@@ -771,7 +771,7 @@
     },
     "/api/apps/alerts/restore": {
       "post": {
-        "description": "Restore alert configuration from a backup snapshot.\n\n:param payload: Restore request body identifying the backup to apply.\n:type payload: RestoreRequest\n:param pmm_api: The PMM API client. Raises 503 if PMM is not configured.\n:type pmm_api: PMMRemoteAPI\n:param session: The async database session.\n:type session: SessionDep\n:return: A ``RestoreResponse`` with the per-section restore counts.\n:rtype: RestoreResponse\n:raises HTTPNotFoundException: If the backup is not found.\n:raises HTTPBadGatewayException: If the PMM upstream call fails with\n    ``OSError``.",
+        "description": "Restore alert configuration from a backup snapshot.\n\n:param payload: Restore request body identifying the backup to apply.\n:type payload: RestoreRequest\n:param pmm_api: The PMM API client. Raises 503 if PMM is not configured.\n:type pmm_api: PMMRemoteAPI\n:param session: The async database session.\n:type session: SessionDep\n:return: A ``RestoreResponse`` with the per-section restore counts.\n:rtype: RestoreResponse\n:raises HTTPNotFoundException: If the backup is not found.\n:raises HTTPBadGatewayException: If the PMM upstream call fails in\n    transport (``OSError`` or ``aiohttp.ClientError``).",
         "operationId": "alerts_alerts_api_restore_api_apps_alerts_restore_post",
         "requestBody": {
           "content": {

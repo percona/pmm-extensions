@@ -626,9 +626,14 @@ class TestPagerDutySaveApi:
         )
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
-    def test_returns_502_on_api_error(self, api_client, mock_pmm_api):
+    @pytest.mark.parametrize(
+        "error",
+        [OSError("network down"), ServerDisconnectedError("network down")],
+        ids=["oserror", "client_error"],
+    )
+    def test_returns_502_on_api_error(self, api_client, mock_pmm_api, error):
         """Return 502 (without leaking the underlying error) on PMM failure."""
-        mock_pmm_api.list_contact_points.side_effect = OSError("network down")
+        mock_pmm_api.list_contact_points.side_effect = error
         response = api_client.post(
             f"{API_BASE}/pagerduty", json={"integration_key": "k"}
         )
@@ -707,13 +712,23 @@ class TestPagerDutyDeleteApi:
         response = api_client.post(f"{API_BASE}/pagerduty/delete")
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
-    def test_returns_502_on_api_error(self, api_client, mock_pmm_api):
+    @pytest.mark.parametrize(
+        "error",
+        [OSError("API failure"), ServerDisconnectedError("API failure")],
+        ids=["oserror", "client_error"],
+    )
+    def test_returns_502_on_api_error(self, api_client, mock_pmm_api, error):
         """Return 502 when the PMM upstream call raises."""
-        mock_pmm_api.list_contact_points.side_effect = OSError("API failure")
+        mock_pmm_api.list_contact_points.side_effect = error
         response = api_client.post(f"{API_BASE}/pagerduty/delete")
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
 
-    def test_returns_502_when_policy_fetch_fails(self, api_client, mock_pmm_api):
+    @pytest.mark.parametrize(
+        "error",
+        [OSError("policy down"), ServerDisconnectedError("policy down")],
+        ids=["oserror", "client_error"],
+    )
+    def test_returns_502_when_policy_fetch_fails(self, api_client, mock_pmm_api, error):
         """Return 502 when the policy fetch (inside the second try) raises."""
         mock_pmm_api.list_contact_points.return_value = [
             ContactPoint(
@@ -723,7 +738,7 @@ class TestPagerDutyDeleteApi:
                 settings={"integrationKey": "secretkey"},
             ),
         ]
-        mock_pmm_api.get_notification_policy.side_effect = OSError("policy down")
+        mock_pmm_api.get_notification_policy.side_effect = error
         response = api_client.post(f"{API_BASE}/pagerduty/delete")
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
         assert "policy down" not in response.text
@@ -861,11 +876,17 @@ class TestAlertsPushApi:
         assert result["status"] == "error"
         assert result["message"] == "Template not found"
 
-    def test_push_pmm_api_error(self, api_client, mock_pmm_api):
+    @pytest.mark.parametrize(
+        "error",
+        [
+            HTTPException(status_code=502, detail="Bad Gateway"),
+            ServerDisconnectedError("Bad Gateway"),
+        ],
+        ids=["http_error", "client_error"],
+    )
+    def test_push_pmm_api_error(self, api_client, mock_pmm_api, error):
         """Emit a per-template error when ``create_template`` raises."""
-        mock_pmm_api.create_template.side_effect = HTTPException(
-            status_code=502, detail="Bad Gateway"
-        )
+        mock_pmm_api.create_template.side_effect = error
         response = api_client.post(
             f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
         )
@@ -883,20 +904,29 @@ class TestAlertsPushApi:
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
         assert response.json()["detail"] == "Failed to access PMM alert folder"
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            HTTPException(status_code=502, detail="Rule creation failed"),
+            ServerDisconnectedError("Rule creation failed"),
+        ],
+        ids=["http_error", "client_error"],
+    )
     def test_push_rule_failure_reports_orphaned_template(
-        self, api_client, mock_pmm_api
+        self, api_client, mock_pmm_api, error
     ):
         """Indicate the template was created when the rule call fails."""
-        mock_pmm_api.create_rule.side_effect = HTTPException(
-            status_code=502, detail="Rule creation failed"
-        )
+        mock_pmm_api.create_rule.side_effect = error
         response = api_client.post(
             f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
         )
         assert response.status_code == status.HTTP_200_OK
         result = response.json()["results"][0]
         assert result["status"] == "error"
-        assert "Template created but rule failed" in result["message"]
+        assert (
+            result["message"]
+            == "Template created but rule failed: Rule creation failed"
+        )
 
     def test_push_conflict_retry_success(self, api_client, mock_pmm_api):
         """Retry ``create_rule`` once after deleting the conflicting rule."""
@@ -914,11 +944,19 @@ class TestAlertsPushApi:
         assert "replaced conflicting rule" in result["message"]
         assert mock_pmm_api.create_rule.await_count == 2  # noqa: PLR2004
 
-    def test_push_conflict_retry_fails(self, api_client, mock_pmm_api):
+    @pytest.mark.parametrize(
+        "error",
+        [
+            HTTPException(status_code=502, detail="still broken"),
+            ServerDisconnectedError("still broken"),
+        ],
+        ids=["http_error", "client_error"],
+    )
+    def test_push_conflict_retry_fails(self, api_client, mock_pmm_api, error):
         """Surface an orphaned-template error when the retry also fails."""
         mock_pmm_api.create_rule.side_effect = [
             HTTPException(status_code=502, detail="rule conflicts with existing rule"),
-            HTTPException(status_code=502, detail="still broken"),
+            error,
         ]
         mock_pmm_api.list_rules.return_value = [_rule("r1", "High CPU")]
         response = api_client.post(
@@ -927,7 +965,7 @@ class TestAlertsPushApi:
         assert response.status_code == status.HTTP_200_OK
         result = response.json()["results"][0]
         assert result["status"] == "error"
-        assert "Template created but rule failed" in result["message"]
+        assert result["message"] == "Template created but rule failed: still broken"
 
     def test_push_rejects_empty_selected_templates(self, api_client, mock_pmm_api):
         """Reject an empty selected_templates list with 422."""
@@ -1035,8 +1073,9 @@ class TestAlertsPushApi:
                 "upstream failed",
             ),
             (OSError("connection reset"), "connection reset"),
+            (ServerDisconnectedError("connection reset"), "connection reset"),
         ],
-        ids=["non_collision", "non_str_detail", "oserror"],
+        ids=["non_collision", "non_str_detail", "oserror", "client_error"],
     )
     def test_push_already_present_reports_create_rule_errors(
         self, api_client, mock_pmm_api, side_effect, expected_message
@@ -1386,11 +1425,16 @@ class TestRestoreApi:
         mock_pmm_api.delete_contact_point.assert_awaited_once()
         mock_pmm_api.create_contact_point.assert_not_awaited()
 
-    async def test_restore_returns_502_on_oserror(
-        self, api_client, mock_pmm_api, seeded_backup: AlertBackup
+    @pytest.mark.parametrize(
+        "error",
+        [OSError("upstream down"), ServerDisconnectedError("upstream down")],
+        ids=["oserror", "client_error"],
+    )
+    async def test_restore_returns_502_on_transport_error(
+        self, api_client, mock_pmm_api, seeded_backup: AlertBackup, error
     ):
-        """Return 502 (without leaking the underlying message) on OSError."""
-        mock_pmm_api.list_rules.side_effect = OSError("upstream down")
+        """Return 502 (without leaking the underlying message) on a transport failure."""
+        mock_pmm_api.list_rules.side_effect = error
         response = api_client.post(
             f"{API_BASE}/restore", json={"backup_id": seeded_backup.id}
         )
