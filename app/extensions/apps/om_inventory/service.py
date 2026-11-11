@@ -1277,13 +1277,15 @@ async def _fail_run(run_id: UUID, error: str) -> None:
 def _refusal(*, automatic: bool) -> str | None:
     """Say why a sweep must not start now, by the freshly published snapshot.
 
+    ``AUTO_SCAN`` is read again here because a queued message can outlive the
+    ``AUTO_SCAN`` it was queued under.
+
     :param automatic: Whether beat or switching on started it, rather than a request.
     :return: The reason, or ``None`` when it may start.
     """
     if not om_inventory_settings.ENABLED:
         return SWITCHED_OFF_DETAIL
     if automatic and not om_inventory_settings.AUTO_SCAN:
-        # A queued message can outlive the AUTO_SCAN it was queued under.
         return AUTO_SCAN_OFF_DETAIL
     return None
 
