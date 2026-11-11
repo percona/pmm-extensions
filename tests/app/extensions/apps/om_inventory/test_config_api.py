@@ -269,6 +269,28 @@ class TestSetEnabled:
         assert await ProbeRunManager.list(session) == []
 
     @pytest.mark.asyncio
+    async def test_switching_off_does_not_sweep(
+        self, gated_api: AsyncClient, session: AsyncSession, delay: MagicMock
+    ) -> None:
+        """Start no sweep when PMM turns the switch off.
+
+        pmm-managed sends this whenever someone turns Operations off, and with
+        ``AUTO_SCAN`` on only ``enabled`` keeps it from sweeping.
+
+        :param gated_api: The client passing the real gate.
+        :param session: The database session.
+        :param delay: The broker's stand-in.
+        """
+        assert om_inventory_settings.AUTO_SCAN is True
+
+        response = await _switch(gated_api, enabled=False)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert om_inventory_settings.ENABLED is False
+        delay.assert_not_called()
+        assert await ProbeRunManager.list(session) == []
+
+    @pytest.mark.asyncio
     async def test_switching_on_during_a_sweep_starts_no_other(
         self, gated_api: AsyncClient, session: AsyncSession, delay: MagicMock
     ) -> None:
