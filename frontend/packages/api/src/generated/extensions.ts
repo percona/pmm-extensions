@@ -338,8 +338,6 @@ export interface paths {
      * Alerts Api Pagerduty Save
      * @description Create or update the PagerDuty contact point and notification route.
      *
-     *     Mirror :func:`app.extensions.apps.alerts.routes.pagerduty_save` over JSON.
-     *
      *     :param payload: PagerDuty save request body.
      *     :type payload: PagerDutyRequest
      *     :param pmm_api: The PMM API client. Raises 503 if PMM is not configured.
@@ -395,7 +393,6 @@ export interface paths {
      * Alerts Api Push
      * @description Push selected alert templates to PMM as rules.
      *
-     *     Mirror :func:`app.extensions.apps.alerts.routes.alerts_push` over JSON.
      *     When the template is already present in PMM, report ``success`` if
      *     ``create_rule`` recreates a missing rule, ``skipped`` on a rule-title
      *     collision, and ``error`` for any other failure. When the template is not

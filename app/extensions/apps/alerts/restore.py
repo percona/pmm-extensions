@@ -47,15 +47,10 @@ def is_conflicting_rule(
     ``rule_name`` or, when ``include_empty`` is set, is empty (ghost rule).
 
     :param rule: The rule to test.
-    :type rule: AlertRule
     :param rule_name: The rule title being created.
-    :type rule_name: str
     :param folder_uid: The folder UID the rule is created in.
-    :type folder_uid: str
     :param include_empty: Treat empty-title rules as conflicting.
-    :type include_empty: bool
     :return: ``True`` if the rule conflicts.
-    :rtype: bool
     """
     if getattr(rule, "namespace_uid", "") != folder_uid:
         return False
@@ -73,11 +68,8 @@ async def delete_conflicting_rules(
     ``create_rule`` call can succeed.
 
     :param pmm_api: The PMM API client.
-    :type pmm_api: PMMRemoteAPI
     :param rule_name: The rule title that triggered the conflict.
-    :type rule_name: str
     :param folder_uid: The folder UID where the conflict occurred.
-    :type folder_uid: str
     """
     rules = await pmm_api.list_rules()
     for rule in rules:

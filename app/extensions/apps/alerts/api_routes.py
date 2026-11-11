@@ -266,8 +266,6 @@ async def alerts_api_pagerduty_save(
 ) -> PagerDutyResponse:
     """Create or update the PagerDuty contact point and notification route.
 
-    Mirror :func:`app.extensions.apps.alerts.routes.pagerduty_save` over JSON.
-
     :param payload: PagerDuty save request body.
     :type payload: PagerDutyRequest
     :param pmm_api: The PMM API client. Raises 503 if PMM is not configured.
@@ -356,18 +354,14 @@ async def _has_conflicting_rule(
     """Return whether the folder currently holds a conflicting rule.
 
     Read the rule listing fresh, so deletes made earlier in the request are
-    reflected. A listing failure counts as no collision.
+    reflected. An HTTP or transport failure of the listing counts as no
+    collision.
 
     :param pmm_api: The PMM API client.
-    :type pmm_api: PMMRemoteAPI
     :param rule_name: The rule title being created.
-    :type rule_name: str
     :param folder_uid: The alert folder UID.
-    :type folder_uid: str
     :param include_empty: Treat empty-title rules as conflicting.
-    :type include_empty: bool
     :return: ``True`` if a conflicting rule was observed.
-    :rtype: bool
     """
     try:
         rules = await pmm_api.list_rules()
