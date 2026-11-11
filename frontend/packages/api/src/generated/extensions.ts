@@ -338,8 +338,6 @@ export interface paths {
      * Alerts Api Pagerduty Save
      * @description Create or update the PagerDuty contact point and notification route.
      *
-     *     Mirror :func:`app.extensions.apps.alerts.routes.pagerduty_save` over JSON.
-     *
      *     :param payload: PagerDuty save request body.
      *     :type payload: PagerDutyRequest
      *     :param pmm_api: The PMM API client. Raises 503 if PMM is not configured.
@@ -395,7 +393,6 @@ export interface paths {
      * Alerts Api Push
      * @description Push selected alert templates to PMM as rules.
      *
-     *     Mirror :func:`app.extensions.apps.alerts.routes.alerts_push` over JSON.
      *     When the template is already present in PMM, report ``success`` if
      *     ``create_rule`` recreates a missing rule, ``skipped`` on a rule-title
      *     collision, and ``error`` for any other failure. When the template is not
@@ -438,16 +435,12 @@ export interface paths {
      * @description Restore alert configuration from a backup snapshot.
      *
      *     :param payload: Restore request body identifying the backup to apply.
-     *     :type payload: RestoreRequest
      *     :param pmm_api: The PMM API client. Raises 503 if PMM is not configured.
-     *     :type pmm_api: PMMRemoteAPI
      *     :param session: The async database session.
-     *     :type session: SessionDep
      *     :return: A ``RestoreResponse`` with the per-section restore counts.
-     *     :rtype: RestoreResponse
      *     :raises HTTPNotFoundException: If the backup is not found.
-     *     :raises HTTPBadGatewayException: If the PMM upstream call fails with
-     *         ``OSError``.
+     *     :raises HTTPBadGatewayException: If the PMM upstream call fails in
+     *         transport (``OSError`` or ``aiohttp.ClientError``).
      */
     post: operations['alerts_alerts_api_restore_api_apps_alerts_restore_post'];
     delete?: never;
