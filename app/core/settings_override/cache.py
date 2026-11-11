@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-__all__ = ["build_snapshot", "load_stored_overrides"]
+__all__ = ["build_snapshot", "load_stored_overrides", "stored_overrides_from_rows"]
 
 import logging
 from collections import defaultdict
@@ -44,6 +44,8 @@ from app.core.utils.cross_field import drop_broken_overrides
 from app.core.utils.pydantic import annotation_pydantic_class
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from pydantic.fields import FieldInfo
     from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -139,6 +141,26 @@ async def load_stored_overrides(
     rows = await SettingsOverrideManager.list(
         session, setting_class=setting_class_token(settings_cls), is_active=True
     )
+    return stored_overrides_from_rows(settings_cls, rows, base_settings)
+
+
+def stored_overrides_from_rows(
+    settings_cls: type[BaseYamlSettings],
+    rows: Iterable[SettingOverride],
+    base_settings: BaseModel | None = None,
+) -> dict[str, Any]:
+    """Return every usable override among ``rows``, coerced, before cross-field rules apply.
+
+    The row-processing half of :func:`load_stored_overrides`, for a caller that
+    already holds the class's active rows and must not read them again. Each
+    unusable row is logged and skipped.
+
+    :param settings_cls: The Pydantic settings class being read.
+    :param rows: The class's active override rows.
+    :param base_settings: The resolved (YAML/env) instance nested overrides merge
+        onto, or ``None`` for each field's declared default.
+    :return: A mapping of field name to coerced typed value.
+    """
     stored: dict[str, Any] = {}
     nested_groups = defaultdict(list)
     for row in rows:

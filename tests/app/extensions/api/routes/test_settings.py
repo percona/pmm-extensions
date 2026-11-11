@@ -2845,6 +2845,25 @@ class TestExtensionsSettingsProvenance:
         assert body["updated_by"] == admin_user.username
         assert body["updated_at"] == patched.json()[0]["updated_at"]
 
+    async def test_an_override_on_a_class_without_rules_carries_no_reason(
+        self, api_admin_client: TestClient
+    ) -> None:
+        """Report no ignored reason where no cross-field rule can drop an override."""
+        patched = api_admin_client.patch(
+            "/api/extensions/admin/settings/ExtensionsSettings",
+            json={"SYNC_REFRESH_TIME": 10},
+        )
+        assert patched.status_code == status.HTTP_200_OK
+
+        response = api_admin_client.get(
+            "/api/extensions/admin/settings/ExtensionsSettings/SYNC_REFRESH_TIME"
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert body["has_override"] is True
+        assert body["override_ignored_reason"] is None
+
     async def test_list_reports_the_stamp_the_patch_returned(
         self, api_admin_client: TestClient, admin_user: CasdoorUser
     ) -> None:

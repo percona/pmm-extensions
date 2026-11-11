@@ -649,8 +649,10 @@ async def get_config(session: SessionDep) -> list[SettingResponse]:
     Changing it stays admin-only, on that router.
 
     Every field is listed, not only the overridden ones, and each row carries
-    whether an override is in effect - so "why is it sweeping every 10 minutes"
-    is answerable without also reading the deployment's YAML.
+    whether an override is stored and, in ``override_ignored_reason``, the
+    cross-field rule that keeps a stored one from applying - so "why is it
+    sweeping every 10 minutes" is answerable without also reading the
+    deployment's YAML.
 
     ``CREDENTIALS_PATH`` is the one exception: its row is present, with ``value``
     forced to ``None`` regardless of the deployment's real setting. See
