@@ -216,6 +216,19 @@ def _get_stamped_revisions(sync_url: str) -> set[str]:
         engine.dispose()
 
 
+def _is_alerts_location(location: str) -> bool:
+    """Return whether ``location`` is the alerts app's ``migrations/versions`` directory.
+
+    Compare the trailing path components, not a substring of the whole path, so
+    a checkout whose directory name contains "alerts" does not match every
+    configured location.
+
+    :param location: One configured Alembic version location.
+    :return: ``True`` for the alerts app's location only.
+    """
+    return Path(location).parts[-3:] == ("alerts", "migrations", "versions")
+
+
 @pytest.fixture
 def extensions_alembic_config_stripped_alerts(extensions_alembic_config, tmp_path):
     """Return an Alembic ``Config`` whose alerts version location is gone from disk.
@@ -241,7 +254,8 @@ def extensions_alembic_config_stripped_alerts(extensions_alembic_config, tmp_pat
     cfg.set_main_option(
         "version_locations",
         ":".join(
-            str(absent) if "alerts" in location else location for location in locations
+            str(absent) if _is_alerts_location(location) else location
+            for location in locations
         ),
     )
     return cfg, sync_url, str(absent)
@@ -270,7 +284,8 @@ def extensions_alembic_config_empty_alerts_versions(
     cfg.set_main_option(
         "version_locations",
         ":".join(
-            str(empty) if "alerts" in location else location for location in locations
+            str(empty) if _is_alerts_location(location) else location
+            for location in locations
         ),
     )
     return cfg, sync_url, str(empty)
