@@ -53,6 +53,15 @@ repos:
         additional_dependencies: ["python-minifier==2.11.3"]
         files: ^app/extensions/apps/(?!dipper/)(?:.*/)?(?:payload(?:/.*)?|[^/]*_payload)$
         pass_filenames: true
+      - id: check-dead-code
+        name: Check for new dead code
+        description: "Fail when vulture finds dead code under app/ that scripts/dead_code_baseline.toml does not keep"
+        entry: python3 scripts/check_dead_code.py
+        language: python
+        additional_dependencies: ["vulture==2.16"]
+        stages: [manual]
+        always_run: true
+        pass_filenames: false
       - id: check-sidecar-purge
         name: Check side-car purge layer ordering
         description: "Ensure no apt/dpkg instruction follows the purge layer"
