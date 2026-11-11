@@ -15,7 +15,6 @@
 
 """Define the constants of the Task API models."""
 
-TASK_ALIAS_LENGTH = 100
 SYSTEM_USER = "SYSTEM"
 ANY_OWNER = "ANY"
 
