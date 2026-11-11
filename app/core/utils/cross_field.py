@@ -16,7 +16,12 @@
 
 """Define relationships that several settings fields must satisfy together."""
 
-__all__ = ["CrossFieldRule", "drop_broken_overrides", "violated_rules"]
+__all__ = [
+    "CrossFieldRule",
+    "drop_broken_overrides",
+    "dropped_override_causes",
+    "violated_rules",
+]
 
 import logging
 from collections.abc import Callable, Iterable, Mapping
@@ -88,9 +93,48 @@ def drop_broken_overrides(
     :param base_value_of: Return the value a field takes with no override.
     :return: The overrides kept, and every rule that was broken along the way.
     """
+    kept, broken, _ = _drop_rounds(rules, overrides, base_value_of)
+    return kept, broken
+
+
+def dropped_override_causes(
+    rules: Iterable[CrossFieldRule],
+    overrides: Mapping[str, Any],
+    base_value_of: Callable[[str], Any],
+) -> dict[str, tuple[CrossFieldRule, ...]]:
+    """Return the rules that dropped each override :func:`drop_broken_overrides` drops.
+
+    A field maps only to the rules violated in the round that dropped it, never
+    to a rule that broke later because the field fell back to its base value:
+    that rule judged the base, not the operator's override.
+
+    :param rules: The rules to enforce.
+    :param overrides: Field name to override value; not mutated.
+    :param base_value_of: Return the value a field takes with no override.
+    :return: Each dropped field's name mapped to the rules that dropped it, in
+        declaration order. A kept field is absent.
+    """
+    _, _, causes = _drop_rounds(rules, overrides, base_value_of)
+    return causes
+
+
+def _drop_rounds(
+    rules: Iterable[CrossFieldRule],
+    overrides: Mapping[str, Any],
+    base_value_of: Callable[[str], Any],
+) -> tuple[dict[str, Any], list[CrossFieldRule], dict[str, tuple[CrossFieldRule, ...]]]:
+    """Drop overrides round by round until the rules hold, recording what dropped each.
+
+    :param rules: The rules to enforce.
+    :param overrides: Field name to override value; not mutated.
+    :param base_value_of: Return the value a field takes with no override.
+    :return: The overrides kept, every rule broken along the way, and each
+        dropped field mapped to the rules violated in the round that dropped it.
+    """
     rules = tuple(rules)
     kept = dict(overrides)
     broken: list[CrossFieldRule] = []
+    causes: dict[str, tuple[CrossFieldRule, ...]] = {}
 
     def value_of(name: str) -> Any:
         return kept[name] if name in kept else base_value_of(name)
@@ -107,5 +151,6 @@ def drop_broken_overrides(
             )
             break
         for name in droppable:
+            causes[name] = tuple(rule for rule in violated if name in rule.fields)
             del kept[name]
-    return kept, broken
+    return kept, broken, causes
