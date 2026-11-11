@@ -280,18 +280,16 @@ class YamlPrefixConfigSettingsSource(YamlConfigSettingsSource):
 
 
 class BaseYamlSettings(BaseSettings):
-    """Base settings class for YAML config.
+    """Load a settings section from the YAML profile and its overriding sources.
 
     An environment or dotenv value of ``null`` means ``None``, as a YAML ``null``
     does, and outranks the YAML value. Secret files are not covered.
 
     :cvar SETTINGS_PREFIXES: Tuple of settings prefixes.
-    :vartype SETTINGS_PREFIXES: list[str]
     :cvar CROSS_FIELD_RULES: Relationships the class's top-level fields must
         satisfy together; a load that breaks one is refused.
     :param FASTAPI_ENV: The environment used (e.g. development, production).
         Defaults to "development".
-    :type FASTAPI_ENV: str
     """
 
     model_config = SettingsConfigDict(
