@@ -31,6 +31,7 @@ from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import setting_class_token, SettingOverride
+from app.core.utils.date_time import utc_now
 from app.extensions.apps.om_inventory.config import OmInventorySettings
 from app.extensions.apps.om_inventory.crud import ProbeRunManager
 from app.extensions.apps.om_inventory.dispatch import HostProbeResult
@@ -280,13 +281,17 @@ async def start_run(session: AsyncSession, scope: list[str] | None) -> ProbeRun:
     )
 
 
-async def store_overrides(session: AsyncSession, **values: Any) -> None:
+async def store_overrides(
+    session: AsyncSession, *, actor: str | None = None, **values: Any
+) -> None:
     """Write ``OmInventorySettings`` override rows straight to the table.
 
     The proxy's snapshot is left as it was, as another worker's write would leave it,
     so a test can make the stored rows and this process's view disagree.
 
     :param session: The database session.
+    :param actor: The username stamped on each row as its last writer, beside
+        the current time.
     :param values: The overrides to store, by field name.
     """
     for key, value in values.items():
@@ -296,5 +301,7 @@ async def store_overrides(session: AsyncSession, **values: Any) -> None:
                 setting_class=setting_class_token(OmInventorySettings),
                 key=key,
                 value=value,
+                updated_at=utc_now(),
+                updated_by=actor,
             ),
         )

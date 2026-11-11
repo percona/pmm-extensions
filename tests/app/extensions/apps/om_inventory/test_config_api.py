@@ -30,10 +30,11 @@ asserts it is refused, because the difference between "not hot" and "not yet hot
 invisible in the field list.
 """
 
-from collections.abc import AsyncIterator
-from datetime import timedelta
+import logging
+from collections.abc import AsyncIterator, Iterator
+from datetime import datetime, timedelta
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -42,6 +43,7 @@ from httpx import ASGITransport, AsyncClient, Response
 from kombu.exceptions import OperationalError as KombuOperationalError
 from pydantic import SecretStr
 from pytest_mock import MockerFixture
+from sqlalchemy import event
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import get_current_user as resolve_bearer
@@ -49,11 +51,14 @@ from app.api.deps import SERVICE_PRINCIPAL
 from app.core.auth.providers.casdoor.models import CasdoorUser
 from app.core.config import settings
 from app.core.exceptions import HTTPBadRequestException
+from app.core.requests.remote_api import RemoteAPI
+from app.core.settings_override import cache
 from app.core.settings_override.lifecycle import publish_snapshot
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import setting_class_token, SettingOverride
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.settings_override.registry import hot_field_names
+from app.core.utils.date_time import make_datetime_utc
 from app.extensions.apps.framework.registry import collect_app_owned_settings_classes
 from app.extensions.apps.om_inventory.api_routes import QUEUE_UNAVAILABLE_DETAIL
 from app.extensions.apps.om_inventory.app import app as om_inventory_app
@@ -64,7 +69,7 @@ from app.extensions.apps.om_inventory.config import (
 )
 from app.extensions.apps.om_inventory.crud import ProbeRunManager
 from app.extensions.apps.om_inventory.models import ProbeRunStatus
-from app.extensions.deps import get_session
+from app.extensions.deps import get_session, get_tasks_api
 from app.extensions.main import extensions_app, extensions_overrides_lifespan
 from tests.app.extensions.apps.om_inventory.conftest import (
     BASE,
@@ -79,6 +84,9 @@ DEFAULTS = OmInventorySettings()
 
 #: The shared, admin-gated settings router's path for this class.
 ADMIN_SETTINGS = f"/api/extensions/admin/settings/{OmInventorySettings.__name__}"
+
+#: The class's two relationships, in declaration order.
+POLL_RULE, STALE_RULE = OmInventorySettings.CROSS_FIELD_RULES
 
 #: The ``EXTENSIONS_INTERNAL_TOKEN`` the real-gate tests present.
 INTERNAL_TOKEN = "internal-test-token"
@@ -1145,20 +1153,51 @@ class TestChangesWhileStoredRowsAreIgnored:
         assert om_inventory_settings.TASK_TIMEOUT == DEFAULTS.TASK_TIMEOUT
 
     @pytest.mark.asyncio
-    async def test_get_reports_the_value_in_effect_for_an_ignored_override(
+    async def test_get_reports_why_an_ignored_override_is_ignored(
         self, api: AsyncClient
     ) -> None:
-        """Show the base value in effect, while the row still counts as an override.
+        """Name the broken rule on both halves of the pair, beside the base value.
 
-        Pins today's report: ``has_override`` reflects the stored row, not whether
-        the snapshot honours it, so the value is the only sign it is ignored.
+        ``has_override`` still reflects the stored row, so the reset stays offered;
+        ``override_ignored_reason`` is what says the snapshot does not apply it.
 
         :param api: The authenticated client.
         """
-        rows = {row["key"]: row for row in (await api.get(f"{BASE}/config")).json()}
+        response = await api.get(f"{BASE}/config")
 
+        assert response.status_code == status.HTTP_200_OK
+        rows = {row["key"]: row for row in response.json()}
         assert rows["TASK_TIMEOUT"]["value"] == DEFAULTS.TASK_TIMEOUT
-        assert rows["TASK_TIMEOUT"]["has_override"] is True
+        for key in ("POLL_INTERVAL", "TASK_TIMEOUT"):
+            assert rows[key]["has_override"] is True
+            assert rows[key]["override_ignored_reason"] == POLL_RULE.message
+        assert rows["STALE_RUN_AFTER"]["override_ignored_reason"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_read_issues_one_override_query(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Judge the pair from the rows already listed for provenance, not a re-read.
+
+        :param api: The authenticated client.
+        :param session: The database session.
+        """
+        statements: list[str] = []
+
+        def _record(
+            conn: object, cursor: object, statement: str, *args: object
+        ) -> None:
+            statements.append(statement)
+
+        bind = session.get_bind()
+        event.listen(bind, "before_cursor_execute", _record)
+        try:
+            response = await api.get(f"{BASE}/config")
+        finally:
+            event.remove(bind, "before_cursor_execute", _record)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert len([s for s in statements if "settingoverride" in s.lower()]) == 1
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1232,6 +1271,195 @@ class TestChangesWhileStoredRowsAreIgnored:
         response = await admin_api.delete(f"{ADMIN_SETTINGS}/{key}")
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
+
+
+@pytest.fixture
+def _mock_tasks_api() -> Iterator[None]:
+    """Stub the Tasks client the shared LIST proxies ``TasksSettings`` through.
+
+    Pops only its own key, since ``admin_api``'s teardown clears the rest.
+    """
+    mock = AsyncMock(spec=RemoteAPI)
+    mock.get.return_value = {
+        "groups": [{"setting_class": "TasksSettings", "settings": []}]
+    }
+    extensions_app.dependency_overrides[get_tasks_api] = lambda: mock
+    yield
+    extensions_app.dependency_overrides.pop(get_tasks_api, None)
+
+
+class TestOverrideIgnoredAfterBaseChange:
+    """Mark a lone override a redeployed base value leaves breaking a rule.
+
+    The base timeout is raised past the stored stale threshold, so the snapshot
+    ignores the threshold while the timeout, carrying no override, is not marked.
+    """
+
+    @pytest_asyncio.fixture(autouse=True)
+    async def stored_row(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> SettingOverride:
+        """Raise the base timeout, then store and publish a threshold below it.
+
+        The base is patched first: ``monkeypatch`` records the old value through
+        the proxy, which would read a published override instead.
+
+        :param session: The database session.
+        :param monkeypatch: Restores the base timeout after the test.
+        :return: The stored threshold row.
+        """
+        monkeypatch.setattr(om_inventory_settings, "TASK_TIMEOUT", 7200)
+        await store_overrides(session, actor="operator", STALE_RUN_AFTER=3600)
+        proxy = cast("OverridableSettingsProxy", om_inventory_settings)
+        await publish_snapshot(proxy, session, OmInventorySettings)
+        (row,) = await _active_rows(session)
+        return row
+
+    def _assert_ignored_threshold(
+        self, entry: dict[str, Any], row: SettingOverride
+    ) -> None:
+        """Assert the threshold reads as an ignored override, stamps intact.
+
+        :param entry: The ``STALE_RUN_AFTER`` response entry.
+        :param row: The stored threshold row.
+        """
+        assert entry["has_override"] is True
+        assert entry["updated_by"] == "operator"
+        assert datetime.fromisoformat(entry["updated_at"]) == make_datetime_utc(
+            row.updated_at
+        )
+        assert entry["value"] == DEFAULTS.STALE_RUN_AFTER.total_seconds()
+        assert entry["override_ignored_reason"] == STALE_RULE.message
+
+    @pytest.mark.asyncio
+    async def test_the_app_config_marks_only_the_override(
+        self, api: AsyncClient, stored_row: SettingOverride
+    ) -> None:
+        """Mark the threshold, and leave the un-overridden timeout unmarked.
+
+        :param api: The authenticated client.
+        :param stored_row: The stored threshold row.
+        """
+        response = await api.get(f"{BASE}/config")
+
+        assert response.status_code == status.HTTP_200_OK
+        rows = {row["key"]: row for row in response.json()}
+        self._assert_ignored_threshold(rows["STALE_RUN_AFTER"], stored_row)
+        assert rows["TASK_TIMEOUT"]["override_ignored_reason"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_mock_tasks_api")
+    async def test_the_shared_list_marks_it(
+        self, admin_api: AsyncClient, stored_row: SettingOverride
+    ) -> None:
+        """Carry the mark on the admin settings LIST.
+
+        :param admin_api: The authenticated admin client.
+        :param stored_row: The stored threshold row.
+        """
+        response = await admin_api.get("/api/extensions/admin/settings/")
+
+        assert response.status_code == status.HTTP_200_OK
+        (group,) = [
+            group
+            for group in response.json()["groups"]
+            if group["setting_class"] == OmInventorySettings.__name__
+        ]
+        (entry,) = [e for e in group["settings"] if e["key"] == "STALE_RUN_AFTER"]
+        self._assert_ignored_threshold(entry, stored_row)
+
+    @pytest.mark.asyncio
+    async def test_the_shared_detail_marks_it(
+        self, admin_api: AsyncClient, stored_row: SettingOverride
+    ) -> None:
+        """Carry the mark on the admin settings detail read.
+
+        :param admin_api: The authenticated admin client.
+        :param stored_row: The stored threshold row.
+        """
+        response = await admin_api.get(f"{ADMIN_SETTINGS}/STALE_RUN_AFTER")
+
+        assert response.status_code == status.HTTP_200_OK
+        self._assert_ignored_threshold(response.json(), stored_row)
+
+
+class TestIgnoredOverrideAttribution:
+    """Name the rule that dropped each override, and nothing for an honoured one."""
+
+    @pytest.mark.asyncio
+    async def test_a_cascade_names_only_the_rule_that_dropped_each_field(
+        self,
+        api: AsyncClient,
+        session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Leave the stale rule off the timeout, whose override satisfies it.
+
+        Against a base of poll 150 and timeout 300, the stored timeout of 100
+        breaks the poll rule and goes; restoring 300 then breaks the stale rule
+        for the stored threshold of 200.
+
+        :param api: The authenticated client.
+        :param session: The database session.
+        :param monkeypatch: Restores the base values after the test.
+        """
+        monkeypatch.setattr(om_inventory_settings, "POLL_INTERVAL", 150)
+        monkeypatch.setattr(om_inventory_settings, "TASK_TIMEOUT", 300)
+        await store_overrides(session, TASK_TIMEOUT=100, STALE_RUN_AFTER=200)
+        proxy = cast("OverridableSettingsProxy", om_inventory_settings)
+        await publish_snapshot(proxy, session, OmInventorySettings)
+
+        response = await api.get(f"{BASE}/config")
+
+        assert response.status_code == status.HTTP_200_OK
+        rows = {row["key"]: row for row in response.json()}
+        assert rows["TASK_TIMEOUT"]["override_ignored_reason"] == POLL_RULE.message
+        assert rows["STALE_RUN_AFTER"]["override_ignored_reason"] == (
+            STALE_RULE.message
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_honoured_override_is_unmarked(
+        self, api: AsyncClient, admin_api: AsyncClient
+    ) -> None:
+        """Report no reason for an override the snapshot applies.
+
+        :param api: The authenticated client.
+        :param admin_api: The authenticated admin client.
+        """
+        patched = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 600})
+        assert patched.status_code == status.HTTP_200_OK
+
+        response = await api.get(f"{BASE}/config")
+
+        assert response.status_code == status.HTTP_200_OK
+        entry = {row["key"]: row for row in response.json()}["TASK_TIMEOUT"]
+        assert entry["has_override"] is True
+        assert entry["override_ignored_reason"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_field_no_rule_names_is_not_decoded_on_read(
+        self,
+        api: AsyncClient,
+        session: AsyncSession,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Leave an unusable row outside every rule to the refresher's warning.
+
+        Judging the rules reads only the fields they name, so a read does not
+        repeat, once per request, the loader's warning for any other bad row.
+
+        :param api: The authenticated client.
+        :param session: The database session.
+        :param caplog: Fixture capturing log records.
+        """
+        await store_overrides(session, RUN_RETENTION="not-a-number")
+
+        with caplog.at_level(logging.WARNING, logger=cache.logger.name):
+            response = await api.get(f"{BASE}/config")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert "RUN_RETENTION" not in caplog.text
 
 
 class TestStaleRunAfterRoundTrip:

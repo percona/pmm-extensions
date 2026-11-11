@@ -40,15 +40,18 @@ from sqlmodel import col, select
 from app.core.exceptions import HTTPBadRequestException
 from app.extensions.apps.inventory.connectivity import probe_service_connectivity
 from app.extensions.apps.inventory.deps import (
-    AvailableSyncer,
     filter_syncers_by_name,
     InternalTokenDep,
     InventoryAvailableSyncersDep,
-    InventorySyncStatusResponse,
-    InventorySyncTriggerWrite,
     SyncersDep,
 )
-from app.extensions.apps.inventory.models import PluginTaskResponse, SyncRunSummary
+from app.extensions.apps.inventory.models import (
+    AvailableSyncer,
+    InventorySyncStatusResponse,
+    InventorySyncTriggerWrite,
+    PluginTaskResponse,
+    SyncRunSummary,
+)
 from app.extensions.apps.inventory.sync import run_inventory_sync
 from app.extensions.crud import SyncInstanceManager, SyncItemManager
 from app.extensions.deps import (

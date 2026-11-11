@@ -31,6 +31,7 @@ from sqlmodel import SQLModel
 
 from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
+from app.core.config import PMMSettings, settings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.exceptions import HTTPBadGatewayException
 from app.core.requests import RemoteAPI
@@ -452,6 +453,29 @@ class TestExtensionsConfigExportYaml:
             assert "inv-secret" not in list_value
         finally:
             extensions_settings._set_snapshot({})
+
+    async def test_defaulted_pmm_frontend_carries_no_endpoint_userinfo(
+        self, api_admin_client: TestClient
+    ) -> None:
+        """Render a defaulted ``PMM.frontend`` without userinfo in both LIST and export."""
+        pmm = PMMSettings(endpoint="http://pmm-user:pmm-pass-UI@127.0.0.1:19411")
+        try:
+            settings._set_snapshot({"PMM": pmm})
+            yaml_text = api_admin_client.get(EXPORT_URL).text
+            export = yaml.safe_load(yaml_text)[SETTINGS]
+            list_response = api_admin_client.get(SETTINGS_LIST_URL).json()
+            listed = {
+                entry["key"]: entry["value"]
+                for group in list_response["groups"]
+                if group["setting_class"] == SETTINGS
+                for entry in group["settings"]
+            }
+            for values in (listed, export):
+                assert values["PMM__frontend"] == "http://127.0.0.1:19411"
+                assert values["PMM__endpoint"] == "http://pmm-user:****@127.0.0.1:19411"
+            assert "pmm-pass-UI" not in yaml_text
+        finally:
+            settings._set_snapshot({})
 
     async def test_complex_field_renders_as_mapping(
         self, api_admin_client: TestClient

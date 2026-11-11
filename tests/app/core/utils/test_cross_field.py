@@ -25,6 +25,7 @@ from app.core.utils import cross_field
 from app.core.utils.cross_field import (
     CrossFieldRule,
     drop_broken_overrides,
+    dropped_override_causes,
     violated_rules,
 )
 
@@ -149,3 +150,62 @@ class TestDropBrokenOverrides:
 
         assert (kept, broken) == ({}, [LE])
         assert "A, B: A must not exceed B" in caplog.text
+
+
+class TestDroppedOverrideCauses:
+    """Group the checks of :func:`dropped_override_causes`.
+
+    :cvar CASCADE: Overrides that ``LE`` drops ``A`` and ``B`` from in round
+        one, after which restoring ``B``'s base 10 breaks ``GT`` for ``D``.
+    """
+
+    CASCADE = {"A": 9, "B": 5, "D": 8}
+
+    def test_a_consistent_set_drops_nothing(self) -> None:
+        """Name no field when the rules hold."""
+        assert (
+            dropped_override_causes((LE, LT), {"A": 5, "B": 15}, BASE.__getitem__) == {}
+        )
+
+    def test_a_jointly_broken_pair_names_the_rule_on_both_halves(self) -> None:
+        """Attribute the one broken rule to each field it dropped."""
+        causes = dropped_override_causes((LE, LT), {"A": 9, "B": 5}, BASE.__getitem__)
+
+        assert causes == {"A": (LE,), "B": (LE,)}
+
+    @pytest.mark.parametrize(
+        ("rules", "overrides", "expected"),
+        [
+            ((LE, LT), {"B": 25}, {"B": (LT,)}),
+            ((LE, LT), {"A": 30, "B": 25}, {"A": (LE,), "B": (LE, LT)}),
+            ((LT, LE), {"A": 30, "B": 25}, {"A": (LE,), "B": (LT, LE)}),
+        ],
+        ids=["one-rule-broken", "both-rules-broken", "reversed-declaration"],
+    )
+    def test_a_field_names_every_rule_broken_in_its_round_in_declaration_order(
+        self,
+        rules: tuple[CrossFieldRule, ...],
+        overrides: dict[str, int],
+        expected: dict[str, tuple[CrossFieldRule, ...]],
+    ) -> None:
+        """Name only the rules that round broke, in the order they were declared.
+
+        :param rules: The rules, in declaration order.
+        :param overrides: The stored overrides.
+        :param expected: The rules each dropped field is attributed to.
+        """
+        assert dropped_override_causes(rules, overrides, BASE.__getitem__) == expected
+
+    def test_the_cascade_names_only_the_round_that_dropped_each_field(self) -> None:
+        """Leave ``B`` off ``GT``, which broke only once ``B`` was already gone."""
+        causes = dropped_override_causes((LE, GT), self.CASCADE, BASE.__getitem__)
+
+        assert causes == {"A": (LE,), "B": (LE,), "D": (GT,)}
+
+    def test_it_names_exactly_the_overrides_drop_broken_overrides_drops(self) -> None:
+        """Attribute every dropped field, and only those, so the two never drift."""
+        kept, _ = drop_broken_overrides((LE, GT), self.CASCADE, BASE.__getitem__)
+
+        causes = dropped_override_causes((LE, GT), self.CASCADE, BASE.__getitem__)
+
+        assert causes.keys() == self.CASCADE.keys() - kept.keys()

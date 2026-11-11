@@ -1322,7 +1322,9 @@ export interface components {
      *         declared default and reporting it as overridden would tell the UI a
      *         field is overridden while showing it that default. A nested row also
      *         marks every canonical prefix of its chain, so a parent reports ``True``
-     *         when only a deeper leaf carries a row.
+     *         when only a deeper leaf carries a row. An active row the snapshot
+     *         ignores for breaking a cross-field rule still counts, so it can be
+     *         reset; ``override_ignored_reason`` says it is not in effect.
      *     :param is_advanced: Whether the setting is flagged ``advanced`` so the UI can
      *         present it separately from everyday settings. Display-only:
      *         it does not affect PATCH/DELETE eligibility.
@@ -1344,6 +1346,16 @@ export interface components {
      *         indistinguishable by timestamp, and the pair reported is then whichever
      *         contributing row was created later, which need not be the one written
      *         later.
+     *     :param override_ignored_reason: The ``"; "``-joined messages of the
+     *         cross-field rules whose violation makes the snapshot ignore this field's
+     *         stored override, or ``None`` otherwise. ``None`` does not prove the
+     *         override is in effect: a row the loader skips as unusable (an unknown or
+     *         non-overridable key, a value that fails coercion or decryption) still
+     *         sets ``has_override`` and carries no reason. It names fields and their
+     *         relationship only, never a value. It is judged from the stored rows
+     *         while ``value`` comes from this worker's snapshot, so the two can
+     *         disagree after another worker's write until this worker's next
+     *         successful refresh.
      */
     SettingResponse: {
       /** Default Value */
@@ -1372,6 +1384,8 @@ export interface components {
       key_path?: string[];
       /** Options */
       options?: components['schemas']['SettingOption'][] | null;
+      /** Override Ignored Reason */
+      override_ignored_reason?: string | null;
       reload: components['schemas']['ReloadClassification'];
       /** Setting Class */
       setting_class: string;
