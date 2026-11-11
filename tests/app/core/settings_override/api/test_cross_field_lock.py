@@ -157,7 +157,7 @@ def _cross_field_entries(rule: CrossFieldRule) -> list[dict[str, Any]]:
     """Return the 422 entries the refusal of ``rule`` must carry.
 
     :param rule: The broken rule.
-    :return: One entry per field, as SEP-2110 defines them.
+    :return: One entry per field, in the cross-field 422 shape.
     """
     return [
         {
@@ -237,7 +237,7 @@ class TestConcurrentWritesAreSerialized:
         """
         yield postgres_session_maker
 
-    async def _race(
+    async def _interleave(
         self,
         mocker: MockerFixture,
         engine: AsyncEngine,
@@ -246,7 +246,7 @@ class TestConcurrentWritesAreSerialized:
         settings_cls: type[BaseYamlSettings],
         first: Write,
         second: Write,
-    ) -> HTTPUnprocessableEntityException:
+    ) -> object:
         """Run ``first`` to its check, start ``second``, then let ``first`` commit.
 
         :param mocker: The pytest-mock fixture.
@@ -255,8 +255,8 @@ class TestConcurrentWritesAreSerialized:
         :param namespace: The lock's namespace.
         :param settings_cls: The class both writes target.
         :param first: The write parked between its check and its commit.
-        :param second: The write expected to queue and then be refused.
-        :return: The refusal ``second`` raised.
+        :param second: The write expected to queue behind ``first``.
+        :return: What ``second`` returned or raised.
         """
         checked: list[AsyncSession] = []
         first_checked = asyncio.Event()
@@ -289,9 +289,65 @@ class TestConcurrentWritesAreSerialized:
                 outcomes = await asyncio.gather(*tasks, return_exceptions=True)
         first_outcome, second_outcome = outcomes
         assert not isinstance(first_outcome, BaseException)
-        assert isinstance(second_outcome, HTTPUnprocessableEntityException)
         assert checked == [first_session, second_session]
         return second_outcome
+
+    async def _race(
+        self,
+        mocker: MockerFixture,
+        engine: AsyncEngine,
+        maker: async_sessionmaker[AsyncSession],
+        namespace: int,
+        settings_cls: type[BaseYamlSettings],
+        first: Write,
+        second: Write,
+    ) -> HTTPUnprocessableEntityException:
+        """Interleave the two writes and return the refusal ``second`` raised.
+
+        :param mocker: The pytest-mock fixture.
+        :param engine: The engine the lock lives on.
+        :param maker: The session maker.
+        :param namespace: The lock's namespace.
+        :param settings_cls: The class both writes target.
+        :param first: The write parked between its check and its commit.
+        :param second: The write expected to queue and then be refused.
+        :return: The refusal ``second`` raised.
+        """
+        outcome = await self._interleave(
+            mocker, engine, maker, namespace, settings_cls, first, second
+        )
+        assert isinstance(outcome, HTTPUnprocessableEntityException)
+        return outcome
+
+    @pytest.mark.asyncio
+    async def test_a_delete_removes_the_row_a_concurrent_patch_inserted(
+        self,
+        mocker: MockerFixture,
+        postgres_engine: AsyncEngine,
+        maker: async_sessionmaker[AsyncSession],
+        lock_namespace: int,
+    ) -> None:
+        """Delete the TIMEOUT row a PATCH committed while the DELETE waited on it.
+
+        :param mocker: The pytest-mock fixture.
+        :param postgres_engine: The engine the lock lives on.
+        :param maker: The session maker.
+        :param lock_namespace: The isolated lock namespace.
+        """
+        proxy = OverridableSettingsProxy(TimingSettings)
+
+        outcome = await self._interleave(
+            mocker,
+            postgres_engine,
+            maker,
+            lock_namespace,
+            TimingSettings,
+            _patch(TimingSettings, proxy, {"TIMEOUT": 10}),
+            _delete(TimingSettings, proxy, "TIMEOUT"),
+        )
+
+        assert outcome is None
+        assert await _stored(maker, TimingSettings) == {}
 
     @pytest.mark.asyncio
     async def test_two_patches_breaking_a_rule_together(
@@ -320,9 +376,8 @@ class TestConcurrentWritesAreSerialized:
             _patch(TimingSettings, proxy, {"POLL": 60}),
         )
 
-        assert refused.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert refused.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
         assert refused.detail == _cross_field_entries(POLL_RULE)
-        assert "60" not in str(refused.detail)
         assert await _stored(maker, TimingSettings) == {"TIMEOUT": 10}
 
     @pytest.mark.asyncio

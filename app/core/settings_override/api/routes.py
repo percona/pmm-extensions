@@ -1125,6 +1125,9 @@ def build_settings_router(
             no rows are written.
         :raises HTTPBadGatewayException: For a remote class, when the owning
             sub-app returns a server error (status >= 500) or is unreachable.
+        :raises HTTPServiceUnavailableException: If the batch names a cross-field
+            rule's field and a concurrent change to the class holds its lock too
+            long; no rows are written.
         :raises IntegrityError: When the replay of a batch that lost the
             unique-index race conflicts again, which leaves nothing written.
         """
@@ -1191,6 +1194,9 @@ def build_settings_router(
         :raises HTTPUnprocessableEntityException: If ``key`` names a
             ``NESTED_ONLY`` parent (the whole parent cannot be overridden;
             target an individual ``parent__leaf`` instead).
+        :raises HTTPServiceUnavailableException: If ``key`` names a cross-field
+            rule's field and a concurrent change to the class holds its lock too
+            long; nothing is deleted.
         :raises HTTPBadGatewayException: For a remote class, when the owning
             sub-app returns a server error (status >= 500) or is unreachable.
         """
@@ -1442,7 +1448,8 @@ def _names_rule_field(
 
     Shared by the rule check and its lock, so a change the check would judge is
     always one the lock serializes. Exact names suffice: a rule names only
-    top-level fields, and both write paths reach here with canonical keys.
+    top-level fields, a DELETE canonicalizes its key first, and a PATCH key that
+    is not an exact field name is refused before the check runs.
 
     :param settings_cls: The Pydantic settings class declaring the rules.
     :param keys: The keys the change sets or clears; ``None`` entries are ignored.
@@ -1804,9 +1811,9 @@ async def _clear_class_override(
     key = canonical_override_key(settings_cls, key)
     field_meta = _field_meta_or_404(settings_cls, key)
     token = setting_class_token(settings_cls)
-    # Read the rows under the lock too: a row loaded before it would stay in the
-    # session's identity map with the value it had then, and the check would
-    # judge the rule against that rather than a concurrent writer's commit.
+    # Read the rows under the lock too: a set read before it would miss a row a
+    # concurrent PATCH of the same key commits while this request waits, and that
+    # row would survive a DELETE that answered 204.
     async with _cross_field_lock(session, settings_cls, (key,)):
         rows = await override_rows_for_key(
             session,
