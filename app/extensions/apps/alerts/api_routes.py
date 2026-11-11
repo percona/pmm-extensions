@@ -34,6 +34,7 @@ Route layout:
 
 import logging
 
+from aiohttp import ClientError
 from fastapi import APIRouter
 from fastapi.exceptions import HTTPException
 
@@ -370,7 +371,7 @@ async def _has_conflicting_rule(
     """
     try:
         rules = await pmm_api.list_rules()
-    except (HTTPException, OSError):
+    except (HTTPException, OSError, ClientError):
         logger.exception("Failed to list rules while classifying rule failure")
         return False
     return any(

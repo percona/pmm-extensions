@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+from aiohttp import ServerDisconnectedError
 from fastapi import status
 from fastapi.exceptions import HTTPException
 from fastapi.testclient import TestClient
@@ -975,8 +976,9 @@ class TestAlertsPushApi:
             [_rule("r1", "High CPU", "other-folder"), _rule("r2", "unrelated")],
             HTTPException(status_code=502, detail="listing down"),
             OSError("listing down"),
+            ServerDisconnectedError(),
         ],
-        ids=["empty", "no_match", "http_error", "oserror"],
+        ids=["empty", "no_match", "http_error", "oserror", "client_error"],
     )
     def test_push_no_collision_reports_original_error(
         self, api_client, mock_pmm_api, present, listing
