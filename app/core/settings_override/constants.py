@@ -30,7 +30,7 @@ NESTED_VALUE_MISSING = object()
 
 # Stable, app-chosen advisory-lock key shared by every settingoverride migration
 # so they serialize against each other on a shared PostgreSQL database. Any fixed
-# bigint unused elsewhere works; no other advisory lock exists in the repo.
+# bigint unused elsewhere works.
 SETTINGOVERRIDE_MIGRATION_LOCK_KEY = 0x5E770438
 
 #: Advisory-lock space serializing the settings writes a cross-field rule judges,
