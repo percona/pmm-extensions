@@ -810,13 +810,17 @@ class TestAlertsPushApi:
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert response.json()["detail"] == "PMM is not configured"
 
-    def test_push_already_present(self, api_client, mock_pmm_api):
-        """Skip when the template and its rule are already present in PMM."""
+    @pytest.mark.parametrize(
+        "detail",
+        ["upstream wording that names no collision", "rule already exists"],
+    )
+    def test_push_already_present(self, api_client, mock_pmm_api, detail):
+        """Skip when the folder holds the rule, whatever the upstream detail says."""
         extensions_app.dependency_overrides[get_pmm_present_names] = lambda: {
             "High CPU"
         }
         mock_pmm_api.create_rule.side_effect = HTTPException(
-            status_code=502, detail="upstream wording that names no collision"
+            status_code=502, detail=detail
         )
         mock_pmm_api.list_rules.return_value = [_rule("r1", "High CPU")]
         response = api_client.post(
@@ -930,27 +934,6 @@ class TestAlertsPushApi:
         response = api_client.post(f"{API_BASE}/push", json={"selected_templates": []})
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    def test_push_already_present_skips_whatever_the_detail_says(
-        self, api_client, mock_pmm_api
-    ):
-        """Report ``skipped`` when the folder holds the rule, regardless of the detail."""
-        extensions_app.dependency_overrides[get_pmm_present_names] = lambda: {
-            "High CPU"
-        }
-        mock_pmm_api.create_rule.side_effect = HTTPException(
-            status_code=502, detail="rule already exists"
-        )
-        mock_pmm_api.list_rules.return_value = [_rule("r1", "High CPU")]
-        response = api_client.post(
-            f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
-        )
-        assert response.status_code == status.HTTP_200_OK
-        result = response.json()["results"][0]
-        assert result["status"] == "skipped"
-        assert result["message"] == "Already present in PMM"
-        mock_pmm_api.create_template.assert_not_awaited()
-        mock_pmm_api.create_rule.assert_awaited_once()
-
     def test_push_already_present_ignores_empty_title_rule(
         self, api_client, mock_pmm_api
     ):
@@ -968,7 +951,9 @@ class TestAlertsPushApi:
         assert result["status"] == "error"
         assert result["message"] == "boom"
 
-    @pytest.mark.parametrize("present", [True, False], ids=["present", "absent"])
+    @pytest.mark.parametrize(
+        "present_names", [{"High CPU"}, set()], ids=["present", "absent"]
+    )
     @pytest.mark.parametrize(
         "listing",
         [
@@ -981,23 +966,19 @@ class TestAlertsPushApi:
         ids=["empty", "no_match", "http_error", "oserror", "client_error"],
     )
     def test_push_no_collision_reports_original_error(
-        self, api_client, mock_pmm_api, present, listing
+        self, api_client, mock_pmm_api, present_names, listing
     ):
         """Report ``error`` with the upstream detail when no collision is observed.
 
         The detail contains the old matched wording to show it no longer decides.
         """
-        if present:
-            extensions_app.dependency_overrides[get_pmm_present_names] = lambda: {
-                "High CPU"
-            }
+        extensions_app.dependency_overrides[get_pmm_present_names] = lambda: (
+            present_names
+        )
         mock_pmm_api.create_rule.side_effect = HTTPException(
             status_code=502, detail="rule conflicts with existing rule"
         )
-        if isinstance(listing, Exception):
-            mock_pmm_api.list_rules.side_effect = listing
-        else:
-            mock_pmm_api.list_rules.return_value = listing
+        mock_pmm_api.list_rules.side_effect = [listing]
         [result] = api_client.post(
             f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
         ).json()["results"]
