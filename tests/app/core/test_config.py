@@ -23,6 +23,7 @@ import re
 import secrets
 import warnings
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -47,6 +48,7 @@ from pydantic_settings.sources import (
 from app import BASE_DIR
 from app.core.alerts.config import AlertSettings
 from app.core.auth.config import AuthSettings
+from app.core.celery.models import IntervalSchedule, Period
 from app.core.config import (
     _sanitize_client_kwargs,
     BaseYamlAppSettings,
@@ -70,6 +72,7 @@ from app.core.settings_override.registry import (
 from app.core.utils.cross_field import CrossFieldRule
 from app.extensions.apps.alerts.config import AlertsSettings
 from app.extensions.apps.atw.config import AtwSettings
+from app.extensions.apps.om_inventory.config import OmInventorySettings
 from app.extensions.apps.report.config import HealthReportSettings
 from app.extensions.config import ExtensionsSettings
 from app.extensions.snippets.config import SnippetsSettings
@@ -1711,3 +1714,88 @@ class TestCrossFieldRuleDeclarations:
             WINDOW: _Window = nested_overridable_field(_Window())
 
         assert _Plain().WINDOW.START == 0
+
+
+class TestEnvironmentNullClearsOptionalSettings:
+    """Check that an environment or dotenv ``null`` resolves to ``None``."""
+
+    CASES = (
+        ("TASKS__LOG_PURGE_INTERVAL", TasksSettings, "LOG_PURGE_INTERVAL"),
+        ("TASKS__BACKEND_CORS_ORIGINS", TasksSettings, "BACKEND_CORS_ORIGINS"),
+        ("TASKS__SECURITY_HEADERS", TasksSettings, "SECURITY_HEADERS"),
+        ("EXTENSIONS__OM_INVENTORY__SCHEDULE", OmInventorySettings, "SCHEDULE"),
+    )
+
+    @pytest.mark.parametrize(("env_var", "settings_cls", "field"), CASES)
+    def test_env_null_is_none(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        env_var: str,
+        settings_cls: type[BaseYamlSettings],
+        field: str,
+    ) -> None:
+        """Ensure ``null`` in the environment clears the field."""
+        monkeypatch.setenv(env_var, "null")
+
+        assert getattr(settings_cls(), field) is None
+
+    @pytest.mark.parametrize(("env_var", "settings_cls", "field"), CASES)
+    def test_dotenv_null_is_none(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        env_var: str,
+        settings_cls: type[BaseYamlSettings],
+        field: str,
+    ) -> None:
+        """Ensure ``null`` in the dotenv file clears the field."""
+        monkeypatch.delenv(env_var, raising=False)
+        env_file = tmp_path / ".env"
+        env_file.write_text(f"{env_var}=null\n", encoding="utf-8")
+
+        assert getattr(settings_cls(_env_file=env_file), field) is None
+
+    def test_nested_scalar_null_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ensure a nested non-complex optional field accepts ``null``."""
+        monkeypatch.setenv("TASKS__NOMAD__FINISHING_SYNC_INTERVAL_SECONDS", "null")
+
+        assert TasksSettings().NOMAD.finishing_sync_interval_seconds is None
+
+    def test_json_value_still_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ensure a non-null value is applied as given."""
+        monkeypatch.setenv(
+            "TASKS__LOG_PURGE_INTERVAL", '{"every": 3, "period": "hours"}'
+        )
+
+        assert (
+            IntervalSchedule(every=3, period=Period.HOURS)
+            == TasksSettings().LOG_PURGE_INTERVAL
+        )
+
+    def test_env_null_outranks_yaml_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure an environment ``null`` wins over a value the YAML profile sets."""
+        _use_profile(
+            tmp_path,
+            monkeypatch,
+            "  EXTENSIONS:\n"
+            "    OM_INVENTORY:\n"
+            "      SCHEDULE:\n"
+            "        every: 5\n"
+            "        period: hours\n",
+        )
+        monkeypatch.setenv("EXTENSIONS__OM_INVENTORY__SCHEDULE", "null")
+
+        assert OmInventorySettings().SCHEDULE is None
+
+    def test_non_optional_field_null_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a field that rejects ``None`` fails validation."""
+        monkeypatch.setenv("TASKS__DATABASE", "null")
+
+        with pytest.raises(ValidationError) as exc_info:
+            TasksSettings()
+
+        assert [error["loc"] for error in exc_info.value.errors()] == [("DATABASE",)]

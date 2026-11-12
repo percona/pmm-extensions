@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
+from aiohttp import ServerDisconnectedError
 from fastapi import status
 from fastapi.exceptions import HTTPException
 from fastapi.testclient import TestClient
@@ -149,6 +150,7 @@ def mock_pmm_api(api_client: TestClient) -> AsyncMock:
     mock = AsyncMock(spec=PMMRemoteAPI)
     mock.list_folders.return_value = [_FOLDER]
     mock.list_templates.return_value = []
+    mock.list_rules.return_value = []
     mock.create_template.return_value = AsyncMock()
     mock.create_rule.return_value = AsyncMock()
     extensions_app.dependency_overrides[get_pmm_api] = lambda: mock
@@ -624,9 +626,14 @@ class TestPagerDutySaveApi:
         )
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
-    def test_returns_502_on_api_error(self, api_client, mock_pmm_api):
+    @pytest.mark.parametrize(
+        "error",
+        [OSError("network down"), ServerDisconnectedError("network down")],
+        ids=["oserror", "client_error"],
+    )
+    def test_returns_502_on_api_error(self, api_client, mock_pmm_api, error):
         """Return 502 (without leaking the underlying error) on PMM failure."""
-        mock_pmm_api.list_contact_points.side_effect = OSError("network down")
+        mock_pmm_api.list_contact_points.side_effect = error
         response = api_client.post(
             f"{API_BASE}/pagerduty", json={"integration_key": "k"}
         )
@@ -705,13 +712,23 @@ class TestPagerDutyDeleteApi:
         response = api_client.post(f"{API_BASE}/pagerduty/delete")
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
-    def test_returns_502_on_api_error(self, api_client, mock_pmm_api):
+    @pytest.mark.parametrize(
+        "error",
+        [OSError("API failure"), ServerDisconnectedError("API failure")],
+        ids=["oserror", "client_error"],
+    )
+    def test_returns_502_on_api_error(self, api_client, mock_pmm_api, error):
         """Return 502 when the PMM upstream call raises."""
-        mock_pmm_api.list_contact_points.side_effect = OSError("API failure")
+        mock_pmm_api.list_contact_points.side_effect = error
         response = api_client.post(f"{API_BASE}/pagerduty/delete")
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
 
-    def test_returns_502_when_policy_fetch_fails(self, api_client, mock_pmm_api):
+    @pytest.mark.parametrize(
+        "error",
+        [OSError("policy down"), ServerDisconnectedError("policy down")],
+        ids=["oserror", "client_error"],
+    )
+    def test_returns_502_when_policy_fetch_fails(self, api_client, mock_pmm_api, error):
         """Return 502 when the policy fetch (inside the second try) raises."""
         mock_pmm_api.list_contact_points.return_value = [
             ContactPoint(
@@ -721,7 +738,7 @@ class TestPagerDutyDeleteApi:
                 settings={"integrationKey": "secretkey"},
             ),
         ]
-        mock_pmm_api.get_notification_policy.side_effect = OSError("policy down")
+        mock_pmm_api.get_notification_policy.side_effect = error
         response = api_client.post(f"{API_BASE}/pagerduty/delete")
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
         assert "policy down" not in response.text
@@ -771,6 +788,11 @@ class TestPagerDutyDeleteApi:
             assert "supersecretkey-xyz" not in record.getMessage()
 
 
+def _rule(uid: str, title: str, namespace_uid: str = _FOLDER.uid) -> AlertRule:
+    """Build a listed rule in the managed folder unless told otherwise."""
+    return AlertRule(uid=uid, title=title, namespace_uid=namespace_uid)
+
+
 class TestAlertsPushApi:
     """Tests for the alerts push endpoint."""
 
@@ -803,14 +825,19 @@ class TestAlertsPushApi:
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert response.json()["detail"] == "PMM is not configured"
 
-    def test_push_already_present(self, api_client, mock_pmm_api):
-        """Skip when the template and its rule are already present in PMM."""
+    @pytest.mark.parametrize(
+        "detail",
+        ["upstream wording that names no collision", "rule already exists"],
+    )
+    def test_push_already_present(self, api_client, mock_pmm_api, detail):
+        """Skip when the folder holds the rule, whatever the upstream detail says."""
         extensions_app.dependency_overrides[get_pmm_present_names] = lambda: {
             "High CPU"
         }
         mock_pmm_api.create_rule.side_effect = HTTPException(
-            status_code=502, detail="rule conflicts with existing rule"
+            status_code=502, detail=detail
         )
+        mock_pmm_api.list_rules.return_value = [_rule("r1", "High CPU")]
         response = api_client.post(
             f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
         )
@@ -849,11 +876,17 @@ class TestAlertsPushApi:
         assert result["status"] == "error"
         assert result["message"] == "Template not found"
 
-    def test_push_pmm_api_error(self, api_client, mock_pmm_api):
+    @pytest.mark.parametrize(
+        "error",
+        [
+            HTTPException(status_code=502, detail="Bad Gateway"),
+            ServerDisconnectedError("Bad Gateway"),
+        ],
+        ids=["http_error", "client_error"],
+    )
+    def test_push_pmm_api_error(self, api_client, mock_pmm_api, error):
         """Emit a per-template error when ``create_template`` raises."""
-        mock_pmm_api.create_template.side_effect = HTTPException(
-            status_code=502, detail="Bad Gateway"
-        )
+        mock_pmm_api.create_template.side_effect = error
         response = api_client.post(
             f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
         )
@@ -871,20 +904,29 @@ class TestAlertsPushApi:
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
         assert response.json()["detail"] == "Failed to access PMM alert folder"
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            HTTPException(status_code=502, detail="Rule creation failed"),
+            ServerDisconnectedError("Rule creation failed"),
+        ],
+        ids=["http_error", "client_error"],
+    )
     def test_push_rule_failure_reports_orphaned_template(
-        self, api_client, mock_pmm_api
+        self, api_client, mock_pmm_api, error
     ):
         """Indicate the template was created when the rule call fails."""
-        mock_pmm_api.create_rule.side_effect = HTTPException(
-            status_code=502, detail="Rule creation failed"
-        )
+        mock_pmm_api.create_rule.side_effect = error
         response = api_client.post(
             f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
         )
         assert response.status_code == status.HTTP_200_OK
         result = response.json()["results"][0]
         assert result["status"] == "error"
-        assert "Template created but rule failed" in result["message"]
+        assert (
+            result["message"]
+            == "Template created but rule failed: Rule creation failed"
+        )
 
     def test_push_conflict_retry_success(self, api_client, mock_pmm_api):
         """Retry ``create_rule`` once after deleting the conflicting rule."""
@@ -892,7 +934,7 @@ class TestAlertsPushApi:
             HTTPException(status_code=502, detail="rule conflicts with existing rule"),
             None,
         ]
-        mock_pmm_api.list_rules.return_value = []
+        mock_pmm_api.list_rules.return_value = [_rule("r1", "High CPU")]
         response = api_client.post(
             f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
         )
@@ -902,45 +944,122 @@ class TestAlertsPushApi:
         assert "replaced conflicting rule" in result["message"]
         assert mock_pmm_api.create_rule.await_count == 2  # noqa: PLR2004
 
-    def test_push_conflict_retry_fails(self, api_client, mock_pmm_api):
+    @pytest.mark.parametrize(
+        "error",
+        [
+            HTTPException(status_code=502, detail="still broken"),
+            ServerDisconnectedError("still broken"),
+        ],
+        ids=["http_error", "client_error"],
+    )
+    def test_push_conflict_retry_fails(self, api_client, mock_pmm_api, error):
         """Surface an orphaned-template error when the retry also fails."""
         mock_pmm_api.create_rule.side_effect = [
             HTTPException(status_code=502, detail="rule conflicts with existing rule"),
-            HTTPException(status_code=502, detail="still broken"),
+            error,
         ]
-        mock_pmm_api.list_rules.return_value = []
+        mock_pmm_api.list_rules.return_value = [_rule("r1", "High CPU")]
         response = api_client.post(
             f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
         )
         assert response.status_code == status.HTTP_200_OK
         result = response.json()["results"][0]
         assert result["status"] == "error"
-        assert "Template created but rule failed" in result["message"]
+        assert result["message"] == "Template created but rule failed: still broken"
 
     def test_push_rejects_empty_selected_templates(self, api_client, mock_pmm_api):
         """Reject an empty selected_templates list with 422."""
         response = api_client.post(f"{API_BASE}/push", json={"selected_templates": []})
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    def test_push_already_present_treats_rule_already_exists_detail_as_error(
+    def test_push_already_present_ignores_empty_title_rule(
         self, api_client, mock_pmm_api
     ):
-        """Report ``error`` for an already-present detail outside the matched collision text."""
+        """Do not treat an empty-title rule as a collision on the present branch."""
         extensions_app.dependency_overrides[get_pmm_present_names] = lambda: {
             "High CPU"
         }
         mock_pmm_api.create_rule.side_effect = HTTPException(
-            status_code=502, detail="rule already exists"
+            status_code=502, detail="boom"
         )
-        response = api_client.post(
+        mock_pmm_api.list_rules.return_value = [_rule("r1", "")]
+        [result] = api_client.post(
             f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
-        )
-        assert response.status_code == status.HTTP_200_OK
-        result = response.json()["results"][0]
+        ).json()["results"]
         assert result["status"] == "error"
-        assert result["message"] == "rule already exists"
-        mock_pmm_api.create_template.assert_not_awaited()
+        assert result["message"] == "boom"
+
+    @pytest.mark.parametrize(
+        "present_names", [{"High CPU"}, set()], ids=["present", "absent"]
+    )
+    @pytest.mark.parametrize(
+        "listing",
+        [
+            [],
+            [_rule("r1", "High CPU", "other-folder"), _rule("r2", "unrelated")],
+            HTTPException(status_code=502, detail="listing down"),
+            OSError("listing down"),
+            ServerDisconnectedError(),
+        ],
+        ids=["empty", "no_match", "http_error", "oserror", "client_error"],
+    )
+    def test_push_no_collision_reports_original_error(
+        self, api_client, mock_pmm_api, present_names, listing
+    ):
+        """Report ``error`` with the upstream detail when no collision is observed.
+
+        The detail contains the old matched wording to show it no longer decides.
+        """
+        extensions_app.dependency_overrides[get_pmm_present_names] = lambda: (
+            present_names
+        )
+        mock_pmm_api.create_rule.side_effect = HTTPException(
+            status_code=502, detail="rule conflicts with existing rule"
+        )
+        mock_pmm_api.list_rules.side_effect = [listing]
+        [result] = api_client.post(
+            f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
+        ).json()["results"]
+        assert result["status"] == "error"
+        assert "rule conflicts with existing rule" in result["message"]
+        mock_pmm_api.delete_rule.assert_not_awaited()
         mock_pmm_api.create_rule.assert_awaited_once()
+
+    def test_push_absent_retries_whatever_the_detail_says(
+        self, api_client, mock_pmm_api
+    ):
+        """Delete and retry once when the folder holds a matching rule, whatever the detail."""
+        mock_pmm_api.create_rule.side_effect = [
+            HTTPException(status_code=502, detail="unrecognised wording"),
+            None,
+        ]
+        mock_pmm_api.list_rules.return_value = [_rule("r2", "")]
+        [result] = api_client.post(
+            f"{API_BASE}/push", json={"selected_templates": ["High CPU"]}
+        ).json()["results"]
+        assert result["status"] == "success"
+        assert "replaced conflicting rule" in result["message"]
+        assert mock_pmm_api.create_rule.await_count == 2  # noqa: PLR2004
+        mock_pmm_api.delete_rule.assert_awaited_once_with("r2")
+
+    def test_push_batch_reads_listing_fresh_per_failure(self, api_client, mock_pmm_api):
+        """Do not reuse a listing: an earlier retry's deletes change the folder."""
+        ghost = _rule("ghost", "")
+        mock_pmm_api.create_rule.side_effect = [
+            HTTPException(status_code=502, detail="first"),
+            None,
+            HTTPException(status_code=502, detail="second failed"),
+        ]
+        mock_pmm_api.list_rules.side_effect = [[ghost], [ghost], []]
+        results = api_client.post(
+            f"{API_BASE}/push",
+            json={"selected_templates": ["High CPU", "Disk Full"]},
+        ).json()["results"]
+        assert [r["status"] for r in results] == ["success", "error"]
+        assert (
+            results[1]["message"] == "Template created but rule failed: second failed"
+        )
+        mock_pmm_api.delete_rule.assert_awaited_once_with("ghost")
 
     @pytest.mark.parametrize(
         ("side_effect", "expected_message"),
@@ -954,8 +1073,9 @@ class TestAlertsPushApi:
                 "upstream failed",
             ),
             (OSError("connection reset"), "connection reset"),
+            (ServerDisconnectedError("connection reset"), "connection reset"),
         ],
-        ids=["non_collision", "non_str_detail", "oserror"],
+        ids=["non_collision", "non_str_detail", "oserror", "client_error"],
     )
     def test_push_already_present_reports_create_rule_errors(
         self, api_client, mock_pmm_api, side_effect, expected_message
@@ -1084,7 +1204,7 @@ class TestAlertsPushNonStringDetail:
             ),
             exception_for_status(status.HTTP_502_BAD_GATEWAY, detail=detail),
         ]
-        mock_pmm_api.list_rules.return_value = []
+        mock_pmm_api.list_rules.return_value = [_rule("r1", "High CPU")]
         [result] = self._push(api_client, "High CPU")
         assert result["status"] == "error"
         assert result["message"] == f"Template created but rule failed: {detail}"
@@ -1115,7 +1235,7 @@ class TestAlertsPushNonStringDetail:
             ),
             None,
         ]
-        mock_pmm_api.list_rules.return_value = []
+        mock_pmm_api.list_rules.return_value = [_rule("r1", "High CPU")]
         [result] = self._push(api_client, "High CPU")
         assert result["status"] == "success"
         assert "replaced conflicting rule" in result["message"]
@@ -1153,9 +1273,10 @@ class TestAlertsPushNonStringDetail:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="rule conflicts with existing rule",
         )
-        mock_pmm_api.list_rules.side_effect = exception_for_status(
-            status.HTTP_502_BAD_GATEWAY, detail=detail
-        )
+        mock_pmm_api.list_rules.side_effect = [
+            [_rule("r1", "High CPU")],
+            exception_for_status(status.HTTP_502_BAD_GATEWAY, detail=detail),
+        ]
         [result] = self._push(api_client, "High CPU")
         assert result["status"] == "error"
         assert result["message"] == f"Template created but rule failed: {detail}"
@@ -1304,11 +1425,16 @@ class TestRestoreApi:
         mock_pmm_api.delete_contact_point.assert_awaited_once()
         mock_pmm_api.create_contact_point.assert_not_awaited()
 
-    async def test_restore_returns_502_on_oserror(
-        self, api_client, mock_pmm_api, seeded_backup: AlertBackup
+    @pytest.mark.parametrize(
+        "error",
+        [OSError("upstream down"), ServerDisconnectedError("upstream down")],
+        ids=["oserror", "client_error"],
+    )
+    async def test_restore_returns_502_on_transport_error(
+        self, api_client, mock_pmm_api, seeded_backup: AlertBackup, error
     ):
-        """Return 502 (without leaking the underlying message) on OSError."""
-        mock_pmm_api.list_rules.side_effect = OSError("upstream down")
+        """Return 502 (without leaking the underlying message) on a transport failure."""
+        mock_pmm_api.list_rules.side_effect = error
         response = api_client.post(
             f"{API_BASE}/restore", json={"backup_id": seeded_backup.id}
         )
