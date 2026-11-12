@@ -2613,7 +2613,7 @@ version = "1.2.3"
 description = "MessagePack serializer"
 optional = false
 python-versions = ">=3.10"
-groups = ["audit", "dev"]
+groups = ["audit"]
 files = [
     {file = "msgpack-1.2.3-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:ec0030361cc861ac699b2ef1c695b741fa145c88f8667fa3d7e3f73deeb648a3"},
     {file = "msgpack-1.2.3-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:5c1efdd9181cb1b719ee46865f368a927f1c0c65d577798340b1194545b7515a"},
@@ -4983,14 +4983,14 @@ sqlcipher = ["sqlcipher3_binary"]
 
 [[package]]
 name = "sqlalchemy-celery-beat"
-version = "0.8.4"
+version = "0.9.1"
 description = "A Scheduler Based SQLalchemy For Celery"
 optional = false
 python-versions = "*"
 groups = ["main"]
 files = [
-    {file = "sqlalchemy_celery_beat-0.8.4-py3-none-any.whl", hash = "sha256:0bba9e821c9152cc5b1d406df8dd814162b7f44aad62b9f5636c934a2d007514"},
-    {file = "sqlalchemy_celery_beat-0.8.4.tar.gz", hash = "sha256:c5f3f7b456f76072ea7dcd3f9363d45b05ae915b17496d9f49225fd0e918a623"},
+    {file = "sqlalchemy_celery_beat-0.9.1-py3-none-any.whl", hash = "sha256:5cd740ed0dd1fe5b1e505d73f56464eb3cb1bbd495f7c9455844b72412ec889a"},
+    {file = "sqlalchemy_celery_beat-0.9.1.tar.gz", hash = "sha256:56f1c8ba7f22fd83934c902f3403ec525e038a927416eb5c95caf9cbf756cb08"},
 ]
 
 [package.dependencies]
@@ -6216,4 +6216,4 @@ test = ["pytest"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11.9,!=3.12.0,!=3.12.1,!=3.12.2,<3.14"
-content-hash = "0bcf58564678e9dba0aa33ee9c617c9d3c7c9b0c8f0578fe8a1ccd6093587217"
+content-hash = "0fd3ca4f4e4cbf201cf59bdb59547a6f5bb3212fa567ad7e00f707eb8089e2a9"
