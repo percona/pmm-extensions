@@ -78,6 +78,11 @@ from app.extensions.apps.om_bootstrap.persistence import (
     to_strategy_os,
 )
 from app.extensions.apps.om_bootstrap.reconcile import reconcile_run
+from app.extensions.apps.om_bootstrap.releases import (
+    supported_operating_system,
+    SUPPORTED_OPERATING_SYSTEMS,
+    SupportedOperatingSystem,
+)
 from app.extensions.apps.om_bootstrap.schema import om_bootstrap_schema
 from app.extensions.apps.om_bootstrap.strategies import strategy_for
 from app.extensions.apps.om_bootstrap.strategy import (
@@ -470,10 +475,11 @@ async def trigger_run(session: SessionDep, request: TriggerRunRequest) -> RunRes
     :param request: The requested run.
     :raises HTTPBadRequestException: When ``request.hosts`` is empty, lists the
         same host twice, has neither one nor three hosts, names an install
-        method with no registered strategy, ``member_configs`` names a host
-        outside ``hosts``, or ``member_configs`` leaves no host that both votes
-        and has a nonzero priority, since ``rs.initiate`` rejects a config with
-        no electable member.
+        method with no registered strategy, asks for a MongoDB version no
+        release of ``request.os`` is supported for, ``member_configs`` names a
+        host outside ``hosts``, or ``member_configs`` leaves no host that both
+        votes and has a nonzero priority, since ``rs.initiate`` rejects a
+        config with no electable member.
     :return: The created run, every host's steps ``pending``.
     """
     if not request.hosts:
@@ -512,6 +518,12 @@ async def trigger_run(session: SessionDep, request: TriggerRunRequest) -> RunRes
         create_admin_user=request.create_admin_user,
     )
     strategy = _strategy_for(request.install_method)
+    supported = supported_operating_system(request.os)
+    if not supported.releases_for(request.mongodb_version):
+        raise HTTPBadRequestException(
+            detail=f"MongoDB {request.mongodb_version} is not supported on "
+            f"{supported.name}; supported: {', '.join(supported.mongodb_versions())}"
+        )
 
     def plan(names: list[str]) -> list[StepRecord]:
         return [
@@ -549,6 +561,18 @@ async def trigger_run(session: SessionDep, request: TriggerRunRequest) -> RunRes
         ),
     )
     return _run_response(run, hosts=host_states, run_steps=run_steps)
+
+
+@router.get("/supported-releases")
+async def list_supported_releases() -> list[SupportedOperatingSystem]:
+    """Return the OS releases a run installs each MongoDB version onto.
+
+    PMM decides from this which nodes an install can target and which MongoDB
+    versions to offer for them. ``pre_check`` checks the same table on the node.
+
+    :return: Every supported distribution, with its releases.
+    """
+    return list(SUPPORTED_OPERATING_SYSTEMS)
 
 
 @router.get("/runs")
