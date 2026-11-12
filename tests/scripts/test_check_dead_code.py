@@ -307,30 +307,67 @@ def test_dipper_payloads_excluded(
 
 
 @pytest.mark.parametrize(
-    "comment",
-    ["# noqa: V103", "# noqa", "# noqa: F841", "# NoQA: E501,V103"],
+    ("text", "message"),
+    [
+        ("def orphan():  # noqa: V103\n    return 1\n", "unused function 'orphan'"),
+        ("def orphan():  # noqa\n    return 1\n", "unused function 'orphan'"),
+        (
+            "def orphan():  # NoQA: E501,V103\n    return 1\n",
+            "unused function 'orphan'",
+        ),
+        ("ORPHAN = 1  # noqa: F841\n", "unused variable 'ORPHAN'"),
+    ],
 )
-def test_vulture_honoured_noqa_under_app_fails(
-    tree: Path, capsys: pytest.CaptureFixture[str], comment: str
+def test_noqa_does_not_hide_a_finding(
+    tree: Path, capsys: pytest.CaptureFixture[str], text: str, message: str
 ) -> None:
-    """Fail a noqa under app/ that vulture would honour for a reported finding."""
-    write(tree, "app/m.py", f"def orphan():  {comment}\n    return 1\n")
+    """Report dead code under app/ that vulture would skip for its noqa comment."""
+    write(tree, "app/m.py", text)
 
     status, output = run_check(tree, capsys)
 
     assert status == 1
-    assert (
-        "app/m.py:1: a '# noqa' comment that vulture honours hides a finding" in output
-    )
+    assert f"app/m.py: {message} is new. Remove it." in output
 
 
-@pytest.mark.parametrize("comment", ["# noqa: BLE001", "# noqa: F401"])
-def test_noqa_vulture_ignores_for_reported_kinds_passes(
-    tree: Path, capsys: pytest.CaptureFixture[str], comment: str
+@pytest.mark.parametrize(
+    ("relpath", "text"),
+    [
+        pytest.param(
+            "app/m.py",
+            "def used():\n    x = 1  # noqa: F841\n    return 2\n",
+            id="function-local",
+        ),
+        pytest.param(
+            "app/m.py",
+            "class Used:\n    y = 1  # noqa: V107\n",
+            id="class-body-variable",
+        ),
+        pytest.param(
+            "app/m.py",
+            "def used():  # noqa: BLE001\n    return 1\n",
+            id="unrelated-code",
+        ),
+        pytest.param(
+            "app/svc/migrations/v1.py",
+            "def upgrade():\n    return 1  # noqa\n",
+            id="migration",
+        ),
+        pytest.param(
+            "app/extensions/apps/dipper/payloads/p.py",
+            "X = 1  # noqa: F841\n",
+            id="excluded-payload",
+        ),
+    ],
+)
+def test_noqa_on_unreported_line_passes(
+    tree: Path, capsys: pytest.CaptureFixture[str], relpath: str, text: str
 ) -> None:
-    """Pass a noqa under app/ whose codes cannot hide a reported finding."""
-    write(tree, "app/m.py", f"def used():  {comment}\n    return 1\n")
-    write(tree, "tests/test_m.py", "from app.m import used\n\nused()\n")
+    """Pass a noqa on a line whose findings the check never reports."""
+    write(tree, relpath, text)
+    write(
+        tree, "tests/test_m.py", "from app.m import Used, used\n\nprint(Used, used)\n"
+    )
 
     status, output = run_check(tree, capsys)
 

@@ -51,10 +51,8 @@ Keep a finding by adding an entry by hand::
     category = "dynamic"
     reason = "Abstract on PydanticBaseSettingsSource; instantiation needs it."
 
-A ``# noqa`` comment under ``app/`` that vulture honours for a reported kind is
-rejected: it would hide a finding from this check without a category or a
-reason. That is a bare ``# noqa``, a ``V`` code for one of those kinds, or
-``F841``, which vulture reads as its unused-variable code.
+Vulture runs as if no ``# noqa`` comment existed, so a ``# noqa`` cannot hide a
+finding from this check: a finding kept on purpose needs a baseline entry.
 """
 
 import argparse
@@ -64,14 +62,12 @@ import importlib.metadata
 import io
 import json
 import tomllib
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import NamedTuple
 
 import vulture
-from vulture.core import ERROR_CODES
-from vulture.noqa import parse_noqa
 from vulture.utils import ExitCode
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -103,7 +99,6 @@ REPORTED_KINDS = frozenset({"function", "method", "class", "property", "variable
 CATALOG_MODULES = frozenset({"app/core/utils/fields.py"})
 CATEGORIES = frozenset({"catalog", "dynamic"})
 ENTRY_KEYS = frozenset({"path", "kind", "name", "category", "reason"})
-HIDING_NOQA_CODES = frozenset({"all", *(ERROR_CODES[kind] for kind in REPORTED_KINDS)})
 DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 BASELINE_HEADER = (
@@ -127,6 +122,25 @@ class Entry(NamedTuple):
     finding: Finding
     category: str
     reason: str
+
+
+class _NoqaBlindVulture(vulture.Vulture):
+    """Run vulture as if the scanned modules carried no ``# noqa`` comments."""
+
+    @property
+    def noqa_lines(self) -> defaultdict[str, set[int]]:
+        """Report no ``noqa`` lines for any code.
+
+        :return: An empty mapping that answers every code with no lines.
+        """
+        return defaultdict(set)
+
+    @noqa_lines.setter
+    def noqa_lines(self, _parsed: object) -> None:
+        """Discard the ``noqa`` lines vulture parses from each module.
+
+        :param _parsed: The parsed lines, which are dropped.
+        """
 
 
 def _definition_time_parts(
@@ -229,7 +243,7 @@ def scan(root: Path) -> list[Finding]:
     :return: Findings under ``app/`` outside migrations, in vulture's order.
     :raises SystemExit: If vulture could not parse a scanned file.
     """
-    scavenger = vulture.Vulture(ignore_decorators=list(IGNORE_DECORATORS))
+    scavenger = _NoqaBlindVulture(ignore_decorators=list(IGNORE_DECORATORS))
     errors = io.StringIO()
     with contextlib.redirect_stderr(errors):
         scavenger.scavenge([root / name for name in SCAN_DIRS], exclude=list(EXCLUDE))
@@ -380,24 +394,6 @@ def render_baseline(entries: Iterable[Entry]) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
-def vulture_noqa_lines(root: Path) -> list[str]:
-    """Return ``path:line`` for every ``noqa`` under ``app/`` that hides a reported kind.
-
-    The comments are read with vulture's own parser, so a line counts exactly
-    when vulture would skip a reported finding on it.
-
-    :param root: The repository root.
-    :return: The offending locations, sorted.
-    """
-    hits: list[str] = []
-    for path in sorted((root / "app").rglob("*.py")):
-        noqa_lines = parse_noqa(path.read_text(encoding="utf-8").splitlines())
-        relpath = path.relative_to(root).as_posix()
-        numbers = set().union(*(noqa_lines[code] for code in HIDING_NOQA_CODES))
-        hits.extend(f"{relpath}:{number}" for number in sorted(numbers))
-    return hits
-
-
 def locked_vulture_version(root: Path) -> str:
     """Return the vulture version ``poetry.lock`` locks.
 
@@ -478,7 +474,9 @@ def main(argv: list[str] | None = None) -> int:
     """Run the dead-code check, or prune the baseline.
 
     :param argv: Command-line arguments; ``None`` reads ``sys.argv``.
-    :return: Exit status: 0 when the tree is clean, 1 otherwise.
+    :return: Exit status. A check returns 0 when the tree is clean and 1 otherwise;
+        ``--update-baseline`` returns 0 once the baseline is rewritten, whatever it
+        reports.
     :raises SystemExit: If the baseline or lockfile is unreadable or malformed, the
         lockfile locks no vulture, the running vulture differs from the locked one, or
         vulture could not parse a scanned file.
@@ -512,11 +510,6 @@ def main(argv: list[str] | None = None) -> int:
     new, stale = compare(findings, entries)
     failures = [_new_finding_message(finding) for finding in new]
     failures.extend(_stale_entry_message(finding) for finding in stale)
-    failures.extend(
-        f"{location}: a '# noqa' comment that vulture honours hides a finding from this "
-        "check. Remove it, or name only codes vulture ignores, and use a baseline entry instead."
-        for location in vulture_noqa_lines(root)
-    )
     if failures:
         print("\n\n".join(failures))
         return 1
