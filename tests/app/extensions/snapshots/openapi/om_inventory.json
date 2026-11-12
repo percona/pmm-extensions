@@ -4299,10 +4299,15 @@
         "type": "object"
       },
       "om_inventory__EnabledWrite": {
-        "description": "Set the app's ``ENABLED`` switch to PMM's Operations for MongoDB switch.\n\n:param enabled: Whether the sweep should run.",
+        "description": "Set the app's ``ENABLED`` switch to PMM's Operations for MongoDB switch.\n\n:param enabled: Whether the sweep should run.\n:param scan: Whether to also sweep the whole estate at once.",
         "properties": {
           "enabled": {
             "title": "Enabled",
+            "type": "boolean"
+          },
+          "scan": {
+            "default": false,
+            "title": "Scan",
             "type": "boolean"
           }
         },
@@ -5102,7 +5107,7 @@
     },
     "/api/apps/om_inventory/enabled": {
       "put": {
-        "description": "Follow PMM's Operations for MongoDB switch.\n\npmm-managed calls this at startup, whenever the switch changes, and whenever it\nfinds ``ENABLED`` differing from the switch, with no user behind the call, so only\nthe service principal may use it; a person changes this app's configuration\nthrough ``/api/extensions/admin/settings`` instead.\n\nIt flips ``ENABLED`` independently of ``SCHEDULE``, so the configured cadence\nsurvives the switch being turned off and back on. The change lands without a\nrestart, the same way an admin's change on the settings router does.\n\nSwitching on also sweeps the whole estate at once, so it need not wait out a\n``SCHEDULE`` interval, unless another sweep is in flight or ``AUTO_SCAN`` is off:\npmm-managed switches on at every start, and an admin who stopped automatic\nscans should not get one from a restart. A sweep that cannot be started does not\nfail the switch, which has already landed.\n\n:param request: The incoming request; its ``app.state`` carries the rebind\n    callbacks fired for ``ENABLED``.\n:param body: The switch's new state.\n:param session: The database session.\n:param actor: The service principal, recorded on the row written.\n:return: The ``ENABLED`` row as written.",
+        "description": "Follow PMM's Operations for MongoDB switch.\n\npmm-managed calls this at startup, whenever the switch changes, and whenever it\nfinds ``ENABLED`` differing from the switch, with no user behind the call, so only\nthe service principal may use it; a person changes this app's configuration\nthrough ``/api/extensions/admin/settings`` instead.\n\nIt flips ``ENABLED`` independently of ``SCHEDULE``, so the configured cadence\nsurvives the switch being turned off and back on. The change lands without a\nrestart, the same way an admin's change on the settings router does.\n\nWith ``scan``, a write of ``true`` also sweeps the whole estate at once, even if\n``ENABLED`` was already on, so it need not wait out a ``SCHEDULE`` interval,\nunless another sweep is in flight or ``AUTO_SCAN`` is off: an admin who stopped\nautomatic scans should not get one from a restart. pmm-managed asks for it when\nit starts and when the switch turns on, repeating the request until a write\nlands, but never when it only corrects ``ENABLED``, so a correction starts no\nsweep. A sweep that cannot be started does not fail the switch, which has\nalready landed.\n\n:param request: The incoming request; its ``app.state`` carries the rebind\n    callbacks fired for ``ENABLED``.\n:param body: The switch's new state, and whether to sweep with it.\n:param session: The database session.\n:param actor: The service principal, recorded on the row written.\n:return: The ``ENABLED`` row as written.",
         "operationId": "om_inventory_set_enabled_api_apps_om_inventory_enabled_put",
         "requestBody": {
           "content": {

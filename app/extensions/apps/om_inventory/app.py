@@ -51,7 +51,7 @@ def _om_inventory_periodic_tasks() -> list[AppPeriodicTask]:
 
     The sweep is what keeps the estate current at all: no endpoint probes, so with no
     schedule a row only changes when someone posts to ``/runs`` or, with ``AUTO_SCAN``
-    on, PMM switches ``ENABLED`` on over ``PUT /enabled``.
+    on, PMM switches ``ENABLED`` on over ``PUT /enabled`` and asks for a sweep.
 
     :return: The sweep contribution, or an empty list when disabled or unconfigured.
     """

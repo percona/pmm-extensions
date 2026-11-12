@@ -679,9 +679,11 @@ class EnabledWrite(BaseModel):
     """Set the app's ``ENABLED`` switch to PMM's Operations for MongoDB switch.
 
     :param enabled: Whether the sweep should run.
+    :param scan: Whether to also sweep the whole estate at once.
     """
 
     enabled: bool
+    scan: bool = False
 
 
 class ProbeRunAccepted(BaseModel):

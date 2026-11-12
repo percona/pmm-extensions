@@ -132,16 +132,19 @@ async def gated_api(
         extensions_app.dependency_overrides = {}
 
 
-async def _switch(client: AsyncClient, *, enabled: bool = True) -> Response:
-    """Set PMM's switch as pmm-managed does, which turns it on at every start.
+async def _switch(
+    client: AsyncClient, *, enabled: bool = True, scan: bool = False
+) -> Response:
+    """Set PMM's switch as pmm-managed does.
 
     :param client: The client passing the real gate.
     :param enabled: The switch's new state.
+    :param scan: Whether to ask for a sweep with it.
     :return: The response.
     """
     return await client.put(
         f"{BASE}/enabled",
-        json={"enabled": enabled},
+        json={"enabled": enabled, "scan": scan},
         headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
     )
 
@@ -232,17 +235,70 @@ class TestSetEnabled:
     async def test_switching_on_sweeps_at_once(
         self, gated_api: AsyncClient, session: AsyncSession, delay: MagicMock
     ) -> None:
-        """Queue a sweep of the whole estate rather than wait out ``SCHEDULE``.
+        """Queue a sweep of the whole estate when asked, rather than wait out ``SCHEDULE``.
 
         :param gated_api: The client passing the real gate.
         :param session: The database session.
         :param delay: The broker's stand-in.
         """
-        response = await _switch(gated_api)
+        response = await _switch(gated_api, scan=True)
 
         assert response.status_code == status.HTTP_200_OK
         (run,) = await ProbeRunManager.list(session)
         delay.assert_called_once_with(str(run.id), None, automatic=True)
+
+    @pytest.mark.asyncio
+    async def test_asking_with_the_switch_already_on_sweeps(
+        self, gated_api: AsyncClient, session: AsyncSession, delay: MagicMock
+    ) -> None:
+        """Sweep when asked although ``ENABLED`` is already on, as after a restart.
+
+        :param gated_api: The client passing the real gate.
+        :param session: The database session.
+        :param delay: The broker's stand-in.
+        """
+        await _switch(gated_api)
+
+        response = await _switch(gated_api, scan=True)
+
+        assert response.status_code == status.HTTP_200_OK
+        (run,) = await ProbeRunManager.list(session)
+        delay.assert_called_once_with(str(run.id), None, automatic=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [{"enabled": True, "scan": False}, {"enabled": True}],
+        ids=["scan-false", "scan-omitted"],
+    )
+    async def test_switching_on_unasked_does_not_sweep(
+        self,
+        gated_api: AsyncClient,
+        session: AsyncSession,
+        delay: MagicMock,
+        body: dict[str, bool],
+    ) -> None:
+        """Start no sweep for a write that only corrects ``ENABLED``.
+
+        pmm-managed rewrites the switch whenever it finds ``ENABLED`` differing from
+        it, and asks for a sweep only at startup and when the switch turns on; an
+        older PMM Server sends no ``scan`` at all.
+
+        :param gated_api: The client passing the real gate.
+        :param session: The database session.
+        :param delay: The broker's stand-in.
+        :param body: The write, with ``scan`` false or left out.
+        """
+        response = await gated_api.put(
+            f"{BASE}/enabled",
+            json=body,
+            headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert om_inventory_settings.ENABLED is True
+        delay.assert_not_called()
+        assert await ProbeRunManager.list(session) == []
 
     @pytest.mark.asyncio
     async def test_switching_on_with_auto_scan_off_does_not_sweep(
@@ -250,7 +306,7 @@ class TestSetEnabled:
     ) -> None:
         """Leave the estate alone when an admin stopped automatic scans.
 
-        pmm-managed switches on at every start, so this is what keeps a restart
+        pmm-managed asks for a sweep at every start, so this is what keeps a restart
         from scanning.
 
         :param gated_api: The client passing the real gate.
@@ -261,7 +317,7 @@ class TestSetEnabled:
         proxy = cast("OverridableSettingsProxy", om_inventory_settings)
         await publish_snapshot(proxy, session, OmInventorySettings)
 
-        response = await _switch(gated_api)
+        response = await _switch(gated_api, scan=True)
 
         assert response.status_code == status.HTTP_200_OK
         assert om_inventory_settings.ENABLED is True
@@ -272,10 +328,10 @@ class TestSetEnabled:
     async def test_switching_off_does_not_sweep(
         self, gated_api: AsyncClient, session: AsyncSession, delay: MagicMock
     ) -> None:
-        """Start no sweep when PMM turns the switch off.
+        """Start no sweep when PMM turns the switch off, even if asked for one.
 
-        pmm-managed sends this whenever someone turns Operations off, and with
-        ``AUTO_SCAN`` on only ``enabled`` keeps it from sweeping.
+        With ``AUTO_SCAN`` on and a sweep asked for, only ``enabled`` keeps this
+        write from sweeping.
 
         :param gated_api: The client passing the real gate.
         :param session: The database session.
@@ -283,7 +339,7 @@ class TestSetEnabled:
         """
         assert om_inventory_settings.AUTO_SCAN is True
 
-        response = await _switch(gated_api, enabled=False)
+        response = await _switch(gated_api, enabled=False, scan=True)
 
         assert response.status_code == status.HTTP_200_OK
         assert om_inventory_settings.ENABLED is False
@@ -302,7 +358,7 @@ class TestSetEnabled:
         """
         running = await start_run(session, None)
 
-        response = await _switch(gated_api)
+        response = await _switch(gated_api, scan=True)
 
         assert response.status_code == status.HTTP_200_OK
         delay.assert_not_called()
@@ -320,7 +376,7 @@ class TestSetEnabled:
         """
         delay.side_effect = KombuOperationalError("Connection refused")
 
-        response = await _switch(gated_api)
+        response = await _switch(gated_api, scan=True)
 
         assert response.status_code == status.HTTP_200_OK
         assert om_inventory_settings.ENABLED is True
@@ -342,7 +398,7 @@ class TestSetEnabled:
             ProbeRunManager, "save", side_effect=HTTPBadRequestException()
         )
 
-        response = await _switch(gated_api)
+        response = await _switch(gated_api, scan=True)
 
         assert response.status_code == status.HTTP_200_OK
         assert om_inventory_settings.ENABLED is True

@@ -707,15 +707,18 @@ async def set_enabled(
     survives the switch being turned off and back on. The change lands without a
     restart, the same way an admin's change on the settings router does.
 
-    Switching on also sweeps the whole estate at once, so it need not wait out a
-    ``SCHEDULE`` interval, unless another sweep is in flight or ``AUTO_SCAN`` is off:
-    pmm-managed switches on at every start, and an admin who stopped automatic
-    scans should not get one from a restart. A sweep that cannot be started does not
-    fail the switch, which has already landed.
+    With ``scan``, a write of ``true`` also sweeps the whole estate at once, even if
+    ``ENABLED`` was already on, so it need not wait out a ``SCHEDULE`` interval,
+    unless another sweep is in flight or ``AUTO_SCAN`` is off: an admin who stopped
+    automatic scans should not get one from a restart. pmm-managed asks for it when
+    it starts and when the switch turns on, repeating the request until a write
+    lands, but never when it only corrects ``ENABLED``, so a correction starts no
+    sweep. A sweep that cannot be started does not fail the switch, which has
+    already landed.
 
     :param request: The incoming request; its ``app.state`` carries the rebind
         callbacks fired for ``ENABLED``.
-    :param body: The switch's new state.
+    :param body: The switch's new state, and whether to sweep with it.
     :param session: The database session.
     :param actor: The service principal, recorded on the row written.
     :return: The ``ENABLED`` row as written.
@@ -729,7 +732,7 @@ async def set_enabled(
         body=SettingsPatch({"ENABLED": body.enabled}),
         actor=actor.username,
     )
-    if body.enabled and om_inventory_settings.AUTO_SCAN:
+    if body.enabled and body.scan and om_inventory_settings.AUTO_SCAN:
         try:
             blocking = await conflicting_run(
                 session, [], stale_after=om_inventory_settings.STALE_RUN_AFTER

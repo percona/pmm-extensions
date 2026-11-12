@@ -87,12 +87,12 @@ class OmInventorySettings(BaseYamlSettings):
         does not start sweeping until Operations for MongoDB is actually turned on
         somewhere.
     :param AUTO_SCAN: Whether the app sweeps on its own: on ``SCHEDULE``, and once
-        when PMM turns ``ENABLED`` on. Off leaves sweeping to requests: a triggered
-        sweep still runs while ``ENABLED``, and ``SCHEDULE`` keeps its value for when
-        it is turned back on.
+        when PMM turns ``ENABLED`` on and asks for it. Off leaves sweeping to
+        requests: a triggered sweep still runs while ``ENABLED``, and ``SCHEDULE``
+        keeps its value for when it is turned back on.
     :param SCHEDULE: How often the probe sweeps the estate, while ``ENABLED`` and
         ``AUTO_SCAN``. ``None`` unregisters the periodic job regardless of either;
-        switching ``ENABLED`` on still sweeps once while ``AUTO_SCAN`` is on.
+        a switch-on that asks for a sweep still gets one while ``AUTO_SCAN`` is on.
     :param PROBE_DATABASE: Whether the payload connects to mongod and runs database
         commands. ``False`` collects process and OS facts only, which needs no credentials
         — and still yields ``installed_version``, the field this app exists for.
