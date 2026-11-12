@@ -18,6 +18,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiohttp import ServerDisconnectedError
 from fastapi.exceptions import HTTPException
 from polyfactory.factories.pydantic_factory import ModelFactory
 
@@ -40,6 +41,13 @@ from app.extensions.clients.pmm import (
     NotificationPolicy,
     PMMRemoteAPI,
 )
+
+_TRANSPORT_ERRORS = pytest.mark.parametrize(
+    "error",
+    [OSError("unreachable"), ServerDisconnectedError()],
+    ids=["oserror", "client_error"],
+)
+"""Parametrize a test over an ``OSError`` and a non-``OSError`` aiohttp failure."""
 
 
 class AlertTemplateFactory(ModelFactory[AlertTemplate]):
@@ -75,10 +83,11 @@ class TestGetPmmPresentNames:
         assert result == set()
 
     @pytest.mark.asyncio
-    async def test_returns_none_on_connection_error(self):
+    @_TRANSPORT_ERRORS
+    async def test_returns_none_on_connection_error(self, error):
         """Assert ``None`` is returned when PMM is unreachable."""
         mock_api = AsyncMock(spec=PMMRemoteAPI)
-        mock_api.list_templates.side_effect = OSError("unreachable")
+        mock_api.list_templates.side_effect = error
         result = await get_pmm_present_names(mock_api)
         assert result is None
 
@@ -154,10 +163,11 @@ class TestGetPagerdutyStatus:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_returns_none_on_connection_error(self):
+    @_TRANSPORT_ERRORS
+    async def test_returns_none_on_connection_error(self, error):
         """Assert ``None`` is returned when PMM is unreachable."""
         mock_api = AsyncMock(spec=PMMRemoteAPI)
-        mock_api.list_contact_points.side_effect = OSError("unreachable")
+        mock_api.list_contact_points.side_effect = error
         result = await get_pagerduty_status(mock_api)
         assert result is None
 
@@ -281,10 +291,11 @@ class TestGetOrCreateAlertFolder:
         assert result is created
 
     @pytest.mark.asyncio
-    async def test_returns_none_on_connection_error(self):
+    @_TRANSPORT_ERRORS
+    async def test_returns_none_on_connection_error(self, error):
         """Assert ``None`` is returned when PMM is unreachable."""
         mock_api = AsyncMock(spec=PMMRemoteAPI)
-        mock_api.list_folders.side_effect = OSError("unreachable")
+        mock_api.list_folders.side_effect = error
 
         with patch("app.extensions.apps.alerts.deps.alerts_settings") as mock_config:
             mock_config.ALERT_FOLDER_NAME = "PMM Extensions Alerts"

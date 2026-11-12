@@ -38,6 +38,26 @@ from app.extensions.clients.pmm import (
 logger = logging.getLogger(__name__)
 
 
+def is_conflicting_rule(
+    rule: AlertRule, rule_name: str, folder_uid: str, *, include_empty: bool = True
+) -> bool:
+    """Return whether ``rule`` conflicts with ``rule_name`` in the folder.
+
+    A rule conflicts when it lives in ``folder_uid`` and its title equals
+    ``rule_name`` or, when ``include_empty`` is set, is empty (ghost rule).
+
+    :param rule: The rule to test.
+    :param rule_name: The rule title being created.
+    :param folder_uid: The folder UID the rule is created in.
+    :param include_empty: Treat empty-title rules as conflicting.
+    :return: ``True`` if the rule conflicts.
+    """
+    if getattr(rule, "namespace_uid", "") != folder_uid:
+        return False
+    titles = (rule_name, "") if include_empty else (rule_name,)
+    return rule.title in titles
+
+
 async def delete_conflicting_rules(
     pmm_api: PMMRemoteAPI, rule_name: str, folder_uid: str
 ) -> None:
@@ -48,18 +68,12 @@ async def delete_conflicting_rules(
     ``create_rule`` call can succeed.
 
     :param pmm_api: The PMM API client.
-    :type pmm_api: PMMRemoteAPI
     :param rule_name: The rule title that triggered the conflict.
-    :type rule_name: str
     :param folder_uid: The folder UID where the conflict occurred.
-    :type folder_uid: str
     """
     rules = await pmm_api.list_rules()
     for rule in rules:
-        namespace = getattr(rule, "namespace_uid", "")
-        if namespace != folder_uid:
-            continue
-        if rule.title in (rule_name, ""):
+        if is_conflicting_rule(rule, rule_name, folder_uid):
             logger.info("Deleting conflicting rule %s (title=%r)", rule.uid, rule.title)
             await pmm_api.delete_rule(rule.uid)
 

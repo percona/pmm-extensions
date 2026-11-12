@@ -34,6 +34,7 @@ Route layout:
 
 import logging
 
+from aiohttp import ClientError
 from fastapi import APIRouter
 from fastapi.exceptions import HTTPException
 
@@ -83,8 +84,10 @@ from app.extensions.apps.alerts.models import (
 )
 from app.extensions.apps.alerts.restore import (
     delete_conflicting_rules,
+    is_conflicting_rule,
     restore_from_backup,
 )
+from app.extensions.clients.pmm import PMMRemoteAPI
 from app.extensions.deps import SessionDep
 
 logger = logging.getLogger(__name__)
@@ -231,16 +234,12 @@ async def alerts_api_restore(
     """Restore alert configuration from a backup snapshot.
 
     :param payload: Restore request body identifying the backup to apply.
-    :type payload: RestoreRequest
     :param pmm_api: The PMM API client. Raises 503 if PMM is not configured.
-    :type pmm_api: PMMRemoteAPI
     :param session: The async database session.
-    :type session: SessionDep
     :return: A ``RestoreResponse`` with the per-section restore counts.
-    :rtype: RestoreResponse
     :raises HTTPNotFoundException: If the backup is not found.
-    :raises HTTPBadGatewayException: If the PMM upstream call fails with
-        ``OSError``.
+    :raises HTTPBadGatewayException: If the PMM upstream call fails in
+        transport (``OSError`` or ``aiohttp.ClientError``).
     """
     backup = await AlertBackupManager.first(session, id=payload.backup_id)
     if backup is None:
@@ -250,7 +249,7 @@ async def alerts_api_restore(
     except HTTPException:
         logger.exception("Failed to restore alert configuration from backup")
         raise
-    except OSError:
+    except (OSError, ClientError):
         logger.exception("Failed to restore alert configuration from backup")
         raise HTTPBadGatewayException(detail="Upstream PMM error") from None
     return RestoreResponse(status="success", details=details)
@@ -262,8 +261,6 @@ async def alerts_api_pagerduty_save(
     pmm_api: RequiredPMMAPIDep,
 ) -> PagerDutyResponse:
     """Create or update the PagerDuty contact point and notification route.
-
-    Mirror :func:`app.extensions.apps.alerts.routes.pagerduty_save` over JSON.
 
     :param payload: PagerDuty save request body.
     :type payload: PagerDutyRequest
@@ -295,7 +292,7 @@ async def alerts_api_pagerduty_save(
             response = PagerDutyResponse(status="created")
 
         await ensure_pagerduty_notification_route(pmm_api, PAGERDUTY_CONTACT_POINT_NAME)
-    except (HTTPException, OSError):
+    except (HTTPException, OSError, ClientError):
         logger.exception("Failed to save PagerDuty contact point")
         raise HTTPBadGatewayException(
             detail="Failed to save PagerDuty configuration"
@@ -318,7 +315,7 @@ async def alerts_api_pagerduty_delete(
     """
     try:
         contact_points = await pmm_api.list_contact_points()
-    except (HTTPException, OSError):
+    except (HTTPException, OSError, ClientError):
         logger.exception("Failed to delete PagerDuty contact point")
         raise HTTPBadGatewayException(
             detail="Failed to delete PagerDuty configuration"
@@ -335,12 +332,42 @@ async def alerts_api_pagerduty_delete(
         ]
         await pmm_api.update_notification_policy(policy)
         await pmm_api.delete_contact_point(pd_cp.uid)
-    except (HTTPException, OSError):
+    except (HTTPException, OSError, ClientError):
         logger.exception("Failed to delete PagerDuty contact point")
         raise HTTPBadGatewayException(
             detail="Failed to delete PagerDuty configuration"
         ) from None
     return PagerDutyResponse(status="deleted")
+
+
+async def _has_conflicting_rule(
+    pmm_api: PMMRemoteAPI,
+    rule_name: str,
+    folder_uid: str,
+    *,
+    include_empty: bool = True,
+) -> bool:
+    """Return whether the folder currently holds a conflicting rule.
+
+    Read the rule listing fresh, so deletes made earlier in the request are
+    reflected. An HTTP or transport failure of the listing counts as no
+    collision.
+
+    :param pmm_api: The PMM API client.
+    :param rule_name: The rule title being created.
+    :param folder_uid: The alert folder UID.
+    :param include_empty: Treat empty-title rules as conflicting.
+    :return: ``True`` if a conflicting rule was observed.
+    """
+    try:
+        rules = await pmm_api.list_rules()
+    except (HTTPException, OSError, ClientError):
+        logger.exception("Failed to list rules while classifying rule failure")
+        return False
+    return any(
+        is_conflicting_rule(r, rule_name, folder_uid, include_empty=include_empty)
+        for r in rules
+    )
 
 
 @router.post("/push")
@@ -354,7 +381,6 @@ async def alerts_api_push(
 ) -> PushResponse:
     """Push selected alert templates to PMM as rules.
 
-    Mirror :func:`app.extensions.apps.alerts.routes.alerts_push` over JSON.
     When the template is already present in PMM, report ``success`` if
     ``create_rule`` recreates a missing rule, ``skipped`` on a rule-title
     collision, and ``error`` for any other failure. When the template is not
@@ -395,9 +421,11 @@ async def alerts_api_push(
                     for_duration=DEFAULT_FOR_DURATION,
                     group=alerts_settings.ALERT_FOLDER_NAME,
                 )
-            except (HTTPException, OSError) as exc:
+            except (HTTPException, OSError, ClientError) as exc:
                 detail = exception_detail(exc)
-                if "conflicts with existing" in detail:
+                if await _has_conflicting_rule(
+                    pmm_api, name, folder.uid, include_empty=False
+                ):
                     logger.debug("Rule already exists for %s", name, exc_info=True)
                     results.append(
                         PushItemResult(
@@ -421,7 +449,7 @@ async def alerts_api_push(
         try:
             pmm_yaml = to_pmm_template_yaml(template)
             await pmm_api.create_template(pmm_yaml)
-        except (HTTPException, OSError) as exc:
+        except (HTTPException, OSError, ClientError) as exc:
             detail = exception_detail(exc)
             results.append(PushItemResult(name=name, status="error", message=detail))
             continue
@@ -439,9 +467,9 @@ async def alerts_api_push(
                     name=name, status="success", message="Pushed successfully"
                 )
             )
-        except (HTTPException, OSError) as exc:
+        except (HTTPException, OSError, ClientError) as exc:
             detail = exception_detail(exc)
-            if "conflicts with existing" not in detail:
+            if not await _has_conflicting_rule(pmm_api, name, folder.uid):
                 results.append(
                     PushItemResult(
                         name=name,
@@ -466,7 +494,7 @@ async def alerts_api_push(
                         message="Pushed successfully (replaced conflicting rule)",
                     )
                 )
-            except (HTTPException, OSError) as retry_exc:
+            except (HTTPException, OSError, ClientError) as retry_exc:
                 retry_detail = exception_detail(retry_exc)
                 results.append(
                     PushItemResult(
