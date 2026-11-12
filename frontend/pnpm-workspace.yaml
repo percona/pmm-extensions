@@ -30,6 +30,7 @@ overrides:
   tinypool@<2.1.2: 2.1.2
   '@babel/core': 7.29.6
   immutable@<5.1.8: ^5.1.8
+  minimatch@10.2.5: 11.0.1
   react: 19.2.7
   source-map-js@<1.2.2: 1.2.2
   react-dom: 19.2.7
