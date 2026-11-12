@@ -49,6 +49,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.api.deps import get_current_user as resolve_bearer
 from app.api.deps import SERVICE_PRINCIPAL
 from app.core.auth.providers.casdoor.models import CasdoorUser
+from app.core.celery.models import IntervalSchedule, Period
 from app.core.config import settings
 from app.core.exceptions import HTTPBadRequestException
 from app.core.requests.remote_api import RemoteAPI
@@ -73,7 +74,6 @@ from app.extensions.deps import get_session, get_tasks_api
 from app.extensions.main import extensions_app, extensions_overrides_lifespan
 from tests.app.extensions.apps.om_inventory.conftest import (
     BASE,
-    BEYOND_TIMEDELTA_SECONDS,
     start_run,
     store_overrides,
 )
@@ -86,7 +86,7 @@ DEFAULTS = OmInventorySettings()
 ADMIN_SETTINGS = f"/api/extensions/admin/settings/{OmInventorySettings.__name__}"
 
 #: The class's two relationships, in declaration order.
-POLL_RULE, STALE_RULE = OmInventorySettings.CROSS_FIELD_RULES
+PROBE_RULE, STALE_RULE = OmInventorySettings.CROSS_FIELD_RULES
 
 #: The ``EXTENSIONS_INTERNAL_TOKEN`` the real-gate tests present.
 INTERNAL_TOKEN = "internal-test-token"
@@ -513,7 +513,7 @@ class TestConfigWritesAreNotServedHere:
 
         :param admin_api: The authenticated admin client.
         """
-        response = await admin_api.patch(f"{BASE}/config", json={"RUN_RETENTION": 5})
+        response = await admin_api.patch(f"{BASE}/config", json={"RUN_RETENTION": 20})
 
         assert response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
         assert om_inventory_settings.RUN_RETENTION == DEFAULTS.RUN_RETENTION
@@ -607,6 +607,31 @@ class TestGetConfig:
         assert rows["SCHEDULE__every"]["has_override"] is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("key", "bounds"),
+        [
+            ("TASK_TIMEOUT", (60, 300)),
+            ("RUN_RETENTION", (10, 1000)),
+            ("STALE_RUN_AFTER", (None, 86400)),
+            ("SCHEDULE__every", (None, None)),
+        ],
+    )
+    async def test_each_field_reports_its_inclusive_range(
+        self, api: AsyncClient, key: str, bounds: tuple[int | None, int | None]
+    ) -> None:
+        """Report each field's range, in the unit its value is reported in.
+
+        ``SCHEDULE__every`` has none of its own: its range depends on the period.
+
+        :param api: The authenticated client.
+        :param key: The field under test.
+        :param bounds: The ``(minimum, maximum)`` expected for it.
+        """
+        rows = {row["key"]: row for row in (await api.get(f"{BASE}/config")).json()}
+
+        assert (rows[key]["minimum"], rows[key]["maximum"]) == bounds
+
+    @pytest.mark.asyncio
     async def test_credentials_path_is_redacted_for_this_routes_audience(
         self, api: AsyncClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -645,7 +670,7 @@ class TestChangeConfig:
         :param admin_user: The admin it is authenticated as.
         :param session: The database session.
         """
-        await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 5})
+        await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 20})
 
         rows = await _active_rows(session)
         assert [row.updated_by for row in rows] == [admin_user.username]
@@ -663,11 +688,11 @@ class TestChangeConfig:
         :param admin_api: The authenticated admin client.
         """
         response = await admin_api.patch(
-            ADMIN_SETTINGS, json={"SCHEDULE": {"every": 2, "period": "minutes"}}
+            ADMIN_SETTINGS, json={"SCHEDULE": {"every": 20, "period": "minutes"}}
         )
 
         assert response.status_code == status.HTTP_200_OK
-        assert om_inventory_settings.SCHEDULE.every == 2  # noqa: PLR2004
+        assert om_inventory_settings.SCHEDULE.every == 20  # noqa: PLR2004
 
     @pytest.mark.asyncio
     async def test_a_single_schedule_leaf_can_be_changed_on_its_own(
@@ -715,10 +740,10 @@ class TestChangeConfig:
         :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 5})
+        await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 20})
 
         rows = await _active_rows(session)
-        assert [(row.key, row.value) for row in rows] == [("RUN_RETENTION", 5)]
+        assert [(row.key, row.value) for row in rows] == [("RUN_RETENTION", 20)]
 
     @pytest.mark.asyncio
     async def test_the_wire_class_name_differs_from_the_stored_token(
@@ -735,7 +760,7 @@ class TestChangeConfig:
         token = setting_class_token(OmInventorySettings)
         assert token != OmInventorySettings.__name__
 
-        response = await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 5})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 20})
 
         assert response.status_code == status.HTTP_200_OK
         assert [row["setting_class"] for row in response.json()] == [
@@ -750,21 +775,28 @@ class TestChangeConfig:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("value", "bound"),
+        [(0, "greater than or equal to 1"), (9, "less than or equal to 8")],
+    )
     async def test_a_bad_value_is_refused_by_the_field_constraint(
-        self, admin_api: AsyncClient
+        self, admin_api: AsyncClient, value: int, bound: str
     ) -> None:
-        """Enforce ``PositiveInt`` on the way in, not at the next sweep.
+        """Enforce the field's range on the way in, not at the next sweep.
 
         A zero here would make ``MAX_CONCURRENT_PROBES`` a semaphore that never admits
         anyone, and the sweep would hang rather than fail.
 
         :param admin_api: The authenticated admin client.
+        :param value: The value refused.
+        :param bound: The part of the refusal naming the bound it breaks.
         """
         response = await admin_api.patch(
-            ADMIN_SETTINGS, json={"MAX_CONCURRENT_PROBES": 0}
+            ADMIN_SETTINGS, json={"MAX_CONCURRENT_PROBES": value}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert bound in response.json()["detail"][0]["msg"]
         assert (
             om_inventory_settings.MAX_CONCURRENT_PROBES
             == DEFAULTS.MAX_CONCURRENT_PROBES
@@ -799,7 +831,7 @@ class TestChangeConfig:
         :param admin_api: The authenticated admin client.
         """
         response = await admin_api.patch(
-            ADMIN_SETTINGS, json={"RUN_RETENTION": 5, "POLL_INTERVAL": -1}
+            ADMIN_SETTINGS, json={"RUN_RETENTION": 20, "POLL_INTERVAL": -1}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -839,7 +871,7 @@ class TestChangeConfig:
         :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 5})
+        await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 20})
 
         response = await admin_api.delete(f"{ADMIN_SETTINGS}/RUN_RETENTION")
 
@@ -866,6 +898,137 @@ class TestChangeConfig:
         :param admin_api: The authenticated admin client.
         """
         response = await admin_api.patch(ADMIN_SETTINGS, json={"SCHEDUEL": 1})
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+class TestScheduleBounds:
+    """Hold the schedule to its range whichever spelling a PATCH uses.
+
+    PMM writes the two leaves, and a leaf alone says nothing about the interval, so
+    each is judged as the schedule it would leave.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("every", [9, 10**400])
+    async def test_a_leaf_out_of_range_is_refused_at_that_leaf(
+        self, admin_api: AsyncClient, session: AsyncSession, every: int
+    ) -> None:
+        """Refuse a schedule out of range, naming the range and the key that was sent.
+
+        :param admin_api: The authenticated admin client.
+        :param session: The database session.
+        :param every: The minutes sent, below the floor or too large for a float.
+        """
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"SCHEDULE__every": every}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        (entry,) = response.json()["detail"]
+        assert entry["loc"] == ["body", "SCHEDULE__every"]
+        assert "from 10 minutes to 1 day" in entry["msg"]
+        assert await _stored_overrides(session) == {}
+
+    @pytest.mark.asyncio
+    async def test_seconds_are_refused(self, admin_api: AsyncClient) -> None:
+        """Refuse a schedule in seconds, which the periodic-task UI cannot edit.
+
+        :param admin_api: The authenticated admin client.
+        """
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"SCHEDULE__period": "seconds"}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "Invalid period 'seconds'" in response.json()["detail"][0]["msg"]
+
+    @pytest.mark.asyncio
+    async def test_both_leaves_are_judged_together(
+        self, admin_api: AsyncClient
+    ) -> None:
+        """Accept 2 hours, though 2 minutes would be refused on the way there.
+
+        :param admin_api: The authenticated admin client.
+        """
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"SCHEDULE__every": 2, "SCHEDULE__period": "hours"}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert (
+            IntervalSchedule(every=2, period=Period.HOURS)
+            == om_inventory_settings.SCHEDULE
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_leaf_is_judged_against_a_stored_sibling(
+        self, admin_api: AsyncClient
+    ) -> None:
+        """Refuse 30 once hours are stored, though 30 minutes is in range.
+
+        :param admin_api: The authenticated admin client.
+        """
+        await admin_api.patch(ADMIN_SETTINGS, json={"SCHEDULE__period": "hours"})
+
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"SCHEDULE__every": 30})
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert (
+            IntervalSchedule(every=10, period=Period.HOURS)
+            == om_inventory_settings.SCHEDULE
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_leaf_under_a_null_schedule_merges_onto_the_base(
+        self, admin_api: AsyncClient
+    ) -> None:
+        """Merge a leaf onto the deployment's schedule, as the snapshot does.
+
+        :param admin_api: The authenticated admin client.
+        """
+        await admin_api.patch(ADMIN_SETTINGS, json={"SCHEDULE": None})
+
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"SCHEDULE__every": 30})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert (
+            IntervalSchedule(every=30, period=Period.MINUTES)
+            == om_inventory_settings.SCHEDULE
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_revert_leaving_the_schedule_out_of_range_is_refused(
+        self, admin_api: AsyncClient
+    ) -> None:
+        """Refuse reverting the period of 2 hours, which would leave 2 minutes.
+
+        :param admin_api: The authenticated admin client.
+        """
+        await admin_api.patch(
+            ADMIN_SETTINGS, json={"SCHEDULE__every": 2, "SCHEDULE__period": "hours"}
+        )
+
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/SCHEDULE__period")
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.json()["detail"][0]["loc"] == ["body", "SCHEDULE__period"]
+        assert (
+            IntervalSchedule(every=2, period=Period.HOURS)
+            == om_inventory_settings.SCHEDULE
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_whole_schedule_over_the_ceiling_is_refused(
+        self, admin_api: AsyncClient
+    ) -> None:
+        """Refuse a two-day schedule written as one object.
+
+        :param admin_api: The authenticated admin client.
+        """
+        response = await admin_api.patch(
+            ADMIN_SETTINGS, json={"SCHEDULE": {"every": 2, "period": "days"}}
+        )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
@@ -898,12 +1061,12 @@ def _cross_field_fields(response_json: dict[str, Any]) -> list[list[str]]:
 class TestPatchCrossFieldRules:
     """Judge a PATCH by the probe-timing relationships, not field by field.
 
-    Each field already passes its own ``PositiveInt`` bound in these cases; only the
-    combination is wrong, which is exactly what per-key validation cannot see.
+    Each field already passes its own range in these cases; only the combination
+    is wrong, which is exactly what per-key validation cannot see.
     """
 
     @pytest.mark.asyncio
-    async def test_lowering_the_timeout_below_a_stored_poll_is_refused(
+    async def test_raising_the_timeout_to_a_stored_threshold_is_refused(
         self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
         """Judge a one-field PATCH against the other field's stored override.
@@ -911,32 +1074,35 @@ class TestPatchCrossFieldRules:
         :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        await admin_api.patch(ADMIN_SETTINGS, json={"POLL_INTERVAL": 100})
+        await admin_api.patch(ADMIN_SETTINGS, json={"STALE_RUN_AFTER": 200})
 
-        response = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 90})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 250})
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert _cross_field_fields(response.json()) == [
-            ["POLL_INTERVAL", "TASK_TIMEOUT"]
+            ["STALE_RUN_AFTER", "TASK_TIMEOUT"]
         ]
-        assert await _stored_overrides(session) == {"POLL_INTERVAL": 100}
+        assert await _stored_overrides(session) == {"STALE_RUN_AFTER": 200}
         assert om_inventory_settings.TASK_TIMEOUT == DEFAULTS.TASK_TIMEOUT
 
     @pytest.mark.asyncio
-    async def test_a_timeout_below_the_deployment_poll_is_refused(
+    async def test_probe_timeouts_over_half_a_stored_timeout_are_refused(
         self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
-        """Judge a one-field PATCH against the other field's YAML value too.
+        """Refuse a repository timeout that leaves the probe no time to report.
 
         :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        response = await admin_api.patch(
-            ADMIN_SETTINGS, json={"TASK_TIMEOUT": DEFAULTS.POLL_INTERVAL - 1}
-        )
+        await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 60})
+
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"REPO_TIMEOUT": 30})
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-        assert await _stored_overrides(session) == {}
+        assert _cross_field_fields(response.json()) == [
+            ["REPO_TIMEOUT", "CONNECT_TIMEOUT", "TASK_TIMEOUT"]
+        ]
+        assert await _stored_overrides(session) == {"TASK_TIMEOUT": 60}
 
     @pytest.mark.asyncio
     async def test_a_stale_threshold_inside_the_timeout_is_refused(
@@ -961,12 +1127,12 @@ class TestPatchCrossFieldRules:
 
         :param admin_api: The authenticated admin client.
         """
-        response = await admin_api.patch(ADMIN_SETTINGS, json={"POLL_INTERVAL": 9999})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"STALE_RUN_AFTER": 137})
 
         assert {entry["msg"] for entry in response.json()["detail"]} == {
-            "POLL_INTERVAL, TASK_TIMEOUT: POLL_INTERVAL must not exceed TASK_TIMEOUT"
+            "STALE_RUN_AFTER, TASK_TIMEOUT: STALE_RUN_AFTER must exceed TASK_TIMEOUT"
         }
-        assert "9999" not in response.text
+        assert "137" not in response.text
 
     @pytest.mark.asyncio
     async def test_the_refusal_is_located_on_each_field_of_the_relationship(
@@ -979,10 +1145,10 @@ class TestPatchCrossFieldRules:
 
         :param admin_api: The authenticated admin client.
         """
-        response = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 1})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"STALE_RUN_AFTER": 1})
 
         assert [entry["loc"] for entry in response.json()["detail"]] == [
-            ["body", "POLL_INTERVAL"],
+            ["body", "STALE_RUN_AFTER"],
             ["body", "TASK_TIMEOUT"],
         ]
 
@@ -990,11 +1156,16 @@ class TestPatchCrossFieldRules:
     @pytest.mark.parametrize(
         "batch",
         [
-            {"POLL_INTERVAL": 300, "TASK_TIMEOUT": 600},
-            {"TASK_TIMEOUT": 30, "STALE_RUN_AFTER": 60},
-            {"POLL_INTERVAL": 20, "TASK_TIMEOUT": 30, "STALE_RUN_AFTER": 60},
+            {"TASK_TIMEOUT": 60, "CONNECT_TIMEOUT": 28, "REPO_TIMEOUT": 2},
+            {"STALE_RUN_AFTER": 120, "TASK_TIMEOUT": 60},
+            {
+                "STALE_RUN_AFTER": 120,
+                "CONNECT_TIMEOUT": 28,
+                "TASK_TIMEOUT": 60,
+                "REPO_TIMEOUT": 2,
+            },
         ],
-        ids=["raise-poll-and-timeout", "lower-timeout-and-stale", "all-three"],
+        ids=["probe-timeouts-and-timeout", "lower-timeout-and-stale", "all-four"],
     )
     async def test_a_consistent_batch_is_accepted_whatever_the_key_order(
         self, admin_api: AsyncClient, batch: dict[str, int]
@@ -1020,7 +1191,7 @@ class TestPatchCrossFieldRules:
         """
         response = await admin_api.patch(
             ADMIN_SETTINGS,
-            json={"RUN_RETENTION": 5, "POLL_INTERVAL": 60, "TASK_TIMEOUT": 30},
+            json={"RUN_RETENTION": 20, "STALE_RUN_AFTER": 100, "TASK_TIMEOUT": 200},
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -1037,12 +1208,12 @@ class TestPatchCrossFieldRules:
         :param session: The database session.
         """
         response = await admin_api.patch(
-            ADMIN_SETTINGS, json={"SCHEDULE__every": 5, "TASK_TIMEOUT": 1}
+            ADMIN_SETTINGS, json={"SCHEDULE__every": 15, "STALE_RUN_AFTER": 1}
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert _cross_field_fields(response.json()) == [
-            ["POLL_INTERVAL", "TASK_TIMEOUT"]
+            ["STALE_RUN_AFTER", "TASK_TIMEOUT"]
         ]
         assert await _stored_overrides(session) == {}
 
@@ -1069,7 +1240,7 @@ class TestPatchCrossFieldRules:
 
         :param admin_api: The authenticated admin client.
         """
-        response = await admin_api.patch(ADMIN_SETTINGS, json={"CONNECT_TIMEOUT": 600})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"POLL_INTERVAL": 30})
 
         assert response.status_code == status.HTTP_200_OK
 
@@ -1081,26 +1252,22 @@ class TestDeleteCrossFieldRules:
     async def test_reverting_a_field_into_an_inconsistent_set_is_refused(
         self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
-        """Keep the override when its YAML value would undercut the other field.
+        """Keep the override when its YAML value would undercut the other fields.
 
         :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        await admin_api.patch(
-            ADMIN_SETTINGS, json={"POLL_INTERVAL": 300, "TASK_TIMEOUT": 600}
-        )
+        batch = {"TASK_TIMEOUT": 60, "CONNECT_TIMEOUT": 28, "REPO_TIMEOUT": 2}
+        await admin_api.patch(ADMIN_SETTINGS, json=batch)
 
-        response = await admin_api.delete(f"{ADMIN_SETTINGS}/TASK_TIMEOUT")
+        response = await admin_api.delete(f"{ADMIN_SETTINGS}/REPO_TIMEOUT")
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert _cross_field_fields(response.json()) == [
-            ["POLL_INTERVAL", "TASK_TIMEOUT"]
+            ["REPO_TIMEOUT", "CONNECT_TIMEOUT", "TASK_TIMEOUT"]
         ]
-        assert await _stored_overrides(session) == {
-            "POLL_INTERVAL": 300,
-            "TASK_TIMEOUT": 600,
-        }
-        assert om_inventory_settings.TASK_TIMEOUT == 600  # noqa: PLR2004
+        assert await _stored_overrides(session) == batch
+        assert om_inventory_settings.REPO_TIMEOUT == 2  # noqa: PLR2004
 
     @pytest.mark.asyncio
     async def test_the_other_order_reverts_both(
@@ -1112,10 +1279,10 @@ class TestDeleteCrossFieldRules:
         :param session: The database session.
         """
         await admin_api.patch(
-            ADMIN_SETTINGS, json={"POLL_INTERVAL": 300, "TASK_TIMEOUT": 600}
+            ADMIN_SETTINGS, json={"TASK_TIMEOUT": 60, "STALE_RUN_AFTER": 120}
         )
 
-        first = await admin_api.delete(f"{ADMIN_SETTINGS}/POLL_INTERVAL")
+        first = await admin_api.delete(f"{ADMIN_SETTINGS}/STALE_RUN_AFTER")
         second = await admin_api.delete(f"{ADMIN_SETTINGS}/TASK_TIMEOUT")
 
         assert (first.status_code, second.status_code) == (
@@ -1159,13 +1326,13 @@ class TestDeleteCrossFieldRules:
         :param admin_api: The authenticated admin client.
         """
         await admin_api.patch(
-            ADMIN_SETTINGS, json={"TASK_TIMEOUT": 30, "STALE_RUN_AFTER": 60}
+            ADMIN_SETTINGS, json={"TASK_TIMEOUT": 60, "STALE_RUN_AFTER": 120}
         )
 
         response = await admin_api.delete(f"{ADMIN_SETTINGS}/TASK_TIMEOUT")
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-        assert timedelta(seconds=60) == om_inventory_settings.STALE_RUN_AFTER
+        assert timedelta(seconds=120) == om_inventory_settings.STALE_RUN_AFTER
 
 
 class TestRulesJudgedAgainstStoredRows:
@@ -1180,39 +1347,39 @@ class TestRulesJudgedAgainstStoredRows:
     async def test_a_patch_is_judged_against_a_row_this_process_has_not_seen(
         self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
-        """Refuse a timeout below a poll interval another worker just stored.
+        """Refuse a timeout at a stale threshold another worker just stored.
 
         :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        await store_overrides(session, POLL_INTERVAL=100)
-        assert om_inventory_settings.POLL_INTERVAL == DEFAULTS.POLL_INTERVAL
+        await store_overrides(session, STALE_RUN_AFTER=200)
+        assert om_inventory_settings.STALE_RUN_AFTER == DEFAULTS.STALE_RUN_AFTER
 
-        response = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 90})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 250})
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert _cross_field_fields(response.json()) == [
-            ["POLL_INTERVAL", "TASK_TIMEOUT"]
+            ["STALE_RUN_AFTER", "TASK_TIMEOUT"]
         ]
-        assert await _stored_overrides(session) == {"POLL_INTERVAL": 100}
+        assert await _stored_overrides(session) == {"STALE_RUN_AFTER": 200}
 
     @pytest.mark.asyncio
     async def test_a_revert_is_judged_against_a_row_this_process_has_not_seen(
         self, admin_api: AsyncClient, session: AsyncSession
     ) -> None:
-        """Refuse a revert that would orphan a poll interval stored elsewhere.
+        """Refuse a revert that would orphan a stale threshold stored elsewhere.
 
         :param admin_api: The authenticated admin client.
         :param session: The database session.
         """
-        await store_overrides(session, POLL_INTERVAL=300, TASK_TIMEOUT=600)
+        await store_overrides(session, TASK_TIMEOUT=60, STALE_RUN_AFTER=120)
 
         response = await admin_api.delete(f"{ADMIN_SETTINGS}/TASK_TIMEOUT")
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert await _stored_overrides(session) == {
-            "POLL_INTERVAL": 300,
-            "TASK_TIMEOUT": 600,
+            "TASK_TIMEOUT": 60,
+            "STALE_RUN_AFTER": 120,
         }
 
 
@@ -1221,11 +1388,13 @@ class TestChangesWhileStoredRowsAreIgnored:
 
     @pytest_asyncio.fixture(autouse=True)
     async def _ignored_pair(self, session: AsyncSession) -> None:
-        """Store a pair that breaks the poll rule and publish it, so both are ignored.
+        """Store a pair that breaks the stale rule and publish it, so both are ignored.
+
+        Either value is consistent with the other's YAML value, so either revert works.
 
         :param session: The database session.
         """
-        await store_overrides(session, POLL_INTERVAL=90, TASK_TIMEOUT=30)
+        await store_overrides(session, STALE_RUN_AFTER=200, TASK_TIMEOUT=250)
         proxy = cast("OverridableSettingsProxy", om_inventory_settings)
         await publish_snapshot(proxy, session, OmInventorySettings)
         assert om_inventory_settings.TASK_TIMEOUT == DEFAULTS.TASK_TIMEOUT
@@ -1246,10 +1415,10 @@ class TestChangesWhileStoredRowsAreIgnored:
         assert response.status_code == status.HTTP_200_OK
         rows = {row["key"]: row for row in response.json()}
         assert rows["TASK_TIMEOUT"]["value"] == DEFAULTS.TASK_TIMEOUT
-        for key in ("POLL_INTERVAL", "TASK_TIMEOUT"):
+        for key in ("STALE_RUN_AFTER", "TASK_TIMEOUT"):
             assert rows[key]["has_override"] is True
-            assert rows[key]["override_ignored_reason"] == POLL_RULE.message
-        assert rows["STALE_RUN_AFTER"]["override_ignored_reason"] is None
+            assert rows[key]["override_ignored_reason"] == STALE_RULE.message
+        assert rows["POLL_INTERVAL"]["override_ignored_reason"] is None
 
     @pytest.mark.asyncio
     async def test_the_read_issues_one_override_query(
@@ -1281,10 +1450,13 @@ class TestChangesWhileStoredRowsAreIgnored:
     @pytest.mark.parametrize(
         ("change", "rule"),
         [
-            ({"TASK_TIMEOUT": 60}, ["POLL_INTERVAL", "TASK_TIMEOUT"]),
-            ({"STALE_RUN_AFTER": 100}, ["STALE_RUN_AFTER", "TASK_TIMEOUT"]),
+            ({"TASK_TIMEOUT": 220}, ["STALE_RUN_AFTER", "TASK_TIMEOUT"]),
+            ({"STALE_RUN_AFTER": 240}, ["STALE_RUN_AFTER", "TASK_TIMEOUT"]),
         ],
-        ids=["still-below-the-stored-poll", "inside-the-restored-timeout"],
+        ids=[
+            "still-at-or-above-the-stored-threshold",
+            "still-inside-the-stored-timeout",
+        ],
     )
     async def test_a_value_the_next_snapshot_would_ignore_is_refused(
         self,
@@ -1305,8 +1477,8 @@ class TestChangesWhileStoredRowsAreIgnored:
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert _cross_field_fields(response.json()) == [rule]
         assert await _stored_overrides(session) == {
-            "POLL_INTERVAL": 90,
-            "TASK_TIMEOUT": 30,
+            "STALE_RUN_AFTER": 200,
+            "TASK_TIMEOUT": 250,
         }
 
     @pytest.mark.asyncio
@@ -1317,7 +1489,7 @@ class TestChangesWhileStoredRowsAreIgnored:
 
         :param admin_api: The authenticated admin client.
         """
-        response = await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 5})
+        response = await admin_api.patch(ADMIN_SETTINGS, json={"RUN_RETENTION": 20})
 
         assert response.status_code == status.HTTP_200_OK
 
@@ -1330,14 +1502,15 @@ class TestChangesWhileStoredRowsAreIgnored:
         :param admin_api: The authenticated admin client.
         """
         response = await admin_api.patch(
-            ADMIN_SETTINGS, json={"POLL_INTERVAL": DEFAULTS.POLL_INTERVAL}
+            ADMIN_SETTINGS,
+            json={"STALE_RUN_AFTER": DEFAULTS.STALE_RUN_AFTER.total_seconds()},
         )
 
         assert response.status_code == status.HTTP_200_OK
-        assert om_inventory_settings.TASK_TIMEOUT == 30  # noqa: PLR2004
+        assert om_inventory_settings.TASK_TIMEOUT == 250  # noqa: PLR2004
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("key", ["POLL_INTERVAL", "TASK_TIMEOUT"])
+    @pytest.mark.parametrize("key", ["STALE_RUN_AFTER", "TASK_TIMEOUT"])
     async def test_either_side_can_be_reverted(
         self, admin_api: AsyncClient, key: str
     ) -> None:
@@ -1386,8 +1559,8 @@ class TestOverrideIgnoredAfterBaseChange:
         :param monkeypatch: Restores the base timeout after the test.
         :return: The stored threshold row.
         """
-        monkeypatch.setattr(om_inventory_settings, "TASK_TIMEOUT", 7200)
-        await store_overrides(session, actor="operator", STALE_RUN_AFTER=3600)
+        monkeypatch.setattr(om_inventory_settings, "TASK_TIMEOUT", 300)
+        await store_overrides(session, actor="operator", STALE_RUN_AFTER=240)
         proxy = cast("OverridableSettingsProxy", om_inventory_settings)
         await publish_snapshot(proxy, session, OmInventorySettings)
         (row,) = await _active_rows(session)
@@ -1473,15 +1646,16 @@ class TestIgnoredOverrideAttribution:
     ) -> None:
         """Leave the stale rule off the timeout, whose override satisfies it.
 
-        Against a base of poll 150 and timeout 300, the stored timeout of 100
-        breaks the poll rule and goes; restoring 300 then breaks the stale rule
-        for the stored threshold of 200.
+        Against a base of repo and connect timeouts of 30 and a task timeout of
+        300, the stored task timeout of 100 breaks the probe rule and goes;
+        restoring 300 then breaks the stale rule for the stored threshold of 200.
 
         :param api: The authenticated client.
         :param session: The database session.
         :param monkeypatch: Restores the base values after the test.
         """
-        monkeypatch.setattr(om_inventory_settings, "POLL_INTERVAL", 150)
+        monkeypatch.setattr(om_inventory_settings, "REPO_TIMEOUT", 30)
+        monkeypatch.setattr(om_inventory_settings, "CONNECT_TIMEOUT", 30)
         monkeypatch.setattr(om_inventory_settings, "TASK_TIMEOUT", 300)
         await store_overrides(session, TASK_TIMEOUT=100, STALE_RUN_AFTER=200)
         proxy = cast("OverridableSettingsProxy", om_inventory_settings)
@@ -1491,7 +1665,7 @@ class TestIgnoredOverrideAttribution:
 
         assert response.status_code == status.HTTP_200_OK
         rows = {row["key"]: row for row in response.json()}
-        assert rows["TASK_TIMEOUT"]["override_ignored_reason"] == POLL_RULE.message
+        assert rows["TASK_TIMEOUT"]["override_ignored_reason"] == PROBE_RULE.message
         assert rows["STALE_RUN_AFTER"]["override_ignored_reason"] == (
             STALE_RULE.message
         )
@@ -1505,7 +1679,7 @@ class TestIgnoredOverrideAttribution:
         :param api: The authenticated client.
         :param admin_api: The authenticated admin client.
         """
-        patched = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 600})
+        patched = await admin_api.patch(ADMIN_SETTINGS, json={"TASK_TIMEOUT": 240})
         assert patched.status_code == status.HTTP_200_OK
 
         response = await api.get(f"{BASE}/config")
@@ -1592,37 +1766,75 @@ class TestStaleRunAfterRoundTrip:
         )
 
 
-class TestTimeoutBeyondTheDurationRange:
-    """Answer a timeout too large for ``timedelta`` with a refusal, not a crash."""
+class TestStoredRowsOutsideTheBounds:
+    """Ignore rows stored before the bounds, so the deployment's value applies."""
 
     @pytest.mark.asyncio
-    async def test_a_patch_is_refused(
-        self, admin_api: AsyncClient, session: AsyncSession
+    @pytest.mark.parametrize(
+        ("rows", "field"),
+        [
+            ({"TASK_TIMEOUT": 1000}, "TASK_TIMEOUT"),
+            ({"SCHEDULE__every": 10, "SCHEDULE__period": "seconds"}, "SCHEDULE"),
+        ],
+        ids=["timeout-over-the-ceiling", "schedule-in-seconds"],
+    )
+    async def test_a_stored_value_out_of_range_is_ignored(
+        self, session: AsyncSession, rows: dict[str, Any], field: str
     ) -> None:
-        """Refuse it through the stale-run relationship and store nothing.
+        """Drop a stored value outside its range so the YAML/env value applies.
 
-        :param admin_api: The authenticated admin client.
-        :param session: The database session.
-        """
-        response = await admin_api.patch(
-            ADMIN_SETTINGS, json={"TASK_TIMEOUT": BEYOND_TIMEDELTA_SECONDS}
-        )
-
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-        assert _cross_field_fields(response.json()) == [
-            ["STALE_RUN_AFTER", "TASK_TIMEOUT"]
-        ]
-        assert await _stored_overrides(session) == {}
-
-    @pytest.mark.asyncio
-    async def test_a_stored_row_is_ignored(self, session: AsyncSession) -> None:
-        """Drop such a row from the snapshot so the YAML/env timeout applies.
+        The honoured override beside it still applies, so the refresh did not fail.
 
         :param session: The database session.
+        :param rows: The override rows stored before the bounds.
+        :param field: The field they override.
         """
-        await store_overrides(session, TASK_TIMEOUT=BEYOND_TIMEDELTA_SECONDS)
+        await store_overrides(session, RUN_RETENTION=20, **rows)
 
         proxy = cast("OverridableSettingsProxy", om_inventory_settings)
         await publish_snapshot(proxy, session, OmInventorySettings)
 
-        assert om_inventory_settings.TASK_TIMEOUT == DEFAULTS.TASK_TIMEOUT
+        assert getattr(om_inventory_settings, field) == getattr(DEFAULTS, field)
+        assert om_inventory_settings.RUN_RETENTION == 20  # noqa: PLR2004
+
+    def test_a_stored_schedule_too_large_for_a_float_is_ignored(self) -> None:
+        """Drop the schedule instead of failing the whole refresh.
+
+        Built from a row in memory: SQLite's JSON round trip turns the value into
+        ``inf``, which coercion refuses before the schedule's own check runs.
+        """
+        row = SettingOverride(
+            setting_class=setting_class_token(OmInventorySettings),
+            key="SCHEDULE__every",
+            value=10**400,
+        )
+
+        stored = cache.stored_overrides_from_rows(OmInventorySettings, [row], DEFAULTS)
+
+        assert "SCHEDULE" not in stored
+
+    @pytest.mark.asyncio
+    async def test_one_leaf_cannot_mend_a_schedule_stored_in_seconds(
+        self, admin_api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Refuse a leaf that would leave the stored period in seconds.
+
+        Accepted, it would store a schedule the snapshot keeps ignoring.
+
+        :param admin_api: The authenticated admin client.
+        :param session: The database session.
+        """
+        await store_overrides(session, SCHEDULE__every=10, SCHEDULE__period="seconds")
+
+        alone = await admin_api.patch(ADMIN_SETTINGS, json={"SCHEDULE__every": 20})
+        both = await admin_api.patch(
+            ADMIN_SETTINGS, json={"SCHEDULE__every": 20, "SCHEDULE__period": "minutes"}
+        )
+
+        assert alone.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "Invalid period 'seconds'" in alone.json()["detail"][0]["msg"]
+        assert both.status_code == status.HTTP_200_OK
+        assert (
+            IntervalSchedule(every=20, period=Period.MINUTES)
+            == om_inventory_settings.SCHEDULE
+        )

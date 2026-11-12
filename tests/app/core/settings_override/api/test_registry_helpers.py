@@ -16,10 +16,10 @@
 """Unit tests for the field-introspection and override-provenance helpers in ``registry.py`` and the response builder ``_settings_response_from_field`` in ``api.routes``."""
 
 from datetime import datetime, timedelta
-from typing import Annotated, ClassVar
+from typing import Annotated, Any, ClassVar
 
 import pytest
-from annotated_types import Gt, Le
+from annotated_types import Ge, Gt, Interval, Le
 from pydantic import (
     BaseModel,
     Field,
@@ -63,7 +63,7 @@ from app.core.settings_override.resolution import (
     SettingProvenance,
 )
 from app.core.utils.date_time import utc_now
-from app.core.utils.fields import CredentialHttpUrl, StrHttpUrl
+from app.core.utils.fields import CredentialHttpUrl, StrHttpUrl, TimedeltaSeconds
 from app.extensions.config import DeliveryPlanInputs, ExtensionsSettings
 from app.tasks.config import TasksSettings
 from app.tasks.execution.executors.nomad.models import NomadExecutor
@@ -848,3 +848,50 @@ def test_override_provenance_normalizes_a_naive_stamp() -> None:
 def test_override_provenance_is_empty_without_rows() -> None:
     """Return an empty mapping when the class has no active override rows."""
     assert override_provenance_for_rows(ExtensionsSettings, []) == {}
+
+
+class _BoundedSettings(BaseYamlSettings):
+    """Synthetic settings class declaring bounds in each spelling a field may use."""
+
+    SETTINGS_PREFIXES: ClassVar[list[str]] = ["BOUNDED"]
+    PAIR: Annotated[int, Ge(2), Le(30)] = hot_field(8)
+    INTERVAL: Annotated[int, Interval(ge=1, le=8)] = hot_field(4)
+    FIELD: Annotated[int, Field(ge=1, le=8)] = hot_field(4)
+    SECONDS: Annotated[TimedeltaSeconds, Le(timedelta(hours=1))] = hot_field(
+        timedelta(minutes=5)
+    )
+    OPTIONAL: Annotated[int, Ge(1), Le(8)] | None = hot_field(None)
+    POSITIVE: PositiveInt = hot_field(3)
+    UNBOUNDED: int = hot_field(3)
+
+
+@pytest.mark.parametrize(
+    ("key", "bounds"),
+    [
+        ("PAIR", (2, 30)),
+        ("INTERVAL", (1, 8)),
+        ("FIELD", (1, 8)),
+        ("SECONDS", (None, 3600)),
+        ("OPTIONAL", (1, 8)),
+        ("POSITIVE", (None, None)),
+        ("UNBOUNDED", (None, None)),
+    ],
+)
+def test_settings_response_reports_inclusive_bounds(
+    key: str, bounds: tuple[Any, Any]
+) -> None:
+    """Report ``Ge``/``Le`` bounds, dumped the way the field's value is.
+
+    :param key: The field under test.
+    :param bounds: The ``(minimum, maximum)`` expected for it.
+    """
+    meta = next(m for m in iter_class_fields(_BoundedSettings) if m.key == key)
+    response = _settings_response_from_field(
+        setting_class=_BoundedSettings.__name__,
+        settings_cls=_BoundedSettings,
+        proxy=OverridableSettingsProxy(_BoundedSettings),
+        field_meta=meta,
+        provenance=None,
+    )
+
+    assert (response.minimum, response.maximum) == bounds

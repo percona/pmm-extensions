@@ -15,8 +15,8 @@
 
 """Serialize concurrent settings writes that a cross-field rule judges together.
 
-Two changes to related fields can each pass the rule check against the other's
-old value. The concurrency cases park the first write between its check and its
+Two changes to related fields, a rule's or one nested parent's, can each pass the
+check against the other's old value. The concurrency cases park the first write between its check and its
 commit, assert the second is queued on the lock rather than at its own check,
 and then that it is refused against the row the first one committed. Without the
 lock the second never queues, so each of them fails.
@@ -24,7 +24,7 @@ lock the second never queues, so each of them fails.
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Coroutine
-from typing import Any, ClassVar
+from typing import Any, cast, ClassVar
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -60,6 +60,9 @@ from tests.app.advisory_locks import (
 from tests.app.core.settings_override.conftest import (
     insert_override_row,
     TimingSettings,
+    WINDOW_HIGH,
+    WINDOW_LOW,
+    WindowSettings,
 )
 
 #: ``TimingSettings``' ``POLL <= TIMEOUT`` relationship.
@@ -246,6 +249,7 @@ class TestConcurrentWritesAreSerialized:
         settings_cls: type[BaseYamlSettings],
         first: Write,
         second: Write,
+        check: str = "_cross_field_errors",
     ) -> object:
         """Run ``first`` to its check, start ``second``, then let ``first`` commit.
 
@@ -256,12 +260,13 @@ class TestConcurrentWritesAreSerialized:
         :param settings_cls: The class both writes target.
         :param first: The write parked between its check and its commit.
         :param second: The write expected to queue behind ``first``.
+        :param check: The name of the check in ``routes`` both writes reach.
         :return: What ``second`` returned or raised.
         """
         checked: list[AsyncSession] = []
         first_checked = asyncio.Event()
         release_first = asyncio.Event()
-        real_check = routes._cross_field_errors
+        real_check = getattr(routes, check)
 
         async def parked_check(
             session: AsyncSession, *args: Any, **kwargs: Any
@@ -273,7 +278,7 @@ class TestConcurrentWritesAreSerialized:
                 await release_first.wait()
             return errors
 
-        mocker.patch.object(routes, "_cross_field_errors", parked_check)
+        mocker.patch.object(routes, check, parked_check)
         key = advisory_lock_key(setting_class_token(settings_cls))
         async with maker() as first_session, maker() as second_session:
             tasks = [asyncio.create_task(first(first_session))]
@@ -301,6 +306,7 @@ class TestConcurrentWritesAreSerialized:
         settings_cls: type[BaseYamlSettings],
         first: Write,
         second: Write,
+        check: str = "_cross_field_errors",
     ) -> HTTPUnprocessableEntityException:
         """Interleave the two writes and return the refusal ``second`` raised.
 
@@ -311,10 +317,11 @@ class TestConcurrentWritesAreSerialized:
         :param settings_cls: The class both writes target.
         :param first: The write parked between its check and its commit.
         :param second: The write expected to queue and then be refused.
+        :param check: The name of the check in ``routes`` both writes reach.
         :return: The refusal ``second`` raised.
         """
         outcome = await self._interleave(
-            mocker, engine, maker, namespace, settings_cls, first, second
+            mocker, engine, maker, namespace, settings_cls, first, second, check
         )
         assert isinstance(outcome, HTTPUnprocessableEntityException)
         return outcome
@@ -379,6 +386,40 @@ class TestConcurrentWritesAreSerialized:
         assert refused.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
         assert refused.detail == _cross_field_entries(POLL_RULE)
         assert await _stored(maker, TimingSettings) == {"TIMEOUT": 10}
+
+    @pytest.mark.asyncio
+    async def test_two_leaf_patches_breaking_their_parent_together(
+        self,
+        mocker: MockerFixture,
+        postgres_engine: AsyncEngine,
+        maker: async_sessionmaker[AsyncSession],
+        lock_namespace: int,
+    ) -> None:
+        """Refuse the second leaf PATCH against the leaf the first one committed.
+
+        :param mocker: The pytest-mock fixture.
+        :param postgres_engine: The engine the lock lives on.
+        :param maker: The session maker.
+        :param lock_namespace: The isolated lock namespace.
+        """
+        await _seed(maker, WindowSettings, {WINDOW_HIGH: 9})
+        proxy = OverridableSettingsProxy(WindowSettings)
+
+        refused = await self._race(
+            mocker,
+            postgres_engine,
+            maker,
+            lock_namespace,
+            WindowSettings,
+            _patch(WindowSettings, proxy, {WINDOW_LOW: 5}),
+            _patch(WindowSettings, proxy, {WINDOW_HIGH: 3}),
+            "_nested_parent_errors",
+        )
+
+        assert refused.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        entries = cast("list[dict[str, Any]]", refused.detail)
+        assert [entry["loc"] for entry in entries] == [["body", WINDOW_HIGH]]
+        assert await _stored(maker, WindowSettings) == {WINDOW_LOW: 5, WINDOW_HIGH: 9}
 
     @pytest.mark.asyncio
     async def test_a_delete_after_a_patch_breaking_a_rule_together(
@@ -553,7 +594,7 @@ class TestConcurrentWritesAreSerialized:
 
 
 class TestUnrelatedWritesTakeNoLock:
-    """Leave a change naming no rule field on its unlocked write path."""
+    """Leave a change naming no rule field or nested parent on its unlocked path."""
 
     @pytest.fixture
     def lock(self, mocker: MockerFixture) -> MagicMock:
@@ -624,5 +665,41 @@ class TestUnrelatedWritesTakeNoLock:
         proxy = OverridableSettingsProxy(TimingSettings)
 
         await _patch(TimingSettings, proxy, {"TIMEOUT": 200})(session)
+
+        lock.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [{WINDOW_LOW: 1}, {WINDOW_LOW.lower(): 1}, {"WINDOW": {"LOW": 1, "HIGH": 2}}],
+        ids=["leaf", "leaf-lowercase", "parent"],
+    )
+    async def test_a_patch_of_a_nested_parent_takes_the_lock(
+        self, session: AsyncSession, lock: MagicMock, body: dict[str, Any]
+    ) -> None:
+        """Take the lock for a parent judged by its merged leaves, in any spelling.
+
+        :param session: The SQLite session.
+        :param lock: The replaced lock.
+        :param body: The PATCH body.
+        """
+        proxy = OverridableSettingsProxy(WindowSettings)
+
+        await _patch(WindowSettings, proxy, body)(session)
+
+        lock.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_delete_of_a_nested_leaf_takes_the_lock(
+        self, session: AsyncSession, lock: MagicMock
+    ) -> None:
+        """Take the lock to revert a leaf the remaining ones are judged with.
+
+        :param session: The SQLite session.
+        :param lock: The replaced lock.
+        """
+        proxy = OverridableSettingsProxy(WindowSettings)
+
+        await _delete(WindowSettings, proxy, WINDOW_HIGH)(session)
 
         lock.assert_called_once()
