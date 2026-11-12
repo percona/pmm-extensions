@@ -24,6 +24,7 @@ __all__ = [
     "collect_class_setting_responses",
 ]
 
+from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager, AsyncExitStack
 from dataclasses import dataclass
@@ -32,7 +33,7 @@ from functools import partial
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, params, Request, status
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from pydantic.fields import FieldInfo
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col
@@ -62,7 +63,10 @@ from app.core.settings_override.api.models import (
 )
 from app.core.settings_override.cache import (
     load_stored_overrides,
+    load_stored_rows,
+    merge_nested_overrides,
     stored_overrides_from_rows,
+    SubChainUpdates,
 )
 from app.core.settings_override.constants import (
     CROSS_FIELD_LOCK_NAMESPACE,
@@ -113,6 +117,7 @@ from app.core.utils.cross_field import (
 )
 from app.core.utils.date_time import utc_now
 from app.core.utils.exceptions import exception_detail
+from app.core.utils.pydantic import annotation_pydantic_class
 
 ClassEntry = tuple[str, type[BaseYamlSettings], OverridableSettingsProxy]
 
@@ -572,8 +577,9 @@ async def _validate_patch_body(
     materialized value is not JSON-storable); plain fields persist the coerced
     value.
 
-    Once every key passes on its own, the batch's end state is judged against
-    the class's ``CROSS_FIELD_RULES`` (see :func:`_cross_field_errors`), so a
+    Once every key passes on its own, the batch's end state is judged: each
+    nested parent it touches against its field (see :func:`_nested_parent_errors`),
+    then the class's ``CROSS_FIELD_RULES`` (see :func:`_cross_field_errors`), so a
     batch moving several related fields at once is accepted whatever its key
     order.
 
@@ -654,12 +660,135 @@ async def _validate_patch_body(
         materialized_by_key[key] = materialized
 
     if not errors:
+        errors = await _nested_parent_errors(
+            session,
+            settings_cls,
+            proxy,
+            setting=materialized_by_key,
+            nested=[(key, value) for key, value in to_apply if "__" in key],
+        )
+    if not errors:
         errors = await _cross_field_errors(
             session, settings_cls, proxy, setting=materialized_by_key
         )
     if errors:
         raise HTTPUnprocessableEntityException(detail=errors)
     return to_apply
+
+
+async def _nested_parent_errors(
+    session: AsyncSession,
+    settings_cls: type[BaseYamlSettings],
+    proxy: OverridableSettingsProxy,
+    *,
+    setting: Mapping[str, Any] | None = None,
+    nested: list[tuple[str, Any]] | None = None,
+    clearing: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return one 422 entry per changed key whose parent the next snapshot would drop.
+
+    Each parent is merged from the rows the change leaves, as the snapshot merges
+    them. Like :func:`_cross_field_errors`, a change is refused when that drops a
+    leaf it writes, or leaves honoured today; leaves already ignored never block it.
+    The caller runs it and its write inside :func:`_cross_field_lock` too.
+
+    :param session: The sub-app's database session, read for stored overrides.
+    :param settings_cls: The Pydantic settings class being changed.
+    :param proxy: The proxy wrapping it, for the YAML/env base values.
+    :param setting: The materialized top-level values a PATCH would store.
+    :param nested: The coerced nested writes a PATCH would store, keyed by
+        canonical path.
+    :param clearing: The key a DELETE would revert to its YAML/env value.
+    :return: Pydantic-style entries, one per refusal of each changed key.
+    """
+    setting = setting or {}
+    written: defaultdict[str, SubChainUpdates] = defaultdict(dict)
+    changed: defaultdict[str, list[str]] = defaultdict(list)
+    for key, value in nested or ():
+        parent, *chain = key.split("__")
+        written[parent][tuple(chain)] = value
+        changed[parent].append(key)
+    for key in [*setting, *([clearing] if clearing else [])]:
+        changed[key.split("__")[0]].append(key)
+    touched = {
+        parent: keys
+        for parent, keys in changed.items()
+        if _judged_parent(settings_cls, parent)
+    }
+    if not touched:
+        return []
+    base = proxy.get_base()
+    whole, leaves = await load_stored_rows(session, settings_cls)
+    after_whole = {key: value for key, value in whole.items() if key != clearing}
+    after_whole |= setting
+    errors: list[dict[str, Any]] = []
+    for parent, keys in touched.items():
+        stored = leaves.get(parent, {})
+        after = {
+            chain: value
+            for chain, value in stored.items()
+            if "__".join((parent, *chain)) != clearing
+        } | written.get(parent, {})
+        if not after:
+            continue
+        try:
+            merge_nested_overrides(settings_cls, parent, after_whole, after, base)
+        except ValidationError as exc:
+            if parent in written or _merges(settings_cls, parent, whole, stored, base):
+                errors.extend(
+                    {
+                        "loc": ["body", key, *entry.get("loc", ())],
+                        "msg": entry.get("msg", ""),
+                        "type": entry.get("type", "value_error"),
+                    }
+                    for key in keys
+                    for entry in exc.errors()
+                )
+    return errors
+
+
+def _judged_parent(settings_cls: type[BaseYamlSettings], key: str) -> str | None:
+    """Return the parent whose merged value judges a change to ``key``.
+
+    :param settings_cls: The Pydantic settings class being changed.
+    :param key: A changed key, a field or a ``__``-delimited leaf, in any case.
+    :return: The canonical name of the nested-overridable model field ``key``
+        names or sits under, or ``None`` when it names none.
+    """
+    resolved = resolve_field_in_model(settings_cls, key.split("__", 1)[0])
+    if resolved is None:
+        return None
+    parent, field_info = resolved
+    if is_nested_overridable_parent(settings_cls, parent) and annotation_pydantic_class(
+        field_info.annotation
+    ):
+        return parent
+    return None
+
+
+def _merges(
+    settings_cls: type[BaseYamlSettings],
+    parent: str,
+    whole: dict[str, Any],
+    sub_updates: SubChainUpdates,
+    base: BaseModel,
+) -> bool:
+    """Return whether ``sub_updates`` merge onto ``parent`` as the snapshot needs.
+
+    :param settings_cls: The Pydantic settings class declaring ``parent``.
+    :param parent: The canonical name of a nested-overridable model field.
+    :param whole: The whole-field overrides the leaves merge onto.
+    :param sub_updates: The leaves, by canonical sub-chain.
+    :param base: The YAML/env settings instance.
+    :return: ``True`` when there are leaves and the merged parent validates.
+    """
+    if not sub_updates:
+        return False
+    try:
+        merge_nested_overrides(settings_cls, parent, whole, sub_updates, base)
+    except ValidationError:
+        return False
+    return True
 
 
 def _validate_nested_key(
@@ -1126,8 +1255,8 @@ def build_settings_router(
         :raises HTTPBadGatewayException: For a remote class, when the owning
             sub-app returns a server error (status >= 500) or is unreachable.
         :raises HTTPServiceUnavailableException: If the batch names a cross-field
-            rule's field and a concurrent change to the class holds its lock too
-            long; no rows are written.
+            rule's field or a nested parent, and a concurrent change to the class
+            holds its lock too long; no rows are written.
         :raises IntegrityError: When the replay of a batch that lost the
             unique-index race conflicts again, which leaves nothing written.
         """
@@ -1195,8 +1324,8 @@ def build_settings_router(
             ``NESTED_ONLY`` parent (the whole parent cannot be overridden;
             target an individual ``parent__leaf`` instead).
         :raises HTTPServiceUnavailableException: If ``key`` names a cross-field
-            rule's field and a concurrent change to the class holds its lock too
-            long; nothing is deleted.
+            rule's field or a nested parent, and a concurrent change to the class
+            holds its lock too long; nothing is deleted.
         :raises HTTPBadGatewayException: For a remote class, when the owning
             sub-app returns a server error (status >= 500) or is unreachable.
         """
@@ -1467,20 +1596,22 @@ async def _cross_field_lock(
     settings_cls: type[BaseYamlSettings],
     keys: Iterable[str | None],
 ) -> AsyncIterator[None]:
-    """Serialize a write's cross-field check and commit against its class's peers.
+    """Serialize a write's stored-row checks and commit against its class's peers.
 
-    Without it, two changes to related fields can each pass the check against
-    the other's old value and commit a pair that breaks a rule together, which
-    the snapshot then ignores while both callers were told it applied. Under the
-    lock the later change is judged against the rows the earlier one committed.
+    Without it, two changes to related fields, those of a cross-field rule or
+    the leaves of one nested parent, can each pass the check against the other's
+    old value and commit a pair that breaks the rule or the parent together,
+    which the snapshot then ignores while both callers were told it applied.
+    Under the lock the later change is judged against the rows the earlier one
+    committed.
 
     The lock is exclusive per settings class, on a connection of its own (see
     :func:`~app.core.db.utils.pg_advisory_xact_lock`), so it outlives the
     session's commit and the rollback before the ``IntegrityError`` replay. It
     is released when the block exits; the snapshot publish and rebind callbacks
     belong after it, so a slow rebind does not hold back the next writer. A
-    change naming no rule field takes no lock and opens no connection, and the
-    lock is a no-op on SQLite.
+    change naming neither a rule field nor a nested parent takes no lock and
+    opens no connection, and the lock is a no-op on SQLite.
 
     :param session: The sub-app's database session, whose engine the lock
         connection is drawn from.
@@ -1491,8 +1622,11 @@ async def _cross_field_lock(
         beyond :data:`CROSS_FIELD_LOCK_TIMEOUT`. Raised before the block is
         entered, so nothing is written.
     """
+    keys = [key for key in keys if key]
     async with AsyncExitStack() as stack:
-        if _names_rule_field(settings_cls, keys):
+        if _names_rule_field(settings_cls, keys) or any(
+            _judged_parent(settings_cls, key) for key in keys
+        ):
             try:
                 await stack.enter_async_context(
                     pg_advisory_xact_lock(
@@ -1742,8 +1876,8 @@ async def apply_class_overrides(
     :raises HTTPUnprocessableEntityException: If any key fails validation or the
         batch breaks a cross-field rule; no rows are written.
     :raises HTTPServiceUnavailableException: If the batch names a cross-field
-        rule's field and a concurrent change to the class holds its lock too
-        long; no rows are written.
+        rule's field or a nested parent, and a concurrent change to the class
+        holds its lock too long; no rows are written.
     :raises IntegrityError: When the replay of a batch that lost the
         unique-index race conflicts again, which leaves nothing written.
     """
@@ -1803,10 +1937,11 @@ async def _clear_class_override(
     :raises HTTPNotFoundException: If ``key`` is not a field on the class.
     :raises HTTPConflictException: If the field is NOT_OVERRIDABLE and has no row.
     :raises HTTPUnprocessableEntityException: If ``key`` names a NESTED_ONLY
-        parent, or reverting it would break a cross-field rule.
+        parent, or reverting it would leave its parent invalid or break a
+        cross-field rule.
     :raises HTTPServiceUnavailableException: If ``key`` names a cross-field
-        rule's field and a concurrent change to the class holds its lock too
-        long; nothing is deleted.
+        rule's field or a nested parent, and a concurrent change to the class
+        holds its lock too long; nothing is deleted.
     """
     key = canonical_override_key(settings_cls, key)
     field_meta = _field_meta_or_404(settings_cls, key)
@@ -1822,9 +1957,10 @@ async def _clear_class_override(
             key=key,
         )
         _assert_key_deletable(settings_cls, field_meta, has_override_row=bool(rows))
-        if errors := await _cross_field_errors(
+        errors = await _nested_parent_errors(
             session, settings_cls, proxy, clearing=key
-        ):
+        ) or await _cross_field_errors(session, settings_cls, proxy, clearing=key)
+        if errors:
             raise HTTPUnprocessableEntityException(detail=errors)
         await _delete_override_rows(session, token, rows)
     previous = proxy.get_snapshot()

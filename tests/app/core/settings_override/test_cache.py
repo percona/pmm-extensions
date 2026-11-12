@@ -31,8 +31,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.alerts.config import AlertSettings
 from app.core.alerts.models import BaseAlertProvider
-from app.core.config import BaseYamlSettings, Settings
+from app.core.config import BaseYamlSettings, PMMSettings, Settings
 from app.core.encryption import encrypt, mark_ciphertext
+from app.core.middleware.security_headers import SecurityHeadersOptions
 from app.core.settings_override import cache
 from app.core.settings_override.cache import (
     _build_nested_update,
@@ -58,6 +59,12 @@ from tests.app.core.settings_override.conftest import (
     SETTINGS_TOKEN,
     TASKS_SETTINGS_TOKEN,
     TimingSettings,
+    WINDOW,
+    Window,
+    WINDOW_HIGH,
+    WINDOW_LOW,
+    WINDOW_UNORDERED,
+    WindowSettings,
 )
 
 _NOMAD_OVERRIDE_TIMEOUT = 30
@@ -1195,3 +1202,87 @@ class TestLoadStoredOverrides:
             "POLL": 60,
             "TIMEOUT": 1,
         }
+
+
+class TestNestedParentValidation:
+    """Group the snapshot's check of a merged parent against its field."""
+
+    TOKEN = setting_class_token(WindowSettings)
+
+    @pytest.mark.asyncio
+    async def test_a_parent_its_field_refuses_falls_back_to_the_base(
+        self, session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Drop a leaf that leaves the merged parent invalid, and say so.
+
+        :param session: The database session.
+        :param caplog: Fixture to capture the warning.
+        """
+        caplog.set_level(logging.WARNING, logger="app.core.settings_override.cache")
+        await insert_override_row(
+            session, setting_class=self.TOKEN, key=WINDOW_LOW, value=5
+        )
+
+        snapshot = await build_snapshot(session, WindowSettings, WindowSettings())
+
+        assert WINDOW not in snapshot
+        assert any(WINDOW_UNORDERED in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_a_parent_its_field_accepts_is_merged(
+        self, session: AsyncSession
+    ) -> None:
+        """Keep leaves that together leave a valid parent.
+
+        :param session: The database session.
+        """
+        for key, value in {WINDOW_LOW: 5, WINDOW_HIGH: 9}.items():
+            await insert_override_row(
+                session, setting_class=self.TOKEN, key=key, value=value
+            )
+
+        snapshot = await build_snapshot(session, WindowSettings, WindowSettings())
+
+        assert snapshot[WINDOW] == Window(LOW=5, HIGH=9)
+
+    @pytest.mark.asyncio
+    async def test_a_nested_child_its_model_refuses_falls_back_to_the_base(
+        self, session: AsyncSession
+    ) -> None:
+        """Validate each rebuilt child, not only the parent holding it.
+
+        :param session: The database session.
+        """
+        for key in ("allow_self", "allow_all"):
+            await insert_override_row(
+                session,
+                setting_class=TASKS_SETTINGS_TOKEN,
+                key=f"SECURITY_HEADERS__permissions_policy__{key}",
+                value=["camera"],
+            )
+        base = TasksSettings.model_construct(SECURITY_HEADERS=SecurityHeadersOptions())
+
+        snapshot = await build_snapshot(session, TasksSettings, base_settings=base)
+
+        assert "SECURITY_HEADERS" not in snapshot
+
+    @pytest.mark.asyncio
+    async def test_the_parent_model_validators_run_on_the_merged_copy(
+        self, session: AsyncSession
+    ) -> None:
+        """Default PMM's frontend to a leaf's endpoint when YAML/env set none.
+
+        :param session: The database session.
+        """
+        await insert_override_row(
+            session,
+            setting_class=SETTINGS_TOKEN,
+            key="PMM__endpoint",
+            value=PMM_ENDPOINT,
+        )
+        base = Settings.model_construct(PMM=PMMSettings())
+
+        snapshot = await build_snapshot(session, Settings, base_settings=base)
+
+        assert snapshot["PMM"].frontend == snapshot["PMM"].endpoint
+        assert snapshot["PMM"].frontend is not None

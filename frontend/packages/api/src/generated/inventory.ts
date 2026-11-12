@@ -80,8 +80,8 @@ export interface paths {
      *     :raises HTTPBadGatewayException: For a remote class, when the owning
      *         sub-app returns a server error (status >= 500) or is unreachable.
      *     :raises HTTPServiceUnavailableException: If the batch names a cross-field
-     *         rule's field and a concurrent change to the class holds its lock too
-     *         long; no rows are written.
+     *         rule's field or a nested parent, and a concurrent change to the class
+     *         holds its lock too long; no rows are written.
      *     :raises IntegrityError: When the replay of a batch that lost the
      *         unique-index race conflicts again, which leaves nothing written.
      */
@@ -149,8 +149,8 @@ export interface paths {
      *         ``NESTED_ONLY`` parent (the whole parent cannot be overridden;
      *         target an individual ``parent__leaf`` instead).
      *     :raises HTTPServiceUnavailableException: If ``key`` names a cross-field
-     *         rule's field and a concurrent change to the class holds its lock too
-     *         long; nothing is deleted.
+     *         rule's field or a nested parent, and a concurrent change to the class
+     *         holds its lock too long; nothing is deleted.
      *     :raises HTTPBadGatewayException: For a remote class, when the owning
      *         sub-app returns a server error (status >= 500) or is unreachable.
      */

@@ -19,11 +19,11 @@ import asyncio
 import logging
 import operator
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
-from typing import ClassVar, Self
+from typing import Annotated, ClassVar, Self
 
 import pytest
 import pytest_asyncio
-from pydantic import BaseModel, SecretStr
+from pydantic import AfterValidator, BaseModel, SecretStr
 from pydantic_settings import SettingsConfigDict
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
@@ -315,3 +315,38 @@ class TimingSettings(BaseYamlSettings):
     TIMEOUT: int = hot_field(180)
     STALE: int = hot_field(600)
     BYSTANDER: int = hot_field(5)
+
+
+class Window(BaseModel):
+    """Carry two leaves that are only valid together."""
+
+    LOW: int = 1
+    HIGH: int = 2
+
+
+#: The refusal :func:`_ordered` raises.
+WINDOW_UNORDERED = "LOW must not exceed HIGH"
+
+
+def _ordered(window: Window) -> Window:
+    """Refuse a window whose ``LOW`` exceeds its ``HIGH``.
+
+    :param window: The window to check.
+    :return: The unchanged window.
+    :raises ValueError: If ``LOW`` exceeds ``HIGH``.
+    """
+    if window.LOW > window.HIGH:
+        raise ValueError(WINDOW_UNORDERED)
+    return window
+
+
+class WindowSettings(BaseYamlSettings):
+    """Carry a nested-overridable parent its field validates as a whole."""
+
+    WINDOW: Annotated[Window, AfterValidator(_ordered)] = hot_field(Window())
+
+
+#: ``WindowSettings``' nested parent and its leaf override keys.
+WINDOW = "WINDOW"
+WINDOW_LOW = "WINDOW__LOW"
+WINDOW_HIGH = "WINDOW__HIGH"
