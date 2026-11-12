@@ -582,6 +582,153 @@ class TestBuildStep:
         assert 'om_mongod_why; exit "$rc"' in body
 
 
+_UBUNTU_20_04 = 'ID=ubuntu\nVERSION_ID="20.04"\nPRETTY_NAME="Ubuntu 20.04.6 LTS"\n'
+_UBUNTU_22_04 = 'ID=ubuntu\nVERSION_ID="22.04"\nPRETTY_NAME="Ubuntu 22.04.5 LTS"\n'
+_ROCKY_9_4 = 'ID="rocky"\nVERSION_ID="9.4"\nPRETTY_NAME="Rocky Linux 9.4 (Blue Onyx)"\n'
+_ROCKY_10_0 = (
+    'ID="rocky"\nVERSION_ID="10.0"\nPRETTY_NAME="Rocky Linux 10.0 (Red Quartz)"\n'
+)
+_DEBIAN_12 = (
+    'ID=debian\nVERSION_ID="12"\nPRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\n'
+)
+
+
+class TestOsReleaseCheck:
+    """Assert pre_check refuses a node release not supported for the MongoDB version."""
+
+    @staticmethod
+    def _run(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        os_: OperatingSystem,
+        mongodb_version: str,
+        os_release: str | None,
+    ) -> subprocess.CompletedProcess[str]:
+        path = tmp_path / "os-release"
+        if os_release is not None:
+            path.write_text(os_release)
+        monkeypatch.setattr(packages, "OS_RELEASE_PATH", str(path))
+        spec = _spec(os_).model_copy(update={"mongodb_version": mongodb_version})
+        return subprocess.run(
+            [_SH, "-euc", packages._os_release_check(spec)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @pytest.mark.parametrize(
+        ("os_", "mongodb_version", "os_release"),
+        [
+            (OperatingSystem.UBUNTU, "7.0", _UBUNTU_22_04),
+            (OperatingSystem.UBUNTU, "8.0.4", _UBUNTU_22_04),
+            (OperatingSystem.ROCKY, "7.0", _ROCKY_9_4),
+            (OperatingSystem.ROCKY, "8.0", _ROCKY_10_0),
+        ],
+    )
+    def test_passes_a_supported_release(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        os_: OperatingSystem,
+        mongodb_version: str,
+        os_release: str,
+    ) -> None:
+        """Pass a release the version is supported on, Rocky Linux by major version."""
+        result = self._run(tmp_path, monkeypatch, os_, mongodb_version, os_release)
+
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize(
+        ("os_", "mongodb_version", "os_release", "message"),
+        [
+            (
+                OperatingSystem.UBUNTU,
+                "7.0",
+                _UBUNTU_20_04,
+                (
+                    "pre_check: MongoDB 7.0 is supported on Ubuntu 22.04, 24.04; "
+                    "this node runs Ubuntu 20.04.6 LTS"
+                ),
+            ),
+            (
+                OperatingSystem.ROCKY,
+                "7.0.14",
+                _ROCKY_10_0,
+                (
+                    "pre_check: MongoDB 7.0 is supported on Rocky Linux 8, 9; "
+                    "this node runs Rocky Linux 10.0 (Red Quartz)"
+                ),
+            ),
+            (
+                OperatingSystem.UBUNTU,
+                "8.0",
+                _DEBIAN_12,
+                (
+                    "pre_check: MongoDB 8.0 is supported on Ubuntu 22.04, 24.04; "
+                    "this node runs Debian GNU/Linux 12 (bookworm)"
+                ),
+            ),
+            (
+                OperatingSystem.UBUNTU,
+                "9.0",
+                _UBUNTU_22_04,
+                (
+                    "pre_check: MongoDB 9.0 is not supported on Ubuntu; "
+                    "this node runs Ubuntu 22.04.5 LTS"
+                ),
+            ),
+        ],
+    )
+    def test_refuses_an_unsupported_release_naming_both(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        os_: OperatingSystem,
+        mongodb_version: str,
+        os_release: str,
+        message: str,
+    ) -> None:
+        """Name the supported releases and the node's own, and fail before any change."""
+        result = self._run(tmp_path, monkeypatch, os_, mongodb_version, os_release)
+
+        assert result.returncode == 1
+        assert result.stderr.strip() == message
+
+    def test_names_the_release_by_id_without_a_pretty_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fall back to ID and VERSION_ID when PRETTY_NAME is absent."""
+        result = self._run(
+            tmp_path,
+            monkeypatch,
+            OperatingSystem.ROCKY,
+            "7.0",
+            "ID=rocky\nVERSION_ID=10.0\n",
+        )
+
+        assert result.returncode == 1
+        assert result.stderr.strip().endswith("this node runs rocky 10.0")
+
+    def test_refuses_a_node_without_os_release(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refuse rather than guess when the release cannot be read."""
+        result = self._run(tmp_path, monkeypatch, OperatingSystem.ROCKY, "8.0", None)
+
+        assert result.returncode == 1
+        assert "is missing, so the OS release is unknown" in result.stderr
+
+    def test_pre_check_runs_it_first(self) -> None:
+        """Check the release before anything else the pre-check looks at."""
+        action = PackagesInstallStrategy().build_step(
+            "pre_check", "node00", _spec(OperatingSystem.ROCKY)
+        )
+
+        body = _body(action.command)
+        assert body.startswith(f"if [ ! -r {packages.OS_RELEASE_PATH} ]; then")
+        assert "'rocky 8'|'rocky 9'|'rocky 10') ;;" in body
+
+
 class TestPlanRunSteps:
     """Assert the run-level step list is fixed and OS-independent."""
 
@@ -1344,7 +1491,7 @@ def _fake_bin(tmp_path: Path, *, with_mongod: bool, ss_output: str = "") -> Path
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for tool in ("df", "tail", "ls", "dirname", "sed", "head"):
+    for tool in ("df", "tail", "ls", "dirname", "sed", "head", "tr"):
         real = shutil.which(tool)
         assert real is not None
         (bin_dir / tool).symlink_to(real)
@@ -1369,6 +1516,9 @@ class TestPreCheckCommand:
         """Point the fixed paths at scratch paths, with a 1-byte minimum."""
         config = tmp_path / "mongod.conf"
         data = tmp_path / "data"
+        os_release = tmp_path / "os-release"
+        os_release.write_text(_UBUNTU_22_04)
+        monkeypatch.setattr(packages, "OS_RELEASE_PATH", str(os_release))
         monkeypatch.setattr(packages, "CONFIG_PATH", str(config))
         monkeypatch.setattr(packages, "MIN_DATA_DISK_BYTES", 1)
         monkeypatch.setattr(

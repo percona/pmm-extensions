@@ -13418,6 +13418,15 @@
         "title": "OperatingSystem",
         "type": "string"
       },
+      "om_bootstrap__ReleaseMatch": {
+        "description": "Say which part of ``/etc/os-release``'s ``VERSION_ID`` names a release.",
+        "enum": [
+          "exact",
+          "major"
+        ],
+        "title": "ReleaseMatch",
+        "type": "string"
+      },
       "om_bootstrap__RunResponse": {
         "description": "Describe one bootstrap run in full.\n\n:param id: The run's id.\n:param status: The run's lifecycle state.\n:param install_method: The run's install method.\n:param os: The run's target OS.\n:param mongodb_version: The run's MongoDB version.\n:param replica_set_name: The replica set every host in this run joins.\n:param data_path: Where mongod stores its data on every host in this run.\n:param log_path: Where mongod writes its log file on every host in this run.\n:param port: The port mongod listens on, on every host in this run.\n:param bind_ip: The interface(s) mongod listens on, on every host in this run.\n:param member_configs: Per-host replica-set member settings this run was\n    created with — see :class:`TriggerRunRequest`'s own docstring.\n:param started_at: When the run began.\n:param finished_at: When it reached a terminal status, if it has.\n:param hosts: Every host's current step-by-step progress — the full,\n    run-specific step list each host was planned with (forward steps and\n    rollback steps both), not just the steps that have started.\n:param run_steps: This run's run-level steps\n    (:meth:`~app.extensions.apps.om_bootstrap.strategy.InstallStrategy.plan_run_steps`),\n    planned up front the same way ``hosts``' steps are.\n:param error: The run-level failure detail, when the run itself raised\n    outside any single host's steps.\n:param cancel_requested: Whether an operator has asked this run to stop —\n    see :func:`cancel_run`. PMM's stepper treats this the same as a step\n    exhausting its retries (force every host's rollback), never something\n    ``om_bootstrap`` itself acts on.",
         "properties": {
@@ -13620,6 +13629,58 @@
         ],
         "title": "StepStatus",
         "type": "string"
+      },
+      "om_bootstrap__SupportedOperatingSystem": {
+        "description": "Hold one distribution a run installs onto, with its supported releases.\n\n:param os: The distribution, as ``/etc/os-release``'s ``ID``.\n:param name: The distribution's name for people, e.g. ``Rocky Linux``.\n:param release_match: How a node's ``VERSION_ID`` names one of ``releases``.\n:param releases: The supported releases, oldest first.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "os": {
+            "$ref": "#/components/schemas/om_bootstrap__OperatingSystem"
+          },
+          "release_match": {
+            "$ref": "#/components/schemas/om_bootstrap__ReleaseMatch"
+          },
+          "releases": {
+            "items": {
+              "$ref": "#/components/schemas/om_bootstrap__SupportedRelease"
+            },
+            "title": "Releases",
+            "type": "array"
+          }
+        },
+        "required": [
+          "os",
+          "name",
+          "release_match",
+          "releases"
+        ],
+        "title": "SupportedOperatingSystem",
+        "type": "object"
+      },
+      "om_bootstrap__SupportedRelease": {
+        "description": "Hold one OS release and the MongoDB versions a run installs onto it.\n\n:param version: The release, as :class:`ReleaseMatch` reads it from ``VERSION_ID``.\n:param mongodb_versions: ``major.minor`` MongoDB versions, oldest first.",
+        "properties": {
+          "mongodb_versions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Mongodb Versions",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "mongodb_versions"
+        ],
+        "title": "SupportedRelease",
+        "type": "object"
       },
       "om_bootstrap__TriggerRunRequest": {
         "description": "Request one bootstrap run over a set of hosts, all sharing one spec.\n\n:param hosts: The hosts to provision — one-member or three-member replica\n    sets only, the decided phase-1 scope. Each is a node name: letters,\n    digits, ``.``, ``_`` and ``-``, starting with a letter or digit.\n:param install_method: Which strategy provisions every host in this run.\n:param os: Every host's OS. Mixed-OS replica sets are out of phase-1 scope.\n:param mongodb_version: The Percona Server for MongoDB version to install,\n    as ``major.minor`` or ``major.minor.patch`` (e.g. ``\"8.0\"``, ``\"8.0.4\"``).\n:param replica_set_name: The replica set every host joins: 1-64 letters,\n    digits, ``_`` or ``-``.\n:param data_path: Where mongod stores its data on every host. Defaults to\n    the same value the column behind it carries\n    (``migrations/versions/..._add_run_config_fields.py``), so a caller\n    that omits it gets the path the fixed-path contract used.\n:param log_path: Where mongod writes its log file on every host. Same\n    default story as ``data_path``.\n:param port: The port mongod listens on, on every host. Same default\n    story as ``data_path``.\n:param bind_ip: The interface(s) mongod listens on, on every host.\n    Defaults to ``127.0.0.1``, keeping mongod's pre-auth window local to\n    the host unless the caller passes a wider address. mongod also listens\n    on ``127.0.0.1`` unless the value already reaches it.\n:param member_configs: Per-host replica-set member settings (election\n    settings and bind address), keyed by entries of ``hosts``. A host\n    missing from this mapping — including every host, when this is left\n    empty — gets\n    :class:`~app.extensions.apps.om_bootstrap.strategy.MemberConfig`'s own\n    defaults.\n:param create_admin_user: Whether to plan a ``create_admin_user`` run step,\n    creating the customer's own administrator with the ``root`` role. Its\n    credentials arrive with that step's dispatch, like every other secret.",
@@ -21006,7 +21067,7 @@
         ]
       },
       "post": {
-        "description": "Create a bootstrap run, planning every host's steps up front.\n\nDispatches nothing: creating a run only plans it, so the caller (PMM's\ndriver) sees the full step list for every host before anything is touched.\nActually starting a host's first step is a separate call to\n:func:`dispatch_run_step`.\n\n:param session: The database session.\n:param request: The requested run.\n:raises HTTPBadRequestException: When ``request.hosts`` is empty, lists the\n    same host twice, has neither one nor three hosts, names an install\n    method with no registered strategy, ``member_configs`` names a host\n    outside ``hosts``, or ``member_configs`` leaves no host that both votes\n    and has a nonzero priority, since ``rs.initiate`` rejects a config with\n    no electable member.\n:return: The created run, every host's steps ``pending``.",
+        "description": "Create a bootstrap run, planning every host's steps up front.\n\nDispatches nothing: creating a run only plans it, so the caller (PMM's\ndriver) sees the full step list for every host before anything is touched.\nActually starting a host's first step is a separate call to\n:func:`dispatch_run_step`.\n\n:param session: The database session.\n:param request: The requested run.\n:raises HTTPBadRequestException: When ``request.hosts`` is empty, lists the\n    same host twice, has neither one nor three hosts, names an install\n    method with no registered strategy, asks for a MongoDB version no\n    release of ``request.os`` is supported for, ``member_configs`` names a\n    host outside ``hosts``, or ``member_configs`` leaves no host that both\n    votes and has a nonzero priority, since ``rs.initiate`` rejects a\n    config with no electable member.\n:return: The created run, every host's steps ``pending``.",
         "operationId": "om_bootstrap_trigger_run_api_apps_om_bootstrap_runs_post",
         "requestBody": {
           "content": {
@@ -21495,6 +21556,32 @@
           }
         },
         "summary": "Get Schema",
+        "tags": [
+          "om_bootstrap"
+        ]
+      }
+    },
+    "/api/apps/om_bootstrap/supported-releases": {
+      "get": {
+        "description": "Return the OS releases a run installs each MongoDB version onto.\n\nPMM decides from this which nodes an install can target and which MongoDB\nversions to offer for them. ``pre_check`` checks the same table on the node.\n\n:return: Every supported distribution, with its releases.",
+        "operationId": "om_bootstrap_list_supported_releases_api_apps_om_bootstrap_supported_releases_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/om_bootstrap__SupportedOperatingSystem"
+                  },
+                  "title": "Response Om Bootstrap List Supported Releases Api Apps Om Bootstrap Supported Releases Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Supported Releases",
         "tags": [
           "om_bootstrap"
         ]

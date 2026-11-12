@@ -2021,10 +2021,11 @@ export interface paths {
      *     :param request: The requested run.
      *     :raises HTTPBadRequestException: When ``request.hosts`` is empty, lists the
      *         same host twice, has neither one nor three hosts, names an install
-     *         method with no registered strategy, ``member_configs`` names a host
-     *         outside ``hosts``, or ``member_configs`` leaves no host that both votes
-     *         and has a nonzero priority, since ``rs.initiate`` rejects a config with
-     *         no electable member.
+     *         method with no registered strategy, asks for a MongoDB version no
+     *         release of ``request.os`` is supported for, ``member_configs`` names a
+     *         host outside ``hosts``, or ``member_configs`` leaves no host that both
+     *         votes and has a nonzero priority, since ``rs.initiate`` rejects a
+     *         config with no electable member.
      *     :return: The created run, every host's steps ``pending``.
      */
     post: operations['om_bootstrap_trigger_run_api_apps_om_bootstrap_runs_post'];
@@ -2345,6 +2346,31 @@ export interface paths {
      *     :return: The plugin schema instance.
      */
     get: operations['om_bootstrap_get_schema_api_apps_om_bootstrap_schema_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/apps/om_bootstrap/supported-releases': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Supported Releases
+     * @description Return the OS releases a run installs each MongoDB version onto.
+     *
+     *     PMM decides from this which nodes an install can target and which MongoDB
+     *     versions to offer for them. ``pre_check`` checks the same table on the node.
+     *
+     *     :return: Every supported distribution, with its releases.
+     */
+    get: operations['om_bootstrap_list_supported_releases_api_apps_om_bootstrap_supported_releases_get'];
     put?: never;
     post?: never;
     delete?: never;
@@ -10779,6 +10805,12 @@ export interface components {
      */
     om_bootstrap__OperatingSystem: 'ubuntu' | 'rocky';
     /**
+     * ReleaseMatch
+     * @description Say which part of ``/etc/os-release``'s ``VERSION_ID`` names a release.
+     * @enum {string}
+     */
+    om_bootstrap__ReleaseMatch: 'exact' | 'major';
+    /**
      * RunResponse
      * @description Describe one bootstrap run in full.
      *
@@ -10917,6 +10949,36 @@ export interface components {
      * @enum {string}
      */
     om_bootstrap__StepStatus: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+    /**
+     * SupportedOperatingSystem
+     * @description Hold one distribution a run installs onto, with its supported releases.
+     *
+     *     :param os: The distribution, as ``/etc/os-release``'s ``ID``.
+     *     :param name: The distribution's name for people, e.g. ``Rocky Linux``.
+     *     :param release_match: How a node's ``VERSION_ID`` names one of ``releases``.
+     *     :param releases: The supported releases, oldest first.
+     */
+    om_bootstrap__SupportedOperatingSystem: {
+      /** Name */
+      name: string;
+      os: components['schemas']['om_bootstrap__OperatingSystem'];
+      release_match: components['schemas']['om_bootstrap__ReleaseMatch'];
+      /** Releases */
+      releases: components['schemas']['om_bootstrap__SupportedRelease'][];
+    };
+    /**
+     * SupportedRelease
+     * @description Hold one OS release and the MongoDB versions a run installs onto it.
+     *
+     *     :param version: The release, as :class:`ReleaseMatch` reads it from ``VERSION_ID``.
+     *     :param mongodb_versions: ``major.minor`` MongoDB versions, oldest first.
+     */
+    om_bootstrap__SupportedRelease: {
+      /** Mongodb Versions */
+      mongodb_versions: string[];
+      /** Version */
+      version: string;
+    };
     /**
      * TriggerRunRequest
      * @description Request one bootstrap run over a set of hosts, all sharing one spec.
@@ -15878,6 +15940,26 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['framework__AppSchema'];
+        };
+      };
+    };
+  };
+  om_bootstrap_list_supported_releases_api_apps_om_bootstrap_supported_releases_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['om_bootstrap__SupportedOperatingSystem'][];
         };
       };
     };
