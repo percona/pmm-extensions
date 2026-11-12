@@ -167,16 +167,23 @@ def _definition_time_parts(
 
 
 def _comprehension_walrus_targets(node: ast.AST) -> Iterator[ast.AST]:
-    """Yield the walrus targets inside a comprehension, stopping at definitions.
+    """Yield the walrus targets inside a comprehension.
+
+    A nested definition is entered only through its definition-time parts
+    (decorators, defaults, annotations, bases), which the comprehension evaluates.
 
     :param node: A comprehension, or a node inside one.
     :return: The ``:=`` targets, which bind in the comprehension's enclosing scope.
     """
-    for child in ast.iter_child_nodes(node):
+    children = (
+        _definition_time_parts(node)
+        if isinstance(node, DEFINITIONS)
+        else ast.iter_child_nodes(node)
+    )
+    for child in children:
         if isinstance(child, ast.NamedExpr):
             yield child.target
-        if not isinstance(child, DEFINITIONS):
-            yield from _comprehension_walrus_targets(child)
+        yield from _comprehension_walrus_targets(child)
 
 
 def _module_scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
@@ -473,7 +480,8 @@ def main(argv: list[str] | None = None) -> int:
     :param argv: Command-line arguments; ``None`` reads ``sys.argv``.
     :return: Exit status: 0 when the tree is clean, 1 otherwise.
     :raises SystemExit: If the baseline or lockfile is unreadable or malformed, the
-        lockfile locks no vulture, or vulture could not parse a scanned file.
+        lockfile locks no vulture, the running vulture differs from the locked one, or
+        vulture could not parse a scanned file.
     """
     parser = argparse.ArgumentParser(
         description="Fail when vulture reports dead code under app/ that the baseline does not keep."
@@ -491,6 +499,12 @@ def main(argv: list[str] | None = None) -> int:
     baseline = root / BASELINE_RELPATH
     entries = load_baseline(baseline)
     locked = locked_vulture_version(root)
+    running = importlib.metadata.version("vulture")
+    if running != locked:
+        raise SystemExit(
+            f"vulture {running} runs this check but {LOCKFILE_NAME} locks {locked}. Move the "
+            "additional_dependencies pin in .pre-commit-config.yaml and the dev-group pin together."
+        )
     findings = scan(root)
     if args.update_baseline:
         return _update_baseline(baseline, entries, findings)
@@ -503,12 +517,6 @@ def main(argv: list[str] | None = None) -> int:
         "check. Remove it, or name only codes vulture ignores, and use a baseline entry instead."
         for location in vulture_noqa_lines(root)
     )
-    running = importlib.metadata.version("vulture")
-    if running != locked:
-        failures.append(
-            f"vulture {running} runs this check but {LOCKFILE_NAME} locks {locked}. Move the "
-            "additional_dependencies pin in .pre-commit-config.yaml and the dev-group pin together."
-        )
     if failures:
         print("\n\n".join(failures))
         return 1

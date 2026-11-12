@@ -222,20 +222,21 @@ def test_module_scope_walrus_bindings_reported(
         "\n\ndef f(arg=(w_default := 1)):\n    return arg\n"
         "\n\nclass C(dict, metaclass=(w_meta := type)):\n    pass\n"
         "\n\nlam = lambda p=(w_lambda := 2): p\n"
-        "rows = [m for m in range(2)]\n",
+        "rows = [m for m in range(2)]\n"
+        "cbs = [(lambda v=(w_lam_comp := 1): v) for i in range(1)]\n",
     )
     write(
         tree,
         "tests/test_m.py",
-        "from app.m import C, f, lam, rows\n\nprint(C, f, lam, rows)\n",
+        "from app.m import C, cbs, f, lam, rows\n\nprint(C, cbs, f, lam, rows)\n",
     )
 
     status, output = run_check(tree, capsys)
 
     assert status == 1
-    for name in ("w_comp", "w_default", "w_meta", "w_lambda"):
+    for name in ("w_comp", "w_default", "w_meta", "w_lambda", "w_lam_comp"):
         assert f"unused variable '{name}'" in output
-    for name in ("n", "m", "p"):
+    for name in ("n", "m", "p", "v", "i"):
         assert f"'{name}'" not in output
 
 
@@ -489,6 +490,22 @@ def test_pin_mismatch_fails(tree: Path, capsys: pytest.CaptureFixture[str]) -> N
     assert importlib.metadata.version("vulture") in output
     assert "0.0.1" in output
     assert ".pre-commit-config.yaml" in output
+
+
+def test_update_baseline_refuses_pin_mismatch(
+    tree: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Refuse --update-baseline under a vulture other than the locked one, leaving the baseline alone."""
+    write(tree, "poetry.lock", lock_text("0.0.1"))
+    write(tree, BASELINE, entry_text("app/m.py", "function", "gone"))
+    before = (tree / BASELINE).read_text(encoding="utf-8")
+
+    status, output = run_check(tree, capsys, "--update-baseline")
+
+    assert status == 1
+    assert importlib.metadata.version("vulture") in output
+    assert "0.0.1" in output
+    assert (tree / BASELINE).read_text(encoding="utf-8") == before
 
 
 def test_lockfile_without_vulture_fails(
