@@ -478,12 +478,15 @@ class TestListBootstrapRuns:
     """Assert GET /runs discovers runs by status, newest first."""
 
     async def _seed_run(
-        self, session: AsyncSession, run_status: BootstrapRunStatus
+        self,
+        session: AsyncSession,
+        run_status: BootstrapRunStatus,
+        replica_set_name: str = "rs-test",
     ) -> BootstrapRun:
         return await BootstrapRunManager.save(
             session,
             BootstrapRunFactory.build(
-                status=run_status,
+                status=run_status, replica_set_name=replica_set_name
             ),
         )
 
@@ -502,6 +505,21 @@ class TestListBootstrapRuns:
         assert response.status_code == status.HTTP_200_OK
         body = response.json()
         assert {run["id"] for run in body} == {str(running.id)}
+
+    @pytest.mark.asyncio
+    async def test_filters_by_replica_set_name(
+        self, regular_user: CasdoorUser, session: AsyncSession
+    ) -> None:
+        """Answer PMM's name check with only the runs creating that replica set."""
+        wanted = await self._seed_run(session, BootstrapRunStatus.SUCCEEDED, "rs0")
+        await self._seed_run(session, BootstrapRunStatus.RUNNING, "rs1")
+
+        response = api_client(regular_user, session, _fake_tasks_api()).get(
+            f"{BASE}/runs", params={"replica_set_name": "rs0"}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert {run["id"] for run in response.json()} == {str(wanted.id)}
 
     @pytest.mark.asyncio
     async def test_returns_every_status_when_unfiltered(
@@ -664,6 +682,39 @@ class TestDispatchRunStep:
         step = next(s for s in body["hosts"][0]["steps"] if s["name"] == "pre_check")
         assert step["status"] == "running"
         assert step["task_history_id"] == FAKE_TASK_HISTORY_ID
+
+    @pytest.mark.asyncio
+    async def test_pre_check_resolves_every_member_of_the_run(
+        self, regular_user: CasdoorUser, session: AsyncSession
+    ) -> None:
+        """Build pre_check from the run's hosts, so each host checks all members."""
+        run = await BootstrapRunManager.save(
+            session,
+            BootstrapRunFactory.build(
+                hosts=dump_host_states(
+                    [
+                        HostBootstrapState(
+                            host=host, steps=[StepRecord(name="pre_check")]
+                        )
+                        for host in ("node00", "node01", "node02")
+                    ]
+                ),
+            ),
+        )
+        dispatch_step_mock = AsyncMock(return_value=FAKE_TASK_HISTORY_ID)
+
+        with patch(
+            "app.extensions.apps.om_bootstrap.api_routes.dispatch_step",
+            dispatch_step_mock,
+        ):
+            response = api_client(regular_user, session, _fake_tasks_api()).post(
+                f"{BASE}/runs/{run.id}/hosts/node01/steps/pre_check:dispatch"
+            )
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        body = dispatch_step_mock.call_args.args[5].command[2]
+        assert "for name in node00 node01 node02; do" in body
+        assert "'pre_check: node01 cannot resolve'" in body
 
     @pytest.mark.asyncio
     async def test_records_a_dispatch_that_the_tasks_api_rejects(

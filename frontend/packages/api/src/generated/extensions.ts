@@ -1991,7 +1991,7 @@ export interface paths {
     };
     /**
      * List Bootstrap Runs
-     * @description Return runs, newest first, optionally narrowed to one status.
+     * @description Return runs, newest first, optionally narrowed to one status or name.
      *
      *     The intended caller is PMM's HA-leader-only stepper. It does not persist
      *     its own copy of which runs exist or where they are, so on every tick, and
@@ -2001,6 +2001,8 @@ export interface paths {
      *
      *     :param session: The database session.
      *     :param status: Restrict to runs in this status. Omit for any status.
+     *     :param replica_set_name: Restrict to runs creating this replica set, as
+     *         PMM asks before it accepts a name for an install. Omit for any name.
      *     :param limit: How many to return.
      *     :return: The runs. Does **not** reconcile in-flight steps — unlike
      *         :func:`get_bootstrap_run`, a caller polling a specific run for the
@@ -15623,6 +15625,7 @@ export interface operations {
     parameters: {
       query?: {
         status?: components['schemas']['om_bootstrap__BootstrapRunStatus'] | null;
+        replica_set_name?: string | null;
         limit?: number;
       };
       header?: never;
