@@ -192,6 +192,8 @@ class BootstrapSpec(BaseModel):
         defaults.
     :param create_admin_user: Whether the run also creates the customer's own
         administrator, alongside PMM's monitoring user.
+    :param hosts: Every host in the run, in run order: the names ``rs.initiate``
+        gives the members, which ``pre_check`` checks each host can resolve.
     """
 
     install_method: InstallMethod
@@ -205,6 +207,7 @@ class BootstrapSpec(BaseModel):
     bind_ip: str
     member_configs: dict[str, MemberConfig] = {}
     create_admin_user: bool = False
+    hosts: list[str]
 
 
 class StepAction(BaseModel):

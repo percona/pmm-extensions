@@ -86,6 +86,7 @@ def _spec(
         port=27017,
         bind_ip="0.0.0.0",
         member_configs=member_configs or {},
+        hosts=["node00"],
     )
 
 
@@ -254,6 +255,7 @@ class TestBuildStep:
             log_path="/var/log/mongodb/mongod.log",
             port=27017,
             bind_ip="0.0.0.0",
+            hosts=["node00"],
         )
         action = PackagesInstallStrategy().build_step(
             "configure_repository", "node00", spec
@@ -556,6 +558,23 @@ class TestBuildStep:
         assert " /opt/*/bin/mongod;" in body
         assert "mongod is already installed at $m" in body
 
+    @pytest.mark.parametrize(
+        ("os_", "needs_curl"),
+        [(OperatingSystem.UBUNTU, True), (OperatingSystem.ROCKY, False)],
+    )
+    def test_pre_check_needs_curl_only_where_the_repository_step_uses_it(
+        self, os_: OperatingSystem, *, needs_curl: bool
+    ) -> None:
+        """Require curl exactly where configure_repository downloads with it."""
+        strategy = PackagesInstallStrategy()
+        pre_check = strategy.build_step("pre_check", "node00", _spec(os_))
+        repository = strategy.build_step("configure_repository", "node00", _spec(os_))
+
+        assert ('echo "pre_check: curl not found"' in _body(pre_check.command)) is (
+            needs_curl
+        )
+        assert ("curl " in _body(repository.command)) is needs_curl
+
     def test_pre_check_checks_the_spec_port_is_free(self) -> None:
         """Check the port the new mongod will use, with ``ss`` and a fallback."""
         spec = _spec(OperatingSystem.UBUNTU).model_copy(update={"port": 27018})
@@ -727,6 +746,84 @@ class TestOsReleaseCheck:
         body = _body(action.command)
         assert body.startswith(f"if [ ! -r {packages.OS_RELEASE_PATH} ]; then")
         assert "'rocky 8'|'rocky 9'|'rocky 10') ;;" in body
+
+
+class TestMemberNamesCheck:
+    """Assert pre_check refuses a node that cannot resolve every member's name."""
+
+    @staticmethod
+    def _run(
+        tmp_path: Path, hosts: list[str], resolvable: set[str]
+    ) -> subprocess.CompletedProcess[str]:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        getent = bin_dir / "getent"
+        known = "|".join(sorted(resolvable)) or "''"
+        getent.write_text(
+            f'#!/bin/sh\ncase "$2" in {known}) echo "10.0.0.1 $2";; *) exit 2;; esac\n'
+        )
+        getent.chmod(0o755)
+        return subprocess.run(
+            [_SH, "-euc", packages._member_names_check("node00", hosts)],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+            check=False,
+        )
+
+    def test_passes_when_every_name_resolves(self, tmp_path: Path) -> None:
+        """Pass silently once every member's name resolves here."""
+        hosts = ["node00", "node01", "node02"]
+
+        result = self._run(tmp_path, hosts, set(hosts))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_names_every_name_that_does_not_resolve(self, tmp_path: Path) -> None:
+        """Name this node and each unresolved member, not only the first."""
+        result = self._run(tmp_path, ["node00", "node01", "node02"], {"node00"})
+
+        assert result.returncode == 1
+        assert result.stderr.strip() == (
+            "pre_check: node00 cannot resolve node01 node02, the names replica set "
+            "members use for each other; add them to DNS or /etc/hosts"
+        )
+
+    def test_counts_a_name_too_slow_to_resolve_as_unresolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cut a slow lookup short, so the step can still say which name failed."""
+        monkeypatch.setattr(packages, "NAME_RESOLUTION_TIMEOUT_S", 1)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        getent = bin_dir / "getent"
+        getent.write_text('#!/bin/sh\n[ "$2" = node00 ] && exit 0\nexec sleep 30\n')
+        getent.chmod(0o755)
+
+        result = subprocess.run(
+            [_SH, "-euc", packages._member_names_check("node00", ["node00", "node01"])],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+            check=False,
+            timeout=10,
+        )
+
+        assert result.returncode == 1
+        assert "pre_check: node00 cannot resolve node01," in result.stderr
+
+    def test_pre_check_checks_the_spec_hosts(self) -> None:
+        """Check every host of the run, from the host the step runs on."""
+        spec = _spec(OperatingSystem.ROCKY).model_copy(
+            update={"hosts": ["node00", "node01", "node02"]}
+        )
+
+        action = PackagesInstallStrategy().build_step("pre_check", "node01", spec)
+
+        body = _body(action.command)
+        assert "for name in node00 node01 node02; do" in body
+        assert "'pre_check: node01 cannot resolve'" in body
 
 
 class TestPlanRunSteps:
@@ -1478,7 +1575,9 @@ def _recording_bin(
     return bin_dir
 
 
-def _fake_bin(tmp_path: Path, *, with_mongod: bool, ss_output: str = "") -> Path:
+def _fake_bin(
+    tmp_path: Path, *, with_mongod: bool, ss_output: str = "", with_curl: bool = True
+) -> Path:
     """Build a ``PATH`` directory with the real tools pre_check needs and fake ones.
 
     ``ss`` is always a fake, so the port check answers about the test's listeners
@@ -1487,6 +1586,7 @@ def _fake_bin(tmp_path: Path, *, with_mongod: bool, ss_output: str = "") -> Path
     :param tmp_path: The test's scratch directory.
     :param with_mongod: Whether a ``mongod`` is on this ``PATH``.
     :param ss_output: What the fake ``ss`` prints: nothing for a free port.
+    :param with_curl: Whether a ``curl`` is on this ``PATH``.
     :return: The directory.
     """
     bin_dir = tmp_path / "bin"
@@ -1495,7 +1595,11 @@ def _fake_bin(tmp_path: Path, *, with_mongod: bool, ss_output: str = "") -> Path
         real = shutil.which(tool)
         assert real is not None
         (bin_dir / tool).symlink_to(real)
-    fakes = ["apt-get", "mongod"] if with_mongod else ["apt-get"]
+    fakes = ["apt-get", "getent"]
+    if with_mongod:
+        fakes.append("mongod")
+    if with_curl:
+        fakes.append("curl")
     for fake in fakes:
         path = bin_dir / fake
         path.write_text("#!/bin/sh\nexit 0\n")
@@ -1529,13 +1633,20 @@ class TestPreCheckCommand:
         return config, data
 
     def _run(
-        self, tmp_path: Path, *, with_mongod: bool = False, ss_output: str = ""
+        self,
+        tmp_path: Path,
+        *,
+        with_mongod: bool = False,
+        ss_output: str = "",
+        with_curl: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         spec = _spec(OperatingSystem.UBUNTU).model_copy(
             update={"data_path": str(tmp_path / "data")}
         )
         action = PackagesInstallStrategy().build_step("pre_check", "node00", spec)
-        bin_dir = _fake_bin(tmp_path, with_mongod=with_mongod, ss_output=ss_output)
+        bin_dir = _fake_bin(
+            tmp_path, with_mongod=with_mongod, ss_output=ss_output, with_curl=with_curl
+        )
         return _run_step(action, tmp_path, bin_dir)
 
     def test_passes_on_a_clean_host(
@@ -1545,6 +1656,15 @@ class TestPreCheckCommand:
         result = self._run(tmp_path)
 
         assert result.returncode == 0, result.stderr
+
+    def test_fails_on_ubuntu_without_curl(
+        self, tmp_path: Path, paths: tuple[Path, Path]
+    ) -> None:
+        """Fail before any change when configure_repository could not download."""
+        result = self._run(tmp_path, with_curl=False)
+
+        assert result.returncode == 1
+        assert result.stderr.strip() == "pre_check: curl not found"
 
     def test_passes_with_an_empty_data_directory(
         self, tmp_path: Path, paths: tuple[Path, Path]

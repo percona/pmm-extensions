@@ -516,6 +516,7 @@ async def trigger_run(session: SessionDep, request: TriggerRunRequest) -> RunRes
         bind_ip=request.bind_ip,
         member_configs=request.member_configs,
         create_admin_user=request.create_admin_user,
+        hosts=request.hosts,
     )
     strategy = _strategy_for(request.install_method)
     supported = supported_operating_system(request.os)
@@ -579,11 +580,12 @@ async def list_supported_releases() -> list[SupportedOperatingSystem]:
 async def list_bootstrap_runs(
     session: SessionDep,
     status: BootstrapRunStatus | None = None,
+    replica_set_name: str | None = None,
     # pagination-ok: bounded by `limit` (capped at 100) and by the number of
     # concurrently in-flight bootstrap runs.
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
 ) -> list[RunResponse]:
-    """Return runs, newest first, optionally narrowed to one status.
+    """Return runs, newest first, optionally narrowed to one status or name.
 
     The intended caller is PMM's HA-leader-only stepper. It does not persist
     its own copy of which runs exist or where they are, so on every tick, and
@@ -593,6 +595,8 @@ async def list_bootstrap_runs(
 
     :param session: The database session.
     :param status: Restrict to runs in this status. Omit for any status.
+    :param replica_set_name: Restrict to runs creating this replica set, as
+        PMM asks before it accepts a name for an install. Omit for any name.
     :param limit: How many to return.
     :return: The runs. Does **not** reconcile in-flight steps — unlike
         :func:`get_bootstrap_run`, a caller polling a specific run for the
@@ -601,7 +605,7 @@ async def list_bootstrap_runs(
     return [
         _run_response(run)
         for run in await BootstrapRunManager.list_runs(
-            session, status=status, limit=limit
+            session, status=status, replica_set_name=replica_set_name, limit=limit
         )
     ]
 
@@ -691,6 +695,7 @@ def _spec_for(run: BootstrapRun) -> tuple[InstallStrategy, BootstrapSpec]:
         create_admin_user=any(
             step.name == CREATE_ADMIN_USER_STEP for step in parse_run_steps(run)
         ),
+        hosts=[state.host for state in parse_host_states(run)],
     )
     return _strategy_for(install_method), spec
 
@@ -858,10 +863,9 @@ async def dispatch_run_run_step(
     step = run_steps[step_index]
 
     strategy, spec = _spec_for(run)
-    hosts = [state.host for state in states]
     params = _body_params(body)
     action = _build_step_action(
-        lambda: strategy.build_run_step(step_name, hosts, spec, params)
+        lambda: strategy.build_run_step(step_name, spec.hosts, spec, params)
     )
 
     run_steps[step_index] = await _dispatch_and_record(
