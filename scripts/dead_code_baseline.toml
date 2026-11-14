@@ -1,0 +1,38 @@
+# Dead code that check_dead_code.py keeps on purpose. Every entry is a
+# catalog primitive or a dynamically reached symbol; dead code is removed.
+# See scripts/check_dead_code.py for the policy and how to edit this file.
+
+[[entry]]
+path = "app/core/config.py"
+kind = "method"
+name = "get_field_value"
+category = "dynamic"
+reason = "Abstract on PydanticBaseSettingsSource; the class cannot be instantiated without it."
+
+[[entry]]
+path = "app/core/utils/fields.py"
+kind = "variable"
+name = "LenientStr"
+category = "catalog"
+reason = "Reusable field type: a string field that coerces any input with str()."
+
+[[entry]]
+path = "app/core/utils/fields.py"
+kind = "variable"
+name = "StrImportableModule"
+category = "catalog"
+reason = "Reusable field type: a module path validated as importable."
+
+[[entry]]
+path = "app/core/utils/fields.py"
+kind = "variable"
+name = "UniqueTuple"
+category = "catalog"
+reason = "Reusable field type: the tuple counterpart of UniqueList."
+
+[[entry]]
+path = "app/tasks/execution/executors/nomad/__init__.py"
+kind = "function"
+name = "__dir__"
+category = "dynamic"
+reason = "PEP 562 module hook; dir() on the package calls it by name."

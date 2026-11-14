@@ -21,7 +21,6 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from celery.utils.log import get_task_logger
 from fastapi import FastAPI, Request, status
 from nomad.api.exceptions import BaseNomadException
 
@@ -60,7 +59,6 @@ from app.tasks.routes import router as tasks_router
 from app.tasks.settings.routes import router as settings_router
 
 logger = logging.getLogger(__name__)
-celery_logger = get_task_logger(__name__)
 
 
 async def _reconcile_nomad(_: SnapshotChange) -> None:

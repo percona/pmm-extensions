@@ -732,24 +732,6 @@ async def get_created_schema(
     return schema
 
 
-async def get_created_table(inventory_api: InventoryAPI, table_id: int) -> CreatedTable:
-    """Retrieve a CreatedTable instance based on the given table ID.
-
-    Fetches the table data from the Inventory API and validates it into a `CreatedTable`
-    model.
-
-    :param inventory_api: The API client used to interact with the inventory service.
-    :type inventory_api: InventoryAPI
-    :param table_id: The ID of the table to retrieve.
-    :type table_id: int
-    :return: The validated `CreatedTable` instance.
-    :rtype: CreatedTable
-    """
-    return await get_created_entity(
-        inventory_api, SyncInventoryEntityTypeEnum.TABLE, table_id
-    )
-
-
 class ExecutorHostsContext:
     """Wrap executor hosts with inventory-based display name mapping.
 
