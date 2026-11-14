@@ -28,7 +28,12 @@ from sqlalchemy.orm import undefer
 from sqlalchemy_celery_beat import PeriodicTask
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import CurrentUserID, IsAuthenticatedDep, require_minimum_role
+from app.api.deps import (
+    admit_service_principal,
+    CurrentUserID,
+    IsAuthenticatedDep,
+    require_minimum_role,
+)
 from app.core.auth.models import UserRole
 from app.core.celery.deps import CeleryBeatSessionDep
 from app.core.config import settings
@@ -172,6 +177,7 @@ async def get_task(task: TaskDep) -> Task:
     status_code=status.HTTP_201_CREATED,
     response_model=TaskResponse,
 )
+@admit_service_principal
 async def create_task(
     session: SessionDep, task: TaskWrite, current_user_id: CurrentUserID
 ) -> Task:
@@ -191,6 +197,7 @@ async def create_task(
     status_code=status.HTTP_201_CREATED,
     response_model=TaskResponse,
 )
+@admit_service_principal
 async def update_task(
     session: SessionDep,
     existing_task: TaskDep,
@@ -258,6 +265,7 @@ async def create_periodic_task_for_task_name(
     dependencies=[IsAuthenticatedDep],
     response_model=TaskHistoryResponse,
 )
+@admit_service_principal
 async def execute_task_name(
     session: SessionDep,
     queue_item: PreparedTaskHistory,
@@ -674,6 +682,7 @@ async def stream_task_history_file(
     dependencies=[IsAuthenticatedDep],
     response_model=TaskHistoryResponse,
 )
+@admit_service_principal
 async def stop_task_history(
     session: SessionDep, executor: TaskExecutor, task_history: TaskHistoryWithTaskDep
 ) -> TaskHistory:
@@ -705,6 +714,7 @@ async def stop_task_history(
     dependencies=[IsAuthenticatedDep],
     response_model=TaskHistoryResponse,
 )
+@admit_service_principal
 async def sync_task_history(
     session: SessionDep, executor: TaskExecutor, task_history: TaskHistoryWithTaskDep
 ) -> TaskHistory:
