@@ -19,8 +19,11 @@ __all__ = [
     "CustomFieldMetadata",
     "annotation_pydantic_class",
     "blank_str_values_to_none",
+    "bound_metadata",
     "extract_model_from_instance",
+    "flatten_metadata",
     "loc_to_dot_sep",
+    "numeric_bounds",
     "run_pydantic_type_validator",
 ]
 
@@ -40,6 +43,7 @@ from typing import (
     Union,
 )
 
+from annotated_types import Ge, GroupedMetadata, Le
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic.fields import Field, FieldInfo
 from pydantic_core import PydanticUndefined
@@ -291,6 +295,63 @@ def extract_model_from_instance(instance: BaseModel, model_cls: type[T]) -> T:
     allowed_keys = model_cls.model_fields.keys()
     filtered_data = {k: data[k] for k in allowed_keys if k in data}
     return TypeAdapter(model_cls).validate_python(filtered_data)
+
+
+def flatten_metadata(metadata: list[Any]) -> list[Any]:
+    """Expand any ``GroupedMetadata`` container into its members.
+
+    Pydantic leaves a ``GroupedMetadata`` container (``Interval``, ``Len``,
+    ``StringConstraints``) unflattened in ``FieldInfo.metadata``; iterating one yields
+    its constituent ``Ge`` / ``Le`` / ``MinLen`` / ``MaxLen`` (and pattern) markers, so
+    the bounds scan can match them with ``isinstance``.
+
+    :param metadata: The metadata items to flatten.
+    :return: The metadata with every ``GroupedMetadata`` container replaced by its
+        constituent markers; other items pass through unchanged.
+    """
+    return [
+        member
+        for item in metadata
+        for member in (item if isinstance(item, GroupedMetadata) else (item,))
+    ]
+
+
+def bound_metadata(field_info: FieldInfo) -> list[Any]:
+    """Return the metadata carrying a field's numeric / string bounds.
+
+    Collect the field's outer ``FieldInfo.metadata`` first — so an outer-level bound
+    wins over a union member's under the first-match scan — then descend into each
+    union member of the annotation and append its metadata, unwrapping a nested
+    ``FieldInfo`` (produced by a ``Field(...)`` marker on the member, e.g. ``TcpPort``)
+    into its constituent markers. Non-``Annotated`` members (``int``, ``NoneType``)
+    contribute nothing.
+
+    :param field_info: The field's Pydantic ``FieldInfo``.
+    :return: The outer metadata followed by each union member's bound metadata.
+    """
+    metadata = list(field_info.metadata)
+    current: Any = field_info.annotation
+    if getattr(current, "__metadata__", None) is not None:
+        current = current.__args__[0]
+    if get_origin(current) in (Union, UnionType):
+        for arg in get_args(current):
+            member_meta = getattr(arg, "__metadata__", None)
+            if not member_meta:
+                continue
+            for item in member_meta:
+                if isinstance(item, FieldInfo):
+                    metadata.extend(item.metadata)
+                else:
+                    metadata.append(item)
+    return metadata
+
+
+def numeric_bounds(metadata: list[Any]) -> dict[str, Any]:
+    """Return ``ge`` / ``le`` bounds extracted from ``annotated_types`` metadata."""
+    metadata = flatten_metadata(metadata)
+    ge = next((item.ge for item in metadata if isinstance(item, Ge)), None)
+    le = next((item.le for item in metadata if isinstance(item, Le)), None)
+    return {"ge": ge, "le": le}
 
 
 def loc_to_dot_sep(loc: tuple[str | int, ...]) -> str:
