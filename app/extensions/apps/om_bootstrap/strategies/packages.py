@@ -48,6 +48,11 @@ import json
 import posixpath
 import shlex
 
+from app.extensions.apps.om_bootstrap.releases import (
+    major_minor,
+    ReleaseMatch,
+    supported_operating_system,
+)
 from app.extensions.apps.om_bootstrap.strategy import (
     BootstrapSpec,
     CREATE_ADMIN_USER_STEP,
@@ -99,6 +104,12 @@ PID_FILE_PATH = "/var/run/mongod.pid"
 #: would put a second ``mongod`` beside it. Shell glob patterns: ``*`` is expanded
 #: on the host, everything else is matched literally.
 EXTRA_MONGOD_DIRS = ("/usr/local/bin", "/opt/*/bin")
+
+#: Where ``pre_check`` reads the node's distribution and release from.
+OS_RELEASE_PATH = "/etc/os-release"
+
+#: The ``tr -d`` argument stripping the quotes ``/etc/os-release`` may put around a value.
+_QUOTES = shlex.quote("\"'")
 
 #: How many lines of ``mongod``'s journal :func:`_mongod_diagnostics` prints.
 JOURNAL_TAIL_LINES = 5
@@ -213,8 +224,7 @@ def _psmdb_channel(mongodb_version: str) -> str:
         major.minor.patch (``"8.0.4"``).
     :return: The channel name ``percona-release setup`` expects.
     """
-    major_minor = ".".join(mongodb_version.split(".")[:2])
-    return f"psmdb-{major_minor.replace('.', '')}"
+    return f"psmdb-{major_minor(mongodb_version).replace('.', '')}"
 
 
 def _shell_step(body: str, *, timeout_s: int = 30) -> StepAction:
@@ -290,6 +300,60 @@ def _existing_mongod_check() -> str:
             "done",
         ]
     )
+
+
+def _os_release_check(spec: BootstrapSpec) -> str:
+    """Build the ``pre_check`` lines refusing a release not supported for the version.
+
+    PMM checks the release its last scan reported, but the node may have been
+    upgraded since, and Percona's repositories still serve builds for releases
+    Percona no longer supports, so a later step would not fail.
+
+    :param spec: The host's bootstrap spec; its OS and MongoDB version are read.
+    :return: The shell lines.
+    """
+    supported = supported_operating_system(spec.os)
+    version = major_minor(spec.mongodb_version)
+    releases = supported.releases_for(version)
+    wanted = (
+        f"MongoDB {version} is supported on {supported.name} {', '.join(releases)}"
+        if releases
+        else f"MongoDB {version} is not supported on {supported.name}"
+    )
+    path = shlex.quote(OS_RELEASE_PATH)
+    release = (
+        "$version_id"
+        if supported.release_match is ReleaseMatch.EXACT
+        else "${version_id%%.*}"
+    )
+    lines = [
+        f"if [ ! -r {path} ]; then",
+        f'  echo "pre_check: "{path}" is missing, so the OS release is unknown" >&2',
+        "  exit 1",
+        "fi",
+    ]
+    for variable, key in (
+        ("os_id", "ID"),
+        ("version_id", "VERSION_ID"),
+        ("os_name", "PRETTY_NAME"),
+    ):
+        lines.append(
+            f"{variable}=$(sed -n 's/^{key}=//p' {path} | head -n 1 | tr -d {_QUOTES})"
+        )
+    lines.append(f'case "$os_id {release}" in')
+    if releases:
+        patterns = "|".join(shlex.quote(f"{spec.os.value} {r}") for r in releases)
+        lines.append(f"  {patterns}) ;;")
+    lines += [
+        "  *)",
+        (
+            f"    echo {shlex.quote(f'pre_check: {wanted}; this node runs ')}"
+            '"${os_name:-$os_id $version_id}" >&2'
+        ),
+        "    exit 1;;",
+        "esac",
+    ]
+    return "\n".join(lines)
 
 
 #: Turns one line of ``ss -p`` output into ``pid N, NAME`` for the first process
@@ -733,6 +797,8 @@ class PackagesInstallStrategy:
         The decided pre-checks — OS, path, disk space — all read-only and fast
         enough to run inline rather than as a background job:
 
+        - **OS release**: the node's distribution and release are supported for
+          ``spec.mongodb_version`` - see :func:`_os_release_check`.
         - **OS**: the OS's package manager is present.
         - **Path**: no MongoDB already lives on the host — no ``mongod`` on
           ``PATH`` or in :data:`EXTRA_MONGOD_DIRS`, no :data:`CONFIG_PATH`, and
@@ -754,14 +820,15 @@ class PackagesInstallStrategy:
         Each failed check names itself on stderr, and a free-space figure ``df``
         could not produce fails the check rather than passing it.
 
-        :param spec: The host's bootstrap spec; its OS, data path and port are
-            read.
+        :param spec: The host's bootstrap spec; its OS, MongoDB version, data
+            path and port are read.
         :return: The step action.
         """
         pkg_manager = self._require_package_manager(spec.os)
         data_path = shlex.quote(spec.data_path)
         body = "\n".join(
             [
+                _os_release_check(spec),
                 (
                     f"command -v {pkg_manager} >/dev/null 2>&1 || "
                     f'{{ echo "pre_check: {pkg_manager} not found" >&2; exit 1; }}'
