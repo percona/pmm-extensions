@@ -952,7 +952,7 @@ class TestRequireMinimumRoleForUnsafeMethods:
     async def test_service_principal_is_ranked_on_any_other_route(
         self, mocker, endpoint
     ):
-        """Verify the principal's ``VIEWER`` meets every other route's minimum.
+        """Verify the principal's ``VIEWER`` is held to every other route's minimum.
 
         A leaked token must not act as an administrator.
         """
