@@ -55,8 +55,8 @@
             </div>
         </aside>
         <h2>
-            <span class="text">16 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">16<span class="text"> run</span></button>
+            <span class="text">15 statements &nbsp;</span>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">15<span class="text"> run</span></button>
             <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">0<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
             <button type="button" class="par run show_par button_toggle_par" value="par" data-shortcut="p" title="Toggle lines partially run">0<span class="text"> partial</span></button>
@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_f7b21b9a2bf29c14_enums_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-16 20:12 +0000
+            created at 2026-11-16 20:13 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -99,61 +99,60 @@
     <p class="pln"><span class="n"><a id="t15" href="#t15">15</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t16" href="#t16">16</a></span><span class="t"><span class="str">&quot;&quot;&quot;Define the constants of the Task API models.&quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t17" href="#t17">17</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t18" href="#t18">18</a></span><span class="t"><span class="nam">TASK_ALIAS_LENGTH</span> <span class="op">=</span> <span class="num">100</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t19" href="#t19">19</a></span><span class="t"><span class="nam">SYSTEM_USER</span> <span class="op">=</span> <span class="str">&quot;SYSTEM&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t20" href="#t20">20</a></span><span class="t"><span class="nam">ANY_OWNER</span> <span class="op">=</span> <span class="str">&quot;ANY&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t21" href="#t21">21</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t22" href="#t22">22</a></span><span class="t"><span class="com">#: ``meta`` key holding the pip requirements a Python task installs. The</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t23" href="#t23">23</a></span><span class="t"><span class="com">#: executor writes it verbatim into ``requirements.txt``, so it is dispatched as</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t24" href="#t24">24</a></span><span class="t"><span class="com">#: one newline-separated string.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t25" href="#t25">25</a></span><span class="t"><span class="nam">REQUIREMENTS_META_KEY</span> <span class="op">=</span> <span class="str">&quot;requirements&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t27" href="#t27">27</a></span><span class="t"><span class="com">#: Validation context for a :class:`TaskExecutionRequest` read back from</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t28" href="#t28">28</a></span><span class="t"><span class="com">#: storage, where a legacy ``meta.requirements`` must not stop the row loading.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t29" href="#t29">29</a></span><span class="t"><span class="nam">STORED_REQUEST_CONTEXT</span><span class="op">:</span> <span class="nam">dict</span><span class="op">[</span><span class="nam">str</span><span class="op">,</span> <span class="nam">bool</span><span class="op">]</span> <span class="op">=</span> <span class="op">{</span><span class="str">&quot;stored&quot;</span><span class="op">:</span> <span class="key">True</span><span class="op">}</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t30" href="#t30">30</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t31" href="#t31">31</a></span><span class="t"><span class="com">#: The only target the Celery backend runs on: PMM Extensions&#x27; own worker, which</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t32" href="#t32">32</a></span><span class="t"><span class="com">#: is not a PMM node.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t33" href="#t33">33</a></span><span class="t"><span class="nam">CELERY_LOCAL_TARGET</span> <span class="op">=</span> <span class="str">&quot;local&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t34" href="#t34">34</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t35" href="#t35">35</a></span><span class="t"><span class="com">#: Maximum stored length of ``TaskHistory.failure_reason``. Above every reason</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t36" href="#t36">36</a></span><span class="t"><span class="com">#: PMM Extensions composes from fixed prose alone; the bound is for the three that</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t37" href="#t37">37</a></span><span class="t"><span class="com">#: interpolate a value &#8212; the payload reference&#x27;s error, a Nomad step name and</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t38" href="#t38">38</a></span><span class="t"><span class="com">#: the resolved callable path &#8212; none of which is bounded at composition time.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t39" href="#t39">39</a></span><span class="t"><span class="nam">MAX_FAILURE_REASON_LENGTH</span> <span class="op">=</span> <span class="num">500</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t40" href="#t40">40</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t41" href="#t41">41</a></span><span class="t"><span class="nam">GENERIC_EXECUTOR_TASK_NAMES</span><span class="op">:</span> <span class="nam">frozenset</span><span class="op">[</span><span class="nam">str</span><span class="op">]</span> <span class="op">=</span> <span class="nam">frozenset</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t42" href="#t42">42</a></span><span class="t">    <span class="op">{</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t43" href="#t43">43</a></span><span class="t">        <span class="str">&quot;run-python&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t44" href="#t44">44</a></span><span class="t">        <span class="str">&quot;exec-artifact&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t45" href="#t45">45</a></span><span class="t">        <span class="str">&quot;exec-python-artifact&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t46" href="#t46">46</a></span><span class="t">    <span class="op">}</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t47" href="#t47">47</a></span><span class="t"><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t48" href="#t48">48</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t49" href="#t49">49</a></span><span class="t"><span class="nam">INVENTORY_SYNC_TASK_NAME</span> <span class="op">=</span> <span class="str">&quot;inventory-sync&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t50" href="#t50">50</a></span><span class="t"><span class="com">#: The Celery task every seeded or kicked ``inventory-sync`` run goes through.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t51" href="#t51">51</a></span><span class="t"><span class="nam">EXECUTE_TASK_BY_NAME_TASK</span> <span class="op">=</span> <span class="str">&quot;app.tasks.celery.execute_task_by_name&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t52" href="#t52">52</a></span><span class="t"><span class="com">#: Meta key naming the per-syncer schedules this one starts after its first pass.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t53" href="#t53">53</a></span><span class="t"><span class="nam">INVENTORY_SYNC_FOLLOWERS_KEY</span> <span class="op">=</span> <span class="str">&quot;follower_syncers&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t54" href="#t54">54</a></span><span class="t"><span class="com">#: Meta key marking a leader-started run, which skips when its syncer is busy.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t55" href="#t55">55</a></span><span class="t"><span class="nam">INVENTORY_SYNC_FIRST_RUN_KEY</span> <span class="op">=</span> <span class="str">&quot;first_run_only&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t56" href="#t56">56</a></span><span class="t"><span class="nam">INVENTORY_COLLECTION_TASK_NAME</span> <span class="op">=</span> <span class="str">&quot;inventory-collection&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t57" href="#t57">57</a></span><span class="t"><span class="nam">SYNC_RUNNING_TASKS_TASK_NAME</span> <span class="op">=</span> <span class="str">&quot;tasks__sync_running_tasks&quot;</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t58" href="#t58">58</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t59" href="#t59">59</a></span><span class="t"><span class="com">#: Maintenance / system task names excluded from user-facing task lists.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t60" href="#t60">60</a></span><span class="t"><span class="com">#: The cert-expiry member is a literal matching</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t61" href="#t61">61</a></span><span class="t"><span class="com">#: :data:`~app.tasks.execution.executors.nomad.constants.CHECK_NOMAD_CERT_EXPIRY_TASK_NAME`</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t62" href="#t62">62</a></span><span class="t"><span class="com">#: so this module does not import the Nomad executor package.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t63" href="#t63">63</a></span><span class="t"><span class="nam">INTERNAL_TASK_NAMES</span><span class="op">:</span> <span class="nam">frozenset</span><span class="op">[</span><span class="nam">str</span><span class="op">]</span> <span class="op">=</span> <span class="nam">frozenset</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t64" href="#t64">64</a></span><span class="t">    <span class="op">{</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t65" href="#t65">65</a></span><span class="t">        <span class="nam">INVENTORY_SYNC_TASK_NAME</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t66" href="#t66">66</a></span><span class="t">        <span class="nam">INVENTORY_COLLECTION_TASK_NAME</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t67" href="#t67">67</a></span><span class="t">        <span class="nam">SYNC_RUNNING_TASKS_TASK_NAME</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t68" href="#t68">68</a></span><span class="t">        <span class="str">&quot;tasks__check_nomad_cert_expiry&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t69" href="#t69">69</a></span><span class="t">    <span class="op">}</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t70" href="#t70">70</a></span><span class="t"><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t71" href="#t71">71</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t72" href="#t72">72</a></span><span class="t"><span class="nam">LATEST_HISTORY_STATUS_NAMES_MAX</span> <span class="op">=</span> <span class="num">200</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t18" href="#t18">18</a></span><span class="t"><span class="nam">SYSTEM_USER</span> <span class="op">=</span> <span class="str">&quot;SYSTEM&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t19" href="#t19">19</a></span><span class="t"><span class="nam">ANY_OWNER</span> <span class="op">=</span> <span class="str">&quot;ANY&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t20" href="#t20">20</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t21" href="#t21">21</a></span><span class="t"><span class="com">#: ``meta`` key holding the pip requirements a Python task installs. The</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t22" href="#t22">22</a></span><span class="t"><span class="com">#: executor writes it verbatim into ``requirements.txt``, so it is dispatched as</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t23" href="#t23">23</a></span><span class="t"><span class="com">#: one newline-separated string.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t24" href="#t24">24</a></span><span class="t"><span class="nam">REQUIREMENTS_META_KEY</span> <span class="op">=</span> <span class="str">&quot;requirements&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t25" href="#t25">25</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t26" href="#t26">26</a></span><span class="t"><span class="com">#: Validation context for a :class:`TaskExecutionRequest` read back from</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t27" href="#t27">27</a></span><span class="t"><span class="com">#: storage, where a legacy ``meta.requirements`` must not stop the row loading.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t28" href="#t28">28</a></span><span class="t"><span class="nam">STORED_REQUEST_CONTEXT</span><span class="op">:</span> <span class="nam">dict</span><span class="op">[</span><span class="nam">str</span><span class="op">,</span> <span class="nam">bool</span><span class="op">]</span> <span class="op">=</span> <span class="op">{</span><span class="str">&quot;stored&quot;</span><span class="op">:</span> <span class="key">True</span><span class="op">}</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t29" href="#t29">29</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t30" href="#t30">30</a></span><span class="t"><span class="com">#: The only target the Celery backend runs on: PMM Extensions&#x27; own worker, which</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t31" href="#t31">31</a></span><span class="t"><span class="com">#: is not a PMM node.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t32" href="#t32">32</a></span><span class="t"><span class="nam">CELERY_LOCAL_TARGET</span> <span class="op">=</span> <span class="str">&quot;local&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t33" href="#t33">33</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t34" href="#t34">34</a></span><span class="t"><span class="com">#: Maximum stored length of ``TaskHistory.failure_reason``. Above every reason</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t35" href="#t35">35</a></span><span class="t"><span class="com">#: PMM Extensions composes from fixed prose alone; the bound is for the three that</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t36" href="#t36">36</a></span><span class="t"><span class="com">#: interpolate a value &#8212; the payload reference&#x27;s error, a Nomad step name and</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t37" href="#t37">37</a></span><span class="t"><span class="com">#: the resolved callable path &#8212; none of which is bounded at composition time.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t38" href="#t38">38</a></span><span class="t"><span class="nam">MAX_FAILURE_REASON_LENGTH</span> <span class="op">=</span> <span class="num">500</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t39" href="#t39">39</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t40" href="#t40">40</a></span><span class="t"><span class="nam">GENERIC_EXECUTOR_TASK_NAMES</span><span class="op">:</span> <span class="nam">frozenset</span><span class="op">[</span><span class="nam">str</span><span class="op">]</span> <span class="op">=</span> <span class="nam">frozenset</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t41" href="#t41">41</a></span><span class="t">    <span class="op">{</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t42" href="#t42">42</a></span><span class="t">        <span class="str">&quot;run-python&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t43" href="#t43">43</a></span><span class="t">        <span class="str">&quot;exec-artifact&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t44" href="#t44">44</a></span><span class="t">        <span class="str">&quot;exec-python-artifact&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t45" href="#t45">45</a></span><span class="t">    <span class="op">}</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t46" href="#t46">46</a></span><span class="t"><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t47" href="#t47">47</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t48" href="#t48">48</a></span><span class="t"><span class="nam">INVENTORY_SYNC_TASK_NAME</span> <span class="op">=</span> <span class="str">&quot;inventory-sync&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t49" href="#t49">49</a></span><span class="t"><span class="com">#: The Celery task every seeded or kicked ``inventory-sync`` run goes through.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t50" href="#t50">50</a></span><span class="t"><span class="nam">EXECUTE_TASK_BY_NAME_TASK</span> <span class="op">=</span> <span class="str">&quot;app.tasks.celery.execute_task_by_name&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t51" href="#t51">51</a></span><span class="t"><span class="com">#: Meta key naming the per-syncer schedules this one starts after its first pass.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t52" href="#t52">52</a></span><span class="t"><span class="nam">INVENTORY_SYNC_FOLLOWERS_KEY</span> <span class="op">=</span> <span class="str">&quot;follower_syncers&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t53" href="#t53">53</a></span><span class="t"><span class="com">#: Meta key marking a leader-started run, which skips when its syncer is busy.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t54" href="#t54">54</a></span><span class="t"><span class="nam">INVENTORY_SYNC_FIRST_RUN_KEY</span> <span class="op">=</span> <span class="str">&quot;first_run_only&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t55" href="#t55">55</a></span><span class="t"><span class="nam">INVENTORY_COLLECTION_TASK_NAME</span> <span class="op">=</span> <span class="str">&quot;inventory-collection&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t56" href="#t56">56</a></span><span class="t"><span class="nam">SYNC_RUNNING_TASKS_TASK_NAME</span> <span class="op">=</span> <span class="str">&quot;tasks__sync_running_tasks&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t57" href="#t57">57</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t58" href="#t58">58</a></span><span class="t"><span class="com">#: Maintenance / system task names excluded from user-facing task lists.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t59" href="#t59">59</a></span><span class="t"><span class="com">#: The cert-expiry member is a literal matching</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t60" href="#t60">60</a></span><span class="t"><span class="com">#: :data:`~app.tasks.execution.executors.nomad.constants.CHECK_NOMAD_CERT_EXPIRY_TASK_NAME`</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t61" href="#t61">61</a></span><span class="t"><span class="com">#: so this module does not import the Nomad executor package.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t62" href="#t62">62</a></span><span class="t"><span class="nam">INTERNAL_TASK_NAMES</span><span class="op">:</span> <span class="nam">frozenset</span><span class="op">[</span><span class="nam">str</span><span class="op">]</span> <span class="op">=</span> <span class="nam">frozenset</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t63" href="#t63">63</a></span><span class="t">    <span class="op">{</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t64" href="#t64">64</a></span><span class="t">        <span class="nam">INVENTORY_SYNC_TASK_NAME</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t65" href="#t65">65</a></span><span class="t">        <span class="nam">INVENTORY_COLLECTION_TASK_NAME</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t66" href="#t66">66</a></span><span class="t">        <span class="nam">SYNC_RUNNING_TASKS_TASK_NAME</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t67" href="#t67">67</a></span><span class="t">        <span class="str">&quot;tasks__check_nomad_cert_expiry&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t68" href="#t68">68</a></span><span class="t">    <span class="op">}</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t69" href="#t69">69</a></span><span class="t"><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t70" href="#t70">70</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t71" href="#t71">71</a></span><span class="t"><span class="nam">LATEST_HISTORY_STATUS_NAMES_MAX</span> <span class="op">=</span> <span class="num">200</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -163,7 +162,7 @@
             <a class="nav" href="z_f7b21b9a2bf29c14_enums_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-16 20:12 +0000
+            created at 2026-11-16 20:13 +0000
         </p>
     </div>
 </footer>
