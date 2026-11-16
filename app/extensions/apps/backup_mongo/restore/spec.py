@@ -180,12 +180,3 @@ def build_restore_payloads(
         pbm_list_task=pbm_list_task,
         force_resync_task=force_resync_task,
     )
-
-
-def build_force_resync_payload(
-    form: RestoreCreate,
-    service_name: str | None,
-) -> TaskWrite:
-    """Build the standalone pbm-force-resync leg envelope (physical restores only)."""
-    payload = PbmForceResyncPayloadModel.from_form(form, service_name)
-    return _task_write_from_leg(_build_pbm_force_resync_leg(payload))
