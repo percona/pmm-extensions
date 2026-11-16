@@ -70,7 +70,7 @@ from app.extensions.apps.om_inventory.service import (
     SweepOutcome,
     terminal_status,
 )
-from tests.app.extensions.apps.om_inventory.conftest import BASE
+from tests.app.extensions.apps.om_inventory.conftest import BASE, start_run
 
 NODE_A = "id-db00"
 NODE_B = "id-db01"
@@ -112,18 +112,6 @@ async def two_hosts(session: AsyncSession) -> AsyncSession:
         )
     await session.commit()
     return session
-
-
-async def start_run(session: AsyncSession, scope: list[str] | None) -> ProbeRun:
-    """Put a run in flight with the given scope.
-
-    :param session: The database session.
-    :param scope: Its scope, or ``None`` for the whole estate.
-    :return: The run.
-    """
-    return await ProbeRunManager.save(
-        session, ProbeRun(scope=scope, status=ProbeRunStatus.RUNNING)
-    )
 
 
 def host(node_id: str, name: str) -> InventoryHost:
@@ -289,6 +277,28 @@ class TestTriggerScope:
         response = await api.post(f"{BASE}/runs")
 
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+
+    @pytest.mark.asyncio
+    async def test_accepted_while_auto_scan_is_off(
+        self,
+        api: AsyncClient,
+        two_hosts: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Queue a manual scan as requested, which the worker runs despite ``AUTO_SCAN``.
+
+        :param api: The authenticated client.
+        :param two_hosts: The populated session.
+        :param monkeypatch: Restores the real value after the test.
+        """
+        monkeypatch.setattr(om_inventory_settings, "AUTO_SCAN", False)
+
+        with patch.object(celery_module.run_om_probe, "delay") as delay:
+            response = await api.post(f"{BASE}/runs")
+
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        (run,) = await ProbeRunManager.list(two_hosts)
+        delay.assert_called_once_with(str(run.id), None, automatic=False)
 
     @pytest.mark.asyncio
     async def test_a_scan_that_cannot_be_queued_is_failed(
