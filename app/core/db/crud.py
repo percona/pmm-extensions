@@ -65,7 +65,6 @@ T = TypeVar("T")
 S = TypeVar("S", bound=SQLModel)
 BS = TypeVar("BS", bound=BaseSQLModel)
 B = TypeVar("B", bound=BaseModel)
-M = TypeVar("M", bound="BaseSQLModelManager")
 
 
 class _QueryBuilder(NamedTuple, Generic[W]):
