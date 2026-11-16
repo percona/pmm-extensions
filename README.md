@@ -4,7 +4,7 @@
 
 | Name                                                                                                                                |    Stmts |     Miss |   Branch |   BrPart |   Cover |   Missing |
 |------------------------------------------------------------------------------------------------------------------------------------ | -------: | -------: | -------: | -------: | ------: | --------: |
-| app/api/deps.py                                                                                                                     |      108 |        0 |       24 |        0 |    100% |           |
+| app/api/deps.py                                                                                                                     |      124 |        0 |       30 |        1 |     99% | 370-\>372 |
 | app/api/main.py                                                                                                                     |        6 |        0 |        0 |        0 |    100% |           |
 | app/api/routes/config.py                                                                                                            |        9 |        0 |        0 |        0 |    100% |           |
 | app/api/routes/oauth.py                                                                                                             |       77 |        0 |       14 |        0 |    100% |           |
@@ -224,7 +224,7 @@
 | app/extensions/apps/framework/script\_source.py                                                                                     |       63 |        0 |       14 |        0 |    100% |           |
 | app/extensions/apps/framework/spec.py                                                                                               |      151 |        0 |       68 |        0 |    100% |           |
 | app/extensions/apps/framework/task\_status.py                                                                                       |       45 |        0 |       14 |        0 |    100% |           |
-| app/extensions/apps/inventory/api\_routes.py                                                                                        |       39 |        0 |        0 |        0 |    100% |           |
+| app/extensions/apps/inventory/api\_routes.py                                                                                        |       41 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/app.py                                                                                                |       10 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/app\_owned\_settings.py                                                                               |        3 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/inventory/collection.py                                                                                         |      104 |        6 |       24 |        0 |     95% |332-334, 363-365 |
@@ -258,7 +258,7 @@
 | app/extensions/apps/mysql\_backups/spec.py                                                                                          |       36 |        1 |       12 |        1 |     96% |       155 |
 | app/extensions/apps/mysql\_backups/views.py                                                                                         |        7 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/nav\_icons.py                                                                                                   |       16 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/om\_bootstrap/api\_routes.py                                                                                    |      224 |        6 |       36 |        2 |     97% |382, 490, 551, 828, 849, 1066 |
+| app/extensions/apps/om\_bootstrap/api\_routes.py                                                                                    |      230 |        6 |       36 |        2 |     97% |382, 490, 551, 831, 852, 1072 |
 | app/extensions/apps/om\_bootstrap/app.py                                                                                            |        5 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_bootstrap/crud.py                                                                                           |       23 |        3 |        4 |        1 |     78% |77-\>79, 80-82 |
 | app/extensions/apps/om\_bootstrap/deps.py                                                                                           |        9 |        0 |        0 |        0 |    100% |           |
@@ -274,7 +274,7 @@
 | app/extensions/apps/om\_bootstrap/schema.py                                                                                         |        2 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_bootstrap/strategies/packages.py                                                                            |      205 |        3 |       38 |        3 |     98% |820, 994, 1323 |
 | app/extensions/apps/om\_bootstrap/strategy.py                                                                                       |       79 |        3 |       16 |        3 |     94% |151, 153, 155 |
-| app/extensions/apps/om\_inventory/api\_routes.py                                                                                    |      160 |       35 |       36 |        3 |     72% |359, 370-371, 383-385, 388, 403-404, 449, 462-464, 492-493, 510-511, 565, 614-\>613, 615, 622, 628, 650-653, 655-656, 735-736, 740, 742-746 |
+| app/extensions/apps/om\_inventory/api\_routes.py                                                                                    |      161 |       35 |       36 |        3 |     73% |365, 376-377, 389-391, 394, 409-410, 455, 468-470, 498-499, 516-517, 571, 621-\>620, 622, 629, 635, 657-660, 662-663, 742-743, 747, 749-753 |
 | app/extensions/apps/om\_inventory/app.py                                                                                            |       12 |        0 |        2 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/app\_owned\_settings.py                                                                           |        3 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/om\_inventory/celery.py                                                                                         |       11 |        2 |        0 |        0 |     82% |     56-63 |
@@ -440,9 +440,9 @@
 | app/inventory/models/writes.py                                                                                                      |       44 |        0 |        6 |        0 |    100% |           |
 | app/inventory/routes/collection.py                                                                                                  |       15 |        0 |        0 |        0 |    100% |           |
 | app/inventory/routes/nodes.py                                                                                                       |       82 |        2 |        4 |        0 |     95% |  358, 360 |
-| app/inventory/routes/schemas.py                                                                                                     |       46 |        0 |        0 |        0 |    100% |           |
+| app/inventory/routes/schemas.py                                                                                                     |       50 |        0 |        0 |        0 |    100% |           |
 | app/inventory/routes/services.py                                                                                                    |       78 |        3 |        6 |        0 |     92% |279, 281, 318 |
-| app/inventory/routes/tables.py                                                                                                      |       38 |        0 |        0 |        0 |    100% |           |
+| app/inventory/routes/tables.py                                                                                                      |       41 |        0 |        0 |        0 |    100% |           |
 | app/inventory/settings/routes.py                                                                                                    |       12 |        0 |        0 |        0 |    100% |           |
 | app/main.py                                                                                                                         |       97 |       23 |        6 |        1 |     75% |   289-343 |
 | app/tasks/alembic\_ops.py                                                                                                           |       42 |        1 |        8 |        1 |     96% |       153 |
@@ -549,11 +549,11 @@
 | app/tasks/periodic/routes.py                                                                                                        |       72 |        4 |       12 |        2 |     93% |97, 171-\>173, 193-196, 210 |
 | app/tasks/periodic/utils.py                                                                                                         |       33 |        0 |        8 |        1 |     98% | 125-\>126 |
 | app/tasks/reference\_fence.py                                                                                                       |       47 |        2 |        2 |        0 |     96% |   157-158 |
-| app/tasks/routes.py                                                                                                                 |      245 |       17 |       46 |        5 |     92% |154-158, 245-\>249, 283, 333-342, 349, 462, 505, 520, 584-586, 663, 728, 739, 742, 775-\>777 |
+| app/tasks/routes.py                                                                                                                 |      250 |       17 |       46 |        5 |     93% |159-163, 252-\>256, 291, 341-350, 357, 470, 513, 528, 592-594, 671, 738, 749, 752, 785-\>787 |
 | app/tasks/run\_result.py                                                                                                            |       59 |        0 |       14 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35578** | **1716** | **8590** |  **687** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35615** | **1716** | **8596** |  **688** | **94%** |           |
 
 
 ## Setup coverage badge
