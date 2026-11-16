@@ -42,7 +42,6 @@ from app.tasks.models.constants import (
     STORED_REQUEST_CONTEXT,
     SYNC_RUNNING_TASKS_TASK_NAME,
     SYSTEM_USER,
-    TASK_ALIAS_LENGTH,
 )
 from app.tasks.models.enums import (
     CAPTURE_STATUS_PRECEDENCE,
@@ -102,7 +101,6 @@ __all__ = [
     "STORED_REQUEST_CONTEXT",
     "SYNC_RUNNING_TASKS_TASK_NAME",
     "SYSTEM_USER",
-    "TASK_ALIAS_LENGTH",
     "AnonymizeMask",
     "DispatchLock",
     "ExecutionEvent",

@@ -541,21 +541,6 @@ async def get_run(session: AsyncSession, run_id: UUID) -> ProbeRun | None:
     return await session.get(ProbeRun, run_id)
 
 
-async def running_run(session: AsyncSession) -> ProbeRun | None:
-    """Return the newest sweep in flight, if there is one.
-
-    :param session: The database session.
-    :return: The running run, or ``None``.
-    """
-    result = await session.exec(
-        select(ProbeRun)
-        .where(ProbeRun.status == ProbeRunStatus.RUNNING)
-        .order_by(col(ProbeRun.started_at).desc())
-        .limit(1)
-    )
-    return result.first()
-
-
 async def running_runs(session: AsyncSession) -> list[ProbeRun]:
     """Return every sweep currently in flight, newest first.
 
