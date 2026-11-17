@@ -564,6 +564,7 @@ async def trigger_run(session: SessionDep, request: TriggerRunRequest) -> RunRes
 
 
 @router.get("/supported-releases")
+# pagination-ok: one entry per OperatingSystem member, from the fixed release table.
 async def list_supported_releases() -> list[SupportedOperatingSystem]:
     """Return the OS releases a run installs each MongoDB version onto.
 

@@ -39,11 +39,14 @@ __all__ = [
 
 
 class ReleaseMatch(StrEnum):
-    """Say which part of ``/etc/os-release``'s ``VERSION_ID`` names a release."""
+    """Say which part of ``/etc/os-release``'s ``VERSION_ID`` names a release.
 
-    #: The whole value, as Ubuntu's ``22.04``.
+    :cvar EXACT: The whole value, as Ubuntu's ``22.04``.
+    :cvar MAJOR: The part before the first dot, so Rocky Linux ``9.4`` is release
+        ``9``.
+    """
+
     EXACT = "exact"
-    #: The part before the first dot, so Rocky Linux ``9.4`` is release ``9``.
     MAJOR = "major"
 
 
