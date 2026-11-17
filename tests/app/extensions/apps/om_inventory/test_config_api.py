@@ -1801,17 +1801,24 @@ class TestStoredRowsOutsideTheBounds:
         """Drop the schedule instead of failing the whole refresh.
 
         Built from a row in memory: SQLite's JSON round trip turns the value into
-        ``inf``, which coercion refuses before the schedule's own check runs.
+        ``inf``, which coercion refuses before the schedule's own check runs. The
+        honoured override beside it still applies.
         """
-        row = SettingOverride(
-            setting_class=setting_class_token(OmInventorySettings),
-            key="SCHEDULE__every",
-            value=10**400,
+        token = setting_class_token(OmInventorySettings)
+        retention = 20
+        oversized = SettingOverride(
+            setting_class=token, key="SCHEDULE__every", value=10**400
+        )
+        neighbour = SettingOverride(
+            setting_class=token, key="RUN_RETENTION", value=retention
         )
 
-        stored = cache.stored_overrides_from_rows(OmInventorySettings, [row], DEFAULTS)
+        stored = cache.stored_overrides_from_rows(
+            OmInventorySettings, [oversized, neighbour], DEFAULTS
+        )
 
         assert "SCHEDULE" not in stored
+        assert stored["RUN_RETENTION"] == retention
 
     @pytest.mark.asyncio
     async def test_one_leaf_cannot_mend_a_schedule_stored_in_seconds(
