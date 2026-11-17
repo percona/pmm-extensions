@@ -37,6 +37,7 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Body, Response, status
 from sqlmodel import col, select
 
+from app.api.deps import admit_service_principal
 from app.core.exceptions import HTTPBadRequestException
 from app.extensions.apps.inventory.connectivity import probe_service_connectivity
 from app.extensions.apps.inventory.deps import (
@@ -76,6 +77,7 @@ _SYNC_RUN_HISTORY_LIMIT = 10
 
 
 @router.post("/sync/", status_code=status.HTTP_202_ACCEPTED, response_class=Response)
+@admit_service_principal
 async def inventory_sync_trigger(
     syncers: SyncersDep,
     background_tasks: BackgroundTasks,

@@ -18,7 +18,8 @@ allowBuilds:
   esbuild: true
   msw: true
 overrides:
-  follow-redirects@1.16.0: 1.16.1
+  glob@13.0.6: 14.0.2
+  follow-redirects@>=1.16.0 <1.16.2: 1.16.2
   '@vitest/mocker@4.1.11': 4.1.12
   esbuild: 0.28.1
   brace-expansion@5.0.6: 5.0.12
@@ -30,6 +31,7 @@ overrides:
   tinypool@<2.1.2: 2.1.2
   '@babel/core': 7.29.6
   immutable@<5.1.8: ^5.1.8
+  minimatch@10.2.5: 11.0.1
   react: 19.2.7
   source-map-js@<1.2.2: 1.2.2
   react-dom: 19.2.7

@@ -51,7 +51,7 @@ from fastapi import status as http_status
 from pydantic import BaseModel, Field, StringConstraints
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import require_minimum_role
+from app.api.deps import admit_service_principal, require_minimum_role
 from app.core.auth.models import UserRole
 from app.core.exceptions import (
     HTTPBadRequestException,
@@ -701,6 +701,7 @@ def _spec_for(run: BootstrapRun) -> tuple[InstallStrategy, BootstrapSpec]:
     status_code=http_status.HTTP_202_ACCEPTED,
 )
 @require_minimum_role(UserRole.ADMIN)
+@admit_service_principal
 async def dispatch_run_step(
     run: LockedRun,
     host: str,
@@ -759,6 +760,7 @@ async def dispatch_run_step(
     status_code=http_status.HTTP_202_ACCEPTED,
 )
 @require_minimum_role(UserRole.ADMIN)
+@admit_service_principal
 async def dispatch_finalize_step(
     run: LockedRun,
     host: str,
@@ -816,6 +818,7 @@ async def dispatch_finalize_step(
     status_code=http_status.HTTP_202_ACCEPTED,
 )
 @require_minimum_role(UserRole.ADMIN)
+@admit_service_principal
 async def dispatch_run_run_step(
     run: LockedRun,
     step_name: str,
@@ -879,6 +882,7 @@ async def dispatch_run_run_step(
     status_code=http_status.HTTP_202_ACCEPTED,
 )
 @require_minimum_role(UserRole.ADMIN)
+@admit_service_principal
 async def dispatch_rollback_step(
     run: LockedRun,
     host: str,
@@ -948,6 +952,7 @@ async def dispatch_rollback_step(
 
 @router.post("/runs/{run_id}:finish")
 @require_minimum_role(UserRole.ADMIN)
+@admit_service_principal
 async def finish_run(
     run: LockedRun, session: SessionDep, body: FinishRunRequest
 ) -> RunResponse:
@@ -1040,6 +1045,7 @@ async def _stop_running_steps(
 
 @router.post("/runs/{run_id}:cancel", status_code=http_status.HTTP_202_ACCEPTED)
 @require_minimum_role(UserRole.ADMIN)
+@admit_service_principal
 async def cancel_run(  # raises-family-ok: the ordering test injects a fault the contract does not promise
     run: LockedRun, session: SessionDep, tasks_client: TasksClient
 ) -> RunResponse:
