@@ -10823,6 +10823,10 @@ export interface components {
     /**
      * ReleaseMatch
      * @description Say which part of ``/etc/os-release``'s ``VERSION_ID`` names a release.
+     *
+     *     :cvar EXACT: The whole value, as Ubuntu's ``22.04``.
+     *     :cvar MAJOR: The part before the first dot, so Rocky Linux ``9.4`` is release
+     *         ``9``.
      * @enum {string}
      */
     om_bootstrap__ReleaseMatch: 'exact' | 'major';
