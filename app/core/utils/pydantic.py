@@ -347,7 +347,13 @@ def bound_metadata(field_info: FieldInfo) -> list[Any]:
 
 
 def numeric_bounds(metadata: list[Any]) -> dict[str, Any]:
-    """Return ``ge`` / ``le`` bounds extracted from ``annotated_types`` metadata."""
+    """Return ``ge`` / ``le`` bounds extracted from ``annotated_types`` metadata.
+
+    :param metadata: The bound-carrying metadata, as :func:`bound_metadata`
+        returns it; ``GroupedMetadata`` containers are flattened first.
+    :return: ``{"ge": ..., "le": ...}``, each the first inclusive bound found, or
+        ``None`` when there is none.
+    """
     metadata = flatten_metadata(metadata)
     ge = next((item.ge for item in metadata if isinstance(item, Ge)), None)
     le = next((item.le for item in metadata if isinstance(item, Le)), None)

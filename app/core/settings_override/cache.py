@@ -437,6 +437,7 @@ def merge_nested_overrides(
     :return: The merged parent, as the field's annotation validates it.
     :raises ValidationError: If the merged parent cannot be built, or the field's
         validators refuse it.
+    :raises TypeError: If ``parent``'s annotation carries no Pydantic model.
     """
     field_info = settings_cls.model_fields[parent]
     parent_cls = annotation_pydantic_class(field_info.annotation)

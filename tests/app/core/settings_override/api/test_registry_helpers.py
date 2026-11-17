@@ -851,7 +851,7 @@ def test_override_provenance_is_empty_without_rows() -> None:
 
 
 class _BoundedSettings(BaseYamlSettings):
-    """Synthetic settings class declaring bounds in each spelling a field may use."""
+    """Declare a bound in each spelling a field may use."""
 
     SETTINGS_PREFIXES: ClassVar[list[str]] = ["BOUNDED"]
     PAIR: Annotated[int, Ge(2), Le(30)] = hot_field(8)
