@@ -20,13 +20,14 @@ from typing import Any, Final
 
 import pytest
 from fastapi import FastAPI
-from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
 
 from app.api.deps import (
+    admits_service_principal,
     get_current_user,
     minimum_role_for,
     require_minimum_role_for_unsafe_methods,
+    resolved_callables,
 )
 from app.core.auth.models import UserRole
 from app.core.security import SAFE_HTTP_METHODS
@@ -51,6 +52,76 @@ NON_ADMIN_MINIMUMS: Final = {
     ("tasks", "POST", "/history/latest"): UserRole.NONE,
 }
 
+#: Every unsafe route the gate admits ``EXTENSIONS_INTERNAL_TOKEN``'s principal on,
+#: keyed like :data:`NON_ADMIN_MINIMUMS`.
+SERVICE_PRINCIPAL_ROUTES: Final = frozenset(
+    {
+        # pmm-managed: inventory sync after an install.
+        ("extensions", "POST", "/api/apps/inventory/sync/"),
+        # pmm-managed: the switch, and a scoped refresh after an install.
+        ("extensions", "PUT", "/api/apps/om_inventory/enabled"),
+        ("extensions", "POST", "/api/apps/om_inventory/runs"),
+        # pmm-managed: the bootstrap stepper.
+        (
+            "extensions",
+            "POST",
+            "/api/apps/om_bootstrap/runs/{run_id}/hosts/{host}/steps/{step_name}:dispatch",
+        ),
+        (
+            "extensions",
+            "POST",
+            "/api/apps/om_bootstrap/runs/{run_id}/hosts/{host}/finalize/{step_name}:dispatch",
+        ),
+        (
+            "extensions",
+            "POST",
+            "/api/apps/om_bootstrap/runs/{run_id}/run-steps/{step_name}:dispatch",
+        ),
+        (
+            "extensions",
+            "POST",
+            "/api/apps/om_bootstrap/runs/{run_id}/hosts/{host}/rollback/{step_name}:dispatch",
+        ),
+        ("extensions", "POST", "/api/apps/om_bootstrap/runs/{run_id}:finish"),
+        ("extensions", "POST", "/api/apps/om_bootstrap/runs/{run_id}:cancel"),
+        # Inventory syncers.
+        ("inventory", "POST", "/nodes/"),
+        ("inventory", "PUT", "/nodes/{node_id}"),
+        ("inventory", "DELETE", "/nodes/{node_id}"),
+        ("inventory", "POST", "/nodes/{node_id}/revive"),
+        ("inventory", "POST", "/nodes/sync-health"),
+        ("inventory", "POST", "/nodes/{node_id}/sync-health"),
+        ("inventory", "PUT", "/nodes/{node_id}/system-observation"),
+        ("inventory", "POST", "/nodes/{node_id}/services/"),
+        ("inventory", "PUT", "/services/{service_id}"),
+        ("inventory", "DELETE", "/services/{service_id}"),
+        ("inventory", "POST", "/services/{service_id}/revive"),
+        ("inventory", "POST", "/services/sync-health"),
+        ("inventory", "POST", "/services/{service_id}/sync-health"),
+        ("inventory", "PUT", "/services/{service_id}/system-observation"),
+        ("inventory", "POST", "/services/{service_id}/schemas/"),
+        ("inventory", "PUT", "/schemas/{schema_id}"),
+        ("inventory", "DELETE", "/schemas/{schema_id}"),
+        ("inventory", "POST", "/schemas/{schema_id}/revive"),
+        ("inventory", "POST", "/schemas/sync-health"),
+        ("inventory", "POST", "/schemas/{schema_id}/sync-health"),
+        ("inventory", "POST", "/schemas/{schema_id}/tables/"),
+        ("inventory", "PUT", "/tables/{table_id}"),
+        ("inventory", "DELETE", "/tables/{table_id}"),
+        ("inventory", "POST", "/tables/{table_id}/revive"),
+        ("inventory", "POST", "/tables/sync-health"),
+        ("inventory", "POST", "/tables/{table_id}/sync-health"),
+        # ATW proxy tasks.
+        ("tasks", "POST", "/"),
+        ("tasks", "PUT", "/{task_name}"),
+        # Syncers, the sweep and bootstrap steps dispatch; the sweep and a
+        # bootstrap cancel stop; the log stream reconciles.
+        ("tasks", "POST", "/execute/{task_name}"),
+        ("tasks", "POST", "/history/{task_history_id}/stop/"),
+        ("tasks", "POST", "/history/{task_history_id}/sync/"),
+    }
+)
+
 
 def _gate_callables(route: APIRoute) -> set[Callable[..., Any]]:
     """Return the callables the route's top-level dependencies resolve to.
@@ -66,22 +137,6 @@ def _gate_callables(route: APIRoute) -> set[Callable[..., Any]]:
     }
 
 
-def _resolved_callables(dependant: Dependant) -> Iterator[Callable[..., Any]]:
-    """Yield every callable the dependency subtree below ``dependant`` resolves.
-
-    The walk recurses because a route reaching authentication through
-    ``IsAdminDep`` carries it as a grandchild rather than as one of its own
-    declared dependencies.
-
-    :param dependant: The dependency node whose subtree to walk.
-    :return: One entry per dependency at any depth below the node.
-    """
-    for sub in dependant.dependencies:
-        if sub.call is not None:
-            yield sub.call
-        yield from _resolved_callables(sub)
-
-
 def _api_routes(app: FastAPI) -> list[APIRoute]:
     """Return every ``APIRoute`` mounted on ``app``.
 
@@ -89,6 +144,18 @@ def _api_routes(app: FastAPI) -> list[APIRoute]:
     :return: The mounted API routes, excluding static mounts and websockets.
     """
     return [route for route in app.routes if isinstance(route, APIRoute)]
+
+
+def _gated_unsafe_routes() -> Iterator[tuple[tuple[str, str, str], APIRoute]]:
+    """Yield each gated unsafe route keyed like :data:`NON_ADMIN_MINIMUMS`.
+
+    :return: One ``(service, method, path)`` key and route per unsafe method.
+    """
+    for name, app in GATED_APPS.items():
+        for route in _api_routes(app):
+            if require_minimum_role_for_unsafe_methods in _gate_callables(route):
+                for method in route.methods - SAFE_HTTP_METHODS:
+                    yield (name, method, route.path), route
 
 
 @pytest.mark.parametrize("app", [inventory_app, tasks_app], ids=["inventory", "tasks"])
@@ -119,7 +186,7 @@ def test_every_unsafe_route_authenticates_itself_as_well(app: FastAPI) -> None:
     unsafe = [route for route in _api_routes(app) if route.methods - SAFE_HTTP_METHODS]
     assert unsafe
     for route in unsafe:
-        assert get_current_user in set(_resolved_callables(route.dependant)), route.path
+        assert get_current_user in set(resolved_callables(route.dependant)), route.path
 
 
 def test_extensions_api_routes_inherit_the_gate_and_the_identity_tree_does_not() -> (
@@ -163,13 +230,7 @@ def test_every_unsafe_route_resolves_to_its_classified_minimum() -> None:
     from the default rather than a registration, and because a walk that
     resolved nothing at all would satisfy the equality on its own.
     """
-    resolved = {
-        (name, method, route.path): minimum_role_for(route)
-        for name, app in GATED_APPS.items()
-        for route in _api_routes(app)
-        if require_minimum_role_for_unsafe_methods in _gate_callables(route)
-        for method in sorted(route.methods - SAFE_HTTP_METHODS)
-    }
+    resolved = {key: minimum_role_for(route) for key, route in _gated_unsafe_routes()}
 
     assert (
         resolved[("extensions", "POST", "/api/apps/alerts/pagerduty")] is UserRole.ADMIN
@@ -183,6 +244,19 @@ def test_every_unsafe_route_resolves_to_its_classified_minimum() -> None:
     }
 
     assert non_admin == NON_ADMIN_MINIMUMS
+
+
+def test_the_service_principal_is_admitted_only_where_classified() -> None:
+    """Assert the gate admits the principal on exactly the routes pinned for it.
+
+    Opening a route to ``EXTENSIONS_INTERNAL_TOKEN`` hands it to whoever holds
+    the token, so it has to mean editing a list that names the route.
+    """
+    admitted = {
+        key for key, route in _gated_unsafe_routes() if admits_service_principal(route)
+    }
+
+    assert admitted == SERVICE_PRINCIPAL_ROUTES
 
 
 def test_a_registration_reaches_the_endpoint_object_fastapi_matched() -> None:

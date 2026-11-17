@@ -17,12 +17,13 @@
 
 import logging
 import secrets
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from hashlib import sha256
 from typing import Annotated, Any, Final, TypeVar
 from uuid import UUID
 
 from fastapi import Cookie, Depends, params, Request
+from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import ValidationError
@@ -206,7 +207,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 async def get_service_principal_exempt_caller(current_user: CurrentUser) -> BaseUser:
-    """Return the authenticated caller of a write open to more than the principal.
+    """Return the authenticated caller of a write not reserved to the principal.
 
     Declared through :data:`ExemptFromServicePrincipalDep` on a route that
     :class:`ServicePrincipalWriteRoute` would otherwise restrict. Its presence
@@ -301,7 +302,7 @@ def require_minimum_role(role: UserRole) -> Callable[[F], F]:
     """Return a decorator registering the minimum role one route requires.
 
     The registration keys on the object FastAPI stores as
-    ``APIRoute.endpoint``, so this belongs below any decorator that returns a
+    ``APIRoute.endpoint``, so this belongs above any decorator that returns a
     *new* function: a wrapper between the two leaves the registry keyed on a
     callable no request reaches, and the route falls back to
     :data:`DEFAULT_MINIMUM_ROLE` with nothing raised to say so. Order against
@@ -341,6 +342,55 @@ def minimum_role_for(route: object | None) -> UserRole:
     return _ROUTE_MINIMUM_ROLES.get(endpoint, DEFAULT_MINIMUM_ROLE)
 
 
+_SERVICE_PRINCIPAL_ENDPOINTS: set[Callable[..., Any]] = set()
+
+
+def admit_service_principal(endpoint: F) -> F:
+    """Admit ``EXTENSIONS_INTERNAL_TOKEN``'s principal past the role gate on a route.
+
+    For an unsafe route called by background work with no user behind it. Like
+    :func:`require_minimum_role`, it keys on the function ``APIRoute.endpoint``
+    holds, so it belongs above any decorator that returns a new function: below
+    one, the principal is refused on that route with nothing raised to say so.
+
+    :param endpoint: The route handler.
+    :return: The handler, unchanged.
+    """
+    _SERVICE_PRINCIPAL_ENDPOINTS.add(endpoint)
+    return endpoint
+
+
+def resolved_callables(dependant: Dependant) -> Iterator[Callable[..., Any]]:
+    """Yield every callable the dependency subtree below ``dependant`` resolves.
+
+    :param dependant: The dependency node whose subtree to walk.
+    :return: One entry per dependency at any depth below the node.
+    """
+    for sub in dependant.dependencies:
+        if sub.call is not None:
+            yield sub.call
+        yield from resolved_callables(sub)
+
+
+def admits_service_principal(route: object | None) -> bool:
+    """Return whether the gate admits the service principal on a matched route.
+
+    A route admits it by registering through :func:`admit_service_principal`, or
+    by accepting nobody else through :data:`IsServicePrincipalDep`, since
+    refusing the only caller such a route takes would leave it unreachable.
+
+    :param route: The matched route from the request scope, if any. Anything
+        without an ``endpoint`` or a ``dependant`` admits nothing.
+    :return: ``True`` when the principal passes the gate on the route.
+    """
+    if getattr(route, "endpoint", None) in _SERVICE_PRINCIPAL_ENDPOINTS:
+        return True
+    dependant = getattr(route, "dependant", None)
+    return isinstance(
+        dependant, Dependant
+    ) and get_current_service_principal in resolved_callables(dependant)
+
+
 async def require_minimum_role_for_unsafe_methods(request: Request) -> None:
     """Require each mutating HTTP method's route-registered minimum role.
 
@@ -361,11 +411,11 @@ async def require_minimum_role_for_unsafe_methods(request: Request) -> None:
     passed along so the route's own authentication dependency is served from this
     resolution rather than repeating it.
 
-    ``EXTENSIONS_INTERNAL_TOKEN``'s service principal is admitted by identity so
-    scheduled inventory sync and scheduled execution keep working. It holds
-    ``UserRole.VIEWER`` and so would fail every minimum above it; the bypass
-    stays scoped to this gate, leaving every pre-existing ``IsApiAdmin`` /
-    ``IsAdminDep`` check refusing it as before.
+    ``EXTENSIONS_INTERNAL_TOKEN``'s service principal holds ``UserRole.VIEWER``
+    and is ranked like anyone else, except on a route that
+    :func:`admits_service_principal`: the writes background work makes with the
+    token. Admitting it there stays scoped to this gate, leaving every
+    ``IsApiAdmin`` / ``IsAdminDep`` check refusing it.
 
     :param request: The incoming HTTP request.
     :raises HTTPUnauthorizedException: When the method is unsafe and the request
@@ -377,13 +427,14 @@ async def require_minimum_role_for_unsafe_methods(request: Request) -> None:
     """
     if request.method in SAFE_HTTP_METHODS:
         return
-    minimum = minimum_role_for(request.scope.get("route"))
+    route = request.scope.get("route")
+    minimum = minimum_role_for(route)
     if minimum is UserRole.NONE:
         return
     if not is_bearer_authenticated(request):
         raise HTTPUnauthorizedException
     user = await get_current_user(request, await oauth2_scheme(request))
-    if user.id == SERVICE_PRINCIPAL_ID:
+    if user.id == SERVICE_PRINCIPAL_ID and admits_service_principal(route):
         return
     if user.role < minimum:
         raise HTTPForbiddenException

@@ -849,12 +849,12 @@ def test_an_admin_may_decide_an_identity_link(
     assert response.status_code == status.HTTP_204_NO_CONTENT
 
 
-def test_the_service_principal_may_also_decide_an_identity_link(
+def test_the_service_principal_may_not_decide_an_identity_link(
     bearer_client: TestClient,
     split_nodes: tuple[Node, Node],
     internal_token: str,
 ) -> None:
-    """Admit the principal too, so an automated caller is not locked out later."""
+    """Refuse the principal, which no background work sends here."""
     predecessor, successor = split_nodes
 
     response = bearer_client.post(
@@ -866,7 +866,7 @@ def test_the_service_principal_may_also_decide_an_identity_link(
         headers={"Authorization": f"Bearer {internal_token}"},
     )
 
-    assert response.status_code == status.HTTP_204_NO_CONTENT
+    assert response.status_code == status.HTTP_403_FORBIDDEN
 
 
 class TestServiceIdentityLinkAccess:
@@ -908,16 +908,16 @@ class TestServiceIdentityLinkAccess:
             == status.HTTP_204_NO_CONTENT
         )
 
-    def test_the_principal_may_decide_it(
+    def test_the_principal_may_not_decide_it(
         self,
         bearer_client: TestClient,
         split_services: tuple[Service, Service],
         internal_token: str,
     ) -> None:
-        """Admit the principal too, the exemption widening rather than swapping."""
+        """Refuse the principal, which no background work sends here."""
         assert (
             self._reject(bearer_client, split_services, internal_token)
-            == status.HTTP_204_NO_CONTENT
+            == status.HTTP_403_FORBIDDEN
         )
 
     def test_a_non_admin_is_still_refused(

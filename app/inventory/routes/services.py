@@ -355,8 +355,8 @@ async def decide_service_identity_link(
 
     The path names the **predecessor** — the survivor of a confirmation.
 
-    Open to an admin as well as the service principal, unlike the other
-    service writes: an identity link is an operator judgement, not a row the
+    Open to an admin, unlike the other service writes, which only the service
+    principal makes: an identity link is an operator judgement, not a row the
     syncer owns.
 
     :param session: The async database session.

@@ -215,6 +215,7 @@ jobs:
             precommit:
               - '.pre-commit-config.yaml'
               - '.github/workflows/ci.yml'
+              - 'scripts/dead_code_baseline.toml'
             shell:
               - '**/*.sh'
             frontend:
@@ -325,6 +326,10 @@ jobs:
         env:
           SKIP: oxfmt,oxlint
         run: pre-commit run --all-files
+
+      - name: Check for new dead code
+        if: needs.changes.outputs.python == 'true' || needs.changes.outputs.precommit == 'true'
+        run: pre-commit run check-dead-code --hook-stage manual --all-files
 
   precommit-frontend:
     if: >-
