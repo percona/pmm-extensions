@@ -389,10 +389,16 @@ export function useAtwIncidentExecutions(
  * carry the reasons it is unavailable. Returns no reasons on any error: a
  * transient config blip should not silently withhold the action, and the POST's
  * own 503 gate remains the real guard.
+ *
+ * The answer is cached for the session. `refreshOnMount` asks for a fresh one
+ * each time the calling component mounts; `DeliverySetupGate` uses it so an
+ * admin who fixes delivery in Settings and comes back does not leave a stale
+ * "unavailable" answer in the cache for the Send action to reuse.
  */
-export function useAtwConfig() {
+export function useAtwConfig({ refreshOnMount = false }: { refreshOnMount?: boolean } = {}) {
   return useQuery<AtwConfig>({
     queryKey: ['atw', 'config'],
+    refetchOnMount: refreshOnMount ? 'always' : true,
     queryFn: async () => {
       try {
         const { data } = await apiClient.get<AtwConfig>(`${ATW_BASE}/config/`);
