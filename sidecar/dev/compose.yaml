@@ -57,7 +57,83 @@ services:
       - pmm-extensions:/run/secrets/extensions:ro
       - pmm-extensions-state:/home/extensions/state
 
+  # A database host is one container that holds the database, its backup tools
+  # and PMM Client. Nomad's client needs control of cgroups to place a task,
+  # hence `privileged` and the host's cgroup tree.
+  mysql-host:
+    profiles:
+      - mysql
+    build:
+      context: targets/mysql
+      dockerfile: Containerfile
+      args:
+        PMM_CLIENT_IMAGE: percona/pmm-client:${PMM_VERSION:-3.10.0}
+    image: pmm-extensions-dev/mysql-host:${PMM_VERSION:-3.10.0}
+    hostname: mysql-host
+    depends_on:
+      pmm-server:
+        condition: service_healthy
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
+      MYSQL_BACKUP_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
+      MYSQL_PMM_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
+      PMM_AGENT_SERVER_ADDRESS: pmm-server:8443
+      PMM_AGENT_SERVER_USERNAME: admin
+      PMM_AGENT_SERVER_PASSWORD: ${PMM_ADMIN_PASSWORD:-admin}
+      PMM_AGENT_SERVER_INSECURE_TLS: "1"
+      PMM_AGENT_CONFIG_FILE: /usr/local/percona/pmm/config/pmm-agent.yaml
+      PMM_AGENT_SETUP_NODE_NAME: mysql-host
+      PMM_AGENT_SETUP_NODE_TYPE: container
+      PMM_AGENT_PATHS_NOMAD_DATA_DIR: /var/lib/nomad
+    privileged: true
+    cgroup: host
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # Off the image layer, so the node keeps its id when the container is recreated.
+      - mysql-pmm-config:/usr/local/percona/pmm/config
+      - mysql-nomad:/var/lib/nomad
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+  postgresql-host:
+    profiles:
+      - postgresql
+    build:
+      context: targets/postgresql
+      dockerfile: Containerfile
+      args:
+        PMM_CLIENT_IMAGE: percona/pmm-client:${PMM_VERSION:-3.10.0}
+    image: pmm-extensions-dev/postgresql-host:${PMM_VERSION:-3.10.0}
+    hostname: postgresql-host
+    depends_on:
+      pmm-server:
+        condition: service_healthy
+    environment:
+      POSTGRESQL_PMM_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
+      PMM_AGENT_SERVER_ADDRESS: pmm-server:8443
+      PMM_AGENT_SERVER_USERNAME: admin
+      PMM_AGENT_SERVER_PASSWORD: ${PMM_ADMIN_PASSWORD:-admin}
+      PMM_AGENT_SERVER_INSECURE_TLS: "1"
+      PMM_AGENT_CONFIG_FILE: /usr/local/percona/pmm/config/pmm-agent.yaml
+      PMM_AGENT_SETUP_NODE_NAME: postgresql-host
+      PMM_AGENT_SETUP_NODE_TYPE: container
+      PMM_AGENT_PATHS_NOMAD_DATA_DIR: /var/lib/nomad
+    privileged: true
+    cgroup: host
+    volumes:
+      - postgresql-data:/var/lib/pgsql
+      - postgresql-backups:/var/lib/pgbackrest
+      - postgresql-pmm-config:/usr/local/percona/pmm/config
+      - postgresql-nomad:/var/lib/nomad
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
 volumes:
   pmm-data:
   pmm-extensions:
   pmm-extensions-state:
+  mysql-data:
+  mysql-pmm-config:
+  mysql-nomad:
+  postgresql-data:
+  postgresql-backups:
+  postgresql-pmm-config:
+  postgresql-nomad:
