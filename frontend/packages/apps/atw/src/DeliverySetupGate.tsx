@@ -285,7 +285,9 @@ interface DeliverySetupGateProps {
  * Any other config answer leaves the decision to the settings below; while the
  * config request is still in flight (including the refetch every mount starts)
  * and the settings would show the prompt, the gate keeps its spinner so a usable
- * deployment never flashes the setup screen.
+ * deployment never flashes the setup screen. The same holds the other way: a
+ * cached "usable" answer waits for that mount refetch whenever the settings
+ * would prompt, so a deployment that stopped being usable never flashes the app.
  *
  * Anything the app can do ends in an upload to a ServiceNow case, so an
  * unconfigured deployment has nothing to offer but a dead end — the prompt
@@ -319,9 +321,16 @@ export function DeliverySetupGate({
     data: config,
     isPending: isConfigPending,
     isFetching: isConfigFetching,
+    isFetchedAfterMount: isConfigFetchedAfterMount,
   } = useAtwConfig({ refreshOnMount: true });
 
-  if (isDeliveryUsable(config)) {
+  // TanStack Query keeps serving the cached answer while the mount refresh runs,
+  // so a cached "usable" is only trusted once that refresh has landed (or when no
+  // refresh is running). Otherwise a cache that says usable, refreshed to "not
+  // usable", would render the app and then swap it for the setup prompt. A later
+  // background refetch does not reset `isFetchedAfterMount`, so it never unmounts
+  // an app that is already on screen.
+  if (isDeliveryUsable(config) && (isConfigFetchedAfterMount || !isConfigFetching)) {
     return <>{children}</>;
   }
 

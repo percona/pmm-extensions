@@ -304,6 +304,57 @@ describe('DeliverySetupGate', () => {
     });
   });
 
+  describe('when a cached "usable" answer is being refreshed on mount', () => {
+    // TanStack Query keeps serving the cached answer during the mount refresh,
+    // which may still come back with reasons.
+    beforeEach(() => {
+      mockConfig({
+        data: { send_disabled_reasons: [], case_search_available: false },
+        isFetching: true,
+        isFetchedAfterMount: false,
+      });
+    });
+
+    it('waits instead of flashing the app when the settings would prompt', () => {
+      mockList({ data: extensionsGroups(['api_key']) });
+      renderGate(true);
+
+      expect(screen.getByLabelText(Messages.loading)).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-app')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('atw-delivery-setup-prompt')).not.toBeInTheDocument();
+    });
+
+    it('waits while the settings are loading', () => {
+      mockList({ isLoading: true });
+      renderGate(true);
+
+      expect(screen.getByLabelText(Messages.loading)).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-app')).not.toBeInTheDocument();
+    });
+
+    it('renders the app without waiting when the settings already render it', () => {
+      mockList({ data: extensionsGroups(['sn_api_key'], { sn_api_key: 'secret' }) });
+      renderGate();
+
+      expect(screen.getByTestId('atw-app')).toBeInTheDocument();
+      expect(screen.queryByLabelText(Messages.loading)).not.toBeInTheDocument();
+    });
+
+    it('keeps the app on screen during a later background refetch', () => {
+      // Once the mount refresh has landed, a refetch must not unmount the app.
+      mockConfig({
+        data: { send_disabled_reasons: [], case_search_available: false },
+        isFetching: true,
+        isFetchedAfterMount: true,
+      });
+      mockList({ data: extensionsGroups(['api_key']) });
+      renderGate(true);
+
+      expect(screen.getByTestId('atw-app')).toBeInTheDocument();
+      expect(screen.queryByLabelText(Messages.loading)).not.toBeInTheDocument();
+    });
+  });
+
   describe('when the backend gives no usable answer', () => {
     it('falls back to the settings when the config carries no reasons array', () => {
       // An e2e catch-all route answers `[]`, which has no `send_disabled_reasons`.
@@ -400,6 +451,49 @@ describe('DeliverySetupGate', () => {
         send_disabled_reasons: [],
         case_search_available: false,
       });
+    });
+
+    it('never shows the app when a cached "usable" answer refreshes to reasons', async () => {
+      // The reverse of the case above: delivery was usable when the answer was
+      // cached and has since stopped being usable.
+      const queryClient = newQueryClient();
+      queryClient.setQueryData(['atw', 'config'], {
+        send_disabled_reasons: [],
+        case_search_available: false,
+      });
+      let resolveGet: (value: unknown) => void = () => {};
+      const get = vi.spyOn(apiClient, 'get').mockReturnValue(
+        new Promise((resolve) => {
+          resolveGet = resolve;
+        }),
+      );
+      renderGate(true, queryClient);
+
+      expect(screen.getByLabelText(Messages.loading)).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-app')).not.toBeInTheDocument();
+
+      resolveGet({
+        data: { send_disabled_reasons: UNUSABLE_REASONS, case_search_available: false },
+      });
+
+      expect(await screen.findByTestId('atw-delivery-setup-prompt')).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-app')).not.toBeInTheDocument();
+      expect(get).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders the app once a cached "usable" answer is confirmed on mount', async () => {
+      const queryClient = newQueryClient();
+      queryClient.setQueryData(['atw', 'config'], {
+        send_disabled_reasons: [],
+        case_search_available: false,
+      });
+      vi.spyOn(apiClient, 'get').mockResolvedValue({
+        data: { send_disabled_reasons: [], case_search_available: false },
+      });
+      renderGate(true, queryClient);
+
+      expect(await screen.findByTestId('atw-app')).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-delivery-setup-prompt')).not.toBeInTheDocument();
     });
 
     it('renders the app when the config request fails (fail-open)', async () => {
