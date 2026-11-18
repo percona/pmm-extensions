@@ -18,7 +18,13 @@
 import gzip
 from unittest.mock import patch
 
-from app.tasks.execution.utils import gzip_compress, minify_file_content
+import pytest
+
+from app.tasks.execution.utils import (
+    gzip_compress,
+    holds_requotable_f_string,
+    minify_file_content,
+)
 
 
 def test_minify_valid_python_code():
@@ -48,6 +54,39 @@ def test_minify_with_syntax_error():
     broken_python_code = "def baz()\n    print('missing colon')"
     result = minify_file_content(broken_python_code, file_ext="py")
     assert result == broken_python_code
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            "config = {'home': '/root'}\nprint(f\"{config['home']}/.my.cnf\")\n",
+            id="quoted-subscript",
+        ),
+        pytest.param("count = 1\nprint(f\"{f'{count}'}\")\n", id="nested-f-string"),
+        pytest.param("print(f\"{b'raw'!r}\")\n", id="bytes-literal"),
+        pytest.param(
+            "width = 5\nprint(f\"{width:{'>'}10}\")\n", id="literal-in-format-spec"
+        ),
+    ],
+)
+def test_minify_passes_through_a_requotable_f_string(source: str) -> None:
+    """Return a source unchanged when an f-string field holds a quoted literal.
+
+    :param source: Python source with a quoted literal inside a replacement field.
+    """
+    assert holds_requotable_f_string(source)
+    assert minify_file_content(source) == source
+
+
+def test_minify_still_minifies_f_strings_of_names() -> None:
+    """Minify a source whose f-string fields hold only names and conversions."""
+    source = (
+        "name = 'backup'\ncount = 3\nwidth = 4\nprint(f\"{name}/{count!r:>{width}}\")\n"
+    )
+
+    assert not holds_requotable_f_string(source)
+    assert minify_file_content(source) != source
 
 
 class TestGzipCompress:
