@@ -15,9 +15,9 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
 import type { ReactNode } from 'react';
 import {
@@ -30,7 +30,7 @@ import {
 import { ROUTES } from '@pmm-extensions/shared';
 import { DeliverySetupGate } from '../src/DeliverySetupGate';
 import { Messages } from '../src/DeliverySetupGate.messages';
-import { useAtwConfig } from '../src/hooks';
+import { ATW_CONFIG_TIMEOUT_MS, useAtwConfig } from '../src/hooks';
 import type * as AtwHooks from '../src/hooks';
 
 vi.mock('@pmm-extensions/api', async (importOriginal) => ({
@@ -355,6 +355,57 @@ describe('DeliverySetupGate', () => {
     });
   });
 
+  describe('when the mount refresh is paused because the browser is offline', () => {
+    // TanStack Query reports a paused fetch as `isFetching: false`, but it
+    // resumes on reconnect, so the cached answer is no more final than during
+    // an in-flight refresh.
+    it('waits instead of trusting a cached "usable" answer when the settings would prompt', () => {
+      mockConfig({
+        data: { send_disabled_reasons: [], case_search_available: false },
+        isFetching: false,
+        isPaused: true,
+        isFetchedAfterMount: false,
+      });
+      mockList({ data: extensionsGroups(['api_key']) });
+      renderGate(true);
+
+      expect(screen.getByLabelText(Messages.loading)).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-app')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('atw-delivery-setup-prompt')).not.toBeInTheDocument();
+    });
+
+    it('waits instead of showing the prompt for a cached "unavailable" answer', () => {
+      mockConfig({ isFetching: false, isPaused: true, isFetchedAfterMount: false });
+      mockList({ data: extensionsGroups(['api_key']) });
+      renderGate(true);
+
+      expect(screen.getByLabelText(Messages.loading)).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-delivery-setup-prompt')).not.toBeInTheDocument();
+    });
+
+    it('renders the app without waiting when the settings already render it', () => {
+      mockConfig({ isFetching: false, isPaused: true, isFetchedAfterMount: false });
+      mockList({ data: extensionsGroups(['sn_api_key'], { sn_api_key: 'secret' }) });
+      renderGate();
+
+      expect(screen.getByTestId('atw-app')).toBeInTheDocument();
+      expect(screen.queryByLabelText(Messages.loading)).not.toBeInTheDocument();
+    });
+
+    it('keeps the app on screen when a later refetch is paused', () => {
+      mockConfig({
+        data: { send_disabled_reasons: [], case_search_available: false },
+        isFetching: false,
+        isPaused: true,
+        isFetchedAfterMount: true,
+      });
+      mockList({ data: extensionsGroups(['api_key']) });
+      renderGate(true);
+
+      expect(screen.getByTestId('atw-app')).toBeInTheDocument();
+    });
+  });
+
   describe('when the backend gives no usable answer', () => {
     it('falls back to the settings when the config carries no reasons array', () => {
       // An e2e catch-all route answers `[]`, which has no `send_disabled_reasons`.
@@ -421,6 +472,128 @@ describe('DeliverySetupGate', () => {
 
     afterEach(() => {
       vi.restoreAllMocks();
+      onlineManager.setOnline(true);
+    });
+
+    /** Seed the cache with the answer an earlier visit left behind. */
+    const cachedUsableClient = () => {
+      const queryClient = newQueryClient();
+      queryClient.setQueryData(['atw', 'config'], {
+        send_disabled_reasons: [],
+        case_search_available: false,
+      });
+      return queryClient;
+    };
+
+    it('sends the config read with the query abort signal and a finite timeout', async () => {
+      const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
+        data: { send_disabled_reasons: [], case_search_available: false },
+      });
+      renderGate(true);
+
+      expect(await screen.findByTestId('atw-app')).toBeInTheDocument();
+      expect(ATW_CONFIG_TIMEOUT_MS).toBeGreaterThan(0);
+      expect(get).toHaveBeenCalledWith('/apps/atw/config/', {
+        signal: expect.any(AbortSignal),
+        timeout: ATW_CONFIG_TIMEOUT_MS,
+      });
+    });
+
+    it('cancels a config read when the gate unmounts, so a remount never reuses it', async () => {
+      // A GET that read "usable" before an admin reset delivery must not finish
+      // after the admin comes back and pass for that mount's fresh answer.
+      const queryClient = cachedUsableClient();
+      const signals: AbortSignal[] = [];
+      let resolveSecond: (value: unknown) => void = () => {};
+      const get = vi
+        .spyOn(apiClient, 'get')
+        .mockImplementationOnce((_url, config) => {
+          const signal = config?.signal as AbortSignal;
+          signals.push(signal);
+          return new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () =>
+              reject(new ApiError({ kind: 'canceled', message: 'Request canceled' })),
+            );
+          });
+        })
+        .mockImplementationOnce((_url, config) => {
+          signals.push(config?.signal as AbortSignal);
+          return new Promise((resolve) => {
+            resolveSecond = resolve;
+          });
+        });
+
+      const first = renderGate(true, queryClient);
+      expect(screen.getByLabelText(Messages.loading)).toBeInTheDocument();
+      first.unmount();
+
+      expect(signals[0]?.aborted).toBe(true);
+      // The cancelled read leaves the earlier answer in place rather than caching
+      // its own fail-open fallback.
+      await waitFor(() =>
+        expect(queryClient.getQueryState(['atw', 'config'])?.fetchStatus).toBe('idle'),
+      );
+      expect(queryClient.getQueryData(['atw', 'config'])).toEqual({
+        send_disabled_reasons: [],
+        case_search_available: false,
+      });
+
+      renderGate(true, queryClient);
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(screen.getByLabelText(Messages.loading)).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-app')).not.toBeInTheDocument();
+
+      resolveSecond({
+        data: { send_disabled_reasons: UNUSABLE_REASONS, case_search_available: false },
+      });
+
+      expect(await screen.findByTestId('atw-delivery-setup-prompt')).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-app')).not.toBeInTheDocument();
+    });
+
+    it('opens the app when the mount refresh times out (fail-open)', async () => {
+      // Cached "usable" plus settings that would prompt holds the spinner until
+      // the refresh settles; a timeout settles it through the fail-open answer.
+      const queryClient = cachedUsableClient();
+      let rejectGet: (reason: unknown) => void = () => {};
+      vi.spyOn(apiClient, 'get').mockReturnValue(
+        new Promise((_resolve, reject) => {
+          rejectGet = reject;
+        }),
+      );
+      renderGate(true, queryClient);
+
+      expect(screen.getByLabelText(Messages.loading)).toBeInTheDocument();
+
+      rejectGet(
+        new ApiError({ kind: 'timeout', code: 'ECONNABORTED', message: 'Request timed out' }),
+      );
+
+      expect(await screen.findByTestId('atw-app')).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-delivery-setup-prompt')).not.toBeInTheDocument();
+    });
+
+    it('holds the spinner while offline and decides once the refresh runs on reconnect', async () => {
+      const queryClient = cachedUsableClient();
+      const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
+        data: { send_disabled_reasons: UNUSABLE_REASONS, case_search_available: false },
+      });
+      onlineManager.setOnline(false);
+      renderGate(true, queryClient);
+
+      await waitFor(() =>
+        expect(queryClient.getQueryState(['atw', 'config'])?.fetchStatus).toBe('paused'),
+      );
+      expect(get).not.toHaveBeenCalled();
+      expect(screen.getByLabelText(Messages.loading)).toBeInTheDocument();
+      expect(screen.queryByTestId('atw-app')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('atw-delivery-setup-prompt')).not.toBeInTheDocument();
+
+      act(() => onlineManager.setOnline(true));
+
+      expect(await screen.findByTestId('atw-delivery-setup-prompt')).toBeInTheDocument();
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId('atw-app')).not.toBeInTheDocument();
     });
 
     it('prompts when a successful response carries no reasons array', async () => {

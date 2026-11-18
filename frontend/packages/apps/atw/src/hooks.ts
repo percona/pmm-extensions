@@ -385,25 +385,47 @@ export function useAtwIncidentExecutions(
 // ── Diagnostics send ─────────────────────────────────────────────────────
 
 /**
+ * How long the config read may run before it gives up (ms).
+ *
+ * The shared API client sets no timeout, and `DeliverySetupGate` holds its
+ * spinner while this read is in flight. A finite deadline lets a server that
+ * never answers fall through to the fail-open answer below instead of leaving
+ * the gate spinning.
+ */
+export const ATW_CONFIG_TIMEOUT_MS = 10_000;
+
+/**
  * Probe whether a diagnostics receiver is configured, so the Send action can
- * carry the reasons it is unavailable. Returns no reasons on any error: a
- * transient config blip should not silently withhold the action, and the POST's
- * own 503 gate remains the real guard.
+ * carry the reasons it is unavailable. Returns no reasons on any error,
+ * including a timeout: a transient config blip should not silently withhold the
+ * action, and the POST's own 503 gate remains the real guard.
  *
  * The answer is cached for the session. `refreshOnMount` asks for a fresh one
  * each time the calling component mounts; `DeliverySetupGate` uses it so an
  * admin who fixes delivery in Settings and comes back does not leave a stale
  * "unavailable" answer in the cache for the Send action to reuse.
+ *
+ * The request carries the query's abort signal, so TanStack Query cancels it
+ * once the last component reading it unmounts. Without that, a GET started
+ * before an admin changed delivery could finish after they reopened the app
+ * and be taken as that mount's fresh answer. A cancelled read is rethrown
+ * rather than mapped to "no reasons", so it never lands in the cache.
  */
 export function useAtwConfig({ refreshOnMount = false }: { refreshOnMount?: boolean } = {}) {
   return useQuery<AtwConfig>({
     queryKey: ['atw', 'config'],
     refetchOnMount: refreshOnMount ? 'always' : true,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        const { data } = await apiClient.get<AtwConfig>(`${ATW_BASE}/config/`);
+        const { data } = await apiClient.get<AtwConfig>(`${ATW_BASE}/config/`, {
+          signal,
+          timeout: ATW_CONFIG_TIMEOUT_MS,
+        });
         return data;
-      } catch {
+      } catch (error) {
+        if (signal.aborted) {
+          throw error;
+        }
         return { send_disabled_reasons: [], case_search_available: false };
       }
     },

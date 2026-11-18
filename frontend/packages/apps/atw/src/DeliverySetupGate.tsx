@@ -288,6 +288,9 @@ interface DeliverySetupGateProps {
  * deployment never flashes the setup screen. The same holds the other way: a
  * cached "usable" answer waits for that mount refetch whenever the settings
  * would prompt, so a deployment that stopped being usable never flashes the app.
+ * A refetch TanStack Query paused because the browser is offline counts as still
+ * in flight: it starts the moment the connection returns, and would otherwise
+ * swap whatever the gate showed meanwhile.
  *
  * Anything the app can do ends in an upload to a ServiceNow case, so an
  * unconfigured deployment has nothing to offer but a dead end — the prompt
@@ -321,8 +324,12 @@ export function DeliverySetupGate({
     data: config,
     isPending: isConfigPending,
     isFetching: isConfigFetching,
+    isPaused: isConfigPaused,
     isFetchedAfterMount: isConfigFetchedAfterMount,
   } = useAtwConfig({ refreshOnMount: true });
+  // An offline browser pauses the refresh with `isFetching: false`; it is still
+  // unfinished and resumes on reconnect, so it holds the gate the same way.
+  const isConfigRefreshing = isConfigFetching || isConfigPaused;
 
   // TanStack Query keeps serving the cached answer while the mount refresh runs,
   // so a cached "usable" is only trusted once that refresh has landed (or when no
@@ -330,7 +337,7 @@ export function DeliverySetupGate({
   // usable", would render the app and then swap it for the setup prompt. A later
   // background refetch does not reset `isFetchedAfterMount`, so it never unmounts
   // an app that is already on screen.
-  if (isDeliveryUsable(config) && (isConfigFetchedAfterMount || !isConfigFetching)) {
+  if (isDeliveryUsable(config) && (isConfigFetchedAfterMount || !isConfigRefreshing)) {
     return <>{children}</>;
   }
 
@@ -342,7 +349,7 @@ export function DeliverySetupGate({
     return <>{children}</>;
   }
 
-  if (isConfigPending || isConfigFetching) {
+  if (isConfigPending || isConfigRefreshing) {
     return <LoadingSpinner />;
   }
 
