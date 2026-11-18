@@ -28,7 +28,7 @@ The commands on this page were run with Docker, with the old instance and PMM Ex
 
 ## Set the names that the commands use
 
-Each command on this page reads these four variables. Set them in every shell that you use, with your own values.
+The commands on this page read these four variables. Type the four lines, with your own values, in the terminal where you run the commands. If you open a new terminal, type them again.
 
 ```sh
 OLD_DIR="$HOME/sep"
@@ -37,9 +37,9 @@ PMM_SERVER=pmm-server
 PMM_EXTENSIONS=pmm-extensions
 ```
 
-- `OLD_DIR` is the install directory of the old instance. It holds `compose.yaml`.
+- `OLD_DIR` is the install directory of the old instance. It holds `compose.yaml`. Only the commands that you run on the host of the old instance use it.
 - `PMM_URL` is the address of PMM as seen from the PMM host. Add the port when it is not 443, for example `https://127.0.0.1:8443`.
-- `PMM_SERVER` and `PMM_EXTENSIONS` are the names of the two containers on the PMM host.
+- `PMM_SERVER` and `PMM_EXTENSIONS` are the names of the two containers on the PMM host. The command `docker ps` lists them.
 
 ## Export the schedules from the old instance
 
@@ -58,7 +58,7 @@ Run these steps on the host of the old instance.
     docker compose --file "$OLD_DIR/compose.yaml" --project-name sep exec -T tasks_api python - export < migrate_standalone_schedules.py > standalone-export.json
     ```
 
-   The export reads the address and the token of the old instance from its own settings. You type neither. The command prints one warning from the old instance, and then a count:
+   The export reads the address and the token of the old instance from its own settings. You type neither. The command prints a warning like this one from the old instance, and then a count:
 
     ```text
     [11/18/26 23:05:21] WARNING  app.core.config: [-] The value '*' in config.py:508
@@ -67,7 +67,7 @@ Run these steps on the host of the old instance.
     Exported 4 schedules, 4 tasks, 2 services.
     ```
 
-3. Copy the `migration` directory to the PMM host, if that is another machine.
+3. Copy the `migration` directory to the PMM host, if that is another machine. If both are on one machine, keep using the same directory.
 
 The file `standalone-export.json` holds every backup setting of the old instance. Treat it as you treat those settings.
 
@@ -83,7 +83,7 @@ Run these steps on the PMM host, in the `migration` directory.
     (umask 077; cat > pmm.token)
     ```
 
-   The script reads the token from this file. Do not put the token on a command line: it would stay in the shell history.
+   The `umask 077` part makes the file readable by you only. The script reads the token from this file. Do not put the token on a command line: it would stay in the shell history.
 
 3. Copy the certificate of PMM out of its container.
 
@@ -106,7 +106,7 @@ Run these steps on the PMM host, in the `migration` directory.
 
 ## Run the script without changing anything
 
-Without the `--apply` option the script creates nothing.
+Without the `--apply` option the script creates nothing. The command starts a short-lived container from the PMM Extensions image. The container sees only the `migration` directory, and it is removed when the script ends.
 
 ```sh
 docker run --rm --network host --user "$(id -u):$(id -g)" --entrypoint python -v "$PWD":/work -w /work "$EXT_IMAGE" migrate_standalone_schedules.py migrate --export standalone-export.json --pmm-url "$PMM_URL" --pmm-token-file pmm.token --pmm-ca-file pmm-ca.crt --matches matches.json
@@ -215,13 +215,13 @@ If PMM Extensions rejects a request, the script stops and says how many schedule
 
 ## Verify
 
-1. Run the command with `--apply` once more. The plan now lists every schedule as present, and the output ends with this line:
+1. Run the command of the previous section again, unchanged. The plan now counts the schedules under "already in PMM" and has none to create. A schedule that was skipped is still listed as skipped. The output ends with this line:
 
     ```text
     Nothing to create.
     ```
 
-2. In PMM, go to **Apps** > **MySQL Backups** and select **Schedules**. Each schedule is listed with its period and time zone, the **Enabled** switch is off, and **Last Run** shows "Not yet run".
+2. In PMM, go to **Apps** > **MySQL Backups** and select **Schedules**. Each schedule is listed with its period and time zone, its **Enabled** checkbox is cleared, and **Last Run** shows "Not yet run".
 
 ## Switch each schedule over
 
@@ -230,14 +230,14 @@ A schedule in PMM Extensions writes to the same directory as the schedule it rep
 For each schedule:
 
 1. On the old instance, open the **MySQL Backups** page. In the **Periodic Tasks** table, turn off the switch in the **Enabled** column, and confirm.
-2. In PMM, go to **Apps** > **MySQL Backups** > **Schedules** and turn on the **Enabled** switch of the same schedule.
+2. In PMM, go to **Apps** > **MySQL Backups** > **Schedules** and select the **Enabled** checkbox of the same schedule.
 3. After the next run, check that **Last Run** shows the run and that the new backup is on the database host.
 
 An interval schedule first runs one interval after you enable it. A schedule that runs every day first runs a day later.
 
 ### While both instances run
 
-When both instances use the Nomad server of the same PMM, two things can happen:
+PMM Extensions and the old instance both run a backup on a host as a Nomad job named `run-python-<host>`. When both instances use the Nomad server of the same PMM, they share that job, and two things can happen:
 
 - A backup that the old instance runs takes longer. In the test, a backup of 30 seconds took about 110 seconds.
 - PMM Extensions answers a run with HTTP 502 for one host: "Failed to get a response from Nomad". This happens when the old instance was the last to register its job on that host. Remove the job, and PMM Extensions registers its own on the next run:
