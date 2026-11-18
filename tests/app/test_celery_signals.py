@@ -15,7 +15,6 @@
 
 """Test Celery signal handlers for correlation ID propagation."""
 
-from collections.abc import Generator
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,20 +25,13 @@ from app.celery import (
     set_task_log_context,
 )
 from app.core.log import (
-    clear_log_context,
     correlation_id_var,
     set_log_context,
     task_id_var,
     task_name_var,
 )
 
-
-@pytest.fixture(autouse=True)
-def _reset_context() -> Generator[None]:
-    """Reset log context before and after each test."""
-    clear_log_context()
-    yield
-    clear_log_context()
+pytestmark = pytest.mark.usefixtures("reset_log_context")
 
 
 class TestPropagateCorrelationId:

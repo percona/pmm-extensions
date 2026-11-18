@@ -60,6 +60,7 @@ from app.core.celery.models import IntervalSchedule
 from app.core.config import settings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.health import HEALTH_PATH
+from app.core.log import clear_log_context
 from app.core.requests import RemoteAPI
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.utils import json_serializer
@@ -249,6 +250,14 @@ class HealthProbeServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+
+
+@pytest.fixture
+def reset_log_context() -> Iterator[None]:
+    """Clear the log context before and after the test that requests this."""
+    clear_log_context()
+    yield
+    clear_log_context()
 
 
 @pytest.fixture(name="pmm_is_the_only_syncer")
@@ -788,6 +797,9 @@ async def contending_sessions(
 @pytest_asyncio.fixture(name="session")
 async def session_fixture() -> AsyncGenerator[AsyncSession]:
     """Create an async db session for testing."""
+    # scaffolding-dup-ok: the atw, snippets and sync conftests still shadow
+    # this with identical copies; folding them in is a cleanup of its own,
+    # separate from the Python 3.14 move that re-annotated this signature.
     engine = create_async_engine(
         "sqlite+aiosqlite://",
         json_serializer=json_serializer,

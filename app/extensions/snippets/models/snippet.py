@@ -209,6 +209,7 @@ class FilePreview(NamedTuple):
         lines_scanned = 0
 
         while lines_scanned < max_scan_lines:
+            # ty-attr-ok: aiofiles attaches readline at import time through its delegate_to_executor decorator
             line = await f.readline()
             if not line:
                 break
