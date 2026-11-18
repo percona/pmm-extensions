@@ -902,6 +902,27 @@ class TestTasksSettingsCredentialUrlAtRest:
         assert parsed.hostname == "nomad.internal"
         assert parsed.port == self._PORT
 
+    async def test_patch_echoes_the_endpoint_with_its_password_masked(
+        self, admin_test_client: TestClient
+    ) -> None:
+        """Mask the password in the PATCH response the settings page reseeds from.
+
+        After a save the settings page fills the edit field from this echo, so
+        a plaintext echo would put the typed password back on screen.
+        """
+        response = admin_test_client.patch(
+            "/admin/settings/TasksSettings",
+            json={"NOMAD__ENDPOINT": self._FULL_URL},
+        )
+        assert response.status_code == status.HTTP_200_OK
+
+        echoed = {item["key"]: item for item in response.json()}["NOMAD__endpoint"]
+        assert self._PASSWORD not in echoed["value"]
+        parsed = urlparse(echoed["value"])
+        assert parsed.password == "****"
+        assert parsed.username == "nomad-user"
+        assert parsed.hostname == "nomad.internal"
+
     async def test_the_effective_endpoint_still_resolves_to_the_real_credential(
         self, admin_test_client: TestClient
     ) -> None:

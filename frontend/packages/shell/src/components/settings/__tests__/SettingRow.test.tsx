@@ -71,6 +71,130 @@ describe('SettingRow', () => {
     await waitFor(() => expect(input).toHaveValue(''));
   });
 
+  it('clears the typed secret when the save echoes the redacted entry', async () => {
+    const secret = makeSetting({
+      key: 'API_SECRET',
+      type: 'SecretStr',
+      is_secret: true,
+      value: '**********',
+    });
+    server.use(
+      http.patch(PATCH_EXTENSIONS, () => HttpResponse.json([{ ...secret, has_override: true }])),
+    );
+    renderRow(secret);
+
+    const input = screen.getByLabelText('API_SECRET');
+    await userEvent.type(input, 'new-secret');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(input).toHaveValue(''));
+  });
+
+  it('shows the saved value after a successful save of a plain text field', async () => {
+    const text = makeSetting({ key: 'SITE_NAME', type: 'str', value: 'old-name' });
+    server.use(
+      http.patch(PATCH_EXTENSIONS, () =>
+        HttpResponse.json([{ ...text, value: 'new-name', has_override: true }]),
+      ),
+    );
+    renderRow(text);
+
+    const input = screen.getByLabelText('SITE_NAME');
+    await userEvent.clear(input);
+    await userEvent.type(input, 'new-name');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Saved SITE_NAME')).toBeInTheDocument();
+    expect(input).toHaveValue('new-name');
+  });
+
+  describe('credential URL', () => {
+    const MASKED_URL = 'https://inv-user:****@inventory.example.com:8080';
+    const credentialUrl = makeSetting({
+      key: 'INVENTORY_ENDPOINT',
+      type: 'CredentialHttpUrl',
+      value: MASKED_URL,
+      has_override: true,
+      is_advanced: true,
+    });
+
+    it.each([
+      {
+        change: 'only the password',
+        typed: 'https://inv-user:new-pass@inventory.example.com:8080',
+        // The masked form hides the password, so it is identical before and
+        // after the save and the value-keyed resync effect never fires.
+        echoed: MASKED_URL,
+      },
+      {
+        change: 'the host and the password',
+        typed: 'https://inv-user:new-pass@inventory-b.example.com:8080',
+        echoed: 'https://inv-user:****@inventory-b.example.com:8080',
+      },
+    ])(
+      'replaces the typed password with the masked URL after saving $change',
+      async ({ typed, echoed }) => {
+        const body = vi.fn();
+        server.use(
+          http.patch(PATCH_EXTENSIONS, async ({ request }) => {
+            body(await request.json());
+            return HttpResponse.json([{ ...credentialUrl, value: echoed }]);
+          }),
+        );
+        renderRow(credentialUrl);
+
+        const input = screen.getByLabelText('INVENTORY_ENDPOINT');
+        expect(input).toHaveValue(MASKED_URL);
+        await userEvent.clear(input);
+        await userEvent.type(input, typed);
+        await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+        expect(await screen.findByText('Saved INVENTORY_ENDPOINT')).toBeInTheDocument();
+        expect(body).toHaveBeenCalledWith({ INVENTORY_ENDPOINT: typed });
+        expect(input).toHaveValue(echoed);
+        expect(input).not.toHaveValue(typed);
+        expect(screen.queryByDisplayValue(/new-pass/)).not.toBeInTheDocument();
+      },
+    );
+
+    it.each([
+      {
+        failure: 'an inline 422',
+        response: () =>
+          HttpResponse.json(
+            {
+              detail: [
+                {
+                  loc: ['body', 'INVENTORY_ENDPOINT'],
+                  msg: 'Input should be a valid URL',
+                  type: 'url_parsing',
+                },
+              ],
+            },
+            { status: 422 },
+          ),
+        message: 'Input should be a valid URL',
+      },
+      {
+        failure: 'an error toast',
+        response: () => HttpResponse.json({ detail: 'Upstream unavailable' }, { status: 503 }),
+        message: 'Upstream unavailable',
+      },
+    ])('keeps the typed URL in the field after $failure', async ({ response, message }) => {
+      server.use(http.patch(PATCH_EXTENSIONS, response));
+      renderRow(credentialUrl);
+
+      const typed = 'https://inv-user:new-pass@inventory.example.com:8080';
+      const input = screen.getByLabelText('INVENTORY_ENDPOINT');
+      await userEvent.clear(input);
+      await userEvent.type(input, typed);
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      expect(await screen.findByText(message)).toBeInTheDocument();
+      expect(input).toHaveValue(typed);
+    });
+  });
+
   it('surfaces a 422 message inline next to the field', async () => {
     server.use(
       http.patch(PATCH_EXTENSIONS, () =>
