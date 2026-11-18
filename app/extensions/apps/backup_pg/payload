@@ -25,7 +25,9 @@ from typing import Any
 import yaml
 
 BYTES_PER_MB = 1024**2
-CURRENT_USER = os.getenv("PERCONA_BACKUP_USER") or os.getenv("SUDO_USER") or getuser()
+CURRENT_USER = (
+    os.getenv("PERCONA_BACKUP_USER") or pwd.getpwuid(os.geteuid()).pw_name
+)
 CURRENT_USER_HOME_DIR = Path(pwd.getpwnam(CURRENT_USER).pw_dir)
 DEFAULT_COMPRESSION_ALGORITHM = "gzip"
 AVAILABLE_COMPRESSION_ALGORITHMS = ["gzip", "zstd"]
@@ -317,12 +319,17 @@ class BaseBackup:
             self.textfile_collector_notify(1)
 
     def check_textcollector_dir(self) -> bool:
-        """Check if the textfile collector directory exists.
+        """Check if the textfile collector directory exists and can be inspected.
 
-        :return: True if directory exists, False otherwise.
+        :return: True if directory exists, False when it is absent or the
+            process may not look inside its parent.
         """
         backup_textfile_collector_dir = self.backup_textfile_collector_dir.parent
-        if not backup_textfile_collector_dir.is_dir():
+        try:
+            is_dir = backup_textfile_collector_dir.is_dir()
+        except PermissionError:
+            is_dir = False
+        if not is_dir:
             self.logger.warning(
                 "Textfile Collector directory %s does not exist.",
                 backup_textfile_collector_dir,

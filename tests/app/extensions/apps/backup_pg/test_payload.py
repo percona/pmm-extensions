@@ -178,3 +178,52 @@ class TestCreateStanzaRetentionCoercion:
         content = cfg_file.read_text()
         assert f"repo1-retention-full = {EXPECTED_RETENTION_FULL}" in content
         assert f"repo1-retention-archive = {EXPECTED_RETENTION_ARCHIVE}" in content
+
+
+class TestDirectoriesOnAPmmClientHost:
+    """Cover the default directories when PMM Client runs the payload as ``root``.
+
+    The payload then re-runs itself as ``postgres`` through ``sudo``, which sets
+    ``SUDO_USER`` to ``root``.
+    """
+
+    def test_default_directories_follow_the_effective_user(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Place the default directories under the home of the user the process runs as."""
+        homes = {"root": "/root", "postgres": "/var/lib/postgresql"}
+        monkeypatch.setenv("SUDO_USER", "root")
+        for variable in (
+            "PERCONA_BACKUP_USER",
+            "PERCONA_BACKUP_DEFAULT_LOGGING_DIR",
+            "PERCONA_BACKUP_DEFAULT_CFG_DIR",
+            "PERCONA_BACKUP_TEXTFILE_COLLECTOR_DIR",
+        ):
+            monkeypatch.delenv(variable, raising=False)
+        monkeypatch.setattr("pwd.getpwuid", lambda _uid: MagicMock(pw_name="postgres"))
+        monkeypatch.setattr(
+            "pwd.getpwnam", lambda name: MagicMock(pw_name=name, pw_dir=homes[name])
+        )
+
+        module = _load_payload_module()
+
+        assert (
+            Path("/var/lib/postgresql/.local/percona/logs/backup")
+            == module.DEFAULT_LOGGING_DIR
+        )
+
+    def test_unreadable_collector_directory_counts_as_absent(
+        self,
+        payload_module: ModuleType,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Skip the collector report when its directory cannot be inspected."""
+        pg = _make_pgbackrest(payload_module, tmp_path)
+
+        def refuse(_path: Path) -> bool:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "is_dir", refuse)
+
+        assert pg.check_textcollector_dir() is False
