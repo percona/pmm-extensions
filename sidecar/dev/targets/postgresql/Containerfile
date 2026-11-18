@@ -24,9 +24,5 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 
 EXPOSE 5432
 
-# Healthy means ready to run a task: PostgreSQL answers, the stanza exists and
-# the service is registered with PMM.
-HEALTHCHECK --interval=10s --timeout=5s --start-period=300s --retries=12 \
-    CMD test -f /run/dev-host-ready && pg_isready -h 127.0.0.1 -p 5432 || exit 1
-
+# The health check is in ../../compose.yaml: an image built in OCI format drops one.
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

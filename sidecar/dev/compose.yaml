@@ -13,11 +13,16 @@ services:
     image: percona/pmm-server:${PMM_VERSION:-3.10.0}
     platform: linux/amd64
     hostname: pmm-server
-    # Only the start period is set: Compose merges a health check field by
-    # field, so the probe stays the one the image ships. The image allows 90 s,
-    # and a cold start can need longer. A dependent service would then fail the
-    # first `up` instead of waiting.
+    # The probe is the one the image ships. It is repeated here because Podman
+    # drops an image's health check when it pulls, and the services below wait
+    # on this one. The start period is longer than the image's 90 s: a cold
+    # start can need more, and a dependent service would then fail the first
+    # `up` instead of waiting.
     healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/v1/server/readyz"]
+      interval: 4s
+      timeout: 2s
+      retries: 3
       start_period: 300s
     environment:
       GF_SECURITY_ADMIN_USER: admin
@@ -73,6 +78,15 @@ services:
     depends_on:
       pmm-server:
         condition: service_healthy
+    # Healthy means ready to run a task: MySQL answers, the sample data is
+    # loaded and the service is registered with PMM. The start period covers
+    # the import.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /run/dev-host-ready && mysqladmin --defaults-file=/root/.my.cnf --protocol=socket ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 600s
     environment:
       MYSQL_ROOT_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
       MYSQL_BACKUP_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
@@ -107,6 +121,14 @@ services:
     depends_on:
       pmm-server:
         condition: service_healthy
+    # Healthy means ready to run a task: PostgreSQL answers, the stanza exists
+    # and the service is registered with PMM.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /run/dev-host-ready && pg_isready -h 127.0.0.1 -p 5432"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 300s
     environment:
       POSTGRESQL_PMM_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
       PMM_AGENT_SERVER_ADDRESS: pmm-server:8443
