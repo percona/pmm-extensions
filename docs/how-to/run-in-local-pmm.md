@@ -192,6 +192,8 @@ The stack runs the code inside the released image. A second Compose file runs yo
      --profile mysql up -d --wait --force-recreate pmm-extensions
    ```
 
+With your checkout's code, PMM's UI shows a banner that says PMM Server and PMM Extensions are at different versions. Your checkout is newer than the released PMM, so the banner is expected.
+
 Your checkout's schema steps change the database, and the released code cannot use a database that newer code changed. To go back to the released code, remove the data first: see [Stop and remove](#stop-and-remove).
 
 The second file replaces code. It does not install packages. When your checkout needs a Python package that the released image lacks, the container fails to start. Build an image from your checkout and set `PMM_EXTENSIONS_IMAGE` to it: see [Get an app into a PMM release](get-an-app-into-a-pmm-release.md).
