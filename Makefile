@@ -124,6 +124,16 @@ typecheck-diff: venv
 
 lint: ruff
 
+# The pages the documentation linters check. A page joins the list when it is
+# rewritten to docs/writing-standard.md; the rumdl hook in
+# .pre-commit-config.yaml carries the same list as its `files:` pattern.
+DOCS_LINT_PATHS ?= docs/writing-standard.md docs/app-status.md docs/tutorials docs/how-to docs/reference docs/explanation
+
+docs-lint:
+	@[ -x .vale/bin/vale ] || bash scripts/install_vale.sh
+	@.vale/bin/vale sync
+	@.vale/bin/vale $(wildcard $(DOCS_LINT_PATHS))
+
 audit: bandit pip-audit
 
 # python.org macOS builds ship without etc/openssl/cert.pem until you run
@@ -435,4 +445,4 @@ lint-pipelines:
 	done; \
 	if [ "$${failures}" -ne 0 ]; then exit 1; fi
 
-.PHONY: venv build pack builder image format ruff typecheck typecheck-diff lint audit run-pre-commit dev-backend dev-frontend backfill-legacy-forms form-audit pip-audit bandit makemigrations makemigrations-plugin migrate checkmigrations mergemigrations test regen-specs regen-pbm-payloads regen-pbm-payloads-check regen-xtrabackup-variants regen-xtrabackup-variants-check smoke-xtrabackup-variants check-nomad-payload-size check-sidecar-purge release-prep release-rc release-stable trigger-jenkins lint-pipelines encryption-key changelog-add changelog-check changelog-list startapp startapp-check
+.PHONY: venv build pack builder image format ruff typecheck typecheck-diff lint docs-lint audit run-pre-commit dev-backend dev-frontend backfill-legacy-forms form-audit pip-audit bandit makemigrations makemigrations-plugin migrate checkmigrations mergemigrations test regen-specs regen-pbm-payloads regen-pbm-payloads-check regen-xtrabackup-variants regen-xtrabackup-variants-check smoke-xtrabackup-variants check-nomad-payload-size check-sidecar-purge release-prep release-rc release-stable trigger-jenkins lint-pipelines encryption-key changelog-add changelog-check changelog-list startapp startapp-check

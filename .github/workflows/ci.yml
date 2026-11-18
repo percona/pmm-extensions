@@ -164,6 +164,7 @@ jobs:
       shell: ${{ steps.filter.outputs.shell }}
       sidecar: ${{ steps.filter.outputs.sidecar }}
       pipeline: ${{ steps.filter.outputs.pipeline }}
+      docs: ${{ steps.filter.outputs.docs }}
     steps:
       # Checkout uses the live PR merge ref (not replayed GITHUB_SHA) so a
       # retarget re-run checks the current base; no PR number → github.sha.
@@ -234,6 +235,12 @@ jobs:
             pipeline:
               - 'build/**/*.pipeline'
               - 'scripts/lint_pipelines.groovy'
+            docs:
+              - '**/*.md'
+              - '.vale.ini'
+              - '.vale/**'
+              - '.rumdl.toml'
+              - 'scripts/install_vale.sh'
 
   precommit-light:
     if: ${{ github.event.pull_request.draft == false }}
@@ -330,6 +337,36 @@ jobs:
       - name: Check for new dead code
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.precommit == 'true'
         run: pre-commit run check-dead-code --hook-stage manual --all-files
+
+  docs-lint:
+    if: >-
+      ${{
+        github.event.pull_request.draft == false &&
+        needs.changes.outputs.docs == 'true'
+      }}
+    needs:
+      - label-gate
+      - changes
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Install pre-commit
+        run: python -m pip install pre-commit==4.5.1
+
+      - name: Check Markdown structure and links
+        run: pre-commit run rumdl --all-files
+
+      - name: Check prose against the writing standard
+        run: make docs-lint
 
   precommit-frontend:
     if: >-
@@ -610,6 +647,7 @@ jobs:
       - precommit-light
       - precommit-python
       - precommit-frontend
+      - docs-lint
       - python
       - frontend
       - build

@@ -1,0 +1,13 @@
+extends: existence
+message: "Remove '%s' and state the fact."
+level: error
+ignorecase: true
+tokens:
+  - easy
+  - easily
+  - simple
+  - simply
+  - powerful
+  - seamless(?:ly)?
+  - straightforward
+  - robust
