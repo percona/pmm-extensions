@@ -162,7 +162,7 @@ Nomad allocation files follow Nomad/client host retention and garbage-collection
 For customer commitments, the retention period must therefore be defined operationally for the deployment. A complete retention procedure should specify:
 
 - The maximum age for task history and task log records.
-- The value of `TASKS.LOG_RETENTION_DAYS`, which sets the maximum age of captured task logs.
+- The value of `TASKS.LOG_RETENTION_DAYS`, which sets how many days the logs of a finished task are kept before the scheduled purge can delete them.
 - The database purge job or manual runbook used to delete expired `TaskHistory` rows.
 - Verification that cascading log rows were deleted.
 - Backup retention and backup expiration behavior, because deleted logs may remain in backups until those backups expire.
