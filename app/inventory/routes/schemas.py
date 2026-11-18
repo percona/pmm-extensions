@@ -19,7 +19,11 @@ import logging
 
 from fastapi import APIRouter, status
 
-from app.api.deps import IsAuthenticatedDep, IsServicePrincipalDep
+from app.api.deps import (
+    admit_service_principal,
+    IsAuthenticatedDep,
+    IsServicePrincipalDep,
+)
 from app.core.pagination import PaginatedResponse
 from app.core.pagination.deps import PaginationDep
 from app.inventory.crud import (
@@ -101,6 +105,7 @@ async def retrieve_schema(
 
 
 @router.put("/{schema_id}", dependencies=[IsAuthenticatedDep])
+@admit_service_principal
 async def update_schema(
     session: SessionDep,
     existing_schema: SchemaDep,
@@ -116,6 +121,7 @@ async def update_schema(
     dependencies=[IsAuthenticatedDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
+@admit_service_principal
 async def retire_schema(session: SessionDep, schema: RetirableSchemaDep) -> None:
     """Retire Schema and its tables, keeping the rows resolvable.
 
@@ -131,6 +137,7 @@ async def retire_schema(session: SessionDep, schema: RetirableSchemaDep) -> None
     dependencies=[IsAuthenticatedDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
+@admit_service_principal
 async def revive_schema(session: SessionDep, schema: RetirableSchemaDep) -> None:
     """Revive a retired Schema together with its retired ancestors.
 
@@ -218,6 +225,7 @@ async def list_tables_by_schema(
     dependencies=[IsAuthenticatedDep],
     status_code=status.HTTP_201_CREATED,
 )
+@admit_service_principal
 async def create_table_for_schema(
     session: SessionDep,
     schema: SchemaDep,

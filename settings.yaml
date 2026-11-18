@@ -154,6 +154,7 @@ default:
     # are read from EXTENSIONS.OM_INVENTORY, entirely commented out below: every value
     # shown is that class's own default, and the sidecar ships defaults-only.
     # OM_INVENTORY:
+    #   AUTO_SCAN: true  # false stops every sweep the app starts itself; triggered scans still run
     #   SCHEDULE: {EVERY: 10, PERIOD: minutes}  # null unregisters the periodic sweep
     #   PROBE_DATABASE: true
     #   REPO_URL: https://repo.percona.com/percona/yum/PERCONA-PACKAGING-KEY

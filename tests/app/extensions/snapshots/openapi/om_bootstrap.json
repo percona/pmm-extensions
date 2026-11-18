@@ -4291,7 +4291,7 @@
         "type": "string"
       },
       "om_bootstrap__ReleaseMatch": {
-        "description": "Say which part of ``/etc/os-release``'s ``VERSION_ID`` names a release.",
+        "description": "Say which part of ``/etc/os-release``'s ``VERSION_ID`` names a release.\n\n:cvar EXACT: The whole value, as Ubuntu's ``22.04``.\n:cvar MAJOR: The part before the first dot, so Rocky Linux ``9.4`` is release\n    ``9``.",
         "enum": [
           "exact",
           "major"

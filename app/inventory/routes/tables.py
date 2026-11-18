@@ -19,7 +19,11 @@ import logging
 
 from fastapi import APIRouter, status
 
-from app.api.deps import IsAuthenticatedDep, IsServicePrincipalDep
+from app.api.deps import (
+    admit_service_principal,
+    IsAuthenticatedDep,
+    IsServicePrincipalDep,
+)
 from app.core.pagination import PaginatedResponse
 from app.core.pagination.deps import PaginationDep
 from app.inventory.crud import TableManager
@@ -84,6 +88,7 @@ async def retrieve_table(
 
 
 @router.put("/{table_id}", dependencies=[IsAuthenticatedDep])
+@admit_service_principal
 async def update_table(
     session: SessionDep,
     existing_table: TableDep,
@@ -99,6 +104,7 @@ async def update_table(
     dependencies=[IsAuthenticatedDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
+@admit_service_principal
 async def retire_table(session: SessionDep, table: RetirableTableDep) -> None:
     """Retire Table, keeping the row resolvable.
 
@@ -114,6 +120,7 @@ async def retire_table(session: SessionDep, table: RetirableTableDep) -> None:
     dependencies=[IsAuthenticatedDep],
     status_code=status.HTTP_204_NO_CONTENT,
 )
+@admit_service_principal
 async def revive_table(session: SessionDep, table: RetirableTableDep) -> None:
     """Revive a retired Table together with its retired ancestors.
 

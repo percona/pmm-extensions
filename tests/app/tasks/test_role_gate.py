@@ -126,16 +126,30 @@ def test_reads_are_unaffected_for_a_non_admin(bearer_client: TestClient) -> None
     assert response.status_code == status.HTTP_200_OK
 
 
-def test_the_service_principal_is_still_refused_by_a_route_admin_check(
-    bearer_client: TestClient, mocker: MockerFixture
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("PATCH", f"/admin/settings/{TASKS_SETTINGS}", {"overrides": {}}),
+        ("DELETE", "/no-such-task", None),
+    ],
+    ids=["settings", "task-deletion"],
+)
+def test_the_service_principal_is_refused_a_write_it_is_not_admitted_on(
+    bearer_client: TestClient,
+    mocker: MockerFixture,
+    method: str,
+    path: str,
+    body: dict[str, object] | None,
 ) -> None:
-    """Refuse the principal on a route carrying its own ``IsAdminDep``."""
+    """Refuse the principal a write no background work makes.
+
+    403 rather than 404 on the deletion shows the gate refused before the route
+    looked the task up.
+    """
     mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(SERVICE_TOKEN))
 
-    response = bearer_client.patch(
-        f"/admin/settings/{TASKS_SETTINGS}",
-        json={"overrides": {}},
-        headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
+    response = bearer_client.request(
+        method, path, json=body, headers={"Authorization": f"Bearer {SERVICE_TOKEN}"}
     )
 
     assert response.status_code == status.HTTP_403_FORBIDDEN

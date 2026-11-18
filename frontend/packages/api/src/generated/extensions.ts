@@ -2430,17 +2430,27 @@ export interface paths {
      * Set Enabled
      * @description Follow PMM's Operations for MongoDB switch.
      *
-     *     pmm-managed calls this at startup and whenever the switch changes, with no user
-     *     behind the call, so only the service principal may use it; a person changes
-     *     this app's configuration through ``/api/extensions/admin/settings`` instead.
+     *     pmm-managed calls this at startup, whenever the switch changes, and whenever it
+     *     finds ``ENABLED`` differing from the switch, with no user behind the call, so only
+     *     the service principal may use it; a person changes this app's configuration
+     *     through ``/api/extensions/admin/settings`` instead.
      *
      *     It flips ``ENABLED`` independently of ``SCHEDULE``, so the configured cadence
      *     survives the switch being turned off and back on. The change lands without a
      *     restart, the same way an admin's change on the settings router does.
      *
+     *     With ``scan``, a write of ``true`` also sweeps the whole estate at once, even if
+     *     ``ENABLED`` was already on, so it need not wait out a ``SCHEDULE`` interval,
+     *     unless another sweep is in flight or ``AUTO_SCAN`` is off: an admin who stopped
+     *     automatic scans should not get one from a restart. pmm-managed asks for it when
+     *     it starts and when the switch turns on, repeating the request until a write
+     *     lands, but never when it only corrects ``ENABLED``, so a correction starts no
+     *     sweep. A sweep that cannot be started does not fail the switch, which has
+     *     already landed.
+     *
      *     :param request: The incoming request; its ``app.state`` carries the rebind
      *         callbacks fired for ``ENABLED``.
-     *     :param body: The switch's new state.
+     *     :param body: The switch's new state, and whether to sweep with it.
      *     :param session: The database session.
      *     :param actor: The service principal, recorded on the row written.
      *     :return: The ``ENABLED`` row as written.
@@ -3555,6 +3565,9 @@ export interface paths {
      *         no rows are written.
      *     :raises HTTPBadGatewayException: For a remote class, when the owning
      *         sub-app returns a server error (status >= 500) or is unreachable.
+     *     :raises HTTPServiceUnavailableException: If the batch names a cross-field
+     *         rule's field and a concurrent change to the class holds its lock too
+     *         long; no rows are written.
      *     :raises IntegrityError: When the replay of a batch that lost the
      *         unique-index race conflicts again, which leaves nothing written.
      */
@@ -3621,6 +3634,9 @@ export interface paths {
      *     :raises HTTPUnprocessableEntityException: If ``key`` names a
      *         ``NESTED_ONLY`` parent (the whole parent cannot be overridden;
      *         target an individual ``parent__leaf`` instead).
+     *     :raises HTTPServiceUnavailableException: If ``key`` names a cross-field
+     *         rule's field and a concurrent change to the class holds its lock too
+     *         long; nothing is deleted.
      *     :raises HTTPBadGatewayException: For a remote class, when the owning
      *         sub-app returns a server error (status >= 500) or is unreachable.
      */
@@ -10809,6 +10825,10 @@ export interface components {
     /**
      * ReleaseMatch
      * @description Say which part of ``/etc/os-release``'s ``VERSION_ID`` names a release.
+     *
+     *     :cvar EXACT: The whole value, as Ubuntu's ``22.04``.
+     *     :cvar MAJOR: The part before the first dot, so Rocky Linux ``9.4`` is release
+     *         ``9``.
      * @enum {string}
      */
     om_bootstrap__ReleaseMatch: 'exact' | 'major';
@@ -11063,10 +11083,16 @@ export interface components {
      * @description Set the app's ``ENABLED`` switch to PMM's Operations for MongoDB switch.
      *
      *     :param enabled: Whether the sweep should run.
+     *     :param scan: Whether to also sweep the whole estate at once.
      */
     om_inventory__EnabledWrite: {
       /** Enabled */
       enabled: boolean;
+      /**
+       * Scan
+       * @default false
+       */
+      scan: boolean;
     };
     /**
      * HostResponse

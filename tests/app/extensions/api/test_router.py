@@ -834,17 +834,32 @@ class TestApiRoleGate:
 
         assert response.status_code == status.HTTP_202_ACCEPTED
 
-    def test_service_principal_gains_nothing_beyond_this_gate(
-        self, bearer_client: TestClient, mocker: MockerFixture
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        [
+            ("PUT", "/api/admin/apps/checksums/state", {"state": "DISABLING"}),
+            ("DELETE", "/api/apps/om_inventory/hosts/no-such-node", None),
+        ],
+        ids=["app-state", "host-deletion"],
+    )
+    def test_service_principal_is_refused_a_route_it_is_not_admitted_on(
+        self,
+        bearer_client: TestClient,
+        mocker: MockerFixture,
+        method: str,
+        path: str,
+        body: dict[str, object] | None,
     ) -> None:
-        """Refuse the principal on a route carrying its own ``IsApiAdmin``."""
+        """Refuse the principal a write no background work makes.
+
+        403 rather than 404 on the deletion shows the gate refused before the
+        route looked the host up.
+        """
         secret = "supersecret"
         mocker.patch.object(settings, "EXTENSIONS_INTERNAL_TOKEN", SecretStr(secret))
 
-        response = bearer_client.put(
-            "/api/admin/apps/checksums/state",
-            json={"state": "DISABLING"},
-            headers={"Authorization": f"Bearer {secret}"},
+        response = bearer_client.request(
+            method, path, json=body, headers={"Authorization": f"Bearer {secret}"}
         )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
