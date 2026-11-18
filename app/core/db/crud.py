@@ -15,6 +15,7 @@
 
 """Define database operations."""
 
+import builtins
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Generic, Literal, NamedTuple, overload, TypeVar
@@ -152,7 +153,7 @@ class BaseManager:
         return col(getattr(cls.Model, name))
 
     @classmethod
-    def _get_columns(cls, *names: str) -> list[ColumnExpressionArgument]:
+    def _get_columns(cls, *names: str) -> builtins.list[ColumnExpressionArgument]:
         """Get the column expressions for multiple fields in the model.
 
         :param names: The names of the fields.
@@ -396,7 +397,7 @@ class BaseManager:
         *whereclause: ColumnExpressionArgument[bool],
         returning: Iterable[str] | bool = False,
         **equal_filters: Any,
-    ) -> CursorResult | ChunkedIteratorResult | list:
+    ) -> CursorResult | ChunkedIteratorResult | builtins.list:
         """Execute a DML statement (UPDATE or DELETE) with the specified filters.
 
         This method ensures that at least one filter is provided to avoid unintentional
@@ -463,7 +464,7 @@ class BaseManager:
         *whereclause: ColumnExpressionArgument[bool],
         returning: Iterable[str] | Literal[True],
         **equal_filters: Any,
-    ) -> list[Any]: ...
+    ) -> builtins.list[Any]: ...
 
     @classmethod
     async def update_where(
@@ -473,7 +474,7 @@ class BaseManager:
         *whereclause: ColumnExpressionArgument[bool],
         returning: Iterable[str] | bool = False,
         **equal_filters: Any,
-    ) -> CursorResult[Any] | ChunkedIteratorResult[Any] | list[Any]:
+    ) -> CursorResult[Any] | ChunkedIteratorResult[Any] | builtins.list[Any]:
         """Execute an UPDATE statement.
 
         A truthy ``returning`` always yields a list, so the overloads let a caller
@@ -519,7 +520,7 @@ class BaseManager:
         *whereclause: ColumnExpressionArgument[bool],
         returning: Iterable[str] | Literal[True],
         **equal_filters: Any,
-    ) -> list[Any]: ...
+    ) -> builtins.list[Any]: ...
 
     @classmethod
     async def delete_where(
@@ -528,7 +529,7 @@ class BaseManager:
         *whereclause: ColumnExpressionArgument[bool],
         returning: Iterable[str] | bool = False,
         **equal_filters: Any,
-    ) -> CursorResult[Any] | ChunkedIteratorResult[Any] | list[Any]:
+    ) -> CursorResult[Any] | ChunkedIteratorResult[Any] | builtins.list[Any]:
         """Execute a DELETE statement.
 
         This method executes a DELETE statement to delete specific rows matching the
@@ -560,7 +561,7 @@ class BaseManager:
         *whereclause: ColumnExpressionArgument[bool],
         select_related: Sequence = (),
         **equal_filters: Any,
-    ) -> list[Any]:
+    ) -> builtins.list[Any]:
         """Return a list of values for the specified fields.
 
         This method retrieves values for the specified fields from the database. If no
@@ -612,7 +613,7 @@ class BaseManager:
         limit: int | None = None,
         order_by: Sequence[ColumnExpressionOrStrLabelArgument] | None = None,
         **equal_filters: Any,
-    ) -> list[T]:
+    ) -> builtins.list[T]:
         """Return a list of matching records, optionally paginated.
 
         :param session: The SQLAlchemy asynchronous session to use for query execution.
