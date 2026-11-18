@@ -4,7 +4,7 @@ inputs:
   python-version:
     description: Version of Python to use
     required: true
-    default: "3.11"
+    default: "3.14.10"
   cache:
     description: Type of cache to use
     required: false

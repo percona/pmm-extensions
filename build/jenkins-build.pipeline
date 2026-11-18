@@ -16,12 +16,6 @@ pipeline {
 			name: 'defaultCmd',
 			defaultValue: '--log-level=DEBUG'
 		)
-		choice(
-			name: 'pyVersion',
-			choices: [
-				'3.11'
-			]
-		)
 		booleanParam(
 			name: 'pushImage',
 			defaultValue: false,
@@ -49,8 +43,6 @@ pipeline {
 		CMD = "${defaultCmd}"
 
 		POETRY_VIRTUALENVS_IN_PROJECT = "true"
-		PYTHON = "python${pyVersion}"
-		PYTHON_VERSION = "${pyVersion}"
 
 		RELEASE_VER = "${releaseTag}"
 

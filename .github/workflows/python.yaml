@@ -27,7 +27,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        python: ["3.11.9"]
+        python: ["3.14.10"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout codebase
@@ -45,7 +45,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        python: ["3.11.9"]
+        python: ["3.14.10"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout codebase
@@ -69,7 +69,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        python: ["3.11.9"]
+        python: ["3.14.10"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout codebase
@@ -87,7 +87,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        python: ["3.11.9"]
+        python: ["3.14.10"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout codebase
@@ -119,7 +119,7 @@ jobs:
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
         with:
-          python-version: "3.11.9"
+          python-version: "3.14.10"
           cache: poetry
       - name: Install test dependencies
         run: poetry sync --no-root
@@ -172,7 +172,7 @@ jobs:
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
         with:
-          python-version: "3.11.9"
+          python-version: "3.14.10"
           cache: poetry
       - name: Install test dependencies
         run: poetry sync --no-root --with postgresql
@@ -183,7 +183,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        python: ["3.11.9"]
+        python: ["3.14.10"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout codebase

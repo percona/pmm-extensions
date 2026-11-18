@@ -22,7 +22,7 @@
 
 - **Python Version Requirements**
 ```text
-  >=3.11.9, !=3.12.0, !=3.12.1, !=3.12.2, <3.14
+  >=3.14, <3.15
 ```
 
 - [Casdoor](https://casdoor.org/docs/basic/server-installation) or [Docker](https://docs.docker.com/get-started/get-docker/)

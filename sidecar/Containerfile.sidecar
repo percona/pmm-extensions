@@ -10,7 +10,7 @@ FROM localhost/extensions:builder AS builder
 
 # Consolidated PMM Extensions side-car: the five PMM Extensions services plus a bundled Valkey broker
 # under one supervisord. No frontend SPA — the UI is served by PMM.
-FROM docker.io/library/python:3.11.16-slim
+FROM docker.io/library/python:3.14.10-slim
 
 RUN groupadd --gid 1001 extensions && \
     useradd --gid extensions --shell /usr/sbin/nologin --home-dir /home/extensions --uid 1001 --create-home extensions

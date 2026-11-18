@@ -16,12 +16,6 @@ pipeline {
 			name: 'defaultCmd',
 			defaultValue: '--log-level=DEBUG'
 		)
-		choice(
-			name: 'pyVersion',
-			choices: [
-				'3.11'
-			]
-		)
 	}
 
 	options {
@@ -34,13 +28,16 @@ pipeline {
 		CMD = "${defaultCmd}"
 
 		POETRY_VIRTUALENVS_IN_PROJECT = "true"
-		PYTHON = "python${pyVersion}"
-		PYTHON_VERSION = "${pyVersion}"
+
+		// Pinned to match the python:3.14.10-slim tag in Containerfile.base.
+		PYTHON_VERSION = "3.14.10"
+		PYTHON_BUILD_TAG = "20261110"
+		PYTHON = "python3.14"
 
 		// Pinned to match .github/workflows/ci.yml.
 		NODE_VERSION = "22.13.0"
 		PNPM_VERSION = "11.1.2"
-		PATH = "${env.WORKSPACE}/build/node/bin:${env.PATH}"
+		PATH = "${env.WORKSPACE}/build/python/bin:${env.WORKSPACE}/build/node/bin:${env.PATH}"
 
 		RELEASE_VER = "${releaseTag}"
 
@@ -77,6 +74,20 @@ pipeline {
 				sh '''
 					set -o errexit
 					set -o pipefail
+
+					PY_TARBALL="cpython-${PYTHON_VERSION}+${PYTHON_BUILD_TAG}-x86_64-unknown-linux-gnu-install_only.tar.gz"
+					PY_RELEASE="https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_BUILD_TAG}"
+					PY_TMP="$(mktemp -d)"
+					curl -fsSL -o "${PY_TMP}/${PY_TARBALL}" "${PY_RELEASE}/${PY_TARBALL}"
+					curl -fsSL "${PY_RELEASE}/SHA256SUMS" \
+						| grep " ${PY_TARBALL}$" \
+						| (cd "${PY_TMP}" && sha256sum --check --status)
+					tar -xzf "${PY_TMP}/${PY_TARBALL}" -C "${PY_TMP}"
+					rm -rf build/python
+					mkdir -p build
+					mv "${PY_TMP}/python" build/python
+					rm -rf "${PY_TMP}"
+					${PYTHON} --version
 
 					${PYTHON} -m venv venv
 					ln -s venv .venv
@@ -118,9 +129,9 @@ pipeline {
 
 			steps {
 				echo 'Running pre-commit ..'
-				// `language: system` hooks shell out to bare `python3`, so the agent's
-				// 3.9 gets the repo's 3.10+ syntax unless the venv leads PATH. CI has
-				// no such gap: setup-python makes 3.11 ambient there.
+				// `language: system` hooks shell out to bare `python3`, and the repo's
+				// scripts use 3.14-only syntax, so the venv must lead PATH ahead of the
+				// agent's own 3.9.
 				withEnv(["PATH+VENV=${env.WORKSPACE}/venv/bin"]) {
 					sh '''
 						set -o errexit

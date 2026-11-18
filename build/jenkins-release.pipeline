@@ -21,12 +21,6 @@ pipeline {
 			name: 'defaultCmd',
 			defaultValue: '--log-level=DEBUG'
 		)
-		choice(
-			name: 'pyVersion',
-			choices: [
-				'3.11'
-			]
-		)
 		booleanParam(
 			name: 'pushImage',
 			defaultValue: true,
@@ -47,9 +41,6 @@ pipeline {
 	environment {
 		BUILD_OPTIONS = ''
 		CMD = "${defaultCmd}"
-
-		PYTHON = "python${pyVersion}"
-		PYTHON_VERSION = "${pyVersion}"
 
 		RELEASE_VER = "${releaseTag}"
 
@@ -85,7 +76,6 @@ pipeline {
 			steps {
 				build job: 'PMM-Extensions/CI', parameters: [
 					[$class: 'StringParameterValue', name: 'releaseTag', value: "${env.GIT_COMMIT_SHA}"],
-					[$class: 'StringParameterValue', name: 'pyVersion', value: "${PYTHON_VERSION}"],
 					[$class: 'BooleanParameterValue', name: 'pushImage', value: Boolean.valueOf("${params.pushImage}")],
 					[$class: 'BooleanParameterValue', name: 'pushImageDocker', value: Boolean.valueOf("${params.pushImageDocker}")]
 				], propagate: true, wait: true

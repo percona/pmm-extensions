@@ -50,7 +50,7 @@ repos:
         description: "Ensure dispatch payloads stay under Nomad 16 KiB limit after minify+gzip"
         entry: python3 scripts/check_nomad_payload_size.py
         language: python
-        additional_dependencies: ["python-minifier==2.11.3"]
+        additional_dependencies: ["python-minifier==3.4.0"]
         files: ^app/extensions/apps/(?!dipper/)(?:.*/)?(?:payload(?:/.*)?|[^/]*_payload)$
         pass_filenames: true
       - id: check-dead-code

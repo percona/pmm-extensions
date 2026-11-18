@@ -97,7 +97,7 @@ jobs:
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
         with:
-          python-version: "3.11"
+          python-version: "3.14.10"
 
       - name: Pre-tag lint gate (all-files pre-commit)
         env:
