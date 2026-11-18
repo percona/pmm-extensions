@@ -160,7 +160,7 @@ lint: ruff
 # The pages the documentation linters check. A page joins the list when it is
 # rewritten to docs/writing-standard.md; the rumdl hook in
 # .pre-commit-config.yaml carries the same list as its `files:` pattern.
-DOCS_LINT_PATHS ?= docs/writing-standard.md docs/app-status.md docs/tutorials docs/how-to docs/reference docs/explanation
+DOCS_LINT_PATHS ?= sidecar/README.md docs/writing-standard.md docs/app-status.md docs/tutorials docs/how-to docs/reference docs/explanation
 
 docs-lint:
 	@[ -x .vale/bin/vale ] || bash scripts/install_vale.sh

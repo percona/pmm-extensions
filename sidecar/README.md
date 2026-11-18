@@ -1,672 +1,210 @@
-# PMM Extensions consolidated side-car image
+# The sidecar image
 
-The side-car image is frontend-less, built for embedding PMM Extensions inside a
-PMM deployment. One `supervisord` runs the five side-car programs plus a bundled Valkey
-broker under a single PID 1, so the whole product ships as one container with
-one log stream.
+PMM Extensions ships as one image, which runs as a sidecar beside PMM Server. This page is the reference for that image. It lists what the image contains, the inputs it reads and the settings an administrator may change. It also lists the image's volumes, its health check and its ports.
 
-Build it with `make image` (tag `extensions:${RELEASE_VER}`, no suffix). This is the
-only image PMM Extensions ships; Jenkins builds and publishes that one tag to the internal
-registry, and to Docker Hub when the build's `pushImageDocker` parameter is set.
+For why the image works this way, see [How the sidecar runs inside PMM](../docs/explanation/architecture.md). To run it, see [Run PMM Extensions in a local PMM](../docs/how-to/run-in-local-pmm.md).
 
-The image is **app-restricted**: the app strip is switched on, so it ships only
-the app packages the settings profile activates — see [App set](#app-set).
+## Image
 
-## What it contains
-
-| Input | Role |
+| Property | Value |
 |---|---|
-| `Containerfile.sidecar` | Final stage; ships the backend only, with no frontend-builder stage, and reuses the shared `extensions:builder` wheel image. |
-| `entrypoint.sh` | PID 1. Resolves `ENCRYPTION_KEY`, mints the broker credential for the container run, resolves the side-car's Grafana service-account token, then hands off to `supervisord`. |
-| `supervisord.conf` | Runs `valkey`, four `migrate-*` one-shots, the `extensions`/`inventory`/`tasks` APIs, and the Celery worker and beat. |
-| `wait_for_api.py` | Run by `supervisord` ahead of the beat command; holds beat until the three APIs answer `/health`, then starts it whatever the outcome. |
-| `wait_for_schema.sh` | Run by `supervisord` ahead of each API command; holds the API until all four schema one-shots have published their sentinel, and fails rather than starting it if they do not. |
-| `clear_sentinels.sh` | Never run by `supervisord`; an operator runs it before a `supervisorctl` re-run of a schema step, to invalidate that step's sentinel. See [Re-running a schema step inside a running container](#re-running-a-schema-step-inside-a-running-container). |
-| `healthcheck.sh` | Aggregate probe wired as the image `HEALTHCHECK`. |
-| `settings-env.sh` | Sourced by `entrypoint.sh`; expands the per-deployment inputs into the canonical `__`-nested settings variables, leaving unexported any name a file under `SECRETS_DIR` already supplies. |
-| `encryption_key.py` | Run by `entrypoint.sh` before `supervisord`; resolves `ENCRYPTION_KEY`, minting and persisting one only where no service database holds encrypted values — under either the `extensions.enc.v1.` envelope or the bare-token shape predating it. |
-| `grafana_service_account.py` | Run by `entrypoint.sh` before `supervisord`; resolves the side-car's Grafana service-account token, minting one when no source supplies it. |
-| `runtime.py` | Imported by `encryption_key.py` and `grafana_service_account.py`; resolves `EXTENSIONS_STATE_DIR`, the retry interval and the positive-timeout inputs, and writes their diagnostics. Copied under `sidecar/` rather than beside the two scripts, so their `from sidecar.runtime import ...` resolves when `entrypoint.sh` runs each one standalone. |
-| `settings.yaml` | The PMM-embedded settings profile, baked at `/home/extensions/app/settings.yaml`. |
-| `restrict_apps.py` | Build-step strip: removes every app package the baked profile does not activate. Deleted in the same `RUN`, so `make image`'s squashed build ships no copy of it. |
-| `verify_image_apps.py` | Post-build assertion that an image's app set matches its own baked profile. Piped into the image, never copied into it. |
-| `verify_image_apps.sh` | Runs `verify_image_apps.py` inside an already-built image; used by both CI and the Jenkins build. |
+| Published name | `percona/pmm-extensions` on Docker Hub |
+| Tags | The full version, such as `3.10.0`, and the moving tags `3.10`, `3` and `latest`. The version is PMM's. |
+| Architecture | amd64 |
+| Local build | `make builder`, then `make image`. The result is tagged `extensions:<RELEASE_VER>`. See [Get an app into a PMM release](../docs/how-to/get-an-app-into-a-pmm-release.md). |
+| Manifest format | docker. The OCI format drops the `HEALTHCHECK` instruction. |
+| User | `extensions` |
+| Frontend | None. PMM's UI holds the pages. |
 
-The image is built in **docker** manifest format rather than OCI, because OCI
-silently discards the `HEALTHCHECK` instruction.
+## What the image contains
 
-## Runtime configuration
-
-`sidecar/settings.yaml` is baked into the image at
-`/home/extensions/app/settings.yaml`, so the container comes up on a working
-PMM-embedded profile with no mount. It carries no secrets: the values that vary
-per deployment arrive as environment variables, which outrank the file.
-
-**Only one YAML file is ever loaded.** `PreEnvSettings.SETTINGS_FILE` names a
-single file and `YamlPrefixConfigSettingsSource` reads only that one — there is
-no baked-file-plus-overlay merge. So a **partial** override is
-environment-variable-only, and a **full** override is a bind mount at
-`/home/extensions/app/settings.yaml`, which replaces the baked profile wholesale.
-
-**Mounted secret files reach this image's settings.** The side-car reads settings from
-files in the directory `SECRETS_DIR` names, and `settings-env.sh` consults the
-same directory before it derives anything: a canonical name a file supplies is
-left *unexported*, so each settings class resolves it from the file. The
-deployment inputs in the table below — the `EXTENSIONS_*` names — are shell inputs that
-script expands, not settings fields, so none of them is mountable under its own
-name. What a file supplies is a *canonical destination*:
-
-| Canonical name | Mountable? |
+| File | Role |
 |---|---|
-| `SECRET_KEY` | **Yes.** The gate accepts a file and the script never exports the key, so each process reads it from the file. |
-| `ENCRYPTION_KEY` | **Yes.** A file suppresses the mint below it and is never exported, so each process reads it from the file. Mount it only carrying a value: the deferral is on the file *existing*, so a blank one pins the key empty and the container refuses to start. |
-| `DATABASE__PASSWORD` | **Yes.** One file supplies all three services. A per-service `{EXTENSIONS,INVENTORY,TASKS}__DATABASE__PASSWORD` file or variable overrides it for that service only. |
-| `{EXTENSIONS,INVENTORY,TASKS}__DATABASE__HOST` / `__PORT` | **Yes.** Per-service names; host and port reach every service through the `EXTENSIONS_DB_HOST` / `EXTENSIONS_DB_PORT` shell inputs (see below), not through a global name in this image. |
-| `AUTH__PROVIDER__GRAFANA__SERVICE_ACCOUNT_TOKEN`, `PMM__API_KEY` | **Yes.** A file supplies that mint-gate name and suppresses exporting a derived value *over it*. It does not block the Grafana helper from resolving the mounted value and exporting it to every other unset destination among the three. An explicitly-set variable of the same name still wins over the file. |
-| `TASKS__NOMAD__API_KEY` | **Yes.** Destination only: a file (or explicit variable) suppresses the derived export for Nomad itself. Mounting a mint-gate token does *not* prevent the other unset destinations — including Nomad — from receiving that export. |
-| `PMM__ENDPOINT`, `AUTH__PROVIDER__GRAFANA__ENDPOINT`, `TASKS__NOMAD__ENDPOINT` | **Yes.** A file suppresses the derived export. An explicitly-set variable of the same name still wins over both. |
-| `EXTENSIONS_INTERNAL_TOKEN`, `BASE_URL` | **Yes.** Already canonical; the script clears only a blank inherited value and otherwise leaves either alone. |
-| `CELERY__BEAT_DBURI` | **Yes.** The script only clears a blank inherited value, which would otherwise outrank the file; the setting itself carries a default derived from the resolved Extensions service database, which a mounted `DATABASE__PASSWORD` or `EXTENSIONS__DATABASE__PASSWORD` outranks. |
-| `CELERY__BROKER_URL`, `CELERY__RESULT_BACKEND` | **No.** `entrypoint.sh` mints the bundled Valkey credential per container run and exports both unconditionally, so a file has nothing to supply. |
-| The `EXTENSIONS_*` deployment inputs | **No.** Shell inputs, not settings fields. |
+| `Containerfile.sidecar` | The final build stage. It ships the backend only and starts from the `extensions:builder` image. |
+| `entrypoint.sh` | Process 1. It resolves `ENCRYPTION_KEY`, generates the broker password, resolves the Grafana token, and then starts `supervisord`. |
+| `supervisord.conf` | Runs `valkey`, the four `migrate-*` programs, the `extensions`, `inventory` and `tasks` APIs, the Celery worker and Celery beat. |
+| `settings-env.sh` | Sourced by `entrypoint.sh`. It expands the deployment inputs into settings variables. |
+| `settings.yaml` | The settings profile, placed at `/home/extensions/app/settings.yaml`. |
+| `encryption_key.py` | Run before `supervisord`. It resolves `ENCRYPTION_KEY`, and generates one only when no database holds encrypted values. |
+| `grafana_service_account.py` | Run before `supervisord`. It resolves the Grafana token, and requests one when no source supplies it. |
+| `runtime.py` | Shared by the two scripts above: the state directory, the retry interval and the timeouts. |
+| `wait_for_schema.sh` | Run before each API. It holds the API until all four schema steps have written their marker. |
+| `wait_for_api.py` | Run before Celery beat. It holds beat until the three APIs answer `/health`. |
+| `clear_sentinels.sh` | Run by an operator before a schema step is rerun by hand. |
+| `healthcheck.sh` | The image's health check. |
+| `restrict_apps.py` | A build step. It removes every app package that the settings profile does not list, and then itself. |
+| `verify_image_apps.py`, `verify_image_apps.sh` | A check, run after the build, that an image's apps match its own settings profile. The script is piped into the image and is not part of it. |
 
-The resolution order is: an explicitly-set canonical environment variable, then a
-file of that name, then the value derived from the raw `EXTENSIONS_*` input. Within each
-of those tiers, a per-service `{EXTENSIONS,INVENTORY,TASKS}__*` name outranks the
-unprefixed global spelling of the same destination — so a deployment that sets
-both `DATABASE__PASSWORD` and `EXTENSIONS__DATABASE__PASSWORD` always resolves the
-per-service value for the Extensions service, regardless of ordering.
+## App set
 
-**To keep the database password out of the environment, mount one
-`DATABASE__PASSWORD` file.** The settings classes resolve that global name for
-the Extensions, Inventory, and Tasks services alike. Mount a per-service
-`{EXTENSIONS,INVENTORY,TASKS}__DATABASE__PASSWORD` file only when one service needs a
-different password. The `EXTENSIONS_DB_PASSWORD` shell input remains
-available: it fans out to all three per-service names as environment variables,
-which is the path to avoid when keeping the password out of the process
-environment.
+The image holds the apps that `EXTENSIONS.APPS` in `settings.yaml` lists, plus the `framework` and `shared` packages.
 
-**Host and port reach every service through the shell inputs, not a global
-name.** `settings-env.sh` reads `EXTENSIONS_DB_HOST` and `EXTENSIONS_DB_PORT` (defaulting to
-`pmm-server` and `5432`) and derives `{EXTENSIONS,INVENTORY,TASKS}__DATABASE__HOST` and
-`__PORT` for all three services; the migrate wait loops read the same inputs.
-Mounting `EXTENSIONS__DATABASE__HOST` or `EXTENSIONS__DATABASE__PORT` seeds those inputs before
-the defaults apply, so the fan-out still reaches Inventory and Tasks. There is
-no global `DATABASE__HOST` mount path in this image: the script exports the three
-per-service names unconditionally, and an environment variable outranks every
-file. To point one service at a different host or port, set that service's
-canonical variable explicitly.
+| Fact | Detail |
+|---|---|
+| What sets the list | `EXTENSIONS.APPS` in `sidecar/settings.yaml`, and nothing else. |
+| Build argument | `EXTENSIONS_RESTRICT_APPS`. Only the value `1` removes anything. `make image` passes `1`. |
+| A listed app with no package | The build fails. |
+| Changing the list at runtime | It can only be narrowed. An app whose package is not in the image stops the container at startup, with a validation error that names the module. |
+| Where the list can be changed at runtime | A file mounted over `/home/extensions/app/settings.yaml`, or the `EXTENSIONS__APPS` variable. The settings API cannot change it. |
+| Migrations of a removed app | Its `version_locations` entry stays in `alembic.ini`. An upgrade then skips that app's revisions in a database that an image with more apps migrated. Do not remove the entry. |
 
-The celery-beat store needs no file of its own: it follows the resolved Extensions
-service database, so a mounted `DATABASE__PASSWORD` or `EXTENSIONS__DATABASE__PASSWORD`
-reaches it through the same settings resolution the services use. Mount
-`CELERY__BEAT_DBURI` only to point beat at a *different* store.
+`verify_image_apps.sh` prints the app set that it verified.
 
-Constraints on the directory: entries must be regular files directly inside it (a
-name in a subdirectory matches no setting). File names are matched
-case-insensitively, by both the script and the settings classes — but two files
-whose names differ **only** in case are an unsupported mount, and which of them
-wins is unspecified. A symlink whose target resolves outside the directory is
-ignored by both; the Kubernetes `..data` projected layout resolves normally.
-`SECRETS_DIR` has no baked default, so a side-car that mounts nothing is
-unaffected.
+## Where settings come from
 
-Leaving a mounted name **unset** and leaving it **empty** both work: a
-canonical variable inherited as the empty string would otherwise outrank the
-file, since a blank environment variable still counts as supplied, so the
-script clears the blank for every canonical name it manages — `SECRET_KEY`,
-every name it derives, and every name an `EXTENSIONS_*` guard would otherwise leave
-untouched when that guard is inactive (`PMM__API_KEY` with no
-`EXTENSIONS_GRAFANA_TOKEN` set, say). `ENCRYPTION_KEY` is cleared on the narrower
-condition that a file of that name is also mounted, since that is the only case
-where a blank would shadow something; `entrypoint.sh` overwrites a surviving
-blank on every other path.
+The image reads one YAML file. There is no second file that is merged over it.
 
-### App set
+| To change | Use |
+|---|---|
+| A few settings | Environment variables. They take precedence over the file. |
+| The whole profile | A file mounted over `/home/extensions/app/settings.yaml`. It replaces the profile completely. |
+| A secret, without putting it in the environment | A file in the directory that `SECRETS_DIR` names. The file's name is the setting's name. |
 
-The app-restricted image ships exactly the apps `settings.yaml`'s
-`EXTENSIONS.APPS` activates, plus `framework` and `shared`, which shipped modules reach
-and which the activation list never names. Nothing else declares the set: changing
-which apps the image ships is an edit to `EXTENSIONS.APPS` and nothing else, and the
-build fails if an activated app has no package to keep.
+For one setting, the order of precedence is:
 
-The strip is driven by the `EXTENSIONS_RESTRICT_APPS` build argument, which `image`
-passes as `1`. Only the exact value `1` strips anything; the argument defaults
-to `0`, and any other value leaves the image unrestricted.
+1. An environment variable with the setting's full name.
+2. A file with that name in `SECRETS_DIR`.
+3. The value derived from an `EXTENSIONS_*` deployment input.
+4. The YAML file.
 
-The set is asserted on the **published artifact**, not on a rebuild of it:
-`verify_image_apps.sh` pipes `verify_image_apps.py` into an already-built
-image's own interpreter, and both CI and the Jenkins build call it before
-anything is pushed. The check re-derives the expected set from the profile the
-image itself bakes rather than importing `restrict_apps.py` — which the build
-deletes from the image anyway, and which could only ever agree with the tree it
-produced. A run prints the set it verified, because a checker that silently
-never ran would otherwise be indistinguishable from a passing one.
+Within each of the first three, a name with a service prefix (`EXTENSIONS__`, `INVENTORY__` or `TASKS__`) takes precedence over the same name without one.
 
-The strip removes an app's directory and leaves its `version_locations` entry in
-`alembic.ini` alone. That combination is load-bearing, not incidental. Each app
-owning migrations is an independent Alembic branch recorded in the shared
-`alembic_version_extensions` table, so a database a full image migrated carries head
-rows for apps this image does not ship. `skip_unresolvable_heads` in
-`app/extensions/migrations/_orphan_heads.py` drops those rows from the heads it hands
-Alembic — but only when a configured `version_locations` entry contributes no
-revisions (absent from disk or present and empty), which is what a stripped
-app looks like. With every configured location present and populated, an
-unresolvable revision means version skew instead and the upgrade hard-fails by
-design. So pruning a stripped app's entry — regenerating the list in an
-already-stripped tree, or rewriting the file during the build — turns a
-working upgrade into a failed one. `tests/sidecar/test_app_strip.py` asserts the
-entries survive for every app the strip removes that owns migrations; an app
-owning none needs no entry, and must not carry one.
+### The secrets directory
 
-On this image an `EXTENSIONS.APPS` override can therefore only **narrow** the baked
-set, never widen it. Registry construction imports each activated module, so
-activating a package the image does not ship raises a pydantic `ValidationError`
-(wrapping `No module named app.extensions.apps.<name>`) and the container fails to
-start. The two surfaces that reach `EXTENSIONS.APPS` are a bind
-mount at `/home/extensions/app/settings.yaml` (which, per above, replaces the profile
-wholesale — so its `EXTENSIONS.APPS` must be a subset of the baked one) and the
-`EXTENSIONS__APPS` environment variable; the runtime settings-override API cannot,
-because `EXTENSIONS.APPS` is absent from `SETTINGS_OVERRIDE.ALLOWED_KEYS`.
+Inside PMM, PMM Server writes four files into a volume, and the sidecar mounts that volume read-only at the path in `SECRETS_DIR`. The four files are `SECRET_KEY`, `EXTENSIONS__DATABASE__PASSWORD`, `INVENTORY__DATABASE__PASSWORD` and `TASKS__DATABASE__PASSWORD`. The sidecar must be a member of group 0 to read them.
 
-### Deployment inputs
+| Rule | Detail |
+|---|---|
+| Entries | Regular files directly in the directory. A file in a subdirectory matches no setting. |
+| Names | Matched without regard to case. Two files whose names differ only in case are not supported. |
+| Symbolic links | A link whose target is outside the directory is ignored. The layout that Kubernetes projects is read normally. |
+| An empty file | It sets the value to the empty string. Mount a file only when it holds a value. |
+| Default | `SECRETS_DIR` has none. A sidecar that mounts nothing is not affected. |
 
-Expanded by `settings-env.sh` into the canonical settings variables. The `EXTENSIONS_*`
-names are shell inputs rather than settings fields, so none of them is mountable
-under its own name — the canonical destinations they expand to are.
-`SECRET_KEY` and `ENCRYPTION_KEY` are the exceptions, being already canonical:
-each is both an input here and mountable. See the note under
-[Runtime configuration](#runtime-configuration):
+A file can supply these names:
 
-| Input | Required | Default | Canonical destinations |
+| Name | Notes |
+|---|---|
+| `SECRET_KEY` | Never exported. Each process reads the file. |
+| `ENCRYPTION_KEY` | Never exported. A file stops the sidecar from generating a key. |
+| `DATABASE__PASSWORD` | One file serves all three services. A file with a service prefix overrides it for that service. |
+| `{EXTENSIONS,INVENTORY,TASKS}__DATABASE__HOST` and `__PORT` | One name for each service. There is no name without a prefix. |
+| `AUTH__PROVIDER__GRAFANA__SERVICE_ACCOUNT_TOKEN`, `PMM__API_KEY` | Either one stops the sidecar from requesting a token. The value is also exported to each of the three token settings that has no value. |
+| `TASKS__NOMAD__API_KEY` | Sets Nomad's key only. It does not stop the token request. |
+| `PMM__ENDPOINT`, `AUTH__PROVIDER__GRAFANA__ENDPOINT`, `TASKS__NOMAD__ENDPOINT` | A file replaces the derived value. |
+| `EXTENSIONS_INTERNAL_TOKEN`, `BASE_URL`, `CELERY__BEAT_DBURI` | Read as they are. |
+
+A file cannot supply `CELERY__BROKER_URL` or `CELERY__RESULT_BACKEND`: the entrypoint sets both at each start. A file cannot supply an `EXTENSIONS_*` deployment input either, because those are inputs to a script and not settings.
+
+## Deployment inputs
+
+`settings-env.sh` expands these inputs into settings variables.
+
+| Input | Required | Default | Becomes |
 |---|---|---|---|
-| `SECRET_KEY` | **yes** | — (fail fast) | already canonical (global `Settings`, no prefix) |
-| `ENCRYPTION_KEY` | no | minted into `pmm-extensions-state` when the databases are provably fresh | already canonical (global `Settings`, no prefix) |
-| `EXTENSIONS_DB_PASSWORD` | yes in practice | none | `EXTENSIONS__DATABASE__PASSWORD`, `INVENTORY__DATABASE__PASSWORD`, `TASKS__DATABASE__PASSWORD` |
-| `EXTENSIONS_DB_HOST` | no | `pmm-server` | `EXTENSIONS__DATABASE__HOST`, `INVENTORY__DATABASE__HOST`, `TASKS__DATABASE__HOST`, and the three supervisord wait loops |
-| `EXTENSIONS_DB_PORT` | no | `5432` | same as `EXTENSIONS_DB_HOST` |
-| `EXTENSIONS_GRAFANA_TOKEN` | no | none | `AUTH__PROVIDER__GRAFANA__SERVICE_ACCOUNT_TOKEN`, `PMM__API_KEY`, `TASKS__NOMAD__API_KEY` |
-| `EXTENSIONS_PMM_ENDPOINT` | no | `https://pmm-server:8443` | `PMM__ENDPOINT`, `AUTH__PROVIDER__GRAFANA__ENDPOINT` (with `/graph` appended) |
-| `EXTENSIONS_NOMAD_ENDPOINT` | no | the profile's credential-free URL | `TASKS__NOMAD__ENDPOINT`. The address only — the executor's credential is `TASKS__NOMAD__API_KEY`, which the Grafana fan-out above supplies |
+| `SECRET_KEY` | Yes | None. The container exits without it. Inside PMM, PMM supplies it as a file. | Itself |
+| `ENCRYPTION_KEY` | No | Generated into the state volume, on a deployment with no encrypted values | Itself |
+| `EXTENSIONS_DB_PASSWORD` | In practice, unless a file supplies the password | None | The database password of all three services |
+| `EXTENSIONS_DB_HOST` | No | `pmm-server` | The database host of all three services, and of the schema steps |
+| `EXTENSIONS_DB_PORT` | No | `5432` | The database port, as above |
+| `EXTENSIONS_GRAFANA_TOKEN` | No | Requested from Grafana at startup | `AUTH__PROVIDER__GRAFANA__SERVICE_ACCOUNT_TOKEN`, `PMM__API_KEY`, `TASKS__NOMAD__API_KEY` |
+| `EXTENSIONS_PMM_ENDPOINT` | No | `https://pmm-server:8443` | `PMM__ENDPOINT`, and `AUTH__PROVIDER__GRAFANA__ENDPOINT` with `/graph` added |
+| `EXTENSIONS_NOMAD_ENDPOINT` | No | `https://pmm-server:8443/nomad` | `TASKS__NOMAD__ENDPOINT` |
+| `EXTENSIONS_INTERNAL_TOKEN` | No | Derived from `SECRET_KEY` | Itself. It authenticates calls between the services. |
+| `BASE_URL` | When tasks download scripts | None | Itself. The sidecar's address as a task host reaches it, with the `/extensions` prefix. |
 
-`SECRET_KEY` is the only input with no fallback of any kind — the container
-exits unless one is supplied, as an environment variable or as a mounted file.
-(`ENCRYPTION_KEY` comes close, and its fallback is conditional: see
-[The encryption key is minted, but only onto a fresh deployment](#the-encryption-key-is-minted-but-only-onto-a-fresh-deployment).)
-It signs the
-framework's cookies and CSRF tokens and, when
-`EXTENSIONS_INTERNAL_TOKEN` is unset, derives that token by HMAC, so it has to be both
-identical across the supervisord children and stable across restarts. The class
-default (`secrets.token_urlsafe(32)`) satisfies neither: it is evaluated per
-process, so each child would resolve a different key. Minting one per container
-run the way the bundled Valkey credential is minted would fix that and still
-break the second half — every session would be signed out and the inter-service
-token would rotate on each restart. Generate it once per deployment, persist it
-alongside the other deployment secrets, and either pass it in or mount it as a
-file named `SECRET_KEY` under `SECRETS_DIR` — the mount keeps it out of every
-process's environment.
+`SECRET_KEY` must be the same in every process and must not change between restarts. It signs sessions.
 
-`EXTENSIONS_GRAFANA_TOKEN` is optional, and the container no longer stays inert without
-it: two further sources sit below it — a token the side-car persisted on an earlier start,
-and one it mints against Grafana. See
-[The Grafana token is minted, not required](#the-grafana-token-is-minted-not-required).
-Supplying either canonical name, here or as a file under `SECRETS_DIR`, skips
-minting altogether. The profile ships an empty `service_account_token`, which is
-a valid `SecretStr`, so a *misspelled* token still yields a silently inert
-provider rather than a startup error.
+`ENCRYPTION_KEY` is 32 bytes in URL-safe base64. `make encryption-key` or `openssl rand -base64 32` produces one. A hexadecimal value is rejected.
 
-Read by that mint step rather than expanded into a canonical name, so none of
-them is mountable and all are optional:
+A setting variable can also be set directly. It then overrides only itself: `EXTENSIONS__DATABASE__PASSWORD` leaves the other two services as they were.
 
-| Input | Default | What it controls |
+### Inputs of the token request
+
+| Input | Default | Meaning |
 |---|---|---|
-| `GF_SECURITY_ADMIN_USER` | `admin` | The Grafana admin login the mint authenticates as. Used only when the side-car holds no valid token. |
-| `GF_SECURITY_ADMIN_PASSWORD` | `admin` | Its password. A blank value falls back to the default rather than being sent empty. |
-| `EXTENSIONS_STATE_DIR` | `/home/extensions/state` | Where the minted token is persisted. Mount a volume here to carry it across a container recreate. |
-| `EXTENSIONS_GRAFANA_MINT_TIMEOUT` | `60` | Seconds the mint may keep retrying a Grafana that has not started yet. |
+| `GF_SECURITY_ADMIN_USER` | `admin` | The Grafana administrator that requests the token. Used only when the sidecar holds no valid token. |
+| `GF_SECURITY_ADMIN_PASSWORD` | `admin` | Its password. Removed from the environment before the services start. |
+| `EXTENSIONS_STATE_DIR` | `/home/extensions/state` | Where the token and a generated encryption key are stored. |
+| `EXTENSIONS_GRAFANA_MINT_TIMEOUT` | `60` | Seconds to keep trying a Grafana that has not started. After that, the services start without a token. |
+| `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` | `60` | Seconds to wait for the databases before a key is generated. |
 
-Already canonical, so they are passed straight through with no expansion:
-
-| Input | Required | Notes |
-|---|---|---|
-| `EXTENSIONS_INTERNAL_TOKEN` | no | Authenticates internal service-to-service calls, such as the scheduled inventory sync. Derived from `SECRET_KEY` by HMAC when unset, so every process sharing the key resolves the same token. Set it explicitly only to rotate it independently of `SECRET_KEY`. |
-| `BASE_URL` | no* | The side-car's address as reachable from Nomad task executors, including its URL prefix — `https://pmm-server:8443/extensions`, not `https://pmm-server:8443`. Download URLs are joined onto its path rather than replacing it, so a value omitting the prefix yields a well-formed URL that no longer routes to PMM Extensions; startup warns when it does. *Required when tasks download scripts or artifacts. |
-
-Any canonical variable can also be set directly — an explicit
-`TASKS__DATABASE__HOST` outranks the one derived from `EXTENSIONS_DB_HOST`. It overrides
-only itself, though: setting `EXTENSIONS__DATABASE__PASSWORD` by hand leaves the other
-two services on whatever `EXTENSIONS_DB_PASSWORD` supplied, so prefer `DATABASE__PASSWORD`
-(or the `EXTENSIONS_DB_PASSWORD` input) when you want one password to reach every
-service. `CELERY__BEAT_DBURI` needs no input at all: it defaults to the resolved
-Extensions service database connection, so set it explicitly only to keep the
-beat schedule in a store separate from that database.
-
-### Not deployment inputs
+### What is not an input
 
 | Setting | Why it is fixed |
 |---|---|
-| Database user and name | PMM's `PMM_ENABLE_EXTENSIONS` provisions exactly the `pmm_extensions` role and database. |
-| Celery broker and result-backend URLs | Minted per container start — see below. |
-| Uvicorn hosts and ports | `healthcheck.sh` probes loopback `:9000`/`:9001`/`:9002`, so they are image contract. |
-| TLS certificate and key files | TLS is off inside the container; the probe speaks plain HTTP on loopback and PMM's nginx terminates TLS. |
+| Database user and name | PMM creates exactly the `pmm_extensions` role and database. |
+| Celery broker and result backend | The entrypoint generates the broker's password at each start. |
+| The services' hosts and ports | The health check uses `127.0.0.1` and ports 9000 to 9002. |
+| TLS certificate and key | The services speak plain HTTP. PMM's nginx ends TLS. |
 
-### The broker credential is generated, not configured
+## Generated credentials
 
-`entrypoint.sh` mints a random password per container start, writes it into a
-mode-`0600` Valkey config at `/tmp/valkey.conf`, and exports
-`CELERY__BROKER_URL` / `CELERY__RESULT_BACKEND` carrying it. Environment
-outranks the baked `settings.yaml`, so the password-less
-`redis://127.0.0.1:6379` the profile carries keeps working unchanged; the
-exported value wins. It also supersedes a `CELERY__BROKER_URL` passed to
-`docker run`, since only the generated credential opens the bundled broker —
-this is the one input the deployment-input table above deliberately excludes.
-Nothing external supplies the credential and nothing needs to know it.
+| Credential | Sources, in order | Stored |
+|---|---|---|
+| Broker password | Generated at each start. Nothing else can supply it. | In `/tmp/valkey.conf`, mode 0600, for the life of the container |
+| `ENCRYPTION_KEY` | The variable. A file in `SECRETS_DIR`. A key stored by an earlier start. A new key. | `<state>/ENCRYPTION_KEY`, mode 0600, when generated |
+| Grafana token | `EXTENSIONS_GRAFANA_TOKEN`, or one of the two token settings. A token stored by an earlier start. A new token. | `<state>/grafana_service_account_token`, mode 0600, when requested |
 
-The password never reaches the command line, of either `valkey-server` or the
-`healthcheck.sh` probe (which reads it back from the config file and passes it
-through `REDISCLI_AUTH`), because argv is readable by every process in the
-container's PID namespace. A container restart mints a fresh one, which is safe:
-the broker runs with `save ""` and `appendonly no`, so no broker state crosses
-restarts.
+A new encryption key is generated only when none of the three service databases holds an encrypted value. If one does, or if a database cannot be read within the timeout, the container does not start. A lost key cannot be recovered.
 
-### The encryption key is minted, but only onto a fresh deployment
+A new Grafana token belongs to a service account named `pmm-extensions` with the `Admin` role. A stored token is checked with one call at startup. If Grafana rejects it, a new one is requested. If Grafana does not answer, the stored token is used.
 
-`ENCRYPTION_KEY` keys the Fernet ciphertext the side-car stores in its
-`settingoverride` rows, so every secret-typed override — an alert provider's
-routing key, a delivery input's API key — is readable only under the key that
-wrote it. Four channels supply it, tried in order:
+## Settings an administrator may change
 
-1. An explicit `ENCRYPTION_KEY` environment variable. Wins outright.
-2. A file named `ENCRYPTION_KEY` under `SECRETS_DIR`. Never exported, so each
-   process reads the file.
-3. A key a previous start persisted at `$EXTENSIONS_STATE_DIR/ENCRYPTION_KEY`.
-4. A freshly minted key, persisted mode `0600` at that same path.
+`SETTINGS_OVERRIDE.ALLOWED_KEYS` in `settings.yaml` lists every setting that the settings API accepts. A request for any other setting answers `422`.
 
-Only channels 1 and 2 are the operator's; `entrypoint.sh` runs
-`encryption_key.py` for the other two, and only when neither of the first two
-supplied anything. Mount a volume at `/home/extensions/state` for a minted key to
-survive a container *recreate* — without one, the key is lost with the
-container, and with it every override encrypted under it.
+| Setting class | Keys |
+|---|---|
+| `Settings` | `LOGGING`, `PMM__annotations_enabled` |
+| `ExtensionsSettings` | `SYNC_REFRESH_TIME`, `CONNECTIVITY_CHECK_DEFAULT`, `FOOTER_TEMPLATE`, `DIAGNOSTICS_DELIVERY_INPUTS` |
+| `AlertSettings` | `PROVIDERS`, `SOURCE_PREFIX`, `SOURCE_SUFFIX` |
+| `AnonymizerSettings` | `DEFAULT_ENTITIES` |
+| `TasksSettings` | `PRE_EXECUTION_CONNECTIVITY_CHECK`, `LOG_RETENTION_DAYS`, `PENDING_ALLOCATION_TIMEOUT_SECONDS` |
+| `OmInventorySettings` | `AUTO_SCAN`, `SCHEDULE__every`, `SCHEDULE__period`, `PROBE_DATABASE`, `REPO_URL`, `REPO_TIMEOUT`, `CONNECT_TIMEOUT`, `TASK_TIMEOUT`, `POLL_INTERVAL`, `MAX_CONCURRENT_PROBES`, `RUN_RETENTION`, `STALE_RUN_AFTER`, `ENABLED` |
 
-Minting is guarded, because minting the wrong key is silently destructive
-rather than loud. A row the configured key cannot decrypt is logged and
-skipped, not treated as an error, so the setting falls back to its YAML value
-and the container comes up green with the operator's configuration quietly
-reverted. The state volume and the databases have independent lifecycles — the
-databases live in pmm-server's postgres, the state volume belongs to the
-side-car — so recreating the side-car against a surviving database is an
-ordinary path, not an exotic one.
-
-So before minting, the helper reads the `settingoverride` table in all three
-service databases (`extensions`, `inventory` and `tasks`, whose endpoints may differ),
-walking each stored value's JSON *leaves* rather than the row — the ciphertext
-sits inside lists and nested mappings, where a check against the row's own
-value finds nothing. It mints only if none of the three holds ciphertext under
-either at-rest shape: a leaf carrying the `extensions.enc.v1.` envelope marker, or a
-bare Fernet token from before that envelope shipped. Testing only the bare shape
-would read a deployment whose overrides were all written under the envelope as
-holding none, because the marker's leading `.` puts the value outside base64 and
-so outside the structural check. Anything else refuses: ciphertext found, a value
-it cannot parse, or a database it cannot reach — freshness unproven is treated
-exactly like freshness disproven.
-The probe runs *only* on the mint path, so an ordinary restart opens no database
-connection and pays no startup latency.
-
-An unreachable database is **retried**, not refused on sight, because a first
-start routinely runs while pmm-server's postgres is still coming up — the same
-condition the supervised migration steps wait out. `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT`
-bounds that wait across all three databases together (60s by default); only
-exhausting it refuses, and the message then points at the database rather than
-at a key restore. It also bounds how long a start waits for a peer side-car
-holding the state lock — twice the probe budget — so two containers sharing one
-state volume serialise rather than mint beside each other, and neither waits on
-the other forever.
-
-Note that a minted key is exported into every supervised program's environment,
-where a key mounted under `SECRETS_DIR` deliberately is not. Mount the key
-instead of letting it be minted if that difference matters to you. A mounted key
-stays where you mounted it under the mode you gave it; only a minted key is
-written to the state directory, at `0600`.
-
-A refusal that found unreadable data names the state path to restore. **Losing
-the key is unrecoverable:**
-there is no way to read those values back without it, and the only remedies are
-restoring the key from a backup or deleting the affected overrides so they can
-be re-entered.
-
-Generate one by hand with `make encryption-key`, or:
-
-```bash
-openssl rand -base64 32
-```
-
-Use `-base64`, not `-hex`: a hex string is 64 characters and Fernet requires 32
-bytes of URL-safe base64, so a hex key is rejected. The output of `-base64` will
-usually contain `+` and `/` rather than the `-` and `_` of the URL-safe alphabet
-Fernet's own documentation shows. That is fine and not worth "fixing" — the
-decoder translates `-_` to `+/` and passes `+/` through untouched, so both
-alphabets are accepted.
-
-### The Grafana token is minted, not required
-
-`EXTENSIONS_GRAFANA_TOKEN` is the last value an operator supplies. Below it,
-`entrypoint.sh` runs `grafana_service_account.py` once, before supervisord, and
-feeds its answer through the same `export_grafana_token` the `EXTENSIONS_GRAFANA_TOKEN`
-guard uses. That helper fills each unset destination among the Grafana
-provider's `AUTH__PROVIDER__GRAFANA__SERVICE_ACCOUNT_TOKEN`, the PMM client's
-`PMM__API_KEY`, and the Nomad executor's `TASKS__NOMAD__API_KEY`; an explicit or
-mounted value already present for a name is left alone. When every destination
-was empty, all five programs therefore inherit one resolved value and nothing in
-the application copies one setting into the other.
-
-`TASKS__NOMAD__API_KEY` is what lets the executor reach PMM's `/nomad/` location,
-whose server-level `auth_request` the embedded profile's credential-free endpoint
-cannot otherwise satisfy. The executor sends it as
-`Authorization: Bearer <key>`, and it takes precedence over any `user:password`
-embedded in `TASKS__NOMAD__ENDPOINT`: while a key is set the endpoint's userinfo
-is stripped, because both HTTP clients would otherwise derive basic auth from it
-and override the header.
-
-The helper skips minting when either the Grafana service-account token or
-`PMM__API_KEY` already resolves, from an explicit variable or from a file under
-`SECRETS_DIR`, or when the active auth provider is not Grafana. A blank value
-counts as absent at every rank the helper reads.
-
-**Those two names are the mint gate only.** Supplying either of them suppresses
-minting, but `entrypoint.sh` still calls `export_grafana_token` with the
-already-resolved value, so every unset destination among the three — the sibling
-mint-gate name and `TASKS__NOMAD__API_KEY` — is set to the same credential
-without a fresh Grafana request. When that value came from a `SECRETS_DIR`-mounted
-mint-gate file, the sibling has no value and no file of its own, so it takes the
-derived export too: mounting only
-`AUTH__PROVIDER__GRAFANA__SERVICE_ACCOUNT_TOKEN` leaves `PMM__API_KEY` and
-`TASKS__NOMAD__API_KEY` both set to the mounted value, and mounting only
-`PMM__API_KEY` does the mirror image. That turns on the PMM client and PMM
-annotations where a mount-only mint-gate deployment previously got neither; it
-also means a mounted credential reaches every supervised program's environment
-under names it was not mounted as — the reason the `ENCRYPTION_KEY` path never
-exports a file-supplied value. When both mint-gate names resolve to different
-values, `AUTH__PROVIDER__GRAFANA__SERVICE_ACCOUNT_TOKEN` wins.
-`TASKS__NOMAD__API_KEY` is a destination only: mounting *it* alone does not
-suppress minting, and an explicit or mounted Nomad key is left alone by the
-export. A non-Grafana deployment mints nothing and must set
-`TASKS__NOMAD__API_KEY` itself if its Nomad requires a credential.
-
-One caveat on the rank above it: `settings-env.sh` defers to a `SECRETS_DIR` file
-on the file *existing*, not on it holding a value, because the settings source
-resolves an empty secret file to the empty string rather than falling through. So
-a mounted-but-empty file named for any of the three pins that name to the empty
-string, and a token minted below it cannot displace it. Mount a file only when it
-carries a value; to leave a name to the mint, do not mount it at all.
-
-Otherwise it finds or creates a service account named `pmm-extensions` with the `Admin` org
-role and asks it for a non-expiring token, authenticating as Grafana's admin.
-Lookup is by that fixed name, so repeated starts leave Grafana with one `pmm-extensions`
-account rather than one per start. The minted token is written mode `0600` to
-`$EXTENSIONS_STATE_DIR/grafana_service_account_token` and re-read on the next start:
-the admin credential is what minting needs, not what restarting needs. Mount a
-volume at `/home/extensions/state` for the token to survive a container *recreate* as
-well. Without one, every recreate mints a further token on the same account, and
-because minted tokens are asked not to expire, the ones earlier containers
-resolved stay valid in Grafana until an operator deletes them.
-
-A persisted token is revalidated with one short, bounded call. Rejected, it is
-re-minted and the file replaced; accepted, it is used as-is and nothing is
-minted; and when Grafana cannot be reached it is used unvalidated, without
-waiting out the retry bound, because an outage must never retract a working
-credential.
-
-Only the states holding no token wait: a first start, and a re-mint after an
-actual rejection. `EXTENSIONS_GRAFANA_MINT_TIMEOUT` bounds that wait. Exhausting it
-leaves the token unresolved and logs one message naming Grafana's address and the
-elapsed wait; the five programs still start, with sign-in and the PMM syncer
-inert exactly as they are with no token at all. Raising the bound much past 90s
-should be paired with a larger `HEALTHCHECK --start-period` — the current 150s
-also has to cover migrations and three API starts.
-
-`GF_SECURITY_ADMIN_*` is unset before `exec supervisord`, so the admin pair
-reaches the mint step and nothing else: it is more privileged than the token it
-mints, and no supervised program reads it.
-
-Like the broker credential, the token reaches the programs through the process
-environment, so it appears in no image- or compose-declared environment and
-therefore in no `docker inspect` output. Unlike a mounted secret it is readable
-through `/proc` by processes running as the same user in the container;
-`SECRETS_DIR` is not available as an alternative, being PMM-owned and mounted
-read-only, so the side-car cannot write the file its own settings source reads.
-
-Two limitations follow from minting through Grafana's admin API:
-
-- **The admin credential is needed whenever the side-car holds no valid token, not only on
-  first boot.** A Grafana volume wipe, or a restore predating the service
-  account, forces a re-mint. If the admin password was changed through
-  `change-admin-password` rather than through the environment, the value the
-  side-car holds is stale and the re-mint fails. Set `GF_SECURITY_ADMIN_PASSWORD` and give
-  the side-car the same value; relying on the `admin`/`admin` default means the
-  side-car can mint
-  only until that password is first changed.
-- **A Grafana with admin-user bootstrap disabled cannot be minted against at
-  all.** Supply `EXTENSIONS_GRAFANA_TOKEN` on such a deployment, or mount either
-  canonical name under `SECRETS_DIR`.
-
-## What the settings API will and will not change
-
-The image bakes `SETTINGS_OVERRIDE.ALLOWED_KEYS` — the exhaustive list of
-settings an administrator may change from the settings UI or API. Everything
-this container provisions is refused with `422`: the loopback endpoints and
-ports from the table above, the PMM connection and its API key, the whole Nomad
-subtree, the snippets source, sessions, security headers, and auth. What stays
-tunable is product behaviour: log level, PMM annotations, sync cadence, the
-footer and message-level display options, alerting policy and retention,
-anonymizer entities, the diagnostics-delivery inputs, and the task
-connectivity-check and log-retention settings.
-
-Diagnostics delivery is the one tunable that is off until you configure it. The
-image bakes the receiver plan — its resolution steps, its upload spec, and the
-*names* of the credentials it needs — but ships those credentials empty, so no
-bundle leaves the container until an operator supplies them through
-`ExtensionsSettings.DIAGNOSTICS_DELIVERY_INPUTS`. That is a single whole-object PATCH
-carrying every declared secret name at once: a per-leaf write such as
-`DIAGNOSTICS_DELIVERY_INPUTS__secrets` is refused with `422`, and so is a
-payload naming a secret the baked plan does not declare or omitting one it
-does. The same key optionally carries an `endpoint` that replaces the baked
-receiver; omit it to keep the shipped one. Stored secrets read back as
-`**********`, and resubmitting that mask preserves the stored value.
-
-If an image upgrade ships a plan that renames a declared secret, the inputs you
-stored against the previous plan stop matching it. Delivery does not silently
-fall back to the never-configured state: the Send action, the send endpoint, and
-any send that does get dispatched all report that the stored inputs no longer
-match this deployment's plan and must be re-supplied. Nothing guesses which old
-name maps to which new one — PATCH the key again, naming the secrets the new
-plan declares.
-
-Rows written before the restriction applied — by a standalone deployment whose
-database was carried over, or by direct table access — are **inert**: the
-snapshot builder skips them, so the baked value is what the services read. They
-remain deletable through `DELETE /settings/<class>/<key>`, which is how an
-operator clears one; deleting a locked key that has no row answers `409`
-instead, since there is nothing to remove.
-
-`SETTINGS_OVERRIDE.ALLOWED_KEYS` is a general capability, not a side-car
-special case: any deployment can set it (bare env var
-`SETTINGS_OVERRIDE__ALLOWED_KEYS`, or a nested `SETTINGS_OVERRIDE:` block in
-`settings.yaml`) to harden its own override surface. Leaving it unset — the
-default everywhere else — keeps every overridable setting overridable. It can
-never be changed through the API, only through the deployment's own
-configuration. This image carries it under `SETTINGS_OVERRIDE:` in
-`settings.yaml`, so the bind mount that replaces that file is what
-changes the list. A replacement that omits the key does not preserve the
-shipped list — it lifts the restriction entirely, since an absent key reads the
-same as a deployment that never set one. An environment variable of the same
-name still outranks the profile, as it does for every other setting here.
+| Fact | Detail |
+|---|---|
+| Changing the list | Only through the deployment's configuration: the `SETTINGS_OVERRIDE__ALLOWED_KEYS` variable, or a replacement `settings.yaml`. Never through the API. |
+| A replacement file without the key | Removes the restriction. Every setting that can be overridden then is. |
+| A stored value for a setting that is not on the list | Ignored. `DELETE /settings/<class>/<key>` removes it. |
+| `DIAGNOSTICS_DELIVERY_INPUTS` | Empty until an administrator supplies it. It is written as one whole object that names every secret the delivery plan declares. A write to one part of it answers `422`. Stored secrets read back as `**********`. |
 
 ## Volumes
 
-Everything shipped into `$APP_HOME` is `root:extensions` and read-only to the `extensions`
-user; the directory itself is `0750 extensions:extensions`, so `extensions` can create new entries
-directly under it but cannot write inside any shipped subdirectory. Runtime
-artifacts survive a container replacement only if their path is mounted as a
-writable volume — at minimum `EXTENSIONS.artifact_dir`, which defaults to
-`data/health-reports`:
+| Path | Holds | Mount |
+|---|---|---|
+| `/home/extensions/state` | The Grafana token and a generated `ENCRYPTION_KEY` | Always. Without it, a recreated container loses the key, and a deployment with encrypted values does not start. |
+| The path in `SECRETS_DIR` | The secret files that PMM writes | Read-only, shared with PMM Server |
 
-```
--v report-artifacts:/home/extensions/app/data/health-reports
-```
-
-`/home/extensions/state` is the one path the image creates for the side-car to write its own
-files into (`0700 extensions:extensions`) — `$APP_HOME` above admits new entries beside the
-shipped tree, but nothing under it is the side-car's to write. It holds the minted
-Grafana token and the minted `ENCRYPTION_KEY`; mounting it is what makes both
-survive a container recreate rather than only a restart.
-
-**Mount it.** The two have very different stakes. A lost Grafana token is
-re-minted on the next start at no cost; a lost `ENCRYPTION_KEY` is
-unrecoverable, and every setting override encrypted under it becomes
-unreadable. See
-[The encryption key is minted, but only onto a fresh deployment](#the-encryption-key-is-minted-but-only-onto-a-fresh-deployment)
-— on a deployment that already holds encrypted values, recreating without this
-volume does not start the container at all.
-
-```
--v pmm-extensions-state:/home/extensions/state
-```
+Everything under `/home/extensions/app` belongs to `root` and is read-only to the `extensions` user. The state directory is the only path the image creates for the sidecar's own files.
 
 ## Health
 
-`healthcheck.sh` exits 0 only when every non-one-shot program is `RUNNING`, all
-four `migrate-*` one-shots have written their `/tmp/migrate-<step>.ok` sentinel,
-the three `/health` endpoints return 200, and the bundled Valkey answers `PING`.
-The sentinels matter because a failed `alembic upgrade` ends in `EXITED` — the
-same state a successful one reaches — so program state alone cannot distinguish
-them.
+`healthcheck.sh` exits 0 only when all of these hold:
 
-The same four sentinels gate the API programs: each runs `wait_for_schema.sh extensions
-inventory tasks beat` before `exec`-ing its app, so no API starts against a
-database whose schema has not been applied. The gate is uniform — `inventory`
-reads no beat table, but container health already requires all three APIs to
-answer, so gating them alike costs nothing and cannot drift out of step with
-which service seeds what. A step that never completes holds the APIs for
-`WAIT_BUDGET_SECONDS` (300) and then fails them — and because they keep
-`autorestart=true`, each one restarts into a fresh gate rather than stopping, so
-`supervisorctl status` shows the three APIs cycling every five minutes for as
-long as the sentinel is missing. The container is reported unhealthy well before
-the first budget expires, because its one-shot's sentinel is already missing.
+- every long-running program is `RUNNING`
+- each of the four schema steps has written its marker, `/tmp/migrate-<step>.ok`
+- the three APIs answer `/health` with 200
+- the broker answers `PING`
 
-Each one-shot waits for its own store without a bound — the three alembic steps
-in the shell, `migrate-beat` inside its bootstrap, against whatever
-`CELERY__BEAT_DBURI` resolves to. None of them is re-run once it exits, so a
-step that gave up could never publish its sentinel and would hold every gated
-program for the life of the container; waiting instead means the sentinel still
-lands whenever the store appears.
+| Fact | Detail |
+|---|---|
+| Health check timing | `--interval=15s --timeout=15s --start-period=150s --retries=5`. A program that stops makes the container unhealthy after about 80 seconds. |
+| Schema steps | `extensions`, `inventory`, `tasks` and `beat`. Each waits for its database with no time limit. |
+| The APIs' gate | Each API waits up to 300 seconds for the four markers, then fails and is restarted. |
+| A container restart | Clears the four markers before any program starts. |
+| Health without a Grafana token | The health check does not test the token. A sidecar that started without one is healthy, and sign-in does not work. |
 
-An API still inside its gate reports `RUNNING`, so the program-state assertion
-is weaker than it reads for those three — the `/health` probe is what keeps a
-healthy container meaning the APIs answer. `entrypoint.sh` clears the four
-sentinels before any program is spawned, so a *container* restart cannot release
-a gate on the previous run's markers. A `supervisorctl` restart does not re-enter
-it; see below.
+To rerun one schema step in a running container, see [Rerun a schema step in a running sidecar](../docs/how-to/rerun-a-schema-step.md). That page covers `clear_sentinels.sh`.
 
-`HEALTHCHECK` is configured `--interval=15s --timeout=15s --start-period=150s
---retries=5`, so a program going down surfaces as an unhealthy container after
-roughly 75-80s.
+## Ports
 
-### Re-running a schema step inside a running container
+| Port | Service | Reached by |
+|---|---|---|
+| 9000 | The `extensions` service | PMM's nginx, which forwards `/extensions/` to `pmm-extensions:9000`. `PMM_EXTENSIONS_ADDRESS` on PMM Server changes that address. |
+| 9001 | The `inventory` service | The other services, inside the container |
+| 9002 | The `tasks` service | The other services, inside the container |
+| 6379 | Valkey, on `127.0.0.1` | Celery, inside the container |
 
-To re-apply one schema step without restarting the container, clear its sentinel
-first, then restart that one-shot together with the API programs:
-
-```
-docker exec <container> /home/extensions/app/clear_sentinels.sh extensions
-docker exec <container> supervisorctl -c /home/extensions/app/supervisord.conf \
-    restart migrate-extensions extensions inventory tasks
-```
-
-If the step owns tables Celery reads, **stop the Celery programs before that
-clear** and start them again only once `/tmp/migrate-extensions.ok` has reappeared:
-
-```
-docker exec <container> supervisorctl -c /home/extensions/app/supervisord.conf \
-    stop celery-worker celery-beat
-# ... the clear and restart above ...
-docker exec <container> supervisorctl -c /home/extensions/app/supervisord.conf \
-    start celery-worker celery-beat
-```
-
-**Clear first, then restart.** `supervisorctl` starts the programs it is given
-one at a time in argument order, and each API blocks for its `startsecs` (8s)
-before the next is started — so without clearing, whether a restarted API's gate
-reads the previous run's sentinel depends on argument order and on how quickly
-the one-shot reaches the `rm -f` at the head of its own command. Once the
-sentinel is cleared there is nothing stale left to observe and the order stops
-mattering.
-
-**Name every step you are re-running, in one call** — `clear_sentinels.sh extensions
-tasks`, then `restart migrate-extensions migrate-tasks extensions inventory tasks`. The script
-takes the bare step names the gate takes, not `supervisord` program names:
-`migrate-extensions` is refused.
-
-**Continue only if the clear exits 0.** A non-zero exit on an unrecognized name
-has removed nothing at all, so fix the name and re-run. A non-zero exit from `rm`
-is different: it stops at that step, so the steps named before it are already
-cleared while it and every step named after it may still hold a marker. Those
-cleared markers have no re-run coming, and `healthcheck.sh` asserts all four, so
-the container stays unhealthy until they are republished — resolve whatever
-blocked the `rm`, then re-run the clear and restart the one-shots for every step
-it had already cleared, or restart the container, which clears and re-runs all
-four through PID 1.
-
-**Restart the one-shot together with the API programs.** An API restarted
-without its one-shot waits out the 300s gate budget and then cycles, as above; an
-API left unrestarted keeps running and never re-enters its gate, so it goes on
-serving against the schema it started with. The APIs are safe to name in the same
-call as the one-shot precisely because each re-enters `wait_for_schema.sh` and
-holds there until the sentinel is republished.
-
-**Stop Celery before the clear, start it after the sentinel — never name it in
-the restart.** `celery-worker` carries no schema gate at all, and `celery-beat`
-is gated only on the APIs answering, so neither re-checks the schema on its own.
-That cuts both ways. A worker left running consumes tasks against the tables
-throughout the re-run, which is why it is stopped up front rather than merely
-restarted at the end. And naming it in the restart call would start it too early:
-supervisord flips a gated API to `RUNNING` once its `startsecs` (8s) elapses even
-though its shell is still inside the gate, so supervisorctl would reach the
-Celery programs roughly 24 seconds in — while a slow or failed migration is still
-running — and the ungated worker would begin consuming tasks against the
-incomplete schema. Queued tasks are held in the broker while Celery is stopped,
-so nothing is lost; in-flight ones are interrupted by the stop, exactly as they
-would be by a restart.
-
-**The container reports unhealthy until the step republishes its sentinel**,
-because `healthcheck.sh` asserts all four. A re-run taking longer than roughly
-75-80s therefore surfaces as an unhealthy container until it finishes.
-
-**Expected output.** `migrate-extensions: ERROR (not running)` from the stop half is
-normal for a one-shot that has already exited, and leaves the command's exit
-status unchanged. The one-shot's own `started` or `ERROR (abnormal termination)`
-line is not its verdict either — a step that exits promptly is reported that way
-whether it succeeded or failed. Nor is `supervisorctl`'s own exit status: the
-start half *does* fault on `ERROR (abnormal termination)`, so the command exits
-non-zero on exactly the line above that you are being told to ignore. Do not gate
-a script on `$?` here. The sentinel is the verdict, exactly as it is for the
-healthcheck.
-
-`-c /home/extensions/app/supervisord.conf` is passed explicitly, as `healthcheck.sh`
-does. `docker exec` runs as the image's `extensions` user, which owns both the sentinels
-and the `0700` supervisor socket, and needs nothing from PID 1's exported
-environment.
-
-## Deployment caveat
-
-The bundled Valkey binds `127.0.0.1:6379` inside the container's own network
-namespace. If the side-car is ever deployed sharing a namespace with PMM (a
-Kubernetes pod, or `--network container:pmm-server`), that port collides with
-PMM's own Valkey, and Celery then fails to reach its own broker. Give the
-side-car its own network namespace — the generated broker URL is not
-deployer-overridable, so re-pointing Celery elsewhere is not an option.
-
-Authentication is what keeps that shared-namespace case from also being an
-exposure: the loopback bind is no boundary there, so the broker requires the
-generated `requirepass` credential described above rather than relying on the
-bind alone. The collision remains — a neighbouring process cannot use the
-broker, but it can still occupy the port first.
+The image publishes no port. A browser reaches PMM Extensions only through PMM.
