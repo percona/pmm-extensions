@@ -44,13 +44,15 @@ Usage::
 """
 
 import argparse
+import contextlib
 import http.client
 import importlib
 import json
+import os
 import ssl
 import sys
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
@@ -133,7 +135,8 @@ _SERVER_KEYS = frozenset(
 _RECIPIENT_KEY = "encryption recipient"
 _BACKUP_SUBDIRECTORY = {"M": "mydumper", "X": "xtrabackup", "B": "binlogs"}
 _UPLOAD_SETTING = {"rsync": "RSYNC_PATH", "s3": "S3_BUCKET", "gsutil": "GS_BUCKET"}
-_FIELDS_NOT_CARRIED = ("start_time", "execute_request")
+_FIELDS_NOT_CARRIED = ("execute_request",)
+_FIELDS_CARRIED_WHEN_SET = ("start_time", "description")
 _CRONTAB_KEYS = frozenset(
     {"minute", "hour", "day_of_week", "day_of_month", "month_of_year", "timezone"}
 )
@@ -887,6 +890,9 @@ def _timing(schedule: dict[str, Any]) -> dict[str, Any]:
 def _schedule_body(schedule: dict[str, Any]) -> dict[str, Any]:
     """Build the body that creates one schedule, paused.
 
+    The interval or crontab is copied unchanged, and so are a start time and a
+    description when the old schedule has them.
+
     :raises SkipScheduleError: When the schedule sets a field this script does not carry over.
     """
     for field in _FIELDS_NOT_CARRIED:
@@ -895,6 +901,9 @@ def _schedule_body(schedule: dict[str, Any]) -> dict[str, Any]:
                 f"the schedule sets {field}, which this script does not carry over"
             )
     body = {key: value for key, value in _timing(schedule).items() if value is not None}
+    for field in _FIELDS_CARRIED_WHEN_SET:
+        if schedule.get(field):
+            body[field] = schedule[field]
     body["enabled"] = False
     return body
 
@@ -1162,32 +1171,58 @@ def run_migrate(args: argparse.Namespace, http: Http | None) -> None:
             "\nNo write request was sent. Run again with --apply to create the schedules."
         )
         return
+    if not plan.to_create:
+        print("\nNothing to create.")
+        return
     created = apply_plan(api, plan)
-    print(
-        f"\nDone: created {created} of {_count(plan.schedule_count(), 'schedule')}. Each one is paused."
-    )
+    total = _count(plan.schedule_count(), "schedule")
+    print(f"\nDone: created {created} of {total}. Each one is paused.")
+
+
+@contextlib.contextmanager
+def stdout_to_stderr() -> Iterator[None]:
+    """Send everything written to standard output to standard error for a while.
+
+    The standalone application logs to standard output when its settings are
+    imported, and standard output is where the export goes.
+    """
+    sys.stdout.flush()
+    saved = os.dup(1)
+    os.dup2(2, 1)
+    try:
+        yield
+    finally:
+        sys.stdout.flush()
+        os.dup2(saved, 1)
+        os.close(saved)
 
 
 def _installed_settings() -> tuple[str, str, str, Path | None]:
     """Read the tasks URL, the inventory URL, the internal token and the CA file from the install.
 
     This works only inside a container of the standalone install, where the
-    application's own settings can be imported.
+    application's own settings can be imported. The settings are read while
+    standard output is redirected, because reading them logs there.
 
     :raises UsageError: When the settings cannot be imported or hold no token.
     """
     try:
-        core = importlib.import_module("app.core.config").settings
-        sep = importlib.import_module("app.sep.config").sep_settings
-        token = core.SEP_INTERNAL_TOKEN.get_secret_value()
-        ca_file = Path(str(core.SSL_CAFILE)) if core.SSL_CAFILE else None
-        return str(sep.TASKS_ENDPOINT), str(sep.INVENTORY_ENDPOINT), token, ca_file
+        with stdout_to_stderr():
+            core = importlib.import_module("app.core.config").settings
+            sep = importlib.import_module("app.sep.config").sep_settings
+            tasks_url, inventory_url = (
+                str(sep.TASKS_ENDPOINT),
+                str(sep.INVENTORY_ENDPOINT),
+            )
+            token = core.SEP_INTERNAL_TOKEN.get_secret_value()
+            ca_file = Path(str(core.SSL_CAFILE)) if core.SSL_CAFILE else None
     except (ImportError, AttributeError) as exc:
         message = (
-            "cannot read the standalone install's settings. Run 'export' inside the install's 'app' container, "
+            "cannot read the standalone install's settings. Run 'export' inside the install's 'tasks_api' container, "
             f"or pass --tasks-url, --inventory-url and --token-file ({type(exc).__name__}: {exc})"
         )
         raise UsageError(message) from exc
+    return tasks_url, inventory_url, token, ca_file
 
 
 def run_export(args: argparse.Namespace, http: Http | None) -> None:
@@ -1242,7 +1277,7 @@ def _parser() -> argparse.ArgumentParser:
     export = modes.add_parser(
         "export",
         help="Print the old instance's schedules, tasks and MySQL services as JSON.",
-        description="Run inside the standalone install's 'app' container. It needs no option there.",
+        description="Run inside the standalone install's 'tasks_api' container. It needs no option there.",
     )
     export.add_argument(
         "--tasks-url", help="URL of the tasks service, when not run inside the install."

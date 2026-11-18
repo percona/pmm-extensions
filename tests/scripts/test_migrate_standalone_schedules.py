@@ -23,8 +23,10 @@ object and changes it.
 
 import copy
 import json
+import os
 import ssl
 import sys
+import types
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -607,23 +609,31 @@ def test_build_plan_skips_schedule_whose_task_is_not_in_the_export() -> None:
     assert "gone" in dict(plan.skipped)[export["schedules"][0]["name"]]
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("start_time", "2026-12-01T00:00:00Z"),
-        ("execute_request", {"chain": ["other-task"]}),
-    ],
-)
-def test_build_plan_skips_schedule_with_a_field_it_does_not_carry(
-    field: str, value: Any
-) -> None:
-    """A start time or a chained request is named, not dropped in silence."""
+def test_build_plan_skips_schedule_with_a_chained_request() -> None:
+    """A chained request is named, not dropped in silence."""
     export = _export()
-    export["schedules"][0][field] = value
+    export["schedules"][0]["execute_request"] = {"chain": ["other-task"]}
     plan = migrate.build_plan(
         _parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, _state()
     )
-    assert field in dict(plan.skipped)[export["schedules"][0]["name"]]
+    assert "execute_request" in dict(plan.skipped)[export["schedules"][0]["name"]]
+
+
+def test_build_plan_carries_a_start_time_and_a_description() -> None:
+    """3.10.0 stores both fields, so a schedule that has them keeps them."""
+    export = _export()
+    export["schedules"][0].update(
+        start_time="2026-12-01T00:00:00Z", description="nightly logical dump"
+    )
+    plan = migrate.build_plan(
+        _parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, _state()
+    )
+    assert plan.to_create[0].schedules[0].body == {
+        "interval": {"every": 1, "period": "days"},
+        "start_time": "2026-12-01T00:00:00Z",
+        "description": "nightly logical dump",
+        "enabled": False,
+    }
 
 
 def test_build_plan_gives_one_task_all_of_its_schedules() -> None:
@@ -916,3 +926,71 @@ def test_export_with_a_rejected_token_writes_nothing(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "401" in captured.err
+
+
+def test_stdout_to_stderr_keeps_the_export_clean(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """What the old application logs to standard output must not reach the export."""
+    with migrate.stdout_to_stderr():
+        os.write(1, b"a log line\n")
+    os.write(1, b"the export\n")
+    captured = capfd.readouterr()
+    assert captured.out == "the export\n"
+    assert captured.err == "a log line\n"
+
+
+class _LoggingSettings:
+    """Settings of a standalone install that log to standard output when read, as v0.13.1's do."""
+
+    SSL_CAFILE = None
+
+    def __init__(self, **values: Any) -> None:
+        """Hold the values to return."""
+        self._values = values
+
+    def __getattr__(self, name: str) -> Any:
+        """Return a value, after writing a log line to the process's standard output."""
+        os.write(1, b"WARNING the value '*' in ALLOWED_HOSTS matches any hostname\n")
+        try:
+            return self._values[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+class _Secret:
+    """A stand-in for the secret wrapper the standalone settings use."""
+
+    def get_secret_value(self) -> str:
+        """Return the token."""
+        return "internal-token"
+
+
+def test_export_inside_the_install_reads_its_settings(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """With no option, the export takes URLs and token from the install, and its log lines stay out."""
+    core = types.SimpleNamespace(
+        settings=_LoggingSettings(SEP_INTERNAL_TOKEN=_Secret())
+    )
+    sep = types.SimpleNamespace(
+        sep_settings=_LoggingSettings(
+            TASKS_ENDPOINT="https://tasks_api:9002/",
+            INVENTORY_ENDPOINT="https://inventory_api:9001/",
+        )
+    )
+    monkeypatch.setitem(sys.modules, "app.core.config", core)
+    monkeypatch.setitem(sys.modules, "app.sep.config", sep)
+    assert migrate.main(["export"], http=FakeStandalone()) == 0
+    captured = capfd.readouterr()
+    assert "WARNING" in captured.err
+    assert len(migrate.parse_export(captured.out).schedules) == _ALL_SCHEDULES
+
+
+def test_export_outside_the_install_says_what_it_needs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without the install's settings and without options, the export is a usage error."""
+    monkeypatch.setitem(sys.modules, "app.sep.config", None)
+    assert migrate.main(["export"], http=FakeStandalone()) == _EXIT_USAGE
+    assert "--tasks-url" in capsys.readouterr().err
