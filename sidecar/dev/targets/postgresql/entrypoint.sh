@@ -138,12 +138,15 @@ EOF
 }
 
 # /etc is an image layer, not a volume, so the file is written on every start.
+# start-fast makes a backup force a checkpoint. Without it a backup waits for
+# the next scheduled one, which can take minutes on an idle server.
 write_pgbackrest_config() {
     install -d -o postgres -g postgres -m 0750 "${BACKUP_REPO}" /var/log/pgbackrest || return 1
     cat > "${PGBACKREST_CONFIG}" << EOF || return 1
 [global]
 repo1-path=${BACKUP_REPO}
 repo1-retention-full=2
+start-fast=y
 
 [${STANZA}]
 pg1-path=${PGDATA}
