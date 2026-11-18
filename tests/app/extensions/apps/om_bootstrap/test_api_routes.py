@@ -51,6 +51,7 @@ from app.extensions.apps.om_bootstrap.api_routes import (
 from app.extensions.apps.om_bootstrap.crud import BootstrapRunManager
 from app.extensions.apps.om_bootstrap.models import BootstrapRun, BootstrapRunStatus
 from app.extensions.apps.om_bootstrap.persistence import dump_host_states
+from app.extensions.apps.om_bootstrap.releases import SUPPORTED_OPERATING_SYSTEMS
 from app.extensions.apps.om_bootstrap.strategy import (
     HostBootstrapState,
     StepRecord,
@@ -412,6 +413,37 @@ class TestTriggerRunValidation:
         assert response.status_code == status.HTTP_201_CREATED
 
     @pytest.mark.parametrize(
+        ("os_", "version", "detail"),
+        [
+            (
+                "ubuntu",
+                "9.0",
+                "MongoDB 9.0 is not supported on Ubuntu; supported: 7.0, 8.0",
+            ),
+            (
+                "rocky",
+                "6.0.20",
+                "MongoDB 6.0.20 is not supported on Rocky Linux; supported: 7.0, 8.0",
+            ),
+        ],
+    )
+    def test_rejects_a_version_no_release_is_supported_for(
+        self,
+        regular_user: CasdoorUser,
+        session: AsyncSession,
+        os_: str,
+        version: str,
+        detail: str,
+    ) -> None:
+        """Refuse a version outside the supported table, before planning anything."""
+        response = api_client(regular_user, session).post(
+            f"{BASE}/runs", json=self._payload(os=os_, mongodb_version=version)
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.json()["detail"] == detail
+
+    @pytest.mark.parametrize(
         "config", [{"priority": 0, "votes": False}, {"priority": 0, "votes": True}]
     )
     def test_rejects_member_configs_with_no_electable_member(
@@ -427,6 +459,19 @@ class TestTriggerRunValidation:
         )
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+class TestListSupportedReleases:
+    """Assert GET /supported-releases serves the table PMM reads."""
+
+    def test_serves_the_release_table(self, regular_user: CasdoorUser) -> None:
+        """Serve every distribution with its releases and how a VERSION_ID is matched."""
+        response = api_client(regular_user).get(f"{BASE}/supported-releases")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == [
+            entry.model_dump(mode="json") for entry in SUPPORTED_OPERATING_SYSTEMS
+        ]
 
 
 class TestListBootstrapRuns:
