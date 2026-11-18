@@ -25,6 +25,8 @@ import Typography from '@mui/material/Typography';
 import { Link as RouterLink } from 'react-router';
 import { useSettingsList, type SettingClassGroup, type SettingResponse } from '@pmm-extensions/api';
 import { ROUTES } from '@pmm-extensions/shared';
+import { useAtwConfig } from './hooks';
+import type { AtwConfig } from './types';
 import {
   DELIVERY_INPUTS_KEY,
   DELIVERY_PLAN_KEY,
@@ -37,9 +39,16 @@ import {
 /**
  * What the stored settings say about diagnostics delivery.
  *
- * Mirrors the PMM-embedded copy's `ConnectionStatus` — the same three values
- * derived the same way, so the two surfaces cannot disagree about whether a
- * deployment is configured.
+ * Derived the same way as `connectionStatus()` in PMM's ServiceNow Settings tab,
+ * with the same three values. This status alone no longer decides the gate, though:
+ * {@link DeliverySetupGate} also renders the app whenever
+ * `GET /api/apps/atw/config/` reports no `send_disabled_reasons`, even when this
+ * status says `not-configured` or `drifted` (SEP-1959). A standalone PMM Extensions
+ * deployment can carry working credentials in the baked plan or in a file-supplied
+ * value with no stored override, which the PMM side-car image never does.
+ * PMM itself dropped its setup gate (`ServiceNowSetupGate`) in PMM-15405: the
+ * PMM-embedded app always renders and relies only on `send_disabled_reasons`
+ * next to the Send control, so there is no PMM gate to keep in step with this one.
  */
 export type DeliveryStatus = 'configured' | 'not-configured' | 'drifted';
 
@@ -174,6 +183,24 @@ export const useDeliveryConfiguration = () => {
 };
 
 /**
+ * Whether the backend reports that a send would go through right now.
+ *
+ * Only an actual empty array counts. A response that carries no
+ * `send_disabled_reasons` array at all (an e2e catch-all route answering `[]`,
+ * an older backend, a malformed body) says nothing about delivery, so the gate
+ * falls back to the settings-derived decision instead of treating it as usable.
+ *
+ * Note that `useAtwConfig` resolves a failed request to an empty array, so a
+ * config read that failed counts as usable here. That is the same fail-open rule
+ * the gate already applies to a failed settings read, and the Send action's own
+ * 503 check still guards the upload.
+ */
+const isDeliveryUsable = (config: AtwConfig | undefined): boolean => {
+  const reasons: unknown = config?.send_disabled_reasons;
+  return Array.isArray(reasons) && reasons.length === 0;
+};
+
+/**
  * What an operator sees instead of the app while delivery is unconfigured:
  * what the tool does, who can enable it, and what it will not do unasked.
  */
@@ -236,6 +263,12 @@ const SetupPrompt = ({ isAdmin }: { isAdmin: boolean }) => (
   </Stack>
 );
 
+const LoadingSpinner = () => (
+  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', p: 4 }}>
+    <CircularProgress aria-label={Messages.loading} />
+  </Box>
+);
+
 interface DeliverySetupGateProps {
   /** Whether the current user has admin privileges. Controls the call to action. */
   isAdmin?: boolean;
@@ -243,6 +276,21 @@ interface DeliverySetupGateProps {
 
 /**
  * Holds the Support diagnostics app until diagnostics delivery is configured.
+ *
+ * The backend's verdict wins when it says delivery is usable:
+ * `GET /api/apps/atw/config/` merges the inputs onto the plan and validates the
+ * result, which the masked settings values cannot reproduce. A deployment whose
+ * credentials come from the baked plan or the settings file, with no stored
+ * override, is usable even though the settings read alone says `not-configured`.
+ * Any other config answer leaves the decision to the settings below; while the
+ * config request is still in flight (including the refetch every mount starts)
+ * and the settings would show the prompt, the gate keeps its spinner so a usable
+ * deployment never flashes the setup screen. The same holds the other way: a
+ * cached "usable" answer waits for that mount refetch whenever the settings
+ * would prompt, so a deployment that stopped being usable never flashes the app.
+ * A refetch TanStack Query paused because the browser is offline counts as still
+ * in flight: it starts the moment the connection returns, and would otherwise
+ * swap whatever the gate showed meanwhile.
  *
  * Anything the app can do ends in an upload to a ServiceNow case, so an
  * unconfigured deployment has nothing to offer but a dead end — the prompt
@@ -259,29 +307,50 @@ interface DeliverySetupGateProps {
  * `drifted` does gate: PMM Extensions holds values the current delivery plan no longer
  * accepts, so delivery is as broken as if nothing were stored.
  *
- * Note for the PMM Extensions → PMM sync: the PMM-embedded build wraps its ATW route in
- * its own `ServiceNowSetupGate` instead of using this one, because its call to
- * action opens a guided ServiceNow settings form that PMM Extensions does not have. The
- * two gates are knowingly divergent; the shared product copy lives in
- * `DeliverySetupGate.messages.ts` on this side and must be diffed against
- * PMM's `ServiceNowSetupGate.messages.ts` on every sync.
+ * Note for the PMM Extensions → PMM sync: PMM has no equivalent of this gate. It
+ * removed its own `ServiceNowSetupGate` in PMM-15405, so the PMM-embedded app
+ * renders its routes directly and relies only on `send_disabled_reasons` to
+ * disable the Send control and name what is missing. Do not port this gate (or
+ * its copy in `DeliverySetupGate.messages.ts`) to PMM.
  */
 export function DeliverySetupGate({
   isAdmin = false,
   children,
 }: PropsWithChildren<DeliverySetupGateProps>) {
   const { status, stored, isLoading, error } = useDeliveryConfiguration();
+  // Refetched on every mount: the gate is what an admin comes back to after
+  // fixing delivery in Settings, and its answer is the one the Send action reads.
+  const {
+    data: config,
+    isPending: isConfigPending,
+    isFetching: isConfigFetching,
+    isPaused: isConfigPaused,
+    isFetchedAfterMount: isConfigFetchedAfterMount,
+  } = useAtwConfig({ refreshOnMount: true });
+  // An offline browser pauses the refresh with `isFetching: false`; it is still
+  // unfinished and resumes on reconnect, so it holds the gate the same way.
+  const isConfigRefreshing = isConfigFetching || isConfigPaused;
+
+  // TanStack Query keeps serving the cached answer while the mount refresh runs,
+  // so a cached "usable" is only trusted once that refresh has landed (or when no
+  // refresh is running). Otherwise a cache that says usable, refreshed to "not
+  // usable", would render the app and then swap it for the setup prompt. A later
+  // background refetch does not reset `isFetchedAfterMount`, so it never unmounts
+  // an app that is already on screen.
+  if (isDeliveryUsable(config) && (isConfigFetchedAfterMount || !isConfigRefreshing)) {
+    return <>{children}</>;
+  }
 
   if (isLoading) {
-    return (
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', p: 4 }}>
-        <CircularProgress aria-label={Messages.loading} />
-      </Box>
-    );
+    return <LoadingSpinner />;
   }
 
   if (error || !stored.isPresent || status === 'configured') {
     return <>{children}</>;
+  }
+
+  if (isConfigPending || isConfigRefreshing) {
+    return <LoadingSpinner />;
   }
 
   return <SetupPrompt isAdmin={isAdmin} />;
