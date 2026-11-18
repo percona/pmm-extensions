@@ -94,7 +94,9 @@ describe('SettingRow', () => {
     const text = makeSetting({ key: 'SITE_NAME', type: 'str', value: 'old-name' });
     server.use(
       http.patch(PATCH_EXTENSIONS, () =>
-        HttpResponse.json([{ ...text, value: 'new-name', has_override: true }]),
+        // Echo a value other than the typed one, so the assertion below can
+        // only pass if the field is reseeded from the response.
+        HttpResponse.json([{ ...text, value: 'normalized-name', has_override: true }]),
       ),
     );
     renderRow(text);
@@ -105,7 +107,82 @@ describe('SettingRow', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(await screen.findByText('Saved SITE_NAME')).toBeInTheDocument();
-    expect(input).toHaveValue('new-name');
+    expect(input).toHaveValue('normalized-name');
+  });
+
+  describe('save and reset in flight', () => {
+    const DELETE_SITE_NAME = `${PATCH_EXTENSIONS}/SITE_NAME`;
+    const overridden = makeSetting({
+      key: 'SITE_NAME',
+      type: 'str',
+      value: 'old-name',
+      has_override: true,
+    });
+
+    it('disables Reset while a save is pending so its late echo cannot supersede the reset', async () => {
+      let releasePatch!: () => void;
+      const patchHeld = new Promise<void>((resolve) => {
+        releasePatch = resolve;
+      });
+      const deleted = vi.fn();
+      server.use(
+        http.patch(PATCH_EXTENSIONS, async () => {
+          await patchHeld;
+          return HttpResponse.json([{ ...overridden, value: 'new-name' }]);
+        }),
+        http.delete(DELETE_SITE_NAME, () => {
+          deleted();
+          return new HttpResponse(null, { status: 204 });
+        }),
+      );
+      renderRow(overridden);
+
+      const input = screen.getByLabelText('SITE_NAME');
+      const resetButton = screen.getByRole('button', { name: 'Reset to default' });
+      await userEvent.clear(input);
+      await userEvent.type(input, 'new-name');
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      await waitFor(() => expect(resetButton).toBeDisabled());
+      expect(deleted).not.toHaveBeenCalled();
+
+      releasePatch();
+      expect(await screen.findByText('Saved SITE_NAME')).toBeInTheDocument();
+      expect(resetButton).toBeEnabled();
+      expect(deleted).not.toHaveBeenCalled();
+    });
+
+    it('disables Save while a reset is pending', async () => {
+      let releaseDelete!: () => void;
+      const deleteHeld = new Promise<void>((resolve) => {
+        releaseDelete = resolve;
+      });
+      const patched = vi.fn();
+      server.use(
+        http.delete(DELETE_SITE_NAME, async () => {
+          await deleteHeld;
+          return new HttpResponse(null, { status: 204 });
+        }),
+        http.patch(PATCH_EXTENSIONS, () => {
+          patched();
+          return HttpResponse.json([]);
+        }),
+      );
+      renderRow(overridden);
+
+      const input = screen.getByLabelText('SITE_NAME');
+      const saveButton = screen.getByRole('button', { name: 'Save' });
+      await userEvent.clear(input);
+      await userEvent.type(input, 'new-name');
+      expect(saveButton).toBeEnabled();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Reset to default' }));
+      await waitFor(() => expect(saveButton).toBeDisabled());
+
+      releaseDelete();
+      expect(await screen.findByText('Reset SITE_NAME to default')).toBeInTheDocument();
+      expect(patched).not.toHaveBeenCalled();
+    });
   });
 
   describe('credential URL', () => {

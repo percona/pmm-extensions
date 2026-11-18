@@ -67,7 +67,12 @@ export default function SettingRow({ setting }: SettingRowProps) {
   const editable = isEditable(setting);
   const applicable = setting.is_applicable !== false;
   const fieldError = settingErrorMessage(patch.error, setting.key);
-  const canSave = isSaveable(setting, edit) && !patch.isPending;
+  // One write per row at a time. A Reset that lands while a save is in flight
+  // would be overwritten in the field by the save's late echo (and a Save
+  // during a pending Reset races it at the server), leaving the field on a
+  // value the server no longer holds.
+  const writing = patch.isPending || reset.isPending;
+  const canSave = isSaveable(setting, edit) && !writing;
   const showReset = setting.has_override;
 
   const handleChange = (value: EditValue) => {
@@ -201,12 +206,7 @@ export default function SettingRow({ setting }: SettingRowProps) {
                 Save
               </Button>
               {showReset ? (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  disabled={reset.isPending}
-                  onClick={handleReset}
-                >
+                <Button size="small" variant="outlined" disabled={writing} onClick={handleReset}>
                   Reset to default
                 </Button>
               ) : null}
@@ -233,12 +233,7 @@ export default function SettingRow({ setting }: SettingRowProps) {
           <Stack direction="row" spacing={1} alignItems="center">
             <Chip size="small" variant="outlined" label="override present" />
             <Box>
-              <Button
-                size="small"
-                variant="outlined"
-                disabled={reset.isPending}
-                onClick={handleReset}
-              >
+              <Button size="small" variant="outlined" disabled={writing} onClick={handleReset}>
                 Reset to default
               </Button>
             </Box>
