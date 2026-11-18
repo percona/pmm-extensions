@@ -1,5 +1,7 @@
 # PMM Extensions Task Execution Data Capture, Redaction, Access, and Retention
 
+This page describes the standalone deployment (v0.13.1 and earlier) except where it says otherwise, and a version for PMM Extensions inside PMM is planned.
+
 This document describes what PMM Extensions captures during task execution, how PMM Extensions handles sensitive data in captured output, who can access that output, and what retention behavior exists in the current implementation.
 
 ## Scope
@@ -35,7 +37,9 @@ PMM Extensions has an optional anonymization filter for task logs and task outpu
 - PMM Extensions controls which entity categories are enabled through an integer `anonymize_mask` on tasks and task history records.
 - If a task does not set an explicit mask, PMM Extensions can use the configured default entities from `TASKS.ANONYMIZER.DEFAULT_ENTITIES`.
 
-The current default settings file configures `TASKS.ANONYMIZER.DEFAULT_ENTITIES` to the following high-confidence set when a task or execution does not override the mask:
+Inside PMM 3.10.0, PMM Extensions configures no default entities. A task that sets no mask of its own is not anonymized. An administrator can set default entities through a runtime settings override of `TASKS.ANONYMIZER.DEFAULT_ENTITIES`.
+
+Outside PMM, the current default settings file configures `TASKS.ANONYMIZER.DEFAULT_ENTITIES` to the following high-confidence set when a task or execution does not override the mask:
 
 - `CREDIT_CARD`
 - `EMAIL_ADDRESS`
@@ -140,7 +144,9 @@ The current application does not implement customer-specific log tenancy or role
 
 ## Retention and Deletion
 
-PMM Extensions currently does not define a time-based retention policy for completed task history or captured stdout/stderr logs in application code. Completed task history rows and associated `taskhistory_log` chunks remain in the Tasks database until they are explicitly deleted or the underlying database, backup, or environment retention policy removes them.
+PMM Extensions purges the captured stdout/stderr logs of finished tasks by age. A periodic task, which runs once per day by default, deletes the `taskhistory_log` chunks of finished tasks older than `TASKS.LOG_RETENTION_DAYS`. The default is 90 days and the maximum is 365 days. Inside PMM, an administrator can change the value through a runtime settings override.
+
+PMM Extensions does not define a time-based retention policy for completed task history rows in application code. Completed task history rows remain in the Tasks database until they are explicitly deleted or the underlying database, backup, or environment retention policy removes them.
 
 When a `TaskHistory` row is deleted, related `taskhistory_log` and `taskhistory_log_state` rows are configured with cascading foreign keys and are deleted with that task history row.
 
@@ -148,7 +154,7 @@ Deletion paths in the current implementation are limited:
 
 - A pending task history can be deleted when a user stops it before it starts running.
 - An expired pending Celery dispatch can delete its `TaskHistory` row.
-- There is no general scheduled purge job for completed task histories based on age.
+- The scheduled purge deletes only log chunks. No scheduled job deletes completed task history rows based on age.
 - There is no application-level end-of-retention workflow that anonymizes, tombstones, exports, or proves deletion of completed task output.
 
 Nomad allocation files follow Nomad/client host retention and garbage-collection behavior, not a PMM Extensions task-log retention setting. Infrastructure logs and database backups follow their own deployment-specific retention policies.
@@ -156,6 +162,7 @@ Nomad allocation files follow Nomad/client host retention and garbage-collection
 For customer commitments, the retention period must therefore be defined operationally for the deployment. A complete retention procedure should specify:
 
 - The maximum age for task history and task log records.
+- The value of `TASKS.LOG_RETENTION_DAYS`, which sets the maximum age of captured task logs.
 - The database purge job or manual runbook used to delete expired `TaskHistory` rows.
 - Verification that cascading log rows were deleted.
 - Backup retention and backup expiration behavior, because deleted logs may remain in backups until those backups expire.
@@ -164,4 +171,4 @@ For customer commitments, the retention period must therefore be defined operati
 
 ## Summary
 
-PMM Extensions captures who ran each task, when it ran, what predefined task context was executed, lifecycle state, and stdout/stderr output. Captured stdout/stderr is stored in the Tasks database, normally PostgreSQL in production. PII anonymization is configurable and Presidio-based, but it is best-effort and is not a comprehensive secrets detector. Access to task logs is currently available to authenticated PMM Extensions users rather than restricted by per-user or customer-specific row-level filters. Completed output retention is not time-bound in PMM Extensions application code and must be handled by deployment retention policy, explicit purge procedures, database backup retention, and Nomad host cleanup.
+PMM Extensions captures who ran each task, when it ran, what predefined task context was executed, lifecycle state, and stdout/stderr output. Captured stdout/stderr is stored in the Tasks database, normally PostgreSQL in production. PII anonymization is configurable and Presidio-based, but it is best-effort and is not a comprehensive secrets detector. Access to task logs is currently available to authenticated PMM Extensions users rather than restricted by per-user or customer-specific row-level filters. Captured logs of finished tasks are purged after `TASKS.LOG_RETENTION_DAYS`, which is 90 days by default. Retention of completed task history rows is not time-bound in PMM Extensions application code and must be handled by deployment retention policy, explicit purge procedures, database backup retention, and Nomad host cleanup.
