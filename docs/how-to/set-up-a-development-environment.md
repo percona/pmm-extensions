@@ -19,6 +19,8 @@ This page takes you from nothing to a checkout where the tests, the linters and 
 
 ## Build the virtualenv
 
+Start from a shell with no virtualenv active. When one is active, `make venv` installs the project into that virtualenv and creates no `venv/`.
+
 1. Build the virtualenv with an interpreter from the supported range:
 
    ```bash
