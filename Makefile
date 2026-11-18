@@ -12,20 +12,26 @@ export RELEASE_VER
 # versions"). Pre-installing means Poetry sees the plugin in its env and skips
 # the resolve entirely.
 POETRY_VERSION?=2.4.0
+# Poetry gets a virtualenv of its own. Installed into the project's, its
+# dependencies become importable there, and `ty` then type-checks the project
+# against packages that poetry.lock does not hold.
+POETRY_VENV?=.poetry-venv
 ifdef VIRTUAL_ENV
     VENV=${VIRTUAL_ENV}
 else
     VENV?=venv
 endif
 VENV_BIN?="${VENV}/bin"
+START_PKGS=pip wheel
 ifdef POETRY
-	START_PKGS=pip wheel
 	VIRTUAL_ENV=$$("${POETRY}" env info --path)
 	VENV=${VIRTUAL_ENV}
 	VENV_BIN="${VENV}/bin"
+	POETRY_BOOTSTRAP=true
 else
-	START_PKGS=pip wheel poetry==${POETRY_VERSION} poetry-plugin-export
-	POETRY="${VENV_BIN}/poetry"
+	POETRY="${POETRY_VENV}/bin/poetry"
+	POETRY_BOOTSTRAP={ [ -x "${POETRY_VENV}/bin/python" ] || "${VENV_BIN}"/python -m venv "${POETRY_VENV}"; } && \
+		"${POETRY_VENV}/bin/pip" install --no-cache poetry==${POETRY_VERSION} poetry-plugin-export
 endif
 PIP?="${VENV_BIN}/pip"
 APPS=tasks inventory extensions
@@ -64,13 +70,28 @@ DARWIN_DYLD = if [ "$$(uname -s)" = "Darwin" ]; then \
 # while bin/python stays on the interpreter it was built with. Every tool in it
 # then dies with ModuleNotFoundError: No module named 'encodings', one command
 # later, in something unrelated.
+#
+# The recipe is one shell command so that a virtualenv this run created is
+# removed when any later step fails. A half-built one would satisfy the guard
+# on the next run and fail the same way.
 venv: pyproject.toml poetry.lock
-	@[ ! -z "${VIRTUAL_ENV}" ] || [ -d "${VENV}" ] || { \
+	@created=0; \
+	if [ -z "${VIRTUAL_ENV}" ] && [ ! -d "${VENV}" ]; then \
+		"${PYTHON}" scripts/check_python_version.py || exit 1; \
 		echo "venv: building ${VENV} with $$("${PYTHON}" -V) ($$(command -v "${PYTHON}"))"; \
-		"${PYTHON}" -m venv "${VENV}"; \
+		created=1; \
+	fi; \
+	{ \
+		{ [ "$$created" -eq 0 ] || "${PYTHON}" -m venv "${VENV}"; } && \
+		"${PIP}" install --no-cache ${START_PKGS} && \
+		${POETRY_BOOTSTRAP} && \
+		source "${VENV_BIN}"/activate && \
+		"${POETRY}" install --all-extras --all-groups; \
+	} || { \
+		status=$$?; \
+		[ "$$created" -eq 0 ] || rm -rf "${VENV}"; \
+		exit $$status; \
 	}
-	@"${PIP}" install --no-cache ${START_PKGS};
-	@source "${VENV_BIN}"/activate; "${POETRY}" install --all-extras --all-groups
 
 build: venv app/
 	@source "${VENV_BIN}"/activate; "${POETRY}" build --format wheel --output dist
@@ -159,7 +180,7 @@ form-audit: venv
 	@"${VENV_BIN}"/python -m app.extensions.apps.framework.form_audit $(AUDIT_ARGS)
 
 pip-audit: venv
-	@"${POETRY}" run pip-audit --verbose --progress-spinner=off \
+	@source "${VENV_BIN}"/activate; "${POETRY}" run pip-audit --verbose --progress-spinner=off \
 		$$($(PYTHON) -c "import tomllib,pathlib;c=tomllib.loads(pathlib.Path('pyproject.toml').read_text());print(' '.join(f'--ignore-vuln {v}' for v in c.get('tool',{}).get('pip-audit',{}).get('ignore-vulnerabilities',[])))" 2>/dev/null)
 
 bandit: venv

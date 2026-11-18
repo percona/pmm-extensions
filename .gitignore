@@ -115,6 +115,7 @@ mutants/
 .venv
 env
 venv/
+.poetry-venv/
 ENV/
 env.bak/
 venv.bak/
