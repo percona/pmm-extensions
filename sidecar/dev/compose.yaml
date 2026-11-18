@@ -1,0 +1,63 @@
+# A local PMM with PMM Extensions beside it, on released images.
+# How to use it: docs/how-to/run-in-local-pmm.md
+#
+# The pair mirrors the `extensions` profile of percona/pmm's docker-compose.yml.
+# What differs is what lets it run on a developer's machine: names scoped to
+# this project, one port on 127.0.0.1, one variable for the version, and a start
+# period long enough for a cold PMM.
+
+name: pmm-extensions-dev
+
+services:
+  pmm-server:
+    image: percona/pmm-server:${PMM_VERSION:-3.10.0}
+    platform: linux/amd64
+    hostname: pmm-server
+    # Only the start period is set: Compose merges a health check field by
+    # field, so the probe stays the one the image ships. The image allows 90 s,
+    # and a cold start can need longer. A dependent service would then fail the
+    # first `up` instead of waiting.
+    healthcheck:
+      start_period: 300s
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${PMM_ADMIN_PASSWORD:-admin}
+      PMM_ENABLE_EXTENSIONS: "1"
+      # PMM Extensions runs its tasks through PMM's Nomad.
+      PMM_ENABLE_NOMAD: "1"
+      # Nomad clients in the other containers dial this address. `localhost`
+      # would make each of them dial itself.
+      PMM_PUBLIC_ADDRESS: pmm-server
+    ports:
+      - "127.0.0.1:${PMM_PORT:-8443}:8443"
+    volumes:
+      - pmm-data:/srv
+      # PMM writes the secrets PMM Extensions reads into this volume.
+      - pmm-extensions:/srv/extensions
+
+  # PMM routes /extensions/ to this service name.
+  pmm-extensions:
+    image: ${PMM_EXTENSIONS_IMAGE:-percona/pmm-extensions:${PMM_VERSION:-3.10.0}}
+    platform: linux/amd64
+    # PMM Extensions needs PMM's secrets, Grafana and PostgreSQL. They exist
+    # once PMM is healthy, not once its container has started.
+    depends_on:
+      pmm-server:
+        condition: service_healthy
+    # PMM writes the secrets as group 0, and the image's user reads them through it.
+    group_add:
+      - "0"
+    environment:
+      SECRETS_DIR: /run/secrets/extensions
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${PMM_ADMIN_PASSWORD:-admin}
+      # Task executors download scripts from here. The path is part of the value.
+      BASE_URL: http://pmm-extensions:9000/extensions
+    volumes:
+      - pmm-extensions:/run/secrets/extensions:ro
+      - pmm-extensions-state:/home/extensions/state
+
+volumes:
+  pmm-data:
+  pmm-extensions:
+  pmm-extensions-state:
