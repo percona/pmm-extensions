@@ -300,7 +300,7 @@ _ACTIVE_NOMAD_STUBS: list[Any] = []
 
 
 @pytest.fixture(autouse=True)
-def _stop_nomad_api_stubs() -> Generator[None, None, None]:
+def _stop_nomad_api_stubs() -> Generator[None]:
     """Undo any Nomad HTTP stub a test installed through :func:`_build_executor`."""
     yield
     while _ACTIVE_NOMAD_STUBS:
@@ -486,7 +486,7 @@ def _stub_nomad_api(
     nodes: Any = None,
     register: Any = None,
     dispatch: Any = None,
-) -> Generator[list[tuple[str, str, dict[str, Any]]], None, None]:
+) -> Generator[list[tuple[str, str, dict[str, Any]]]]:
     """Answer the executor's ported Nomad calls, yielding the calls it recorded.
 
     See :func:`_nomad_router` for the routing and for what each argument accepts.
@@ -11723,7 +11723,7 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
     @contextmanager
     def _capture(
         body: Any,
-    ) -> Generator[list[tuple[str, str, dict[str, Any]]], None, None]:
+    ) -> Generator[list[tuple[str, str, dict[str, Any]]]]:
         """Answer every request with ``body``, recording the requests made.
 
         Patched on the class, not on the executor under test: an un-entered
@@ -11861,7 +11861,7 @@ class TestPortedNomadCallsKeepTheirErrorContract:
 
     @staticmethod
     @contextmanager
-    def _failing_request(exc: Exception) -> Generator[None, None, None]:
+    def _failing_request(exc: Exception) -> Generator[None]:
         """Make the executor's next request fail with ``exc``.
 
         :param exc: Raised in place of sending the request.
@@ -12031,7 +12031,7 @@ class TestPortedNomadCallsRunOnAnUnenteredExecutor:
 
     @staticmethod
     @contextmanager
-    def _answer(body: Any) -> Generator[list[Any], None, None]:
+    def _answer(body: Any) -> Generator[list[Any]]:
         """Answer every request with ``body``, recording the session used.
 
         Patches ``aiohttp.ClientSession.request`` rather than the executor's

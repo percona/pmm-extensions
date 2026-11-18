@@ -517,7 +517,7 @@ _json_probe = Table(
 @pytest_asyncio.fixture
 async def json_probe_session(
     postgres_engine: AsyncEngine,
-) -> AsyncGenerator[AsyncSession, None]:
+) -> AsyncGenerator[AsyncSession]:
     """Create the module-local JSON probe table on real PG and yield a session.
 
     Layered on the shared ``postgres_engine`` so cells 1-3 exercise
@@ -1008,7 +1008,7 @@ class TestTryPgAdvisoryXactLockNoOp:
 
 
 @pytest_asyncio.fixture
-async def postgres_dialect_engine() -> AsyncGenerator[AsyncEngine, None]:
+async def postgres_dialect_engine() -> AsyncGenerator[AsyncEngine]:
     """Yield a reachable engine that reports the PostgreSQL dialect.
 
     The acquisition body is dialect-gated, so relabelling a real engine is what
@@ -1027,7 +1027,7 @@ async def postgres_dialect_engine() -> AsyncGenerator[AsyncEngine, None]:
 @pytest_asyncio.fixture
 async def postgres_dialect_session(
     postgres_dialect_engine: AsyncEngine,
-) -> AsyncGenerator[AsyncSession, None]:
+) -> AsyncGenerator[AsyncSession]:
     """Yield a session bound to the relabelled engine itself."""
     async with get_async_session_maker_from_engine(
         postgres_dialect_engine

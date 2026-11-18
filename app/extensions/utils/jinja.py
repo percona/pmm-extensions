@@ -111,7 +111,7 @@ def timestamp_format(epoch_seconds: float) -> str:
     """
     try:
         return time.strftime("%d %B %Y at %H:%M:%S", time.gmtime(epoch_seconds))
-    except (OverflowError, OSError, ValueError):
+    except OverflowError, OSError, ValueError:
         return str(epoch_seconds)
 
 
@@ -129,7 +129,7 @@ def backup_date(value: int | str) -> str:
     if isinstance(value, int):
         try:
             return time.strftime("%d %B %Y at %H:%M:%S UTC", time.gmtime(value / 1000))
-        except (OverflowError, OSError, ValueError):
+        except OverflowError, OSError, ValueError:
             return str(value)
     return str(value)
 
@@ -146,7 +146,7 @@ def convert_bytes(value: str | float, unit: str = "G") -> str:
     """
     try:
         total_bytes = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return str(value)
     units = {"K": 1, "M": 2, "G": 3, "T": 4, "P": 5}
     exp = units.get(unit, 3)

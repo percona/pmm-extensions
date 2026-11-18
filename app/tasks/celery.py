@@ -1136,7 +1136,7 @@ async def sync_finishing_items() -> None:
             ready_job_ids = await nomad.capture_hold_ready_job_ids(
                 history_ids_by_job.keys()
             )
-    except (ClientError, TimeoutError, ValueError):
+    except ClientError, TimeoutError, ValueError:
         logger.warning(
             "Could not list Nomad allocations; leaving finished runs to the sweep",
             exc_info=True,
@@ -1261,7 +1261,7 @@ async def sync_queue_item(
                 ],
             )
             await session.refresh(saved, attribute_names=["execution_request"])
-    except (HTTPBadRequestException, HTTPConflictException):
+    except HTTPBadRequestException, HTTPConflictException:
         await release_sync_lock(async_session, queue_id, claimed_at)
         raise
     if pending_event:

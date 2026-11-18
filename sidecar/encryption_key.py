@@ -229,7 +229,7 @@ def mounted_key() -> str | None:
             if not entry.resolve().is_relative_to(directory):
                 continue
             return entry.read_text(encoding="utf-8").strip() or None
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         # An unreadable directory or file supplies nothing, which is how the
         # shell helper's glob treats it too, and the channels below still
         # apply. UnicodeDecodeError is listed because it is a ValueError, not
@@ -257,7 +257,7 @@ def read_persisted_key(directory: Path) -> str | None:
     """
     try:
         raw = (directory / PERSISTED_FILENAME).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         # UnicodeDecodeError is a ValueError rather than an OSError, so a
         # non-UTF-8 file would otherwise leave this function as a traceback.
         return None

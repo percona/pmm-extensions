@@ -268,7 +268,7 @@ class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
         v3_major = 3
         try:
             version = await self.get_version()
-        except (TypeError, KeyError):
+        except TypeError, KeyError:
             self.logger.exception(
                 "Failed to retrieve PMM version, defaulting to %s",
                 "v3" if self.default_to_v3 else "v2",
@@ -277,7 +277,7 @@ class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
 
         try:
             is_older = int(version.split(".")[0]) < v3_major
-        except (AttributeError, ValueError):
+        except AttributeError, ValueError:
             self.logger.exception(
                 "Failed to parse PMM version, defaulting to %s: %s",
                 "v3" if self.default_to_v3 else "v2",
@@ -328,7 +328,7 @@ class PMMRemoteAPI(StoredCredentialHeaderMixin, RemoteAPI):
             async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
                 version_data = as_json_object(await self.get(probe_path))
             version = version_data["version"]
-        except (KeyError, TypeError):
+        except KeyError, TypeError:
             return build_connectivity_result(
                 service,
                 ConnectivityStatusEnum.REACHABLE,

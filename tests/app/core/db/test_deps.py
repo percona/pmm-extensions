@@ -28,7 +28,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import cast, column, String
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import col, SQLModel
-from sqlmodel.ext.asyncio.session import AsyncSession  # noqa: TC002
+from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel.pool import StaticPool
 
 from app.core import db as core_db_package
@@ -570,7 +570,7 @@ async def _lq_nosearch_route(
 
 
 @pytest_asyncio.fixture(name="lq_session")
-async def lq_session_fixture() -> AsyncGenerator[AsyncSession, None]:
+async def lq_session_fixture() -> AsyncGenerator[AsyncSession]:
     """Create an isolated SQLite session seeded with ordered, searchable rows."""
     engine = create_async_engine(
         "sqlite+aiosqlite://",
@@ -593,10 +593,10 @@ async def lq_session_fixture() -> AsyncGenerator[AsyncSession, None]:
 @pytest_asyncio.fixture(name="lq_client")
 async def lq_client_fixture(
     lq_session: AsyncSession,
-) -> AsyncGenerator[AsyncClient, None]:
+) -> AsyncGenerator[AsyncClient]:
     """Yield an async client bound to the throwaway list-query app."""
 
-    async def _override_session() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_session() -> AsyncGenerator[AsyncSession]:
         yield lq_session
 
     _SESSION_SENTINEL_APP.dependency_overrides[_get_lq_session] = _override_session

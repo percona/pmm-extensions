@@ -35,7 +35,7 @@ from app.core.log import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_context() -> Generator[None, None, None]:
+def _reset_context() -> Generator[None]:
     """Reset log context before and after each test."""
     clear_log_context()
     yield

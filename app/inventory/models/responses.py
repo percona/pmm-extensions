@@ -73,7 +73,7 @@ class NodeResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, NodeBase):
     :param services: A list of services associated with the node.
     """
 
-    services: list["Service"]
+    services: list[Service]
 
 
 class ServiceResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, ServiceBase):
@@ -109,7 +109,7 @@ class ServiceResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, ServiceBase):
         time for a row that was failing when the column was added.
     """
 
-    schemas: list["Schema"]
+    schemas: list[Schema]
     node: Node
 
 
@@ -187,7 +187,7 @@ class SchemaResponse(BaseSQLModel, RetiredAtBase, SyncHealthBase, SchemaBase):
     :param tables: A list of tables within the schema.
     """
 
-    tables: list["Table"]
+    tables: list[Table]
 
 
 class SchemaDetailResponse(SchemaResponse):

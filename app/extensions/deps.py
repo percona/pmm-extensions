@@ -304,7 +304,7 @@ async def get_username_mapping() -> dict[str, str]:
     return {str(user.id): user.username for user in users}
 
 
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_session() -> AsyncGenerator[AsyncSession]:
     """Yield an asynchronous database session for FastAPI routes.
 
     This function provides a dependency for FastAPI routes that yields an ``AsyncSession``
@@ -780,7 +780,7 @@ class ExecutorHostsContext:
 
 
 async def get_executor_hosts_context(
-    executor_hosts: "ExecutorHosts",
+    executor_hosts: ExecutorHosts,
     inventory_api: InventoryAPI,
 ) -> ExecutorHostsContext:
     """Build an enriched executor hosts context with inventory display names.
@@ -799,7 +799,7 @@ async def get_executor_hosts_context(
             )
         )
         display_names = {node["address"]: node["name"] for node in nodes}
-    except (HTTPException, TypeError, KeyError, OSError):
+    except HTTPException, TypeError, KeyError, OSError:
         logger.warning(
             "Failed to fetch inventory nodes for display names", exc_info=True
         )

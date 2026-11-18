@@ -133,7 +133,7 @@ class MemberConfig(BaseModel):
     bind_ip: str | None = Field(default=None, pattern=NO_CONTROL_CHARS_PATTERN)
 
     @model_validator(mode="after")
-    def _priority_matches_role(self) -> "MemberConfig":
+    def _priority_matches_role(self) -> MemberConfig:
         """Reject a priority MongoDB would refuse for this member's role.
 
         ``rs.initiate`` rejects a non-voting, hidden, or delayed member unless

@@ -56,7 +56,7 @@ _OUTPUT_FILES_PATH = "run-script/local/output_files"
 _RESULT_PATH = f"{_OUTPUT_FILES_PATH}/{RUN_RESULT_FILENAME}"
 _NOMAD_ENDPOINT = "http://nomad.example:4646"
 
-_Stream = Callable[..., AsyncGenerator[bytes, None]]
+_Stream = Callable[..., AsyncGenerator[bytes]]
 
 
 def _result_bytes(result: dict | None = None) -> bytes:
@@ -67,7 +67,7 @@ def _result_bytes(result: dict | None = None) -> bytes:
 def _yielding(*chunks: bytes) -> _Stream:
     """Return a ``stream_file`` stand-in yielding ``chunks``."""
 
-    async def _stream(*args, **kwargs) -> AsyncGenerator[bytes, None]:
+    async def _stream(*args, **kwargs) -> AsyncGenerator[bytes]:
         del args, kwargs
         for chunk in chunks:
             yield chunk
@@ -78,7 +78,7 @@ def _yielding(*chunks: bytes) -> _Stream:
 def _raising(error: Exception, *chunks: bytes) -> _Stream:
     """Return a ``stream_file`` stand-in raising ``error`` after ``chunks``."""
 
-    async def _stream(*args, **kwargs) -> AsyncGenerator[bytes, None]:
+    async def _stream(*args, **kwargs) -> AsyncGenerator[bytes]:
         del args, kwargs
         for chunk in chunks:
             yield chunk
@@ -117,7 +117,7 @@ class _SessionBoundExecutor(NomadExecutor):
     whole, so it cannot tell an entered executor from an un-entered one.
     """
 
-    async def stream_file(self, *args, **kwargs) -> AsyncGenerator[bytes, None]:
+    async def stream_file(self, *args, **kwargs) -> AsyncGenerator[bytes]:
         """Yield the result bytes, failing as the real reader does with no session."""
         del args, kwargs
         if self.session is None:

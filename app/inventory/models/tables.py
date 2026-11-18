@@ -81,7 +81,7 @@ class Node(NodeBase, SyncHealthBase, RetirableSQLModel, table=True):
             sqlite_where=RETIRED_ROWS_ONLY,
         ),
     )
-    services: list["Service"] = Relationship(back_populates="node", cascade_delete=True)
+    services: list[Service] = Relationship(back_populates="node", cascade_delete=True)
 
 
 class Service(RetirableSQLModel, SyncHealthBase, ServiceBase, table=True):
@@ -138,7 +138,7 @@ class Service(RetirableSQLModel, SyncHealthBase, ServiceBase, table=True):
     )
 
     node: Node = Relationship(back_populates="services")
-    schemas: list["Schema"] = Relationship(
+    schemas: list[Schema] = Relationship(
         back_populates="service",
         cascade_delete=True,
     )
@@ -190,7 +190,7 @@ class Schema(RetirableSQLModel, SyncHealthBase, SchemaBase, table=True):
         ),
     )
     service: Service = Relationship(back_populates="schemas")
-    tables: list["Table"] = Relationship(back_populates="database", cascade_delete=True)
+    tables: list[Table] = Relationship(back_populates="database", cascade_delete=True)
 
 
 class Table(RetirableSQLModel, SyncHealthBase, TableBase, table=True):

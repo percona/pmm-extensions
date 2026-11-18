@@ -75,7 +75,7 @@ def delivery_plan() -> DeliveryPlan:
 
 
 @pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
+async def session_fixture() -> AsyncGenerator[AsyncSession]:
     """Create an in-memory async DB session with every SQLModel table created."""
     # scaffolding-dup-ok: this duplication predates the change that
     # re-annotated the fixture's return type; promoting it against
@@ -158,7 +158,7 @@ async def _authenticated_api_client(
 @pytest_asyncio.fixture
 async def admin_api_client(
     admin_user: CasdoorUser, session: AsyncSession
-) -> AsyncGenerator[AsyncClient, None]:
+) -> AsyncGenerator[AsyncClient]:
     """Yield the authenticated async client as an administrator.
 
     Mirrors :func:`async_api_client`, whose user is a viewer. Routes declaring
@@ -172,7 +172,7 @@ async def admin_api_client(
 @pytest_asyncio.fixture
 async def async_api_client(
     regular_user: CasdoorUser, session: AsyncSession
-) -> AsyncGenerator[AsyncClient, None]:
+) -> AsyncGenerator[AsyncClient]:
     """Yield an authenticated async client sharing the in-memory test session.
 
     Used by route tests that must ``await`` a DB read after the request (e.g.

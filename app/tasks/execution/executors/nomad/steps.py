@@ -39,7 +39,7 @@ class NomadStep(StrEnum):
     STEP1 = "step1"
 
     @classmethod
-    def anonymized(cls) -> frozenset["NomadStep"]:
+    def anonymized(cls) -> frozenset[NomadStep]:
         """Return the steps whose log output is PII-anonymized.
 
         :return: The frozen set of steps classified as anonymized.

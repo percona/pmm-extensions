@@ -97,7 +97,7 @@ async def close_run(
 
 
 @pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
+async def session_fixture() -> AsyncGenerator[AsyncSession]:
     """Create an async db session for testing."""
     # scaffolding-dup-ok: this duplication predates the change that
     # re-annotated the fixture's return type; promoting it against

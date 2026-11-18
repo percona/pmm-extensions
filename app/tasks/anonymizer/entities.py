@@ -45,7 +45,7 @@ class PIIEntity(EnumFieldMixin, IntEnum):
     US_SSN = 1 << 13
 
     @classmethod
-    def encode_selection(cls, selected_entities: set["PIIEntity"]) -> int:
+    def encode_selection(cls, selected_entities: set[PIIEntity]) -> int:
         """Encode a set of :class:`PIIEntity` values into an integer bitmask.
 
         :param selected_entities: A set of :class:`PIIEntity` members to encode.
@@ -60,7 +60,7 @@ class PIIEntity(EnumFieldMixin, IntEnum):
         return number
 
     @classmethod
-    def decode_selection(cls, mask: int) -> set["PIIEntity"]:
+    def decode_selection(cls, mask: int) -> set[PIIEntity]:
         """Decode an integer bitmask into a set of :class:`PIIEntity` values.
 
         :param mask: The integer bitmask to decode.

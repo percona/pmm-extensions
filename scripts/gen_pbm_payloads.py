@@ -59,7 +59,7 @@ def find_payloads(search_root: Path, begin_marker: str) -> list[Path]:
             continue
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError, OSError:
             continue
         if begin_marker in lines:
             found.append(path)

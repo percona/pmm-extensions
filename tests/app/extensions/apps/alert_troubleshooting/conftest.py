@@ -36,7 +36,7 @@ from tests.app.db_schema import apply_schema
 
 
 @pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
+async def session_fixture() -> AsyncGenerator[AsyncSession]:
     """Create an async database session backed by in-memory SQLite."""
     engine = create_async_engine(
         "sqlite+aiosqlite://",

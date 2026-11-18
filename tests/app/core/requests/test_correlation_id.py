@@ -25,7 +25,7 @@ from app.core.requests.remote_api import BaseRemoteAPI
 
 
 @pytest.fixture(autouse=True)
-def _reset_context() -> Generator[None, None, None]:
+def _reset_context() -> Generator[None]:
     """Reset log context before and after each test."""
     clear_log_context()
     yield

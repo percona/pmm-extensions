@@ -92,7 +92,7 @@ async def _resolve_outcome(
             execution_id,
         )
         return {"outcome_unrecoverable": True}
-    except (HTTPException, OSError):
+    except HTTPException, OSError:
         logger.warning(
             "Could not reach task history %s; leaving ATW execution %s unresolved for "
             "a later tick.",
