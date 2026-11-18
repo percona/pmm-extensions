@@ -77,6 +77,8 @@ EOF
 esac
 
 PGDATA=/var/lib/pgsql/17/data
+# sudo resets PATH, so the server's own programs are called by full path.
+PGBIN=/usr/pgsql-17/bin
 BACKUP_REPO=/var/lib/pgbackrest
 PGBACKREST_CONFIG=/etc/pgbackrest.conf
 # The image's health check reads this file. /run survives a restart, so it is
@@ -124,7 +126,7 @@ shutdown_postgres() {
 
 init_datadir() {
     install -d -o postgres -g postgres -m 0700 "${PGDATA}" || return 1
-    as_postgres initdb -D "${PGDATA}" > /dev/null || return 1
+    as_postgres "${PGBIN}/initdb" -D "${PGDATA}" > /dev/null || return 1
     cat >> "${PGDATA}/postgresql.conf" << EOF || return 1
 listen_addresses = '*'
 wal_level = replica
@@ -165,10 +167,10 @@ SQL
 
 seed_sample_data() {
     as_postgres psql -Atqc "SELECT 1 FROM pg_database WHERE datname='bench'" | grep -q 1 ||
-        as_postgres createdb bench || return 1
+        as_postgres "${PGBIN}/createdb" bench || return 1
     if ! as_postgres psql -d bench -Atqc 'SELECT 1 FROM pgbench_accounts LIMIT 1' > /dev/null 2>&1; then
         info 'Creating the pgbench sample data'
-        as_postgres pgbench -i -q -s 10 bench || return 1
+        as_postgres "${PGBIN}/pgbench" -i -q -s 10 bench || return 1
     fi
 }
 
@@ -243,7 +245,7 @@ main() {
     # A restarted container keeps /run, so the socket lock of the previous run
     # is still there.
     rm -f /run/postgresql/.s.PGSQL.5432 /run/postgresql/.s.PGSQL.5432.lock "${PGDATA}/postmaster.pid"
-    as_postgres postgres -D "${PGDATA}" &
+    as_postgres "${PGBIN}/postgres" -D "${PGDATA}" &
     postgres_pid=$!
     trap shutdown_postgres INT TERM
 
