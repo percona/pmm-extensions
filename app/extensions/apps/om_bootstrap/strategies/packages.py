@@ -90,6 +90,10 @@ OWNERSHIP_MARKER_PATH = "/etc/mongod.om-bootstrap"
 #: purges only the PSMDB packages in it.
 _PSMDB_PACKAGES_ERE = "^percona-(server-mongodb-|mongodb-mongosh$|telemetry-agent$)"
 
+#: Where apt downloads the .debs ``install_package`` installs, in place of its
+#: shared cache, so that exactly what this install fetched can be deleted.
+APT_DOWNLOAD_PATH = "/var/cache/om-bootstrap"
+
 #: Matches the packaged ``mongod.service``'s own ``PIDFile=`` on both supported
 #: OSes. PSMDB 7.0's unit is ``Type=forking``, so this has to agree with it
 #: exactly — see :meth:`PackagesInstallStrategy._configure_mongod`. 8.0's unit has
@@ -865,6 +869,10 @@ class PackagesInstallStrategy:
     def _configure_repository(self, spec: BootstrapSpec) -> StepAction:
         """Install ``percona-release`` and enable the requested PSMDB channel.
 
+        On Ubuntu its .deb is downloaded to a ``mktemp`` file removed when the step
+        exits, failed, timed out or not: no rollback step could remove it, since
+        rollback does nothing on a host where ``install_package`` never started.
+
         :param spec: The host's bootstrap spec; its OS and MongoDB version are read.
         :return: The step action.
         :raises ValueError: If ``spec.os`` is not a supported :class:`OperatingSystem`.
@@ -872,9 +880,14 @@ class PackagesInstallStrategy:
         channel = _psmdb_channel(spec.mongodb_version)
         if spec.os is OperatingSystem.UBUNTU:
             command = (
-                "curl -fsSL -o /tmp/percona-release.deb "
+                "pkg=\n"
+                'trap \'[ -z "$pkg" ] || rm -f "$pkg"\' EXIT\n'
+                # sh runs no EXIT trap when a signal kills it, as the step timeout does.
+                "trap 'exit 143' HUP INT TERM\n"
+                "pkg=$(mktemp)\n"
+                'curl -fsSL -o "$pkg" '
                 "https://repo.percona.com/apt/percona-release_latest.generic_all.deb && "
-                "dpkg -i /tmp/percona-release.deb && "
+                'dpkg -i "$pkg" && '
                 f"percona-release setup -y {shlex.quote(channel)}"
             )
         elif spec.os is OperatingSystem.ROCKY:
@@ -893,7 +906,9 @@ class PackagesInstallStrategy:
         The marker, holding the run's id, goes first so a rollback of a
         half-finished install still cleans up. It is only ever written after
         ``pre_check`` proved the host had no MongoDB of its own — see the module
-        docstring.
+        docstring. On Ubuntu, apt downloads into :data:`APT_DOWNLOAD_PATH`, deleted
+        once the install succeeds; a failed attempt leaves it for the retry to reuse
+        and for ``purge_package`` to delete.
 
         :param spec: The host's bootstrap spec; its OS and run id are read.
         :return: The step action.
@@ -901,10 +916,18 @@ class PackagesInstallStrategy:
         """
         run_id = _require_run_id(spec, INSTALL_PACKAGE)
         pkg_manager = self._require_package_manager(spec.os)
-        install = "apt-get install -y" if pkg_manager == "apt-get" else "dnf install -y"
+        if pkg_manager == "apt-get":
+            install = (
+                # apt's _apt user downloads into partial, whatever the step's umask.
+                f"mkdir -p -m 0755 {APT_DOWNLOAD_PATH} {APT_DOWNLOAD_PATH}/partial\n"
+                f"apt-get install -y -o Dir::Cache::Archives={APT_DOWNLOAD_PATH} "
+                "percona-server-mongodb\n"
+                f"rm -rf {APT_DOWNLOAD_PATH}"
+            )
+        else:
+            install = "dnf install -y percona-server-mongodb"
         return _shell_step(
-            f"printf '%s\\n' {shlex.quote(run_id)} > {OWNERSHIP_MARKER_PATH}\n"
-            f"{install} percona-server-mongodb",
+            f"printf '%s\\n' {shlex.quote(run_id)} > {OWNERSHIP_MARKER_PATH}\n{install}",
             timeout_s=300,
         )
 
@@ -1432,6 +1455,9 @@ class PackagesInstallStrategy:
         needed itself, with ``clean_requirements_on_remove``, set here so the
         host's ``dnf.conf`` cannot turn it off.
 
+        On Ubuntu it first deletes :data:`APT_DOWNLOAD_PATH`, the .debs a failed
+        install downloaded, its dependencies' included.
+
         :param spec: The host's bootstrap spec; only its OS is read.
         :param run_id: The run the rollback belongs to.
         :return: The step action.
@@ -1440,6 +1466,8 @@ class PackagesInstallStrategy:
         if pkg_manager == "apt-get":
             remove = "\n".join(
                 [
+                    # First, so a purge stuck past its timeout cannot keep it.
+                    f"rm -rf {APT_DOWNLOAD_PATH}",
                     "apt-get remove -y --purge percona-server-mongodb || true",
                     (
                         "unused=$(apt-get -s autoremove 2>/dev/null"
