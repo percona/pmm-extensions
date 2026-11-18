@@ -1167,9 +1167,12 @@ def run_migrate(args: argparse.Namespace, http: Http | None) -> None:
             print(
                 "\nNote: this token is not an admin's. A run with --apply needs one that is."
             )
-        print(
-            "\nNo write request was sent. Run again with --apply to create the schedules."
+        hint = (
+            "Run again with --apply to create the schedules."
+            if plan.to_create
+            else "There is nothing to create."
         )
+        print(f"\nNo write request was sent. {hint}")
         return
     if not plan.to_create:
         print("\nNothing to create.")
