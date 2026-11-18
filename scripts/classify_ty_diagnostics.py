@@ -22,7 +22,7 @@ private constructor kwarg, a FastAPI ``Query(...)`` default replaced during
 request handling, a subscripted generic called at runtime. Those are the
 ones neutralized by ``[[tool.ty.overrides]]`` entries and per-site
 ``# ty: ignore[rule]`` comments; everything else is first-party and stays
-reportable. ``docs/development/ty-policy.md`` carries the narrative.
+reportable. ``docs/reference/type-check-policy.md`` lists the groups.
 
 Each group records the **discriminant** it classifies on, because several groups
 share a rule with first-party diagnostics: under ``unknown-argument`` the
@@ -149,7 +149,7 @@ class Diagnostic:
 class Group:
     """Represent one dependency-typing shape and the discriminant that isolates it.
 
-    :param name: The group's identifier, as used in ``ty-policy.md``.
+    :param name: The group's identifier, as used in ``type-check-policy.md``.
     :param rules: The ty rules the group's diagnostics report under.
     :param pattern: The message pattern that separates the group from first-party
         diagnostics sharing those rules.

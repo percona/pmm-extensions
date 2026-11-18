@@ -141,7 +141,7 @@ ruff: venv
 # Passes no paths, so `[tool.ty.src]` stays the single definition of the surface.
 # `--python` is load-bearing: VIRTUAL_ENV is never exported, so ty would resolve
 # imports against whichever interpreter is first on PATH.
-# See docs/development/ty-policy.md under `Enforcement`.
+# See docs/reference/type-check-policy.md under `Enforcement`.
 typecheck: venv
 	@"${VENV_BIN}"/ty check --python "${VENV}"
 
@@ -151,7 +151,7 @@ typecheck: venv
 # `typecheck_diff` job: the job still fails and shows red when the branch adds a
 # diagnostic in a changed non-test Python file. It forces every `warn` rule to
 # `error` before diffing, so it reports what a severity-respecting local check does not.
-# See docs/development/ty-policy.md under `Enforcement`.
+# See docs/reference/type-check-policy.md under `Enforcement`.
 typecheck-diff: venv
 	@"${VENV_BIN}"/python -m scripts.check_ty_diff $(if $(PER_FILE),--per-file,)
 

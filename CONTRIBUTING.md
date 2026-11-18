@@ -100,7 +100,7 @@ Because the project is fully type-annotated, you can check the annotations local
 - **`typecheck`** runs `make typecheck` over the whole tree and **blocks the merge**. It fails only on error-severity diagnostics, so keeping it green means not introducing one.
 - **`typecheck_diff`** reports the diagnostics your branch adds against its merge-base, with every rule held at `warn` promoted to `error` for the comparison, over changed files outside `tests/`. It is **advisory**: a surplus turns that one check red and leaves the merge button enabled. So "all checks passed" is no longer the norm on every PR — a red `typecheck_diff` beside a green `ci-success` means read the job's summary, which lists each new diagnostic. Reproduce it locally with `make typecheck-diff BASE_SHA=origin/main`.
 
-Which trees are checked, what severity each rule carries, and why enforcement is scoped this way are recorded in [docs/development/ty-policy.md](docs/development/ty-policy.md) under [Enforcement](docs/development/ty-policy.md#enforcement).
+Which trees are checked, what severity each rule carries, and why enforcement is scoped this way are recorded in [docs/reference/type-check-policy.md](docs/reference/type-check-policy.md) under [Enforcement](docs/reference/type-check-policy.md#enforcement).
 
 - **Docstrings**:
 

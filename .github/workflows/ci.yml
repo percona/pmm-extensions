@@ -415,7 +415,7 @@ jobs:
 
   # Advisory by design: intentionally omitted from `ci-success`'s `needs`. It
   # sits here rather than in python.yaml because a reusable workflow cannot make
-  # one of its jobs advisory. See docs/development/ty-policy.md under `Enforcement`.
+  # one of its jobs advisory. See docs/reference/type-check-policy.md under `Enforcement`.
   typecheck_diff:
     # Not redundant with the draft test: on a non-pull_request event the absent
     # `pull_request` object makes `draft == false` compare 0 to 0 and pass,
