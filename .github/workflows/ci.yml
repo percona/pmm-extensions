@@ -197,6 +197,13 @@ jobs:
               - 'sidecar/wait_for_schema.sh'
               - 'sidecar/clear_sentinels.sh'
               - 'sidecar/Containerfile.sidecar'
+              # tests/test_python_version_pins.py reads these, so a change to
+              # one alone must still run the tier that checks it.
+              - 'Containerfile.base'
+              - 'build/jenkins-*.pipeline'
+              - '.pre-commit-config.yaml'
+              - '.github/actions/setup-python-job/**'
+              - '.github/workflows/**'
               - 'Makefile'
               - 'frontend/packages/api/specs/**'
               # The snippet front-matter authoring rules are enforced by a
