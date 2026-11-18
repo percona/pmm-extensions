@@ -142,3 +142,5 @@ disproven
 (?i)combinators
 (?i)misattributed
 (?i)subscripted
+falsy
+validator
