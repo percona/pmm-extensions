@@ -40,6 +40,8 @@ need_cmd mysqladmin
 need_cmd pmm-agent
 need_cmd pmm-admin
 need_cmd install
+need_cmd curl
+need_cmd awk
 
 usage() {
     cat << 'EOF'
@@ -203,6 +205,17 @@ agent_is_registered() {
     grep -qE '^id: *[^"[:space:]]' "${PMM_CONFIG_FILE}" 2> /dev/null
 }
 
+# pmm-agent starts the Nomad client last, and PMM Extensions lists a host only
+# once that client has joined PMM's Nomad. The client answers over HTTPS on the
+# port that pmm-admin shows for it.
+nomad_client_is_ready() {
+    local port
+    port="$(pmm-admin list 2> /dev/null | awk '$1 == "nomad_agent" && $2 == "Running" {print $NF}')"
+    [[ -n ${port} ]] || return 1
+    curl -sk --max-time 3 "https://127.0.0.1:${port}/v1/agent/health?type=client" |
+        grep -q '"ok":true'
+}
+
 add_mysql_service() {
     pmm-admin add mysql \
         --username=pmm --password="${MYSQL_PMM_PASSWORD}" \
@@ -304,6 +317,12 @@ main() {
     fi
 
     register_with_pmm
+
+    retry_cmd 90 2 nomad_client_is_ready || {
+        error 'The Nomad client never joined PMM'
+        exit 1
+    }
+    success 'The Nomad client has joined PMM'
 
     : > "${READY_MARKER}"
     success 'The host is ready to run tasks'
