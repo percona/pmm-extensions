@@ -475,7 +475,7 @@ class TestListSupportedReleases:
 
 
 class TestListBootstrapRuns:
-    """Assert GET /runs discovers runs by status, newest first."""
+    """Assert GET /runs discovers runs by status or replica set name, newest first."""
 
     async def _seed_run(
         self,

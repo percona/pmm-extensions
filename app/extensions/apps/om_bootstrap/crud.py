@@ -24,6 +24,7 @@ a documented reason — freshness columns a blanket update would silently wipe.
 design), so the manager's generic ``save``/``update`` need no override.
 """
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlmodel import col, select
@@ -32,6 +33,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.db.crud import BaseSQLModelManager
 from app.core.exceptions import HTTPNotFoundException
 from app.extensions.apps.om_bootstrap.models import BootstrapRun, BootstrapRunStatus
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql import ColumnElement
 
 __all__ = ["BootstrapRunManager"]
 
@@ -106,7 +110,7 @@ class BootstrapRunManager(BaseSQLModelManager):
         :param limit: How many to return.
         :return: The runs.
         """
-        clauses = []
+        clauses: list[ColumnElement[bool]] = []
         if status is not None:
             clauses.append(col(BootstrapRun.status) == status)
         if replica_set_name is not None:
