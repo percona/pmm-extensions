@@ -111,10 +111,22 @@ builder:
 	@podman image exists "extensions:builder" && podman image rm "extensions:builder" || true
 	@buildah build -f Containerfile.base --compress --force-rm --squash --no-cache --format oci --memory 100M --isolation rootless --tag "extensions:builder"
 
+# buildah's own error for a missing base image does not name the target that
+# builds it.
+image-preflight:
+	@command -v podman > /dev/null 2>&1 && command -v buildah > /dev/null 2>&1 || { \
+		echo "image: podman and buildah are required." >&2; \
+		exit 1; \
+	}
+	@podman image exists "extensions:builder" || { \
+		echo "image: no extensions:builder image. Run 'make builder' first." >&2; \
+		exit 1; \
+	}
+
 # The app-restricted PMM-embedded image is the only artifact PMM Extensions ships. Which
 # apps survive is sidecar/settings.yaml's EXTENSIONS.APPS.
 # docker format, not oci: OCI silently discards the HEALTHCHECK instruction
-image: pack
+image: image-preflight pack
 	@podman image exists "extensions:$$RELEASE_VER" && podman image rm "extensions:$$RELEASE_VER" || true
 	@buildah build -f sidecar/Containerfile.sidecar --compress --force-rm --squash --no-cache --format docker --memory 100M --isolation rootless --build-arg EXTENSIONS_RESTRICT_APPS=1 --tag "extensions:$$RELEASE_VER"
 
@@ -466,4 +478,4 @@ lint-pipelines:
 	done; \
 	if [ "$${failures}" -ne 0 ]; then exit 1; fi
 
-.PHONY: venv build pack builder image format ruff typecheck typecheck-diff lint docs-lint audit run-pre-commit dev-backend dev-frontend backfill-legacy-forms form-audit pip-audit bandit makemigrations makemigrations-plugin migrate checkmigrations mergemigrations test regen-specs regen-pbm-payloads regen-pbm-payloads-check regen-xtrabackup-variants regen-xtrabackup-variants-check smoke-xtrabackup-variants check-nomad-payload-size check-sidecar-purge release-prep release-rc release-stable trigger-jenkins lint-pipelines encryption-key changelog-add changelog-check changelog-list startapp startapp-check
+.PHONY: venv build pack builder image-preflight image format ruff typecheck typecheck-diff lint docs-lint audit run-pre-commit dev-backend dev-frontend backfill-legacy-forms form-audit pip-audit bandit makemigrations makemigrations-plugin migrate checkmigrations mergemigrations test regen-specs regen-pbm-payloads regen-pbm-payloads-check regen-xtrabackup-variants regen-xtrabackup-variants-check smoke-xtrabackup-variants check-nomad-payload-size check-sidecar-purge release-prep release-rc release-stable trigger-jenkins lint-pipelines encryption-key changelog-add changelog-check changelog-list startapp startapp-check
