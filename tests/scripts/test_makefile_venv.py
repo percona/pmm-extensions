@@ -103,3 +103,27 @@ def test_make_venv_removes_a_virtualenv_it_failed_to_build(tmp_path: Path) -> No
 
     assert result.returncode != 0
     assert not venv.exists()
+
+
+def test_make_venv_refuses_a_venv_path_that_is_not_a_directory(tmp_path: Path) -> None:
+    """Refuse a ``VENV`` that names a file, and leave that file in place."""
+    venv = tmp_path / "venv"
+    venv.write_text("not a virtualenv\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "make",
+            "venv",
+            f"VENV={venv}",
+            f"POETRY_VENV={tmp_path / 'poetry-venv'}",
+            f"PYTHON={sys.executable}",
+        ],
+        cwd=PROJECT_ROOT,
+        env=make_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert venv.read_text(encoding="utf-8") == "not a virtualenv\n"

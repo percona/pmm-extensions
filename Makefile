@@ -77,6 +77,10 @@ DARWIN_DYLD = if [ "$$(uname -s)" = "Darwin" ]; then \
 venv: pyproject.toml poetry.lock
 	@created=0; \
 	if [ -z "${VIRTUAL_ENV}" ] && [ ! -d "${VENV}" ]; then \
+		if [ -e "${VENV}" ] || [ -L "${VENV}" ]; then \
+			echo "venv: ${VENV} exists and is not a directory" >&2; \
+			exit 1; \
+		fi; \
 		"${PYTHON}" scripts/check_python_version.py || exit 1; \
 		echo "venv: building ${VENV} with $$("${PYTHON}" -V) ($$(command -v "${PYTHON}"))"; \
 		created=1; \
