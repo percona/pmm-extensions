@@ -44,20 +44,28 @@ def _configured_levels() -> dict[str, str]:
     return {rule: level for rule, level in rules.items() if rule != _BASELINE_KEY}
 
 
-def _page_levels() -> dict[str, str]:
-    """Return each rule in the page's "Rule severities" table, with its level.
+def _page_rows() -> list[tuple[str, str]]:
+    """Return each row of the page's "Rule severities" table as a rule and its level.
 
-    :return: Rule name to level, one entry per table row.
+    :return: One ``(rule, level)`` pair per table row, in page order.
     """
     text = _PAGE_PATH.read_text(encoding="utf-8")
     section = text.split("## Rule severities\n", 1)[1].split("\n## ", 1)[0]
     matches = (_ROW_RE.match(line) for line in section.splitlines())
-    return {match["rule"]: match["level"] for match in matches if match}
+    return [(match["rule"], match["level"]) for match in matches if match]
+
+
+def test_page_lists_each_rule_once() -> None:
+    """Test that no rule has two rows, which a comparison by rule would hide."""
+    rules = [rule for rule, _level in _page_rows()]
+    duplicated = sorted({rule for rule in rules if rules.count(rule) > 1})
+
+    assert duplicated == [], f"Rules with more than one row: {duplicated}"
 
 
 def test_page_has_one_row_per_configured_rule_at_its_level() -> None:
     """Test that the page's table and ``[tool.ty.rules]`` name the same rules and levels."""
-    assert _page_levels() == _configured_levels()
+    assert dict(_page_rows()) == _configured_levels()
 
 
 def test_page_states_the_baseline_level() -> None:
