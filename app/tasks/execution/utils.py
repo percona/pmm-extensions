@@ -49,7 +49,7 @@ def minify_file_content(content: str, file_ext: str = "") -> str:
 
     Content with a file extension other than ``py`` is returned as is. So is
     Python source holding an f-string the minifier could re-quote: minified on
-    Python 3.12 or later, it would no longer parse on an executor host's older
+    Python 3.12 or later, it may not parse on an executor host's older
     interpreter.
 
     :param content: The file content.
