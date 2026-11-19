@@ -295,7 +295,10 @@ main() {
     }
     success 'The Nomad client has joined PMM'
 
-    : > "${READY_MARKER}"
+    : > "${READY_MARKER}" || {
+        error "Could not write ${READY_MARKER}: the health check would never pass"
+        exit 1
+    }
     success 'The host is ready to run tasks'
 
     wait "${postgres_pid}"
