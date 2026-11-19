@@ -209,17 +209,18 @@ Http = Callable[[Request], Response]
 
 @dataclass(frozen=True, slots=True)
 class OldService:
-    """Represent a MySQL service of the old instance's inventory. The address is its node's."""
+    """Represent a MySQL service of the old instance's inventory. The address and the node name are its node's."""
 
     name: str
     external_id: str | None
     address: str | None
     port: int | None
+    node_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PmmService:
-    """Represent a MySQL service of PMM Extensions' inventory. The address is its node's."""
+    """Represent a MySQL service of PMM Extensions' inventory. The address and the node name are its node's."""
 
     id: int
     name: str
@@ -227,6 +228,7 @@ class PmmService:
     address: str | None
     port: int | None
     last_synced_at: str | None
+    node_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,7 +287,6 @@ class PlannedTask:
 
     ``create_task`` is false when PMM Extensions already has the task, which is
     what an earlier run leaves when it stops between the two writes.
-
     """
 
     name: str
@@ -310,12 +311,13 @@ class Plan:
     """Describe what a run would do.
 
     ``skipped`` holds ``(old schedule name, reason)``. ``already_present``
-    holds the old names of schedules PMM Extensions already has.
-
+    holds the old names of schedules PMM Extensions already has, and
+    ``already_enabled`` those of them that are enabled there.
     """
 
     to_create: list[PlannedTask]
     already_present: list[str]
+    already_enabled: list[str]
     skipped: list[tuple[str, str]]
     backup_locations: list[BackupLocation]
 
@@ -332,7 +334,6 @@ def _yaml() -> Any:
 
     :return: The ``yaml`` module.
     :raises UsageError: When PyYAML is not installed for this Python.
-
     """
     try:
         return importlib.import_module("yaml")
@@ -601,6 +602,7 @@ def _old_service_from(item: dict[str, Any]) -> OldService:
         external_id=item.get("external_id") or None,
         address=node.get("address") or None,
         port=item.get("port"),
+        node_name=node.get("name") or None,
     )
 
 
@@ -618,6 +620,7 @@ def pmm_service_from(item: dict[str, Any]) -> PmmService:
         address=node.get("address") or None,
         port=item.get("port"),
         last_synced_at=item.get("last_synced_at"),
+        node_name=node.get("name") or None,
     )
 
 
@@ -785,16 +788,14 @@ def _unknown(keys: Any, known: frozenset[str]) -> str:
     return ", ".join(sorted(str(key) for key in keys if key not in known))
 
 
-def _stored_settings(task: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Parse a task's stored settings into the common part and the one server entry.
-
-    PMM Extensions 3.10.0 drops a form field it does not know without an
-    error, so any key this script does not know is refused here.
+def _parse_settings(
+    task: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Parse a task's stored settings, checking their structure and no key.
 
     :param task: The task as the old instance's API returns it.
-    :return: The ``ALL_SERVERS`` mapping and the one ``SERVER_LIST`` entry.
+    :return: The whole mapping, its ``ALL_SERVERS`` mapping and its one ``SERVER_LIST`` entry.
     :raises SkipScheduleError: When the settings are not the shape v0.13.1 writes.
-
     """
     yaml = _yaml()
     try:
@@ -821,6 +822,20 @@ def _stored_settings(task: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
         raise SkipScheduleError(
             f"the settings of task {task['name']} have a server entry that is not a mapping"
         )
+    return settings, common, server
+
+
+def _stored_settings(task: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return a task's stored settings, refusing any key this script does not know.
+
+    PMM Extensions 3.10.0 drops a form field it does not know without an
+    error, so an unknown key is a reason not to create the task.
+
+    :param task: The task as the old instance's API returns it.
+    :return: The ``ALL_SERVERS`` mapping and the one ``SERVER_LIST`` entry.
+    :raises SkipScheduleError: When the settings have the wrong shape or an unknown key.
+    """
+    settings, common, server = _parse_settings(task)
     encryption = server.get("DIR_ENCRYPT_CONFIG") or {}
     unknown = ", ".join(
         part
@@ -916,7 +931,7 @@ def _backup_location(task: dict[str, Any]) -> BackupLocation | None:
     :return: The location, or ``None``.
     """
     try:
-        common, server = _stored_settings(task)
+        _, common, server = _parse_settings(task)
     except SkipScheduleError:
         return None
     meta = task["data"]["meta"]
@@ -948,7 +963,6 @@ def _resolve_task(
     :param state: What PMM Extensions holds now.
     :return: The planned task, with an empty schedule list.
     :raises SkipScheduleError: When nothing may be created for the task.
-
     """
     name = task["name"]
     service_name = task["data"]["meta"].get("_service_name")
@@ -976,6 +990,13 @@ def _resolve_task(
         message = (
             f"task {name} runs on execution host {form['hostname']}, "
             "which is not a host PMM Extensions can run a task on"
+        )
+        raise SkipScheduleError(message)
+    old_service = next(item for item in export.services if item.name == service_name)
+    if old_service.node_name == form["hostname"] != service.node_name:
+        message = (
+            f"task {name} ran on its database host {form['hostname']}, "
+            f"and the matched PMM service {service.name} is on host {service.node_name}"
         )
         raise SkipScheduleError(message)
     existing = state.tasks.get(name)
@@ -1067,7 +1088,6 @@ def _schedule_body(schedule: dict[str, Any]) -> dict[str, Any]:
     :param schedule: The schedule as the old instance's API returns it.
     :return: The JSON body for the schedule create call.
     :raises SkipScheduleError: When the schedule sets a field this script does not carry over.
-
     """
     for field in _FIELDS_NOT_CARRIED:
         if schedule.get(field) is not None:
@@ -1097,7 +1117,13 @@ def build_plan(export: OldExport, matches: dict[str, int], state: PmmState) -> P
     tasks = {task["name"]: task for task in export.tasks}
     resolved: dict[str, PlannedTask | SkipScheduleError] = {}
     seen: dict[str, list[dict[str, Any]]] = {}
-    plan = Plan(to_create=[], already_present=[], skipped=[], backup_locations=[])
+    plan = Plan(
+        to_create=[],
+        already_present=[],
+        already_enabled=[],
+        skipped=[],
+        backup_locations=[],
+    )
     for schedule in export.schedules:
         name, task_name = schedule["name"], schedule["task"]
         if task_name in tasks and task_name not in resolved:
@@ -1135,6 +1161,8 @@ def build_plan(export: OldExport, matches: dict[str, int], state: PmmState) -> P
             plan.skipped.append((name, conflict))
         elif listed:
             plan.already_present.append(name)
+            if listed.get("enabled"):
+                plan.already_enabled.append(name)
         else:
             planned.schedules.append(
                 PlannedSchedule(name, body, was_enabled=bool(schedule.get("enabled")))
@@ -1260,7 +1288,11 @@ def _print_plan(plan: Plan) -> None:
     print(f"\n{_count(len(plan.skipped), 'schedule')} skipped:")
     for name, reason in plan.skipped:
         print(f"  {name}: {reason}")
-    print(f"\n{_count(len(plan.already_present), 'schedule')} already in PMM.")
+    present = _count(len(plan.already_present), "schedule")
+    print(f"\n{present} already in PMM. The script does not change them:")
+    for name in plan.already_present:
+        state = "enabled" if name in plan.already_enabled else "paused"
+        print(f"  {name}: {state} in PMM")
     print(
         "\nWhere the old instance wrote backups. The newest one is under 'latest' in each directory:"
     )
@@ -1338,7 +1370,6 @@ def _read_file(path: Path, what: str) -> str:
     :param what: What the file is, for the message.
     :return: The text.
     :raises UsageError: When the file cannot be read.
-
     """
     try:
         return path.read_text(encoding="utf-8")
@@ -1443,7 +1474,6 @@ def _installed_settings() -> tuple[str, str, str, Path | None]:
 
     :return: The tasks URL, the inventory URL, the token and the CA file.
     :raises UsageError: When the settings cannot be imported or hold no token.
-
     """
     try:
         with stdout_to_stderr():

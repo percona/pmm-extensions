@@ -577,7 +577,7 @@ def test_build_plan_skips_schedule_using_an_unknown_setting() -> None:
     plan = migrate.build_plan(
         _parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, _state()
     )
-    assert _XTRABACKUP not in [task.name for task in plan.to_create]
+    assert sorted(task.name for task in plan.to_create) == [_MYDUMPER, _RSYNC]
     assert (
         "REMOVED_FIELD"
         in dict(plan.skipped)[_old_schedule(export, _XTRABACKUP)["name"]]
@@ -594,6 +594,7 @@ def test_build_plan_skips_schedule_using_an_unknown_server_key() -> None:
     plan = migrate.build_plan(
         _parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, _state()
     )
+    assert sorted(task.name for task in plan.to_create) == [_MYDUMPER, _RSYNC]
     assert "SOCKET" in dict(plan.skipped)[_old_schedule(export, _XTRABACKUP)["name"]]
 
 
@@ -734,8 +735,9 @@ def test_output_never_holds_the_token(
     workdir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Verify that the token is read from a file and printed nowhere."""
-    migrate.main(_args(workdir), http=FakePmm())
+    assert migrate.main(_args(workdir), http=FakePmm()) == 0
     captured = capsys.readouterr()
+    assert "3 schedules to create" in captured.out
     assert _TOKEN not in captured.out + captured.err
 
 
@@ -1126,3 +1128,50 @@ def test_build_plan_matches_a_start_time_written_another_way() -> None:
     )
     plan = migrate.build_plan(_parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, state)
     assert plan.already_present == [schedule["name"]]
+
+
+def test_build_plan_skips_task_matched_to_a_service_on_another_host() -> None:
+    """Verify that a task that ran on its database host is not created for a service on another host."""
+    service = _pmm_services(_SERVICE_A)[0]
+    service["node"]["name"] = "another-host"
+    state = _state(services=[service], hosts=["svcdocs-mysql-a", "another-host"])
+    plan = migrate.build_plan(
+        _parsed(_export()), {_SERVICE_A: _PMM_SERVICE_A_ID}, state
+    )
+    assert plan.to_create == []
+    reason = dict(plan.skipped)[_old_schedule(_export(), _XTRABACKUP)["name"]]
+    assert "svcdocs-mysql-a" in reason
+    assert "another-host" in reason
+
+
+def test_build_plan_lists_the_backup_location_of_a_task_it_skips() -> None:
+    """Verify that a task with a setting the script does not know still has its backup directory listed."""
+    export = _export()
+    _edit_settings(
+        _old_task(export, _XTRABACKUP),
+        lambda settings: settings["ALL_SERVERS"].update(REMOVED_FIELD=1),
+    )
+    plan = migrate.build_plan(
+        _parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, _state()
+    )
+    locations = {
+        location.task: location.directory for location in plan.backup_locations
+    }
+    assert locations[_XTRABACKUP] == "/var/backups/svcdocs/xtrabackup/172.31.213.11"
+
+
+def test_plan_names_a_present_schedule_that_is_enabled(
+    workdir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify that a schedule already in PMM is shown with its state, because the script does not pause it."""
+    pmm = FakePmm()
+    migrate.main(_args(workdir), http=pmm)
+    migrate.main(_args(workdir, "--apply"), http=pmm)
+    next(schedule for schedule in pmm.schedules if schedule["task"] == _MYDUMPER)[
+        "enabled"
+    ] = True
+    capsys.readouterr()
+    assert migrate.main(_args(workdir), http=pmm) == 0
+    out = capsys.readouterr().out
+    assert f"{_old_schedule(_export(), _MYDUMPER)['name']}: enabled in PMM" in out
+    assert f"{_old_schedule(_export(), _XTRABACKUP)['name']}: paused in PMM" in out

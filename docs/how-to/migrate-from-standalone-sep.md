@@ -77,13 +77,14 @@ Run these steps on the PMM host, in the `migration` directory.
 
 1. In PMM, go to **Users and access** > **Service accounts** and select **Add service account**. Give the account the **Admin** role, and add a token to it. For details, see [Service accounts authentication](https://docs.percona.com/percona-monitoring-and-management/3/api/authentication.html).
 
-2. Save the token in a file that only you can read. Run the command, paste the token, press Enter, and then press Ctrl+D.
+2. Save the token in a file that only you can read. Run the two commands, paste the token, press Enter, and then press Ctrl+D.
 
     ```sh
-    (umask 077; cat > pmm.token)
+    install -m 600 /dev/null pmm.token
+    cat > pmm.token
     ```
 
-   The `umask 077` part makes the file readable by you only. The script reads the token from this file. Do not put the token on a command line: it would stay in the shell history.
+   The first command creates the file, or empties an existing one, and makes it readable by you only. The script reads the token from this file. Do not put the token on a command line: it would stay in the shell history.
 
 3. Copy the certificate of PMM out of its container.
 
@@ -131,7 +132,7 @@ Matches, from matches.json:
 1 schedule skipped:
   run_svcdocs-b-xtrabackup_every_12_hours_6791739818912467822: service svcdocs-mysql-b has no match in the match file
 
-0 schedules already in PMM.
+0 schedules already in PMM. The script does not change them:
 
 Where the old instance wrote backups. The newest one is under 'latest' in each directory:
   svcdocs-mysql-b, task svcdocs-b-xtrabackup: /var/backups/svcdocs/xtrabackup/172.31.213.12
@@ -142,7 +143,7 @@ Where the old instance wrote backups. The newest one is under 'latest' in each d
 No write request was sent. Run again with --apply to create the schedules.
 ```
 
-Keep the last list. It is where the backups of the old instance are, and you need it to restore one.
+Keep the last list. It is where the backups of the old instance are, and you need it to restore one. A task whose settings the script cannot read is missing from the list. For such a task, open it on the old instance and note its backup directory.
 
 To run the script without a container, use Python 3.11 or later with PyYAML installed: `python3 migrate_standalone_schedules.py migrate`, with the same options.
 
@@ -219,7 +220,7 @@ If PMM Extensions rejects a request, the script stops and says how many schedule
 
 ## Verify
 
-1. Run the command of the previous section again, unchanged. The plan now counts the schedules under "already in PMM" and has none to create. A schedule that was skipped is still listed as skipped. The output ends with this line:
+1. Run the command of the previous section again, unchanged. The plan now lists the schedules under "already in PMM", each with its state, and has none to create. A schedule that was skipped is still listed as skipped. The output ends with this line:
 
     ```text
     Nothing to create.
@@ -229,9 +230,11 @@ If PMM Extensions rejects a request, the script stops and says how many schedule
 
 ## Switch each schedule over
 
+The script never enables or pauses a schedule that is already in PMM. If the plan shows one as "enabled in PMM", pause it in PMM first, unless you have already switched it over.
+
 A schedule in PMM Extensions writes to the same directory as the schedule it replaces. Do not leave both enabled. A mydumper backup from one instance replaces the backup that the other took on the same day.
 
-For each schedule:
+Switch over only the schedules that were enabled on the old instance. The plan marks the others with "paused on the old instance too": leave those paused. For each schedule that was enabled:
 
 1. On the old instance, open the **MySQL Backups** page. In the **Periodic Tasks** table, turn off the switch in the **Enabled** column, and confirm.
 2. In PMM, go to **Apps** > **MySQL Backups** > **Schedules** and select the **Enabled** checkbox of the same schedule.
