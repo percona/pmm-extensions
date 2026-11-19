@@ -38,7 +38,6 @@ def _configured_levels() -> dict[str, str]:
     """Return each rule that ``[tool.ty.rules]`` names, with its level.
 
     :return: Rule name to level, without the ``all`` baseline.
-    :rtype: dict[str, str]
     """
     with _PYPROJECT_PATH.open("rb") as handle:
         rules: dict[str, str] = tomllib.load(handle)["tool"]["ty"]["rules"]
@@ -49,7 +48,6 @@ def _page_levels() -> dict[str, str]:
     """Return each rule in the page's "Rule severities" table, with its level.
 
     :return: Rule name to level, one entry per table row.
-    :rtype: dict[str, str]
     """
     text = _PAGE_PATH.read_text(encoding="utf-8")
     section = text.split("## Rule severities\n", 1)[1].split("\n## ", 1)[0]
