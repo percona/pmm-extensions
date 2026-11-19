@@ -126,7 +126,7 @@ def test_workflows_pin_only_the_reference_and_the_host_python(version: str) -> N
         for pinned in _workflow_pins(parsed):
             pins[workflow.name, pinned] += 1
 
-    assert {pinned for _, pinned in pins if pinned != HOST_PYTHON} == {version}
+    assert {pinned for _, pinned in pins if pinned != HOST_PYTHON} <= {version}
     assert sorted(
         name for name, pinned in pins.elements() if pinned == HOST_PYTHON
     ) == (HOST_PYTHON_WORKFLOWS)

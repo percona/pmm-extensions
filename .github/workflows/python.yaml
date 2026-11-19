@@ -27,7 +27,6 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        python: ["3.14.10"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout codebase
@@ -36,8 +35,6 @@ jobs:
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
-        with:
-          python-version: ${{ matrix.python }}
       - name: Run bandit
         run: make bandit
 
@@ -45,7 +42,6 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        python: ["3.14.10"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout codebase
@@ -55,7 +51,6 @@ jobs:
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
         with:
-          python-version: ${{ matrix.python }}
           cache: poetry
       # Sync explicitly: the `venv` prerequisite no-ops against the runner's
       # pre-seeded environment, and ty resolves imports against what is actually
@@ -69,7 +64,6 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        python: ["3.14.10"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout codebase
@@ -78,8 +72,6 @@ jobs:
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
-        with:
-          python-version: ${{ matrix.python }}
       - name: Check pyproject.toml/poetry.lock consistency
         run: poetry check --lock --strict
 
@@ -87,7 +79,6 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        python: ["3.14.10"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout codebase
@@ -96,8 +87,6 @@ jobs:
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
-        with:
-          python-version: ${{ matrix.python }}
       # ENCRYPTION_KEY is required to construct settings and is minted per run
       # rather than stored: migrations encrypt nothing, so the value only has to
       # be a valid key, and nothing here needs it to outlive the job.
@@ -119,7 +108,6 @@ jobs:
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
         with:
-          python-version: "3.14.10"
           cache: poetry
       - name: Install test dependencies
         run: poetry sync --no-root
@@ -172,7 +160,6 @@ jobs:
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
         with:
-          python-version: "3.14.10"
           cache: poetry
       - name: Install test dependencies
         run: poetry sync --no-root --with postgresql
@@ -183,7 +170,6 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        python: ["3.14.10"]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout codebase
@@ -192,7 +178,5 @@ jobs:
           ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
-        with:
-          python-version: ${{ matrix.python }}
       - name: Build package
         run: make build

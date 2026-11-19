@@ -20,6 +20,7 @@ import sys
 
 import pytest
 
+from app.tasks.execution import utils as dispatch_utils
 from tests.scripts import load_script, write_file
 
 check_nomad_payload_size = load_script("check_nomad_payload_size")
@@ -64,14 +65,14 @@ def test_check_payload_uses_minified_text_for_size(tmp_path, monkeypatch):
     """Gzip-compress the minified source in ``check_payload``, not the original text."""
     path = write_file(tmp_path, "verbose.py", VERBOSE_SCRIPT)
     seen = {}
-    real_minify = check_nomad_payload_size.minify
+    real_minify = dispatch_utils.minify
 
     def spy_minify(src, **kwargs):
         out = real_minify(src, **kwargs)
         seen["minified"] = out
         return out
 
-    monkeypatch.setattr(check_nomad_payload_size, "minify", spy_minify)
+    monkeypatch.setattr(dispatch_utils, "minify", spy_minify)
     monkeypatch.setattr(check_nomad_payload_size, "NOMAD_PAYLOAD_SIZE_LIMIT", 0)
     _, size = check_nomad_payload_size.check_payload(str(path))
     assert len(seen["minified"]) < len(VERBOSE_SCRIPT)
@@ -101,13 +102,9 @@ def test_payload_size_measures_an_unminifiable_source_as_written(
 
 
 def test_check_payload_falls_back_on_syntax_error(tmp_path, monkeypatch):
-    """Ignore ``SyntaxError`` from ``minify`` in ``check_payload`` and use raw source."""
+    """Measure source that is not Python as written in ``check_payload``."""
     path = write_file(tmp_path, "broken.py", INVALID_SCRIPT)
 
-    def raise_syntax(src, **kwargs):
-        raise SyntaxError("boom")
-
-    monkeypatch.setattr(check_nomad_payload_size, "minify", raise_syntax)
     monkeypatch.setattr(check_nomad_payload_size, "NOMAD_PAYLOAD_SIZE_LIMIT", 0)
     result = check_nomad_payload_size.check_payload(str(path))
     assert result is not None

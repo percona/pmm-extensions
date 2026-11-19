@@ -2,8 +2,11 @@ name: Setup Python job
 description: Checkout repo, install Poetry, setup Python
 inputs:
   python-version:
-    description: Version of Python to use
-    required: true
+    description: >-
+      Version of Python to use. Callers leave it unset, so the default from the
+      checked-out revision applies; a run replayed against an older ref then gets
+      that ref's interpreter.
+    required: false
     default: "3.14.10"
   cache:
     description: Type of cache to use
