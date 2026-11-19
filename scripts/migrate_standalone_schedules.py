@@ -263,7 +263,8 @@ class PmmState:
 
     ``tasks`` maps each MySQL Backups task name to the task. ``schedules`` maps
     a task name to its schedules as the API lists them. ``hosts`` holds the
-    names of the hosts PMM Extensions can run a task on.
+    executor IDs of the hosts PMM Extensions can run a task on, which can
+    differ from the names the inventory shows.
     """
 
     services: list[PmmService]
@@ -1288,7 +1289,7 @@ def read_pmm_state(api: Api) -> PmmState:
         services=[pmm_service_from(item) for item in _well_formed(services, "service")],
         tasks=existing,
         schedules=by_task,
-        hosts=[str(host.get("name")) for host in hosts if isinstance(host, dict)],
+        hosts=[str(host.get("id")) for host in hosts if isinstance(host, dict)],
     )
 
 

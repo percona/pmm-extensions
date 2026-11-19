@@ -156,7 +156,7 @@ def _state(
         services=[migrate.pmm_service_from(item) for item in raw],
         tasks=existing,
         schedules=schedules or {},
-        hosts=[host["name"] for host in _CAPTURE["pmm"]["hosts"]]
+        hosts=[host["id"] for host in _CAPTURE["pmm"]["hosts"]]
         if hosts is None
         else hosts,
     )
@@ -1050,6 +1050,22 @@ def test_dry_run_shows_the_execution_host(
         f"{_MYDUMPER} on {_SERVICE_A} (PMM service 3), runs on host svcdocs-mysql-a, new task"
         in capsys.readouterr().out
     )
+
+
+def test_dry_run_plans_a_task_whose_host_has_another_display_name(
+    workdir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify that the host check reads the executor's ID, not its inventory label."""
+    pmm = FakePmm()
+    for host in pmm.hosts:
+        host["name"] = f"Display name of {host['id']}"
+    assert migrate.main(_args(workdir), http=pmm) == 0
+    out = capsys.readouterr().out
+    assert (
+        f"{_MYDUMPER} on {_SERVICE_A} (PMM service 3), runs on host svcdocs-mysql-a"
+        in out
+    )
+    assert "is not a host PMM Extensions can run a task on" not in out
 
 
 def test_build_plan_skips_same_name_task_with_other_settings() -> None:
