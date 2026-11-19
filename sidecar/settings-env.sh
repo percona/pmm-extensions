@@ -74,7 +74,8 @@ export_canonical() {
 # settings classes refuse an empty key outright, so admitting one here would
 # replace this gate's single actionable line with five crashing children.
 mounted_secret_key() {
-    secret_file_supplies SECRET_KEY && read_secret_file SECRET_KEY
+    secret_file_supplies SECRET_KEY && [[ -r ${secret_files[secret_key]} ]] &&
+        read_secret_file SECRET_KEY
 }
 
 # A set SECRETS_DIR means the key is PMM's to publish, and PMM writes it while it
@@ -91,9 +92,17 @@ wait_for_published_secret_key() {
     local next_log=$SECONDS
     until [[ -n "$(mounted_secret_key)" ]]; do
         if ((SECONDS >= next_log)); then
-            echo "[entrypoint] Waiting for PMM to publish SECRET_KEY under" \
-                "${SECRETS_DIR}. PMM writes it there when it starts with" \
-                "PMM_ENABLE_EXTENSIONS=1." >&2
+            # A file that is there and unreadable is not one PMM has yet to
+            # write, so the line names what an operator has to change instead.
+            if secret_file_supplies SECRET_KEY && [[ ! -r ${secret_files[secret_key]} ]]; then
+                echo "[entrypoint] Waiting for SECRET_KEY under ${SECRETS_DIR}:" \
+                    "the file is there, but uid $(id -u) with groups $(id -G)" \
+                    "cannot read it. PMM writes it for group 0." >&2
+            else
+                echo "[entrypoint] Waiting for PMM to publish SECRET_KEY under" \
+                    "${SECRETS_DIR}. PMM writes it there when it starts with" \
+                    "PMM_ENABLE_EXTENSIONS=1." >&2
+            fi
             next_log=$((SECONDS + 10))
         fi
         sleep 1

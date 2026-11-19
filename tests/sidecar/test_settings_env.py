@@ -571,6 +571,27 @@ def test_the_gate_keeps_waiting_while_no_file_holds_a_key(
     assert "openssl" not in first_line
 
 
+def test_the_gate_names_a_key_file_it_cannot_read(tmp_path: Path):
+    """Say that the key is there and unreadable, rather than that PMM is late.
+
+    A side-car outside group 0 sees exactly this, and waiting for PMM to
+    publish a key it has already published would never end or explain itself.
+    """
+    secrets_dir = write_secrets(tmp_path, SECRET_KEY="published-by-pmm")
+    (Path(secrets_dir) / "SECRET_KEY").chmod(0o000)
+
+    with (
+        waiting_helper(SECRETS_DIR=secrets_dir) as (process, first_line),
+        pytest.raises(subprocess.TimeoutExpired),
+    ):
+        process.wait(timeout=POLLS_OBSERVED_SECONDS)
+
+    assert "cannot read it" in first_line
+    assert secrets_dir in first_line
+    assert WAITING_FOR_THE_KEY not in first_line
+    assert "Permission denied" not in first_line
+
+
 def test_a_blank_secret_key_variable_does_not_shadow_the_file(tmp_path: Path):
     """Clear a blank inherited key, which every child would read over the file."""
     secrets_dir = write_secrets(tmp_path, SECRET_KEY="from-file")

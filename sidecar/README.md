@@ -464,7 +464,7 @@ PMM supplies while it starts, says what it is waiting for, and hands off to
 
 | It waits for | When | What the container log says |
 |---|---|---|
-| The `SECRET_KEY` file | `SECRETS_DIR` is set, and neither the environment nor a file under it supplies a key | `[entrypoint] Waiting for PMM to publish SECRET_KEY under <directory>.`, every 10 seconds |
+| The `SECRET_KEY` file | `SECRETS_DIR` is set, and neither the environment nor a file under it supplies a key | `[entrypoint] Waiting for PMM to publish SECRET_KEY under <directory>.`, every 10 seconds. When the file is there and the side-car cannot read it, the line says so instead and names the uid and groups it runs as |
 | A Grafana that can mint the token | The start has to mint: no token is configured or mounted, and none that Grafana still accepts is persisted | `[grafana-mint] Waiting for Grafana at <endpoint> to accept the service-account mint (last answer: …).`, every 30 seconds |
 
 Neither wait has a bound. PMM owns both the key and Grafana, so a bound could
