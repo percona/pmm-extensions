@@ -110,6 +110,11 @@ def test_pyproject_targets_the_reference_minor(minor: str) -> None:
     assert pyproject["project"]["requires-python"] == (
         f">={minor},<{major}.{int(minor_number) + 1}"
     )
+    assert [
+        classifier
+        for classifier in pyproject["project"]["classifiers"]
+        if re.fullmatch(r"Programming Language :: Python :: \d+\.\d+", classifier)
+    ] == [f"Programming Language :: Python :: {minor}"]
     assert pyproject["tool"]["ruff"]["target-version"] == f"py{major}{minor_number}"
     assert pyproject["tool"]["ty"]["environment"]["python-version"] == minor
     assert pyproject["tool"]["tox"]["env_list"] == [minor]
