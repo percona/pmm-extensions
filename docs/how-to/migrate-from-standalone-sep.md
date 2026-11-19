@@ -232,7 +232,7 @@ If PMM Extensions rejects a request, the script stops and says how many schedule
 
 The script never enables or pauses a schedule that is already in PMM. If the plan shows one as "enabled in PMM", pause it in PMM first, unless you have already switched it over.
 
-A schedule in PMM Extensions writes to the same directory as the schedule it replaces. Do not leave both enabled. A mydumper backup from one instance replaces the backup that the other took on the same day.
+A schedule in PMM Extensions writes to the same directory as the schedule it replaces. Do not leave both enabled. A mydumper backup from one instance replaces the backup that the other took on the same day. The retention settings of the task also apply to that directory. In the test, a task that keeps two XtraBackup copies removed the backups of the old instance after it had run twice. If you need an old backup, restore it or copy it away before the new schedule runs.
 
 Switch over only the schedules that were enabled on the old instance. The plan marks the others with "paused on the old instance too": leave those paused. For each schedule that was enabled:
 
