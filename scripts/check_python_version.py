@@ -17,8 +17,10 @@
 
 ``make venv`` runs this file with the interpreter it is about to build a
 virtualenv from, so it uses the standard library only and must stay importable
-on interpreters older and newer than the supported range.
+on interpreters older and newer than the supported range: Python 3.7 and later.
 """
+
+from __future__ import annotations
 
 import sys
 

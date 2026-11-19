@@ -54,3 +54,8 @@ def test_is_supported_mirrors_requires_python(version: tuple[int, int, int]) -> 
     expected = requires_python().contains(".".join(str(part) for part in version))
 
     assert check_python_version.is_supported(version) is expected
+
+
+def test_check_loads_on_an_interpreter_older_than_3_9() -> None:
+    """Leave the annotations unevaluated, so ``tuple[int, int, int]`` cannot fail on 3.8."""
+    assert isinstance(check_python_version.is_supported.__annotations__["version"], str)
