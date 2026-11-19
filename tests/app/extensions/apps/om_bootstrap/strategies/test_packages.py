@@ -86,6 +86,7 @@ def _spec(
         port=27017,
         bind_ip="0.0.0.0",
         member_configs=member_configs or {},
+        hosts=["node00"],
     )
 
 
@@ -254,6 +255,7 @@ class TestBuildStep:
             log_path="/var/log/mongodb/mongod.log",
             port=27017,
             bind_ip="0.0.0.0",
+            hosts=["node00"],
         )
         action = PackagesInstallStrategy().build_step(
             "configure_repository", "node00", spec
@@ -556,6 +558,23 @@ class TestBuildStep:
         assert " /opt/*/bin/mongod;" in body
         assert "mongod is already installed at $m" in body
 
+    @pytest.mark.parametrize(
+        ("os_", "needs_curl"),
+        [(OperatingSystem.UBUNTU, True), (OperatingSystem.ROCKY, False)],
+    )
+    def test_pre_check_needs_curl_only_where_the_repository_step_uses_it(
+        self, os_: OperatingSystem, *, needs_curl: bool
+    ) -> None:
+        """Require curl exactly where configure_repository downloads with it."""
+        strategy = PackagesInstallStrategy()
+        pre_check = strategy.build_step("pre_check", "node00", _spec(os_))
+        repository = strategy.build_step("configure_repository", "node00", _spec(os_))
+
+        assert ('echo "pre_check: curl not found"' in _body(pre_check.command)) is (
+            needs_curl
+        )
+        assert ("curl " in _body(repository.command)) is needs_curl
+
     def test_pre_check_checks_the_spec_port_is_free(self) -> None:
         """Check the port the new mongod will use, with ``ss`` and a fallback."""
         spec = _spec(OperatingSystem.UBUNTU).model_copy(update={"port": 27018})
@@ -580,6 +599,247 @@ class TestBuildStep:
         assert "journalctl -u mongod --no-pager -o cat -n 5 >&2" in body
         assert "/var/log/mongodb/mongod.log" in body
         assert 'om_mongod_why; exit "$rc"' in body
+
+
+_UBUNTU_20_04 = 'ID=ubuntu\nVERSION_ID="20.04"\nPRETTY_NAME="Ubuntu 20.04.6 LTS"\n'
+_UBUNTU_22_04 = 'ID=ubuntu\nVERSION_ID="22.04"\nPRETTY_NAME="Ubuntu 22.04.5 LTS"\n'
+_ROCKY_9_4 = 'ID="rocky"\nVERSION_ID="9.4"\nPRETTY_NAME="Rocky Linux 9.4 (Blue Onyx)"\n'
+_ROCKY_10_0 = (
+    'ID="rocky"\nVERSION_ID="10.0"\nPRETTY_NAME="Rocky Linux 10.0 (Red Quartz)"\n'
+)
+_DEBIAN_12 = (
+    'ID=debian\nVERSION_ID="12"\nPRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\n'
+)
+
+
+class TestOsReleaseCheck:
+    """Assert pre_check refuses a node release not supported for the MongoDB version."""
+
+    @staticmethod
+    def _run(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        os_: OperatingSystem,
+        mongodb_version: str,
+        os_release: str | None,
+    ) -> subprocess.CompletedProcess[str]:
+        path = tmp_path / "os-release"
+        if os_release is not None:
+            path.write_text(os_release)
+        monkeypatch.setattr(packages, "OS_RELEASE_PATH", str(path))
+        spec = _spec(os_).model_copy(update={"mongodb_version": mongodb_version})
+        return subprocess.run(
+            [_SH, "-euc", packages._os_release_check(spec)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @pytest.mark.parametrize(
+        ("os_", "mongodb_version", "os_release"),
+        [
+            (OperatingSystem.UBUNTU, "7.0", _UBUNTU_22_04),
+            (OperatingSystem.UBUNTU, "8.0.4", _UBUNTU_22_04),
+            (OperatingSystem.ROCKY, "7.0", _ROCKY_9_4),
+            (OperatingSystem.ROCKY, "8.0", _ROCKY_10_0),
+        ],
+    )
+    def test_passes_a_supported_release(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        os_: OperatingSystem,
+        mongodb_version: str,
+        os_release: str,
+    ) -> None:
+        """Pass a release the version is supported on, Rocky Linux by major version."""
+        result = self._run(tmp_path, monkeypatch, os_, mongodb_version, os_release)
+
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize(
+        ("os_", "mongodb_version", "os_release", "message"),
+        [
+            (
+                OperatingSystem.UBUNTU,
+                "7.0",
+                _UBUNTU_20_04,
+                (
+                    "pre_check: MongoDB 7.0 is supported on Ubuntu 22.04, 24.04; "
+                    "this node runs Ubuntu 20.04.6 LTS"
+                ),
+            ),
+            (
+                OperatingSystem.ROCKY,
+                "7.0.14",
+                _ROCKY_10_0,
+                (
+                    "pre_check: MongoDB 7.0 is supported on Rocky Linux 8, 9; "
+                    "this node runs Rocky Linux 10.0 (Red Quartz)"
+                ),
+            ),
+            (
+                OperatingSystem.UBUNTU,
+                "8.0",
+                _DEBIAN_12,
+                (
+                    "pre_check: MongoDB 8.0 is supported on Ubuntu 22.04, 24.04; "
+                    "this node runs Debian GNU/Linux 12 (bookworm)"
+                ),
+            ),
+            (
+                OperatingSystem.UBUNTU,
+                "9.0",
+                _UBUNTU_22_04,
+                (
+                    "pre_check: MongoDB 9.0 is not supported on Ubuntu; "
+                    "this node runs Ubuntu 22.04.5 LTS"
+                ),
+            ),
+        ],
+    )
+    def test_refuses_an_unsupported_release_naming_both(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        os_: OperatingSystem,
+        mongodb_version: str,
+        os_release: str,
+        message: str,
+    ) -> None:
+        """Name the supported releases and the node's own, and fail before any change."""
+        result = self._run(tmp_path, monkeypatch, os_, mongodb_version, os_release)
+
+        assert result.returncode == 1
+        assert result.stderr.strip() == message
+
+    def test_names_the_release_by_id_without_a_pretty_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fall back to ID and VERSION_ID when PRETTY_NAME is absent."""
+        result = self._run(
+            tmp_path,
+            monkeypatch,
+            OperatingSystem.ROCKY,
+            "7.0",
+            "ID=rocky\nVERSION_ID=10.0\n",
+        )
+
+        assert result.returncode == 1
+        assert result.stderr.strip().endswith("this node runs rocky 10.0")
+
+    def test_refuses_a_node_without_os_release(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refuse rather than guess when the release cannot be read."""
+        result = self._run(tmp_path, monkeypatch, OperatingSystem.ROCKY, "8.0", None)
+
+        assert result.returncode == 1
+        assert "is missing, so the OS release is unknown" in result.stderr
+
+    def test_pre_check_runs_it_first(self) -> None:
+        """Check the release before anything else the pre-check looks at."""
+        action = PackagesInstallStrategy().build_step(
+            "pre_check", "node00", _spec(OperatingSystem.ROCKY)
+        )
+
+        body = _body(action.command)
+        assert body.startswith(f"if [ ! -r {packages.OS_RELEASE_PATH} ]; then")
+        assert "'rocky 8'|'rocky 9'|'rocky 10') ;;" in body
+
+
+class TestMemberNamesCheck:
+    """Assert pre_check refuses a node that cannot resolve every member's name."""
+
+    @staticmethod
+    def _run(
+        tmp_path: Path,
+        hosts: list[str],
+        resolvable: set[str],
+        ipv6_only: frozenset[str] = frozenset(),
+    ) -> subprocess.CompletedProcess[str]:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        getent = bin_dir / "getent"
+        known = "|".join(sorted(resolvable)) or "''"
+        ipv6 = "|".join(sorted(ipv6_only)) or "''"
+        getent.write_text(
+            f'#!/bin/sh\ncase "$2" in {known}) echo "10.0.0.1 $2";;'
+            f' {ipv6}) [ "$1" != ahostsv4 ];; *) exit 2;; esac\n'
+        )
+        getent.chmod(0o755)
+        return subprocess.run(
+            [_SH, "-euc", packages._member_names_check("node00", hosts)],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+            check=False,
+        )
+
+    def test_passes_when_every_name_resolves(self, tmp_path: Path) -> None:
+        """Pass silently once every member's name resolves here."""
+        hosts = ["node00", "node01", "node02"]
+
+        result = self._run(tmp_path, hosts, set(hosts))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_names_every_name_that_does_not_resolve(self, tmp_path: Path) -> None:
+        """Name this node and each unresolved member, not only the first."""
+        result = self._run(tmp_path, ["node00", "node01", "node02"], {"node00"})
+
+        assert result.returncode == 1
+        assert result.stderr.strip() == (
+            "pre_check: node00 cannot resolve node01 node02, the names replica set "
+            "members use for each other; add them to DNS or /etc/hosts"
+        )
+
+    def test_counts_a_name_with_only_an_ipv6_address_as_unresolved(
+        self, tmp_path: Path
+    ) -> None:
+        """Refuse a member name with no IPv4 address, which ``mongod`` cannot use."""
+        result = self._run(
+            tmp_path, ["node00", "node01"], {"node00"}, ipv6_only=frozenset({"node01"})
+        )
+
+        assert result.returncode == 1
+        assert "pre_check: node00 cannot resolve node01," in result.stderr
+
+    def test_counts_a_name_too_slow_to_resolve_as_unresolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cut a slow lookup short, so the step can still say which name failed."""
+        monkeypatch.setattr(packages, "NAME_RESOLUTION_TIMEOUT_S", 1)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        getent = bin_dir / "getent"
+        getent.write_text('#!/bin/sh\n[ "$2" = node00 ] && exit 0\nexec sleep 30\n')
+        getent.chmod(0o755)
+
+        result = subprocess.run(
+            [_SH, "-euc", packages._member_names_check("node00", ["node00", "node01"])],
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+            check=False,
+            timeout=10,
+        )
+
+        assert result.returncode == 1
+        assert "pre_check: node00 cannot resolve node01," in result.stderr
+
+    def test_pre_check_checks_the_spec_hosts(self) -> None:
+        """Check every host of the run, from the host the step runs on."""
+        spec = _spec(OperatingSystem.ROCKY).model_copy(
+            update={"hosts": ["node00", "node01", "node02"]}
+        )
+
+        action = PackagesInstallStrategy().build_step("pre_check", "node01", spec)
+
+        body = _body(action.command)
+        assert "for name in node00 node01 node02; do" in body
+        assert "'pre_check: node01 cannot resolve'" in body
 
 
 class TestPlanRunSteps:
@@ -1331,7 +1591,9 @@ def _recording_bin(
     return bin_dir
 
 
-def _fake_bin(tmp_path: Path, *, with_mongod: bool, ss_output: str = "") -> Path:
+def _fake_bin(
+    tmp_path: Path, *, with_mongod: bool, ss_output: str = "", with_curl: bool = True
+) -> Path:
     """Build a ``PATH`` directory with the real tools pre_check needs and fake ones.
 
     ``ss`` is always a fake, so the port check answers about the test's listeners
@@ -1340,15 +1602,20 @@ def _fake_bin(tmp_path: Path, *, with_mongod: bool, ss_output: str = "") -> Path
     :param tmp_path: The test's scratch directory.
     :param with_mongod: Whether a ``mongod`` is on this ``PATH``.
     :param ss_output: What the fake ``ss`` prints: nothing for a free port.
+    :param with_curl: Whether a ``curl`` is on this ``PATH``.
     :return: The directory.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for tool in ("df", "tail", "ls", "dirname", "sed", "head"):
+    for tool in ("df", "tail", "ls", "dirname", "sed", "head", "tr"):
         real = shutil.which(tool)
         assert real is not None
         (bin_dir / tool).symlink_to(real)
-    fakes = ["apt-get", "mongod"] if with_mongod else ["apt-get"]
+    fakes = ["apt-get", "getent"]
+    if with_mongod:
+        fakes.append("mongod")
+    if with_curl:
+        fakes.append("curl")
     for fake in fakes:
         path = bin_dir / fake
         path.write_text("#!/bin/sh\nexit 0\n")
@@ -1369,6 +1636,9 @@ class TestPreCheckCommand:
         """Point the fixed paths at scratch paths, with a 1-byte minimum."""
         config = tmp_path / "mongod.conf"
         data = tmp_path / "data"
+        os_release = tmp_path / "os-release"
+        os_release.write_text(_UBUNTU_22_04)
+        monkeypatch.setattr(packages, "OS_RELEASE_PATH", str(os_release))
         monkeypatch.setattr(packages, "CONFIG_PATH", str(config))
         monkeypatch.setattr(packages, "MIN_DATA_DISK_BYTES", 1)
         monkeypatch.setattr(
@@ -1379,13 +1649,20 @@ class TestPreCheckCommand:
         return config, data
 
     def _run(
-        self, tmp_path: Path, *, with_mongod: bool = False, ss_output: str = ""
+        self,
+        tmp_path: Path,
+        *,
+        with_mongod: bool = False,
+        ss_output: str = "",
+        with_curl: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         spec = _spec(OperatingSystem.UBUNTU).model_copy(
             update={"data_path": str(tmp_path / "data")}
         )
         action = PackagesInstallStrategy().build_step("pre_check", "node00", spec)
-        bin_dir = _fake_bin(tmp_path, with_mongod=with_mongod, ss_output=ss_output)
+        bin_dir = _fake_bin(
+            tmp_path, with_mongod=with_mongod, ss_output=ss_output, with_curl=with_curl
+        )
         return _run_step(action, tmp_path, bin_dir)
 
     def test_passes_on_a_clean_host(
@@ -1395,6 +1672,15 @@ class TestPreCheckCommand:
         result = self._run(tmp_path)
 
         assert result.returncode == 0, result.stderr
+
+    def test_fails_on_ubuntu_without_curl(
+        self, tmp_path: Path, paths: tuple[Path, Path]
+    ) -> None:
+        """Fail before any change when configure_repository could not download."""
+        result = self._run(tmp_path, with_curl=False)
+
+        assert result.returncode == 1
+        assert result.stderr.strip() == "pre_check: curl not found"
 
     def test_passes_with_an_empty_data_directory(
         self, tmp_path: Path, paths: tuple[Path, Path]

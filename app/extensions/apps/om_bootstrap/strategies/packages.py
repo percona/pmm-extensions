@@ -48,6 +48,11 @@ import json
 import posixpath
 import shlex
 
+from app.extensions.apps.om_bootstrap.releases import (
+    major_minor,
+    ReleaseMatch,
+    supported_operating_system,
+)
 from app.extensions.apps.om_bootstrap.strategy import (
     BootstrapSpec,
     CREATE_ADMIN_USER_STEP,
@@ -99,6 +104,12 @@ PID_FILE_PATH = "/var/run/mongod.pid"
 #: would put a second ``mongod`` beside it. Shell glob patterns: ``*`` is expanded
 #: on the host, everything else is matched literally.
 EXTRA_MONGOD_DIRS = ("/usr/local/bin", "/opt/*/bin")
+
+#: Where ``pre_check`` reads the node's distribution and release from.
+OS_RELEASE_PATH = "/etc/os-release"
+
+#: The ``tr -d`` argument stripping the quotes ``/etc/os-release`` may put around a value.
+_QUOTES = shlex.quote("\"'")
 
 #: How many lines of ``mongod``'s journal :func:`_mongod_diagnostics` prints.
 JOURNAL_TAIL_LINES = 5
@@ -213,8 +224,7 @@ def _psmdb_channel(mongodb_version: str) -> str:
         major.minor.patch (``"8.0.4"``).
     :return: The channel name ``percona-release setup`` expects.
     """
-    major_minor = ".".join(mongodb_version.split(".")[:2])
-    return f"psmdb-{major_minor.replace('.', '')}"
+    return f"psmdb-{major_minor(mongodb_version).replace('.', '')}"
 
 
 def _shell_step(body: str, *, timeout_s: int = 30) -> StepAction:
@@ -292,6 +302,60 @@ def _existing_mongod_check() -> str:
     )
 
 
+def _os_release_check(spec: BootstrapSpec) -> str:
+    """Build the ``pre_check`` lines refusing a release not supported for the version.
+
+    PMM checks the release its last scan reported, but the node may have been
+    upgraded since, and Percona's repositories still serve builds for releases
+    Percona no longer supports, so a later step would not fail.
+
+    :param spec: The host's bootstrap spec; its OS and MongoDB version are read.
+    :return: The shell lines.
+    """
+    supported = supported_operating_system(spec.os)
+    version = major_minor(spec.mongodb_version)
+    releases = supported.releases_for(version)
+    wanted = (
+        f"MongoDB {version} is supported on {supported.name} {', '.join(releases)}"
+        if releases
+        else f"MongoDB {version} is not supported on {supported.name}"
+    )
+    path = shlex.quote(OS_RELEASE_PATH)
+    release = (
+        "$version_id"
+        if supported.release_match is ReleaseMatch.EXACT
+        else "${version_id%%.*}"
+    )
+    lines = [
+        f"if [ ! -r {path} ]; then",
+        f'  echo "pre_check: "{path}" is missing, so the OS release is unknown" >&2',
+        "  exit 1",
+        "fi",
+    ]
+    for variable, key in (
+        ("os_id", "ID"),
+        ("version_id", "VERSION_ID"),
+        ("os_name", "PRETTY_NAME"),
+    ):
+        lines.append(
+            f"{variable}=$(sed -n 's/^{key}=//p' {path} | head -n 1 | tr -d {_QUOTES})"
+        )
+    lines.append(f'case "$os_id {release}" in')
+    if releases:
+        patterns = "|".join(shlex.quote(f"{spec.os.value} {r}") for r in releases)
+        lines.append(f"  {patterns}) ;;")
+    lines += [
+        "  *)",
+        (
+            f"    echo {shlex.quote(f'pre_check: {wanted}; this node runs ')}"
+            '"${os_name:-$os_id $version_id}" >&2'
+        ),
+        "    exit 1;;",
+        "esac",
+    ]
+    return "\n".join(lines)
+
+
 #: Turns one line of ``ss -p`` output into ``pid N, NAME`` for the first process
 #: it lists, e.g. ``users:(("mongod",pid=812,fd=11))`` into ``pid 812, mongod``.
 _SS_HOLDER_SED = r's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/pid \2, \1/p'
@@ -357,6 +421,46 @@ def _port_free_check(port: int) -> str:
             "fi",
             'if [ -n "$held" ]; then',
             '  echo "pre_check: port $port is already in use ($held)" >&2; exit 1',
+            "fi",
+        ]
+    )
+
+
+#: How long one member name may take to resolve before ``pre_check`` counts it as
+#: unresolved, so slow lookups cannot run the step out of time before it says which.
+NAME_RESOLUTION_TIMEOUT_S = 5
+
+
+def _member_names_check(host: str, hosts: list[str]) -> str:
+    """Build the ``pre_check`` lines refusing a host that cannot resolve every member.
+
+    ``rs_initiate`` names each member by its host name, so a name one member cannot
+    resolve otherwise fails the run only after every host is installed, and rolls
+    them all back. A name counts as resolved only to an IPv4 address, since the
+    generated ``mongod.conf`` never sets ``net.ipv6``. Every unresolved name is
+    reported, not just the first, and each lookup is cut off after
+    :data:`NAME_RESOLUTION_TIMEOUT_S`.
+
+    :param host: The host the check runs on, named in the message.
+    :param hosts: Every member's name, this host's own included.
+    :return: The shell lines.
+    """
+    prefix = f"pre_check: {host} cannot resolve"
+    return "\n".join(
+        [
+            "unresolved=''",
+            f"for name in {shlex.join(hosts)}; do",
+            (
+                f'  timeout {NAME_RESOLUTION_TIMEOUT_S} getent ahostsv4 "$name"'
+                ' >/dev/null || unresolved="$unresolved $name"'
+            ),
+            "done",
+            'if [ -n "$unresolved" ]; then',
+            (
+                f'  echo {shlex.quote(prefix)}"$unresolved, the names replica set '
+                'members use for each other; add them to DNS or /etc/hosts" >&2'
+            ),
+            "  exit 1",
             "fi",
         ]
     )
@@ -662,9 +766,9 @@ class PackagesInstallStrategy:
 
         :param step_name: One of :meth:`plan_steps`' names.
         :param host: The node name being bootstrapped. Used by ``configure_mongod``,
-            whose ``bindIp`` may be this member's own address rather than the run's;
-            every other step builds a command to run *on* ``host`` rather than one
-            naming it, so they ignore it.
+            whose ``bindIp`` may be this member's own address rather than the run's,
+            and by ``pre_check``, whose messages name it; every other step builds a
+            command to run *on* ``host`` rather than one naming it, so they ignore it.
         :param spec: The host's bootstrap spec.
         :param params: ``{"key_file_content": ...}`` for ``distribute_keyfile``;
             ignored by every other step.
@@ -676,7 +780,7 @@ class PackagesInstallStrategy:
         """
         builders = {
             "distribute_keyfile": lambda s: self._distribute_keyfile(s, params),
-            PRE_CHECK: self._pre_check,
+            PRE_CHECK: lambda s: self._pre_check(s, host),
             "configure_repository": self._configure_repository,
             INSTALL_PACKAGE: self._install_package,
             "configure_mongod": lambda s: self._configure_mongod(s, host),
@@ -727,13 +831,16 @@ class PackagesInstallStrategy:
             f"install -m 400 -o mongod -g mongod /dev/stdin {KEY_FILE_PATH}"
         )
 
-    def _pre_check(self, spec: BootstrapSpec) -> StepAction:
+    def _pre_check(self, spec: BootstrapSpec, host: str) -> StepAction:
         """Verify OS, paths, and disk space before touching anything.
 
         The decided pre-checks — OS, path, disk space — all read-only and fast
         enough to run inline rather than as a background job:
 
-        - **OS**: the OS's package manager is present.
+        - **OS release**: the node's distribution and release are supported for
+          ``spec.mongodb_version`` - see :func:`_os_release_check`.
+        - **OS**: the OS's package manager is present, and on Ubuntu ``curl``,
+          which ``configure_repository`` downloads ``percona-release`` with.
         - **Path**: no MongoDB already lives on the host — no ``mongod`` on
           ``PATH`` or in :data:`EXTRA_MONGOD_DIRS`, no :data:`CONFIG_PATH`, and
           ``spec.data_path`` absent or empty. This is also what makes rollback
@@ -750,21 +857,28 @@ class PackagesInstallStrategy:
           ``/`` is ``/``.
         - **Port**: nothing listens on ``spec.port`` yet - see
           :func:`_port_free_check`.
+        - **Member names**: this host resolves every member's name - see
+          :func:`_member_names_check`.
 
         Each failed check names itself on stderr, and a free-space figure ``df``
         could not produce fails the check rather than passing it.
 
-        :param spec: The host's bootstrap spec; its OS, data path and port are
-            read.
+        :param spec: The host's bootstrap spec; its OS, MongoDB version, data
+            path, port and hosts are read.
+        :param host: The host the check runs on.
         :return: The step action.
         """
-        pkg_manager = self._require_package_manager(spec.os)
+        tools = [self._require_package_manager(spec.os)]
+        if spec.os is OperatingSystem.UBUNTU:
+            tools.append("curl")
         data_path = shlex.quote(spec.data_path)
         body = "\n".join(
             [
-                (
-                    f"command -v {pkg_manager} >/dev/null 2>&1 || "
-                    f'{{ echo "pre_check: {pkg_manager} not found" >&2; exit 1; }}'
+                _os_release_check(spec),
+                *(
+                    f"command -v {tool} >/dev/null 2>&1 || "
+                    f'{{ echo "pre_check: {tool} not found" >&2; exit 1; }}'
+                    for tool in tools
                 ),
                 _existing_mongod_check(),
                 (
@@ -791,6 +905,7 @@ class PackagesInstallStrategy:
                     '$((tenths / 10)).$((tenths % 10)) GiB" >&2; exit 1; fi'
                 ),
                 _port_free_check(spec.port),
+                _member_names_check(host, spec.hosts),
             ]
         )
         return _shell_step(body)
