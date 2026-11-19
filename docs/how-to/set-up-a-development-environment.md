@@ -113,7 +113,7 @@ To run the tests of one app, see [Test an app](test-an-app.md).
    make docs-lint
    ```
 
-   The first run downloads Vale into `.vale/bin/`. The output ends with a count, such as:
+   The first run downloads Vale into a directory that Git ignores. The output ends with a count, such as:
 
    ```text
    ✖ 0 errors, 12 warnings and 0 suggestions in 24 files.

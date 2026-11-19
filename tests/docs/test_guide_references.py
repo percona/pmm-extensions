@@ -15,10 +15,10 @@
 
 """Reference-integrity test for the code examples in the documentation.
 
-The pages under ``docs/`` source their code examples from real files, tagging
-each with an HTML-comment marker naming the file and containing symbol --
-``<!-- src: <path> [:: <symbol>] -->`` -- or, for an example no file holds,
-``<!-- constructed -->``. Prose has no test to keep it honest, so this parser
+The pages under ``docs/`` source their code examples from real files. Each
+example carries an HTML-comment marker. ``<!-- src: <path> [:: <symbol>] -->``
+names the file and the containing symbol, and ``<!-- constructed -->`` marks an
+example that no file holds. Prose has no test to keep it honest, so this parser
 enforces three contracts against the working tree, on every page that holds a
 ``python`` block:
 

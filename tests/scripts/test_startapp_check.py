@@ -56,7 +56,7 @@ def recorded_runs(
 def test_runs_framework_conformance_once_after_every_flavor(
     recorded_runs: list[tuple[str, ...]],
 ) -> None:
-    """Run both conformance files while all three scaffolded apps are registered."""
+    """Run both conformance files while every scaffolded app is registered."""
     assert startapp_check.main() == 0
 
     conformance_runs = [

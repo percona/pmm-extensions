@@ -32,13 +32,13 @@ Run every command from the root of this repository.
    Then follow docs/how-to/run-in-local-pmm.md.
    ```
 
-   The app is in `app/extensions/apps/diskfree/`. Its tests are in `tests/app/extensions/apps/diskfree/`.
+   The app is in a new directory, `diskfree`, under `app/extensions/apps/`. Its tests are in a directory of the same name under `tests/app/extensions/apps/`.
 
 ## Describe the form
 
 The form model is the one place where you say what the app asks for. The framework builds the form, the validation and the command from it.
 
-1. In `app/extensions/apps/diskfree/models.py`, replace the example field named `message` with these two fields:
+1. In `models.py` in the app's directory, replace the example field named `message` with these two fields:
 
    <!-- constructed -->
    ```python
@@ -63,7 +63,7 @@ The form model is the one place where you say what the app asks for. The framewo
        :param total: Whether a grand total row is printed.
    ```
 
-3. In `app/extensions/apps/diskfree/app.py`, set the text of `description=` to `Report free disk space on a database host.`
+3. In `app.py` in the same directory, set the text of `description=` to `Report free disk space on a database host.`
 
 ## Test the app
 
