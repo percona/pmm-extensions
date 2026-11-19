@@ -26,7 +26,7 @@ PMM Extensions has the same version as PMM. The image is [`percona/pmm-extension
 
 ## Documentation
 
-To use PMM Extensions, read PMM's documentation. The pages below are for people who change this repository.
+To use PMM Extensions, read PMM's documentation. The pages below are for people who change this repository. One page is for people who run a standalone instance: the migration guide.
 
 | Goal | Page |
 |---|---|
@@ -37,6 +37,7 @@ To use PMM Extensions, read PMM's documentation. The pages below are for people 
 | Make an app of this repository run inside PMM | [Port an app](docs/how-to/port-an-app.md) |
 | Give an app a page in PMM's UI | [Add an app to the PMM UI](docs/how-to/add-an-app-to-the-pmm-ui.md) |
 | Build the image and ship an app | [Get an app into a PMM release](docs/how-to/get-an-app-into-a-pmm-release.md) |
+| Move MySQL backup schedules from a standalone instance to PMM | [Migrate MySQL backup schedules from standalone SEP](docs/how-to/migrate-from-standalone-sep.md) |
 | Rerun a schema step without a restart | [Rerun a schema step in a running sidecar](docs/how-to/rerun-a-schema-step.md) |
 | Run the type check | [Run the type check](docs/how-to/run-the-type-check.md) |
 | Update the snapshots after a route or a form changes | [Update the API snapshots](docs/how-to/update-api-snapshots.md) |

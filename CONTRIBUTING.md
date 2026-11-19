@@ -12,6 +12,17 @@ To add an app, start with [Build your first app](docs/tutorials/first-app.md).
 
 Create your branch from `main`. Name it after the ticket key of the change, `PMM-NNNNN`, with an optional suffix: `PMM-NNNNN-docs`. Keys that start with `SEP-` stay valid.
 
+If you have no ticket key, contribute from a fork:
+
+1. Open an issue on GitHub that describes the change, before you start the work.
+2. Fork the repository.
+3. Create a branch in your fork, with any name. CI does not check the branch name.
+4. Open the pull request from your fork against `main`, and name the issue in its description.
+
+A maintainer creates the ticket key and writes it in the issue. Then put that key at the start of the pull request's title. A changelog fragment needs the same key in its name.
+
+On a pull request from a fork, CI starts only after a maintainer approves the run. A maintainer also sets the QA label that the `label-gate` check requires.
+
 ## Code
 
 - **Style.** The commit hooks format and lint the code with Ruff. The rules are in `pyproject.toml`.
