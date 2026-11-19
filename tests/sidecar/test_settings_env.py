@@ -119,8 +119,8 @@ def waiting_helper(**inputs: str) -> Iterator[tuple[subprocess.Popen[str], str]]
     """Start the helper where its key gate has to wait, and yield it once it speaks.
 
     The first stderr line is read before yielding, so a case acts only after the
-    gate has reached its wait -- and a gate that exits instead yields an empty
-    line and a finished process rather than hanging the case.
+    gate has reached its wait. A gate that exits instead yields an empty line
+    and a finished process rather than hanging the case.
 
     :param inputs: The deployment inputs to place in the environment.
     :return: The running helper and the first line it wrote to stderr.
@@ -487,10 +487,12 @@ def test_the_gate_waits_for_pmm_to_publish_the_key(tmp_path: Path):
         write_secrets(tmp_path, SECRET_KEY="published-by-pmm")
         result = finish(process, first_line)
 
+    environment = exported(result)
     assert WAITING_FOR_THE_KEY in first_line
     assert secrets_dir in first_line
     assert "openssl" not in result.stderr
-    assert "SECRET_KEY" not in exported(result)
+    assert environment["EXTENSIONS_DB_HOST"] == "pmm-server"
+    assert "SECRET_KEY" not in environment
 
 
 def test_a_file_published_just_after_the_key_is_still_read(tmp_path: Path):
@@ -556,7 +558,7 @@ def test_the_gate_keeps_waiting_while_no_file_holds_a_key(
     """Hold the start for as long as the directory supplies no usable key.
 
     A blank file is what a key looks like part-way through being published, and
-    the settings classes reject an empty key outright -- so admitting one would
+    the settings classes reject an empty key outright. Admitting one would
     trade this gate's one line for five crashing children.
     """
     secrets_dir = build_secrets_dir(tmp_path)

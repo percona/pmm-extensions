@@ -90,7 +90,7 @@ def test_a_held_token_passes_on_to_the_other_assertions(
     """Let the sentinel satisfy only its own assertion.
 
     Nothing else of a side-car exists on a test machine, so the probe still
-    fails -- on a later assertion, which is what shows this one passed.
+    fails. It fails on a later assertion, which is what shows this one passed.
     """
     token_sentinel.touch()
 
