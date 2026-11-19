@@ -38,54 +38,47 @@ A rule at `warn` prints its diagnostics and does not fail `make typecheck`. The 
 
 `[tool.ty.rules]` in `pyproject.toml` sets the severities. A rule that the table does not list is at `error`, because the table starts with `all = "error"`.
 
-### Rules at `warn`
+The table below has one row for each rule that `pyproject.toml` names. The levels mean this:
 
-Each of these rules reports real defects together with reports caused by how a dependency declares its types.
+- A rule at `warn` reports real defects together with reports caused by how a dependency declares its types.
+- A rule named at `error` mostly reports defects in this repository's own annotations. Every unlisted rule is also at `error`.
+- A rule at `ignore` checks a convention that the project has not adopted.
 
-| Rule | What it mostly reports here |
-|---|---|
-| `invalid-argument-type` | The split between SQLModel's and SQLAlchemy's `AsyncSession`, and real `int` against `int \| None` mismatches |
-| `unresolved-attribute` | Real missing narrowing of an optional value, test doubles, and gaps in third-party stubs |
-| `unknown-argument` | The private constructor arguments of pydantic-settings, such as `_env_file` and `_secrets_dir` |
-| `invalid-assignment` | The pydantic `Field(...)` idiom |
-| `missing-argument` | `Settings()`, which fills its required fields from the environment |
-| `call-non-callable` | Subscripted generics, fixtures typed as `object`, and real calls of `None` |
-| `no-matching-overload` | Third-party overload sets: `AsyncSession.exec`, `select`, `create_model` |
-| `unresolved-import` | The golden app templates, which the test run generates |
-| `invalid-parameter-default` | The FastAPI `Query(...)` default idiom |
-
-### Rules at `error`
-
-These rules mostly report defects in this repository's own annotations. The table lists the ones that `pyproject.toml` names. Every unlisted rule is also at `error`.
-
-| Rule | What it mostly reports here |
-|---|---|
-| `invalid-return-type` | Returns that can be `None`, and generator fixtures annotated with the yielded type |
-| `not-subscriptable` | A subscript on a value that can be `None` |
-| `invalid-type-form` | Annotations that name a class chosen at runtime |
-| `unsupported-operator` | An operand of type `X \| None` that was not narrowed |
-| `invalid-method-override` | Overrides of this repository's own base classes |
-| `not-iterable` | Includes `async for` over a coroutine that was not awaited |
-| `call-top-callable` | A call after `callable()` narrowing, which drops the signature |
-| `unbound-type-variable` | The generics in `app/core` |
-| `invalid-paramspec` | `*args: P.args` without the matching `**kwargs: P.kwargs` |
-| `invalid-context-manager` | An `__aexit__` signature that prevents `async with` |
-| `empty-body` | An implicit `None` return against another annotation |
-| `redundant-cast` | A cast to the type the value already has |
-| `possibly-missing-submodule` | A submodule that is used and not imported |
-| `mismatched-type-name` | A `StrEnum` whose name differs from the variable it is assigned to |
-| `invalid-yield` | An optional value yielded against an annotation that is not optional |
-| `invalid-key`, `invalid-base` | As named |
-| `invalid-attribute-access` | An assignment to a `ClassVar` through an instance |
-| `deprecated` | A use of something a library has deprecated |
-| `possibly-unresolved-reference`, `possibly-missing-attribute`, `unsupported-dynamic-base` | Three rules that `ty` ships disabled. `all = "error"` turns them on. |
-
-### Rules at `ignore`
-
-| Rule | Why |
-|---|---|
-| `missing-type-argument` | Bare generics are common in the code and intended. |
-| `missing-override-decorator` | The project has not adopted the `@override` decorator. |
+| Rule | Level | What it mostly reports here |
+|---|---|---|
+| `invalid-argument-type` | `warn` | The split between SQLModel's and SQLAlchemy's `AsyncSession`, and real `int` against `int \| None` mismatches |
+| `unresolved-attribute` | `warn` | Real missing narrowing of an `Optional` value, test doubles, and gaps in third-party stubs |
+| `unknown-argument` | `warn` | The private constructor arguments of pydantic-settings, such as `_env_file` and `_secrets_dir` |
+| `invalid-assignment` | `warn` | The pydantic `Field(...)` idiom, where the call returns a `FieldInfo` and the annotation names another type |
+| `missing-argument` | `warn` | `Settings()`, which fills its required fields from the environment |
+| `call-non-callable` | `warn` | Subscripted generics, fixtures typed as `object`, and real calls of `None` |
+| `no-matching-overload` | `warn` | Third-party overload sets: `AsyncSession.exec`, `select`, `create_model` |
+| `unresolved-import` | `warn` | The golden app templates, which the test run generates |
+| `invalid-parameter-default` | `warn` | The FastAPI `Query(...)` default idiom |
+| `invalid-return-type` | `error` | Returns that can be `None`, and generator fixtures annotated with the yielded type |
+| `not-subscriptable` | `error` | A subscript on a value that can be `None` |
+| `invalid-type-form` | `error` | PMM Extensions' own annotations that name a class chosen at runtime, such as `type[BaseUser]` and `type[BaseModel]` |
+| `unsupported-operator` | `error` | An operand of type `X \| None` that was not narrowed |
+| `invalid-method-override` | `error` | Overrides of this repository's own base classes |
+| `not-iterable` | `error` | Includes `async for` over a coroutine that was not awaited |
+| `call-top-callable` | `error` | A call after `callable()` narrowing, which drops the signature |
+| `unbound-type-variable` | `error` | The generics in `app/core` |
+| `invalid-paramspec` | `error` | `*args: P.args` without the matching `**kwargs: P.kwargs` |
+| `invalid-context-manager` | `error` | An `__aexit__` signature that prevents `async with` |
+| `empty-body` | `error` | An implicit `None` return against another annotation |
+| `redundant-cast` | `error` | A cast to the type the value already has |
+| `possibly-missing-submodule` | `error` | A submodule that is used and not imported |
+| `mismatched-type-name` | `error` | A `StrEnum` whose name differs from the variable it is assigned to |
+| `invalid-yield` | `error` | An optional value yielded against an annotation that is not optional |
+| `invalid-key` | `error` | A subscript with a key that the value does not have, and a `TypedDict` built with an unknown key |
+| `invalid-base` | `error` | A class base that is not a class |
+| `invalid-attribute-access` | `error` | An assignment to a `ClassVar` through an instance |
+| `deprecated` | `error` | A use of something a library has deprecated |
+| `possibly-unresolved-reference` | `error` | A name that is possibly not defined where it is read. `ty` ships this rule disabled, and `all = "error"` turns it on. |
+| `possibly-missing-attribute` | `error` | An attribute read through a union that was narrowed in part. `ty` ships this rule disabled, and `all = "error"` turns it on. |
+| `unsupported-dynamic-base` | `error` | A class created with `type()` whose base `ty` cannot follow, so the hierarchy is unknown. `ty` ships this rule disabled, and `all = "error"` turns it on. |
+| `missing-type-argument` | `ignore` | Bare generics, which are common in the code and intended |
+| `missing-override-decorator` | `ignore` | A method that overrides another without the `@override` decorator of PEP 698, which the project has not adopted |
 
 ## Diagnostic groups
 
