@@ -21,6 +21,8 @@ from io import BytesIO
 
 from python_minifier import minify
 
+MINIFIER_ERRORS = (SyntaxError, ValueError, RuntimeError, TypeError, AssertionError)
+
 
 def holds_requotable_f_string(content: str) -> bool:
     """Return whether ``content`` has an f-string the minifier could re-quote.
@@ -51,13 +53,13 @@ def minify_file_content(content: str, file_ext: str = "") -> str:
     Content with a file extension other than ``py`` is returned as is. So is
     Python source holding an f-string the minifier could re-quote: minified on
     Python 3.12 or later, it may not parse on an executor host's older
-    interpreter.
+    interpreter. Source the minifier cannot parse or represent is returned as is
+    too, since minifying only shrinks the payload.
 
     :param content: The file content.
     :param file_ext: The file extension; anything but empty or ``py`` is returned as is.
-    :return: The minified source, or ``content`` when it is not Python or holds
-        an f-string the minifier could re-quote.
-    :raises RecursionError: When ``content`` nests too deeply to parse.
+    :return: The minified source, or ``content`` when it is not Python, holds an
+        f-string the minifier could re-quote, or cannot be minified.
     """
     file_ext = file_ext.lstrip(".").lower()
     if file_ext and file_ext != "py":
@@ -80,7 +82,7 @@ def minify_file_content(content: str, file_ext: str = "") -> str:
             remove_explicit_return_none=True,
             remove_builtin_exception_brackets=True,
         )
-    except SyntaxError:
+    except MINIFIER_ERRORS:
         return content
 
 

@@ -79,6 +79,14 @@ def test_minify_passes_through_a_requotable_f_string(source: str) -> None:
     assert minify_file_content(source) == source
 
 
+def test_minify_passes_through_source_the_minifier_cannot_represent() -> None:
+    """Return valid source unchanged when the minifier cannot represent it."""
+    source = 'print(f"{42:\\N{NO-BREAK SPACE}>5}")\n'
+
+    assert not holds_requotable_f_string(source)
+    assert minify_file_content(source) == source
+
+
 def test_minify_still_minifies_f_strings_of_names() -> None:
     """Minify a source whose f-string fields hold only names and conversions."""
     source = (

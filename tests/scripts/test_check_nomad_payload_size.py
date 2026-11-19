@@ -42,6 +42,8 @@ import os
 print(f"{os.environ['HOME']}/.my.cnf")
 '''
 
+UNREPRESENTABLE_SCRIPT = 'print(f"{42:\\N{NO-BREAK SPACE}>5}")\n'
+
 INVALID_SCRIPT = "def oops(:\n"
 USAGE_ERROR_EXIT_CODE = 2
 
@@ -76,16 +78,26 @@ def test_check_payload_uses_minified_text_for_size(tmp_path, monkeypatch):
     assert size > 0
 
 
-def test_payload_size_measures_a_requotable_source_unminified(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(REQUOTABLE_SCRIPT, id="requotable"),
+        pytest.param(UNREPRESENTABLE_SCRIPT, id="unrepresentable"),
+    ],
+)
+def test_payload_size_measures_an_unminifiable_source_as_written(
+    tmp_path, source: str
+) -> None:
     """Measure a source dispatch sends as written at its unminified size.
 
     :param tmp_path: The directory the payload is written to.
+    :param source: Valid Python dispatch does not minify.
     """
-    path = write_file(tmp_path, "requotable.py", REQUOTABLE_SCRIPT)
+    path = write_file(tmp_path, "payload.py", source)
 
     size = check_nomad_payload_size.payload_size(str(path))
 
-    assert size == len(gzip.compress(REQUOTABLE_SCRIPT.encode("utf-8")))
+    assert size == len(gzip.compress(source.encode("utf-8")))
 
 
 def test_check_payload_falls_back_on_syntax_error(tmp_path, monkeypatch):
