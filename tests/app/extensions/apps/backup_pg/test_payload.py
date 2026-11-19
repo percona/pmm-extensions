@@ -227,3 +227,7 @@ class TestDirectoriesOnAPmmClientHost:
         monkeypatch.setattr(Path, "is_dir", refuse)
 
         assert pg.check_textcollector_dir() is False
+        pg.logger.warning.assert_called_once_with(
+            "Textfile Collector directory %s cannot be inspected: permission denied.",
+            pg.backup_textfile_collector_dir.parent,
+        )

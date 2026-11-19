@@ -328,7 +328,11 @@ class BaseBackup:
         try:
             is_dir = backup_textfile_collector_dir.is_dir()
         except PermissionError:
-            is_dir = False
+            self.logger.warning(
+                "Textfile Collector directory %s cannot be inspected: permission denied.",
+                backup_textfile_collector_dir,
+            )
+            return False
         if not is_dir:
             self.logger.warning(
                 "Textfile Collector directory %s does not exist.",
