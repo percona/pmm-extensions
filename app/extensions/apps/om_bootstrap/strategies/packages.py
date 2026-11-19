@@ -436,8 +436,10 @@ def _member_names_check(host: str, hosts: list[str]) -> str:
 
     ``rs_initiate`` names each member by its host name, so a name one member cannot
     resolve otherwise fails the run only after every host is installed, and rolls
-    them all back. Every unresolved name is reported, not just the first, and each
-    lookup is cut off after :data:`NAME_RESOLUTION_TIMEOUT_S`.
+    them all back. A name counts as resolved only to an IPv4 address, since the
+    generated ``mongod.conf`` never sets ``net.ipv6``. Every unresolved name is
+    reported, not just the first, and each lookup is cut off after
+    :data:`NAME_RESOLUTION_TIMEOUT_S`.
 
     :param host: The host the check runs on, named in the message.
     :param hosts: Every member's name, this host's own included.
@@ -449,8 +451,8 @@ def _member_names_check(host: str, hosts: list[str]) -> str:
             "unresolved=''",
             f"for name in {shlex.join(hosts)}; do",
             (
-                f'  timeout {NAME_RESOLUTION_TIMEOUT_S} getent hosts "$name" >/dev/null'
-                ' || unresolved="$unresolved $name"'
+                f'  timeout {NAME_RESOLUTION_TIMEOUT_S} getent ahostsv4 "$name"'
+                ' >/dev/null || unresolved="$unresolved $name"'
             ),
             "done",
             'if [ -n "$unresolved" ]; then',

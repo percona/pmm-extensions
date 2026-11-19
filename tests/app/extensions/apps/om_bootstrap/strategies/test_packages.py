@@ -753,14 +753,19 @@ class TestMemberNamesCheck:
 
     @staticmethod
     def _run(
-        tmp_path: Path, hosts: list[str], resolvable: set[str]
+        tmp_path: Path,
+        hosts: list[str],
+        resolvable: set[str],
+        ipv6_only: frozenset[str] = frozenset(),
     ) -> subprocess.CompletedProcess[str]:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         getent = bin_dir / "getent"
         known = "|".join(sorted(resolvable)) or "''"
+        ipv6 = "|".join(sorted(ipv6_only)) or "''"
         getent.write_text(
-            f'#!/bin/sh\ncase "$2" in {known}) echo "10.0.0.1 $2";; *) exit 2;; esac\n'
+            f'#!/bin/sh\ncase "$2" in {known}) echo "10.0.0.1 $2";;'
+            f' {ipv6}) [ "$1" != ahostsv4 ];; *) exit 2;; esac\n'
         )
         getent.chmod(0o755)
         return subprocess.run(
@@ -789,6 +794,17 @@ class TestMemberNamesCheck:
             "pre_check: node00 cannot resolve node01 node02, the names replica set "
             "members use for each other; add them to DNS or /etc/hosts"
         )
+
+    def test_counts_a_name_with_only_an_ipv6_address_as_unresolved(
+        self, tmp_path: Path
+    ) -> None:
+        """Refuse a member name with no IPv4 address, which ``mongod`` cannot use."""
+        result = self._run(
+            tmp_path, ["node00", "node01"], {"node00"}, ipv6_only=frozenset({"node01"})
+        )
+
+        assert result.returncode == 1
+        assert "pre_check: node00 cannot resolve node01," in result.stderr
 
     def test_counts_a_name_too_slow_to_resolve_as_unresolved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
