@@ -1083,9 +1083,9 @@ def test_task_form_infers_the_encryption_format(
 
 def test_task_form_leaves_the_encryption_format_out_of_a_plain_task() -> None:
     """Verify that a task with no encryption sends no format, so PMM Extensions uses its default."""
-    assert "encryption_format" not in migrate.task_form(
-        _old_task(_export(), _XTRABACKUP), _PMM_SERVICE_A_ID
-    )
+    form = migrate.task_form(_old_task(_export(), _XTRABACKUP), _PMM_SERVICE_A_ID)
+    assert form
+    assert "encryption_format" not in form
 
 
 @pytest.mark.parametrize(
@@ -1106,8 +1106,10 @@ def test_build_plan_reports_a_schedule_that_differs_beyond_its_timing(
     }
     state = _state(tasks={_MYDUMPER: _PMM_SERVICE_A_ID}, schedules=existing)
     plan = migrate.build_plan(_parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, state)
+    planned = _planned_names(plan)
+    assert planned
     assert plan.already_present == []
-    assert schedule["name"] not in _planned_names(plan)
+    assert schedule["name"] not in planned
     assert next(iter(difference)) in dict(plan.skipped)[schedule["name"]]
 
 
