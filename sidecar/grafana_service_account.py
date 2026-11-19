@@ -28,9 +28,15 @@ consulted here are the ones the five supervised programs will read. Unlike the
 build-time helpers beside it, this one runs where ``bundle.tgz`` has already put
 ``app/`` on the path.
 
+A start that has to mint waits for Grafana without a bound, for as long as
+Grafana answers like a server that is still starting: PMM starts this container
+beside its own, not after it, so "not up yet" is the ordinary first answer, and
+a start that gave up on it would run without the token all five programs need.
+A fault no retry can clear is reported at once.
+
 Deployment inputs, all optional: ``GF_SECURITY_ADMIN_USER`` and
 ``GF_SECURITY_ADMIN_PASSWORD`` (each defaulting to Grafana's own ``admin``),
-``EXTENSIONS_STATE_DIR`` and ``EXTENSIONS_GRAFANA_MINT_TIMEOUT``.
+and ``EXTENSIONS_STATE_DIR``.
 """
 
 import asyncio
@@ -56,7 +62,6 @@ from app.core.utils.date_time import utc_now
 from app.core.utils.strings import b64encode_str
 from sidecar.runtime import (
     DEFAULT_STATE_DIR,
-    positive_timeout,
     RETRY_INTERVAL_SECONDS,
     state_dir,
 )
@@ -65,7 +70,6 @@ from sidecar.runtime import warn as runtime_warn
 __all__ = [
     "DEFAULT_STATE_DIR",
     "RETRY_INTERVAL_SECONDS",
-    "mint_timeout",
     "state_dir",
     "warn",
 ]
@@ -77,7 +81,14 @@ SERVICE_ACCOUNT_ROLE = "Admin"
 
 PERSISTED_FILENAME = "grafana_service_account_token"
 
-DEFAULT_MINT_TIMEOUT_SECONDS = 60.0
+MINT_ATTEMPT_TIMEOUT_SECONDS = 30.0
+"""How long one mint attempt may run before it is abandoned and retried."""
+
+WAIT_REPORT_INTERVAL_SECONDS = 30.0
+"""How often a start still waiting for Grafana says so."""
+
+RETIRED_TIMEOUT_INPUT = "EXTENSIONS_GRAFANA_MINT_TIMEOUT"
+"""A mint bound a deployment may still set, which nothing reads."""
 
 DEFAULT_ADMIN_CREDENTIAL = "admin"
 
@@ -97,8 +108,7 @@ RETRYABLE_STATUSES = frozenset(
 
 Every other status is a deterministic fault — a wrong admin credential, a
 misconfigured endpoint, a body Grafana refuses — which a retry can only
-repeat until the bound runs out, delaying the actionable message by the
-whole budget.
+repeat, never clear, while the actionable message goes unwritten.
 """
 
 
@@ -132,14 +142,17 @@ def admin_credentials() -> str:
     return b64encode_str(f"{user}:{password}")
 
 
-def mint_timeout() -> float:
-    """Return how long minting may keep retrying before it gives up.
+def report_retired_timeout() -> None:
+    """Say that a mint bound the deployment sets is no longer read.
 
-    :return: The bound in seconds.
+    Such a deployment waits past the value it set, and this line is what keeps
+    that from being silent.
     """
-    return positive_timeout(
-        "EXTENSIONS_GRAFANA_MINT_TIMEOUT", DEFAULT_MINT_TIMEOUT_SECONDS, warn
-    )
+    if (os.environ.get(RETIRED_TIMEOUT_INPUT) or "").strip():
+        warn(
+            f"{RETIRED_TIMEOUT_INPUT} is set but no longer read: a start that has "
+            "to mint a Grafana token waits until Grafana answers."
+        )
 
 
 def read_persisted_token(directory: Path) -> str | None:
@@ -195,10 +208,10 @@ def quiet_client_logging(api: RemoteAPI, floor: int) -> Generator[None]:
     Two reasons, both about what reaches ``docker logs``. ``RemoteAPI.request``
     logs the parsed response body at DEBUG, and the create-token response
     carries the minted token in its ``key`` field. And ``GrafanaSDK.request``
-    logs a full traceback for every connection failure, which during a bounded
+    logs a full traceback for every connection failure, which during the
     wait for a Grafana that has not started yet repeats once per attempt,
-    where this helper reports the same outcome once, on stderr, naming the
-    endpoint and the classified cause.
+    where this helper reports the same outcome on stderr at intervals, naming
+    the endpoint and the classified cause.
 
     :param api: The client whose logger to hold.
     :param floor: The lowest level the logger may emit at meanwhile.
@@ -355,28 +368,29 @@ async def mint(provider: GrafanaSDK, credentials: str) -> tuple[str, bool]:
     return token.strip(), not account_created
 
 
-async def mint_with_retry(
-    provider: GrafanaSDK, credentials: str, deadline: float
-) -> tuple[str, bool]:
-    """Mint a token, retrying only what a still-starting Grafana explains.
+async def mint_with_retry(provider: GrafanaSDK, credentials: str) -> tuple[str, bool]:
+    """Mint a token, waiting out a Grafana that is still starting.
 
-    Each attempt carries its own timeout off ``deadline``: the client's session
-    is opened with a 300 s total and offers no field to narrow it, so without
-    the wrapper one stalled call would outlast the whole bound several times
-    over.
+    The wait has no bound. What is retried is exactly what a starting Grafana
+    explains, and giving up on that starts the programs without the token they
+    read once and cannot be handed later. Every other answer raises at once: a
+    rejected admin credential stays rejected, and repeating the sign-in is how
+    Grafana comes to lock that account.
+
+    Each attempt carries its own timeout: the client's session is opened with a
+    300 s total and offers no field to narrow it, so without the wrapper a
+    Grafana that accepts the connection and never answers would hold one
+    attempt for minutes.
 
     :param provider: The open Grafana client.
     :param credentials: The Base64 admin pair to authenticate with.
-    :param deadline: The :func:`time.monotonic` reading to give up at.
     :return: The minted token, and whether it was minted onto a reused account.
-    :raises MintError: When Grafana answers a fault no retry can clear, or when
-        the deadline passes first.
+    :raises MintError: When Grafana answers a fault no retry can clear.
     """
-    started = time.monotonic()
-    last_failure = "no attempt completed"
-    while (remaining := deadline - time.monotonic()) > 0:
+    next_report = time.monotonic()
+    while True:
         try:
-            async with asyncio.timeout(remaining):
+            async with asyncio.timeout(MINT_ATTEMPT_TIMEOUT_SECONDS):
                 return await mint(provider, credentials)
         except HTTPException as error:
             if error.status_code not in RETRYABLE_STATUSES:
@@ -384,15 +398,14 @@ async def mint_with_retry(
             last_failure = f"HTTP {error.status_code}: {error.detail}"
         except (ClientError, TimeoutError) as error:
             last_failure = f"{type(error).__name__}: {error}"
-        await asyncio.sleep(
-            max(0.0, min(RETRY_INTERVAL_SECONDS, deadline - time.monotonic()))
-        )
-    raise MintError(
-        f"Could not mint a Grafana service-account token at {provider.endpoint} "
-        f"after waiting {time.monotonic() - started:.1f}s (last failure: "
-        f"{last_failure}). PMM Extensions starts without Grafana-backed sign-in and "
-        "without the PMM syncer."
-    )
+        if time.monotonic() >= next_report:
+            warn(
+                f"Waiting for Grafana at {provider.endpoint} to accept the "
+                f"service-account mint (last answer: {last_failure}). "
+                "PMM Extensions starts once it does."
+            )
+            next_report = time.monotonic() + WAIT_REPORT_INTERVAL_SECONDS
+        await asyncio.sleep(RETRY_INTERVAL_SECONDS)
 
 
 def _fatal_mint_error(provider: RemoteAPI, error: HTTPException) -> MintError:
@@ -533,16 +546,13 @@ async def resolve_token() -> str | None:
 
     directory = state_dir()
     persisted = read_persisted_token(directory)
-    deadline = time.monotonic() + mint_timeout()
     with quiet_client_logging(provider, logging.CRITICAL):
         async with provider:
             if persisted is not None and await keep_persisted_token(
                 provider, persisted
             ):
                 return persisted
-            token, reused = await mint_with_retry(
-                provider, admin_credentials(), deadline
-            )
+            token, reused = await mint_with_retry(provider, admin_credentials())
             if reused:
                 probe = await validate_token(provider, token)
                 if probe is TokenStateEnum.FORBIDDEN:
@@ -561,6 +571,7 @@ def main() -> int:
 
     :return: The process exit status.
     """
+    report_retired_timeout()
     try:
         # The settings stack applies its logging configuration on first access,
         # binding handlers to whatever stdout is then -- so without this every

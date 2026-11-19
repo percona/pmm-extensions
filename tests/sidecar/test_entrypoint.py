@@ -29,6 +29,7 @@ from tests.sidecar.conftest import (
     schema_steps,
     SENTINEL_PREFIX,
     SIDECAR_DIR,
+    TOKEN_SENTINEL,
 )
 
 SETTINGS_ENV_HELPER = SIDECAR_DIR / "settings-env.sh"
@@ -101,6 +102,7 @@ class FakeContainer:
         The copied entrypoint's sentinel paths are rewritten onto a prefix unique
         to this container, so the two cases that exercise the clearing cannot
         invalidate each other's precondition under the suite's parallel runner.
+        The token sentinel moves under ``root`` for the same reason.
         The substitution count is asserted, so renaming or dropping a sentinel in
         the shipped entrypoint fails the test rather than silently leaving the
         copy pointed at the real ``/tmp`` paths.
@@ -110,6 +112,7 @@ class FakeContainer:
         self.app_dir = root / "app"
         self.app_dir.mkdir()
         self.sentinel_prefix = f"{SENTINEL_PREFIX}{uuid4().hex}-"
+        self.token_sentinel = root / "grafana-token.ok"
         for source in (ENTRYPOINT, SETTINGS_ENV_HELPER):
             target = self.app_dir / source.name
             text = source.read_text(encoding="utf-8")
@@ -118,6 +121,10 @@ class FakeContainer:
                     "the entrypoint no longer clears one sentinel per schema step"
                 )
                 text = text.replace(SENTINEL_PREFIX, self.sentinel_prefix)
+                assert text.count(TOKEN_SENTINEL) == 1, (
+                    "the entrypoint no longer names the token sentinel exactly once"
+                )
+                text = text.replace(TOKEN_SENTINEL, str(self.token_sentinel))
             target.write_text(text, encoding="utf-8")
             target.chmod(0o755)
         (self.app_dir / MINT_HELPER_NAME).write_text(STUB_MINT_HELPER, encoding="utf-8")
@@ -273,6 +280,54 @@ def test_a_failing_helper_does_not_take_the_container_down(container: FakeContai
     assert container.supervised_environment
     for name in CANONICAL_NAMES:
         assert name not in container.supervised_environment
+
+
+def test_a_resolved_token_publishes_the_health_sentinel(container: FakeContainer):
+    """Mark the start as holding its token, which the health check requires."""
+    container.start()
+
+    assert container.token_sentinel.exists()
+
+
+def test_a_start_with_nothing_to_resolve_publishes_the_health_sentinel(
+    container: FakeContainer,
+):
+    """Stay healthy where no token is owed, such as a provider other than Grafana."""
+    container.start(token="")
+
+    assert container.token_sentinel.exists()
+
+
+def test_a_failed_mint_leaves_the_health_sentinel_unpublished(
+    container: FakeContainer,
+):
+    """Keep a container that started without its token from reporting healthy.
+
+    The sentinel of the previous run is in place first: ``/tmp`` survives a
+    container restart, so a marker merely left unwritten would still be there.
+    """
+    container.token_sentinel.touch()
+
+    container.start(token="", exit_code=1)
+
+    assert container.reached_supervisord
+    assert not container.token_sentinel.exists()
+
+
+def test_the_health_sentinel_is_cleared_before_the_key_gate(container: FakeContainer):
+    """Drop the previous run's marker before the first step that can wait.
+
+    The key gate is that step. A marker cleared only at the mint would leave a
+    restarted container, waiting there for PMM, reporting on the token its
+    previous run held.
+    """
+    container.token_sentinel.touch()
+
+    result = container.start(SECRET_KEY="")
+
+    assert result.returncode != 0
+    assert not container.reached_supervisord
+    assert not container.token_sentinel.exists()
 
 
 def test_an_explicit_token_still_outranks_the_mint(container: FakeContainer):

@@ -12,9 +12,16 @@
 # Entries resolving outside the directory are skipped, matching the walk in
 # NestedSecretsSettingsSource -- reading one here would suppress an export the
 # settings classes then never fill.
+#
+# A function because the SECRET_KEY gate below reads the directory again while it
+# waits: PMM publishes into it after this script has read it once.
 declare -A secret_files=()
 secrets_root=""
-if [[ -n ${SECRETS_DIR:-} && -d ${SECRETS_DIR} ]]; then
+scan_secret_files() {
+    local secret_entry secret_base
+    secret_files=()
+    secrets_root=""
+    [[ -n ${SECRETS_DIR:-} && -d ${SECRETS_DIR} ]] || return 0
     secrets_root="$(readlink -f -- "${SECRETS_DIR}")"
     for secret_entry in "$secrets_root"/*; do
         [[ -f $secret_entry ]] || continue
@@ -22,8 +29,8 @@ if [[ -n ${SECRETS_DIR:-} && -d ${SECRETS_DIR} ]]; then
         secret_base="${secret_entry##*/}"
         secret_files["${secret_base,,}"]="$secret_entry"
     done
-    unset secret_entry secret_base
-fi
+}
+scan_secret_files
 
 # Keyed on the file existing rather than on its contents: pydantic-settings
 # resolves an empty secret file to the empty string instead of falling through to
@@ -66,12 +73,46 @@ export_canonical() {
 # The one name whose file must hold a value rather than merely exist: the
 # settings classes refuse an empty key outright, so admitting one here would
 # replace this gate's single actionable line with five crashing children.
+mounted_secret_key() {
+    secret_file_supplies SECRET_KEY && read_secret_file SECRET_KEY
+}
+
+# A set SECRETS_DIR means the key is PMM's to publish, and PMM writes it while it
+# starts -- which Compose's plain depends_on does not order ahead of this
+# container. So the gate waits rather than exits, and without a bound: a bound
+# gives up on a slow PMM, and recovering from that takes a restart policy this
+# script cannot assume. The schema one-shots wait for PMM's PostgreSQL the same
+# way.
+#
+# The last read comes one poll after the key appears. PMM publishes the key and
+# the database passwords as consecutive renames, key first, so the instant the
+# key appears is the one instant the other files may still be missing.
+wait_for_published_secret_key() {
+    local next_log=$SECONDS
+    until [[ -n "$(mounted_secret_key)" ]]; do
+        if ((SECONDS >= next_log)); then
+            echo "[entrypoint] Waiting for PMM to publish SECRET_KEY under" \
+                "${SECRETS_DIR}. PMM writes it there when it starts with" \
+                "PMM_ENABLE_EXTENSIONS=1." >&2
+            next_log=$((SECONDS + 10))
+        fi
+        sleep 1
+        scan_secret_files
+    done
+    sleep 1
+    scan_secret_files
+    echo "[entrypoint] SECRET_KEY is published under ${SECRETS_DIR}; starting." >&2
+}
+
 if [[ -z ${SECRET_KEY:-} ]]; then
-    if [[ -z "$(secret_file_supplies SECRET_KEY && read_secret_file SECRET_KEY)" ]]; then
-        echo "[entrypoint] SECRET_KEY is required. Generate one with" \
-            "'openssl rand -hex 32' and pass it to the container, or mount it as a" \
-            "file named SECRET_KEY under SECRETS_DIR." >&2
-        exit 1
+    if [[ -z "$(mounted_secret_key)" ]]; then
+        if [[ -z ${SECRETS_DIR:-} ]]; then
+            echo "[entrypoint] SECRET_KEY is required. Generate one with" \
+                "'openssl rand -hex 32' and pass it to the container, or mount it as a" \
+                "file named SECRET_KEY under SECRETS_DIR." >&2
+            exit 1
+        fi
+        wait_for_published_secret_key
     fi
     # Cleared for the same reason export_canonical clears a deferred name: an
     # inherited empty string outranks the file every child then reads.

@@ -17,7 +17,7 @@ the app packages the settings profile activates — see [App set](#app-set).
 | Input | Role |
 |---|---|
 | `Containerfile.sidecar` | Final stage; ships the backend only, with no frontend-builder stage, and reuses the shared `extensions:builder` wheel image. |
-| `entrypoint.sh` | PID 1. Resolves `ENCRYPTION_KEY`, mints the broker credential for the container run, resolves the side-car's Grafana service-account token, then hands off to `supervisord`. |
+| `entrypoint.sh` | PID 1. Waits for the `SECRET_KEY` file when PMM has not published it yet, resolves `ENCRYPTION_KEY`, mints the broker credential for the container run, resolves the side-car's Grafana service-account token — waiting for a Grafana that is still starting — then hands off to `supervisord`. See [Starting before PMM is ready](#starting-before-pmm-is-ready). |
 | `supervisord.conf` | Runs `valkey`, four `migrate-*` one-shots, the `extensions`/`inventory`/`tasks` APIs, and the Celery worker and beat. |
 | `wait_for_api.py` | Run by `supervisord` ahead of the beat command; holds beat until the three APIs answer `/health`, then starts it whatever the outcome. |
 | `wait_for_schema.sh` | Run by `supervisord` ahead of each API command; holds the API until all four schema one-shots have published their sentinel, and fails rather than starting it if they do not. |
@@ -180,7 +180,7 @@ each is both an input here and mountable. See the note under
 
 | Input | Required | Default | Canonical destinations |
 |---|---|---|---|
-| `SECRET_KEY` | **yes** | — (fail fast) | already canonical (global `Settings`, no prefix) |
+| `SECRET_KEY` | **yes** | — (waits for the file when `SECRETS_DIR` is set, otherwise fails fast) | already canonical (global `Settings`, no prefix) |
 | `ENCRYPTION_KEY` | no | minted into `pmm-extensions-state` when the databases are provably fresh | already canonical (global `Settings`, no prefix) |
 | `EXTENSIONS_DB_PASSWORD` | yes in practice | none | `EXTENSIONS__DATABASE__PASSWORD`, `INVENTORY__DATABASE__PASSWORD`, `TASKS__DATABASE__PASSWORD` |
 | `EXTENSIONS_DB_HOST` | no | `pmm-server` | `EXTENSIONS__DATABASE__HOST`, `INVENTORY__DATABASE__HOST`, `TASKS__DATABASE__HOST`, and the three supervisord wait loops |
@@ -189,8 +189,11 @@ each is both an input here and mountable. See the note under
 | `EXTENSIONS_PMM_ENDPOINT` | no | `https://pmm-server:8443` | `PMM__ENDPOINT`, `AUTH__PROVIDER__GRAFANA__ENDPOINT` (with `/graph` appended) |
 | `EXTENSIONS_NOMAD_ENDPOINT` | no | the profile's credential-free URL | `TASKS__NOMAD__ENDPOINT`. The address only — the executor's credential is `TASKS__NOMAD__API_KEY`, which the Grafana fan-out above supplies |
 
-`SECRET_KEY` is the only input with no fallback of any kind — the container
-exits unless one is supplied, as an environment variable or as a mounted file.
+`SECRET_KEY` is the only input with no fallback of any kind: one has to be
+supplied, as an environment variable or as a mounted file. With `SECRETS_DIR`
+unset, the container exits at once without one. With it set, the container
+waits for the file instead — see
+[Starting before PMM is ready](#starting-before-pmm-is-ready).
 (`ENCRYPTION_KEY` comes close, and its fallback is conditional: see
 [The encryption key is minted, but only onto a fresh deployment](#the-encryption-key-is-minted-but-only-onto-a-fresh-deployment).)
 It signs the
@@ -223,7 +226,6 @@ them is mountable and all are optional:
 | `GF_SECURITY_ADMIN_USER` | `admin` | The Grafana admin login the mint authenticates as. Used only when the side-car holds no valid token. |
 | `GF_SECURITY_ADMIN_PASSWORD` | `admin` | Its password. A blank value falls back to the default rather than being sent empty. |
 | `EXTENSIONS_STATE_DIR` | `/home/extensions/state` | Where the minted token is persisted. Mount a volume here to carry it across a container recreate. |
-| `EXTENSIONS_GRAFANA_MINT_TIMEOUT` | `60` | Seconds the mint may keep retrying a Grafana that has not started yet. |
 
 Already canonical, so they are passed straight through with no expansion:
 
@@ -417,12 +419,15 @@ waiting out the retry bound, because an outage must never retract a working
 credential.
 
 Only the states holding no token wait: a first start, and a re-mint after an
-actual rejection. `EXTENSIONS_GRAFANA_MINT_TIMEOUT` bounds that wait. Exhausting it
-leaves the token unresolved and logs one message naming Grafana's address and the
-elapsed wait; the five programs still start, with sign-in and the PMM syncer
-inert exactly as they are with no token at all. Raising the bound much past 90s
-should be paired with a larger `HEALTHCHECK --start-period` — the current 150s
-also has to cover migrations and three API starts.
+actual rejection. That wait has no bound — see
+[Starting before PMM is ready](#starting-before-pmm-is-ready).
+
+A fault no wait can clear is handled differently. A rejected admin credential,
+or an endpoint that does not carry Grafana's API, is reported once in a
+`[grafana-mint]` line and not retried, because repeating a failed admin sign-in
+can lock that account in Grafana. The five programs then start with sign-in and
+the PMM syncer inert, and the container reports unhealthy — see
+[Health](#health) — until it is started again with a credential that works.
 
 `GF_SECURITY_ADMIN_*` is unset before `exec supervisord`, so the admin pair
 reaches the mint step and nothing else: it is more privileged than the token it
@@ -448,6 +453,47 @@ Two limitations follow from minting through Grafana's admin API:
 - **A Grafana with admin-user bootstrap disabled cannot be minted against at
   all.** Supply `EXTENSIONS_GRAFANA_TOKEN` on such a deployment, or mount either
   canonical name under `SECRETS_DIR`.
+
+### Starting before PMM is ready
+
+A Compose file that starts the side-car with a plain `depends_on: pmm-server`
+starts it when the `pmm-server` container has started, not when PMM is healthy.
+The side-car copes with that by itself: `entrypoint.sh` waits for the two things
+PMM supplies while it starts, says what it is waiting for, and hands off to
+`supervisord` only when it has both.
+
+| It waits for | When | What the container log says |
+|---|---|---|
+| The `SECRET_KEY` file | `SECRETS_DIR` is set, and neither the environment nor a file under it supplies a key | `[entrypoint] Waiting for PMM to publish SECRET_KEY under <directory>.`, every 10 seconds |
+| A Grafana that can mint the token | The start has to mint: no token is configured or mounted, and none that Grafana still accepts is persisted | `[grafana-mint] Waiting for Grafana at <endpoint> to accept the service-account mint (last answer: …).`, every 30 seconds |
+
+Neither wait has a bound. PMM owns both the key and Grafana, so a bound could
+only give up on a slow PMM, and the five programs read the token once, from
+`supervisord`'s environment: a token minted after they started could not reach
+them without a restart. The schema one-shots wait for PMM's PostgreSQL the same
+way. While the entrypoint waits, the container's health is `starting` through
+the `HEALTHCHECK` start period and five failed probes after it, about 215
+seconds in all, and `unhealthy` from then on. It turns healthy without a
+restart when the wait ends.
+
+The Grafana wait covers what a server that is still starting answers: a refused
+or timed-out connection, and HTTP 500, 502, 503 or 504. Each attempt is given up
+after 30 seconds and retried 3 seconds later. A start that already holds a token
+does not wait: a configured or mounted token skips the mint, and a persisted
+token is used unvalidated while Grafana is unreachable.
+
+When the key file appears, the gate reads the directory once more a second
+later before it continues. PMM publishes the key and the database passwords as
+consecutive renames with the key first, so the moment the key appears is the one
+moment the other files may still be missing.
+
+`EXTENSIONS_GRAFANA_MINT_TIMEOUT` is not read. A deployment that sets it gets
+one `[grafana-mint]` line saying so.
+
+One earlier step keeps a bound: on a start that has to mint `ENCRYPTION_KEY`,
+the probe of the service databases gives up after
+`EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` seconds and the container exits — see
+[The encryption key is minted, but only onto a fresh deployment](#the-encryption-key-is-minted-but-only-onto-a-fresh-deployment).
 
 ## What the settings API will and will not change
 
@@ -534,7 +580,8 @@ volume does not start the container at all.
 
 ## Health
 
-`healthcheck.sh` exits 0 only when every non-one-shot program is `RUNNING`, all
+`healthcheck.sh` exits 0 only when the entrypoint has resolved the Grafana
+token, every non-one-shot program is `RUNNING`, all
 four `migrate-*` one-shots have written their `/tmp/migrate-<step>.ok` sentinel,
 the three `/health` endpoints return 200, and the bundled Valkey answers `PING`.
 The sentinels matter because a failed `alembic upgrade` ends in `EXITED` — the
@@ -559,6 +606,16 @@ in the shell, `migrate-beat` inside its bootstrap, against whatever
 step that gave up could never publish its sentinel and would hold every gated
 program for the life of the container; waiting instead means the sentinel still
 lands whenever the store appears.
+
+The token assertion reads `/tmp/grafana-token.ok`. `entrypoint.sh` removes that
+file at every container start, and writes it when the token step ends with a
+token, or with nothing to resolve because the auth provider is not Grafana. It
+is the probe's first assertion, so `docker inspect` shows
+`unhealthy: PMM Extensions holds no Grafana service-account token; …` in both
+states it covers: an entrypoint still waiting for PMM, and programs that started
+after a mint that failed for good. It does not detect a token that is held but
+empty — a mounted credential file with no value, described under
+[The Grafana token is minted, not required](#the-grafana-token-is-minted-not-required).
 
 An API still inside its gate reports `RUNNING`, so the program-state assertion
 is weaker than it reads for those three — the `/health` probe is what keeps a

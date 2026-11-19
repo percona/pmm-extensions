@@ -49,13 +49,19 @@ ACCOUNT_ID = 7
 DEFAULT_BASIC = f"Basic {b64encode_str('admin:admin')}"
 
 SHORT_BOUND_SECONDS = 0.5
-"""A mint bound short enough that outrunning it is visible in the wall clock."""
+"""An attempt bound short enough that outrunning it is visible in the wall clock."""
+
+WAITING_FOR_GRAFANA = "Waiting for Grafana at"
+"""What the helper says while Grafana answers like a server still starting."""
+
+HELPER_SPEAKS_SECONDS = 60
+"""Ample for a helper process to resolve its settings and report its first wait."""
 
 HANDLER_STALL_SECONDS = PROBE_TIMEOUT_SECONDS + 2.0
 """Longer than every bound under test, so a stall is never simply outwaited."""
 
 PATIENT_BOUND_SECONDS = 30
-"""A bound long enough that a branch declining to wait it out is unambiguous."""
+"""Long enough that a branch declining to wait for Grafana is unambiguous."""
 
 TOKEN_FILE_MODE = 0o600
 STATE_DIR_MODE = 0o700
@@ -303,8 +309,8 @@ def profile_cwd(tmp_path: Path, profile: Path = EMBEDDED_PROFILE) -> Path:
     return directory
 
 
-async def run_helper(cwd: Path, **environment: str) -> HelperRun:
-    """Run the helper as its own process, the way ``entrypoint.sh`` does.
+async def start_helper(cwd: Path, **environment: str) -> asyncio.subprocess.Process:
+    """Start the helper as its own process, the way ``entrypoint.sh`` does.
 
     The subprocess runs on this test's event loop, so the stub keeps serving
     while the helper talks to it.
@@ -316,7 +322,7 @@ async def run_helper(cwd: Path, **environment: str) -> HelperRun:
 
     :param cwd: The directory holding the profile the helper should read.
     :param environment: The environment to run with, over a minimal base.
-    :return: The completed run.
+    :return: The running helper.
     """
     base = {
         "PATH": os.environ["PATH"],
@@ -325,8 +331,7 @@ async def run_helper(cwd: Path, **environment: str) -> HelperRun:
         "SECRET_KEY": "0" * 32,
         "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
     }
-    started = time.monotonic()
-    process = await asyncio.create_subprocess_exec(
+    return await asyncio.create_subprocess_exec(
         sys.executable,
         str(HELPER_SCRIPT),
         cwd=str(cwd),
@@ -334,6 +339,17 @@ async def run_helper(cwd: Path, **environment: str) -> HelperRun:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+
+
+async def run_helper(cwd: Path, **environment: str) -> HelperRun:
+    """Run the helper to its end and collect what it printed.
+
+    :param cwd: The directory holding the profile the helper should read.
+    :param environment: The environment to run with, over a minimal base.
+    :return: The completed run.
+    """
+    started = time.monotonic()
+    process = await start_helper(cwd, **environment)
     stdout, stderr = await process.communicate()
     return HelperRun(
         returncode=process.returncode,
@@ -512,11 +528,7 @@ async def test_a_refused_creation_with_no_winner_is_reported(
 
     async with provider:
         with pytest.raises(helper.MintError):
-            await helper.mint_with_retry(
-                provider,
-                helper.admin_credentials(),
-                time.monotonic() + PATIENT_BOUND_SECONDS,
-            )
+            await helper.mint_with_retry(provider, helper.admin_credentials())
 
     assert not grafana_stub.calls(StubRoute.CREATE_TOKEN)
 
@@ -569,11 +581,7 @@ async def test_a_token_response_without_a_key_is_reported_not_retried(
 
     async with provider:
         with pytest.raises(helper.MintError):
-            await helper.mint_with_retry(
-                provider,
-                helper.admin_credentials(),
-                time.monotonic() + PATIENT_BOUND_SECONDS,
-            )
+            await helper.mint_with_retry(provider, helper.admin_credentials())
 
     assert len(grafana_stub.calls(StubRoute.CREATE_TOKEN)) == 1
 
@@ -588,11 +596,7 @@ async def test_a_rejected_admin_credential_is_reported_not_retried(
 
     async with provider:
         with pytest.raises(helper.MintError) as raised:
-            await helper.mint_with_retry(
-                provider,
-                helper.admin_credentials(),
-                time.monotonic() + PATIENT_BOUND_SECONDS,
-            )
+            await helper.mint_with_retry(provider, helper.admin_credentials())
 
     assert "GF_SECURITY_ADMIN_PASSWORD" in str(raised.value)
     assert len(grafana_stub.calls(StubRoute.SEARCH)) == 1
@@ -607,11 +611,7 @@ async def test_a_misconfigured_endpoint_is_reported_not_retried(
 
     async with provider:
         with pytest.raises(helper.MintError) as raised:
-            await helper.mint_with_retry(
-                provider,
-                helper.admin_credentials(),
-                time.monotonic() + PATIENT_BOUND_SECONDS,
-            )
+            await helper.mint_with_retry(provider, helper.admin_credentials())
 
     assert str(provider.endpoint) in str(raised.value)
     assert len(grafana_stub.calls(StubRoute.SEARCH)) == 1
@@ -622,8 +622,13 @@ async def test_a_starting_grafana_is_retried_until_it_answers(
     grafana_stub: GrafanaStub,
     provider: GrafanaAuthProvider,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ):
-    """Retry every transient answer a starting Grafana gives through PMM's proxy."""
+    """Retry every transient answer a starting Grafana gives through PMM's proxy.
+
+    The wait is reported once here rather than once per attempt: the three
+    retries all fall inside one reporting interval.
+    """
     monkeypatch.setattr(helper, "RETRY_INTERVAL_SECONDS", 0.05)
     grafana_stub.queue(
         StubRoute.SEARCH,
@@ -635,39 +640,73 @@ async def test_a_starting_grafana_is_retried_until_it_answers(
 
     async with provider:
         token, reused = await helper.mint_with_retry(
-            provider,
-            helper.admin_credentials(),
-            time.monotonic() + PATIENT_BOUND_SECONDS,
+            provider, helper.admin_credentials()
         )
 
     assert token == MINTED_TOKEN
     assert not reused
     assert len(grafana_stub.calls(StubRoute.SEARCH)) == EXPECTED_SEARCH_ATTEMPTS
+    reported = capsys.readouterr().err
+    assert reported.count(WAITING_FOR_GRAFANA) == 1
+    assert grafana_stub.endpoint in reported
+    assert "HTTP 503" in reported
 
 
 @pytest.mark.asyncio
-async def test_a_hung_grafana_does_not_outrun_the_mint_bound(
-    grafana_stub: GrafanaStub, provider: GrafanaAuthProvider
+async def test_the_wait_is_reported_again_after_each_interval(
+    grafana_stub: GrafanaStub,
+    provider: GrafanaAuthProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Keep saying what the start waits for, with the answer Grafana last gave.
+
+    The wait has no bound, so a log that fell silent after one line would read
+    as a hung container.
+    """
+    monkeypatch.setattr(helper, "RETRY_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(helper, "WAIT_REPORT_INTERVAL_SECONDS", 0.0)
+    grafana_stub.queue(
+        StubRoute.SEARCH,
+        StubResponse(status=503),
+        StubResponse(status=502),
+        DEFAULT_RESPONSES[StubRoute.SEARCH],
+    )
+
+    async with provider:
+        await helper.mint_with_retry(provider, helper.admin_credentials())
+
+    reported = capsys.readouterr().err
+    assert reported.count(WAITING_FOR_GRAFANA) == len(("503", "502"))
+    assert "HTTP 502" in reported.splitlines()[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_hung_attempt_is_abandoned_and_retried(
+    grafana_stub: GrafanaStub,
+    provider: GrafanaAuthProvider,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """Stop a stalled call the client's own 300 s total would let run on.
 
     ``BaseRemoteAPI`` opens its session with ``ClientTimeout(total=300, ...)``
     and offers no field to narrow it, so the per-attempt wrapper is the only
-    thing making the configured bound real.
+    thing that turns a Grafana which accepts a connection and never answers
+    into another attempt.
     """
+    monkeypatch.setattr(helper, "RETRY_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(helper, "MINT_ATTEMPT_TIMEOUT_SECONDS", SHORT_BOUND_SECONDS)
     grafana_stub.queue(
-        StubRoute.SEARCH, StubResponse(delay=HANDLER_STALL_SECONDS, payload={})
+        StubRoute.SEARCH,
+        StubResponse(delay=HANDLER_STALL_SECONDS, payload={}),
+        DEFAULT_RESPONSES[StubRoute.SEARCH],
     )
     started = time.monotonic()
 
     async with provider:
-        with pytest.raises(helper.MintError):
-            await helper.mint_with_retry(
-                provider,
-                helper.admin_credentials(),
-                time.monotonic() + SHORT_BOUND_SECONDS,
-            )
+        token, _ = await helper.mint_with_retry(provider, helper.admin_credentials())
 
+    assert token == MINTED_TOKEN
     assert time.monotonic() - started < HANDLER_STALL_SECONDS
 
 
@@ -831,48 +870,39 @@ def test_a_read_only_state_directory_does_not_fail_the_run(tmp_path: Path):
     assert helper.write_persisted_token(directory, MINTED_TOKEN) is False
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        (None, helper.DEFAULT_MINT_TIMEOUT_SECONDS),
-        ("", helper.DEFAULT_MINT_TIMEOUT_SECONDS),
-        ("nonsense", helper.DEFAULT_MINT_TIMEOUT_SECONDS),
-        ("0", helper.DEFAULT_MINT_TIMEOUT_SECONDS),
-        ("-5", helper.DEFAULT_MINT_TIMEOUT_SECONDS),
-        ("inf", helper.DEFAULT_MINT_TIMEOUT_SECONDS),
-        ("-inf", helper.DEFAULT_MINT_TIMEOUT_SECONDS),
-        ("nan", helper.DEFAULT_MINT_TIMEOUT_SECONDS),
-        ("2.5", 2.5),
-        ("90", 90),
-    ],
-    ids=[
-        "unset",
-        "blank",
-        "text",
-        "zero",
-        "negative",
-        "infinite",
-        "negative-infinite",
-        "not-a-number",
-        "fractional",
-        "valid",
-    ],
-)
-def test_the_mint_bound_falls_back_rather_than_raising(
-    monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: float
+@pytest.mark.parametrize("raw", ["90", "nonsense"], ids=["a-number", "text"])
+def test_a_set_mint_timeout_is_reported_as_no_longer_read(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], raw: str
 ):
-    """Keep a mistyped bound from raising, hanging the start, or failing at once.
+    """Tell a deployment that still sets the retired bound that nothing reads it.
 
-    ``float`` accepts ``inf`` and ``nan``, and both clear a bare positivity
-    check: an infinite deadline waits out a still-starting Grafana forever, and
-    a NaN one compares false against every reading, so the retry loop never runs
-    a single attempt.
+    The value is not validated, because it is not used: a deployment that set
+    ``90`` now waits past it, and saying so is what keeps that from being a
+    silent change.
     """
+    monkeypatch.setenv("EXTENSIONS_GRAFANA_MINT_TIMEOUT", raw)
+
+    helper.report_retired_timeout()
+
+    reported = capsys.readouterr().err
+    assert "EXTENSIONS_GRAFANA_MINT_TIMEOUT" in reported
+    assert "no longer read" in reported
+
+
+@pytest.mark.parametrize("raw", [None, "", "  "], ids=["unset", "empty", "blank"])
+def test_an_unset_mint_timeout_is_not_mentioned(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    raw: str | None,
+):
+    """Say nothing about the retired bound to a deployment that never set it."""
     monkeypatch.delenv("EXTENSIONS_GRAFANA_MINT_TIMEOUT", raising=False)
     if raw is not None:
         monkeypatch.setenv("EXTENSIONS_GRAFANA_MINT_TIMEOUT", raw)
 
-    assert helper.mint_timeout() == expected
+    helper.report_retired_timeout()
+
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.asyncio
@@ -1131,14 +1161,18 @@ async def test_a_persisted_token_survives_a_restart(
 async def test_an_unreachable_grafana_keeps_the_persisted_token_without_waiting(
     tmp_path: Path, state_dir: Path, unused_tcp_port: int
 ):
-    """Keep a working credential through an outage, without consuming the bound."""
+    """Keep a working credential through an outage, without waiting for Grafana.
+
+    Only a start that has to mint waits. One that already holds a token must
+    come up during an outage, or a Grafana restart would take the side-car down
+    with it.
+    """
     helper.write_persisted_token(state_dir, PERSISTED_TOKEN)
 
     run = await run_helper(
         profile_cwd(tmp_path),
         AUTH__PROVIDER__GRAFANA__ENDPOINT=f"http://127.0.0.1:{unused_tcp_port}/graph",
         EXTENSIONS_STATE_DIR=str(state_dir),
-        EXTENSIONS_GRAFANA_MINT_TIMEOUT=str(PATIENT_BOUND_SECONDS),
     )
 
     assert run.returncode == 0, run.stderr
@@ -1271,20 +1305,57 @@ async def test_unresolvable_settings_do_not_stop_the_container(
 
 
 @pytest.mark.asyncio
-async def test_an_exhausted_bound_names_grafana_and_the_wait(
+async def test_a_grafana_that_is_not_up_is_waited_for_by_name(
     tmp_path: Path, state_dir: Path, unused_tcp_port: int
 ):
-    """Emit one actionable message and let the supervised programs start anyway."""
-    endpoint = f"http://127.0.0.1:{unused_tcp_port}/graph"
+    """Hold the start on a Grafana nothing listens at yet, and say which one.
 
-    run = await run_helper(
+    Printing nothing and exiting is how the side-car used to come up healthy
+    without the token every one of its programs needs, so the helper is still
+    running after it has reported the wait.
+    """
+    endpoint = f"http://127.0.0.1:{unused_tcp_port}/graph"
+    process = await start_helper(
         profile_cwd(tmp_path),
         AUTH__PROVIDER__GRAFANA__ENDPOINT=endpoint,
         EXTENSIONS_STATE_DIR=str(state_dir),
-        EXTENSIONS_GRAFANA_MINT_TIMEOUT="1",
+    )
+    assert process.stderr is not None
+    reported = ""
+    try:
+        async with asyncio.timeout(HELPER_SPEAKS_SECONDS):
+            while WAITING_FOR_GRAFANA not in reported:
+                line = await process.stderr.readline()
+                assert line, f"the helper exited instead of waiting: {reported}"
+                reported += line.decode()
+        still_waiting = process.returncode is None
+    finally:
+        process.kill()
+        await process.communicate()
+
+    assert still_waiting
+    assert endpoint in reported
+    assert "Traceback" not in reported
+
+
+@pytest.mark.asyncio
+async def test_a_grafana_that_starts_late_is_minted_against_without_a_restart(
+    grafana_stub: GrafanaStub, tmp_path: Path, state_dir: Path
+):
+    """Resolve the token from the same helper run that found Grafana not ready."""
+    grafana_stub.queue(
+        StubRoute.SEARCH,
+        StubResponse(status=503),
+        DEFAULT_RESPONSES[StubRoute.SEARCH],
     )
 
-    assert run.returncode == 1
-    assert run.token == ""
-    assert endpoint in run.stderr
-    assert "Traceback" not in run.stderr
+    run = await run_helper(
+        profile_cwd(tmp_path),
+        AUTH__PROVIDER__GRAFANA__ENDPOINT=grafana_stub.endpoint,
+        EXTENSIONS_STATE_DIR=str(state_dir),
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert run.token == MINTED_TOKEN
+    assert WAITING_FOR_GRAFANA in run.stderr
+    assert helper.read_persisted_token(state_dir) == MINTED_TOKEN

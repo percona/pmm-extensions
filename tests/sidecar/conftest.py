@@ -37,6 +37,15 @@ SCHEMA_STEP_PREFIX = "migrate-"
 SENTINEL_PREFIX = "/tmp/migrate-"
 """The prefix every shipped sentinel path is built from."""
 
+HEALTHCHECK = SIDECAR_DIR / "healthcheck.sh"
+
+TOKEN_SENTINEL = "/tmp/grafana-token.ok"
+"""The marker ``entrypoint.sh`` publishes and ``healthcheck.sh`` requires.
+
+One literal for both suites, so the two scripts cannot come to name different
+paths while each suite still passes on its own.
+"""
+
 BUDGET_ASSIGNMENT = re.compile(r"^readonly WAIT_BUDGET_SECONDS=\d+$", re.MULTILINE)
 """The gate's budget constant, which a case needing a different wait rewrites."""
 

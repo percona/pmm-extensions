@@ -95,11 +95,6 @@ class TestStateDirectory:
             "EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT",
             "[encryption-key]",
         ),
-        (
-            grafana_service_account.mint_timeout,
-            "EXTENSIONS_GRAFANA_MINT_TIMEOUT",
-            "[grafana-mint]",
-        ),
     ],
 )
 class TestPositiveTimeout:

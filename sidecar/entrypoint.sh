@@ -2,6 +2,8 @@
 # Side-car PID 1: expand the per-deployment inputs into canonical settings
 # variables, mint the bundled Valkey broker's credential for this container run,
 # resolve PMM Extensions' Grafana service-account token, then hand off to supervisord.
+# It waits, without a bound, for the two things PMM supplies while it starts: the
+# SECRET_KEY file and a Grafana that can mint the token.
 #
 # The credential reaches valkey-server through a generated config file rather
 # than a --requirepass flag, and reaches healthcheck.sh by being read back out of
@@ -12,6 +14,14 @@ set -o errexit -o nounset -o pipefail
 # Resolved from this script rather than written absolute so the start path can be
 # exercised outside an image; in the image it is $APP_HOME either way.
 app_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Published once the Grafana token step below ends with a token, or with nothing
+# to resolve; healthcheck.sh requires it. Cleared ahead of everything that can
+# wait -- the key gate in settings-env.sh first of all -- because /tmp survives a
+# container restart, and the previous run's marker would report this start as
+# holding a token it has not resolved yet.
+grafana_token_sentinel=/tmp/grafana-token.ok
+rm -f "$grafana_token_sentinel"
 
 # Sourced first, so a misconfigured container's first log line is the actionable
 # message rather than a Valkey mint that was never going to be reached.
@@ -63,13 +73,19 @@ EOF
 export CELERY__BROKER_URL="redis://:${valkey_password}@127.0.0.1:6379/0"
 export CELERY__RESULT_BACKEND="redis://:${valkey_password}@127.0.0.1:6379/1"
 
-# Absorbing the helper's failure is load-bearing under errexit: auth degrading to
-# what it does today is survivable, a PID 1 that dies before supervisord is not.
+# The helper waits for a Grafana that is still starting, so a non-zero exit is a
+# fault no wait clears, such as a rejected admin credential. Absorbing it is
+# load-bearing under errexit: a PID 1 that died on it would be restarted into
+# the same failed sign-in, which is how Grafana comes to lock the admin account.
+# The programs start without the token instead, and the sentinel left unwritten
+# is what keeps that container from reporting healthy.
 # The value arrives by command substitution for the same reason the Valkey
 # password above does -- an argv is readable across the whole PID namespace.
-grafana_token="$(python3 "$app_dir/grafana_service_account.py")" || grafana_token=""
-if [[ -n $grafana_token ]]; then
-    export_grafana_token "$grafana_token"
+if grafana_token="$(python3 "$app_dir/grafana_service_account.py")"; then
+    if [[ -n $grafana_token ]]; then
+        export_grafana_token "$grafana_token"
+    fi
+    touch "$grafana_token_sentinel"
 fi
 
 # The admin pair is more privileged than the token it mints and only the step
