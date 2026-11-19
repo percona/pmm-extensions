@@ -144,40 +144,40 @@ _INTERVAL_KEYS = frozenset({"every", "period"})
 
 
 class MigrationError(Exception):
-    """A failure that ends the run with its own exit code."""
+    """Signal a failure that ends the run with its own exit code."""
 
     exit_code = 1
 
 
 class UsageError(MigrationError):
-    """The command line, or the environment the script runs in, is wrong."""
+    """Signal that the command line, or the environment the script runs in, is wrong."""
 
     exit_code = _EXIT_USAGE
 
 
 class PreconditionError(MigrationError):
-    """Something is wrong before any write request was sent."""
+    """Signal that something is wrong before any write request was sent."""
 
     exit_code = _EXIT_PRECONDITION
 
 
 class ConnectionFailedError(PreconditionError):
-    """A server could not be reached, or its certificate was not accepted."""
+    """Signal that a server could not be reached, or that its certificate was not accepted."""
 
 
 class PartialError(MigrationError):
-    """A write was rejected after the run had started."""
+    """Signal that a write was rejected after the run had started."""
 
     exit_code = _EXIT_PARTIAL
 
 
 class SkipScheduleError(Exception):
-    """A schedule cannot be recreated; the message is the reason shown to the operator."""
+    """Signal that a schedule cannot be recreated; the message is the reason shown to the operator."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Request:
-    """One HTTP request."""
+    """Represent one HTTP request."""
 
     method: str
     url: str
@@ -185,15 +185,18 @@ class Request:
     body: bytes | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Response:
-    """One HTTP response."""
+    """Represent one HTTP response."""
 
     status: int
     body: bytes
 
     def json(self) -> Any:
-        """Return the body parsed as JSON, or ``None`` when it is not JSON."""
+        """Return the body parsed as JSON, or ``None`` when it is not JSON.
+
+        :return: The parsed body, or ``None``.
+        """
         try:
             return json.loads(self.body)
         except ValueError:
@@ -203,9 +206,9 @@ class Response:
 Http = Callable[[Request], Response]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OldService:
-    """A MySQL service of the old instance's inventory. The address is its node's."""
+    """Represent a MySQL service of the old instance's inventory. The address is its node's."""
 
     name: str
     external_id: str | None
@@ -213,9 +216,9 @@ class OldService:
     port: int | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PmmService:
-    """A MySQL service of PMM Extensions' inventory. The address is its node's."""
+    """Represent a MySQL service of PMM Extensions' inventory. The address is its node's."""
 
     id: int
     name: str
@@ -225,30 +228,31 @@ class PmmService:
     last_synced_at: str | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Match:
-    """The PMM service proposed for one old service, or ``None`` with the reason."""
+    """Represent the PMM service proposed for one old service, or ``None`` with the reason."""
 
     old: OldService
     pmm: PmmService | None
     reason: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OldExport:
-    """What ``export`` wrote: schedules, the tasks they run, and the inventory services."""
+    """Carry what ``export`` wrote: schedules, the tasks they run, and the inventory services."""
 
     schedules: list[dict[str, Any]]
     tasks: list[dict[str, Any]]
     services: list[OldService]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PmmState:
-    """What PMM Extensions holds before the run.
+    """Describe what PMM Extensions holds before the run.
 
     ``tasks`` maps each MySQL Backups task name to its service ID. ``schedules``
     maps a task name to the ``interval`` and ``crontab`` of each of its schedules.
+
     """
 
     services: list[PmmService]
@@ -256,21 +260,22 @@ class PmmState:
     schedules: dict[str, list[dict[str, Any]]]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlannedSchedule:
-    """One schedule to create: the old schedule's name and the request body."""
+    """Describe one schedule to create: the old schedule's name and the request body."""
 
     old_name: str
     body: dict[str, Any]
     was_enabled: bool
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlannedTask:
-    """One task and the schedules to create for it.
+    """Describe one task and the schedules to create for it.
 
     ``create_task`` is false when PMM Extensions already has the task, which is
     what an earlier run leaves when it stops between the two writes.
+
     """
 
     name: str
@@ -280,9 +285,9 @@ class PlannedTask:
     schedules: list[PlannedSchedule]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BackupLocation:
-    """Where one old task wrote its backups, and where it copied them."""
+    """Describe where one old task wrote its backups, and where it copied them."""
 
     service: str
     task: str
@@ -290,12 +295,13 @@ class BackupLocation:
     upload: str | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Plan:
-    """What a run would do.
+    """Describe what a run would do.
 
     ``skipped`` holds ``(old schedule name, reason)``. ``already_present``
     holds the old names of schedules PMM Extensions already has.
+
     """
 
     to_create: list[PlannedTask]
@@ -304,14 +310,19 @@ class Plan:
     backup_locations: list[BackupLocation]
 
     def schedule_count(self) -> int:
-        """Return how many schedules the plan creates."""
+        """Return how many schedules the plan creates.
+
+        :return: The number of schedules.
+        """
         return sum(len(task.schedules) for task in self.to_create)
 
 
 def _yaml() -> Any:
     """Return the PyYAML module.
 
+    :return: The ``yaml`` module.
     :raises UsageError: When PyYAML is not installed for this Python.
+
     """
     try:
         return importlib.import_module("yaml")
@@ -380,7 +391,11 @@ def make_sender(context: ssl.SSLContext) -> Http:
 
 
 def _detail(response: Response) -> str:
-    """Return the server's own error text, or a short piece of the body."""
+    """Return the server's own error text, or a short piece of the body.
+
+    :param response: The response of a failed request.
+    :return: The text to show the operator.
+    """
     payload = response.json()
     if isinstance(payload, dict) and "detail" in payload:
         return str(payload["detail"])
@@ -388,7 +403,7 @@ def _detail(response: Response) -> str:
 
 
 class Api:
-    """A JSON API reached with one bearer token."""
+    """Call a JSON API with one bearer token."""
 
     def __init__(self, http: Http, base_url: str, token: str, name: str) -> None:
         """Remember where the API is and how to call it.
@@ -477,24 +492,40 @@ class Api:
         return self._http(request)
 
 
+def _shape_problem(problem: str) -> str:
+    """Return the message for an export file that does not have the expected shape.
+
+    :param problem: What is wrong with the file.
+    :return: The message.
+    """
+    return f"the export file does not have the expected shape: {problem}"
+
+
 def _require(condition: object, problem: str) -> None:
-    """Raise :class:`PreconditionError` for a malformed export unless ``condition`` holds."""
+    """Raise :class:`PreconditionError` for a malformed export unless ``condition`` holds.
+
+    :param condition: What must hold.
+    :param problem: What is wrong when it does not.
+    """
     if not condition:
-        raise PreconditionError(
-            f"the export file does not have the expected shape: {problem}"
-        )
+        raise PreconditionError(_shape_problem(problem))
 
 
 def _paged_items(document: dict[str, Any], key: str) -> list[dict[str, Any]]:
-    """Return the items of one paged list of the export, checked to be whole."""
+    """Return the items of one paged list of the export, checked to be whole.
+
+    :param document: The export document.
+    :param key: The name of the paged list in it.
+    :return: The list's items.
+    :raises PreconditionError: When the list is malformed or holds fewer items than its total.
+    """
     page = document.get(key)
-    _require(
-        isinstance(page, dict) and isinstance(page.get("items"), list),
-        f"'{key}' is not a paged list",
-    )
+    if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+        raise PreconditionError(_shape_problem(f"'{key}' is not a paged list"))
     items: list[dict[str, Any]] = page["items"]
     total = page.get("total")
-    _require(isinstance(total, int), f"'{key}' has no total")
+    if not isinstance(total, int):
+        raise PreconditionError(_shape_problem(f"'{key}' has no total"))
     if total > len(items):
         raise PreconditionError(
             f"the export file is truncated: '{key}' holds {len(items)} of {total} items"
@@ -507,7 +538,10 @@ def _paged_items(document: dict[str, Any], key: str) -> list[dict[str, Any]]:
 
 
 def _check_schedule(schedule: Any) -> None:
-    """Check one exported schedule: a name, a task, and an interval or a crontab."""
+    """Check one exported schedule: a name, a task, and an interval or a crontab.
+
+    :param schedule: One entry of the export's schedule list.
+    """
     _require(isinstance(schedule, dict), "a schedule is not an object")
     _require(isinstance(schedule.get("name"), str), "a schedule has no name")
     name = schedule["name"]
@@ -530,7 +564,10 @@ def _check_schedule(schedule: Any) -> None:
 
 
 def _check_task(task: dict[str, Any]) -> None:
-    """Check one exported task: a name and stored settings."""
+    """Check one exported task: a name and stored settings.
+
+    :param task: One item of the export's task list.
+    """
     _require(isinstance(task.get("name"), str), "a task has no name")
     data = task.get("data")
     meta = data.get("meta") if isinstance(data, dict) else None
@@ -542,7 +579,11 @@ def _check_task(task: dict[str, Any]) -> None:
 
 
 def _old_service_from(item: dict[str, Any]) -> OldService:
-    """Build an :class:`OldService` from one exported inventory service."""
+    """Build an :class:`OldService` from one exported inventory service.
+
+    :param item: The service as the old inventory API returns it.
+    :return: The service, with its node's address.
+    """
     _require(isinstance(item.get("name"), str), "a service has no name")
     node = item.get("node") if isinstance(item.get("node"), dict) else {}
     return OldService(
@@ -601,7 +642,12 @@ def parse_export(text: str) -> OldExport:
 
 
 def _propose(old: OldService, pmm: list[PmmService]) -> Match:
-    """Propose the PMM service for one old service."""
+    """Propose the PMM service for one old service.
+
+    :param old: The old service.
+    :param pmm: PMM Extensions' MySQL services.
+    :return: The match, or no match with the reason.
+    """
     by_id = [
         service
         for service in pmm
@@ -720,7 +766,12 @@ def read_match_file(path: Path) -> dict[str, int]:
 
 
 def _unknown(keys: Any, known: frozenset[str]) -> str:
-    """Return the keys that are not in ``known``, sorted and joined, or an empty string."""
+    """Return the keys that are not in ``known``, sorted and joined, or an empty string.
+
+    :param keys: The keys found.
+    :param known: The keys this script knows.
+    :return: The unknown keys as one string.
+    """
     return ", ".join(sorted(str(key) for key in keys if key not in known))
 
 
@@ -730,7 +781,10 @@ def _stored_settings(task: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
     PMM Extensions 3.10.0 drops a form field it does not know without an
     error, so any key this script does not know is refused here.
 
+    :param task: The task as the old instance's API returns it.
+    :return: The ``ALL_SERVERS`` mapping and the one ``SERVER_LIST`` entry.
     :raises SkipScheduleError: When the settings are not the shape v0.13.1 writes.
+
     """
     yaml = _yaml()
     try:
@@ -821,7 +875,11 @@ def task_form(task: dict[str, Any], pmm_service_id: int) -> dict[str, Any]:
 
 
 def _backup_location(task: dict[str, Any]) -> BackupLocation | None:
-    """Return where one old task wrote backups, or ``None`` when its settings cannot be read."""
+    """Return where one old task wrote backups, or ``None`` when its settings cannot be read.
+
+    :param task: The task as the old instance's API returns it.
+    :return: The location, or ``None``.
+    """
     try:
         common, server = _stored_settings(task)
     except SkipScheduleError:
@@ -849,7 +907,13 @@ def _resolve_task(
 ) -> PlannedTask:
     """Decide how one old task is created, with no schedules yet.
 
+    :param task: The task as the old instance's API returns it.
+    :param export: The old instance's schedules, tasks and services.
+    :param matches: The PMM service ID for each matched old service name.
+    :param state: What PMM Extensions holds now.
+    :return: The planned task, with an empty schedule list.
     :raises SkipScheduleError: When nothing may be created for the task.
+
     """
     name = task["name"]
     service_name = task["data"]["meta"].get("_service_name")
@@ -883,7 +947,11 @@ def _resolve_task(
 
 
 def _timing(schedule: dict[str, Any]) -> dict[str, Any]:
-    """Return the ``interval`` and ``crontab`` of a schedule, which identify it within its task."""
+    """Return the ``interval`` and ``crontab`` of a schedule, which identify it within its task.
+
+    :param schedule: A schedule of either instance.
+    :return: A mapping with the two keys.
+    """
     return {"interval": schedule.get("interval"), "crontab": schedule.get("crontab")}
 
 
@@ -893,7 +961,10 @@ def _schedule_body(schedule: dict[str, Any]) -> dict[str, Any]:
     The interval or crontab is copied unchanged, and so are a start time and a
     description when the old schedule has them.
 
+    :param schedule: The schedule as the old instance's API returns it.
+    :return: The JSON body for the schedule create call.
     :raises SkipScheduleError: When the schedule sets a field this script does not carry over.
+
     """
     for field in _FIELDS_NOT_CARRIED:
         if schedule.get(field) is not None:
@@ -998,12 +1069,21 @@ def read_pmm_state(api: Api) -> PmmState:
 
 
 def _count(number: int, noun: str) -> str:
-    """Return ``number`` with ``noun``, in the plural unless it is one."""
+    """Return ``number`` with ``noun``, in the plural unless it is one.
+
+    :param number: How many.
+    :param noun: The singular noun.
+    :return: For example ``3 schedules``.
+    """
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
 def _describe_timing(body: dict[str, Any]) -> str:
-    """Return a schedule's interval or crontab as one short phrase."""
+    """Return a schedule's interval or crontab as one short phrase.
+
+    :param body: The body of a schedule create call.
+    :return: The phrase.
+    """
     if body.get("interval"):
         return f"every {body['interval']['every']} {body['interval']['period']}"
     cron = body["crontab"]
@@ -1017,7 +1097,13 @@ def _describe_timing(body: dict[str, Any]) -> str:
 def _print_matches(
     path: Path, matches: dict[str, int], export: OldExport, state: PmmState
 ) -> None:
-    """Print each old service with the PMM service the match file gives it."""
+    """Print each old service with the PMM service the match file gives it.
+
+    :param path: The match file.
+    :param matches: The matches read from it.
+    :param export: The old instance's schedules, tasks and services.
+    :param state: What PMM Extensions holds now.
+    """
     services = {service.id: service for service in state.services}
     print(f"Matches, from {path}:")
     for old in export.services:
@@ -1036,7 +1122,10 @@ def _print_matches(
 
 
 def _print_plan(plan: Plan) -> None:
-    """Print what a run creates, what it leaves out and why, and the old backup directories."""
+    """Print what a run creates, what it leaves out and why, and the old backup directories.
+
+    :param plan: The plan to print.
+    """
     print(f"\n{_count(plan.schedule_count(), 'schedule')} to create, each paused:")
     for task in plan.to_create:
         state = "new task" if task.create_task else "task already in PMM"
@@ -1060,7 +1149,13 @@ def _print_plan(plan: Plan) -> None:
 
 
 def _stop(created: int, plan: Plan, reason: str) -> PartialError:
-    """Print how far a run got and return the error that ends it."""
+    """Print how far a run got and return the error that ends it.
+
+    :param created: The number of schedules created so far.
+    :param plan: The plan being carried out.
+    :param reason: Why the run stops.
+    :return: The error to raise.
+    """
     print(
         f"\nStopped: created {created} of {_count(plan.schedule_count(), 'schedule')}."
     )
@@ -1070,7 +1165,14 @@ def _stop(created: int, plan: Plan, reason: str) -> PartialError:
 
 
 def _write(api: Api, path: str, body: dict[str, Any], what: str) -> str | None:
-    """Send one create request and return ``None``, or why it failed."""
+    """Send one create request and return ``None``, or why it failed.
+
+    :param api: The PMM Extensions API.
+    :param path: The path of the create call.
+    :param body: The JSON body.
+    :param what: What is being created, for the message.
+    :return: ``None`` on HTTP 201, or the failure as one sentence.
+    """
     try:
         response = api.post(path, body)
     except ConnectionFailedError as exc:
@@ -1110,7 +1212,11 @@ def apply_plan(api: Api, plan: Plan) -> int:
 def _read_file(path: Path, what: str) -> str:
     """Return a file's text.
 
+    :param path: The file to read.
+    :param what: What the file is, for the message.
+    :return: The text.
     :raises UsageError: When the file cannot be read.
+
     """
     try:
         return path.read_text(encoding="utf-8")
@@ -1121,7 +1227,13 @@ def _read_file(path: Path, what: str) -> str:
 def _matches(
     args: argparse.Namespace, export: OldExport, state: PmmState
 ) -> dict[str, int]:
-    """Return the matches of the match file, writing the file first when it does not exist."""
+    """Return the matches of the match file, writing the file first when it does not exist.
+
+    :param args: The parsed command line.
+    :param export: The old instance's schedules, tasks and services.
+    :param state: What PMM Extensions holds now.
+    :return: The PMM service ID for each matched old service name.
+    """
     if not args.matches.exists():
         write_match_file(args.matches, propose_matches(export.services, state.services))
         print(
@@ -1207,12 +1319,14 @@ def _installed_settings() -> tuple[str, str, str, Path | None]:
     application's own settings can be imported. The settings are read while
     standard output is redirected, because reading them logs there.
 
+    :return: The tasks URL, the inventory URL, the token and the CA file.
     :raises UsageError: When the settings cannot be imported or hold no token.
+
     """
     try:
         with stdout_to_stderr():
-            core = importlib.import_module("app.core.config").settings
-            sep = importlib.import_module("app.sep.config").sep_settings
+            core: Any = importlib.import_module("app.core.config").settings
+            sep: Any = importlib.import_module("app.sep.config").sep_settings
             tasks_url, inventory_url = (
                 str(sep.TASKS_ENDPOINT),
                 str(sep.INVENTORY_ENDPOINT),
@@ -1272,7 +1386,10 @@ def run_export(args: argparse.Namespace, http: Http | None) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    """Build the command line parser."""
+    """Build the command line parser.
+
+    :return: The parser, with the ``export`` and ``migrate`` subcommands.
+    """
     parser = argparse.ArgumentParser(
         description="Recreate a standalone v0.13.1 instance's MySQL backup schedules in PMM Extensions.",
     )

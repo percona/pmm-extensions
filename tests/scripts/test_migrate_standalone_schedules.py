@@ -151,10 +151,11 @@ def _planned_names(plan: Any) -> list[str]:
 
 
 class FakePmm:
-    """An in-memory PMM Extensions 3.10.0, answering as the captures show.
+    """Imitate PMM Extensions 3.10.0 in memory, answering as the captures show.
 
     A duplicate task name answers 409, a duplicate schedule 502, a task on an
     unknown service 404, and a list ``limit`` over 50 answers 422.
+
     """
 
     def __init__(
@@ -301,7 +302,7 @@ def _reject_nth_write(count: int, status: int = 500) -> Any:
 
 
 def test_propose_matches_pairs_by_external_id() -> None:
-    """Two inventories synced from one PMM server share the service's external ID."""
+    """Verify that two inventories synced from one PMM server share the service's external ID."""
     old = [_old_service(external_id="same-id")]
     pmm = [
         _pmm_service(
@@ -315,7 +316,7 @@ def test_propose_matches_pairs_by_external_id() -> None:
 
 
 def test_propose_matches_pairs_by_address_and_port() -> None:
-    """Without a shared external ID, the node address and the port decide."""
+    """Verify that without a shared external ID, the node address and the port decide."""
     match = migrate.propose_matches(
         [_old_service()], [_pmm_service(_DB1_PMM_ID, "db1-mysql", external_id="new-1")]
     )[0]
@@ -325,7 +326,7 @@ def test_propose_matches_pairs_by_address_and_port() -> None:
 
 
 def test_propose_matches_leaves_shared_address_unmatched() -> None:
-    """Two PMM services on one address and port are never guessed between."""
+    """Verify that two PMM services on one address and port are never guessed between."""
     pmm = [_pmm_service(40, "a"), _pmm_service(41, "b")]
     match = migrate.propose_matches([_old_service()], pmm)[0]
     assert match.pmm is None
@@ -333,21 +334,21 @@ def test_propose_matches_leaves_shared_address_unmatched() -> None:
 
 
 def test_propose_matches_leaves_missing_service_unmatched() -> None:
-    """A service PMM does not have gets no match and a reason."""
+    """Verify that a service PMM does not have gets no match and a reason."""
     match = migrate.propose_matches([_old_service()], [])[0]
     assert match.pmm is None
     assert "no PMM service" in match.reason
 
 
 def test_propose_matches_refuses_two_old_services_with_one_name() -> None:
-    """The match file is keyed by name, so a repeated name cannot be written."""
+    """Verify that the match file is keyed by name, so a repeated name cannot be written."""
     old = [_old_service(), _old_service(external_id="old-2", port=3307)]
     with pytest.raises(migrate.PreconditionError, match="db1"):
         migrate.propose_matches(old, [])
 
 
 def test_match_file_round_trip_drops_null_entries(tmp_path: Path) -> None:
-    """Only an entry with a PMM service ID is a match."""
+    """Verify that only an entry with a PMM service ID is a match."""
     path = tmp_path / "matches.json"
     matched = migrate.Match(
         _old_service(),
@@ -360,7 +361,7 @@ def test_match_file_round_trip_drops_null_entries(tmp_path: Path) -> None:
 
 
 def test_match_file_shows_what_the_operator_checks(tmp_path: Path) -> None:
-    """Each entry carries the PMM service's name, address, port and last sync."""
+    """Verify that each entry carries the PMM service's name, address, port and last sync."""
     path = tmp_path / "matches.json"
     matches = migrate.propose_matches(_parsed(_export()).services, _state().services)
     migrate.write_match_file(path, matches)
@@ -379,7 +380,7 @@ def test_match_file_shows_what_the_operator_checks(tmp_path: Path) -> None:
 def test_read_match_file_refuses_a_file_that_is_not_a_match_file(
     tmp_path: Path,
 ) -> None:
-    """A hand-edited file with the wrong shape stops the run before any write."""
+    """Verify that a hand-edited file with the wrong shape stops the run before any write."""
     path = tmp_path / "matches.json"
     path.write_text('{"db1": {"pmm_service_id": "40"}}', encoding="utf-8")
     with pytest.raises(migrate.PreconditionError, match="db1"):
@@ -387,7 +388,7 @@ def test_read_match_file_refuses_a_file_that_is_not_a_match_file(
 
 
 def test_parse_export_refuses_a_truncated_list() -> None:
-    """A paged list whose total is larger than its items is not a whole export."""
+    """Verify that a paged list whose total is larger than its items is not a whole export."""
     export = _export()
     export["tasks"]["total"] = 7
     with pytest.raises(migrate.PreconditionError, match="4 of 7"):
@@ -406,7 +407,7 @@ def test_parse_export_refuses_a_truncated_list() -> None:
     ],
 )
 def test_parse_export_refuses_the_wrong_shape(damage: Any) -> None:
-    """A file that is not an export is refused, whatever is wrong with it."""
+    """Verify that a file that is not an export is refused, whatever is wrong with it."""
     export = _export()
     damage(export)
     with pytest.raises(migrate.PreconditionError):
@@ -414,13 +415,13 @@ def test_parse_export_refuses_the_wrong_shape(damage: Any) -> None:
 
 
 def test_parse_export_refuses_text_that_is_not_json() -> None:
-    """An HTML error page saved as the export is refused."""
+    """Verify that an HTML error page saved as the export is refused."""
     with pytest.raises(migrate.PreconditionError, match="JSON"):
         migrate.parse_export("<html>303 See Other</html>")
 
 
 def test_task_form_matches_the_body_pmm_accepted() -> None:
-    """The form built from a captured task equals the form 3.10.0 stored for it."""
+    """Verify that the form built from a captured task equals the form 3.10.0 stored for it."""
     stored = _CAPTURE["pmm"]["created_task"]["data"]["_form"]
     form = migrate.task_form(_old_task(_export(), _RSYNC), _PMM_SERVICE_A_ID)
     assert form["task_name"] == _RSYNC
@@ -430,7 +431,7 @@ def test_task_form_matches_the_body_pmm_accepted() -> None:
 
 
 def test_task_form_reads_wrapped_and_quoted_values() -> None:
-    """A long free-text value survives the way PyYAML wraps and quotes it."""
+    """Verify that a long free-text value survives the way PyYAML wraps and quotes it."""
     extra_args = "--regex '^(?!(mysql\\.|sys\\.))' " + " ".join(
         f"--option-{index}=value: {index}" for index in range(30)
     )
@@ -446,7 +447,7 @@ def test_task_form_reads_wrapped_and_quoted_values() -> None:
 
 
 def test_task_form_carries_the_encryption_recipient() -> None:
-    """The recipient moves from the server entry to its own form field."""
+    """Verify that the recipient moves from the server entry to its own form field."""
     task = _old_task(_export(), _XTRABACKUP)
     _edit_settings(
         task,
@@ -461,7 +462,7 @@ def test_task_form_carries_the_encryption_recipient() -> None:
 
 
 def test_build_plan_creates_every_schedule_disabled() -> None:
-    """Every schedule arrives paused, whatever it was on the old instance."""
+    """Verify that every schedule arrives paused, whatever it was on the old instance."""
     plan = migrate.build_plan(
         _parsed(_export()), {_SERVICE_A: _PMM_SERVICE_A_ID}, _state()
     )
@@ -472,7 +473,7 @@ def test_build_plan_creates_every_schedule_disabled() -> None:
 
 
 def test_build_plan_copies_the_interval_and_the_crontab_unchanged() -> None:
-    """The timing objects of the old list are the bodies 3.10.0 accepted."""
+    """Verify that the timing objects of the old list are the bodies 3.10.0 accepted."""
     export = _export()
     plan = migrate.build_plan(
         _parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, _state()
@@ -489,7 +490,7 @@ def test_build_plan_copies_the_interval_and_the_crontab_unchanged() -> None:
 
 
 def test_build_plan_skips_service_absent_from_match_file() -> None:
-    """Nothing is created for a service the match file does not match."""
+    """Verify that nothing is created for a service the match file does not match."""
     plan = migrate.build_plan(_parsed(_export()), {}, _state())
     assert plan.to_create == []
     assert len(plan.skipped) == _ALL_SCHEDULES
@@ -499,25 +500,27 @@ def test_build_plan_skips_service_absent_from_match_file() -> None:
 
 
 def test_build_plan_skips_a_match_to_a_service_pmm_does_not_have() -> None:
-    """A hand-edited ID that PMM does not know creates nothing."""
+    """Verify that a hand-edited ID that PMM does not know creates nothing."""
     plan = migrate.build_plan(_parsed(_export()), {_SERVICE_A: 99}, _state())
     assert plan.to_create == []
     assert "99" in plan.skipped[0][1]
 
 
 def test_build_plan_skips_schedule_that_already_exists() -> None:
-    """A schedule PMM already lists for the task is not planned again."""
+    """Verify that a schedule PMM already lists for the task is not planned again."""
     export = _export()
     schedule = _old_schedule(export, _MYDUMPER)
     existing = {_MYDUMPER: [{"interval": schedule["interval"], "crontab": None}]}
     state = _state(tasks={_MYDUMPER: _PMM_SERVICE_A_ID}, schedules=existing)
     plan = migrate.build_plan(_parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, state)
-    assert schedule["name"] not in _planned_names(plan)
+    planned = _planned_names(plan)
+    assert len(planned) == _HOST_A_SCHEDULES - 1
+    assert schedule["name"] not in planned
     assert plan.already_present == [schedule["name"]]
 
 
 def test_build_plan_completes_a_task_that_has_no_schedule_yet() -> None:
-    """A run that stopped between the two writes left a task; only its schedule is planned."""
+    """Verify that a run that stopped between the two writes left a task; only its schedule is planned."""
     state = _state(tasks={_MYDUMPER: _PMM_SERVICE_A_ID})
     plan = migrate.build_plan(
         _parsed(_export()), {_SERVICE_A: _PMM_SERVICE_A_ID}, state
@@ -528,7 +531,7 @@ def test_build_plan_completes_a_task_that_has_no_schedule_yet() -> None:
 
 
 def test_build_plan_skips_a_task_name_taken_by_another_service() -> None:
-    """A PMM task of the same name on another service is not given schedules."""
+    """Verify that a PMM task of the same name on another service is not given schedules."""
     state = _state(tasks={_MYDUMPER: 77})
     plan = migrate.build_plan(
         _parsed(_export()), {_SERVICE_A: _PMM_SERVICE_A_ID}, state
@@ -538,7 +541,7 @@ def test_build_plan_skips_a_task_name_taken_by_another_service() -> None:
 
 
 def test_build_plan_skips_schedule_using_an_unknown_setting() -> None:
-    """3.10.0 drops a field it does not know, so the script refuses the schedule and names the key."""
+    """Verify that 3.10.0 drops a field it does not know, so the script refuses the schedule and names the key."""
     export = _export()
     _edit_settings(
         _old_task(export, _XTRABACKUP),
@@ -555,7 +558,7 @@ def test_build_plan_skips_schedule_using_an_unknown_setting() -> None:
 
 
 def test_build_plan_skips_schedule_using_an_unknown_server_key() -> None:
-    """An unknown key in the server entry is refused the same way."""
+    """Verify that an unknown key in the server entry is refused the same way."""
     export = _export()
     _edit_settings(
         _old_task(export, _XTRABACKUP),
@@ -568,7 +571,7 @@ def test_build_plan_skips_schedule_using_an_unknown_server_key() -> None:
 
 
 def test_build_plan_skips_task_with_no_backup_dir() -> None:
-    """3.10.0 requires a backup directory that v0.13.1 left optional."""
+    """Verify that 3.10.0 requires a backup directory that v0.13.1 left optional."""
     export = _export()
     _edit_settings(
         _old_task(export, _XTRABACKUP),
@@ -584,7 +587,7 @@ def test_build_plan_skips_task_with_no_backup_dir() -> None:
 
 
 def test_build_plan_skips_task_whose_service_left_the_old_inventory() -> None:
-    """A task that names a service the old inventory no longer has cannot be matched."""
+    """Verify that a task that names a service the old inventory no longer has cannot be matched."""
     export = _export()
     export["services"]["items"] = [
         item for item in export["services"]["items"] if item["name"] != _SERVICE_A
@@ -600,7 +603,7 @@ def test_build_plan_skips_task_whose_service_left_the_old_inventory() -> None:
 
 
 def test_build_plan_skips_schedule_whose_task_is_not_in_the_export() -> None:
-    """A schedule of a task the export does not hold is named, not guessed at."""
+    """Verify that a schedule of a task the export does not hold is named, not guessed at."""
     export = _export()
     export["schedules"][0]["task"] = "gone"
     plan = migrate.build_plan(
@@ -610,7 +613,7 @@ def test_build_plan_skips_schedule_whose_task_is_not_in_the_export() -> None:
 
 
 def test_build_plan_skips_schedule_with_a_chained_request() -> None:
-    """A chained request is named, not dropped in silence."""
+    """Verify that a chained request is named, not dropped in silence."""
     export = _export()
     export["schedules"][0]["execute_request"] = {"chain": ["other-task"]}
     plan = migrate.build_plan(
@@ -620,7 +623,7 @@ def test_build_plan_skips_schedule_with_a_chained_request() -> None:
 
 
 def test_build_plan_carries_a_start_time_and_a_description() -> None:
-    """3.10.0 stores both fields, so a schedule that has them keeps them."""
+    """Verify that 3.10.0 stores both fields, so a schedule that has them keeps them."""
     export = _export()
     export["schedules"][0].update(
         start_time="2026-12-01T00:00:00Z", description="nightly logical dump"
@@ -637,7 +640,7 @@ def test_build_plan_carries_a_start_time_and_a_description() -> None:
 
 
 def test_build_plan_gives_one_task_all_of_its_schedules() -> None:
-    """One task with two schedules is one task write and two schedule writes."""
+    """Verify that one task with two schedules is one task write and two schedule writes."""
     export = _export()
     second = copy.deepcopy(_old_schedule(export, _MYDUMPER))
     second.update(
@@ -654,7 +657,7 @@ def test_build_plan_gives_one_task_all_of_its_schedules() -> None:
 
 
 def test_build_plan_lists_old_backup_locations() -> None:
-    """Every old task's backup directory is listed, matched or not."""
+    """Verify that every old task's backup directory is listed, matched or not."""
     plan = migrate.build_plan(_parsed(_export()), {}, _state())
     locations = {
         (location.service, location.task): location
@@ -676,7 +679,7 @@ def test_build_plan_lists_old_backup_locations() -> None:
 def test_dry_run_sends_no_write_request(
     workdir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Without --apply the script reads, writes the match file and prints the plan."""
+    """Verify that without --apply the script reads, writes the match file and prints the plan."""
     pmm = FakePmm()
     assert migrate.main(_args(workdir), http=pmm) == 0
     assert pmm.writes() == []
@@ -691,7 +694,7 @@ def test_dry_run_sends_no_write_request(
 
 
 def test_dry_run_keeps_an_existing_match_file(workdir: Path) -> None:
-    """A match file the operator edited is read, never rewritten."""
+    """Verify that a match file the operator edited is read, never rewritten."""
     edited = json.dumps(
         {_SERVICE_A: {"pmm_service_id": None, "reason": "edited by hand"}}
     )
@@ -703,14 +706,14 @@ def test_dry_run_keeps_an_existing_match_file(workdir: Path) -> None:
 def test_output_never_holds_the_token(
     workdir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The token is read from a file and printed nowhere."""
+    """Verify that the token is read from a file and printed nowhere."""
     migrate.main(_args(workdir), http=FakePmm())
     captured = capsys.readouterr()
     assert _TOKEN not in captured.out + captured.err
 
 
 def test_apply_without_match_file_is_a_usage_error(workdir: Path) -> None:
-    """--apply creates only what an existing match file holds."""
+    """Verify that --apply creates only what an existing match file holds."""
     pmm = FakePmm()
     assert migrate.main(_args(workdir, "--apply"), http=pmm) == _EXIT_USAGE
     assert pmm.requests == []
@@ -719,7 +722,7 @@ def test_apply_without_match_file_is_a_usage_error(workdir: Path) -> None:
 def test_apply_stops_before_any_write_when_token_is_not_admin(
     workdir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A Viewer reads every list, so only the role check stops the run in time."""
+    """Verify that a Viewer reads every list, so only the role check stops the run in time."""
     pmm = FakePmm(me=_CAPTURE["pmm"]["me_viewer"])
     migrate.main(_args(workdir), http=pmm)
     assert migrate.main(_args(workdir, "--apply"), http=pmm) == _EXIT_PRECONDITION
@@ -730,14 +733,14 @@ def test_apply_stops_before_any_write_when_token_is_not_admin(
 def test_a_rejected_token_is_a_precondition_failure(
     workdir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """HTTP 401 on the first read ends the run with one clear line."""
+    """Verify that HTTP 401 on the first read ends the run with one clear line."""
     (workdir / "pmm.token").write_text("not-the-token", encoding="utf-8")
     assert migrate.main(_args(workdir), http=FakePmm()) == _EXIT_PRECONDITION
     assert "401" in capsys.readouterr().err
 
 
 def test_a_truncated_export_stops_before_any_request(workdir: Path) -> None:
-    """The export is checked before PMM is asked anything."""
+    """Verify that the export is checked before PMM is asked anything."""
     export = _export()
     export["services"]["total"] = 9
     (workdir / "export.json").write_text(json.dumps(export), encoding="utf-8")
@@ -749,7 +752,7 @@ def test_a_truncated_export_stops_before_any_request(workdir: Path) -> None:
 def test_apply_creates_three_paused_schedules(
     workdir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Each schedule is a task write and then a schedule write, with enabled false."""
+    """Verify that each schedule is a task write and then a schedule write, with enabled false."""
     pmm = FakePmm()
     migrate.main(_args(workdir), http=pmm)
     assert migrate.main(_args(workdir, "--apply"), http=pmm) == 0
@@ -767,7 +770,7 @@ def test_apply_creates_three_paused_schedules(
 def test_apply_stops_on_first_rejected_schedule_and_reports(
     workdir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A rejected write ends the run with what was created so far."""
+    """Verify that a rejected write ends the run with what was created so far."""
     pmm = FakePmm()
     migrate.main(_args(workdir), http=pmm)
     pmm.reject = _reject_nth_write(_WRITES_BEFORE_REJECTION)
@@ -779,7 +782,7 @@ def test_apply_stops_on_first_rejected_schedule_and_reports(
 
 
 def test_second_apply_creates_only_the_rest(workdir: Path) -> None:
-    """A run that stopped between a task and its schedule is completed, not duplicated."""
+    """Verify that a run that stopped between a task and its schedule is completed, not duplicated."""
     pmm = FakePmm()
     migrate.main(_args(workdir), http=pmm)
     pmm.reject = _reject_nth_write(_WRITES_BEFORE_REJECTION)
@@ -807,7 +810,7 @@ def test_second_apply_creates_only_the_rest(workdir: Path) -> None:
 def test_third_apply_finds_every_schedule_by_listing(
     workdir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """3.10.0 answers 502 for a duplicate schedule, so the script never sends one."""
+    """Verify that 3.10.0 answers 502 for a duplicate schedule, so the script never sends one."""
     pmm = FakePmm()
     migrate.main(_args(workdir), http=pmm)
     migrate.main(_args(workdir, "--apply"), http=pmm)
@@ -818,7 +821,7 @@ def test_third_apply_finds_every_schedule_by_listing(
 
 
 def test_existing_tasks_are_found_beyond_the_first_page(workdir: Path) -> None:
-    """The task list gives 50 per page at most, and every page is read."""
+    """Verify that the task list gives 50 per page at most, and every page is read."""
     pmm = FakePmm()
     migrate.main(_args(workdir), http=pmm)
     migrate.main(_args(workdir, "--apply"), http=pmm)
@@ -837,7 +840,7 @@ def test_existing_tasks_are_found_beyond_the_first_page(workdir: Path) -> None:
 def test_missing_pyyaml_is_one_line_and_exit_2(
     workdir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Without PyYAML the script says how to get it and sends nothing."""
+    """Verify that without PyYAML the script says how to get it and sends nothing."""
     monkeypatch.setitem(sys.modules, "yaml", None)
     pmm = FakePmm()
     assert migrate.main(_args(workdir), http=pmm) == _EXIT_USAGE
@@ -848,7 +851,7 @@ def test_missing_pyyaml_is_one_line_and_exit_2(
 
 
 def test_tls_is_verified_unless_the_option_says_otherwise(tmp_path: Path) -> None:
-    """The default context checks the certificate and the host name."""
+    """Verify that the default context checks the certificate and the host name."""
     default = migrate.tls_context(ca_file=None, insecure=False)
     assert default.verify_mode == ssl.CERT_REQUIRED
     assert default.check_hostname is True
@@ -856,7 +859,7 @@ def test_tls_is_verified_unless_the_option_says_otherwise(tmp_path: Path) -> Non
 
 
 class FakeStandalone:
-    """The tasks and inventory services of an installed v0.13.1, two items per page."""
+    """Serve the tasks and inventory lists of an installed v0.13.1, two items per page."""
 
     def __init__(self) -> None:
         """Serve the captured lists."""
@@ -904,7 +907,7 @@ def _export_args(tmp_path: Path) -> list[str]:
 def test_export_writes_three_whole_lists(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The export follows every page and its output is what migrate reads."""
+    """Verify that the export follows every page and its output is what migrate reads."""
     old = FakeStandalone()
     assert migrate.main(_export_args(tmp_path), http=old) == 0
     assert all(request.method == "GET" for request in old.requests)
@@ -919,7 +922,7 @@ def test_export_writes_three_whole_lists(
 def test_export_with_a_rejected_token_writes_nothing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A failed read leaves no partial export behind."""
+    """Verify that a failed read leaves no partial export behind."""
     args = _export_args(tmp_path)
     (tmp_path / "old.token").write_text("wrong", encoding="utf-8")
     assert migrate.main(args, http=FakeStandalone()) == _EXIT_PRECONDITION
@@ -931,7 +934,7 @@ def test_export_with_a_rejected_token_writes_nothing(
 def test_stdout_to_stderr_keeps_the_export_clean(
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """What the old application logs to standard output must not reach the export."""
+    """Verify that What the old application logs to standard output must not reach the export."""
     with migrate.stdout_to_stderr():
         os.write(1, b"a log line\n")
     os.write(1, b"the export\n")
@@ -941,7 +944,7 @@ def test_stdout_to_stderr_keeps_the_export_clean(
 
 
 class _LoggingSettings:
-    """Settings of a standalone install that log to standard output when read, as v0.13.1's do."""
+    """Imitate settings of a standalone install that log to standard output when read."""
 
     SSL_CAFILE = None
 
@@ -959,7 +962,7 @@ class _LoggingSettings:
 
 
 class _Secret:
-    """A stand-in for the secret wrapper the standalone settings use."""
+    """Stand in for the secret wrapper that the standalone settings use."""
 
     def get_secret_value(self) -> str:
         """Return the token."""
@@ -969,7 +972,7 @@ class _Secret:
 def test_export_inside_the_install_reads_its_settings(
     monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """With no option, the export takes URLs and token from the install, and its log lines stay out."""
+    """Verify that with no option, the export takes URLs and token from the install, and its log lines stay out."""
     core = types.SimpleNamespace(
         settings=_LoggingSettings(SEP_INTERNAL_TOKEN=_Secret())
     )
@@ -990,7 +993,7 @@ def test_export_inside_the_install_reads_its_settings(
 def test_export_outside_the_install_says_what_it_needs(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Without the install's settings and without options, the export is a usage error."""
+    """Verify that without the install's settings and without options, the export is a usage error."""
     monkeypatch.setitem(sys.modules, "app.sep.config", None)
     assert migrate.main(["export"], http=FakeStandalone()) == _EXIT_USAGE
     assert "--tasks-url" in capsys.readouterr().err
