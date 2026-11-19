@@ -478,7 +478,11 @@ class Api:
                     f"{self._name} answered GET {path} with something that is not a paged list"
                 )
             items.extend(page["items"])
-            total = page.get("total", len(items))
+            total = page.get("total")
+            if not isinstance(total, int):
+                raise PreconditionError(
+                    f"{self._name} answered GET {path} with a list that has no total"
+                )
             if len(items) >= total:
                 return items
             if not page["items"]:
@@ -651,6 +655,7 @@ def parse_export(text: str) -> OldExport:
     for task in tasks:
         _check_task(task)
     services = [_old_service_from(item) for item in _paged_items(document, "services")]
+    _refuse_repeated_names(services)
     return OldExport(schedules=schedules, tasks=tasks, services=services)
 
 
@@ -694,6 +699,19 @@ def _propose(old: OldService, pmm: list[PmmService]) -> Match:
     )
 
 
+def _refuse_repeated_names(services: list[OldService]) -> None:
+    """Refuse an old inventory in which two MySQL services share a name.
+
+    :param services: The old instance's MySQL services.
+    :raises PreconditionError: When a name repeats, because the match file is keyed by name.
+    """
+    names = [service.name for service in services]
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        message = f"the old inventory has more than one MySQL service named {', '.join(repeated)}; rename one first"
+        raise PreconditionError(message)
+
+
 def propose_matches(old: list[OldService], pmm: list[PmmService]) -> list[Match]:
     """Propose a PMM service for each old service.
 
@@ -707,12 +725,26 @@ def propose_matches(old: list[OldService], pmm: list[PmmService]) -> list[Match]
     :raises PreconditionError: When two old services share a name, because the
         match file is keyed by name.
     """
-    names = [service.name for service in old]
-    repeated = sorted({name for name in names if names.count(name) > 1})
-    if repeated:
-        message = f"the old inventory has more than one MySQL service named {', '.join(repeated)}; rename one first"
-        raise PreconditionError(message)
+    _refuse_repeated_names(old)
     return [_propose(service, pmm) for service in old]
+
+
+def _write_file(path: Path, text: str, what: str, *, private: bool = False) -> None:
+    """Write a file, as a usage error when it cannot be written.
+
+    :param path: The file to write.
+    :param text: Its contents.
+    :param what: What the file is, for the message.
+    :param private: Make the file readable and writable by its owner only.
+    :raises UsageError: When the file cannot be written.
+    """
+    try:
+        if private:
+            path.touch(mode=0o600)
+            path.chmod(0o600)
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise UsageError(f"cannot write {what} {path}: {exc}") from exc
 
 
 def write_match_file(path: Path, matches: list[Match]) -> None:
@@ -744,7 +776,7 @@ def write_match_file(path: Path, matches: list[Match]) -> None:
         }
         for match in matches
     }
-    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    _write_file(path, json.dumps(document, indent=2) + "\n", "the match file")
 
 
 def read_match_file(path: Path) -> dict[str, int]:
@@ -921,6 +953,12 @@ def task_form(task: dict[str, Any], pmm_service_id: int) -> dict[str, Any]:
     encryption_format = _encryption_format(common)
     if encryption_format:
         form["encryption_format"] = encryption_format
+    try:
+        json.dumps(form)
+    except TypeError as exc:
+        raise SkipScheduleError(
+            f"task {name} has a setting value that cannot be sent as JSON ({exc})"
+        ) from exc
     return form
 
 
@@ -1051,15 +1089,20 @@ def _timing(schedule: dict[str, Any]) -> dict[str, Any]:
 def _instant(value: Any) -> Any:
     """Return a start time as a point in time, so that two notations of one instant compare equal.
 
+    A time with no zone is taken as UTC, which is what both instances store.
+
     :param value: A start time as an API returns it, or ``None``.
     :return: The parsed time, or the value itself when it is not an ISO 8601 string.
     """
     if not isinstance(value, str):
         return value
     try:
-        return datetime.datetime.fromisoformat(value)
+        instant = datetime.datetime.fromisoformat(value)
     except ValueError:
         return value
+    if instant.tzinfo is None:
+        return instant.replace(tzinfo=datetime.UTC)
+    return instant
 
 
 def _schedule_conflict(schedule: dict[str, Any], listed: dict[str, Any]) -> str | None:
@@ -1144,15 +1187,21 @@ def build_plan(export: OldExport, matches: dict[str, int], state: PmmState) -> P
             plan.skipped.append((name, str(exc)))
             continue
         timing = _timing(schedule)
+        same_timing = [
+            item
+            for item in state.schedules.get(task_name, [])
+            if _timing(item) == timing
+        ]
+        conflicts = [_schedule_conflict(schedule, item) for item in same_timing]
         listed = next(
             (
                 item
-                for item in state.schedules.get(task_name, [])
-                if _timing(item) == timing
+                for item, reason in zip(same_timing, conflicts, strict=True)
+                if not reason
             ),
             None,
         )
-        conflict = _schedule_conflict(schedule, listed) if listed else None
+        conflict = None if listed or not conflicts else conflicts[0]
         if timing in seen.setdefault(task_name, []):
             plan.skipped.append(
                 (name, f"it repeats another schedule of task {task_name}")
@@ -1179,6 +1228,23 @@ def build_plan(export: OldExport, matches: dict[str, int], state: PmmState) -> P
     return plan
 
 
+def _well_formed(items: list[dict[str, Any]], what: str) -> list[dict[str, Any]]:
+    """Return a PMM Extensions list after checking that each item has a name, and a service an ID.
+
+    :param items: The items as the API returns them.
+    :param what: ``service`` or ``task``, for the message and the ID check.
+    :return: The same items.
+    :raises PreconditionError: When an item is not an object with the expected keys.
+    """
+    for item in items:
+        named = isinstance(item, dict) and isinstance(item.get("name"), str)
+        if not named or (what == "service" and not isinstance(item.get("id"), int)):
+            raise PreconditionError(
+                f"PMM Extensions listed a {what} without a name or an ID"
+            )
+    return items
+
+
 def read_pmm_state(api: Api) -> PmmState:
     """Read what PMM Extensions holds: MySQL services, MySQL Backups tasks, their schedules.
 
@@ -1194,13 +1260,13 @@ def read_pmm_state(api: Api) -> PmmState:
     )
     tasks = api.get_all("/apps/mysql_backups/", {}, _PAGE_SIZE)
     schedules = api.get_all("/extensions/periodic-tasks/", {}, _PAGE_SIZE)
-    hosts = api.get("/extensions/hosts/", {"limit": _PAGE_SIZE})
+    hosts = api.get("/extensions/hosts/")
     if not isinstance(hosts, list):
         raise PreconditionError(
             "PMM Extensions answered GET /extensions/hosts/ with something that is not a list"
         )
     existing: dict[str, PmmTask] = {}
-    for task in tasks:
+    for task in _well_formed(tasks, "task"):
         data = task.get("data") if isinstance(task.get("data"), dict) else {}
         meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
         form = data.get("_form") if isinstance(data.get("_form"), dict) else {}
@@ -1210,7 +1276,7 @@ def read_pmm_state(api: Api) -> PmmState:
         if schedule.get("task") in existing:
             by_task.setdefault(schedule["task"], []).append(schedule)
     return PmmState(
-        services=[pmm_service_from(item) for item in services],
+        services=[pmm_service_from(item) for item in _well_formed(services, "service")],
         tasks=existing,
         schedules=by_task,
         hosts=[str(host.get("name")) for host in hosts if isinstance(host, dict)],
@@ -1485,7 +1551,7 @@ def _installed_settings() -> tuple[str, str, str, Path | None]:
             )
             token = core.SEP_INTERNAL_TOKEN.get_secret_value()
             ca_file = Path(str(core.SSL_CAFILE)) if core.SSL_CAFILE else None
-    except (ImportError, AttributeError) as exc:
+    except (ImportError, AttributeError, ValueError, OSError) as exc:
         message = (
             "cannot read the standalone install's settings. Run 'export' inside the install's 'tasks_api' container, "
             f"or pass --tasks-url, --inventory-url and --token-file ({type(exc).__name__}: {exc})"
@@ -1503,7 +1569,12 @@ def run_export(args: argparse.Namespace, http: Http | None) -> None:
     :param http: The function that sends a request, or ``None`` for the network.
     :raises MigrationError: When a list cannot be read.
     """
-    if args.tasks_url and args.inventory_url and args.token_file:
+    given = [args.tasks_url, args.inventory_url, args.token_file]
+    if any(given) and not all(given):
+        raise UsageError(
+            "pass --tasks-url, --inventory-url and --token-file together, or none of them"
+        )
+    if all(given):
         tasks_url, inventory_url = args.tasks_url, args.inventory_url
         token, ca_file = (
             _read_file(args.token_file, "the token file").strip(),
@@ -1530,7 +1601,7 @@ def run_export(args: argparse.Namespace, http: Http | None) -> None:
     text = json.dumps(document, indent=2) + "\n"
     parse_export(text)
     if args.output:
-        args.output.write_text(text, encoding="utf-8")
+        _write_file(args.output, text, "the export file", private=True)
     else:
         sys.stdout.write(text)
     summary = f"{_count(len(schedules), 'schedule')}, {_count(len(tasks), 'task')}, {_count(len(services), 'service')}"

@@ -22,6 +22,7 @@ object and changes it.
 """
 
 import copy
+import datetime
 import json
 import os
 import ssl
@@ -64,6 +65,7 @@ _EXIT_PARTIAL = 4
 _WRITES_BEFORE_REJECTION = 4
 _TASKS_BEFORE_REJECTION = 2
 _WRITES_LEFT = 3
+_PRIVATE_MODE = 0o600
 
 
 def _export() -> dict[str, Any]:
@@ -1175,3 +1177,147 @@ def test_plan_names_a_present_schedule_that_is_enabled(
     out = capsys.readouterr().out
     assert f"{_old_schedule(_export(), _MYDUMPER)['name']}: enabled in PMM" in out
     assert f"{_old_schedule(_export(), _XTRABACKUP)['name']}: paused in PMM" in out
+
+
+def test_export_refuses_a_partial_set_of_source_options(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Verify that one source option without the other two is a usage error, not a silent fallback."""
+    http = FakeStandalone()
+    assert (
+        migrate.main(["export", "--tasks-url", "https://tasks_api:9002"], http=http)
+        == _EXIT_USAGE
+    )
+    assert http.requests == []
+    assert "together" in capsys.readouterr().err
+
+
+def test_export_reports_settings_that_fail_to_load(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify that settings the old application refuses to build end in a usage error, not a traceback."""
+
+    class _Broken:
+        def __getattr__(self, name: str) -> Any:
+            raise ValueError("1 validation error for Settings")
+
+    monkeypatch.setitem(
+        sys.modules, "app.core.config", types.SimpleNamespace(settings=_Broken())
+    )
+    monkeypatch.setitem(
+        sys.modules, "app.sep.config", types.SimpleNamespace(sep_settings=_Broken())
+    )
+    assert migrate.main(["export"], http=FakeStandalone()) == _EXIT_USAGE
+    assert "--tasks-url" in capsys.readouterr().err
+
+
+def test_export_output_file_is_private(tmp_path: Path) -> None:
+    """Verify that an export written to a file is readable by its owner only, even when the file existed."""
+    output = tmp_path / "export.json"
+    output.write_text("old", encoding="utf-8")
+    output.chmod(0o644)
+    args = [*_export_args(tmp_path), "--output", str(output)]
+    assert migrate.main(args, http=FakeStandalone()) == 0
+    assert output.stat().st_mode & 0o777 == _PRIVATE_MODE
+    assert (
+        len(migrate.parse_export(output.read_text(encoding="utf-8")).schedules)
+        == _ALL_SCHEDULES
+    )
+
+
+def test_build_plan_skips_task_with_a_value_json_cannot_carry() -> None:
+    """Verify that a stored date is found by the plan, not by a failed write in the middle of a run."""
+    export = _export()
+    _edit_settings(
+        _old_task(export, _XTRABACKUP),
+        lambda settings: settings["ALL_SERVERS"].update(
+            XTRABACKUP_EXTRA_ARGS=datetime.date(2026, 1, 1)
+        ),
+    )
+    plan = migrate.build_plan(
+        _parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, _state()
+    )
+    assert sorted(task.name for task in plan.to_create) == [_MYDUMPER, _RSYNC]
+    assert "JSON" in dict(plan.skipped)[_old_schedule(export, _XTRABACKUP)["name"]]
+
+
+def test_an_unwritable_match_file_is_a_usage_error(
+    workdir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify that a match file in a directory that does not exist ends the run with one line."""
+    args = _args(workdir)
+    args[args.index("--matches") + 1] = str(workdir / "absent" / "matches.json")
+    assert migrate.main(args, http=FakePmm()) == _EXIT_USAGE
+    assert "cannot write the match file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"items": [], "total": None, "offset": 0, "limit": 50},
+        {"items": [{"name": "no-id"}], "total": 1, "offset": 0, "limit": 50},
+    ],
+)
+def test_a_malformed_list_from_pmm_is_a_precondition_failure(
+    workdir: Path, answer: dict[str, Any]
+) -> None:
+    """Verify that a list PMM Extensions answers in another shape stops the run before any write."""
+    pmm = FakePmm()
+
+    def odd_services(request: Any) -> Any:
+        if "/extensions/services/" in request.url:
+            return migrate.Response(status=200, body=json.dumps(answer).encode())
+        return None
+
+    pmm.reject = odd_services
+    assert migrate.main(_args(workdir), http=pmm) == _EXIT_PRECONDITION
+    assert pmm.writes() == []
+
+
+def test_two_old_services_with_one_name_are_refused_with_a_match_file_present(
+    workdir: Path,
+) -> None:
+    """Verify that the repeated name is refused on every run, not only when the match file is first written."""
+    export = _export()
+    clone = copy.deepcopy(export["services"]["items"][0])
+    clone["port"] = 3307
+    export["services"]["items"].append(clone)
+    export["services"]["total"] = len(export["services"]["items"])
+    (workdir / "export.json").write_text(json.dumps(export), encoding="utf-8")
+    (workdir / "matches.json").write_text(
+        json.dumps({_SERVICE_A: {"pmm_service_id": 3}}), encoding="utf-8"
+    )
+    pmm = FakePmm()
+    assert migrate.main(_args(workdir, "--apply"), http=pmm) == _EXIT_PRECONDITION
+    assert pmm.requests == []
+
+
+def test_build_plan_finds_the_matching_schedule_behind_a_conflicting_one() -> None:
+    """Verify that every PMM schedule with the same timing is examined, not only the first."""
+    export = _export()
+    schedule = _old_schedule(export, _MYDUMPER)
+    listed = [
+        _listed_schedule(
+            interval=schedule["interval"], start_time="2027-01-01T00:00:00Z"
+        ),
+        _listed_schedule(interval=schedule["interval"], enabled=True),
+    ]
+    state = _state(tasks={_MYDUMPER: _PMM_SERVICE_A_ID}, schedules={_MYDUMPER: listed})
+    plan = migrate.build_plan(_parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, state)
+    assert plan.already_present == [schedule["name"]]
+    assert plan.already_enabled == [schedule["name"]]
+
+
+def test_build_plan_reads_a_start_time_with_no_zone_as_utc() -> None:
+    """Verify that a start time with no zone equals the same instant written with one."""
+    export = _export()
+    schedule = _old_schedule(export, _MYDUMPER)
+    schedule["start_time"] = "2026-12-01T00:00:00"
+    listed = _listed_schedule(
+        interval=schedule["interval"], start_time="2026-12-01T00:00:00+00:00"
+    )
+    state = _state(
+        tasks={_MYDUMPER: _PMM_SERVICE_A_ID}, schedules={_MYDUMPER: [listed]}
+    )
+    plan = migrate.build_plan(_parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, state)
+    assert plan.already_present == [schedule["name"]]
