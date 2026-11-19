@@ -89,16 +89,24 @@ pipeline {
 					rm -rf "${PY_TMP}"
 					${PYTHON} --version
 
-					${PYTHON} -m venv venv
-					ln -s venv .venv
-					venv/bin/${PYTHON} -m pip install --no-cache -U pip wheel
+					# An older releaseTag (a patch branched from a pre-3.14 tag) caps
+					# requires-python below 3.14, so it installs on the agent's 3.11.
+					VENV_PYTHON="${PYTHON}"
+					if grep -qE '^requires-python = ".*<3\\.([0-9]|1[0-4])(\\.[0-9]+)?"' pyproject.toml; then
+						VENV_PYTHON=python3.11
+					fi
+					${VENV_PYTHON} --version
 
-					${PYTHON} -m venv build/venv
-					build/venv/bin/${PYTHON} -m pip install --no-cache -U pip wheel 'poetry==2.4.1'
+					${VENV_PYTHON} -m venv venv
+					ln -s venv .venv
+					venv/bin/python -m pip install --no-cache -U pip wheel
+
+					${VENV_PYTHON} -m venv build/venv
+					build/venv/bin/python -m pip install --no-cache -U pip wheel 'poetry==2.4.1'
 					# Pre-install so Poetry's project-scoped plugin self-install
 					# never runs — that solver hits PyPI live and trips
 					# `solver.min-release-age` in poetry.toml on fresh transitives.
-					build/venv/bin/${PYTHON} -m pip install --no-cache 'poetry-plugin-export>=1.9.0,<2.0.0'
+					build/venv/bin/python -m pip install --no-cache 'poetry-plugin-export>=1.9.0,<2.0.0'
 					build/venv/bin/poetry check --lock --strict
 					build/venv/bin/poetry install --with audit
 

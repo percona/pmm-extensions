@@ -94,10 +94,11 @@ jobs:
             exit 1
           fi
 
+      # No python-version input: the action comes from the checked-out branch, so
+      # its default is that branch's interpreter, which a patch branch cut from an
+      # older tag may still pin below the one main uses.
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
-        with:
-          python-version: "3.14.10"
 
       - name: Pre-tag lint gate (all-files pre-commit)
         env:

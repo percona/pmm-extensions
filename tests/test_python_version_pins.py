@@ -25,6 +25,8 @@ checks; those two pins are expected by name.
 import re
 import tomllib
 from collections import Counter
+from collections.abc import Iterator
+from typing import Any
 
 import pytest
 import yaml
@@ -34,7 +36,6 @@ from app import BASE_DIR
 FROM_TAG = re.compile(
     r"^FROM docker\.io/library/python:(\d+\.\d+\.\d+)-slim\b", re.MULTILINE
 )
-WORKFLOW_PIN = re.compile(r"^\s*(?:python-version:\s*(.+)|python:\s*\[(.*)\])\s*$")
 HOST_PYTHON = "3.9"
 HOST_PYTHON_WORKFLOWS = ["coverage-main.yml", "python.yaml"]
 
@@ -50,17 +51,29 @@ def _from_tag(relative: str) -> str:
     return match.group(1)
 
 
-def _pinned_values(text: str) -> list[str]:
-    """Return the literal versions in a ``python-version:`` value or matrix list.
+def _workflow_pins(node: Any) -> Iterator[str]:
+    """Yield every literal Python version a parsed workflow pins.
 
-    Quoted and unquoted values count alike; an expression such as
-    ``${{ matrix.python }}`` carries no literal and is skipped.
+    A scalar ``python-version`` value and each entry of a ``python`` matrix list
+    count, in any YAML spelling; an expression such as ``${{ matrix.python }}``
+    carries no literal and is skipped.
 
-    :param text: The value after ``python-version:``, or the matrix list's contents.
-    :return: Each literal version it names.
+    :param node: A parsed workflow, or any part of one.
+    :return: An iterator over the pinned versions, as strings.
     """
-    values = [item.strip().strip("'\"") for item in text.split(",")]
-    return [value for value in values if value and "${{" not in value]
+    if isinstance(node, list):
+        for item in node:
+            yield from _workflow_pins(item)
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            if key == "python-version" and isinstance(value, str | int | float):
+                literals = [value]
+            elif key == "python" and isinstance(value, list):
+                literals = value
+            else:
+                yield from _workflow_pins(value)
+                continue
+            yield from (str(item) for item in literals if "${{" not in str(item))
 
 
 @pytest.fixture(scope="module")
@@ -109,11 +122,9 @@ def test_workflows_pin_only_the_reference_and_the_host_python(version: str) -> N
     """
     pins: Counter[tuple[str, str]] = Counter()
     for workflow in sorted((BASE_DIR / ".github" / "workflows").glob("*.y*ml")):
-        for line in workflow.read_text(encoding="utf-8").splitlines():
-            if (match := WORKFLOW_PIN.match(line)) is None:
-                continue
-            for pinned in _pinned_values(match.group(1) or match.group(2)):
-                pins[workflow.name, pinned] += 1
+        parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        for pinned in _workflow_pins(parsed):
+            pins[workflow.name, pinned] += 1
 
     assert {pinned for _, pinned in pins if pinned != HOST_PYTHON} == {version}
     assert sorted(

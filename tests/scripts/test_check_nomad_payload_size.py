@@ -15,6 +15,7 @@
 
 """Tests for the ``scripts/check_nomad_payload_size.py`` CLI."""
 
+import gzip
 import sys
 
 import pytest
@@ -31,6 +32,14 @@ VERBOSE_SCRIPT = '''\
 def hello(name: str = "world") -> str:
     """Return a friendly greeting."""
     return f"hello, {name}"
+'''
+
+REQUOTABLE_SCRIPT = '''\
+"""A module whose f-string holds a quoted subscript."""
+
+import os
+
+print(f"{os.environ['HOME']}/.my.cnf")
 '''
 
 INVALID_SCRIPT = "def oops(:\n"
@@ -65,6 +74,18 @@ def test_check_payload_uses_minified_text_for_size(tmp_path, monkeypatch):
     _, size = check_nomad_payload_size.check_payload(str(path))
     assert len(seen["minified"]) < len(VERBOSE_SCRIPT)
     assert size > 0
+
+
+def test_payload_size_measures_a_requotable_source_unminified(tmp_path) -> None:
+    """Measure a source dispatch sends as written at its unminified size.
+
+    :param tmp_path: The directory the payload is written to.
+    """
+    path = write_file(tmp_path, "requotable.py", REQUOTABLE_SCRIPT)
+
+    size = check_nomad_payload_size.payload_size(str(path))
+
+    assert size == len(gzip.compress(REQUOTABLE_SCRIPT.encode("utf-8")))
 
 
 def test_check_payload_falls_back_on_syntax_error(tmp_path, monkeypatch):

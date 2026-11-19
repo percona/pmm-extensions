@@ -21,6 +21,7 @@ import contextlib
 import gzip
 import io
 import sys
+from pathlib import Path
 
 try:
     from python_minifier import minify
@@ -28,16 +29,18 @@ except ModuleNotFoundError:
     minify = None
 
 NOMAD_PAYLOAD_SIZE_LIMIT = 16384
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def payload_size(path: str) -> int:
-    """Return the minify+gzip size in bytes of the Python file at ``path``.
+    """Return the size in bytes of the Python file at ``path`` as dispatch sends it.
 
-    The source is minified with ``python_minifier`` (falling back to the
-    original text on ``SyntaxError``) then gzip-compressed.
+    The source is minified with ``python_minifier`` then gzip-compressed. As at
+    dispatch, it is left as written when it is not Python or holds an f-string
+    the minifier could re-quote.
 
     :param path: Payload file path.
-    :return: Minify+gzip size in bytes.
+    :return: The gzip-compressed size in bytes.
     :raises SystemExit: When ``python_minifier`` is not importable.
     """
     if minify is None:
@@ -46,25 +49,30 @@ def payload_size(path: str) -> int:
             "Use the project venv interpreter, or let make resolve it:\n"
             "  make check-nomad-payload-size ARGS='--report <path>...'"
         )
+    repo_root = str(REPO_ROOT)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from app.tasks.execution.utils import holds_requotable_f_string  # noqa: PLC0415
 
     with open(path, encoding="utf-8") as f:  # noqa: PTH123
         src = f.read()
     with contextlib.suppress(SyntaxError):
-        src = minify(
-            src,
-            remove_annotations=True,
-            remove_pass=True,
-            remove_literal_statements=True,
-            combine_imports=True,
-            hoist_literals=True,
-            rename_locals=True,
-            rename_globals=True,
-            remove_object_base=True,
-            remove_asserts=True,
-            remove_debug=True,
-            remove_explicit_return_none=True,
-            remove_builtin_exception_brackets=True,
-        )
+        if not holds_requotable_f_string(src):
+            src = minify(
+                src,
+                remove_annotations=True,
+                remove_pass=True,
+                remove_literal_statements=True,
+                combine_imports=True,
+                hoist_literals=True,
+                rename_locals=True,
+                rename_globals=True,
+                remove_object_base=True,
+                remove_asserts=True,
+                remove_debug=True,
+                remove_explicit_return_none=True,
+                remove_builtin_exception_brackets=True,
+            )
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
         gz.write(src.encode("utf-8"))
