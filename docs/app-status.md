@@ -40,7 +40,7 @@ The test counts are from each app's own tests on the current `main`.
 
 - **What it does:** Runs pgBackRest backups of a PostgreSQL service: full, incremental and differential, with retention settings. On the host it runs `pgbackrest`, as the `postgres` user.
 - **State:** 898 lines of Python. 143 tests pass. Its pages are drawn from its form schema. It has run inside PMM: the app appeared under **Apps**, and one backup finished.
-- **What stands between it and PMM:** A host with pgBackRest and a configured stanza. Nothing else is known.
+- **What stands between it and PMM:** A host with pgBackRest and a configured stanza. The task switches to the `postgres` user with `sudo`, so the user that PMM Client runs as needs that permission without a password. Nothing else is known.
 - **Cost:** S.
 
 ### Checksums (`checksums`)

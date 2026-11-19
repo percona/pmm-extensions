@@ -177,7 +177,7 @@ A new Grafana token belongs to a service account named `pmm-extensions` with the
 | `/home/extensions/state` | The Grafana token and a generated `ENCRYPTION_KEY` | Always. Without it, a recreated container loses the key, and a deployment with encrypted values does not start. |
 | The path in `SECRETS_DIR` | The secret files that PMM writes | Read-only, shared with PMM Server |
 
-Everything under `/home/extensions/app` belongs to `root` and is read-only to the `extensions` user. The state directory is the only path the image creates for the sidecar's own files.
+The files under `/home/extensions/app` belong to `root`, and the `extensions` user cannot change their content. The directory itself belongs to `extensions`, so that user can add, remove and replace the entries directly in it. The state directory is the only path the image creates for the sidecar to write to by design.
 
 ## Health
 

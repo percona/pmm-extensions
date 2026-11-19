@@ -6,6 +6,7 @@ This page takes you from nothing to a checkout where the tests, the linters and 
 
 - Git and `make`.
 - Python 3.11.9 to 3.13. Versions 3.12.0 to 3.12.2 do not work.
+- Pango, which WeasyPrint loads when the tests import the `report` app. [WeasyPrint's installation page](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html) names the package for each system.
 - Linux or macOS. The steps were tested on Linux x86-64.
 
 ## Clone the repository

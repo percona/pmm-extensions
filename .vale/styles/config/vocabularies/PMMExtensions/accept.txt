@@ -11,6 +11,7 @@ Ansible
 Galera
 Fernet
 Uvicorn
+Pango
 [Nn]ginx
 [Ss]ystemd
 [Ss]upervisord

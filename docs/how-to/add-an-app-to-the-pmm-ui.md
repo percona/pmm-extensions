@@ -113,7 +113,13 @@ Two test files repeat the list of items. Without this step, four tests fail.
 
 2. Open `contexts/navigation/navigation.provider.test.tsx`. Find the list with the same two entries, and add the same line at its end.
 
-3. Run the navigation tests:
+3. Install the dependencies:
+
+   ```bash
+   pnpm install
+   ```
+
+4. Run the navigation tests:
 
    ```bash
    pnpm --filter ./apps/pmm exec vitest run src/contexts/navigation
@@ -128,13 +134,7 @@ Two test files repeat the list of items. Without this step, four tests fail.
 
 ## Build the UI
 
-1. Install the dependencies:
-
-   ```bash
-   pnpm install
-   ```
-
-2. Check the format of your edits:
+1. Check the format of your edits:
 
    ```bash
    pnpm format:check
@@ -142,7 +142,7 @@ Two test files repeat the list of items. Without this step, four tests fail.
 
    The output includes `All matched files use the correct format.` If it lists a file, run `pnpm format`.
 
-3. Build:
+2. Build:
 
    ```bash
    pnpm build

@@ -71,6 +71,8 @@ Each step writes a marker file when it finishes, and each API waits for all four
 
    Repeat the command until it exits with status 0. A step with nothing to apply finishes within a second.
 
+   If the marker does not appear, the step failed. Its error is in the container's log, which `docker logs pmm-extensions` prints. Fix the cause, then repeat steps 1 and 2. Leave Celery stopped until the marker exists.
+
 The container's health check fails while Celery is stopped or a marker is missing. After five failed checks, the container reports unhealthy: see [Health](../../sidecar/README.md#health).
 
 To rerun several steps, name them all in each call: `clear_sentinels.sh extensions tasks`, then `restart migrate-extensions migrate-tasks extensions inventory tasks`.

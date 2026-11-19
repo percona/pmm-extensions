@@ -50,7 +50,9 @@ The stack listens on `127.0.0.1` only. These variables change it:
 | `PMM_PORT` | `8443` | The port on `127.0.0.1` where PMM listens. |
 | `PMM_ADMIN_PASSWORD` | `admin` | The password of PMM's `admin` user. |
 | `PMM_EXTENSIONS_IMAGE` | `percona/pmm-extensions:<PMM_VERSION>` | The PMM Extensions image, for an image that you built. |
-| `DEV_DATABASE_PASSWORD` | `pmm-extensions-dev` | The password of every database account on the database hosts. |
+| `DEV_DATABASE_PASSWORD` | `pmm-extensions-dev` | The password of every database account on the database hosts. Use letters, digits, `-` and `_` only: the hosts write it into SQL and into option files as it is. |
+
+The default passwords are public. On a machine that other people can sign in to, set both passwords before the first start.
 
 ## Add a database host
 
@@ -89,6 +91,8 @@ PMM Extensions accepts a short-lived token that you get in exchange for a PMM se
    ```
 
    The output is `{"message":"Logged in","redirectUrl":"/graph/"}`.
+
+   If you set `PMM_ADMIN_PASSWORD`, put its value in place of the second `admin`.
 
 2. Exchange the session for a token:
 

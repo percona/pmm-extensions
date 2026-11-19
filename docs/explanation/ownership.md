@@ -25,10 +25,12 @@ The framework gives every app the same behavior, with no code in the app: routes
 
 Every pull request is reviewed by the owners of the paths it changes. The file `.github/CODEOWNERS` maps each path to its reviewers, and GitHub requests their review when a pull request opens.
 
-Two rules follow from that file:
+Two rules follow from that file in most cases:
 
 - A change inside an app's package needs a review from the backend reviewers.
 - A change to the framework, to the dependencies or to the build needs a review from the core reviewers. Some of those paths need more than one approval.
+
+The file has exceptions, and it decides. Three framework modules go to the backend reviewers: the conformance checks, the list queries and the scaffolder.
 
 A pull request that adds an app and also changes the framework is reviewed by both groups. Keep the two in separate pull requests when you can: the app then does not wait for the framework review.
 

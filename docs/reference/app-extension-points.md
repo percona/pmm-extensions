@@ -19,7 +19,7 @@ Turns derived routes on and off. The value is an `AppCapabilities` object.
 | `update` | `PUT /{task_name}` | off |
 | `delete` | `DELETE /{task_name}` | off |
 
-`GET /schema` is always derived and has no flag.
+`GET /schema` has no flag. An app with a form model always has the route. An app with a `script_source` has it only when `static_schema` is set.
 
 A capability that is off removes the derived route, so a route from `extra_routes` can take its path.
 
