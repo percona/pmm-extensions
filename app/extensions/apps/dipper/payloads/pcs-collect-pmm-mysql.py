@@ -139,6 +139,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import requests
 import urllib3
@@ -394,7 +395,7 @@ def render_dashboard(
 
 
 def render_graphs(
-    graphs: list[str], dashboard_params: dict[str, str], path_to_graphs: str
+    graphs: list[str], dashboard_params: dict[str, Any], path_to_graphs: str
 ) -> None:
     headers = build_header()
 
