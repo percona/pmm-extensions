@@ -526,6 +526,15 @@ def _require(condition: object, problem: str) -> None:
         raise PreconditionError(_shape_problem(problem))
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    """Return ``value`` when it is a mapping, and an empty mapping otherwise.
+
+    :param value: A value read from a JSON document.
+    :return: The mapping, or an empty one.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def _paged_items(document: dict[str, Any], key: str) -> list[dict[str, Any]]:
     """Return the items of one paged list of the export, checked to be whole.
 
@@ -584,9 +593,9 @@ def _check_task(task: dict[str, Any]) -> None:
     :param task: One item of the export's task list.
     """
     _require(isinstance(task.get("name"), str), "a task has no name")
-    data = task.get("data")
-    meta = data.get("meta") if isinstance(data, dict) else None
-    _require(isinstance(meta, dict), f"task {task['name']} has no data.meta")
+    meta = _mapping(task.get("data")).get("meta")
+    if not isinstance(meta, dict):
+        raise PreconditionError(_shape_problem(f"task {task['name']} has no data.meta"))
     _require(
         isinstance(meta.get("config"), str),
         f"task {task['name']} has no stored settings",
@@ -600,7 +609,7 @@ def _old_service_from(item: dict[str, Any]) -> OldService:
     :return: The service, with its node's address.
     """
     _require(isinstance(item.get("name"), str), "a service has no name")
-    node = item.get("node") if isinstance(item.get("node"), dict) else {}
+    node = _mapping(item.get("node"))
     return OldService(
         name=item["name"],
         external_id=item.get("external_id") or None,
@@ -616,7 +625,7 @@ def pmm_service_from(item: dict[str, Any]) -> PmmService:
     :param item: The item as the API returns it.
     :return: The service, with its node's address.
     """
-    node = item.get("node") if isinstance(item.get("node"), dict) else {}
+    node = _mapping(item.get("node"))
     return PmmService(
         id=item["id"],
         name=item["name"],
@@ -1267,9 +1276,9 @@ def read_pmm_state(api: Api) -> PmmState:
         )
     existing: dict[str, PmmTask] = {}
     for task in _well_formed(tasks, "task"):
-        data = task.get("data") if isinstance(task.get("data"), dict) else {}
-        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
-        form = data.get("_form") if isinstance(data.get("_form"), dict) else {}
+        data = _mapping(task.get("data"))
+        meta = _mapping(data.get("meta"))
+        form = _mapping(data.get("_form"))
         existing[task["name"]] = PmmTask(service_id=meta.get("_service_id"), form=form)
     by_task: dict[str, list[dict[str, Any]]] = {}
     for schedule in schedules:
