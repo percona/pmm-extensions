@@ -22,15 +22,10 @@ import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
-from app.core.db.utils import get_async_session_maker_from_engine
-from app.core.utils import json_serializer
 from app.extensions.bundle_upload.plan import DeliveryPlan
 from app.extensions.deps import (
     get_current_user,
@@ -38,7 +33,6 @@ from app.extensions.deps import (
     require_bearer_for_unsafe_methods,
 )
 from app.extensions.main import extensions_app
-from tests.app.db_schema import apply_schema
 
 BEARER_HEADERS = {"Authorization": "Bearer test-token"}
 
@@ -72,27 +66,6 @@ def delivery_plan() -> DeliveryPlan:
             "reference_pointer": "/result/sys_id",
         },
     )
-
-
-@pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession]:
-    """Create an in-memory async DB session with every SQLModel table created."""
-    # scaffolding-dup-ok: this duplication predates the change that
-    # re-annotated the fixture's return type; promoting it against
-    # its sibling bootstrap is a cross-tree refactor of its own.
-    engine = create_async_engine(
-        "sqlite+aiosqlite://",
-        json_serializer=json_serializer,
-        poolclass=StaticPool,
-    )
-    async with engine.begin() as conn:
-        await apply_schema(conn, SQLModel.metadata)
-    async_session_maker = get_async_session_maker_from_engine(engine)
-    try:
-        async with async_session_maker() as session:
-            yield session
-    finally:
-        await engine.dispose()
 
 
 @pytest.fixture
