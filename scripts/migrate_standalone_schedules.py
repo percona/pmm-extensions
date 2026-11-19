@@ -45,6 +45,7 @@ Usage::
 
 import argparse
 import contextlib
+import datetime
 import http.client
 import importlib
 import json
@@ -247,17 +248,26 @@ class OldExport:
 
 
 @dataclass(frozen=True, slots=True)
+class PmmTask:
+    """Describe a MySQL Backups task that PMM Extensions already has: its service and its form."""
+
+    service_id: int | None
+    form: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class PmmState:
     """Describe what PMM Extensions holds before the run.
 
-    ``tasks`` maps each MySQL Backups task name to its service ID. ``schedules``
-    maps a task name to the ``interval`` and ``crontab`` of each of its schedules.
-
+    ``tasks`` maps each MySQL Backups task name to the task. ``schedules`` maps
+    a task name to its schedules as the API lists them. ``hosts`` holds the
+    names of the hosts PMM Extensions can run a task on.
     """
 
     services: list[PmmService]
-    tasks: dict[str, int | None]
+    tasks: dict[str, PmmTask]
     schedules: dict[str, list[dict[str, Any]]]
+    hosts: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -833,6 +843,28 @@ def _stored_settings(task: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
     return common, server
 
 
+def _encryption_format(common: dict[str, Any]) -> str | None:
+    """Return the encryption format of a task that v0.13.1 stored without one.
+
+    PMM Extensions refuses an AES-256 key file, ``ENCRYPT`` or
+    ``POST_RUN_ENCRYPT`` unless the format names them, and v0.13.1 has no such
+    setting. The rule is the one PMM Extensions applies to its own older
+    tasks: a key file means AES-256, either GPG flag means GPG, both mean dual.
+
+    :param common: The task's ``ALL_SERVERS`` settings.
+    :return: The format to send, or ``None`` when the task stores one or is not encrypted.
+    """
+    if common.get("ENCRYPTION_FORMAT"):
+        return None
+    aes256 = bool(common.get("XTRABACKUP_AES256_KEYFILE"))
+    gpg = bool(common.get("ENCRYPT") or common.get("POST_RUN_ENCRYPT"))
+    if aes256 and gpg:
+        return "dual"
+    if aes256:
+        return "aes256"
+    return "gpg" if gpg else None
+
+
 def task_form(task: dict[str, Any], pmm_service_id: int) -> dict[str, Any]:
     """Build the body that creates a v0.13.1 task in PMM Extensions.
 
@@ -871,6 +903,9 @@ def task_form(task: dict[str, Any], pmm_service_id: int) -> dict[str, Any]:
     recipient = (server.get("DIR_ENCRYPT_CONFIG") or {}).get(_RECIPIENT_KEY)
     if recipient:
         form["encryption_recipient"] = recipient
+    encryption_format = _encryption_format(common)
+    if encryption_format:
+        form["encryption_format"] = encryption_format
     return form
 
 
@@ -937,13 +972,50 @@ def _resolve_task(
         )
         raise SkipScheduleError(message)
     form = task_form(task, service.id)
-    exists = name in state.tasks
-    if exists and state.tasks[name] != service.id:
-        message = f"PMM Extensions already has a task named {name}, on service ID {state.tasks[name]}"
+    if form["hostname"] not in state.hosts:
+        message = (
+            f"task {name} runs on execution host {form['hostname']}, "
+            "which is not a host PMM Extensions can run a task on"
+        )
         raise SkipScheduleError(message)
+    existing = state.tasks.get(name)
+    if existing is not None:
+        _check_existing_task(name, existing, form)
     return PlannedTask(
-        name=name, service=service, form=form, create_task=not exists, schedules=[]
+        name=name,
+        service=service,
+        form=form,
+        create_task=existing is None,
+        schedules=[],
     )
+
+
+def _check_existing_task(name: str, existing: PmmTask, form: dict[str, Any]) -> None:
+    """Refuse to give schedules to a PMM task that is not the one this script would create.
+
+    A task of the same name is taken for the result of an earlier run only when
+    it is on the same service and every field this script sends has the same
+    value in it. Fields this script does not send are not compared.
+
+    :param name: The task's name.
+    :param existing: The task PMM Extensions has.
+    :param form: The form this script would send.
+    :raises SkipScheduleError: When the service or a sent field differs.
+    """
+    if existing.service_id != form["service_id"]:
+        message = f"PMM Extensions already has a task named {name}, on service ID {existing.service_id}"
+        raise SkipScheduleError(message)
+    different = sorted(
+        key
+        for key, value in form.items()
+        if key != "service_id" and existing.form.get(key) != value
+    )
+    if different:
+        message = (
+            f"PMM Extensions already has a task named {name} with other settings "
+            f"({', '.join(different)}); its schedules are left alone"
+        )
+        raise SkipScheduleError(message)
 
 
 def _timing(schedule: dict[str, Any]) -> dict[str, Any]:
@@ -953,6 +1025,37 @@ def _timing(schedule: dict[str, Any]) -> dict[str, Any]:
     :return: A mapping with the two keys.
     """
     return {"interval": schedule.get("interval"), "crontab": schedule.get("crontab")}
+
+
+def _instant(value: Any) -> Any:
+    """Return a start time as a point in time, so that two notations of one instant compare equal.
+
+    :param value: A start time as an API returns it, or ``None``.
+    :return: The parsed time, or the value itself when it is not an ISO 8601 string.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        return datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return value
+
+
+def _schedule_conflict(schedule: dict[str, Any], listed: dict[str, Any]) -> str | None:
+    """Return why a PMM schedule with the same timing is not the old schedule, or ``None`` when it is.
+
+    :param schedule: The schedule as the old instance's API returns it.
+    :param listed: The schedule of the same task and timing as PMM Extensions lists it.
+    :return: The reason to skip the old schedule, or ``None``.
+    """
+    if listed.get("execute_request") is not None:
+        return (
+            "PMM Extensions already has a schedule with this timing "
+            "that runs another request (execute_request)"
+        )
+    if _instant(listed.get("start_time")) != _instant(schedule.get("start_time")):
+        return "PMM Extensions already has a schedule with this timing and another start_time"
+    return None
 
 
 def _schedule_body(schedule: dict[str, Any]) -> dict[str, Any]:
@@ -1015,11 +1118,22 @@ def build_plan(export: OldExport, matches: dict[str, int], state: PmmState) -> P
             plan.skipped.append((name, str(exc)))
             continue
         timing = _timing(schedule)
+        listed = next(
+            (
+                item
+                for item in state.schedules.get(task_name, [])
+                if _timing(item) == timing
+            ),
+            None,
+        )
+        conflict = _schedule_conflict(schedule, listed) if listed else None
         if timing in seen.setdefault(task_name, []):
             plan.skipped.append(
                 (name, f"it repeats another schedule of task {task_name}")
             )
-        elif timing in state.schedules.get(task_name, []):
+        elif conflict:
+            plan.skipped.append((name, conflict))
+        elif listed:
             plan.already_present.append(name)
         else:
             planned.schedules.append(
@@ -1052,19 +1166,26 @@ def read_pmm_state(api: Api) -> PmmState:
     )
     tasks = api.get_all("/apps/mysql_backups/", {}, _PAGE_SIZE)
     schedules = api.get_all("/extensions/periodic-tasks/", {}, _PAGE_SIZE)
-    task_services: dict[str, int | None] = {}
+    hosts = api.get("/extensions/hosts/", {"limit": _PAGE_SIZE})
+    if not isinstance(hosts, list):
+        raise PreconditionError(
+            "PMM Extensions answered GET /extensions/hosts/ with something that is not a list"
+        )
+    existing: dict[str, PmmTask] = {}
     for task in tasks:
         data = task.get("data") if isinstance(task.get("data"), dict) else {}
         meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
-        task_services[task["name"]] = meta.get("_service_id")
+        form = data.get("_form") if isinstance(data.get("_form"), dict) else {}
+        existing[task["name"]] = PmmTask(service_id=meta.get("_service_id"), form=form)
     by_task: dict[str, list[dict[str, Any]]] = {}
     for schedule in schedules:
-        if schedule.get("task") in task_services:
-            by_task.setdefault(schedule["task"], []).append(_timing(schedule))
+        if schedule.get("task") in existing:
+            by_task.setdefault(schedule["task"], []).append(schedule)
     return PmmState(
         services=[pmm_service_from(item) for item in services],
-        tasks=task_services,
+        tasks=existing,
         schedules=by_task,
+        hosts=[str(host.get("name")) for host in hosts if isinstance(host, dict)],
     )
 
 
@@ -1130,7 +1251,8 @@ def _print_plan(plan: Plan) -> None:
     for task in plan.to_create:
         state = "new task" if task.create_task else "task already in PMM"
         print(
-            f"  {task.name} on {task.service.name} (PMM service {task.service.id}), {state}"
+            f"  {task.name} on {task.service.name} (PMM service {task.service.id}), "
+            f"runs on host {task.form['hostname']}, {state}"
         )
         for schedule in task.schedules:
             note = "" if schedule.was_enabled else ", paused on the old instance too"

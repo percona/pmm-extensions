@@ -135,14 +135,37 @@ def _state(
     services: list[dict[str, Any]] | None = None,
     tasks: dict[str, int | None] | None = None,
     schedules: dict[str, list[dict[str, Any]]] | None = None,
+    hosts: list[str] | None = None,
+    forms: dict[str, dict[str, Any]] | None = None,
 ) -> Any:
-    """Build what the script read from PMM Extensions."""
+    """Build what the script read from PMM Extensions.
+
+    A task in ``tasks`` gets the form the script itself would send for it,
+    unless ``forms`` gives another.
+    """
     raw = _pmm_services(_SERVICE_A) if services is None else services
+    existing = {}
+    for name, service_id in (tasks or {}).items():
+        form = (forms or {}).get(name)
+        if form is None:
+            form = migrate.task_form(_old_task(_export(), name), _PMM_SERVICE_A_ID)
+        existing[name] = migrate.PmmTask(service_id=service_id, form=form)
     return migrate.PmmState(
         services=[migrate.pmm_service_from(item) for item in raw],
-        tasks=tasks or {},
+        tasks=existing,
         schedules=schedules or {},
+        hosts=[host["name"] for host in _CAPTURE["pmm"]["hosts"]]
+        if hosts is None
+        else hosts,
     )
+
+
+def _listed_schedule(**fields: Any) -> dict[str, Any]:
+    """Build a schedule as PMM Extensions lists it, from the captured one, with ``fields`` changed."""
+    listed = copy.deepcopy(_CAPTURE["pmm"]["created_schedule"])
+    listed.update(interval=None, crontab=None)
+    listed.update(fields)
+    return listed
 
 
 def _planned_names(plan: Any) -> list[str]:
@@ -173,6 +196,7 @@ class FakePmm:
         )
         self.requests: list[Any] = []
         self.reject: Any = None
+        self.hosts = copy.deepcopy(_CAPTURE["pmm"]["hosts"])
 
     def writes(self) -> list[Any]:
         """Return every request that is not a GET."""
@@ -215,6 +239,8 @@ class FakePmm:
             "/apps/mysql_backups/": self.tasks,
             "/extensions/periodic-tasks/": self.schedules,
         }
+        if path == "/extensions/hosts/":
+            return self._answer(200, self.hosts)
         return self._page(lists[path], query)
 
     def _create_task(self, body: dict[str, Any]) -> Any:
@@ -510,7 +536,7 @@ def test_build_plan_skips_schedule_that_already_exists() -> None:
     """Verify that a schedule PMM already lists for the task is not planned again."""
     export = _export()
     schedule = _old_schedule(export, _MYDUMPER)
-    existing = {_MYDUMPER: [{"interval": schedule["interval"], "crontab": None}]}
+    existing = {_MYDUMPER: [_listed_schedule(interval=schedule["interval"])]}
     state = _state(tasks={_MYDUMPER: _PMM_SERVICE_A_ID}, schedules=existing)
     plan = migrate.build_plan(_parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, state)
     planned = _planned_names(plan)
@@ -998,3 +1024,103 @@ def test_export_outside_the_install_says_what_it_needs(
     monkeypatch.setitem(sys.modules, "app.sep.config", None)
     assert migrate.main(["export"], http=FakeStandalone()) == _EXIT_USAGE
     assert "--tasks-url" in capsys.readouterr().err
+
+
+def test_build_plan_skips_task_whose_host_pmm_cannot_run_on() -> None:
+    """Verify that a task is not created for an execution host that PMM Extensions does not have."""
+    state = _state(hosts=["pmm-server", "another-host"])
+    plan = migrate.build_plan(
+        _parsed(_export()), {_SERVICE_A: _PMM_SERVICE_A_ID}, state
+    )
+    assert plan.to_create == []
+    reason = dict(plan.skipped)[_old_schedule(_export(), _MYDUMPER)["name"]]
+    assert "execution host svcdocs-mysql-a" in reason
+
+
+def test_dry_run_shows_the_execution_host(
+    workdir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify that the plan names the host each task runs on."""
+    assert migrate.main(_args(workdir), http=FakePmm()) == 0
+    assert (
+        f"{_MYDUMPER} on {_SERVICE_A} (PMM service 3), runs on host svcdocs-mysql-a, new task"
+        in capsys.readouterr().out
+    )
+
+
+def test_build_plan_skips_same_name_task_with_other_settings() -> None:
+    """Verify that a PMM task of the same name and service but other settings is not given schedules."""
+    other = migrate.task_form(_old_task(_export(), _XTRABACKUP), _PMM_SERVICE_A_ID)
+    other.update(backup_type="M", compress=False)
+    state = _state(tasks={_XTRABACKUP: _PMM_SERVICE_A_ID}, forms={_XTRABACKUP: other})
+    plan = migrate.build_plan(
+        _parsed(_export()), {_SERVICE_A: _PMM_SERVICE_A_ID}, state
+    )
+    assert _XTRABACKUP not in [task.name for task in plan.to_create]
+    reason = dict(plan.skipped)[_old_schedule(_export(), _XTRABACKUP)["name"]]
+    assert "backup_type" in reason
+    assert "compress" in reason
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        ({"XTRABACKUP_AES256_KEYFILE": "/root/key"}, "aes256"),
+        ({"ENCRYPT": True}, "gpg"),
+        ({"POST_RUN_ENCRYPT": True}, "gpg"),
+        ({"ENCRYPT": True, "XTRABACKUP_AES256_KEYFILE": "/root/key"}, "dual"),
+        ({"ENCRYPT": True, "ENCRYPTION_FORMAT": "dual"}, "dual"),
+    ],
+)
+def test_task_form_infers_the_encryption_format(
+    settings: dict[str, Any], expected: str
+) -> None:
+    """Verify that an encrypted v0.13.1 task gets the format 3.10.0 requires, which v0.13.1 never stored."""
+    task = _old_task(_export(), _XTRABACKUP)
+    _edit_settings(task, lambda stored: stored["ALL_SERVERS"].update(settings))
+    assert migrate.task_form(task, _PMM_SERVICE_A_ID)["encryption_format"] == expected
+
+
+def test_task_form_leaves_the_encryption_format_out_of_a_plain_task() -> None:
+    """Verify that a task with no encryption sends no format, so PMM Extensions uses its default."""
+    assert "encryption_format" not in migrate.task_form(
+        _old_task(_export(), _XTRABACKUP), _PMM_SERVICE_A_ID
+    )
+
+
+@pytest.mark.parametrize(
+    "difference",
+    [
+        {"start_time": "2027-01-01T00:00:00Z"},
+        {"execute_request": {"chain": ["other-task"]}},
+    ],
+)
+def test_build_plan_reports_a_schedule_that_differs_beyond_its_timing(
+    difference: dict[str, Any],
+) -> None:
+    """Verify that a PMM schedule with the same timing but another start or a chain is a conflict, not a match."""
+    export = _export()
+    schedule = _old_schedule(export, _MYDUMPER)
+    existing = {
+        _MYDUMPER: [_listed_schedule(interval=schedule["interval"], **difference)]
+    }
+    state = _state(tasks={_MYDUMPER: _PMM_SERVICE_A_ID}, schedules=existing)
+    plan = migrate.build_plan(_parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, state)
+    assert plan.already_present == []
+    assert schedule["name"] not in _planned_names(plan)
+    assert next(iter(difference)) in dict(plan.skipped)[schedule["name"]]
+
+
+def test_build_plan_matches_a_start_time_written_another_way() -> None:
+    """Verify that the same instant in another notation is the same start time."""
+    export = _export()
+    schedule = _old_schedule(export, _MYDUMPER)
+    schedule["start_time"] = "2026-12-01T00:00:00Z"
+    listed = _listed_schedule(
+        interval=schedule["interval"], start_time="2026-12-01T00:00:00+00:00"
+    )
+    state = _state(
+        tasks={_MYDUMPER: _PMM_SERVICE_A_ID}, schedules={_MYDUMPER: [listed]}
+    )
+    plan = migrate.build_plan(_parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, state)
+    assert plan.already_present == [schedule["name"]]

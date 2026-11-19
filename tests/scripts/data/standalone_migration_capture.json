@@ -651,6 +651,26 @@
       "next_runs": [],
       "next_run_at": null,
       "timezone": "America/New_York"
-    }
+    },
+    "hosts": [
+      {
+        "id": "pmm-server",
+        "name": "pmm-server",
+        "address": "127.0.0.1",
+        "can_elevate": false
+      },
+      {
+        "id": "svcdocs-mysql-a",
+        "name": "svcdocs-mysql-a",
+        "address": "172.31.213.11",
+        "can_elevate": true
+      },
+      {
+        "id": "svcdocs-mysql-b",
+        "name": "svcdocs-mysql-b",
+        "address": "172.31.213.12",
+        "can_elevate": true
+      }
+    ]
   }
 }

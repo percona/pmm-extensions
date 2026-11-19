@@ -121,11 +121,11 @@ Matches, from matches.json:
   svcdocs-mysql-b: no match
 
 3 schedules to create, each paused:
-  svcdocs-a-mydumper on svcdocs-mysql-a (PMM service 3), new task
+  svcdocs-a-mydumper on svcdocs-mysql-a (PMM service 3), runs on host svcdocs-mysql-a, new task
     every 1 days
-  svcdocs-a-xtrabackup on svcdocs-mysql-a (PMM service 3), new task
+  svcdocs-a-xtrabackup on svcdocs-mysql-a (PMM service 3), runs on host svcdocs-mysql-a, new task
     cron '0 2 * * *' in UTC
-  svcdocs-a-xtrabackup-rsync on svcdocs-mysql-a (PMM service 3), new task
+  svcdocs-a-xtrabackup-rsync on svcdocs-mysql-a (PMM service 3), runs on host svcdocs-mysql-a, new task
     cron '30 3 * * 0' in America/New_York
 
 1 schedule skipped:
@@ -195,7 +195,11 @@ Check each entry:
 
 The script reads only `pmm_service_id`. It creates nothing for a service whose `pmm_service_id` is `null`, and it never writes to this file again. Run the previous command again to see the plan for your changes.
 
-The script also skips a schedule that it cannot copy in full, and names the reason. For example, a task has no `BACKUP_DIR`, which PMM Extensions requires, or it uses a setting that the script does not know. Create such a schedule by hand in PMM.
+The script also skips a schedule that it cannot copy in full, and names the reason. Create such a schedule by hand in PMM. The reasons include these:
+
+- The task has no `BACKUP_DIR`, which PMM Extensions requires, or it uses a setting that the script does not know.
+- The task ran on a host that PMM Extensions cannot run a task on. The plan shows the host of each task after "runs on host".
+- PMM Extensions already has a task of the same name with other settings, or a schedule with the same timing and another start time.
 
 ## Create the schedules
 
