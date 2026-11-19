@@ -83,6 +83,10 @@ _CONST_NAMES = frozenset(
         "MYCNF_DIRS",
         "MYCNF_FILES",
         "DATADIR_CNF",
+        "STATUS_OK",
+        "STATUS_CRITICAL",
+        "MAX_ATTEMPTS",
+        "SLEEP_INTERVAL",
     }
 )
 
