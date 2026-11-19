@@ -514,6 +514,7 @@ def test_build_plan_skips_schedule_that_already_exists() -> None:
     state = _state(tasks={_MYDUMPER: _PMM_SERVICE_A_ID}, schedules=existing)
     plan = migrate.build_plan(_parsed(export), {_SERVICE_A: _PMM_SERVICE_A_ID}, state)
     planned = _planned_names(plan)
+    assert planned
     assert len(planned) == _HOST_A_SCHEDULES - 1
     assert schedule["name"] not in planned
     assert plan.already_present == [schedule["name"]]
