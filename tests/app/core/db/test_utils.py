@@ -39,10 +39,11 @@ from sqlalchemy import (
     Table,
     Text,
     text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool, StaticPool
 from sqlalchemy.sql import column
@@ -64,6 +65,7 @@ from app.core.db.utils import (
     pg_advisory_xact_lock,
     translate_metadata_schemas,
     try_pg_advisory_xact_lock,
+    unique_violation_columns,
 )
 from app.core.settings_override.constants import SETTINGOVERRIDE_MIGRATION_LOCK_KEY
 from app.core.utils.fields import AsyncDatabaseEngine, DatabaseDialect
@@ -1636,3 +1638,95 @@ class TestPgAdvisoryXactLockOnRealPostgres:
                 )
 
         assert setting == "0"
+
+
+class _ConstraintNamingError(Exception):
+    """Stand in for a PostgreSQL driver error, which names the violated key.
+
+    :param constraint_name: The constraint name the database reports.
+    """
+
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__(
+            f'duplicate key value violates unique constraint "{constraint_name}"'
+        )
+        self.constraint_name = constraint_name
+
+
+def _violation_of(constraint_name: str) -> IntegrityError:
+    """Build the integrity error SQLAlchemy raises for a named constraint.
+
+    :param constraint_name: The constraint name the database reports.
+    :return: The wrapped error, as ``BaseManager.save()`` receives it.
+    """
+    return IntegrityError("INSERT", {}, _ConstraintNamingError(constraint_name))
+
+
+class TestUniqueViolationColumnsOfAnUnnamedKey:
+    """Test resolving a violation of a unique key declared without a name.
+
+    A library's table can declare ``unique=True`` on a column, or a bare
+    ``UniqueConstraint``, and leave the naming to the database. PostgreSQL then
+    reports a name the declared key does not carry.
+    """
+
+    def test_column_level_key_resolves_by_the_name_postgresql_gives_it(self):
+        """Assert an unnamed single-column key is found by its default name."""
+        table = Table(
+            "schedule",
+            MetaData(),
+            Column("id", Integer, primary_key=True),
+            Column("name", Text, unique=True),
+        )
+
+        columns = unique_violation_columns(table, _violation_of("schedule_name_key"))
+
+        assert columns == ["name"]
+
+    def test_composite_key_resolves_to_every_column_in_declared_order(self):
+        """Assert an unnamed composite key is found, with all its columns."""
+        table = Table(
+            "solar",
+            MetaData(),
+            Column("id", Integer, primary_key=True),
+            Column("event", Text),
+            Column("latitude", Integer),
+            UniqueConstraint("event", "latitude"),
+        )
+
+        columns = unique_violation_columns(
+            table, _violation_of("solar_event_latitude_key")
+        )
+
+        assert columns == ["event", "latitude"]
+
+    def test_named_key_is_not_found_by_a_default_name(self):
+        """Assert a key that carries a name is matched by that name only."""
+        table = Table(
+            "schedule",
+            MetaData(),
+            Column("id", Integer, primary_key=True),
+            Column("name", Text),
+            UniqueConstraint("name", name="uq_schedule_name"),
+        )
+
+        assert (
+            unique_violation_columns(table, _violation_of("schedule_name_key")) is None
+        )
+        assert unique_violation_columns(table, _violation_of("uq_schedule_name")) == [
+            "name"
+        ]
+
+    def test_another_constraint_of_the_table_resolves_to_no_key(self):
+        """Assert a violation of some other constraint is not read as a duplicate."""
+        table = Table(
+            "schedule",
+            MetaData(),
+            Column("id", Integer, primary_key=True),
+            Column("name", Text, unique=True),
+        )
+
+        assert (
+            unique_violation_columns(table, _violation_of("schedule_priority_check"))
+            is None
+        )

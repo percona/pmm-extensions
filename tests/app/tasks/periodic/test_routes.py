@@ -1469,3 +1469,87 @@ async def test_update_periodic_task_answers_503_while_a_batch_holds_the_fence(
     assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
     await celery_beat_session.refresh(created_periodic_task)
     assert created_periodic_task.kwargs == original_kwargs
+
+
+@pytest.mark.postgres
+class TestDuplicatePeriodicTaskNameOnPostgres:
+    """Test that a duplicate schedule name is a conflict on a real PostgreSQL.
+
+    The beat tables belong to ``sqlalchemy_celery_beat``, which declares the
+    unique key on ``name`` without naming it. PostgreSQL reports a violation by
+    the constraint's name alone, so only a real PostgreSQL bind shows whether
+    that key is recognized; SQLite spells the column into its message.
+    """
+
+    @pytest.mark.asyncio
+    async def test_second_identical_create_answers_409(
+        self,
+        mocker,
+        postgres_session_maker,
+        postgres_celery_beat_session: AsyncSession,
+        regular_user,
+    ):
+        """Assert a repeat of an unnamed create request answers 409."""
+        isolate_reference_fence(mocker)
+        async with postgres_session_maker() as tasks_session:
+            await TaskManager.create(
+                tasks_session,
+                TaskWrite.model_validate(TaskFactory.build(name="my-task")),
+            )
+        payload = {"interval": {"every": 1, "period": "days"}, "enabled": False}
+
+        async with tasks_api_client(
+            regular_user, postgres_session_maker, postgres_celery_beat_session
+        ) as client:
+            first = await client.post("/my-task/periodic/", json=payload)
+            second = await client.post("/my-task/periodic/", json=payload)
+
+        assert first.status_code == status.HTTP_201_CREATED
+        assert second.status_code == status.HTTP_409_CONFLICT
+        assert second.json() == {
+            "detail": "PeriodicTask with the same name already exists."
+        }
+        rows = await postgres_celery_beat_session.exec(
+            select(PeriodicTask).where(PeriodicTask.name == first.json()["name"])
+        )
+        assert len(rows.all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_rename_onto_an_existing_name_answers_409(
+        self,
+        mocker,
+        postgres_session_maker,
+        postgres_celery_beat_session: AsyncSession,
+        regular_user,
+    ):
+        """Assert renaming a schedule to another schedule's name answers 409."""
+        isolate_reference_fence(mocker)
+        await _add_periodic_task(
+            postgres_celery_beat_session, name="taken", task_name="my-task"
+        )
+        renamed = await _add_periodic_task(
+            postgres_celery_beat_session, name="free", task_name="my-task"
+        )
+        renamed_id = renamed.id
+        payload = {
+            "name": "taken",
+            "task": "my-task",
+            "start_time": None,
+            "enabled": True,
+            "description": "",
+            "interval": {"every": 10, "period": "minutes"},
+        }
+
+        async with tasks_api_client(
+            regular_user, postgres_session_maker, postgres_celery_beat_session
+        ) as client:
+            response = await client.put(f"/periodic/{renamed_id}", json=payload)
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.json() == {
+            "detail": "PeriodicTask with the same name already exists."
+        }
+        rows = await postgres_celery_beat_session.exec(
+            select(PeriodicTask.name).order_by(PeriodicTask.name)
+        )
+        assert rows.all() == [("free",), ("taken",)]
