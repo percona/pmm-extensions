@@ -132,8 +132,11 @@ def test_workflows_pin_only_the_reference_and_the_host_python(version: str) -> N
     ) == (HOST_PYTHON_WORKFLOWS)
 
 
-def test_the_setup_python_action_defaults_to_the_reference(version: str) -> None:
-    """Default the composite action every Python job uses to the reference version.
+def test_the_setup_python_action_pins_the_reference(version: str) -> None:
+    """Pin the composite action every Python job uses to the reference version.
+
+    The action takes no version from callers, so a replayed workflow that still
+    passes one cannot override the checked-out revision's pin.
 
     :param version: The reference version.
     """
@@ -143,7 +146,14 @@ def test_the_setup_python_action_defaults_to_the_reference(version: str) -> None
         ).read_text(encoding="utf-8")
     )
 
-    assert action["inputs"]["python-version"]["default"] == version
+    setup = [
+        step
+        for step in action["runs"]["steps"]
+        if step.get("uses", "").startswith("actions/setup-python@")
+    ]
+
+    assert "python-version" not in action["inputs"]
+    assert [step["with"]["python-version"] for step in setup] == [version]
 
 
 def test_the_audit_pipeline_provisions_the_reference(version: str, minor: str) -> None:
