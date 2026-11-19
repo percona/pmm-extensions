@@ -1116,6 +1116,41 @@ class TestDuplicateUnnamedPeriodicTaskAttach:
         assert len(rows.all()) == 1
 
 
+class TestRenamePeriodicTaskOntoExistingName:
+    """Test that a rename cannot take another schedule's name."""
+
+    @pytest.mark.asyncio
+    async def test_rename_onto_an_existing_name_gets_409(
+        self,
+        periodic_test_client,
+        celery_beat_session: AsyncSession,
+    ):
+        """Assert renaming a schedule to a name in use is refused and changes nothing."""
+        await _add_periodic_task(celery_beat_session, name="taken", task_name="my-task")
+        renamed = await _add_periodic_task(
+            celery_beat_session, name="free", task_name="my-task"
+        )
+        payload = {
+            "name": "taken",
+            "task": "my-task",
+            "start_time": None,
+            "enabled": True,
+            "description": "",
+            "interval": {"every": 10, "period": "minutes"},
+        }
+
+        response = periodic_test_client.put(f"/periodic/{renamed.id}", json=payload)
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.json() == {
+            "detail": "PeriodicTask with the same name already exists."
+        }
+        rows = await celery_beat_session.exec(
+            select(PeriodicTask.name).order_by(PeriodicTask.name)
+        )
+        assert rows.all() == [("free",), ("taken",)]
+
+
 class TestDeletePeriodicTask:
     """Test the DELETE /periodic/{periodic_task_id} endpoint."""
 
