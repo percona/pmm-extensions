@@ -12,9 +12,9 @@ This page covers this repository only. Users see the app after PMM's UI has it t
 - Docker with Compose, for the local PMM: see [Run PMM Extensions in a local PMM](run-in-local-pmm.md).
 - An app under `app/extensions/apps/` that `sidecar/settings.yaml` does not list.
 
-## Check what ties the app to the standalone product
+## Check what the app depends on
 
-The apps were written for a product that had its own UI and its own hosts. Check three things before you start.
+The apps were written when PMM Extensions ran without PMM and had a UI of its own. Check three things before you start.
 
 - **Its pages.** PMM's UI draws an app's pages from the app's form schema. An app whose pages were written by hand needs those pages written again in PMM's UI. [App status](../app-status.md) says how each app draws its pages.
 - **Its tables.** An app with a `migrations/` directory creates tables of its own. PMM Extensions applies them when the container starts. Only `alerts` among the twelve has tables, and nobody has run it inside PMM.
@@ -26,7 +26,7 @@ The apps were written for a product that had its own UI and its own hosts. Check
 
 `sidecar/settings.yaml` lists the apps that PMM Extensions serves inside PMM. The image ships the apps in that list and removes the code of the others.
 
-1. Open `sidecar/settings.yaml` and find the list under `EXTENSIONS.APPS`. Add a line for the app at the end of the list:
+1. In `sidecar/settings.yaml`, add a line for the app at the end of the list under `EXTENSIONS.APPS`:
 
    ```yaml
          - MODULE_NAME: om_bootstrap
@@ -49,7 +49,7 @@ A constant in the tests repeats the list, and one test compares the two.
    E         Right contains one more item: 'app.extensions.apps.backup_pg'
    ```
 
-2. Open `tests/app/extensions/conftest.py` and find `REDUCED_ACTIVATION`. Add the app's name at the end of the tuple, in the same order as the settings file.
+2. In `tests/app/extensions/conftest.py`, add the app's name at the end of the tuple in `REDUCED_ACTIVATION`. The order must match the settings file.
 
 3. Run the test again. It passes.
 
@@ -109,7 +109,13 @@ Tests do not run a task on a host. Run one before you open a pull request.
      'import json,sys; [print(s["id"], s["type"], s["name"]) for s in json.load(sys.stdin)["items"]]'
    ```
 
-   The output has a line for `dev-postgresql`. Note its identifier.
+   The output has a line for `dev-postgresql`. Note its identifier:
+
+   ```text
+   202
+   1 postgresql dev-postgresql
+   2 postgresql pmm-server-postgresql
+   ```
 
 5. Create a backup task. If the identifier in your list is not `1`, replace the `1` in the command:
 
@@ -128,6 +134,12 @@ Tests do not run a task on a host. Run one before you open a pull request.
      https://127.0.0.1:8443/extensions/api/apps/backup_pg/first-pg-backup/execute -d '{}'
    ```
 
+   The output names the run:
+
+   ```json
+   {"task_name":"first-pg-backup","task_id":7,"status":"running","created_at":"2026-11-18T23:48:54Z"}
+   ```
+
 7. After about 30 seconds, read the task's status:
 
    ```bash
@@ -138,13 +150,13 @@ Tests do not run a task on a host. Run one before you open a pull request.
 
    The output is `success`. While the backup runs, it is `running`.
 
-When the task fails, read its log. Step 6 printed a `task_id`. Replace `9` with it:
+When the task fails, read its log. Replace `7` with the `task_id` from step 6:
 
 ```bash
-curl -sk -H "Authorization: Bearer $TOKEN" https://127.0.0.1:8443/extensions/stream-logs/9
+curl -sk -H "Authorization: Bearer $TOKEN" https://127.0.0.1:8443/extensions/stream-logs/7
 ```
 
-A failure on the first run is likely. `backup_pg` passed all its tests and failed on its first run on a host, on a path that exists only there.
+A failure on the first run is likely. [App status](../app-status.md#how-the-cost-is-judged) says why.
 
 ## Verify
 

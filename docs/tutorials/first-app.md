@@ -2,7 +2,7 @@
 
 In this tutorial you build an app named Disk Free. It runs `df` on a database host and shows the result in PMM.
 
-You scaffold the app, describe its form, test it, run it in a local PMM, and add it to PMM's UI. Every step shows the result to expect.
+You scaffold the app, describe its form, test it, run it in a local PMM, and add it to PMM's UI. Each command shows the output to expect.
 
 ## Before you start
 
@@ -38,7 +38,7 @@ Run every command from the root of this repository.
 
 The form model is the one place where you say what the app asks for. The framework builds the form, the validation and the command from it.
 
-1. Open `app/extensions/apps/diskfree/models.py`. The form has an example field named `message`. Replace that field with these two:
+1. In `app/extensions/apps/diskfree/models.py`, replace the example field named `message` with these two fields:
 
    <!-- constructed -->
    ```python
@@ -54,16 +54,16 @@ The form model is the one place where you say what the app asks for. The framewo
        ] = True
    ```
 
-   Each field becomes an option of the command: `block_size` becomes `--block-size=1M`, and `total` becomes `--total`. A field cannot be a bare positional argument, such as a path after `df`. Every field needs an option name.
+   Each field becomes an option of the command: `block_size` becomes `--block-size=1M`, and `total` becomes `--total`. A field cannot be a bare positional argument, such as a path after `df`. Every field needs an option name. The file already imports the names that the two fields use.
 
-2. In the same file, the docstring of the class describes `message`. Replace that line with these two:
+2. In the docstring of the class, replace the `:param message:` line with these two:
 
    ```text
        :param block_size: The unit that sizes are printed in.
        :param total: Whether a grand total row is printed.
    ```
 
-3. Open `app/extensions/apps/diskfree/app.py`. In the line that starts with `description=`, replace the text between the quotes with `Report free disk space on a database host.`
+3. In `app/extensions/apps/diskfree/app.py`, set the text of `description=` to `Report free disk space on a database host.`
 
 ## Test the app
 
@@ -97,7 +97,7 @@ The scaffolder generated a test that calls every route of your app.
 
 Inside PMM, PMM Extensions serves the apps that `sidecar/settings.yaml` lists.
 
-1. Open `sidecar/settings.yaml` and find the line `- MODULE_NAME: om_bootstrap`. Add a line for your app below it, with the same indentation:
+1. In `sidecar/settings.yaml`, add a line for your app below `- MODULE_NAME: om_bootstrap`, with the same indentation:
 
    ```yaml
          - MODULE_NAME: om_bootstrap
@@ -256,15 +256,17 @@ PMM's UI has a route and a menu item for each app, in its own repository. You ad
    git clone --depth 1 --branch v3.10.0 https://github.com/percona/pmm.git ../pmm
    ```
 
+   Git warns that the tag is not a commit, and prints a note about a detached HEAD. Both are expected.
+
    The four files to edit are in `../pmm/ui/apps/pmm/src/`.
 
-2. Open `lib/constants.ts`. Below the line that starts with `export const EXTENSIONS_MYSQL_BACKUPS_PATH`, add:
+2. In `lib/constants.ts`, add a line below the one that starts with `export const EXTENSIONS_MYSQL_BACKUPS_PATH`:
 
    ```ts
    export const EXTENSIONS_DISKFREE_PATH = `${PMM_NEW_NAV_PATH}/extensions/disk-free`;
    ```
 
-3. Open `router.tsx`. In the import from `'lib/constants'`, add a line below `EXTENSIONS_MYSQL_BACKUPS_PATH,`:
+3. In `router.tsx`, add a line to the import from `'lib/constants'`, below `EXTENSIONS_MYSQL_BACKUPS_PATH,`:
 
    ```ts
      EXTENSIONS_DISKFREE_PATH,
@@ -286,13 +288,13 @@ PMM's UI has a route and a menu item for each app, in its own repository. You ad
                },
    ```
 
-4. Open `contexts/navigation/navigation.constants.ts`. In the import from `'lib/constants'`, add the same line below `EXTENSIONS_MYSQL_BACKUPS_PATH,`:
+4. In `contexts/navigation/navigation.constants.ts`, add the same line to the import from `'lib/constants'`:
 
    ```ts
      EXTENSIONS_DISKFREE_PATH,
    ```
 
-   At the end of the file, add the menu item:
+   At the end of the file, add the menu item. The file already imports its icon:
 
    ```ts
    export const NAV_EXTENSIONS_DISKFREE: NavItem = {
@@ -304,13 +306,13 @@ PMM's UI has a route and a menu item for each app, in its own repository. You ad
    };
    ```
 
-5. Open `contexts/navigation/navigation.utils.tsx`. In the import from `'./navigation.constants'`, add a line below `NAV_EXTENSIONS_MYSQL_BACKUPS,`:
+5. In `contexts/navigation/navigation.utils.tsx`, add a line to the import from `'./navigation.constants'`, below `NAV_EXTENSIONS_MYSQL_BACKUPS,`:
 
    ```ts
      NAV_EXTENSIONS_DISKFREE,
    ```
 
-   In the same file, find the line `[NAV_EXTENSIONS_MYSQL_BACKUPS, NAV_EXTENSIONS_ATW]`. Replace it with:
+   In the same file, replace the line `[NAV_EXTENSIONS_MYSQL_BACKUPS, NAV_EXTENSIONS_ATW]` with:
 
    ```tsx
        [NAV_EXTENSIONS_MYSQL_BACKUPS, NAV_EXTENSIONS_ATW, NAV_EXTENSIONS_DISKFREE]
@@ -325,7 +327,7 @@ PMM's UI has a route and a menu item for each app, in its own repository. You ad
    cd -
    ```
 
-   The build ends with:
+   The output includes:
 
    ```text
     Tasks:    2 successful, 2 total
@@ -343,9 +345,9 @@ PMM's UI has a route and a menu item for each app, in its own repository. You ad
 
    Compose recreates the PMM container. The task that you ran is kept.
 
-8. Open `https://127.0.0.1:8443` in a browser and sign in as `admin` with the password `admin`. The browser warns about the certificate, because PMM signs its own.
+8. Open `https://127.0.0.1:8443` in a browser and sign in as `admin` with the password `admin`. The browser warns about the certificate, because PMM signs its own. PMM then asks you to change the password: select **Skip**.
 
-9. In the menu, open **Apps → Disk Free**. The page lists one task, `first-report`, with the status **Done**.
+9. In the menu, expand **Apps** and select **Disk Free**. The page lists one task, `first-report`, with the status **Done**.
 
    PMM shows a banner that says PMM Server and PMM Extensions are at different versions. Your checkout's code is newer than the released PMM, so the banner is expected here.
 

@@ -39,7 +39,7 @@ Each step writes a marker file when it finishes, and each API waits for all four
 
    The script takes step names, not program names: `extensions`, not `migrate-extensions`. Continue only if it exits with status 0.
 
-2. Restart the step together with the three APIs, in one call:
+2. Restart the step and the three APIs in one call:
 
    ```bash
    docker exec pmm-extensions supervisorctl -c /home/extensions/app/supervisord.conf \
@@ -71,9 +71,14 @@ Each step writes a marker file when it finishes, and each API waits for all four
 
    Repeat the command until it exits with status 0. A step with nothing to apply finishes within a second.
 
-The container's health check fails while Celery is stopped or a marker is missing. After five failed checks, about 75 seconds, the container reports unhealthy.
+The container's health check fails while Celery is stopped or a marker is missing. After five failed checks, the container reports unhealthy: see [Health](../../sidecar/README.md#health).
 
 To rerun several steps, name them all in each call: `clear_sentinels.sh extensions tasks`, then `restart migrate-extensions migrate-tasks extensions inventory tasks`.
+
+## If the clear fails
+
+- An exit with status 2 means an unknown step name, and nothing was removed. Correct the name and run the clear again.
+- An exit with any other status means that a marker could not be removed. The script stopped at that step, and the steps named before it are already cleared. Fix what blocked the removal, then clear and restart every step that was cleared. Or restart the container, which reruns all four.
 
 ## Start Celery
 
@@ -108,11 +113,6 @@ To rerun several steps, name them all in each call: `clear_sentinels.sh extensio
    ```
 
    The output is `healthy`. If the container had turned unhealthy, the next passing check turns it back, within 15 seconds.
-
-## If the clear fails
-
-- An exit with status 2 means an unknown step name, and nothing was removed. Correct the name and run the clear again.
-- An exit from a failed removal stops at that step. The steps named before it are already cleared. Fix what blocked the removal, then clear and restart every step that was cleared. Or restart the container, which reruns all four.
 
 ## Next steps
 

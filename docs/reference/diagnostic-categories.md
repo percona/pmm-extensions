@@ -16,7 +16,7 @@ Search finds every script, whatever the key says. Of the 89 scripts in `snippets
 
 ## Permitted values
 
-Write the member name, from the first column. A display label, or a name that the taxonomy does not define, places the script in no category, with no error.
+The key takes the member name, from the first column. A display label, or a name that the taxonomy does not define, places the script in no category, with no error.
 
 The taxonomy is `ATWCategory` in `app/extensions/apps/atw/categories.py`: fourteen members under four parents.
 

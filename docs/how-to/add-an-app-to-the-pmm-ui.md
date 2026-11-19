@@ -27,7 +27,7 @@ The four files are in `ui/apps/pmm/src/` of the `percona/pmm` checkout. Run the 
 
 ## Add the path constant
 
-1. Open `lib/constants.ts`. Below the line that starts with `export const EXTENSIONS_MYSQL_BACKUPS_PATH`, add:
+1. In `lib/constants.ts`, add a line below the one that starts with `export const EXTENSIONS_MYSQL_BACKUPS_PATH`:
 
    ```ts
    export const EXTENSIONS_BACKUP_PG_PATH = `${PMM_NEW_NAV_PATH}/extensions/postgresql-backups`;
@@ -35,7 +35,7 @@ The four files are in `ui/apps/pmm/src/` of the `percona/pmm` checkout. Run the 
 
 ## Add the route
 
-1. Open `router.tsx`. In the import from `'lib/constants'`, add a line below `EXTENSIONS_MYSQL_BACKUPS_PATH,`:
+1. In `router.tsx`, add a line to the import from `'lib/constants'`, below `EXTENSIONS_MYSQL_BACKUPS_PATH,`:
 
    ```ts
      EXTENSIONS_BACKUP_PG_PATH,
@@ -61,7 +61,7 @@ The four files are in `ui/apps/pmm/src/` of the `percona/pmm` checkout. Run the 
 
 ## Add the menu item
 
-1. Open `contexts/navigation/navigation.constants.ts`. In the import from `'lib/constants'`, add the same line below `EXTENSIONS_MYSQL_BACKUPS_PATH,`:
+1. In `contexts/navigation/navigation.constants.ts`, add the same line to the import from `'lib/constants'`:
 
    ```ts
      EXTENSIONS_BACKUP_PG_PATH,
@@ -83,7 +83,7 @@ The four files are in `ui/apps/pmm/src/` of the `percona/pmm` checkout. Run the 
 
 ## Add the item to the menu
 
-1. Open `contexts/navigation/navigation.utils.tsx`. In the import from `'./navigation.constants'`, add a line below `NAV_EXTENSIONS_MYSQL_BACKUPS,`:
+1. In `contexts/navigation/navigation.utils.tsx`, add a line to the import from `'./navigation.constants'`:
 
    ```ts
      NAV_EXTENSIONS_BACKUP_PG,
@@ -169,7 +169,7 @@ The local PMM can serve a UI from a directory in place of the UI inside the PMM 
 ## Verify
 
 1. Open `https://127.0.0.1:8443` in a browser and sign in.
-2. In the menu, open **Apps → PostgreSQL Backups**.
+2. In the menu, expand **Apps** and select **PostgreSQL Backups**.
 3. Confirm that the page lists the app's tasks, and that the button above the list opens the app's form.
 
 ## Next steps

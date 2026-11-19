@@ -46,7 +46,7 @@ The image holds the apps that `EXTENSIONS.APPS` in `settings.yaml` lists, plus t
 | A listed app with no package | The build fails. |
 | Changing the list at runtime | It can only be narrowed. An app whose package is not in the image stops the container at startup, with a validation error that names the module. |
 | Where the list can be changed at runtime | A file mounted over `/home/extensions/app/settings.yaml`, or the `EXTENSIONS__APPS` variable. The settings API cannot change it. |
-| Migrations of a removed app | Its `version_locations` entry stays in `alembic.ini`. An upgrade then skips that app's revisions in a database that an image with more apps migrated. Do not remove the entry. |
+| Migrations of a removed app | Its `version_locations` entry stays in `alembic.ini`. An upgrade then skips that app's revisions in a database that an image with more apps migrated. The entry is what makes that possible. |
 
 `verify_image_apps.sh` prints the app set that it verified.
 
@@ -78,7 +78,7 @@ Inside PMM, PMM Server writes four files into a volume, and the sidecar mounts t
 | Entries | Regular files directly in the directory. A file in a subdirectory matches no setting. |
 | Names | Matched without regard to case. Two files whose names differ only in case are not supported. |
 | Symbolic links | A link whose target is outside the directory is ignored. The layout that Kubernetes projects is read normally. |
-| An empty file | It sets the value to the empty string. Mount a file only when it holds a value. |
+| An empty file | It sets the value to the empty string. So an empty file is not the same as no file. |
 | Default | `SECRETS_DIR` has none. A sidecar that mounts nothing is not affected. |
 
 A file can supply these names:

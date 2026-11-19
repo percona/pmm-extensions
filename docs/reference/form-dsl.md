@@ -56,7 +56,7 @@ Carries what the type cannot say about how a field is shown. Nothing on `Ui` cha
 | `parent` | `str` | none | The name of a `bool` field in the same section that this field belongs to. The form shows the field indented under that toggle, and inactive until the toggle is on. |
 | `help_placement` | `HelpPlacement` | chosen by length | Where the description is shown: `"inline"` puts it under the input, and `"tooltip"` puts it behind a help icon. |
 
-Sections appear in the order of each section's first field.
+[Layout](#layout) says how the sections are ordered.
 
 <!-- src: app/extensions/apps/checksums/models.py :: ChecksumsForm -->
 ```python
@@ -234,7 +234,7 @@ Four markers bind a field to the inventory. The field becomes a list whose optio
 
 | Marker | Options | Fields beyond the shared ones |
 |---|---|---|
-| `ServiceRef` | Services | `service_types` (required): the service types to offer. `check_connectivity`: after the task is created, the create route checks that the service can be reached; it also makes this service the task's primary one. `primary`: names the task's primary service among several `ServiceRef` fields, with no check. |
+| `ServiceRef` | Services | `service_types` (required): the service types to offer. `check_connectivity`: after the task is created, the create route checks that the service can be reached. It also makes this service the task's primary one. `primary`: names the task's primary service among several `ServiceRef` fields, with no check. |
 | `SchemaRef` | Schemas of the selected service | none |
 | `TableRef` | Tables of the selected schema | none |
 | `HostRef` | Hosts that can run a task | `target_service`: the name of a service field. The form warns when the selected host is not the host of that service. |
@@ -296,7 +296,7 @@ The model says which section a field is in. The layout, inside the app's `Views`
 | `key` | `str` | required | The section key. Every `Ui(section="X")` needs a `SectionLayout(key="X")`, with the same case. |
 | `title` | `str` | required | The heading shown. |
 | `description` | `str` | none | Help text for the section. A renderer may leave it out. |
-| `advanced` | `bool` | `False` | The section holds expert options. The form keeps such sections behind one "Show advanced options" control. |
+| `advanced` | `bool` | `False` | The section holds expert options. The form keeps such sections behind one **Show advanced options** control. |
 | `collapsible` | `bool` | `False` | The section can be collapsed. |
 | `collapsed_by_default` | `bool` | `False` | A collapsible section starts collapsed. |
 | `render_after_submit` | `bool` | `False` | The section is shown after the submit button. |
@@ -340,7 +340,7 @@ The UI features of an app's pages, set on `Views`. Every flag defaults to `False
 | `alert_on_fail` | The form offers a PMM alert for a failed task. The hidden `alert_on_fail` field stores the choice. |
 | `scheduling` | Tasks can run on a schedule. |
 | `stats` | The detail page shows the execution statistics card. |
-| `pii_anonymization` | The detail page shows the PII Anonymization section. The flag controls the display only. |
+| `pii_anonymization` | The detail page shows the **PII Anonymization** section. The flag controls the display only. |
 
 ## Rules
 

@@ -19,7 +19,7 @@ An app builder is responsible for the whole route of the app, not only for its P
 - the tools that the app expects on a database host, and the documentation that says so
 - fixes, when a user reports a problem with the app
 
-The framework gives every app the same behavior for free: routes, validation, task storage, logs and the form. An app builder does not maintain those.
+The framework gives every app the same behavior, with no code in the app: routes, validation, task storage, logs and the form. An app builder does not maintain those.
 
 ## How a change is reviewed
 

@@ -95,7 +95,7 @@ Replace the handler of a derived `PUT` or `DELETE`, or change the checks that ru
 | `update_handler`, `delete_handler` | A complete handler that replaces the derived one. |
 | `update_guard`, `delete_guard` | The checks before the derived handler. The default, `()`, applies the two framework guards: the protected-task check and the running-conflict check. A tuple of dependencies replaces them. `UNGUARDED` removes them. |
 
-No app in the repository replaces a handler. Prefer a response builder when only the body differs.
+No app in the repository replaces a handler. A response builder is enough when only the body differs.
 
 ## `response_context_provider`
 

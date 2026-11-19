@@ -105,7 +105,7 @@ To run the tests of one app, see [Test an app](test-an-app.md).
    make typecheck
    ```
 
-   The command prints warnings and ends with a count, such as `Found 4499 diagnostics`. It passes when it exits with status 0: only an error makes it fail. [Run the type check](run-the-type-check.md) explains how to read the output.
+   The command ends with a count of diagnostics. [Run the type check](run-the-type-check.md) explains how to read the output, and what makes the command fail.
 
 3. If you changed a page under `docs/`, check it:
 
@@ -113,11 +113,13 @@ To run the tests of one app, see [Test an app](test-an-app.md).
    make docs-lint
    ```
 
-   The first run downloads Vale into `.vale/bin/`. A clean run ends with a line such as:
+   The first run downloads Vale into `.vale/bin/`. The output ends with a count, such as:
 
    ```text
-   ✔ 0 errors, 0 warnings and 0 suggestions in 24 files.
+   ✖ 0 errors, 12 warnings and 0 suggestions in 24 files.
    ```
+
+   The command fails only on an error. The warnings today are headings that hold a product name or an app's name.
 
    The rules are in [Writing standard](../writing-standard.md).
 

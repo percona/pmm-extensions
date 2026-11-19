@@ -4,6 +4,8 @@ This page starts PMM and PMM Extensions on your machine, adds a database host th
 
 Everything runs from `sidecar/dev/` in this repository, on released images.
 
+If you already work in `percona/pmm`, its `docker-compose.yml` has an `extensions` profile that starts the same pair of containers. It has no database host that can run a task, and it fixes the container names and publishes PMM on every interface.
+
 ## Prerequisites
 
 - Docker with Compose. The steps were tested with Docker 29.10 and Compose 5.8.
@@ -38,7 +40,7 @@ Run every command from the root of the repository.
 
    The output is `200`.
 
-3. Open `https://127.0.0.1:8443` in a browser and sign in as `admin` with the password `admin`. The browser warns about the certificate, because PMM signs its own.
+3. Open `https://127.0.0.1:8443` in a browser and sign in as `admin` with the password `admin`. The browser warns about the certificate, because PMM signs its own. PMM then asks you to change the password: select **Skip**.
 
 The stack listens on `127.0.0.1` only. These variables change it:
 
@@ -143,7 +145,7 @@ PMM Extensions copies the services from PMM's inventory every 15 minutes. A new 
 
 ## Run a backup
 
-1. Create an XtraBackup task for `dev-mysql`. Replace `2` with the identifier from the list:
+1. Create an XtraBackup task for `dev-mysql`, with its identifier from the list in place of `2`:
 
    ```bash
    curl -sk -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
@@ -200,19 +202,17 @@ The second file replaces code. It does not install packages. When your checkout 
 
 ## Use your own database host
 
-The two hosts are a convenience. PMM Extensions runs a task on any host that has all five of these:
+The two hosts are a convenience. PMM Extensions runs a task on any host that meets the list in [What the sidecar expects from Nomad](../explanation/architecture.md#what-the-sidecar-expects-from-nomad). In this environment, three more things hold for such a host:
 
-- PMM Client 3.2 or later, registered with this PMM. The client includes the program that runs tasks.
-- A route to PMM at the name `pmm-server`, on ports 8443 and 4647. A container gets that when it joins the Compose network, `pmm-extensions-dev_default`.
-- Its database service added to PMM, for example with `pmm-admin add mysql`.
-- The tool that the task calls, installed on the host. PMM Extensions runs the tool and does not install it.
-- Credentials for the tool in a file on the host. A form takes a path, not a password.
+- It reaches PMM at the name `pmm-server`, on ports 8443 and 4647. A container gets that when it joins the Compose network, `pmm-extensions-dev_default`.
+- Its database service is added to PMM, for example with `pmm-admin add mysql`. A form offers only the services that PMM knows.
+- The credentials for the tool are in a file on the host. A form takes a path, not a password.
 
 The files under `sidecar/dev/targets/` are working examples of such a host.
 
 ## Verify
 
-1. In PMM, open **Apps → MySQL Backups**.
+1. In PMM's menu, expand **Apps** and select **MySQL Backups**.
 2. Confirm that the page lists `first-backup` with the status **Done**.
 
 ## Troubleshooting
@@ -231,7 +231,7 @@ docker compose -f sidecar/dev/compose.yaml --profile mysql restart mysql-host
 
 ### The sidecar is healthy and requests fail with HTTP 502
 
-A request answers `502` with "Failed to get a response from Nomad". The `pmm-extensions` container started before PMM was ready and did not get its token. Restart it:
+A request answers `502` with "Failed to get a response from Nomad". Nomad is the engine that PMM uses to run tasks. The `pmm-extensions` container started before PMM was ready and did not get its token. Restart it:
 
 ```bash
 docker compose -f sidecar/dev/compose.yaml restart pmm-extensions
@@ -269,5 +269,3 @@ Use the same value in every later command, and in the URLs on this page.
 - [Port an app](port-an-app.md)
 - [Add an app to the PMM UI](add-an-app-to-the-pmm-ui.md)
 - [How the sidecar runs inside PMM](../explanation/architecture.md)
-
-If you already work in `percona/pmm`, its `docker-compose.yml` has an `extensions` profile that starts the same pair of containers. It has no database host that can run a task, and it fixes the container names and publishes PMM on every interface.

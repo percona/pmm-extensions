@@ -10,11 +10,11 @@ The PMM Extensions image ships the apps that `sidecar/settings.yaml` lists. Toda
 
 | App | Where a user finds it |
 |---|---|
-| MySQL Backups | **Apps → MySQL Backups** in PMM |
-| Support diagnostics | **Apps → Support diagnostics** in PMM |
-| Inventory | Nowhere. It has no page. The other apps read their services and hosts from it. |
-| Operations Inventory | Nowhere. PMM's own pages for MongoDB operations read from it. |
-| Operations Bootstrap | Nowhere. PMM's own pages for MongoDB operations call it. |
+| MySQL Backups (`mysql_backups`) | **Apps → MySQL Backups** in PMM |
+| Support diagnostics (`atw`) | **Apps → Support diagnostics** in PMM |
+| Inventory (`inventory`) | Nowhere. It has no page. The other apps read their services and hosts from it. |
+| Operations Inventory (`om_inventory`) | Nowhere. PMM's own pages for MongoDB operations read from it. |
+| Operations Bootstrap (`om_bootstrap`) | Nowhere. PMM's own pages for MongoDB operations call it. |
 
 PMM's documentation describes the two apps that have pages.
 
