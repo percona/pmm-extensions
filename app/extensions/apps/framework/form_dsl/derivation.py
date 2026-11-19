@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
+from app.core.utils.pydantic import bound_metadata, flatten_metadata, numeric_bounds
 from app.extensions.apps.framework.form_dsl.markers import (
     Choices,
     FieldWidget,
@@ -376,70 +377,9 @@ def _derive_choices(name: str, base: Any, choices: Choices | None) -> list[Choic
     )
 
 
-def _flatten_metadata(metadata: list[Any]) -> list[Any]:
-    """Expand any ``annotated_types.GroupedMetadata`` container into its members.
-
-    Pydantic leaves a ``GroupedMetadata`` container (``Interval``, ``Len``,
-    ``StringConstraints``) unflattened in ``FieldInfo.metadata``; iterating one yields
-    its constituent ``Ge`` / ``Le`` / ``MinLen`` / ``MaxLen`` (and pattern) markers, so
-    the bounds scan can match them with ``isinstance``.
-
-    :param metadata: The metadata items to flatten.
-    :return: The metadata with every ``GroupedMetadata`` container replaced by its
-        constituent markers; other items pass through unchanged.
-    """
-    return [
-        member
-        for item in metadata
-        for member in (
-            item if isinstance(item, annotated_types.GroupedMetadata) else (item,)
-        )
-    ]
-
-
-def _bound_metadata(field_info: FieldInfo) -> list[Any]:
-    """Return the metadata carrying a field's numeric / string bounds.
-
-    Collect the field's outer ``FieldInfo.metadata`` first — so an outer-level bound
-    wins over a union member's under the first-match scan — then descend into each
-    union member of the annotation and append its metadata, unwrapping a nested
-    ``FieldInfo`` (produced by a ``Field(...)`` marker on the member, e.g. ``TcpPort``)
-    into its constituent markers. Non-``Annotated`` members (``int``, ``NoneType``)
-    contribute nothing.
-
-    :param field_info: The field's Pydantic ``FieldInfo``.
-    :return: The outer metadata followed by each union member's bound metadata.
-    """
-    metadata = list(field_info.metadata)
-    current = _strip_annotated(field_info.annotation)
-    if get_origin(current) in (Union, UnionType):
-        for arg in get_args(current):
-            member_meta = getattr(arg, "__metadata__", None)
-            if not member_meta:
-                continue
-            for item in member_meta:
-                if isinstance(item, FieldInfo):
-                    metadata.extend(item.metadata)
-                else:
-                    metadata.append(item)
-    return metadata
-
-
-def _numeric_bounds(metadata: list[Any]) -> dict[str, Any]:
-    """Return ``ge`` / ``le`` bounds extracted from ``annotated_types`` metadata."""
-    metadata = _flatten_metadata(metadata)
-    ge = next(
-        (item.ge for item in metadata if isinstance(item, annotated_types.Ge)), None
-    )
-    le = next(
-        (item.le for item in metadata if isinstance(item, annotated_types.Le)), None
-    )
-    return {"ge": ge, "le": le}
-
-
 def _string_constraints(metadata: list[Any]) -> dict[str, Any]:
     """Return ``min_length`` / ``max_length`` / ``pattern`` from string metadata."""
-    metadata = _flatten_metadata(metadata)
+    metadata = flatten_metadata(metadata)
     min_length = next(
         (
             item.min_length
@@ -833,7 +773,7 @@ def _build_base_field(
             "element type"
         )
     return _build_scalar_field(
-        name, base, ui.widget, common, _bound_metadata(field_info)
+        name, base, ui.widget, common, bound_metadata(field_info)
     )
 
 
@@ -863,7 +803,7 @@ def _build_scalar_field(
     :param widget: The optional widget override.
     :param common: The shared ``BaseField`` keyword arguments.
     :param metadata: The field's bound-carrying metadata (from
-        :func:`_bound_metadata`): the outer ``FieldInfo.metadata`` plus any union
+        :func:`~app.core.utils.pydantic.bound_metadata`): the outer ``FieldInfo.metadata`` plus any union
         members' metadata, for numeric bounds and string constraints.
     :return: The derived scalar field.
     :raises ValueError: When ``base`` maps to no known field kind.
@@ -873,9 +813,9 @@ def _build_scalar_field(
     if widget is FieldWidget.YAML:
         return YamlField(**common)
     if base is int:
-        return IntegerField(**common, **_numeric_bounds(metadata))
+        return IntegerField(**common, **numeric_bounds(metadata))
     if base is float:
-        return FloatField(**common, **_numeric_bounds(metadata))
+        return FloatField(**common, **numeric_bounds(metadata))
     if base is str:
         return StringField(**common, **_string_constraints(metadata))
     field_class = _SIMPLE_SCALAR_FIELDS.get(base)
