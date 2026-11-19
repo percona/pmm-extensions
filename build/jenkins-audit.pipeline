@@ -29,7 +29,7 @@ pipeline {
 
 		POETRY_VIRTUALENVS_IN_PROJECT = "true"
 
-		// Pinned to match the python:3.14.10-slim tag in Containerfile.base.
+		// Pinned to match the python:*-slim tag in Containerfile.base.
 		PYTHON_VERSION = "3.14.10"
 		PYTHON_BUILD_TAG = "20261110"
 		PYTHON = "python3.14"
