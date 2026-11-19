@@ -117,6 +117,9 @@ def test_dispatch_minifies_every_host_payload(payload: Path) -> None:
         f"{_relative(payload)} has a quoted literal inside an f-string field, so "
         "dispatch sends it unminified: bind the value to a name or use str.format"
     )
+    assert minify_file_content(source) != source, (
+        f"{_relative(payload)} is sent unminified at dispatch"
+    )
 
 
 def test_an_inline_payload_survives_dispatch_under_the_minimum_python(

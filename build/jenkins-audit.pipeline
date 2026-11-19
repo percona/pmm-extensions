@@ -129,9 +129,8 @@ pipeline {
 
 			steps {
 				echo 'Running pre-commit ..'
-				// `language: system` hooks shell out to bare `python3`, and the repo's
-				// scripts use 3.14-only syntax, so the venv must lead PATH ahead of the
-				// agent's own 3.9.
+				// `language: system` hooks shell out to bare `python3` and import the
+				// project's dependencies, so the venv must lead PATH.
 				withEnv(["PATH+VENV=${env.WORKSPACE}/venv/bin"]) {
 					sh '''
 						set -o errexit

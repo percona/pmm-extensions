@@ -797,9 +797,8 @@ async def contending_sessions(
 @pytest_asyncio.fixture(name="session")
 async def session_fixture() -> AsyncGenerator[AsyncSession]:
     """Create an async db session for testing."""
-    # scaffolding-dup-ok: the atw, snippets and sync conftests still shadow
-    # this with identical copies; folding them in is a cleanup of its own,
-    # separate from the Python 3.14 move that re-annotated this signature.
+    # scaffolding-dup-ok: the atw, snippets and sync conftests shadow this
+    # with identical copies; folding them in is a separate cleanup.
     engine = create_async_engine(
         "sqlite+aiosqlite://",
         json_serializer=json_serializer,

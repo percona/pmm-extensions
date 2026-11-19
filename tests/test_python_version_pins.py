@@ -35,7 +35,6 @@ FROM_TAG = re.compile(
     r"^FROM docker\.io/library/python:(\d+\.\d+\.\d+)-slim\b", re.MULTILINE
 )
 WORKFLOW_PIN = re.compile(r"^\s*(?:python-version:\s*(.+)|python:\s*\[(.*)\])\s*$")
-QUOTED = re.compile(r"\"([^\"]+)\"")
 HOST_PYTHON = "3.9"
 HOST_PYTHON_WORKFLOWS = ["coverage-main.yml", "python.yaml"]
 
@@ -49,6 +48,19 @@ def _from_tag(relative: str) -> str:
     match = FROM_TAG.search((BASE_DIR / relative).read_text(encoding="utf-8"))
     assert match is not None, f"{relative} has no python:<version>-slim FROM line"
     return match.group(1)
+
+
+def _pinned_values(text: str) -> list[str]:
+    """Return the literal versions in a ``python-version:`` value or matrix list.
+
+    Quoted and unquoted values count alike; an expression such as
+    ``${{ matrix.python }}`` carries no literal and is skipped.
+
+    :param text: The value after ``python-version:``, or the matrix list's contents.
+    :return: Each literal version it names.
+    """
+    values = [item.strip().strip("'\"") for item in text.split(",")]
+    return [value for value in values if value and "${{" not in value]
 
 
 @pytest.fixture(scope="module")
@@ -100,7 +112,7 @@ def test_workflows_pin_only_the_reference_and_the_host_python(version: str) -> N
         for line in workflow.read_text(encoding="utf-8").splitlines():
             if (match := WORKFLOW_PIN.match(line)) is None:
                 continue
-            for pinned in QUOTED.findall(match.group(1) or match.group(2)):
+            for pinned in _pinned_values(match.group(1) or match.group(2)):
                 pins[workflow.name, pinned] += 1
 
     assert {pinned for _, pinned in pins if pinned != HOST_PYTHON} == {version}

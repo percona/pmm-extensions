@@ -32,6 +32,7 @@ def holds_requotable_f_string(content: str) -> bool:
     :param content: Python source.
     :return: Whether any replacement field holds a quoted literal.
     :raises SyntaxError: When ``content`` is not Python source.
+    :raises RecursionError: When ``content`` nests too deeply to parse.
     """
     for node in ast.walk(ast.parse(content)):
         if not isinstance(node, ast.FormattedValue):
@@ -56,6 +57,7 @@ def minify_file_content(content: str, file_ext: str = "") -> str:
     :param file_ext: The file extension; anything but empty or ``py`` is returned as is.
     :return: The minified source, or ``content`` when it is not Python or holds
         an f-string the minifier could re-quote.
+    :raises RecursionError: When ``content`` nests too deeply to parse.
     """
     file_ext = file_ext.lstrip(".").lower()
     if file_ext and file_ext != "py":
