@@ -146,14 +146,15 @@ def _exit_status(script: _Script, restore: Callable[[], None]) -> tuple[int, Rec
         def run(self) -> object:
             return run(self)
 
-    main = load_function("main", payload_path=script.path)
-    cast("types.FunctionType", main).__globals__.update(
-        {
+    main = load_function(
+        "main",
+        extra_namespace={
             **stubs,
             "preflight_check": lambda: None,
             "parse_args": lambda: types.SimpleNamespace(config_path="restore.yml"),
             "Restorer": _Restorer,
-        }
+        },
+        payload_path=script.path,
     )
     try:
         main()

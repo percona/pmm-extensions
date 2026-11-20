@@ -158,11 +158,17 @@ XBCRYPT_BIN = load_constant("XBCRYPT_BIN")
 
 
 def load_function(
-    name: str, *, payload_path: pathlib.Path = XTRABACKUP_PAYLOAD_PATH
+    name: str,
+    *,
+    extra_namespace: dict[str, object] | None = None,
+    payload_path: pathlib.Path = XTRABACKUP_PAYLOAD_PATH,
 ) -> Callable[..., Any]:
     """Extract a single module-level payload function with its constants seeded.
 
     :param name: The function to extract; it has to be defined at module level.
+    :param extra_namespace: Globals the function body reads that are not
+        whitelisted constants: other payload functions and classes, or stand-ins
+        for them.
     :param payload_path: The payload script to extract the function out of.
     :raises TypeError: If the extracted name is not callable.
     """
@@ -181,6 +187,7 @@ def load_function(
         compile(ast.Module(body=body, type_ignores=[]), str(payload_path), "exec"),
         namespace,
     )
+    namespace.update(extra_namespace or {})
     extracted = namespace[name]
     if not callable(extracted):
         raise TypeError(f"{name} in {payload_path} is not callable.")
