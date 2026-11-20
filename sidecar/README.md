@@ -21,7 +21,7 @@ For why the image works this way, see [How the sidecar runs inside PMM](../docs/
 | File | Role |
 |---|---|
 | `Containerfile.sidecar` | The final build stage. It ships the backend only and starts from the `extensions:builder` image. |
-| `entrypoint.sh` | Process 1. It resolves `ENCRYPTION_KEY`, generates the broker password, resolves the Grafana token, and then starts `supervisord`. |
+| `entrypoint.sh` | Process 1. It waits for the `SECRET_KEY` file when PMM has not written it yet. It then resolves `ENCRYPTION_KEY`, generates the broker password and resolves the Grafana token, and it waits for a Grafana that is still starting. Then it starts `supervisord`. See [Starting before PMM is ready](#starting-before-pmm-is-ready). |
 | `supervisord.conf` | Runs `valkey`, the four `migrate-*` programs, the `extensions`, `inventory` and `tasks` APIs, the Celery worker and Celery beat. |
 | `settings-env.sh` | Sourced by `entrypoint.sh`. It expands the deployment inputs into settings variables. |
 | `settings.yaml` | The settings profile, placed at `/home/extensions/app/settings.yaml`. |
@@ -102,7 +102,7 @@ A file cannot supply `CELERY__BROKER_URL` or `CELERY__RESULT_BACKEND`: the entry
 
 | Input | Required | Default | Becomes |
 |---|---|---|---|
-| `SECRET_KEY` | Yes | None. The container exits without it. Inside PMM, PMM supplies it as a file. | Itself |
+| `SECRET_KEY` | Yes | None. With `SECRETS_DIR` set, the container waits for the file. With `SECRETS_DIR` unset, the container exits without a key. Inside PMM, PMM supplies it as a file. | Itself |
 | `ENCRYPTION_KEY` | No | Generated into the state volume, on a deployment with no encrypted values | Itself |
 | `EXTENSIONS_DB_PASSWORD` | In practice, unless a file supplies the password | None | The database password of all three services |
 | `EXTENSIONS_DB_HOST` | No | `pmm-server` | The database host of all three services, and of the schema steps |
@@ -126,8 +126,9 @@ A setting variable can also be set directly. It then overrides only itself: `EXT
 | `GF_SECURITY_ADMIN_USER` | `admin` | The Grafana administrator that requests the token. Used only when the sidecar holds no valid token. |
 | `GF_SECURITY_ADMIN_PASSWORD` | `admin` | Its password. Removed from the environment before the services start. |
 | `EXTENSIONS_STATE_DIR` | `/home/extensions/state` | Where the token and a generated encryption key are stored. |
-| `EXTENSIONS_GRAFANA_MINT_TIMEOUT` | `60` | Seconds to keep trying a Grafana that has not started. After that, the services start without a token. |
 | `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` | `60` | Seconds to wait for the databases before a key is generated. |
+
+`EXTENSIONS_GRAFANA_MINT_TIMEOUT` is not read. A deployment that sets it gets one `[grafana-mint]` log line that says so.
 
 ### What is not an input
 
@@ -149,6 +150,26 @@ A setting variable can also be set directly. It then overrides only itself: `EXT
 A new encryption key is generated only when none of the three service databases holds an encrypted value. If one does, or if a database cannot be read within the timeout, the container does not start. A lost key cannot be recovered.
 
 A new Grafana token belongs to a service account named `pmm-extensions` with the `Admin` role. A stored token is checked with one call at startup. If Grafana rejects it, a new one is requested. If Grafana does not answer, the stored token is used.
+
+## Starting before PMM is ready
+
+A Compose file with a plain `depends_on: pmm-server` starts the sidecar when the `pmm-server` container has started, not when PMM is healthy. `entrypoint.sh` then waits for the two things that PMM supplies while it starts. It starts `supervisord` only when it has both.
+
+| It waits for | When | What the container log says |
+|---|---|---|
+| The `SECRET_KEY` file | `SECRETS_DIR` is set, and neither the environment nor a file in that directory supplies a key. | `[entrypoint] Waiting for PMM to publish SECRET_KEY under <directory>.`, every 10 seconds. When the file exists and the sidecar cannot read it, the line says so. It then names the user ID and the groups that the sidecar runs as. |
+| A Grafana that can create the token | The start must request a token: none is configured or mounted, and no stored token is one that Grafana still accepts. | `[grafana-mint] Waiting for Grafana at <endpoint> to accept the service-account mint (last answer: …).`, at least 30 seconds apart. |
+
+| Fact | Detail |
+|---|---|
+| Time limit | Neither wait has one. |
+| Health during a wait | `starting` for about three and a half minutes, and `unhealthy` after that. The container turns healthy without a restart when the wait ends. |
+| A stop signal during a wait | The entrypoint ends within a second, with exit status 143. |
+| What the Grafana wait covers | A refused or timed-out connection, and HTTP 500, 502, 503 or 504. Each attempt is given up after 30 seconds and repeated 3 seconds later. |
+| A fault that no wait can clear | A rejected administrator credential, an endpoint that does not serve Grafana's API, or a Grafana certificate that fails verification. It is reported once, in a `[grafana-mint]` line, and not tried again. The programs then start without a token, and sign-in and the inventory copy do not work. The container reports unhealthy until it is started again with a credential that works. |
+| A start that already holds a token | It does not wait. A configured or mounted token skips the request. A stored token is used without a check while Grafana does not answer. |
+| After the key file appears | The entrypoint reads the directory once more, one second later. PMM writes the key first and the three database passwords directly after it. |
+| The encryption-key step | It keeps its time limit. On a start that must generate `ENCRYPTION_KEY`, the container exits when the databases do not answer within `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` seconds. |
 
 ## Settings an administrator may change
 
@@ -183,6 +204,7 @@ The files under `/home/extensions/app` belong to `root`, and the `extensions` us
 
 `healthcheck.sh` exits 0 only when all of these hold:
 
+- the entrypoint has resolved the Grafana token and written its marker, `/tmp/grafana-token.ok`
 - every long-running program is `RUNNING`
 - each of the four schema steps has written its marker, `/tmp/migrate-<step>.ok`
 - the three APIs answer `/health` with 200
@@ -193,8 +215,10 @@ The files under `/home/extensions/app` belong to `root`, and the `extensions` us
 | Health check timing | `--interval=15s --timeout=15s --start-period=150s --retries=5`. A program that stops makes the container unhealthy after about 80 seconds. |
 | Schema steps | `extensions`, `inventory`, `tasks` and `beat`. Each waits for its database with no time limit. |
 | The APIs' gate | Each API waits up to 300 seconds for the four markers, then fails and is restarted. |
-| A container restart | Clears the four markers before any program starts. |
-| Health without a Grafana token | The health check does not test the token. A sidecar that started without one is healthy, and sign-in does not work. |
+| A container restart | Clears the token marker and the four schema markers before any program starts. |
+| The token marker | `entrypoint.sh` writes it when the token step ends with a token. It also writes it when the auth provider is not Grafana, because there is then no token to resolve. When the token step cannot read its settings, the marker is not written. |
+| Health without a Grafana token | Unhealthy. The token is the first thing the health check tests, and `docker inspect` shows `unhealthy: PMM Extensions holds no Grafana service-account token; …`. That covers an entrypoint that still waits for PMM, and programs that started after a token request failed for good. |
+| A token that is held but empty | Not detected. A mounted credential file with no value sets the token to the empty string, and the marker is still written. |
 
 To rerun one schema step in a running container, see [Rerun a schema step in a running sidecar](../docs/how-to/rerun-a-schema-step.md). That page covers `clear_sentinels.sh`.
 
