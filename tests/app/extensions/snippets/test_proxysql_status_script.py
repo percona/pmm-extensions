@@ -52,6 +52,7 @@ from pathlib import Path
 import pytest
 
 from app.extensions.snippets.config import snippets_settings
+from tests.conftest import require_bash_4
 
 SCRIPT = snippets_settings.SNIPPETS_DIR / "proxysql_status.sh"
 _cap = re.search(
@@ -403,6 +404,7 @@ class ProxysqlHarness:
         :param args: Options passed after ``--defaults-file``.
         :return: The argument vector.
         """
+        require_bash_4()
         return ["bash", str(SCRIPT), "--defaults-file", str(self.admin_cnf), *args]
 
     def _env(self) -> dict[str, str]:
