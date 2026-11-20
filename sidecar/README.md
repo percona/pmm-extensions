@@ -157,16 +157,16 @@ A Compose file with a plain `depends_on: pmm-server` starts the sidecar when the
 
 | It waits for | When | What the container log says |
 |---|---|---|
-| The `SECRET_KEY` file | `SECRETS_DIR` is set, and neither the environment nor a file in that directory supplies a key. | `[entrypoint] Waiting for PMM to publish SECRET_KEY under <directory>.`, every 10 seconds. When the file exists and the sidecar cannot read it, the line says so. It then names the user ID and the groups that the sidecar runs as. |
-| A Grafana that can create the token | The start must request a token: none is configured or mounted, and no stored token is one that Grafana still accepts. | `[grafana-mint] Waiting for Grafana at <endpoint> to accept the service-account mint (last answer: …).`, at least 30 seconds apart. |
+| The `SECRET_KEY` file | `SECRETS_DIR` is set, and neither the environment nor a file in that directory supplies a key. | A line that starts with `[entrypoint] Waiting for PMM to publish SECRET_KEY under <directory>`, every 10 seconds. When the file exists and the sidecar cannot read it, the line says so. It then names the user ID and the groups that the sidecar runs as. |
+| A Grafana that can create the token | The start must request a token. None is configured or mounted, and either none is stored or Grafana rejected the stored one. | A line that starts with `[grafana-mint] Waiting for Grafana at <endpoint> to accept the service-account mint`, at least 30 seconds apart. The line gives Grafana's last answer. |
 
 | Fact | Detail |
 |---|---|
 | Time limit | Neither wait has one. |
 | Health during a wait | `starting` for about three and a half minutes, and `unhealthy` after that. The container turns healthy without a restart when the wait ends. |
-| A stop signal during a wait | The entrypoint ends within a second, with exit status 143. |
+| A stop signal during a wait | The entrypoint ends in about a second, with exit status 143. |
 | What the Grafana wait covers | A refused or timed-out connection, and HTTP 500, 502, 503 or 504. Each attempt is given up after 30 seconds and repeated 3 seconds later. |
-| A fault that no wait can clear | A rejected administrator credential, an endpoint that does not serve Grafana's API, or a Grafana certificate that fails verification. It is reported once, in a `[grafana-mint]` line, and not tried again. The programs then start without a token, and sign-in and the inventory copy do not work. The container reports unhealthy until it is started again with a credential that works. |
+| A fault that no wait can clear | A rejected administrator credential, an endpoint that does not serve Grafana's API, or a Grafana certificate that fails verification. It is reported once, in a `[grafana-mint]` line, and not tried again. The programs then start without a token, and sign-in and the inventory copy do not work. The container reports unhealthy until the fault is removed and the container is started again. |
 | A start that already holds a token | It does not wait. A configured or mounted token skips the request. A stored token is used without a check while Grafana does not answer. |
 | After the key file appears | The entrypoint reads the directory once more, one second later. PMM writes the key first and the three database passwords directly after it. |
 | The encryption-key step | It keeps its time limit. On a start that must generate `ENCRYPTION_KEY`, the container exits when the databases do not answer within `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` seconds. |

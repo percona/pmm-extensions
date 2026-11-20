@@ -56,7 +56,7 @@ Three credentials do not come from PMM.
 
 **The Grafana token.** To ask Grafana about sessions, to call PMM's API and to reach Nomad, the sidecar needs a token of its own. At startup it signs in to Grafana as the administrator. It finds or creates a service account named `pmm-extensions` and asks for a token. It stores the token in its state volume and reuses it at the next start. The administrator password is needed only when the sidecar holds no valid token.
 
-While Grafana is still starting, the sidecar waits for it. The next section says why.
+While Grafana is still starting, the sidecar waits for it: see [Why the sidecar waits for PMM](#why-the-sidecar-waits-for-pmm).
 
 **The broker password.** The Valkey server is inside the container and serves only Celery. The entrypoint generates a new password at each start. Nothing outside the container needs to know it, and nothing in the broker survives a restart.
 
