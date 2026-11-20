@@ -2431,10 +2431,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             hold must not be cut short.
         :param on_terminal: The caller's hook for a run that has reached a
             terminal status. It is awaited after the logs are stored and before
-            the hold is released, which is the last moment the allocation's
-            files are sure to exist: a client short of disk space collects the
-            allocation as soon as the hold ends. The hold is released whether
-            the hook returns or raises.
+            the hold is released, so a read it makes comes before the release
+            that lets a client short of disk space collect the allocation. That
+            is best effort, not a guarantee that the files are there: the hold
+            also ends by itself at its deadline, and an allocation registered
+            before the hold existed has none. The hold is released whether the
+            hook returns or raises.
         """
         alloc_id = alloc["ID"]
         alloc_epoch = alloc["CreateIndex"]

@@ -128,7 +128,7 @@ async def read_run_result(
 
 
 class RunResultCapture:
-    """Read a run's result while the executor still keeps the run's files.
+    """Read a run's result before the executor releases the run's files.
 
     A sync that ends a run lets go of the run's working directory before it
     returns, and a host short of disk space deletes the directory at once. The

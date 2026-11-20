@@ -38,7 +38,8 @@ from app.tasks.models import (
 logger = logging.getLogger(__name__)
 _ONE_MEBIBYTE = 1024 * 1024
 #: A caller's hook for a run that has just reached a terminal status, awaited
-#: while the backend still keeps the run's files. See
+#: before the backend releases the run's files; whether they are still there
+#: is best effort. See
 #: :meth:`BaseExecutor.sync_task_history`.
 TerminalRunHook = Callable[[TaskHistory], Awaitable[None]]
 _TERMINAL_STATUS_EVENT_MAP = {
@@ -286,7 +287,8 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
             (default), schedule it as a fire-and-forget background task.
         :param on_terminal: A hook the executor awaits with the run once the
             sync has resolved it to a terminal status and before the backend
-            lets go of the run's files. A backend that keeps a finished run's
+            lets go of the run's files; whether the files are still there then
+            is best effort. A backend that keeps a finished run's
             files never calls it, and neither does a sync that gets no
             ``writer_session``.
         :return: The updated task history and, when
