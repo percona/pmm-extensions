@@ -21,8 +21,10 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -211,6 +213,70 @@ class TestBuildStep:
         assert "dpkg -i" in command
         assert "psmdb-80" in command
 
+    @pytest.mark.parametrize("setup_exit", [0, 1])
+    def test_configure_repository_removes_the_downloaded_deb(
+        self, tmp_path: Path, setup_exit: int
+    ) -> None:
+        """Remove percona-release's .deb when the step exits, failed or not.
+
+        No rollback step could: rollback does nothing before ``install_package``.
+        """
+        action = PackagesInstallStrategy().build_step(
+            "configure_repository", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+        bin_dir = _recording_bin(tmp_path, ["curl", "dpkg"], real=("mktemp",))
+        setup = bin_dir / "percona-release"
+        setup.write_text(f"#!/bin/sh\nexit {setup_exit}\n")
+        setup.chmod(0o755)
+        scratch = tmp_path / "tmp"
+        scratch.mkdir()
+
+        result = subprocess.run(
+            [_SH, "-c", _body(action.command)],
+            env={"PATH": str(bin_dir), "TMPDIR": str(scratch)},
+            check=False,
+        )
+
+        assert result.returncode == setup_exit
+        curl, dpkg = (tmp_path / "calls.log").read_text().splitlines()
+        deb = dpkg.removeprefix("dpkg -i ")
+        assert Path(deb).parent == scratch
+        assert curl.startswith(f"curl -fsSL -o {deb} https://")
+        assert list(scratch.iterdir()) == []
+
+    def test_configure_repository_removes_the_deb_when_killed(
+        self, tmp_path: Path
+    ) -> None:
+        """Remove percona-release's .deb when the step is killed, as on its timeout.
+
+        ``timeout`` signals the step's whole process group, and sh runs no EXIT trap
+        when a signal kills it.
+        """
+        action = PackagesInstallStrategy().build_step(
+            "configure_repository", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+        bin_dir = _recording_bin(tmp_path, ["dpkg"], real=("mktemp", "sleep"))
+        curl = bin_dir / "curl"
+        curl.write_text("#!/bin/sh\nexec sleep 30\n")
+        curl.chmod(0o755)
+        scratch = tmp_path / "tmp"
+        scratch.mkdir()
+        step = subprocess.Popen(
+            [_SH, "-c", _body(action.command)],
+            env={"PATH": str(bin_dir), "TMPDIR": str(scratch)},
+            start_new_session=True,
+        )
+        for _ in range(100):
+            if any(scratch.iterdir()):
+                break
+            time.sleep(0.05)
+        assert any(scratch.iterdir())
+
+        os.killpg(step.pid, signal.SIGTERM)
+
+        assert step.wait(timeout=10) == 128 + signal.SIGTERM
+        assert list(scratch.iterdir()) == []
+
     def test_configure_repository_uses_dnf_on_rocky(self) -> None:
         """Install percona-release's .rpm via dnf on Rocky."""
         action = PackagesInstallStrategy().build_step(
@@ -271,7 +337,10 @@ class TestBuildStep:
             "install_package", "node00", _spec(OperatingSystem.UBUNTU)
         )
 
-        assert "apt-get install -y percona-server-mongodb" in " ".join(action.command)
+        assert (
+            "apt-get install -y -o Dir::Cache::Archives=/var/cache/om-bootstrap"
+            " percona-server-mongodb"
+        ) in " ".join(action.command)
 
     @pytest.mark.parametrize("os_", SUPPORTED_OSES)
     def test_install_package_claims_the_host_before_installing(
@@ -284,7 +353,7 @@ class TestBuildStep:
 
         lines = _body(action.command).splitlines()
         assert lines[0] == f"printf '%s\\n' {RUN_ID} > {OWNERSHIP_MARKER_PATH}"
-        assert "percona-server-mongodb" in lines[1]
+        assert "percona-server-mongodb" in "\n".join(lines[1:])
 
     def test_install_package_requires_a_run_id(self) -> None:
         """Refuse to write an ownership marker no run's rollback could match."""
@@ -301,10 +370,11 @@ class TestBuildStep:
         """Leave exactly this run's id in the marker once the shell has run."""
         marker = tmp_path / "mongod.om-bootstrap"
         monkeypatch.setattr(packages, "OWNERSHIP_MARKER_PATH", str(marker))
+        monkeypatch.setattr(packages, "APT_DOWNLOAD_PATH", str(tmp_path / "debs"))
         action = PackagesInstallStrategy().build_step(
             "install_package", "node00", _spec(OperatingSystem.UBUNTU)
         )
-        bin_dir = _recording_bin(tmp_path, ["apt-get"])
+        bin_dir = _recording_bin(tmp_path, ["apt-get"], real=("mkdir",))
 
         subprocess.run(
             [_SH, "-c", _body(action.command)],
@@ -313,6 +383,37 @@ class TestBuildStep:
         )
 
         assert marker.read_text() == f"{RUN_ID}\n"
+
+    @pytest.mark.parametrize("apt_exit", [0, 100])
+    def test_install_package_deletes_its_downloads_once_installed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        apt_exit: int,
+    ) -> None:
+        """Delete the .debs apt downloaded once the install succeeds, not before.
+
+        After a failure the retry reuses them, and ``purge_package`` deletes them.
+        """
+        downloads = tmp_path / "debs"
+        monkeypatch.setattr(packages, "APT_DOWNLOAD_PATH", str(downloads))
+        monkeypatch.setattr(
+            packages, "OWNERSHIP_MARKER_PATH", str(tmp_path / "mongod.om-bootstrap")
+        )
+        action = PackagesInstallStrategy().build_step(
+            "install_package", "node00", _spec(OperatingSystem.UBUNTU)
+        )
+        bin_dir = _recording_bin(tmp_path, ["apt-get"], real=("mkdir",))
+        apt = bin_dir / "apt-get"
+        apt.write_text(
+            f"#!/bin/sh\n: > {shlex.quote(str(downloads / 'mongod.deb'))}\n"
+            f"exit {apt_exit}\n"
+        )
+
+        result = _run_step(action, tmp_path, bin_dir)
+
+        assert result.returncode == apt_exit, result.stderr
+        assert downloads.exists() is (apt_exit != 0)
 
     def test_install_package_uses_dnf_on_rocky(self) -> None:
         """Install the package through dnf, not apt-get, on Rocky."""
@@ -1558,7 +1659,10 @@ class TestBuildRollbackStep:
 
 
 def _recording_bin(
-    tmp_path: Path, fakes: list[str], outputs: dict[str, str] | None = None
+    tmp_path: Path,
+    fakes: list[str],
+    outputs: dict[str, str] | None = None,
+    real: tuple[str, ...] = (),
 ) -> Path:
     """Build a ``PATH`` directory with ``cat``/``rm``/``awk`` and fakes that log their argv.
 
@@ -1568,14 +1672,15 @@ def _recording_bin(
     :param fakes: The commands to fake.
     :param outputs: What a fake prints, keyed by the exact call as ``calls.log``
         records it; every other call prints nothing.
+    :param real: More real tools to put on the ``PATH``.
     :return: The directory.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for tool in ("cat", "rm", "awk"):
-        real = shutil.which(tool)
-        assert real is not None
-        (bin_dir / tool).symlink_to(real)
+    for tool in ("cat", "rm", "awk", *real):
+        found = shutil.which(tool)
+        assert found is not None
+        (bin_dir / tool).symlink_to(found)
     log = tmp_path / "calls.log"
     for fake in fakes:
         path = bin_dir / fake
@@ -2119,6 +2224,7 @@ class TestRollbackCommands:
         marker = tmp_path / "mongod.om-bootstrap"
         monkeypatch.setattr(packages, "CONFIG_PATH", str(config))
         monkeypatch.setattr(packages, "OWNERSHIP_MARKER_PATH", str(marker))
+        monkeypatch.setattr(packages, "APT_DOWNLOAD_PATH", str(tmp_path / "debs"))
         config.write_text("net: {}\n")
         data.mkdir()
         (data / "WiredTiger").write_text("")
@@ -2150,10 +2256,14 @@ class TestRollbackCommands:
         """Leave a MongoDB this strategy never installed intact."""
         config, data, _marker = paths
 
+        downloads = tmp_path / "debs"
+        downloads.mkdir()
+
         calls = self._run_all(tmp_path)
 
         assert calls == []
         assert config.exists()
+        assert downloads.exists()
         assert (data / "WiredTiger").exists()
 
     def test_leaves_another_runs_install_untouched(
@@ -2167,10 +2277,14 @@ class TestRollbackCommands:
         config, data, marker = paths
         marker.write_text(f"{OTHER_RUN_ID}\n")
 
+        downloads = tmp_path / "debs"
+        downloads.mkdir()
+
         calls = self._run_all(tmp_path)
 
         assert calls == []
         assert config.exists()
+        assert downloads.exists()
         assert (data / "WiredTiger").exists()
         assert marker.read_text() == f"{OTHER_RUN_ID}\n"
 
@@ -2191,6 +2305,21 @@ class TestRollbackCommands:
         assert not config.exists()
         assert not data.exists()
         assert not marker.exists()
+
+    def test_deletes_what_a_failed_install_downloaded(
+        self, tmp_path: Path, paths: tuple[Path, Path, Path]
+    ) -> None:
+        """Delete the .debs a failed install left, its dependencies' included."""
+        _config, _data, marker = paths
+        marker.write_text(f"{RUN_ID}\n")
+        downloads = tmp_path / "debs"
+        (downloads / "partial").mkdir(parents=True)
+        (downloads / "percona-server-mongodb-server_8.0.4-2.noble_amd64.deb").touch()
+        (downloads / "libcurl4t64_8.5.0-2ubuntu10_amd64.deb").touch()
+
+        self._run(tmp_path, "purge_package")
+
+        assert not downloads.exists()
 
     @pytest.mark.parametrize("verb", ["Remv", "Purg"])
     def test_purges_the_psmdb_packages_apt_no_longer_needs(
