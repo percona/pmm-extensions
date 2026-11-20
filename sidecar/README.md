@@ -552,20 +552,21 @@ name still outranks the profile, as it does for every other setting here.
 
 ## Volumes
 
-Everything shipped into `$APP_HOME` is `root:extensions` and read-only to the `extensions`
-user; the directory itself is `0750 extensions:extensions`, so `extensions` can create new entries
-directly under it but cannot write inside any shipped subdirectory. Runtime
-artifacts survive a container replacement only if their path is mounted as a
-writable volume — at minimum `EXTENSIONS.artifact_dir`, which defaults to
-`data/health-reports`:
+Nothing the image ships can be changed by the `extensions` user every process runs as.
+`/home/extensions` and `$APP_HOME` are both `0750 root:extensions`, so `extensions` can
+neither rename nor delete an entry in them nor create a new one, and nothing under `$APP_HOME`
+is writable by group or other. That holds with the supplementary group 0 too, which PMM's
+compose file adds so the side-car can read the secrets PMM writes for that group. A program
+that writes at run time can therefore write under `$APP_HOME` only where a writable volume is
+mounted — at minimum `EXTENSIONS.artifact_dir`, which defaults to `data/health-reports`, for a
+deployment that enables the `report` app:
 
 ```
 -v report-artifacts:/home/extensions/app/data/health-reports
 ```
 
 `/home/extensions/state` is the one path the image creates for the side-car to write its own
-files into (`0700 extensions:extensions`) — `$APP_HOME` above admits new entries beside the
-shipped tree, but nothing under it is the side-car's to write. It holds the minted
+files into (`0700 extensions:extensions`). It holds the minted
 Grafana token and the minted `ENCRYPTION_KEY`; mounting it is what makes both
 survive a container recreate rather than only a restart.
 
