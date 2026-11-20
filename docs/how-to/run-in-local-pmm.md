@@ -235,13 +235,15 @@ docker compose -f sidecar/dev/compose.yaml --profile mysql restart mysql-host
 
 ### The sidecar is healthy and requests fail with HTTP 502
 
-A request answers `502` with "Failed to get a response from Nomad". Nomad is the engine that PMM uses to run tasks. The `pmm-extensions` container started before PMM was ready and did not get its token. Restart it:
+A request answers `502` with "Failed to get a response from Nomad". Nomad is the engine that PMM uses to run tasks. This happens with the `3.10.0` image when the `pmm-extensions` container started before PMM was ready. That image then runs without its token. Restart it:
 
 ```bash
 docker compose -f sidecar/dev/compose.yaml restart pmm-extensions
 ```
 
 This environment waits for PMM before it starts the container. The symptom appears with other Compose files that do not.
+
+An image that you build from this repository waits for PMM itself, and it reports unhealthy until it has its token. See [Starting before PMM is ready](../../sidecar/README.md#starting-before-pmm-is-ready).
 
 ### The port is taken
 

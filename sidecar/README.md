@@ -171,6 +171,8 @@ A Compose file with a plain `depends_on: pmm-server` starts the sidecar when the
 | After the key file appears | The entrypoint reads the directory once more, one second later. PMM writes the key first and the three database passwords directly after it. |
 | The encryption-key step | It keeps its time limit. On a start that must generate `ENCRYPTION_KEY`, the container exits when the databases do not answer within `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` seconds. |
 
+For why neither wait has a time limit, see [Why the sidecar waits for PMM](../docs/explanation/architecture.md#why-the-sidecar-waits-for-pmm).
+
 ## Settings an administrator may change
 
 `SETTINGS_OVERRIDE.ALLOWED_KEYS` in `settings.yaml` lists every setting that the settings API accepts. A request for any other setting answers `422`.

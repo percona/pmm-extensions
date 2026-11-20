@@ -17,7 +17,7 @@ One `supervisord` process starts everything, so the container has one process tr
 - a Valkey server, which is the Celery broker
 - four programs that apply the database schema and then exit
 
-Each API waits until all four schema programs have finished. The container is healthy when every long-running program runs, the four schema steps have completed, the three APIs answer and the broker answers.
+Each API waits until all four schema programs have finished. The container is healthy when five things hold. The sidecar has its Grafana token, every long-running program runs, the four schema steps have completed, the three APIs answer and the broker answers.
 
 The three services share one database, `pmm_extensions`, in PMM's own PostgreSQL. Their tables do not collide, and each service keeps its own migration history.
 
@@ -42,9 +42,7 @@ The sidecar mounts that volume read-only and reads each file as the setting that
 
 PMM writes the files for group 0, in a directory that passes its group on to new files. The sidecar runs as its own user, so it joins group 0 to read them. That is the `group_add` entry in the Compose file. A matching user ID would break if PMM changed the user it runs as.
 
-The sidecar reads its settings once, when each process starts. A sidecar that starts before the files exist has no key. That is why the sidecar must wait until PMM is healthy, and not only until PMM's container has started. PMM is healthy once it has written the files.
-
-PMM Server's own health check allows it 90 seconds to start. A cold start can take longer. A Compose file that makes the sidecar wait for PMM should also give PMM a longer start period, or the first `up` fails.
+The sidecar reads its settings once, when each process starts. PMM writes the files while it starts, so a sidecar that starts at the same time finds no key yet. It waits for the key file before it starts any process: see [Why the sidecar waits for PMM](#why-the-sidecar-waits-for-pmm).
 
 ## Sign-in
 
@@ -58,13 +56,31 @@ Three credentials do not come from PMM.
 
 **The Grafana token.** To ask Grafana about sessions, to call PMM's API and to reach Nomad, the sidecar needs a token of its own. At startup it signs in to Grafana as the administrator. It finds or creates a service account named `pmm-extensions` and asks for a token. It stores the token in its state volume and reuses it at the next start. The administrator password is needed only when the sidecar holds no valid token.
 
-If Grafana does not answer within 60 seconds, the sidecar starts without a token. Sign-in and the inventory copy then do not work until the container is restarted.
+While Grafana is still starting, the sidecar waits for it. The next section says why.
 
 **The broker password.** The Valkey server is inside the container and serves only Celery. The entrypoint generates a new password at each start. Nothing outside the container needs to know it, and nothing in the broker survives a restart.
 
 **The encryption key.** Secret values that an administrator stores through the settings API are encrypted with `ENCRYPTION_KEY`. The sidecar generates the key on a first start and stores it in the state volume. It generates one only when no database holds encrypted values. A new key over old data would make that data unreadable without any error, so in that case the container refuses to start.
 
 The state volume therefore matters. A lost token costs one new token. A lost encryption key cannot be recovered.
+
+## Why the sidecar waits for PMM
+
+A Compose file can start the sidecar as soon as the `pmm-server` container has started, before PMM is healthy. Two things that the sidecar needs do not exist yet: the `SECRET_KEY` file, and a Grafana that can create the token. The sidecar waits for both, and neither wait has a time limit.
+
+PMM owns the key and Grafana, so a time limit could only give up on a slow PMM. The programs read the token once, from the environment that `supervisord` starts them with. A token that is created later cannot reach them without a restart. The four schema programs wait for PMM's PostgreSQL in the same way.
+
+PMM writes the key first and the three database passwords directly after it. So the sidecar reads the directory once more, one second after the key appears.
+
+Some faults do not clear with time. Examples are a rejected administrator password, an address that does not serve Grafana's API, and a Grafana certificate that fails verification. The sidecar reports such a fault once and does not try again, because repeated failed sign-ins can lock the administrator account in Grafana. It then starts its programs without a token.
+
+The health check requires the token. A sidecar without one still answers `/health`, but sign-in and the inventory copy do not work. So the health check fails while the sidecar waits, and after a fault that waiting cannot clear.
+
+The image with the tag `3.10.0` does not wait. Without the key file, it exits. When Grafana does not answer within 60 seconds, it starts without a token and still reports healthy. That image needs a Compose file that starts it only after PMM is healthy.
+
+PMM Server's own health check allows it 90 seconds to start. A cold start can take longer. A Compose file that makes the sidecar wait for PMM should also give PMM a longer start period, or the first `up` fails.
+
+[Starting before PMM is ready](../../sidecar/README.md#starting-before-pmm-is-ready) lists what each wait covers and what the container log says.
 
 ## What the sidecar expects from Nomad
 
