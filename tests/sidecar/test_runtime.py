@@ -191,13 +191,18 @@ def test_warning_keeps_its_prefix_and_leaves_stdout_empty(
 
 
 @pytest.mark.parametrize(
-    ("script", "stdout_template"),
-    [("encryption_key.py", "{key}\n"), ("grafana_service_account.py", "")],
+    ("script", "stdout_template", "returncode"),
+    [("encryption_key.py", "{key}\n", 0), ("grafana_service_account.py", "", 1)],
 )
 def test_standalone_script_uses_the_shipped_runtime(
-    tmp_path: Path, script: str, stdout_template: str
+    tmp_path: Path, script: str, stdout_template: str, returncode: int
 ):
-    """Run the image's copied scripts without the checkout on the import path."""
+    """Run the image's copied scripts without the checkout on the import path.
+
+    The directory holds no settings profile, so the Grafana helper ends on its
+    own unresolved-settings diagnostic. Reaching that line, rather than an
+    import error, is what shows the shipped runtime module was found.
+    """
     sources = {
         "./sidecar/encryption_key.py",
         "./sidecar/grafana_service_account.py",
@@ -230,6 +235,6 @@ def test_standalone_script_uses_the_shipped_runtime(
         timeout=60,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == returncode, result.stderr
     assert result.stdout == stdout_template.format(key=key)
     assert "Traceback" not in result.stderr

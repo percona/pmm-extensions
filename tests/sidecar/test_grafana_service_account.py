@@ -17,12 +17,13 @@
 import asyncio
 import logging
 import os
+import ssl
 import stat
 import sys
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -30,11 +31,16 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from aiohttp import web
+from cryptography import x509
 from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 from app import BASE_DIR
 from app.core.auth.providers.grafana.provider import GrafanaAuthProvider
 from app.core.requests.connectivity import PROBE_TIMEOUT_SECONDS
+from app.core.utils.date_time import utc_now
 from app.core.utils.strings import b64encode_str
 from sidecar import grafana_service_account as helper
 from tests.sidecar.conftest import EMBEDDED_PROFILE, SIDECAR_DIR
@@ -138,8 +144,13 @@ class GrafanaStub:
     endpoint's own ``/graph`` path is re-prefixed onto every request.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, ssl_context: ssl.SSLContext | None = None) -> None:
+        """Prepare a stub that serves plain HTTP, or TLS when given a context.
+
+        :param ssl_context: The server-side TLS context to serve with, if any.
+        """
         self.requests: list[RecordedRequest] = []
+        self._ssl_context = ssl_context
         self._queued: dict[StubRoute, list[StubResponse]] = {}
         self._site: web.TCPSite | None = None
         self._runner: web.AppRunner | None = None
@@ -171,7 +182,9 @@ class GrafanaStub:
         )
         self._runner = web.AppRunner(application, shutdown_timeout=SHORT_BOUND_SECONDS)
         await self._runner.setup()
-        self._site = web.TCPSite(self._runner, "127.0.0.1", 0)
+        self._site = web.TCPSite(
+            self._runner, "127.0.0.1", 0, ssl_context=self._ssl_context
+        )
         await self._site.start()
         self._port = self._runner.addresses[0][1]
 
@@ -186,7 +199,8 @@ class GrafanaStub:
 
         :return: The loopback URL, carrying PMM's ``/graph`` base path.
         """
-        return f"http://127.0.0.1:{self._port}/graph"
+        scheme = "https" if self._ssl_context else "http"
+        return f"{scheme}://127.0.0.1:{self._port}/graph"
 
     def calls(self, route: StubRoute) -> list[RecordedRequest]:
         """Return the requests ``route`` served, in order.
@@ -265,6 +279,40 @@ async def grafana_stub() -> AsyncGenerator[GrafanaStub, None]:
         yield stub
     finally:
         await stub.stop()
+
+
+def self_signed_server_context(directory: Path) -> ssl.SSLContext:
+    """Build a TLS server context around a certificate no client trusts.
+
+    :param directory: Where to write the key and the certificate.
+    :return: The server-side context.
+    """
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "grafana-stub")])
+    now = utc_now()
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(hours=1))
+        .sign(key, hashes.SHA256())
+    )
+    key_file = directory / "stub-key.pem"
+    certificate_file = directory / "stub-certificate.pem"
+    key_file.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    certificate_file.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certificate_file, key_file)
+    return context
 
 
 @pytest.fixture
@@ -615,6 +663,34 @@ async def test_a_misconfigured_endpoint_is_reported_not_retried(
 
     assert str(provider.endpoint) in str(raised.value)
     assert len(grafana_stub.calls(StubRoute.SEARCH)) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_untrusted_certificate_is_reported_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Report a certificate the client does not trust, which no wait changes.
+
+    The Grafana client reports every connection failure as a 502, the status a
+    starting Grafana also gives, so without its own branch this fault would be
+    waited on forever. The bound is what turns that wait into a failure here.
+    """
+    monkeypatch.setattr(helper, "RETRY_INTERVAL_SECONDS", 0.05)
+    stub = GrafanaStub(ssl_context=self_signed_server_context(tmp_path))
+    await stub.start()
+    verifying = GrafanaAuthProvider(
+        endpoint=stub.endpoint, service_account_token="", verify_ssl=True
+    )
+    try:
+        async with verifying, asyncio.timeout(PATIENT_BOUND_SECONDS):
+            with pytest.raises(helper.MintError) as raised:
+                await helper.mint_with_retry(verifying, helper.admin_credentials())
+    finally:
+        await stub.stop()
+
+    assert "certificate" in str(raised.value)
+    assert stub.endpoint in str(raised.value)
+    assert not stub.requests
 
 
 @pytest.mark.asyncio
@@ -1269,14 +1345,17 @@ async def test_a_mounted_service_account_token_wins_over_a_differing_pmm_api_key
 
 
 @pytest.mark.asyncio
-async def test_a_non_grafana_provider_performs_no_grafana_work(
-    grafana_stub: GrafanaStub, tmp_path: Path, state_dir: Path
-):
-    """Leave a casdoor deployment exactly as it was, probing nothing."""
+async def test_a_non_grafana_provider_owes_no_token(tmp_path: Path, state_dir: Path):
+    """Leave a casdoor deployment exactly as it was, with nothing to resolve.
+
+    Exit 0 with no token and no diagnostic is the helper's statement that no
+    token is owed. The Grafana provider is left out of the environment
+    altogether: an endpoint with no token beside it does not validate, and the
+    run would then end on unresolved settings rather than on the provider.
+    """
     run = await run_helper(
         profile_cwd(tmp_path, ROOT_PROFILE),
         FASTAPI_ENV="development",
-        AUTH__PROVIDER__GRAFANA__ENDPOINT=grafana_stub.endpoint,
         EXTENSIONS_STATE_DIR=str(state_dir),
         AUTH__PROVIDER__CASDOOR__CLIENT_ID="client-id",
         AUTH__PROVIDER__CASDOOR__CLIENT_SECRET="client-secret",
@@ -1284,21 +1363,27 @@ async def test_a_non_grafana_provider_performs_no_grafana_work(
 
     assert run.returncode == 0, run.stderr
     assert run.token == ""
-    assert not grafana_stub.requests
+    assert "[grafana-mint]" not in run.stderr
+    assert not (state_dir / helper.PERSISTED_FILENAME).exists()
 
 
 @pytest.mark.asyncio
-async def test_unresolvable_settings_do_not_stop_the_container(
+async def test_unresolvable_settings_are_reported_as_an_unresolved_token(
     tmp_path: Path, state_dir: Path
 ):
-    """Leave the actionable message to the five programs rather than crashing PID 1."""
+    """Exit non-zero without a traceback when the settings cannot be read.
+
+    Exit 0 with no token means the provider is provably not Grafana, and the
+    entrypoint marks that start as holding all it needs. Settings that did not
+    resolve prove nothing of the kind, and the five programs say why.
+    """
     run = await run_helper(
         profile_cwd(tmp_path, ROOT_PROFILE),
         FASTAPI_ENV="development",
         EXTENSIONS_STATE_DIR=str(state_dir),
     )
 
-    assert run.returncode == 0
+    assert run.returncode == 1
     assert run.token == ""
     assert run.stderr.strip()
     assert "Traceback" not in run.stderr

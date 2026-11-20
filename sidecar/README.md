@@ -423,9 +423,10 @@ actual rejection. That wait has no bound — see
 [Starting before PMM is ready](#starting-before-pmm-is-ready).
 
 A fault no wait can clear is handled differently. A rejected admin credential,
-or an endpoint that does not carry Grafana's API, is reported once in a
-`[grafana-mint]` line and not retried, because repeating a failed admin sign-in
-can lock that account in Grafana. The five programs then start with sign-in and
+an endpoint that does not carry Grafana's API, or a Grafana certificate that
+fails verification is reported once in a `[grafana-mint]` line and not retried.
+Repeating a failed admin sign-in can lock that account in Grafana, and none of
+the three changes by waiting. The five programs then start with sign-in and
 the PMM syncer inert, and the container reports unhealthy — see
 [Health](#health) — until it is started again with a credential that works.
 
@@ -477,10 +478,11 @@ seconds in all, and `unhealthy` from then on. It turns healthy without a
 restart when the wait ends.
 
 The Grafana wait covers what a server that is still starting answers: a refused
-or timed-out connection, and HTTP 500, 502, 503 or 504. Each attempt is given up
-after 30 seconds and retried 3 seconds later. A start that already holds a token
-does not wait: a configured or mounted token skips the mint, and a persisted
-token is used unvalidated while Grafana is unreachable.
+or timed-out connection, and HTTP 500, 502, 503 or 504. A certificate that fails
+verification is not among them, and ends the token step at once. Each attempt is
+given up after 30 seconds and retried 3 seconds later. A start that already
+holds a token does not wait: a configured or mounted token skips the mint, and a
+persisted token is used unvalidated while Grafana is unreachable.
 
 When the key file appears, the gate reads the directory once more a second
 later before it continues. PMM publishes the key and the database passwords as
@@ -609,8 +611,9 @@ lands whenever the store appears.
 
 The token assertion reads `/tmp/grafana-token.ok`. `entrypoint.sh` removes that
 file at every container start, and writes it when the token step ends with a
-token, or with nothing to resolve because the auth provider is not Grafana. It
-is the probe's first assertion, so `docker inspect` shows
+token, or with nothing to resolve because the auth provider is not Grafana.
+Settings the token step could not read count as neither, so the file is not
+written. It is the probe's first assertion, so `docker inspect` shows
 `unhealthy: PMM Extensions holds no Grafana service-account token; …` in both
 states it covers: an entrypoint still waiting for PMM, and programs that started
 after a mint that failed for good. It does not detect a token that is held but

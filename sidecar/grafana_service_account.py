@@ -18,9 +18,11 @@
 deployment inputs and before it execs supervisord, and captures stdout. Stdout
 carries the resolved token and nothing else; every diagnostic goes to stderr.
 An already-configured token under either mint-gate name is printed so
-``entrypoint.sh`` can export it, with no Grafana mint. Printing nothing means
-there was genuinely nothing to resolve: a provider other than Grafana, or
-settings that did not resolve. Neither of those is a failure.
+``entrypoint.sh`` can export it, with no Grafana mint. Printing nothing and
+exiting 0 means there was provably nothing to resolve: the active provider is
+not Grafana. ``entrypoint.sh`` reads that exit status as "this start holds every
+token it is owed", so settings that did not resolve exit non-zero instead: they
+prove nothing about the provider.
 
 Configuration is read from the application's own settings classes rather than
 re-derived, so the endpoint, the TLS setting and the two canonical token names
@@ -32,7 +34,8 @@ A start that has to mint waits for Grafana without a bound, for as long as
 Grafana answers like a server that is still starting: PMM starts this container
 beside its own, not after it, so "not up yet" is the ordinary first answer, and
 a start that gave up on it would run without the token all five programs need.
-A fault no retry can clear is reported at once.
+A fault no retry can clear is reported at once: a rejected admin credential, a
+wrong endpoint, or a certificate that fails verification.
 
 Deployment inputs, all optional: ``GF_SECURITY_ADMIN_USER`` and
 ``GF_SECURITY_ADMIN_PASSWORD`` (each defaulting to Grafana's own ``admin``),
@@ -51,7 +54,7 @@ from enum import StrEnum
 from functools import partial
 from pathlib import Path
 
-from aiohttp import ClientError
+from aiohttp import ClientConnectorCertificateError, ClientError
 from fastapi import HTTPException, status
 
 from app.core.auth.providers.grafana.sdk import GrafanaSDK
@@ -377,6 +380,11 @@ async def mint_with_retry(provider: GrafanaSDK, credentials: str) -> tuple[str, 
     rejected admin credential stays rejected, and repeating the sign-in is how
     Grafana comes to lock that account.
 
+    A certificate that fails verification is one of those other answers, and it
+    has to be recognized before the status is read. The client reports every
+    connection failure as a 502, the status a starting Grafana also gives, and
+    keeps the original error only as the context of the one it raises.
+
     Each attempt carries its own timeout: the client's session is opened with a
     300 s total and offers no field to narrow it, so without the wrapper a
     Grafana that accepts the connection and never answers would hold one
@@ -393,9 +401,13 @@ async def mint_with_retry(provider: GrafanaSDK, credentials: str) -> tuple[str, 
             async with asyncio.timeout(MINT_ATTEMPT_TIMEOUT_SECONDS):
                 return await mint(provider, credentials)
         except HTTPException as error:
+            if isinstance(error.__context__, ClientConnectorCertificateError):
+                raise _certificate_error(provider, error.__context__) from None
             if error.status_code not in RETRYABLE_STATUSES:
                 raise _fatal_mint_error(provider, error) from None
             last_failure = f"HTTP {error.status_code}: {error.detail}"
+        except ClientConnectorCertificateError as error:
+            raise _certificate_error(provider, error) from None
         except (ClientError, TimeoutError) as error:
             last_failure = f"{type(error).__name__}: {error}"
         if time.monotonic() >= next_report:
@@ -406,6 +418,22 @@ async def mint_with_retry(provider: GrafanaSDK, credentials: str) -> tuple[str, 
             )
             next_report = time.monotonic() + WAIT_REPORT_INTERVAL_SECONDS
         await asyncio.sleep(RETRY_INTERVAL_SECONDS)
+
+
+def _certificate_error(
+    provider: RemoteAPI, error: ClientConnectorCertificateError
+) -> MintError:
+    """Return an actionable message for a certificate that fails verification.
+
+    :param provider: The client whose endpoint presented the certificate.
+    :param error: The verification failure to explain.
+    :return: The error to raise.
+    """
+    return MintError(
+        f"Grafana's certificate at {provider.endpoint} failed verification "
+        f"({error.certificate_error}). Give the Grafana provider a CA file that "
+        "signs it (ssl_cafile), or turn verification off for it (verify_ssl)."
+    )
 
 
 def _fatal_mint_error(provider: RemoteAPI, error: HTTPException) -> MintError:
@@ -456,14 +484,15 @@ def supplied_token(service_account_token: str, pmm_api_key: str) -> str | None:
 def resolve_provider() -> GrafanaSDK | str | None:
     """Return a Grafana client to mint against, an already-resolved token, or ``None``.
 
-    Distinguishes the two former ``None`` cases: a token already configured under
-    either canonical name is returned as that value so ``entrypoint.sh`` can
-    export it without minting, while settings that did not resolve and a
-    provider other than Grafana still answer ``None`` (genuinely nothing to
-    export).
+    A token already configured under either canonical name is returned as that
+    value so ``entrypoint.sh`` can export it without minting. ``None`` means the
+    active provider is not Grafana, so there is nothing to export. Settings that
+    did not resolve are neither: nothing is known about the provider, so they
+    raise rather than pass for "no token owed".
 
     :return: The open-able Grafana provider, an already-resolved token, or
         ``None``.
+    :raises MintError: When the settings did not resolve.
     """
     try:
         from app.core.auth.config import (  # noqa: PLC0415 - resolves settings at import; a failure is reported, never fatal
@@ -476,11 +505,10 @@ def resolve_provider() -> GrafanaSDK | str | None:
         provider = auth_settings.active_provider
         pmm_api_key = settings.PMM.api_key
     except Exception as error:  # noqa: BLE001 -- reported, never re-raised
-        warn(
+        raise MintError(
             "Skipping the Grafana token pre-flight: settings did not resolve "
             f"({type(error).__name__}). The supervised programs report why."
-        )
-        return None
+        ) from None
     if not isinstance(provider, GrafanaAuthProvider):
         return None
     configured = supplied_token(
@@ -535,7 +563,8 @@ async def resolve_token() -> str | None:
     reachability diagnostic, matching :func:`keep_persisted_token`.
 
     :return: The resolved token, or ``None`` when there is nothing to resolve.
-    :raises MintError: When a token is needed and cannot be minted.
+    :raises MintError: When a token is needed and cannot be minted, or when the
+        settings did not resolve.
     """
     resolved = resolve_provider()
     if resolved is None:
