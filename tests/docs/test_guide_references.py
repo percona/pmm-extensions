@@ -165,7 +165,7 @@ def _parse_pages() -> dict[str, _ParsedGuide]:
 
     :return: Each page's parse result, keyed by its repository-relative path.
     """
-    pages = {}
+    pages: dict[str, _ParsedGuide] = {}
     for path in _pages_with_python_examples():
         relative = path.relative_to(_REPO_ROOT).as_posix()
         pages[relative] = _parse_guide_text(path.read_text(encoding="utf-8"), relative)
@@ -302,7 +302,7 @@ def _lines_missing_from_source(
     source = [line.strip() for line in source_lines[start_line - 1 :]]
     source = [line for line in source if line]
     position = 0
-    missing = []
+    missing: list[str] = []
     for run in _split_into_runs(example):
         longest_prefix = 0
         for index in range(position, len(source)):
