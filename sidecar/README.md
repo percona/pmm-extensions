@@ -556,10 +556,12 @@ Nothing the image ships can be changed by the `extensions` user every process ru
 `/home/extensions` and `$APP_HOME` are both `0750 root:extensions`, so `extensions` can
 neither rename nor delete an entry in them nor create a new one, and nothing under `$APP_HOME`
 is writable by group or other. That holds with the supplementary group 0 too, which PMM's
-compose file adds so the side-car can read the secrets PMM writes for that group. A program
-that writes at run time can therefore write under `$APP_HOME` only where a writable volume is
-mounted — at minimum `EXTENSIONS.artifact_dir`, which defaults to `data/health-reports`, for a
-deployment that enables the `report` app:
+compose file adds so the side-car can read the secrets PMM writes for that group. The one
+exception is `$APP_HOME/var` (`0700 extensions:extensions`), where the Celery worker keeps its
+state file (`CELERY.WORKER_STATE_DB`); it lives in the container and is lost when the container
+is recreated. Any other path a program writes under `$APP_HOME` at run time needs a writable
+volume mounted there — at minimum `EXTENSIONS.artifact_dir`, which defaults to
+`data/health-reports`, for a deployment that enables the `report` app:
 
 ```
 -v report-artifacts:/home/extensions/app/data/health-reports

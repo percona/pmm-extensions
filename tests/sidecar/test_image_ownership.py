@@ -24,10 +24,12 @@ that write away.
 
 import re
 import stat
+from pathlib import PurePosixPath
 
 import pytest
+import yaml
 
-from tests.sidecar.conftest import CONTAINERFILE
+from tests.sidecar.conftest import CONTAINERFILE, EMBEDDED_PROFILE
 
 RUNTIME_UID = "1001"
 ROOT_UID = "0"
@@ -130,6 +132,43 @@ def test_useradd_creates_no_home_of_its_own():
 def test_the_state_directory_stays_the_runtime_users():
     """Keep the one place the side-car writes its minted credentials writable."""
     assert installed_directories().get("$HOME/state") == (RUNTIME_UID, "0700")
+
+
+def test_the_worker_state_database_has_a_directory_it_can_write():
+    """Give the Celery worker's state file a directory of its own under ``$APP_HOME``.
+
+    ``CELERY.WORKER_STATE_DB`` is a path relative to the worker's working
+    directory, ``$APP_HOME``, which ``extensions`` cannot write. A worker that
+    cannot open the file exits at start, and ``supervisord`` restarts it into
+    the same failure.
+    """
+    profile = yaml.safe_load(EMBEDDED_PROFILE.read_text(encoding="utf-8"))
+    state_db = PurePosixPath(profile["default"]["CELERY"]["WORKER_STATE_DB"])
+
+    assert state_db.parent != PurePosixPath(".")
+    assert installed_directories().get(f"$APP_HOME/{state_db.parent}") == (
+        RUNTIME_UID,
+        "0700",
+    )
+
+
+def test_the_writable_directory_is_made_after_the_recursive_chmod():
+    """Leave the worker's directory owner-only, as ``install -d`` makes it.
+
+    The recursive ``chmod`` over ``$APP_HOME`` adds group search to every
+    directory it reaches, so a directory made before it would not stay ``0700``.
+    """
+    lines = recipe_lines()
+    chmod = max(i for i, line in enumerate(lines) if RECURSIVE_CHMOD.match(line))
+    writable = [
+        i
+        for i, line in enumerate(lines)
+        for match in INSTALL_DIRECTORY.finditer(line)
+        if match["target"].startswith("$APP_HOME/")
+    ]
+
+    assert writable
+    assert min(writable) > chmod
 
 
 def test_the_shipped_tree_loses_the_archives_group_write():
