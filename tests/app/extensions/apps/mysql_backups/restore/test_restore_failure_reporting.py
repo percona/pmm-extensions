@@ -50,6 +50,9 @@ FAILED_EXIT_STATUS = 2
 #: The port the stand-in restore probes to learn whether MySQL has stopped.
 PROBED_PORT = 3307
 
+#: The client option file the stand-in restore reads its connection settings from.
+DEFAULTS_FILE = "/home/backupuser/.my.cnf"
+
 
 class _BackupError(Exception):
     """Mirror the payloads' ``BackupError``, which carries its text as ``message``."""
@@ -252,6 +255,7 @@ def _restore_on(host: _Host) -> types.SimpleNamespace:
     restore = types.SimpleNamespace(
         custom_mysql_init_command="/usr/local/bin/mysql-init",
         port=PROBED_PORT,
+        defaults_cnf_file=DEFAULTS_FILE,
         logger=Recorder(),
         _query_mysql=host.query,
     )
@@ -291,7 +295,7 @@ class TestStopWait:
         assert len(host.sleeps) == answered
 
     def test_every_wait_for_the_stop_is_printed(self) -> None:
-        """Pin one printed line, naming the probed port, for each wait."""
+        """Pin one printed line for each wait, naming the probed port and the option file whose socket replaces it."""
         answered = 3
         restore = _restore_on(_Host(answers=answered))
 
@@ -302,6 +306,7 @@ class TestStopWait:
         ]
         assert len(waits) == answered
         assert all(f"port {PROBED_PORT}" in line for line in waits)
+        assert all(DEFAULTS_FILE in line for line in waits)
 
     def test_a_stop_that_worked_at_once_prints_no_wait(self) -> None:
         """Pin that a restore whose stop worked does not report a wait."""

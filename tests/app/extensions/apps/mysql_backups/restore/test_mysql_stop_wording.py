@@ -87,6 +87,7 @@ def _commands_run_for(action: str, init_command: str | None) -> list[str]:
     restore = types.SimpleNamespace(
         custom_mysql_init_command=init_command,
         port=3306,
+        defaults_cnf_file="/home/backupuser/.my.cnf",
         logger=Recorder(),
         _query_mysql=query,
     )
