@@ -1730,3 +1730,84 @@ class TestUniqueViolationColumnsOfAnUnnamedKey:
             unique_violation_columns(table, _violation_of("schedule_priority_check"))
             is None
         )
+
+
+_UNNAMED_KEY_METADATA = MetaData()
+_unnamed_key_probe = Table(
+    "unnamed_key_probe",
+    _UNNAMED_KEY_METADATA,
+    Column("id", Integer, primary_key=True),
+    Column("name", Text, unique=True),
+    Column("event", Text),
+    Column("latitude", Integer),
+    UniqueConstraint("event", "latitude"),
+)
+
+
+@pytest_asyncio.fixture
+async def unnamed_key_probe_session(
+    postgres_engine: AsyncEngine,
+) -> AsyncGenerator[AsyncSession, None]:
+    """Create the unnamed-key probe table on real PostgreSQL and yield a session.
+
+    PostgreSQL names both unique keys here itself, which is the state the
+    resolution has to recognize.
+    """
+    async with postgres_engine.begin() as conn:
+        await conn.run_sync(_UNNAMED_KEY_METADATA.create_all)
+    async_session_maker = get_async_session_maker_from_engine(postgres_engine)
+    try:
+        async with async_session_maker() as session:
+            yield session
+    finally:
+        async with postgres_engine.begin() as conn:
+            await conn.run_sync(_UNNAMED_KEY_METADATA.drop_all)
+
+
+@pytest.mark.postgres
+class TestUniqueViolationColumnsOfAnUnnamedKeyOnRealPostgres:
+    """Resolve violations of unnamed keys from the errors PostgreSQL itself raises.
+
+    Siblings to the unit tests above, which hand the resolution a constraint name
+    written into the test. Here the name comes from the database.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("first", "second", "expected_columns"),
+        [
+            pytest.param(
+                {"id": 1, "name": "taken"},
+                {"id": 2, "name": "taken"},
+                ["name"],
+                id="column-level key",
+            ),
+            pytest.param(
+                {"id": 1, "event": "sunrise", "latitude": 10},
+                {"id": 2, "event": "sunrise", "latitude": 10},
+                ["event", "latitude"],
+                id="composite key",
+            ),
+        ],
+    )
+    async def test_violation_resolves_to_the_key_columns(
+        self,
+        unnamed_key_probe_session: AsyncSession,
+        first: dict[str, object],
+        second: dict[str, object],
+        expected_columns: list[str],
+    ):
+        """Assert a duplicate row's error resolves to the violated key's columns."""
+        await unnamed_key_probe_session.exec(_unnamed_key_probe.insert().values(first))
+        await unnamed_key_probe_session.commit()
+
+        with pytest.raises(IntegrityError) as raised:
+            await unnamed_key_probe_session.exec(
+                _unnamed_key_probe.insert().values(second)
+            )
+        await unnamed_key_probe_session.rollback()
+
+        assert (
+            unique_violation_columns(_unnamed_key_probe, raised.value)
+            == expected_columns
+        )

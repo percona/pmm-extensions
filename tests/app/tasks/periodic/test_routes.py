@@ -64,6 +64,17 @@ OVERFLOWS_CADENCE_TIMEDELTA = 2_000_000_000
 #: first overflow, whatever the cadence.
 OVERFLOWS_FROM_START_TIME = "9999-12-31T23:00:00Z"
 
+#: The update body that renames a schedule to ``taken``, a name the rename tests
+#: give to another schedule first.
+RENAME_TO_TAKEN_BODY = {
+    "name": "taken",
+    "task": "my-task",
+    "start_time": None,
+    "enabled": True,
+    "description": "",
+    "interval": {"every": 10, "period": "minutes"},
+}
+
 
 async def _add_periodic_task(
     celery_beat_session: AsyncSession,
@@ -1130,16 +1141,9 @@ class TestRenamePeriodicTaskOntoExistingName:
         renamed = await _add_periodic_task(
             celery_beat_session, name="free", task_name="my-task"
         )
-        payload = {
-            "name": "taken",
-            "task": "my-task",
-            "start_time": None,
-            "enabled": True,
-            "description": "",
-            "interval": {"every": 10, "period": "minutes"},
-        }
-
-        response = periodic_test_client.put(f"/periodic/{renamed.id}", json=payload)
+        response = periodic_test_client.put(
+            f"/periodic/{renamed.id}", json=RENAME_TO_TAKEN_BODY
+        )
 
         assert response.status_code == status.HTTP_409_CONFLICT
         assert response.json() == {
@@ -1566,19 +1570,13 @@ class TestDuplicatePeriodicTaskNameOnPostgres:
             postgres_celery_beat_session, name="free", task_name="my-task"
         )
         renamed_id = renamed.id
-        payload = {
-            "name": "taken",
-            "task": "my-task",
-            "start_time": None,
-            "enabled": True,
-            "description": "",
-            "interval": {"every": 10, "period": "minutes"},
-        }
 
         async with tasks_api_client(
             regular_user, postgres_session_maker, postgres_celery_beat_session
         ) as client:
-            response = await client.put(f"/periodic/{renamed_id}", json=payload)
+            response = await client.put(
+                f"/periodic/{renamed_id}", json=RENAME_TO_TAKEN_BODY
+            )
 
         assert response.status_code == status.HTTP_409_CONFLICT
         assert response.json() == {
