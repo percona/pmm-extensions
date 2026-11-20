@@ -15,6 +15,14 @@ The UI is in the `percona/pmm` repository, under `ui/`. Each app needs four edit
 - A checkout of `percona/pmm`. To try the change in the local PMM, check out the tag of the version that it runs, `v3.10.0`.
 - Node.js and `pnpm`, at the versions that `ui/package.json` in that checkout asks for. At `v3.10.0` those are Node.js 22 or later and `pnpm` 11 or later.
 
+To get the checkout at that tag:
+
+```bash
+git clone https://github.com/percona/pmm.git
+cd pmm
+git checkout v3.10.0
+```
+
 The four files are in `ui/apps/pmm/src/` of the `percona/pmm` checkout. Run the commands on this page from `ui/`, unless a step says otherwise.
 
 ## Choose the names
@@ -61,7 +69,7 @@ The four files are in `ui/apps/pmm/src/` of the `percona/pmm` checkout. Run the 
 
 ## Add the menu item
 
-1. In `contexts/navigation/navigation.constants.ts`, add the same line to the import from `'lib/constants'`:
+1. In `contexts/navigation/navigation.constants.ts`, add the same line to the import from `'lib/constants'`, below `EXTENSIONS_MYSQL_BACKUPS_PATH,`:
 
    ```ts
      EXTENSIONS_BACKUP_PG_PATH,

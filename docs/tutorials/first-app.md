@@ -9,7 +9,7 @@ You scaffold the app, describe its form, test it, run it in a local PMM, and add
 You need:
 
 - A development environment with the virtualenv active: see [Set up a development environment](../how-to/set-up-a-development-environment.md).
-- Docker with Compose, on an x86-64 machine with port 8443 free. [Run PMM Extensions in a local PMM](../how-to/run-in-local-pmm.md) lists the details.
+- Docker with Compose, on an x86-64 machine or a Mac with Apple Silicon, with port 8443 free. [Run PMM Extensions in a local PMM](../how-to/run-in-local-pmm.md) lists the details.
 - Node.js 22 or later and `pnpm` 11 or later, for the last part.
 
 Run every command from the root of this repository.
@@ -119,6 +119,13 @@ Inside PMM, PMM Extensions serves the apps that `sidecar/settings.yaml` lists.
     Container pmm-extensions-dev-pmm-server-1 Healthy
     Container pmm-extensions-dev-pmm-extensions-1 Healthy
     Container pmm-extensions-dev-mysql-host-1 Healthy
+   ```
+
+   If the local PMM was already running with your checkout's code, Compose leaves the `pmm-extensions` container as it is. Step 4 then does not list your app. Restart the container:
+
+   ```bash
+   docker compose -f sidecar/dev/compose.yaml -f sidecar/dev/compose.checkout.yaml \
+     --profile mysql up -d --wait --force-recreate pmm-extensions
    ```
 
 2. Sign in to PMM and keep the session cookie:

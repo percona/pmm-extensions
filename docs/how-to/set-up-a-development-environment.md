@@ -6,8 +6,8 @@ This page takes you from nothing to a checkout where the tests, the linters and 
 
 - Git and `make`.
 - Python 3.11.9 to 3.13. Versions 3.12.0 to 3.12.2 do not work.
-- Pango, which WeasyPrint loads when the tests import the `report` app. [WeasyPrint's installation page](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html) names the package for each system.
-- Linux or macOS. The steps were tested on Linux x86-64.
+- Pango, which WeasyPrint loads when the tests import the `report` app. [WeasyPrint's installation page](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html) names the package for each system. On macOS, that page's Homebrew package can also install a newer Python as `python3`. Give `make venv` an interpreter from the range above.
+- Linux or macOS. The steps were tested on Linux x86-64 and on macOS on Apple Silicon. On macOS, part of the test suite does not pass: see [Run the tests](#run-the-tests).
 
 ## Clone the repository
 
@@ -22,10 +22,10 @@ This page takes you from nothing to a checkout where the tests, the linters and 
 
 Start from a shell with no virtualenv active. When one is active, `make venv` installs the project into that virtualenv and creates no `venv/`.
 
-1. Build the virtualenv with an interpreter from the supported range:
+1. Build the virtualenv with an interpreter from the supported range that you have. The example uses Python 3.12:
 
    ```bash
-   make venv PYTHON=python3.11
+   make venv PYTHON=python3.12
    ```
 
    `PYTHON` is the interpreter that the virtualenv is built from. Give a full path when the interpreter is not on your `PATH`.
@@ -89,6 +89,8 @@ Start from a shell with no virtualenv active. When one is active, `make venv` in
    ```
 
    The suite runs in parallel, on one worker for each CPU. It fails if a test fails, or if coverage of `app/` is under 85%.
+
+   On macOS on Apple Silicon, `make venv` does not install the `greenlet` package, and the suite needs it. Install it into the virtualenv by hand. The suite also needs bash 4 or later, and macOS has 3.2. With both, some tests that run Linux tools still fail. CI runs the suite on Linux.
 
 To run the tests of one app, see [Test an app](test-an-app.md).
 

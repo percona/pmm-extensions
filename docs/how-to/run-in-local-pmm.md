@@ -10,7 +10,7 @@ If you already work in `percona/pmm`, its `docker-compose.yml` has an `extension
 
 - Docker with Compose. The steps were tested with Docker 29.10 and Compose 5.8.
 - Not rootless Podman. PMM and PMM Extensions start there, and a database host cannot run a task.
-- An x86-64 machine. The PMM images exist for amd64 only, and the steps were tested on Linux x86-64 only.
+- An x86-64 machine, or a Mac with Apple Silicon. The PMM images exist for amd64 only, and on the Mac they ran through Rosetta. The steps were tested on Linux x86-64, and on macOS with Colima started with Rosetta: `colima start --vm-type vz --vz-rosetta`.
 - A clone of this repository. You do not need the virtualenv.
 - Port 8443 free on `127.0.0.1`, or another port in `PMM_PORT`.
 - About 8 GB of disk space for the images.
@@ -75,7 +75,7 @@ A task runs on a host that has PMM Client and the tool the task calls. The envir
     Container pmm-extensions-dev-mysql-host-1 Healthy
    ```
 
-To start the PostgreSQL host too, add `--profile postgresql`.
+To start the PostgreSQL host too, add `--profile postgresql`. On macOS with Colima, the PostgreSQL host stops at its first start. Colima's Docker runs AppArmor, and `sudo` then fails inside the host's container.
 
 Give the same profiles to every later `docker compose` command. Compose ignores a service whose profile is not named. The same holds for a second `-f` file: a command without it recreates the containers without what that file adds.
 

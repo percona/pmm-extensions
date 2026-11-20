@@ -86,6 +86,13 @@ Tests do not run a task on a host. Run one before you open a pull request.
      --profile postgresql up -d --wait
    ```
 
+   If the local PMM was already running with your checkout's code, Compose leaves the `pmm-extensions` container as it is. Step 3 then does not list the app. Restart the container:
+
+   ```bash
+   docker compose -f sidecar/dev/compose.yaml -f sidecar/dev/compose.checkout.yaml \
+     --profile postgresql up -d --wait --force-recreate pmm-extensions
+   ```
+
 2. Get a token in `TOKEN`: see [Call the API from a shell](run-in-local-pmm.md#call-the-api-from-a-shell).
 
 3. Confirm that PMM Extensions serves the app:
