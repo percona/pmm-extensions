@@ -2303,8 +2303,9 @@ class TestSyncFinishingItems:
             *,
             writer_session=None,
             defer_terminal_annotation: bool = False,
+            on_terminal=None,
         ) -> tuple[TaskHistory, str | None]:
-            del writer_session, defer_terminal_annotation
+            del writer_session, defer_terminal_annotation, on_terminal
             item.status = TaskHistoryStatusEnum.SUCCESS
             return item, None
 
@@ -3685,8 +3686,9 @@ class TestSyncQueueItemChainDispatch:
             writer_session=None,
             *,
             defer_terminal_annotation: bool = False,
+            on_terminal=None,
         ) -> tuple[TaskHistory, str | None]:
-            del writer_session, defer_terminal_annotation
+            del writer_session, defer_terminal_annotation, on_terminal
             queue_item.status = TaskHistoryStatusEnum.FAILED
             queue_item.started_at = datetime(2026, 4, 1, 10, 1, 0, tzinfo=UTC)
             queue_item.finished_at = datetime(2026, 4, 1, 10, 2, 0, tzinfo=UTC)
@@ -5143,8 +5145,9 @@ class TestSyncQueueItemRegression:
             *,
             writer_session=None,
             defer_terminal_annotation: bool = False,
+            on_terminal=None,
         ) -> tuple[TaskHistory, str | None]:
-            del writer_session, defer_terminal_annotation
+            del writer_session, defer_terminal_annotation, on_terminal
             item.status = TaskHistoryStatusEnum.SUCCESS
             return item, None
 
@@ -5196,8 +5199,9 @@ class TestSyncQueueItemRegression:
                 *,
                 writer_session=None,
                 defer_terminal_annotation: bool = False,
+                on_terminal=None,
             ) -> tuple[TaskHistory, str | None]:
-                del writer_session, defer_terminal_annotation
+                del writer_session, defer_terminal_annotation, on_terminal
                 item.status = TaskHistoryStatusEnum.FAILED
                 item.set_failure_reason("Step 'run-script' failed (exit code 1).")
                 return item, None
