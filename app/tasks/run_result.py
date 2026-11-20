@@ -127,7 +127,52 @@ async def read_run_result(
     return result
 
 
-async def maybe_record_run(task_history_id: int, executor: BaseExecutor) -> None:
+class RunResultCapture:
+    """Read a run's result while the executor still keeps the run's files.
+
+    A sync that ends a run lets go of the run's working directory before it
+    returns, and a host short of disk space deletes the directory at once. The
+    recorder can only run later, once the terminal status is saved. Pass an
+    instance to :meth:`~app.tasks.execution.models.BaseExecutor.sync_task_history`
+    as ``on_terminal`` to read the result in between, and hand :attr:`result`
+    to :func:`maybe_record_run`.
+
+    :param executor: The executor that runs the sync, used to read the file.
+    :ivar result: The result read, or ``None`` when there was none to read.
+    """
+
+    def __init__(self, executor: BaseExecutor) -> None:
+        self._executor = executor
+        self.result: dict[str, Any] | None = None
+
+    async def __call__(self, history: TaskHistory) -> None:
+        """Read the result of ``history`` when its task declares a recorder.
+
+        Nothing is read for a task without a recorder, so such a run costs no
+        request to its host. A failure is logged and swallowed: it must not
+        fail the sync, and :func:`maybe_record_run` reads again.
+
+        :param history: The run that has just reached a terminal status; must
+            have both ``task`` and ``execution_request`` loaded.
+        """
+        task = history.task
+        if task is None or not task.run_result_recorder:
+            return
+        try:
+            self.result = await read_run_result(self._executor, history)
+        except Exception:
+            logger.exception(
+                "Could not read the run result of task history %s before its"
+                " files were released.",
+                history.id,
+            )
+
+
+async def maybe_record_run(
+    task_history_id: int,
+    executor: BaseExecutor,
+    early_result: dict[str, Any] | None = None,
+) -> None:
     """Resolve and invoke the task's run-result recorder at terminal status.
 
     Best-effort: no-op when the history is missing, not terminal, or declares no
@@ -147,6 +192,9 @@ async def maybe_record_run(task_history_id: int, executor: BaseExecutor) -> None
 
     :param task_history_id: The id of the just-terminal ``TaskHistory``.
     :param executor: The executor that ran the task, used to read its result.
+    :param early_result: The result a :class:`RunResultCapture` read during the
+        sync. When there is none, the file is read here, which is the only read
+        for a backend that keeps a finished run's files.
     """
     recorder_path: str | None = None
     try:
@@ -164,7 +212,9 @@ async def maybe_record_run(task_history_id: int, executor: BaseExecutor) -> None
                 return
             recorder: RunResultRecorder = resolve_hook(recorder_path)
             await session.refresh(history, ["execution_request"])
-            result = await read_run_result(executor, history)
+            result = early_result
+            if result is None:
+                result = await read_run_result(executor, history)
             await recorder(session, history, result)
     except Exception:
         logger.exception(

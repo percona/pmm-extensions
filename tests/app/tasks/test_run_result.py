@@ -47,6 +47,7 @@ from app.tasks.run_result import (
     read_run_result,
     RUN_RESULT_FILENAME,
     RUN_RESULT_MAX_BYTES,
+    RunResultCapture,
 )
 from tests.app.db_schema import apply_schema
 from tests.app.factories import build_task_history, TaskFactory
@@ -55,6 +56,7 @@ _RESULT = {"backup_dir": "/data/x", "size_bytes": 123, "upload_destination": "s3
 _OUTPUT_FILES_PATH = "run-script/local/output_files"
 _RESULT_PATH = f"{_OUTPUT_FILES_PATH}/{RUN_RESULT_FILENAME}"
 _NOMAD_ENDPOINT = "http://nomad.example:4646"
+_RECORDER = "app.extensions.apps.pkg:rec"
 
 _Stream = Callable[..., AsyncGenerator[bytes, None]]
 
@@ -101,9 +103,19 @@ def _fake_executor(stream: _Stream) -> MagicMock:
     return executor
 
 
-def _history(output_files_path: str | None = _OUTPUT_FILES_PATH) -> TaskHistory:
-    """Return an unsaved terminal history whose task has ``output_files_path``."""
-    task = Task(name="recorder-task", output_files_path=output_files_path)
+def _history(
+    output_files_path: str | None = _OUTPUT_FILES_PATH, *, recorder: str | None = None
+) -> TaskHistory:
+    """Return an unsaved terminal history whose task has ``output_files_path``.
+
+    :param output_files_path: The task's output-files directory.
+    :param recorder: The run-result recorder the task declares, if any.
+    """
+    task = Task(
+        name="recorder-task",
+        output_files_path=output_files_path,
+        run_result_recorder=recorder,
+    )
     return build_task_history(task)
 
 
@@ -173,6 +185,39 @@ class TestReadRunResult:
 
         assert await read_run_result(executor, _history(None)) is None
         executor.stream_file.assert_not_called()
+
+
+class TestRunResultCapture:
+    """Cover the early read a sync makes while the run's files are still held."""
+
+    @pytest.mark.asyncio
+    async def test_keeps_the_result_of_a_task_with_a_recorder(self) -> None:
+        """Keep the result read for a task that declares a recorder."""
+        capture = RunResultCapture(_fake_executor(_yielding(_result_bytes())))
+
+        await capture(_history(recorder=_RECORDER))
+
+        assert capture.result == _RESULT
+
+    @pytest.mark.asyncio
+    async def test_reads_nothing_for_a_task_without_a_recorder(self) -> None:
+        """Leave the host alone when nothing will consume the result."""
+        executor = _fake_executor(_yielding(_result_bytes()))
+        capture = RunResultCapture(executor)
+
+        await capture(_history())
+
+        assert capture.result is None
+        executor.stream_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_read_does_not_raise(self) -> None:
+        """Swallow a read failure, which must not fail the sync that made it."""
+        capture = RunResultCapture(_fake_executor(_raising(RuntimeError("boom"))))
+
+        await capture(_history(recorder=_RECORDER))
+
+        assert capture.result is None
 
 
 @asynccontextmanager
@@ -250,6 +295,27 @@ class TestMaybeRecordRun:
             )
 
         assert calls == [(history_id, _RESULT)]
+
+    @pytest.mark.asyncio
+    async def test_recorder_invoked_with_the_early_result(self, mocker):
+        """Hand the recorder a result read earlier, without reading the file again."""
+        results = []
+
+        async def _recorder(session, history, result):
+            results.append(result)
+
+        mocker.patch.dict(hook_resolver._RESOLVED, {_RECORDER: _recorder})
+        executor = _fake_executor(_raising(_response_error(404)))
+        async with _recorder_db(
+            recorder=_RECORDER, status=TaskHistoryStatusEnum.SUCCESS
+        ) as (maker, history_id):
+            mocker.patch(
+                "app.tasks.run_result.get_async_session_maker", return_value=maker
+            )
+            await maybe_record_run(history_id, executor, _RESULT)
+
+        assert results == [_RESULT]
+        executor.stream_file.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recorder_invoked_with_none_when_no_result_file(self, mocker):
@@ -480,8 +546,10 @@ class TestMaybeRecordRun:
 def _flip_status(target: TaskHistoryStatusEnum, *, result: dict | None = None):
     """Return a fake executor that syncs an item to ``target`` and serves ``result``."""
 
-    async def _fake_sync(item, writer_session=None, *, defer_terminal_annotation=False):
-        del writer_session, defer_terminal_annotation
+    async def _fake_sync(
+        item, writer_session=None, *, defer_terminal_annotation=False, on_terminal=None
+    ):
+        del writer_session, defer_terminal_annotation, on_terminal
         item.status = target
         item.finished_at = utc_now()
         return item, None
@@ -491,6 +559,40 @@ def _flip_status(target: TaskHistoryStatusEnum, *, result: dict | None = None):
         if result is None
         else _yielding(_result_bytes(result))
     )
+    executor.sync_task_history = AsyncMock(side_effect=_fake_sync)
+    return executor
+
+
+def _collecting_executor(result: dict) -> MagicMock:
+    """Return a fake executor whose host deletes a run's files once it lets go.
+
+    Its sync takes the run to SUCCESS, offers the caller's hook the run while the
+    files are still there, and then releases them, as a Nomad client over its
+    disk limit does. A read made after the sync finds nothing.
+
+    :param result: The result the run's file holds until the release.
+    """
+    released = False
+
+    async def _stream(*args, **kwargs) -> AsyncGenerator[bytes, None]:
+        del args, kwargs
+        if released:
+            raise _response_error(404)
+        yield _result_bytes(result)
+
+    async def _fake_sync(
+        item, writer_session=None, *, defer_terminal_annotation=False, on_terminal=None
+    ):
+        nonlocal released
+        del writer_session, defer_terminal_annotation
+        item.status = TaskHistoryStatusEnum.SUCCESS
+        item.finished_at = utc_now()
+        if on_terminal is not None:
+            await on_terminal(item)
+        released = True
+        return item, None
+
+    executor = _fake_executor(_stream)
     executor.sync_task_history = AsyncMock(side_effect=_fake_sync)
     return executor
 
@@ -526,6 +628,30 @@ class TestSyncQueueItemSeam:
                 return_value=_flip_status(
                     TaskHistoryStatusEnum.SUCCESS, result=_RESULT
                 ),
+            )
+            await sync_queue_item(history_id)
+
+        assert recorded == [_RESULT]
+
+    @pytest.mark.asyncio
+    async def test_records_a_result_the_host_deletes_at_release(self, mocker):
+        """Record the result of a run whose files are gone once the sync lets go."""
+        recorded = []
+
+        async def _recorder(session, history, result):
+            recorded.append(result)
+
+        mocker.patch.dict(hook_resolver._RESOLVED, {_RECORDER: _recorder})
+        async with _recorder_db(
+            recorder=_RECORDER, status=TaskHistoryStatusEnum.RUNNING
+        ) as (maker, history_id):
+            mocker.patch("app.tasks.celery.get_async_session_maker", return_value=maker)
+            mocker.patch(
+                "app.tasks.run_result.get_async_session_maker", return_value=maker
+            )
+            mocker.patch(
+                "app.tasks.celery.get_executor_for_task",
+                return_value=_collecting_executor(_RESULT),
             )
             await sync_queue_item(history_id)
 
@@ -596,6 +722,37 @@ class TestSyncRouteSeam:
                     executor=_flip_status(
                         TaskHistoryStatusEnum.SUCCESS, result=_RESULT
                     ),
+                    task_history=task_history,
+                )
+
+        assert recorded == [_RESULT]
+
+    @pytest.mark.asyncio
+    async def test_records_a_result_the_host_deletes_at_release(self, mocker):
+        """Record the result of a run whose files are gone once the sync lets go."""
+        recorded = []
+
+        async def _recorder(session, history, result):
+            recorded.append(result)
+
+        mocker.patch.dict(hook_resolver._RESOLVED, {_RECORDER: _recorder})
+        async with _recorder_db(
+            recorder=_RECORDER, status=TaskHistoryStatusEnum.RUNNING
+        ) as (maker, history_id):
+            mocker.patch("app.tasks.routes.get_async_session_maker", return_value=maker)
+            mocker.patch(
+                "app.tasks.run_result.get_async_session_maker", return_value=maker
+            )
+            async with maker() as session:
+                task_history = await TaskHistoryManager.get_or_404(
+                    session,
+                    select_related=(TaskHistory.task,),
+                    query_options=[undefer(TaskHistory.execution_request)],
+                    id=history_id,
+                )
+                await sync_task_history(
+                    session=session,
+                    executor=_collecting_executor(_RESULT),
                     task_history=task_history,
                 )
 

@@ -1307,7 +1307,7 @@ async def test_sync_task_history_running_calls_executor(
     await TaskHistoryManager.save(session, created_task_with_history)
 
     async def fake_sync(
-        item: TaskHistory, writer_session=None
+        item: TaskHistory, writer_session=None, on_terminal=None
     ) -> tuple[TaskHistory, str | None]:
         item.status = TaskHistoryStatusEnum.SUCCESS
         item.finished_at = utc_now()
@@ -1362,7 +1362,7 @@ async def test_sync_task_history_populates_has_logs(
     if running:
 
         async def fake_sync(
-            item: TaskHistory, writer_session=None
+            item: TaskHistory, writer_session=None, on_terminal=None
         ) -> tuple[TaskHistory, str | None]:
             item.status = TaskHistoryStatusEnum.SUCCESS
             item.finished_at = utc_now()
@@ -1437,7 +1437,7 @@ class TestSyncTaskHistoryChainDispatch:
     @staticmethod
     def _executor_flips_to(status_value: TaskHistoryStatusEnum):
         async def fake_sync(
-            item: TaskHistory, writer_session=None
+            item: TaskHistory, writer_session=None, on_terminal=None
         ) -> tuple[TaskHistory, str | None]:
             item.status = status_value
             item.finished_at = utc_now()
@@ -3510,6 +3510,7 @@ class TestSyncTaskHistoryRealSession:
         async def fake_sync(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
+            on_terminal: object = None,
         ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             await TaskHistoryLogWriter.append(
@@ -3604,6 +3605,7 @@ class TestSyncTaskHistoryRealSession:
         async def fake_sync(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
+            on_terminal: object = None,
         ) -> tuple[TaskHistory, str | None]:
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
             queue_item.finished_at = utc_now()
@@ -4107,7 +4109,7 @@ class TestExecutionRequestEncryptionOverHTTP:
         )
 
         async def fake_sync(
-            item: TaskHistory, writer_session=None
+            item: TaskHistory, writer_session=None, on_terminal=None
         ) -> tuple[TaskHistory, str | None]:
             item.status = TaskHistoryStatusEnum.SUCCESS
             item.finished_at = utc_now()
@@ -4188,7 +4190,7 @@ class TestExecutionRequestEncryptionOverHTTP:
         )
 
         async def fake_sync(
-            item: TaskHistory, writer_session=None
+            item: TaskHistory, writer_session=None, on_terminal=None
         ) -> tuple[TaskHistory, str | None]:
             item.status = TaskHistoryStatusEnum.SUCCESS
             item.finished_at = utc_now()
@@ -4366,7 +4368,9 @@ async def test_manual_sync_alerts_from_the_stored_alert_settings(
     created_task_with_history.status = TaskHistoryStatusEnum.RUNNING
     await TaskHistoryManager.save(session, created_task_with_history)
 
-    async def _fail(item: TaskHistory, writer_session: object = None) -> TaskHistory:
+    async def _fail(
+        item: TaskHistory, writer_session: object = None, on_terminal: object = None
+    ) -> TaskHistory:
         item.status = TaskHistoryStatusEnum.FAILED
         item.finished_at = utc_now()
         return item
