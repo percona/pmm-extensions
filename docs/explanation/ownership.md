@@ -44,7 +44,7 @@ The PMM team supports app builders in two ways. It answers questions about the f
 
 ## How apps reach users
 
-An app reaches users inside a PMM release. The image that PMM ships holds the apps listed in `sidecar/settings.yaml`, and PMM's UI has an entry for each one. [Get an app into a PMM release](../how-to/get-an-app-into-a-pmm-release.md) describes the steps.
+An app reaches users inside a PMM release. The image that PMM ships holds the apps listed in `sidecar/settings.yaml`, and PMM's UI has an entry for each one that has pages. [Get an app into a PMM release](../how-to/get-an-app-into-a-pmm-release.md) describes the steps.
 
 A marketplace for apps is a planned direction.
 

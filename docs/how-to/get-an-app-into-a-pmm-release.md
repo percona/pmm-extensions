@@ -112,7 +112,7 @@ Check the image itself, not the commit that it was built from.
      --profile postgresql up -d --wait
    ```
 
-3. Confirm that PMM Extensions serves the app, and run one task: follow steps 2 to 7 of [Run the app in a local PMM](port-an-app.md#run-the-app-in-a-local-pmm).
+3. Confirm that PMM Extensions serves the app, and run one task: follow steps 2 to 7 of [Run the app in a local PMM](port-an-app.md#run-the-app-in-a-local-pmm). Compose keeps PMM's data when it recreates a container, so the task from that page may still exist. In that case, skip step 5: a second task with the same name is refused.
 
 ## Add the changelog fragment
 

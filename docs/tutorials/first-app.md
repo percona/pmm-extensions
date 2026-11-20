@@ -128,10 +128,11 @@ Inside PMM, PMM Extensions serves the apps that `sidecar/settings.yaml` lists.
      --profile mysql up -d --wait --force-recreate pmm-extensions
    ```
 
-2. Sign in to PMM and keep the session cookie:
+2. Sign in to PMM and keep the session cookie in a file that only you can read:
 
    ```bash
-   curl -sk -c /tmp/pmm-cookies -X POST https://127.0.0.1:8443/graph/login \
+   install -m 600 /dev/null ~/.pmm-cookies
+   curl -sk -c ~/.pmm-cookies -X POST https://127.0.0.1:8443/graph/login \
      -H 'Content-Type: application/json' -d '{"user":"admin","password":"admin"}'
    ```
 
@@ -140,7 +141,7 @@ Inside PMM, PMM Extensions serves the apps that `sidecar/settings.yaml` lists.
 3. Exchange the session for a token:
 
    ```bash
-   TOKEN=$(curl -sk -b /tmp/pmm-cookies -X POST \
+   TOKEN=$(curl -sk -b ~/.pmm-cookies -X POST \
      https://127.0.0.1:8443/extensions/api/oauth/session/exchange | python3 -c \
      'import json,sys; print(json.load(sys.stdin)["access_token"])')
    ```
@@ -364,6 +365,12 @@ PMM's UI has a route and a menu item for each app, in its own repository. You ad
 
    ```bash
    docker compose -f sidecar/dev/compose.yaml --profile mysql down -v
+   ```
+
+2. Remove the file that holds the session:
+
+   ```bash
+   rm -f ~/.pmm-cookies
    ```
 
    The app, the line in `sidecar/settings.yaml` and the UI edits stay in your two checkouts.

@@ -19,6 +19,20 @@ Run every command from the root of the repository.
 
 ## Start PMM with PMM Extensions
 
+The stack listens on `127.0.0.1` only. These variables change it:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PMM_VERSION` | `3.10.0` | The version of PMM, PMM Extensions and PMM Client. All three use the same one. |
+| `PMM_PORT` | `8443` | The port on `127.0.0.1` where PMM listens. |
+| `PMM_ADMIN_PASSWORD` | `admin` | The password of PMM's `admin` user. |
+| `PMM_EXTENSIONS_IMAGE` | `percona/pmm-extensions:<PMM_VERSION>` | The PMM Extensions image, for an image that you built. |
+| `DEV_DATABASE_PASSWORD` | `pmm-extensions-dev` | The password of every database account on the database hosts. Use letters, digits, `-` and `_` only: the hosts write it into SQL and into option files as it is. |
+
+The default passwords are public. On a machine that other people can sign in to, set both passwords before the first start.
+
+If the stack already started with the default passwords, remove its data as described in [Stop and remove](#stop-and-remove). Then start it again with both variables set.
+
 1. Start the two containers:
 
    ```bash
@@ -40,19 +54,7 @@ Run every command from the root of the repository.
 
    The output is `200`.
 
-3. Open `https://127.0.0.1:8443` in a browser and sign in as `admin` with the password `admin`. The browser warns about the certificate, because PMM signs its own. PMM then asks you to change the password: select **Skip**.
-
-The stack listens on `127.0.0.1` only. These variables change it:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `PMM_VERSION` | `3.10.0` | The version of PMM, PMM Extensions and PMM Client. All three use the same one. |
-| `PMM_PORT` | `8443` | The port on `127.0.0.1` where PMM listens. |
-| `PMM_ADMIN_PASSWORD` | `admin` | The password of PMM's `admin` user. |
-| `PMM_EXTENSIONS_IMAGE` | `percona/pmm-extensions:<PMM_VERSION>` | The PMM Extensions image, for an image that you built. |
-| `DEV_DATABASE_PASSWORD` | `pmm-extensions-dev` | The password of every database account on the database hosts. Use letters, digits, `-` and `_` only: the hosts write it into SQL and into option files as it is. |
-
-The default passwords are public. On a machine that other people can sign in to, set both passwords before the first start.
+3. Open `https://127.0.0.1:8443` in a browser and sign in as `admin` with the password `admin`, or with the value of `PMM_ADMIN_PASSWORD`. The browser warns about the certificate, because PMM signs its own. PMM then asks you to change the password: select **Skip**.
 
 ## Add a database host
 
@@ -83,10 +85,11 @@ Give the same profiles to every later `docker compose` command. Compose ignores 
 
 PMM Extensions accepts a short-lived token that you get in exchange for a PMM session.
 
-1. Sign in to PMM and keep the session cookie:
+1. Sign in to PMM and keep the session cookie in a file that only you can read:
 
    ```bash
-   curl -sk -c /tmp/pmm-cookies -X POST https://127.0.0.1:8443/graph/login \
+   install -m 600 /dev/null ~/.pmm-cookies
+   curl -sk -c ~/.pmm-cookies -X POST https://127.0.0.1:8443/graph/login \
      -H 'Content-Type: application/json' -d '{"user":"admin","password":"admin"}'
    ```
 
@@ -97,7 +100,7 @@ PMM Extensions accepts a short-lived token that you get in exchange for a PMM se
 2. Exchange the session for a token:
 
    ```bash
-   TOKEN=$(curl -sk -b /tmp/pmm-cookies -X POST \
+   TOKEN=$(curl -sk -b ~/.pmm-cookies -X POST \
      https://127.0.0.1:8443/extensions/api/oauth/session/exchange | python3 -c \
      'import json,sys; print(json.load(sys.stdin)["access_token"])')
    ```
@@ -243,7 +246,7 @@ docker compose -f sidecar/dev/compose.yaml restart pmm-extensions
 
 This environment waits for PMM before it starts the container. The symptom appears with other Compose files that do not.
 
-An image that you build from this repository waits for PMM itself, and it reports unhealthy until it has its token. See [Starting before PMM is ready](../../sidecar/README.md#starting-before-pmm-is-ready).
+An image that you build from this repository waits for PMM itself when it holds no token, and it reports unhealthy until it has one. A stored token is used without a check while Grafana does not answer, so a healthy container does not prove that the token works. See [Starting before PMM is ready](../../sidecar/README.md#starting-before-pmm-is-ready).
 
 ### The port is taken
 
@@ -267,6 +270,12 @@ Use the same value in every later command, and in the URLs on this page.
 
    ```bash
    docker compose -f sidecar/dev/compose.yaml --profile mysql --profile postgresql down -v
+   ```
+
+3. Remove the file that holds the session:
+
+   ```bash
+   rm -f ~/.pmm-cookies
    ```
 
 ## Next steps

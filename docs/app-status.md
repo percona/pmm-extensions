@@ -81,9 +81,9 @@ The test counts are from each app's own tests on the current `main`.
 ### Task Manager (`tasks`)
 
 - **What it does:** Lists the tasks of every app in one place. It runs nothing on a host.
-- **State:** 407 lines of Python. 30 tests pass. Its UI is written by hand, in 665 lines of frontend code.
-- **What stands between it and PMM:** The list page, which must be moved into PMM's UI.
-- **Cost:** M.
+- **State:** 407 lines of Python. 30 tests pass. Its whole UI is written by hand: a list page and a detail page, in 665 lines of frontend code.
+- **What stands between it and PMM:** The two pages, which must be moved into PMM's UI.
+- **Cost:** L.
 
 ### Health & Security Report (`report`)
 
@@ -128,9 +128,9 @@ The test counts are from each app's own tests on the current `main`.
 | Checksums | Percona Toolkit | From the schema | S |
 | Archives | Percona Toolkit | From the schema | S |
 | Schema Change | Percona Toolkit | From the schema, with one view of its own | M |
-| Task Manager | none | Written by hand | M |
 | Topology | none beyond MySQL | Written by hand | L |
 | Health & Security Report | none | Written by hand | L |
+| Task Manager | none | Written by hand | L |
 | MongoDB Backups | Percona Backup for MongoDB | Mostly written by hand | L, after a decision |
 | Dipper Data Collection | Collection scripts | Written by hand | L, after a decision |
 | Alert Templates | none | Written by hand | L, after a decision |

@@ -21,7 +21,7 @@ Turns derived routes on and off. The value is an `AppCapabilities` object.
 
 `GET /schema` has no flag. An app with a form model always has the route. An app with a `script_source` has it only when `static_schema` is set.
 
-A capability that is off removes the derived route, so a route from `extra_routes` can take its path.
+A capability that is off removes the derived route. For `list` and `detail`, the app must then supply the route in `extra_routes`: see [`extra_routes`](#extra_routes).
 
 <!-- src: app/extensions/apps/checksums/app.py :: app -->
 ```python
@@ -34,6 +34,8 @@ app = TaskExecutionApp(
 ## `extra_routes`
 
 Adds routes that the framework does not derive, such as an approval route or a download. The value is a tuple of FastAPI `APIRouter` objects. They are mounted under the app's prefix, after the derived routes. A derived route therefore wins when two paths collide.
+
+Two collisions stop the app's construction with a `ValueError` instead: an extra `GET /` while `list` is on, and an extra `GET /{task_name}` while `detail` is on. To replace one of these routes, turn its capability off. Turning `list` or `detail` off without the extra route raises the same error.
 
 From this entry down, you write FastAPI route handlers, with its dependency injection and `async` handling.
 
@@ -67,10 +69,11 @@ Replace how a derived route builds its response body. The route itself stays der
 
 | Argument | Replaces |
 |---|---|
-| `response_builder` | The body of each task in the list and create responses. |
+| `response_builder` | The body of each task in the list response. It also builds the create response when the app sets neither `detail_response_builder` nor `create_response_builder`. |
 | `response_model` | The model of that body. Set it to the class that `response_builder` returns. Construction rejects a mismatch. |
-| `detail_response_builder` | The body of the detail response. |
+| `detail_response_builder` | The body of the detail response. It also builds the create response when the app sets no `create_response_builder`. |
 | `detail_response_model` | The model of the detail body. |
+| `create_response_builder` | The body of the create response, and of the derived `PUT` response. It cannot be combined with `create_response_model`. |
 
 Every builder must accept a `context` keyword. The framework rejects one that does not when the app is constructed.
 
@@ -147,7 +150,7 @@ The helpers that such a function calls are in `app/extensions/apps/framework/cas
 
 | Helpers | Behavior on failure |
 |---|---|
-| `cascade_create_*` | Stop at the first failure, delete the tasks already created in reverse order, and raise the original exception. They return `None`. |
+| `cascade_create_*` | Stop at the first failure, try to delete the tasks already created in reverse order, and raise the original exception. A delete that fails is logged and does not stop the others, so a failed rollback can leave tasks behind. They return `None`. |
 | `cascade_update_*`, `cascade_delete_*` | Continue, and return a `CascadeResult`. Call `raise_if_failed(op="update")` or `raise_if_failed(op="delete")` on it to turn a partial failure into HTTP 500. |
 
 ## `script_source`
