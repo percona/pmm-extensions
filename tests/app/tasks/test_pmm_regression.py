@@ -33,6 +33,7 @@ from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.pmm import _background_tasks, await_annotation, schedule_annotation
 from app.core.requests.remote_api import RemoteAPI
 from app.tasks.crud import TaskHistoryManager, TaskManager
+from app.tasks.execution.models import TerminalRunHook
 from app.tasks.models import (
     TaskExecutionRequest,
     TaskHistory,
@@ -255,6 +256,7 @@ class _SuccessAfterRunExecutor(ConcreteExecutor):
         self,
         queue_item: TaskHistory,
         writer_session: AsyncSession | None = None,
+        on_terminal: TerminalRunHook | None = None,
     ) -> TaskHistory:
         queue_item.status = TaskHistoryStatusEnum.SUCCESS
         return queue_item
@@ -267,6 +269,7 @@ class _StillRunningExecutor(ConcreteExecutor):
         self,
         queue_item: TaskHistory,
         writer_session: AsyncSession | None = None,
+        on_terminal: TerminalRunHook | None = None,
     ) -> TaskHistory:
         return queue_item
 

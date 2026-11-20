@@ -14,9 +14,12 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 """Cover the side-car PID 1's Grafana mint step and its stale-sentinel clearing."""
 
+import contextlib
 import os
 import re
+import signal
 import subprocess
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
@@ -29,6 +32,7 @@ from tests.sidecar.conftest import (
     schema_steps,
     SENTINEL_PREFIX,
     SIDECAR_DIR,
+    TOKEN_SENTINEL,
 )
 
 SETTINGS_ENV_HELPER = SIDECAR_DIR / "settings-env.sh"
@@ -64,13 +68,33 @@ assertion made once the entrypoint has exited could not tell the two apart.
 
 STUB_MINT_HELPER = """import os
 import sys
+import time
 
 with open(os.environ["FAKE_HELPER_ARGV"], "w", encoding="utf-8") as handle:
     handle.write("\\n".join(sys.argv))
+time.sleep(float(os.environ["FAKE_HELPER_WAIT"]))
 sys.stdout.write(os.environ["FAKE_HELPER_STDOUT"])
 sys.exit(int(os.environ["FAKE_HELPER_EXIT"]))
 """
-"""A stand-in for the mint helper, answering whatever the case calls for."""
+"""A stand-in for the mint helper, answering whatever the case calls for.
+
+It records its argv before it waits, so a case can tell that the helper is
+running from the moment that file exists.
+"""
+
+STOPPED_BY_TERM = 143
+"""The status a shell that handled ``SIGTERM`` exits with, 128 + 15.
+
+A shell killed by the signal instead reports ``-15``, which is what tells a
+handled stop from a default one outside a container. Inside one the entrypoint
+is PID 1, where an unhandled ``SIGTERM`` is not delivered at all.
+"""
+
+HELPER_STILL_WAITING_SECONDS = 20
+"""How long the stub helper waits where a case stops the entrypoint under it."""
+
+STOP_HONOURED_SECONDS = 5
+"""Well under the stub's wait, and well over the one-second poll of the key gate."""
 
 STUB_ENCRYPTION_HELPER = """import os
 import sys
@@ -101,6 +125,7 @@ class FakeContainer:
         The copied entrypoint's sentinel paths are rewritten onto a prefix unique
         to this container, so the two cases that exercise the clearing cannot
         invalidate each other's precondition under the suite's parallel runner.
+        The token sentinel moves under ``root`` for the same reason.
         The substitution count is asserted, so renaming or dropping a sentinel in
         the shipped entrypoint fails the test rather than silently leaving the
         copy pointed at the real ``/tmp`` paths.
@@ -110,6 +135,7 @@ class FakeContainer:
         self.app_dir = root / "app"
         self.app_dir.mkdir()
         self.sentinel_prefix = f"{SENTINEL_PREFIX}{uuid4().hex}-"
+        self.token_sentinel = root / "grafana-token.ok"
         for source in (ENTRYPOINT, SETTINGS_ENV_HELPER):
             target = self.app_dir / source.name
             text = source.read_text(encoding="utf-8")
@@ -118,6 +144,10 @@ class FakeContainer:
                     "the entrypoint no longer clears one sentinel per schema step"
                 )
                 text = text.replace(SENTINEL_PREFIX, self.sentinel_prefix)
+                assert text.count(TOKEN_SENTINEL) == 1, (
+                    "the entrypoint no longer names the token sentinel exactly once"
+                )
+                text = text.replace(TOKEN_SENTINEL, str(self.token_sentinel))
             target.write_text(text, encoding="utf-8")
             target.chmod(0o755)
         (self.app_dir / MINT_HELPER_NAME).write_text(STUB_MINT_HELPER, encoding="utf-8")
@@ -158,14 +188,7 @@ class FakeContainer:
         :return: The completed entrypoint run.
         """
         environment = {
-            "PATH": f"{self._bin}{os.pathsep}{os.environ['PATH']}",
-            "SECRET_KEY": "k",
-            "FAKE_SUPERVISORD_ENV": str(self._environment_file),
-            "FAKE_SUPERVISORD_SENTINELS": str(self._sentinel_file),
-            "FAKE_HELPER_ARGV": str(self._argv_file),
-            "FAKE_HELPER_STDOUT": token,
-            "FAKE_HELPER_EXIT": str(exit_code),
-            "FAKE_ENCRYPTION_ARGV": str(self._encryption_argv_file),
+            **self._base_environment(token=token, exit_code=exit_code),
             "FAKE_ENCRYPTION_STDOUT": minted_key,
             "FAKE_ENCRYPTION_EXIT": str(minted_key_exit_code),
             **({} if encryption_key is None else {"ENCRYPTION_KEY": encryption_key}),
@@ -178,6 +201,61 @@ class FakeContainer:
             text=True,
             check=False,
         )
+
+    def _base_environment(
+        self, *, token: str, exit_code: int, helper_wait: float = 0
+    ) -> dict[str, str]:
+        """Return the environment every entrypoint run shares.
+
+        :param token: What the stub mint helper prints.
+        :param exit_code: What the stub mint helper exits with.
+        :param helper_wait: Seconds the stub mint helper waits before it answers.
+        :return: The environment, with a supplied key and no encryption key.
+        """
+        return {
+            "PATH": f"{self._bin}{os.pathsep}{os.environ['PATH']}",
+            "SECRET_KEY": "k",
+            "FAKE_SUPERVISORD_ENV": str(self._environment_file),
+            "FAKE_SUPERVISORD_SENTINELS": str(self._sentinel_file),
+            "FAKE_HELPER_ARGV": str(self._argv_file),
+            "FAKE_HELPER_STDOUT": token,
+            "FAKE_HELPER_EXIT": str(exit_code),
+            "FAKE_HELPER_WAIT": str(helper_wait),
+            "FAKE_ENCRYPTION_ARGV": str(self._encryption_argv_file),
+        }
+
+    def spawn(self, *, helper_wait: float = 0, **inputs: str) -> subprocess.Popen[str]:
+        """Start the entrypoint and return it while it runs.
+
+        It runs in a session of its own, so a case can end the stub helper along
+        with it: outside a container nothing reaps a child the entrypoint leaves.
+
+        :param helper_wait: Seconds the stub mint helper waits before it answers.
+        :param inputs: Deployment inputs to place in the environment.
+        :return: The running entrypoint.
+        """
+        return subprocess.Popen(
+            [str(self.app_dir / ENTRYPOINT.name)],
+            env={
+                **self._base_environment(
+                    token=MINTED_TOKEN, exit_code=0, helper_wait=helper_wait
+                ),
+                "ENCRYPTION_KEY": SUPPLIED_ENCRYPTION_KEY,
+                **inputs,
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+
+    @property
+    def helper_started(self) -> bool:
+        """Return whether the stub mint helper has begun to run.
+
+        :return: Whether it has recorded its argv.
+        """
+        return self._argv_file.exists()
 
     @property
     def supervised_environment(self) -> dict[str, str]:
@@ -273,6 +351,111 @@ def test_a_failing_helper_does_not_take_the_container_down(container: FakeContai
     assert container.supervised_environment
     for name in CANONICAL_NAMES:
         assert name not in container.supervised_environment
+
+
+def test_a_resolved_token_publishes_the_health_sentinel(container: FakeContainer):
+    """Mark the start as holding its token, which the health check requires."""
+    container.start()
+
+    assert container.token_sentinel.exists()
+
+
+def test_a_start_with_nothing_to_resolve_publishes_the_health_sentinel(
+    container: FakeContainer,
+):
+    """Stay healthy where no token is owed, such as a provider other than Grafana."""
+    container.start(token="")
+
+    assert container.token_sentinel.exists()
+
+
+def test_a_failed_mint_leaves_the_health_sentinel_unpublished(
+    container: FakeContainer,
+):
+    """Keep a container that started without its token from reporting healthy.
+
+    The sentinel of the previous run is in place first: ``/tmp`` survives a
+    container restart, so a marker merely left unwritten would still be there.
+    """
+    container.token_sentinel.touch()
+
+    container.start(token="", exit_code=1)
+
+    assert container.reached_supervisord
+    assert not container.token_sentinel.exists()
+
+
+def test_the_health_sentinel_is_cleared_before_the_key_gate(container: FakeContainer):
+    """Drop the previous run's marker before the first step that can wait.
+
+    The key gate is that step. A marker cleared only at the mint would leave a
+    restarted container, waiting there for PMM, reporting on the token its
+    previous run held.
+    """
+    container.token_sentinel.touch()
+
+    result = container.start(SECRET_KEY="")
+
+    assert result.returncode != 0
+    assert not container.reached_supervisord
+    assert not container.token_sentinel.exists()
+
+
+def stop(process: subprocess.Popen[str]) -> int:
+    """Send the entrypoint the signal ``docker stop`` sends, and wait for its exit.
+
+    :param process: An entrypoint started by :meth:`FakeContainer.spawn`.
+    :return: The entrypoint's exit status.
+    """
+    try:
+        process.send_signal(signal.SIGTERM)
+        return process.wait(timeout=STOP_HONOURED_SECONDS)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+
+
+def test_a_stop_is_honoured_while_the_key_gate_waits(
+    container: FakeContainer, tmp_path: Path
+):
+    """End the wait for PMM's key on a stop, rather than at the end of the grace period.
+
+    The entrypoint is PID 1 in the container, and a PID 1 with no handler for a
+    signal is not sent it: without one, a stop during the wait runs out its
+    grace period and ends in a kill.
+    """
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    process = container.spawn(SECRET_KEY="", SECRETS_DIR=str(secrets_dir))
+    assert process.stderr is not None
+    waiting = process.stderr.readline()
+
+    status = stop(process)
+
+    assert "Waiting for PMM" in waiting
+    assert status == STOPPED_BY_TERM
+    assert not container.reached_supervisord
+
+
+def test_a_stop_is_honoured_while_the_token_helper_waits(container: FakeContainer):
+    """End the wait for Grafana on a stop, while the helper is still running.
+
+    The shell runs a handler only once a foreground command returns, and the
+    helper can wait for as long as PMM takes to start. So the helper has to be
+    something the shell waits on, which a signal interrupts.
+    """
+    process = container.spawn(helper_wait=HELPER_STILL_WAITING_SECONDS)
+    deadline = time.monotonic() + STOP_HONOURED_SECONDS
+    while not container.helper_started and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert container.helper_started
+
+    status = stop(process)
+
+    assert status == STOPPED_BY_TERM
+    assert not container.reached_supervisord
+    assert not container.token_sentinel.exists()
 
 
 def test_an_explicit_token_still_outranks_the_mint(container: FakeContainer):
