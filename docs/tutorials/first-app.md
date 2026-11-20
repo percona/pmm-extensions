@@ -370,7 +370,7 @@ You built an app from one form model. The framework derived its routes, its form
 - [The app framework](../explanation/app-framework.md), for how one form model becomes an app
 - [Form DSL](../reference/form-dsl.md), for the other field types and for rules between fields
 - [Test an app](../how-to/test-an-app.md)
-- [Update the API snapshots](../how-to/update-api-snapshots.md), because the whole test suite fails until a new app has its two snapshot files
+- [Update the API snapshots](../how-to/update-api-snapshots.md), because the whole test suite fails until you regenerate the snapshots for a new app
 - [Port an app](../how-to/port-an-app.md), for the test that compares its list of apps with `sidecar/settings.yaml`
 - [Add an app to the PMM UI](../how-to/add-an-app-to-the-pmm-ui.md), which explains the four edits
 - [Get an app into a PMM release](../how-to/get-an-app-into-a-pmm-release.md)

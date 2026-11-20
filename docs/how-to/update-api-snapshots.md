@@ -49,7 +49,7 @@ FAILED tests/app/extensions/test_schema_snapshot.py::test_schema_payload_matches
 
    If you did not intend the change, do not accept it. Find what altered the contract and fix that.
 
-A new app fails four tests, because its two snapshot files do not exist yet. For an app named `diskfree`, the output holds these lines:
+A new app fails four tests of these two modules, because its two snapshot files do not exist yet. For an app named `diskfree`, the output holds these lines:
 
 ```text
 AssertionError: snapshot set drift in snapshots/schema: missing={'diskfree'}, orphaned=set(); regenerate with EXTENSIONS_UPDATE_SNAPSHOTS=1
@@ -59,7 +59,15 @@ FAILED tests/app/extensions/test_schema_snapshot.py::test_schema_payload_matches
 FAILED tests/app/extensions/test_schema_snapshot.py::test_schema_golden_set_is_complete
 ```
 
-Create the two files as described in the next section. `make regen-specs` sets the variable that the message names.
+A new app also fails two tests in `tests/app/test_openapi_specs_fresh.py`, because it changes an OpenAPI file that the frontend reads:
+
+```text
+AssertionError: OpenAPI spec drift: ['extensions']; regenerate with `python scripts/dump_openapi.py`
+FAILED tests/app/test_openapi_specs_fresh.py::test_committed_openapi_specs_are_fresh
+FAILED tests/app/test_openapi_specs_fresh.py::test_dump_script_ignores_developer_auth_config
+```
+
+One command in the next section creates the two snapshot files and regenerates the OpenAPI file. `make regen-specs` does what both messages name.
 
 A `GET /schema` route that stops answering 200 fails on its status before the comparison. That points at sign-in or at the app being disabled, not at the snapshot.
 
@@ -100,6 +108,14 @@ A reviewer reads a regenerated snapshot as carefully as source code. A snapshot 
 ## Verify
 
 Run the snapshot tests again. They pass.
+
+For a new app, run the test of the OpenAPI files too:
+
+```bash
+pytest tests/app/test_openapi_specs_fresh.py -q
+```
+
+The output ends with a line such as `13 passed in 16.11s`.
 
 ## Next steps
 

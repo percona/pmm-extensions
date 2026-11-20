@@ -124,9 +124,9 @@ Do this only when you changed the scaffolder or its templates.
 
 ## Create the snapshots of a new app
 
-The test suite compares each app's routes and form schema with two snapshot files. A new app has none, so four tests of the whole suite fail until you create them. An app that this repository already holds has both files.
+The test suite compares each app's routes and form schema with two snapshot files. A new app has none, and it changes an OpenAPI file that the frontend reads. Six tests of the whole suite fail until you regenerate all three. An app that this repository already holds needs nothing here.
 
-1. Create the two files and commit them: see [Update the API snapshots](update-api-snapshots.md).
+1. Regenerate the files with one command and commit them: see [Update the API snapshots](update-api-snapshots.md).
 
 ## Run the app once in a local PMM
 
@@ -136,7 +136,7 @@ Tests do not run an app's task on a host. The PostgreSQL Backups app passed all 
 
 ## Verify
 
-The app's own tests, the two conformance modules and the two snapshot modules pass. One task of the app has finished with the status `success` in a local PMM.
+The app's own tests, the two conformance modules and the two snapshot modules pass. For a new app, `tests/app/test_openapi_specs_fresh.py` passes too. One task of the app has finished with the status `success` in a local PMM.
 
 ## Next steps
 

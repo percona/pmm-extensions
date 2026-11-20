@@ -137,6 +137,8 @@ With `databases="sales,orders"` and `explain_arg=True`, the command gets `--data
 
 `Choices` gives a field a fixed list of options. It takes precedence over options derived from the type.
 
+`Choices` fills the list that the form shows, and it does not restrict what the server accepts. A field of type `str` with `Choices` accepts any string. The field's type restricts the value: a `Literal` or an enum type rejects a value that is not one of its members.
+
 | Field | Type | Meaning |
 |---|---|---|
 | `options` | a tuple of `(value, label)` pairs or `Option` instances | The options, in display order. |
