@@ -68,7 +68,7 @@ from app.tasks.execution.executors.nomad.steps import (
     NomadStep,
     RUN_SCRIPT_OUTPUT_FILES_PATH,
 )
-from app.tasks.execution.models import BaseExecutor
+from app.tasks.execution.models import BaseExecutor, TerminalRunHook
 from app.tasks.execution_request_secrets import (
     MASKED_ARGS_META_KEY,
     PAYLOAD_LEAF,
@@ -3510,7 +3510,7 @@ class TestSyncTaskHistoryRealSession:
         async def fake_sync(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-            on_terminal: object = None,
+            on_terminal: TerminalRunHook | None = None,
         ) -> tuple[TaskHistory, str | None]:
             assert writer_session is not None
             await TaskHistoryLogWriter.append(
@@ -3605,7 +3605,7 @@ class TestSyncTaskHistoryRealSession:
         async def fake_sync(
             queue_item: TaskHistory,
             writer_session: AsyncSession | None = None,
-            on_terminal: object = None,
+            on_terminal: TerminalRunHook | None = None,
         ) -> tuple[TaskHistory, str | None]:
             queue_item.status = TaskHistoryStatusEnum.SUCCESS
             queue_item.finished_at = utc_now()
@@ -4369,7 +4369,9 @@ async def test_manual_sync_alerts_from_the_stored_alert_settings(
     await TaskHistoryManager.save(session, created_task_with_history)
 
     async def _fail(
-        item: TaskHistory, writer_session: object = None, on_terminal: object = None
+        item: TaskHistory,
+        writer_session: object = None,
+        on_terminal: TerminalRunHook | None = None,
     ) -> TaskHistory:
         item.status = TaskHistoryStatusEnum.FAILED
         item.finished_at = utc_now()

@@ -48,6 +48,8 @@ from tests.app.factories import TaskFactory
 class ConcreteExecutor(BaseExecutor):
     """Provide a minimal concrete implementation of BaseExecutor for testing."""
 
+    received_terminal_hook: TerminalRunHook | None = None
+
     async def dispatch_task(
         self,
         session: Any,
@@ -97,7 +99,8 @@ class ConcreteExecutor(BaseExecutor):
         writer_session: AsyncSession | None = None,
         on_terminal: TerminalRunHook | None = None,
     ) -> TaskHistory:
-        """Return the queue item unchanged."""
+        """Keep the hook received and return the queue item unchanged."""
+        self.received_terminal_hook = on_terminal
         return queue_item
 
 
@@ -555,14 +558,10 @@ class TestSyncTaskHistory:
         queue_item.task = MagicMock()
         queue_item.task.alert_on_fail = False
         hook = AsyncMock()
-        mock_sync = AsyncMock(return_value=queue_item)
 
-        with patch.object(ConcreteExecutor, "_sync_task_history", mock_sync):
-            await executor.sync_task_history(queue_item, on_terminal=hook)
+        await executor.sync_task_history(queue_item, on_terminal=hook)
 
-        mock_sync.assert_awaited_once_with(
-            queue_item, writer_session=None, on_terminal=hook
-        )
+        assert executor.received_terminal_hook is hook
 
     @pytest.mark.asyncio
     async def test_alerts_when_alert_on_fail_is_true(self, executor: ConcreteExecutor):

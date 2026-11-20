@@ -16,6 +16,7 @@
 """Define tests for the run-result file reader and recorder seam."""
 
 import json
+import logging
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
@@ -211,13 +212,21 @@ class TestRunResultCapture:
         executor.stream_file.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_failing_read_does_not_raise(self) -> None:
-        """Swallow a read failure, which must not fail the sync that made it."""
+    async def test_a_failing_read_does_not_raise(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Log and swallow a read failure, which must not fail the sync."""
         capture = RunResultCapture(_fake_executor(_raising(RuntimeError("boom"))))
+        history = _history(recorder=_RECORDER)
+        history.id = 4321
 
-        await capture(_history(recorder=_RECORDER))
+        with caplog.at_level(logging.ERROR, logger="app.tasks.run_result"):
+            await capture(history)
 
         assert capture.result is None
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+        assert "4321" in errors[0].getMessage()
 
 
 @asynccontextmanager

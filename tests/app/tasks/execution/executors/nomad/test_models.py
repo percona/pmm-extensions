@@ -11367,7 +11367,7 @@ class TestNomadTerminalHook:
     def _held(run_script_state: str = "dead") -> dict[str, Any]:
         """Return the task states of a run whose hold step is running."""
         return {
-            "run-script": {"State": run_script_state, "Failed": False},
+            NomadStep.RUN_SCRIPT: {"State": run_script_state, "Failed": False},
             NomadStep.LOG_CAPTURE_HOLD: {"State": "running", "Failed": False},
         }
 
@@ -11411,21 +11411,46 @@ class TestNomadTerminalHook:
         session: AsyncSession,
         created_task_with_history: TaskHistory,
     ) -> None:
-        """Assert the hook sees the run while Nomad may not yet collect it.
+        """Assert the hook runs after the logs are stored and before the release.
 
         The hook also has to see the allocation that produced the terminal
         status: a file read resolves the allocation from the run's tracking
         data, which here still names the allocation before a reschedule.
         """
-        mock_backend = self._backend(mock_nomad_cls, self._held())
+        task_states = self._held()
+        task_states[NomadStep.RUN_SCRIPT].update(
+            StartedAt="2024-01-01T00:00:00Z", FinishedAt="2024-01-01T00:00:05Z"
+        )
+        mock_backend = self._backend(mock_nomad_cls, task_states)
+        stdout = (NomadStep.RUN_SCRIPT, TaskLogType.STDOUT)
+        mock_backend.client.stream_logs.stream.side_effect = (
+            TestPersistNomadTaskLogsCursorDurability._offset_aware_stream(
+                {stdout: "backup done\n"}
+            )
+        )
         signal = mock_backend.client.allocation.signal_allocation
-        seen: list[tuple[TaskHistoryStatusEnum, str, int]] = []
+        seen: list[tuple[TaskHistoryStatusEnum, str, int, str, str | None]] = []
 
         async def hook(queue_item: TaskHistory) -> None:
             tracking = queue_item.execution_request.tracking
             assert tracking is not None
+            chunks = await TaskHistoryLogManager.list_chunks_for_task(
+                session, queue_item.id
+            )
+            stored = "".join(
+                chunk.content
+                for chunk in sorted(chunks, key=lambda c: c.start_offset)
+                if (chunk.source, chunk.stream) == stdout
+            )
+            verdicts = await TestNomadCaptureOutcomes._verdicts(session, queue_item.id)
             seen.append(
-                (queue_item.status, tracking["allocation_id"], signal.call_count)
+                (
+                    queue_item.status,
+                    tracking["allocation_id"],
+                    signal.call_count,
+                    stored,
+                    verdicts.get(stdout),
+                )
             )
 
         executor = _build_executor(terminal_log_drain_max_attempts=0)
@@ -11436,7 +11461,15 @@ class TestNomadTerminalHook:
             on_terminal=hook,
         )
 
-        assert seen == [(TaskHistoryStatusEnum.SUCCESS, "alloc-2", 0)]
+        assert seen == [
+            (
+                TaskHistoryStatusEnum.SUCCESS,
+                "alloc-2",
+                0,
+                "backup done\n",
+                LogCaptureStatusEnum.COMPLETE,
+            )
+        ]
         signal.assert_called_once_with(
             "alloc-2", "SIGTERM", task=NomadStep.LOG_CAPTURE_HOLD
         )
@@ -11497,7 +11530,7 @@ class TestNomadTerminalHook:
         """Assert a run registered before the hold existed still gets the hook."""
         mock_backend = self._backend(
             mock_nomad_cls,
-            {"run-script": {"State": "dead", "Failed": False}},
+            {NomadStep.RUN_SCRIPT: {"State": "dead", "Failed": False}},
             job_status=NOMAD_DEAD_JOB_STATUS,
         )
         mock_backend.allocation.get_allocation.return_value["ClientStatus"] = (
