@@ -295,7 +295,10 @@ class TestStopWait:
         assert len(host.sleeps) == answered
 
     def test_every_wait_for_the_stop_is_printed(self) -> None:
-        """Pin one printed line for each wait, naming the probed port and the option file whose socket replaces it."""
+        """Pin one printed line per wait, naming the port and the option file.
+
+        A socket set in that option file replaces the port, so the line names both.
+        """
         answered = 3
         restore = _restore_on(_Host(answers=answered))
 
@@ -310,10 +313,12 @@ class TestStopWait:
 
     def test_a_stop_that_worked_at_once_prints_no_wait(self) -> None:
         """Pin that a restore whose stop worked does not report a wait."""
-        restore = _restore_on(_Host(answers=0))
+        host = _Host(answers=0)
+        restore = _restore_on(host)
 
         restore.signal_mysqld("stop")
 
+        assert host.probes == 1
         assert not any("still accepts" in line for line in restore.logger.infos)
 
     def test_no_restore_step_runs_after_a_failed_stop(self) -> None:
