@@ -1687,7 +1687,12 @@ class TestSaveRejectedWrite:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Assert a commit failing with a non-integrity error answers bad request."""
+        """Assert a commit failing with a non-integrity error answers bad request.
+
+        The commit is replaced on a real session because neither SQLite nor
+        asyncpg raises a ``DatabaseError`` other than ``IntegrityError`` from a
+        commit on demand.
+        """
         row = await UniqueKeyManager.save(session, UniqueKeyModel(key="delta"))
         row.label = "changed"
         monkeypatch.setattr(UniqueKeyModel, "__str__", _refuse_text_form)
