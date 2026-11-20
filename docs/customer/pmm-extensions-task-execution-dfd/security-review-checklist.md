@@ -1,5 +1,7 @@
 # Security Review Checklist — PMM Extensions Task Execution DFD
 
+This page describes the standalone deployment (v0.13.1 and earlier) except where it says otherwise, and a version for PMM Extensions inside PMM is planned.
+
 Complete this checklist before sending customer-facing task-execution or Nomad materials.
 
 **DFD deliverables:** [`exports/pmm-extensions-task-execution-dfd.pdf`](exports/pmm-extensions-task-execution-dfd.pdf) (and optional sequence PDF)
