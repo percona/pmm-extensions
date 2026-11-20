@@ -128,7 +128,7 @@ A new app is a change that users see, so it needs a changelog fragment.
 
 ## Open the pull requests
 
-1. Open a pull request in this repository. It holds the line in `sidecar/settings.yaml`, the test constant, the changelog fragment, and the app's move to "What ships" in [App status](../app-status.md). For an app that is new to this repository, it also holds the app's two snapshot files and the regenerated files under `frontend/packages/api/`: see [Update the API snapshots](update-api-snapshots.md).
+1. Open a pull request in this repository. It holds the line in `sidecar/settings.yaml`, the test constant, the changelog fragment, and the app's move to "What ships" in [App status](../app-status.md). For an app that is new to this repository, it also holds the app's two snapshot files and the regenerated files under `frontend/packages/api/`. [Update the API snapshots](update-api-snapshots.md) shows how to create them.
 
 2. Open a pull request in `percona/pmm` with the UI change. Link each pull request from the other.
 
