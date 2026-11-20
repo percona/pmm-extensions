@@ -1,6 +1,6 @@
 # Update the API snapshots
 
-The test suite keeps a snapshot of each app's public HTTP contract. A test fails when your change alters a contract. This page shows how to read that failure and how to accept a change that you intended.
+The test suite keeps a snapshot of each app's public HTTP contract. A test fails when your change alters a contract, and when a new app has no snapshot yet. This page shows how to read that failure, accept a change that you intended, and create the snapshots of a new app.
 
 ## Prerequisites
 
@@ -49,9 +49,21 @@ FAILED tests/app/extensions/test_schema_snapshot.py::test_schema_payload_matches
 
    If you did not intend the change, do not accept it. Find what altered the contract and fix that.
 
+A new app fails four tests, because its two snapshot files do not exist yet. For an app named `diskfree`, the output holds these lines:
+
+```text
+AssertionError: snapshot set drift in snapshots/schema: missing={'diskfree'}, orphaned=set(); regenerate with EXTENSIONS_UPDATE_SNAPSHOTS=1
+FAILED tests/app/extensions/test_openapi_snapshot.py::test_openapi_subtree_matches_snapshot[diskfree]
+FAILED tests/app/extensions/test_openapi_snapshot.py::test_openapi_golden_set_is_complete
+FAILED tests/app/extensions/test_schema_snapshot.py::test_schema_payload_matches_snapshot[diskfree]
+FAILED tests/app/extensions/test_schema_snapshot.py::test_schema_golden_set_is_complete
+```
+
+Create the two files as described in the next section. `make regen-specs` sets the variable that the message names.
+
 A `GET /schema` route that stops answering 200 fails on its status before the comparison. That points at sign-in or at the app being disabled, not at the snapshot.
 
-## Accept a change
+## Accept a change or create the snapshots of a new app
 
 1. Install the frontend dependencies, once:
 
@@ -65,7 +77,7 @@ A `GET /schema` route that stops answering 200 fails on its status before the co
    make regen-specs
    ```
 
-   The command rewrites the snapshot files that differ, the form snapshots, the OpenAPI files under `frontend/packages/api/specs/` and the generated API client. Its test run reports the snapshot cases as skipped, which is expected:
+   The command rewrites the snapshot files that differ, the form snapshots, the OpenAPI files under `frontend/packages/api/specs/` and the generated API client. For a new app, it also creates `openapi/<app>.json` and `schema/<app>.json`. Its test run reports the snapshot cases as skipped, which is expected:
 
    ```text
    4 passed, 39 skipped, 21 warnings in 7.73s
@@ -78,6 +90,8 @@ A `GET /schema` route that stops answering 200 fails on its status before the co
    ```
 
    The command lists every file that changed. Read the diff of each one. Every changed line must follow from your change.
+
+   For a new app, the list holds the two new snapshot files, and two files under `frontend/packages/api/`: the OpenAPI file and the generated client.
 
 4. Commit the regenerated files with the change that caused them.
 

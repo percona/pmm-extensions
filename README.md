@@ -40,7 +40,7 @@ To use PMM Extensions, read PMM's documentation. The pages below are for people 
 | Move MySQL backup schedules from a standalone instance to PMM | [Migrate MySQL backup schedules from standalone SEP](docs/how-to/migrate-from-standalone-sep.md) |
 | Rerun a schema step without a restart | [Rerun a schema step in a running sidecar](docs/how-to/rerun-a-schema-step.md) |
 | Run the type check | [Run the type check](docs/how-to/run-the-type-check.md) |
-| Update the snapshots after a route or a form changes | [Update the API snapshots](docs/how-to/update-api-snapshots.md) |
+| Update the snapshots after a route or a form changes, or create them for a new app | [Update the API snapshots](docs/how-to/update-api-snapshots.md) |
 | Write a script for Support diagnostics | [Write a diagnostic script](docs/how-to/write-a-diagnostic-script.md) |
 | Look up a field type or a rule of a form | [Form DSL](docs/reference/form-dsl.md) |
 | Look up what an app can replace in the framework | [App extension points](docs/reference/app-extension-points.md) |

@@ -122,6 +122,12 @@ Do this only when you changed the scaffolder or its templates.
 
    The command scaffolds one app of each flavor, runs each generated test, runs conformance over all three, and removes them. It exits with status 0 when all of that passes.
 
+## Create the snapshots of a new app
+
+The test suite compares each app's routes and form schema with two snapshot files. A new app has none, so four tests of the whole suite fail until you create them. An app that this repository already holds has both files.
+
+1. Create the two files and commit them: see [Update the API snapshots](update-api-snapshots.md).
+
 ## Run the app once in a local PMM
 
 Tests do not run an app's task on a host. The PostgreSQL Backups app passed all its tests and failed on its first run on a real host. The cause was a path that only exists there.
@@ -130,10 +136,10 @@ Tests do not run an app's task on a host. The PostgreSQL Backups app passed all 
 
 ## Verify
 
-The app's own tests and the two conformance modules pass. One task of the app has finished with the status `success` in a local PMM.
+The app's own tests, the two conformance modules and the two snapshot modules pass. One task of the app has finished with the status `success` in a local PMM.
 
 ## Next steps
 
 - [Port an app](port-an-app.md)
-- [Update the API snapshots](update-api-snapshots.md), when your change alters a route or a form
+- [Update the API snapshots](update-api-snapshots.md), when a later change alters a route or a form
 - [App extension points](../reference/app-extension-points.md)
