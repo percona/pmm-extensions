@@ -67,7 +67,7 @@ A constant in the tests repeats the list, and one test compares the two.
    pytest tests/app/extensions/apps/framework/test_conformance.py tests/app/extensions/apps/framework/test_form_dsl_conformance.py -q
    ```
 
-3. Run the tests of the sidecar's settings. They take about two minutes:
+3. Run the tests of the sidecar's settings. Here they took about three minutes:
 
    ```bash
    pytest tests/sidecar -q
