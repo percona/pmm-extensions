@@ -26,11 +26,9 @@ from tests.sidecar.conftest import (
     BUDGET_ASSIGNMENT,
     CONTAINERFILE,
     GATE,
+    HEALTHCHECK,
     SCHEMA_STEPS,
-    SIDECAR_DIR,
 )
-
-HEALTHCHECK = SIDECAR_DIR / "healthcheck.sh"
 
 GATE_INVOCATION = "./wait_for_schema.sh"
 
