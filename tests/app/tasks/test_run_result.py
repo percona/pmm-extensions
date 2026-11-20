@@ -189,7 +189,7 @@ class TestReadRunResult:
 
 
 class TestRunResultCapture:
-    """Cover the early read a sync makes while the run's files are still held."""
+    """Cover the early read a sync makes before the run's files are released."""
 
     @pytest.mark.asyncio
     async def test_keeps_the_result_of_a_task_with_a_recorder(self) -> None:
@@ -572,7 +572,9 @@ def _flip_status(target: TaskHistoryStatusEnum, *, result: dict | None = None):
     return executor
 
 
-def _collecting_executor(result: dict) -> MagicMock:
+def _collecting_executor(
+    result: dict, *, read_error: Exception | None = None
+) -> MagicMock:
     """Return a fake executor whose host deletes a run's files once it lets go.
 
     Its sync takes the run to SUCCESS, offers the caller's hook the run while the
@@ -580,6 +582,8 @@ def _collecting_executor(result: dict) -> MagicMock:
     disk limit does. A read made after the sync finds nothing.
 
     :param result: The result the run's file holds until the release.
+    :param read_error: An error every read raises while the files are still
+        there, in place of returning the result.
     """
     released = False
 
@@ -587,6 +591,8 @@ def _collecting_executor(result: dict) -> MagicMock:
         del args, kwargs
         if released:
             raise _response_error(404)
+        if read_error is not None:
+            raise read_error
         yield _result_bytes(result)
 
     async def _fake_sync(
@@ -665,6 +671,33 @@ class TestSyncQueueItemSeam:
             await sync_queue_item(history_id)
 
         assert recorded == [_RESULT]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_early_read_still_saves_and_records(self, mocker):
+        """Save the terminal status and record without a result when the read fails."""
+        recorded = []
+
+        async def _recorder(session, history, result):
+            recorded.append((history.status, result))
+
+        mocker.patch.dict(hook_resolver._RESOLVED, {_RECORDER: _recorder})
+        async with _recorder_db(
+            recorder=_RECORDER, status=TaskHistoryStatusEnum.RUNNING
+        ) as (maker, history_id):
+            mocker.patch("app.tasks.celery.get_async_session_maker", return_value=maker)
+            mocker.patch(
+                "app.tasks.run_result.get_async_session_maker", return_value=maker
+            )
+            mocker.patch(
+                "app.tasks.celery.get_executor_for_task",
+                return_value=_collecting_executor(
+                    _RESULT, read_error=RuntimeError("boom")
+                ),
+            )
+            saved = await sync_queue_item(history_id)
+
+        assert saved.status == TaskHistoryStatusEnum.SUCCESS
+        assert recorded == [(TaskHistoryStatusEnum.SUCCESS, None)]
 
     @pytest.mark.asyncio
     async def test_records_none_on_non_success_terminal(self, mocker):
@@ -766,6 +799,40 @@ class TestSyncRouteSeam:
                 )
 
         assert recorded == [_RESULT]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_early_read_still_saves_and_records(self, mocker):
+        """Save the terminal status and record without a result when the read fails."""
+        recorded = []
+
+        async def _recorder(session, history, result):
+            recorded.append((history.status, result))
+
+        mocker.patch.dict(hook_resolver._RESOLVED, {_RECORDER: _recorder})
+        async with _recorder_db(
+            recorder=_RECORDER, status=TaskHistoryStatusEnum.RUNNING
+        ) as (maker, history_id):
+            mocker.patch("app.tasks.routes.get_async_session_maker", return_value=maker)
+            mocker.patch(
+                "app.tasks.run_result.get_async_session_maker", return_value=maker
+            )
+            async with maker() as session:
+                task_history = await TaskHistoryManager.get_or_404(
+                    session,
+                    select_related=(TaskHistory.task,),
+                    query_options=[undefer(TaskHistory.execution_request)],
+                    id=history_id,
+                )
+                synced = await sync_task_history(
+                    session=session,
+                    executor=_collecting_executor(
+                        _RESULT, read_error=RuntimeError("boom")
+                    ),
+                    task_history=task_history,
+                )
+
+        assert synced.status == TaskHistoryStatusEnum.SUCCESS
+        assert recorded == [(TaskHistoryStatusEnum.SUCCESS, None)]
 
 
 class TestStopPathCarveOut:

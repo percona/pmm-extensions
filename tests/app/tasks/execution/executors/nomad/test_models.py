@@ -11361,7 +11361,7 @@ class TestNomadSyncWithCaptureHold:
 
 
 class TestNomadTerminalHook:
-    """Cover the caller's hook, which runs while the run's files are still held."""
+    """Cover the caller's hook, which runs before the hold is released."""
 
     @staticmethod
     def _held(run_script_state: str = "dead") -> dict[str, Any]:
