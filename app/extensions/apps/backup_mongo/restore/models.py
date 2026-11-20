@@ -446,36 +446,21 @@ class RestoreTaskWrite(BaseModel):
     force-resync children.
 
     :param task_name: The name of the task to be created.
-    :type task_name: NonEmptyStr
     :param hostname: The target hostname for the task execution.
-    :type hostname: NonEmptyStr
     :param service_id: Optional Inventory ID of the MongoDB service.
-    :type service_id: int | None
     :param backup_type: Type of backup to restore from (logical or physical).
-    :type backup_type: BackupType
     :param backup_source: Backup name or timestamp to restore from.
-    :type backup_source: NonEmptyStr
     :param restore_namespace_filter: Optional database or collection namespace
         filter for a logical restore.
-    :type restore_namespace_filter: str | None
     :param restore_batch_size: Number of documents to buffer.
-    :type restore_batch_size: int | None
     :param restore_num_insertion_workers: Insertion workers per collection.
-    :type restore_num_insertion_workers: int | None
     :param restore_num_parallel_collections: Parallel collections for logical restore.
-    :type restore_num_parallel_collections: int | None
     :param restore_num_download_workers: Download workers for physical restore.
-    :type restore_num_download_workers: int | None
     :param restore_max_download_buffer_mb: Max S3 download buffer in MB.
-    :type restore_max_download_buffer_mb: int | None
     :param restore_download_chunk_mb: S3 download chunk size in MB.
-    :type restore_download_chunk_mb: int | None
     :param restore_mongod_location: Custom path to mongod binaries.
-    :type restore_mongod_location: str | None
     :param restore_mongod_location_map: Per-node mongod paths as YAML.
-    :type restore_mongod_location_map: str | None
     :param credentials_path: Path to MongoDB URI credentials on the Nomad node.
-    :type credentials_path: str | None
 
     A key the model does not declare is rejected with ``422`` rather than
     dropped, as on every task create and update body.
