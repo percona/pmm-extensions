@@ -302,9 +302,11 @@ def idempotent_insert(engine_name: str, table: Any) -> GenericInsert:
 def _postgresql_generated_constraint_name(constraint: UniqueConstraint) -> str:
     """Return the name PostgreSQL gives a unique constraint declared without one.
 
-    PostgreSQL joins the table name, the column names and the suffix ``key``. It
-    shortens a result longer than 63 bytes, which this does not reproduce, so a
-    key that long stays unresolved.
+    PostgreSQL joins the table name, the column names and the suffix ``key`` when
+    it creates the constraint. Two cases give a different name, and in both the
+    key stays unresolved. A result longer than 63 bytes is shortened, which this
+    does not reproduce. A table or column renamed afterwards keeps the name the
+    constraint was created with.
 
     :param constraint: The unnamed unique constraint, attached to its table.
     :return: The generated constraint name.
