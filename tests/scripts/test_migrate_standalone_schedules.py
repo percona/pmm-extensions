@@ -482,7 +482,7 @@ def test_task_form_sends_only_fields_the_create_form_declares() -> None:
 
     form = migrate.task_form(task, _PMM_SERVICE_A_ID)
 
-    assert migrate._SETTINGS_FIELDS
+    assert set(migrate._SETTINGS_FIELDS)
     assert set(migrate._SETTINGS_FIELDS) <= form.keys()
     assert {"alias", "encryption_recipient", "encryption_format"} <= form.keys()
     assert form.keys() <= BackupCreate.model_fields.keys()
