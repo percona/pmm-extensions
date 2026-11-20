@@ -54,7 +54,7 @@ from enum import StrEnum
 from functools import partial
 from pathlib import Path
 
-from aiohttp import ClientConnectorCertificateError, ClientError
+from aiohttp import ClientConnectionError, ClientConnectorCertificateError, ClientError
 from fastapi import HTTPException, status
 
 from app.core.auth.providers.grafana.sdk import GrafanaSDK
@@ -88,7 +88,7 @@ MINT_ATTEMPT_TIMEOUT_SECONDS = 30.0
 """How long one mint attempt may run before it is abandoned and retried."""
 
 WAIT_REPORT_INTERVAL_SECONDS = 30.0
-"""How often a start still waiting for Grafana says so."""
+"""The least time between two reports from a start still waiting for Grafana."""
 
 RETIRED_TIMEOUT_INPUT = "EXTENSIONS_GRAFANA_MINT_TIMEOUT"
 """A mint bound a deployment may still set, which nothing reads."""
@@ -146,7 +146,7 @@ def admin_credentials() -> str:
 
 
 def report_retired_timeout() -> None:
-    """Say that a mint bound the deployment sets is no longer read.
+    """Say that a mint bound the deployment sets is not read.
 
     Such a deployment waits past the value it set, and this line is what keeps
     that from being silent.
@@ -383,7 +383,9 @@ async def mint_with_retry(provider: GrafanaSDK, credentials: str) -> tuple[str, 
     A certificate that fails verification is one of those other answers, and it
     has to be recognized before the status is read. The client reports every
     connection failure as a 502, the status a starting Grafana also gives, and
-    keeps the original error only as the context of the one it raises.
+    keeps the original error only as the context of the one it raises. Every
+    other connection failure is waited on, with that original error in the
+    report: a refused connection and a failed handshake read the same as a 502.
 
     Each attempt carries its own timeout: the client's session is opened with a
     300 s total and offers no field to narrow it, so without the wrapper a
@@ -401,11 +403,14 @@ async def mint_with_retry(provider: GrafanaSDK, credentials: str) -> tuple[str, 
             async with asyncio.timeout(MINT_ATTEMPT_TIMEOUT_SECONDS):
                 return await mint(provider, credentials)
         except HTTPException as error:
-            if isinstance(error.__context__, ClientConnectorCertificateError):
-                raise _certificate_error(provider, error.__context__) from None
+            cause = error.__context__
+            if isinstance(cause, ClientConnectorCertificateError):
+                raise _certificate_error(provider, cause) from None
             if error.status_code not in RETRYABLE_STATUSES:
                 raise _fatal_mint_error(provider, error) from None
             last_failure = f"HTTP {error.status_code}: {error.detail}"
+            if isinstance(cause, ClientConnectionError):
+                last_failure += f" ({type(cause).__name__}: {cause})"
         except ClientConnectorCertificateError as error:
             raise _certificate_error(provider, error) from None
         except (ClientError, TimeoutError) as error:
@@ -495,7 +500,7 @@ def resolve_provider() -> GrafanaSDK | str | None:
     :raises MintError: When the settings did not resolve.
     """
     try:
-        from app.core.auth.config import (  # noqa: PLC0415 - resolves settings at import; a failure is reported, never fatal
+        from app.core.auth.config import (  # noqa: PLC0415 - resolves settings at import; a failure is raised as MintError below
             auth_settings,
         )
         from app.core.auth.providers.grafana.provider import (  # noqa: PLC0415
@@ -504,9 +509,9 @@ def resolve_provider() -> GrafanaSDK | str | None:
 
         provider = auth_settings.active_provider
         pmm_api_key = settings.PMM.api_key
-    except Exception as error:  # noqa: BLE001 -- reported, never re-raised
+    except Exception as error:  # noqa: BLE001 -- raised as MintError, which main reports
         raise MintError(
-            "Skipping the Grafana token pre-flight: settings did not resolve "
+            "Could not resolve the Grafana token: settings did not resolve "
             f"({type(error).__name__}). The supervised programs report why."
         ) from None
     if not isinstance(provider, GrafanaAuthProvider):

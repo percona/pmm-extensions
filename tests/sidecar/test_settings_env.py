@@ -18,7 +18,6 @@ import os
 import re
 import shlex
 import subprocess
-import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -61,9 +60,8 @@ POLLS_OBSERVED_SECONDS = 1.5
 """Longer than the gate's one-second poll, so a gate that is still running
 afterwards read the directory again and chose to keep waiting."""
 
-PUBLISH_GAP_SECONDS = 0.3
-"""Far inside the gate's one-second settle, and far longer than the gap between
-the renames PMM publishes its files with."""
+KEY_IS_PUBLISHED = "SECRET_KEY is published"
+"""What the gate says when it first finds the key, before it reads the rest."""
 
 GATE_EXIT_SECONDS = 15
 """Ample for the gate to see a published key, settle and finish."""
@@ -500,14 +498,21 @@ def test_a_file_published_just_after_the_key_is_still_read(tmp_path: Path):
 
     PMM publishes its files as consecutive renames with the key first, so the
     instant the key appears is the one instant the rest may still be missing.
+    The second file is written only once the gate has reported the key, so a
+    gate that settled on the read which found the key cannot have seen it.
     """
     secrets_dir = write_secrets(tmp_path)
 
     with waiting_helper(SECRETS_DIR=secrets_dir) as (process, first_line):
+        assert process.stderr is not None
         write_secrets(tmp_path, SECRET_KEY="published-by-pmm")
-        time.sleep(PUBLISH_GAP_SECONDS)
+        reported = first_line
+        while KEY_IS_PUBLISHED not in reported:
+            line = process.stderr.readline()
+            assert line, f"the gate exited before it reported the key: {reported}"
+            reported += line
         write_secrets(tmp_path, EXTENSIONS__DATABASE__HOST="published-later")
-        environment = exported(finish(process, first_line))
+        environment = exported(finish(process, reported))
 
     assert environment["EXTENSIONS_DB_HOST"] == "published-later"
     assert "EXTENSIONS__DATABASE__HOST" not in environment

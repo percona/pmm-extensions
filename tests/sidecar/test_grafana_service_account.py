@@ -742,18 +742,16 @@ async def test_the_wait_is_reported_again_after_each_interval(
     """
     monkeypatch.setattr(helper, "RETRY_INTERVAL_SECONDS", 0.05)
     monkeypatch.setattr(helper, "WAIT_REPORT_INTERVAL_SECONDS", 0.0)
+    still_starting = (StubResponse(status=503), StubResponse(status=502))
     grafana_stub.queue(
-        StubRoute.SEARCH,
-        StubResponse(status=503),
-        StubResponse(status=502),
-        DEFAULT_RESPONSES[StubRoute.SEARCH],
+        StubRoute.SEARCH, *still_starting, DEFAULT_RESPONSES[StubRoute.SEARCH]
     )
 
     async with provider:
         await helper.mint_with_retry(provider, helper.admin_credentials())
 
     reported = capsys.readouterr().err
-    assert reported.count(WAITING_FOR_GRAFANA) == len(("503", "502"))
+    assert reported.count(WAITING_FOR_GRAFANA) == len(still_starting)
     assert "HTTP 502" in reported.splitlines()[-1]
 
 
@@ -950,11 +948,10 @@ def test_a_read_only_state_directory_does_not_fail_the_run(tmp_path: Path):
 def test_a_set_mint_timeout_is_reported_as_no_longer_read(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], raw: str
 ):
-    """Tell a deployment that still sets the retired bound that nothing reads it.
+    """Tell a deployment that sets the retired bound that nothing reads it.
 
-    The value is not validated, because it is not used: a deployment that set
-    ``90`` now waits past it, and saying so is what keeps that from being a
-    silent change.
+    The value is not validated, because it is not used. A deployment that sets
+    ``90`` waits past it, and this line is what keeps that from being silent.
     """
     monkeypatch.setenv("EXTENSIONS_GRAFANA_MINT_TIMEOUT", raw)
 
@@ -1395,9 +1392,11 @@ async def test_a_grafana_that_is_not_up_is_waited_for_by_name(
 ):
     """Hold the start on a Grafana nothing listens at yet, and say which one.
 
-    Printing nothing and exiting is how the side-car used to come up healthy
-    without the token every one of its programs needs, so the helper is still
-    running after it has reported the wait.
+    A helper that printed nothing and exited would start every program without
+    the token it needs, so the helper is still running after it has reported
+    the wait. The report carries the connection error under the 502 the client
+    reports it as, which is what tells a refused connection from a failed
+    handshake.
     """
     endpoint = f"http://127.0.0.1:{unused_tcp_port}/graph"
     process = await start_helper(
@@ -1420,6 +1419,7 @@ async def test_a_grafana_that_is_not_up_is_waited_for_by_name(
 
     assert still_waiting
     assert endpoint in reported
+    assert "ClientConnectorError" in reported
     assert "Traceback" not in reported
 
 

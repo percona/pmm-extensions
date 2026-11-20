@@ -466,16 +466,17 @@ PMM supplies while it starts, says what it is waiting for, and hands off to
 | It waits for | When | What the container log says |
 |---|---|---|
 | The `SECRET_KEY` file | `SECRETS_DIR` is set, and neither the environment nor a file under it supplies a key | `[entrypoint] Waiting for PMM to publish SECRET_KEY under <directory>.`, every 10 seconds. When the file is there and the side-car cannot read it, the line says so instead and names the uid and groups it runs as |
-| A Grafana that can mint the token | The start has to mint: no token is configured or mounted, and none that Grafana still accepts is persisted | `[grafana-mint] Waiting for Grafana at <endpoint> to accept the service-account mint (last answer: …).`, every 30 seconds |
+| A Grafana that can mint the token | The start has to mint: no token is configured or mounted, and none that Grafana still accepts is persisted | `[grafana-mint] Waiting for Grafana at <endpoint> to accept the service-account mint (last answer: …).`, at least 30 seconds apart |
 
 Neither wait has a bound. PMM owns both the key and Grafana, so a bound could
 only give up on a slow PMM, and the five programs read the token once, from
 `supervisord`'s environment: a token minted after they started could not reach
 them without a restart. The schema one-shots wait for PMM's PostgreSQL the same
 way. While the entrypoint waits, the container's health is `starting` through
-the `HEALTHCHECK` start period and five failed probes after it, about 215
-seconds in all, and `unhealthy` from then on. It turns healthy without a
-restart when the wait ends.
+the `HEALTHCHECK` start period and five failed probes after it, about three and
+a half minutes in all, and `unhealthy` from then on. It turns healthy without a
+restart when the wait ends. A stop signal during either wait ends the
+entrypoint within a second, with exit status 143.
 
 The Grafana wait covers what a server that is still starting answers: a refused
 or timed-out connection, and HTTP 500, 502, 503 or 504. A certificate that fails

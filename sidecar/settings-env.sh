@@ -108,9 +108,9 @@ wait_for_published_secret_key() {
         sleep 1
         scan_secret_files
     done
+    echo "[entrypoint] SECRET_KEY is published under ${SECRETS_DIR}; starting." >&2
     sleep 1
     scan_secret_files
-    echo "[entrypoint] SECRET_KEY is published under ${SECRETS_DIR}; starting." >&2
 }
 
 if [[ -z ${SECRET_KEY:-} ]]; then

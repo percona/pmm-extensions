@@ -23,6 +23,11 @@ app_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 grafana_token_sentinel=/tmp/grafana-token.ok
 rm -f "$grafana_token_sentinel"
 
+# This script is PID 1 until it execs supervisord, and a PID 1 with no handler
+# for a signal is never sent it. Without this, a stop that arrives during
+# either wait below runs out its grace period and ends in a kill.
+trap 'exit 143' TERM INT
+
 # Sourced first, so a misconfigured container's first log line is the actionable
 # message rather than a Valkey mint that was never going to be reached.
 # shellcheck source=sidecar/settings-env.sh
@@ -79,19 +84,28 @@ export CELERY__RESULT_BACKEND="redis://:${valkey_password}@127.0.0.1:6379/1"
 # the same failed sign-in, which is how Grafana comes to lock the admin account.
 # The programs start without the token instead, and the sentinel left unwritten
 # is what keeps that container from reporting healthy.
-# The value arrives by command substitution for the same reason the Valkey
-# password above does -- an argv is readable across the whole PID namespace.
-if grafana_token="$(python3 "$app_dir/grafana_service_account.py")"; then
-    if [[ -n $grafana_token ]]; then
+# The value arrives over a pipe for the same reason the Valkey password above
+# arrives by command substitution -- an argv is readable across the whole PID
+# namespace. It is a process substitution waited on, not a command
+# substitution, because the shell runs the trap above only once a foreground
+# command returns, and this helper can wait for as long as PMM takes to start.
+# `wait` is what a signal interrupts.
+exec {grafana_token_fd}< <(exec python3 "$app_dir/grafana_service_account.py")
+if wait "$!"; then
+    # The helper's one line may end without a newline, which `read` reports as
+    # a failure after it has assigned the value.
+    read -r grafana_token <&"$grafana_token_fd" || true
+    if [[ -n ${grafana_token:-} ]]; then
         export_grafana_token "$grafana_token"
     fi
     touch "$grafana_token_sentinel"
 fi
+exec {grafana_token_fd}<&-
 
 # The admin pair is more privileged than the token it mints and only the step
 # above reads it, so leaving it exported would hand every supervised program a
 # Grafana administrator credential for the life of the container.
-unset grafana_token GF_SECURITY_ADMIN_USER GF_SECURITY_ADMIN_PASSWORD
+unset grafana_token grafana_token_fd GF_SECURITY_ADMIN_USER GF_SECURITY_ADMIN_PASSWORD
 
 # /tmp survives a container restart, and each schema one-shot clears its own
 # sentinel only after being spawned -- concurrently with the API programs now
