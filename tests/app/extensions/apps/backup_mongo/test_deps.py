@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.exceptions import (
     HTTPConflictException,
@@ -38,12 +39,14 @@ from app.extensions.apps.backup_mongo.models import (
     BackupTaskWrite,
     BackupType,
 )
+from app.extensions.apps.backup_mongo.schema import backup_mongo_schema
 from app.extensions.apps.framework.schema import DerivedTask
 from app.extensions.inventory import CreatedService
 from app.extensions.models import SyncInventoryEntityTypeEnum
 from app.inventory.models import ServiceTypeEnum
 from app.tasks.models import Task, TaskWrite
 from tests.app.extensions.path_unsafe_task_names import SUFFIXED_UNSAFE_TASKS
+from tests.app.extensions.unknown_body_field import edit_page_body
 from tests.app.factories import (
     MOCK_ACTOR_USERNAMES,
     MOCK_CREATOR_ID,
@@ -134,20 +137,32 @@ class TestBackupFormRoundTrip:
     def test_stamped_create_form_revalidates_as_put_body(
         self, backup_create: BackupCreate
     ) -> None:
-        """Re-validate the JSON-mode create form as the PUT body model.
+        """Re-validate what the edit page submits from the stored form as the PUT body.
 
-        The generic edit page resubmits the stored ``_form`` (a
-        :class:`BackupCreate` dump, carrying ``backup_type``) as the PUT body;
-        :class:`BackupTaskWrite` must accept it, dropping the extra
-        ``backup_type`` rather than rejecting it.
+        The stored ``_form`` is a :class:`BackupCreate` dump and carries
+        ``backup_type``, which :class:`BackupTaskWrite` does not declare. The edit
+        page seeds its fields from the stamp and submits only the fields the
+        published form declares, so ``backup_type`` never reaches the PUT.
         """
         stamped = backup_create.model_dump(mode="json")
 
-        body = BackupTaskWrite.model_validate(stamped)
+        body = BackupTaskWrite.model_validate(
+            edit_page_body(stamped, backup_mongo_schema.model_dump(mode="json"))
+        )
 
         assert body.task_name == backup_create.task_name
         assert body.service_id == backup_create.service_id
-        assert not hasattr(body, "backup_type")
+
+    def test_the_stamp_resent_whole_is_refused(
+        self, backup_create: BackupCreate
+    ) -> None:
+        """Refuse the stamp sent whole, naming ``backup_type``, the key the body lacks."""
+        stamped = backup_create.model_dump(mode="json")
+
+        with pytest.raises(ValidationError) as excinfo:
+            BackupTaskWrite.model_validate(stamped)
+
+        assert [error["loc"] for error in excinfo.value.errors()] == [("backup_type",)]
 
 
 class TestBuildBackupMongoApiTaskResponse:

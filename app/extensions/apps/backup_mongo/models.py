@@ -887,7 +887,12 @@ class BackupTaskWrite(
     :type backup_with_users_and_roles: bool
     :param credentials_path: Path to MongoDB URI credentials on the Nomad node.
     :type credentials_path: str | None
+
+    A key the model does not declare is rejected with ``422`` rather than
+    dropped, as on every task create and update body.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     task_name: NonEmptyStr
     hostname: NonEmptyStr

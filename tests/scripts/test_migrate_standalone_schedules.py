@@ -35,6 +35,7 @@ from typing import Any
 import pytest
 import yaml
 
+from app.extensions.apps.mysql_backups.forms import BackupCreate
 from tests.scripts import load_script
 
 migrate = load_script("migrate_standalone_schedules")
@@ -456,6 +457,34 @@ def test_task_form_matches_the_body_pmm_accepted() -> None:
     assert form["service_id"] == _PMM_SERVICE_A_ID
     assert form["upload"] == ["rsync"]
     assert {key: stored[key] for key in form} == form
+
+
+def test_task_form_sends_only_fields_the_create_form_declares() -> None:
+    """Verify that every key the script can send is a field of the MySQL Backups form.
+
+    The create call answers 422 for a key the form does not declare. The task
+    here sets every setting the script accepts, plus the alias, the encryption
+    recipient and a format the script infers, so the body holds every key the
+    script can send.
+    """
+    task = _old_task(_export(), _XTRABACKUP)
+
+    def set_everything(settings: dict[str, Any]) -> None:
+        settings["ALL_SERVERS"].update(
+            {field.upper(): "value" for field in migrate._SETTINGS_FIELDS}
+        )
+        settings["SERVER_LIST"][0].update(
+            ALIAS="db1-mysql",
+            DIR_ENCRYPT_CONFIG={"encryption recipient": "backup-key"},
+        )
+
+    _edit_settings(task, set_everything)
+
+    form = migrate.task_form(task, _PMM_SERVICE_A_ID)
+
+    assert set(migrate._SETTINGS_FIELDS) <= form.keys()
+    assert {"alias", "encryption_recipient", "encryption_format"} <= form.keys()
+    assert form.keys() <= BackupCreate.model_fields.keys()
 
 
 def test_task_form_reads_wrapped_and_quoted_values() -> None:

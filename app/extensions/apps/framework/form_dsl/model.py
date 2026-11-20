@@ -17,6 +17,8 @@
 
 from typing import Annotated, Any, ClassVar
 
+from pydantic import ConfigDict
+
 from app.core.utils.fields import NonEmptyStr
 from app.extensions.apps.framework.form_dsl.derivation import build_runtime_schema
 from app.extensions.apps.framework.form_dsl.markers import (
@@ -51,10 +53,19 @@ __conditional_rules_plan__` so the inherited validator enforces them, while
         later success. Excluded from the derived schema — the framework renders it
         from the ``alert_on_fail`` capability — yet validated in the JSON body so
         every model-first form accepts it. Defaults to ``False``.
+    A body key the model does not declare is rejected (``extra="forbid"``), so a
+    create or update that names a setting the form does not have answers ``422``
+    naming the key instead of saving the task without it. Code that validates a
+    *stored* form rather than a request passes ``extra="ignore"`` to
+    ``model_validate``, so a key a form has since retired does not make the
+    stored task unreadable.
+
     :cvar __form_rules__: Section-scoped and plugin-scoped conditional rules that
         cannot attach to a single field (field-level gates live on the fields via
         ``Requires`` / ``Forbidden``). Defaults to an empty :class:`FormRules`.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     __form_rules__: ClassVar[FormRules] = FormRules()
 

@@ -210,7 +210,9 @@ def _declared_source_override(task: Task) -> dict[str, Any]:
     directly keeps the served stamp exactly what a subsequent ``PUT`` would
     accept. It is tolerant of a stamp that cannot be validated at all, because
     this builder also serves the list route, where one unparseable task must not
-    take out the whole page.
+    take out the whole page. A key the form no longer declares is ignored rather
+    than failing the validation: the edit form never submits it, and the served
+    stamp is the validated model, which leaves it out.
 
     :param task: The restore task being serialized.
     :return: A single-key ``data`` override, or an empty mapping when the stamp
@@ -226,7 +228,9 @@ def _declared_source_override(task: Task) -> dict[str, Any]:
     if repaired is None:
         return {}
     try:
-        declared = RestoreCreate.model_validate(repaired).model_dump(mode="json")
+        declared = RestoreCreate.model_validate(repaired, extra="ignore").model_dump(
+            mode="json"
+        )
     except ValidationError:
         return {}
     return {"data": {**data, RESERVED_FORM_KEY: declared}}

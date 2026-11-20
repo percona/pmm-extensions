@@ -7047,6 +7047,9 @@ export interface components {
      *     :type backup_with_users_and_roles: bool
      *     :param credentials_path: Path to MongoDB URI credentials on the Nomad node.
      *     :type credentials_path: str | None
+     *
+     *     A key the model does not declare is rejected with ``422`` rather than
+     *     dropped, as on every task create and update body.
      */
     backup_mongo__BackupTaskWrite: {
       /**
@@ -7307,6 +7310,9 @@ export interface components {
      *     :type restore_mongod_location_map: str | None
      *     :param credentials_path: Path to MongoDB URI credentials on the Nomad node.
      *     :type credentials_path: str | None
+     *
+     *     A key the model does not declare is rejected with ``422`` rather than
+     *     dropped, as on every task create and update body.
      */
     backup_mongo__RestoreTaskWrite: {
       /** Backup Source */
@@ -7356,8 +7362,8 @@ export interface components {
      *     builder injects :attr:`BackupType.PGBACKREST`. The ``task_name`` / ``hostname``
      *     Task-section fields and the ``alert_on_fail`` capability control are inherited
      *     from :class:`TaskFormModel` (``alert_on_fail`` is ``Hidden``, off-schema).
-     *     ``extra="forbid"`` rejects unknown fields (for example a stale FE submitting
-     *     ``host`` / ``port``, which the payload pins itself).
+     *     Unknown fields are rejected by the inherited ``extra="forbid"`` (for example a
+     *     stale FE submitting ``host`` / ``port``, which the payload pins itself).
      */
     backup_pg__BackupPgForm: {
       /**
