@@ -751,7 +751,12 @@ class RestoreCreate(TaskFormModel):
             section="XtraBackup",
             description=(
                 "MySQL data directory the backup is restored into. Required: it has to "
-                "exist already, and everything currently in it is deleted."
+                "exist already, and everything currently in it is deleted. The "
+                "restore first stops MySQL on the execution host, and starts it again "
+                "after the backup is in place. By default it stops the service named "
+                "mysql, even when this is not that service's data directory. To stop "
+                "another server, set 'Custom MySQL init command' and 'Port' in "
+                "General."
             ),
             destructive=(
                 "The data directory is emptied before the backup is restored into "
@@ -981,11 +986,16 @@ class RestoreCreate(TaskFormModel):
         Ui(
             section="General",
             description=(
-                "Port PMM Extensions connects to on the target host when it queries "
-                "the server "
-                "during an XtraBackup restore (defaults to 3306). A Mydumper restore "
-                "loads over the destination service's own address and a Binlog restore "
-                "replays through a local client, so neither uses it."
+                "Port on the execution host where an XtraBackup restore connects to "
+                "MySQL (defaults to 3306). The restore uses the connection to check "
+                "that MySQL stopped and started, and to run its replication "
+                "statements. Enter the port of the server that the init command below "
+                "stops and starts. With the port of another running server, the "
+                "restore fails with Failed to stop MySQL. A socket set under [client] "
+                "in ~/.my.cnf of the user that runs the restore replaces this port. A "
+                "Mydumper restore loads over the destination service's own address "
+                "and a Binlog restore replays through a local client, so neither "
+                "uses it."
             ),
         ),
     ] = None
@@ -995,10 +1005,14 @@ class RestoreCreate(TaskFormModel):
             label="Custom MySQL init command",
             section="General",
             description=(
-                "Service command used to stop and start MySQL during an XtraBackup "
-                "restore, such as /usr/bin/systemctl; detected automatically when left "
-                "empty. Mydumper and Binlog restores never stop MySQL, so they ignore "
-                "it."
+                "Command an XtraBackup restore runs to stop and start MySQL on the "
+                "execution host. The restore adds stop or start to it: "
+                "/etc/init.d/mysql-3307 runs as /etc/init.d/mysql-3307 stop. For "
+                "/usr/bin/systemctl it also adds the unit name mysql. When left "
+                "empty, the restore runs /usr/bin/systemctl stop mysql and "
+                "/usr/bin/systemctl start mysql. On a host without systemctl, it uses "
+                "service mysql or /etc/init.d/mysql in the same way. Mydumper and "
+                "Binlog restores never stop MySQL, so they ignore it."
             ),
         ),
     ] = None

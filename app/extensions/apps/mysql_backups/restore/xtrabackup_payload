@@ -2080,6 +2080,10 @@ class Xtrabackup(Restore):
                 attempts += 1
                 if attempts > MAX_ATTEMPTS:
                     raise BackupError('Failed to stop MySQL in {total_attempts}'.format(total_attempts=attempts))
+                self.logger.info(
+                    'MySQL still accepts connections after the stop command (port %s). '
+                    'Checking again in %s seconds, check %s of %s',
+                    self.port, SLEEP_INTERVAL, attempts, MAX_ATTEMPTS)
                 time.sleep(SLEEP_INTERVAL)
         return proc.returncode
 
