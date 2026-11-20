@@ -24,7 +24,8 @@ update routes validate the body against.
 
 import pytest
 from fastapi import status
-from pydantic import BaseModel
+from fastapi.testclient import TestClient
+from pydantic import BaseModel, ValidationError
 
 from app.extensions.apps.alters.models import AltersCreate
 from app.extensions.apps.archives.models import ArchivesCreate
@@ -34,7 +35,10 @@ from app.extensions.apps.backup_pg.models import BackupPgForm
 from app.extensions.apps.checksums.models import ChecksumsForm
 from app.extensions.apps.mysql_backups.forms import BackupCreate
 from app.extensions.apps.mysql_backups.restore.models import RestoreCreate
-from tests.app.extensions.unknown_body_field import submitted_field_names
+from tests.app.extensions.unknown_body_field import (
+    submitted_field_names,
+    UNKNOWN_FIELD,
+)
 
 TASK_REQUEST_MODELS = [
     pytest.param("/api/apps/mysql_backups", BackupCreate, id="mysql_backups"),
@@ -52,16 +56,27 @@ TASK_REQUEST_MODELS = [
 ]
 
 
-@pytest.mark.parametrize(("base", "model"), TASK_REQUEST_MODELS)
-def test_request_model_rejects_unknown_fields(base: str, model: type[BaseModel]):
-    """Reject an undeclared key rather than dropping it."""
-    assert model.model_config.get("extra") == "forbid"
+REQUEST_MODELS = [
+    pytest.param(param.values[1], id=param.id) for param in TASK_REQUEST_MODELS
+]
+
+
+@pytest.mark.parametrize("model", REQUEST_MODELS)
+def test_request_model_rejects_unknown_fields(model: type[BaseModel]) -> None:
+    """Reject an undeclared key with an error that names it, rather than dropping it."""
+    with pytest.raises(ValidationError) as excinfo:
+        model.model_validate({UNKNOWN_FIELD: "value"})
+
+    assert {
+        "type": "extra_forbidden",
+        "loc": (UNKNOWN_FIELD,),
+    } in [{"type": e["type"], "loc": e["loc"]} for e in excinfo.value.errors()]
 
 
 @pytest.mark.parametrize(("base", "model"), TASK_REQUEST_MODELS)
 def test_request_model_declares_every_key_the_ui_sends(
-    test_client, base: str, model: type[BaseModel]
-):
+    test_client: TestClient, base: str, model: type[BaseModel]
+) -> None:
     """Declare every field of the published form, ``task_name``, and a shown ``alert_on_fail``."""
     response = test_client.get(f"{base}/schema")
     assert response.status_code == status.HTTP_200_OK

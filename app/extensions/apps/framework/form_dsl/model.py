@@ -49,10 +49,6 @@ __conditional_rules_plan__` so the inherited validator enforces them, while
     :func:`~app.extensions.apps.framework.form_dsl.derivation.derive_form_sections`
     derives the wire schema from the same fields.
 
-    :param alert_on_fail: Whether to alert on task failure and auto-resolve on a
-        later success. Excluded from the derived schema — the framework renders it
-        from the ``alert_on_fail`` capability — yet validated in the JSON body so
-        every model-first form accepts it. Defaults to ``False``.
     A body key the model does not declare is rejected (``extra="forbid"``), so a
     create or update that names a setting the form does not have answers ``422``
     naming the key instead of saving the task without it. Code that validates a
@@ -60,6 +56,10 @@ __conditional_rules_plan__` so the inherited validator enforces them, while
     ``model_validate``, so a key a form has since retired does not make the
     stored task unreadable.
 
+    :param alert_on_fail: Whether to alert on task failure and auto-resolve on a
+        later success. Excluded from the derived schema — the framework renders it
+        from the ``alert_on_fail`` capability — yet validated in the JSON body so
+        every model-first form accepts it. Defaults to ``False``.
     :cvar __form_rules__: Section-scoped and plugin-scoped conditional rules that
         cannot attach to a single field (field-level gates live on the fields via
         ``Requires`` / ``Forbidden``). Defaults to an empty :class:`FormRules`.
