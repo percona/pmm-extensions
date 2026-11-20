@@ -843,51 +843,34 @@ class BackupTaskWrite(
     logical, physical, status, and incremental siblings.
 
     :param task_name: The name of the task to be created.
-    :type task_name: NonEmptyStr
     :param hostname: The target hostname for the task execution.
-    :type hostname: NonEmptyStr
     :param service_id: The Inventory ID of the MongoDB service to connect to.
-    :type service_id: int
     :param alert_on_fail: If True, send an alert if the task fails.
-    :type alert_on_fail: bool
     :param pitr_oplog_span_min: PITR oplog span in minutes.
-    :type pitr_oplog_span_min: int | None
     :param pitr_enabled: Whether PITR is enabled.
-    :type pitr_enabled: bool
     :param pitr_compression: PITR compression algorithm.
-    :type pitr_compression: str | None
     :param storage_type: Storage backend type (``s3`` or ``filesystem``); required.
-    :type storage_type: str
     :param storage_s3_region: S3 region when ``storage_type`` is ``s3``.
-    :type storage_s3_region: str | None
     :param storage_s3_bucket: S3 bucket when ``storage_type`` is ``s3``.
-    :type storage_s3_bucket: str | None
     :param storage_s3_prefix: S3 key prefix when ``storage_type`` is ``s3``.
-    :type storage_s3_prefix: str | None
     :param storage_s3_endpoint_url: S3 endpoint URL when ``storage_type`` is ``s3``.
-    :type storage_s3_endpoint_url: str | None
     :param storage_filesystem_path: Filesystem path when ``storage_type`` is
         ``filesystem``.
-    :type storage_filesystem_path: str | None
     :param backup_priority: Node priority mapping as YAML.
-    :type backup_priority: str | None
     :param backup_compression: Backup snapshot compression algorithm.
-    :type backup_compression: CompressionAlgorithm | None
     :param backup_compression_level: Backup compression level.
-    :type backup_compression_level: int | None
     :param backup_timeouts_starting_status: PBM starting-status timeout in seconds.
-    :type backup_timeouts_starting_status: int | None
     :param backup_oplog_span_min: Logical backup oplog span in minutes.
-    :type backup_oplog_span_min: float | None
     :param backup_num_parallel_collections: Parallel collections for logical backup.
-    :type backup_num_parallel_collections: int | None
     :param backup_namespaces: Selective ``--ns`` namespaces for logical backups.
-    :type backup_namespaces: str | None
     :param backup_with_users_and_roles: Opt-in ``--with-users-and-roles`` for ``db.*``.
-    :type backup_with_users_and_roles: bool
     :param credentials_path: Path to MongoDB URI credentials on the Nomad node.
-    :type credentials_path: str | None
+
+    A key the model does not declare is rejected with ``422`` rather than
+    dropped, as on every task create and update body.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     task_name: NonEmptyStr
     hostname: NonEmptyStr
