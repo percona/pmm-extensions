@@ -270,7 +270,7 @@
           "type": "bool"
         },
         {
-          "description": "MySQL data directory the backup is restored into. Required: it has to exist already, and everything currently in it is deleted. The restore first stops MySQL on the execution host, and starts it again after the backup is in place. By default it stops the service named mysql, even when this is not that service's data directory. To stop another server, set 'Custom MySQL init command' and 'Port' in General.",
+          "description": "MySQL data directory the backup is restored into. Required: it has to exist already, and everything currently in it is deleted. The restore first stops MySQL on the execution host, and starts it again after the backup is in place. If the restore fails after the stop, MySQL stays stopped. By default it stops the service named mysql, even when this is not that service's data directory. To stop another server, set 'Custom MySQL init command' and 'Port' in General.",
           "destructive": "The data directory is emptied before the backup is restored into it. Whatever it holds now, including a live dataset, is lost.",
           "label": "Data directory",
           "min_length": 1,
