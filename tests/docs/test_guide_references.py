@@ -244,7 +244,7 @@ def _symbol_start_line(source: str, symbol: str) -> int:
     :return: The 1-based line of the definition, or ``1``.
     """
     for node in ast.parse(source).body:
-        candidates: list[ast.stmt] = [node]
+        candidates = [node]
         if isinstance(node, ast.ClassDef):
             candidates.extend(node.body)
         for candidate in candidates:
@@ -255,12 +255,11 @@ def _symbol_start_line(source: str, symbol: str) -> int:
                     decorators = [d.lineno for d in candidate.decorator_list]
                     return min([candidate.lineno, *decorators])
             elif candidate is node:
+                targets: list[ast.expr] = []
                 if isinstance(node, ast.Assign):
                     targets = node.targets
                 elif isinstance(node, ast.AnnAssign):
                     targets = [node.target]
-                else:
-                    targets = []
                 if symbol in [name for t in targets for name in _target_names(t)]:
                     return node.lineno
     return 1
