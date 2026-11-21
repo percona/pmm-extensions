@@ -323,13 +323,44 @@ def starting_database_port() -> Iterator[int]:
             server.join()
 
 
+def helper_environment(directory: Path) -> dict[str, str]:
+    """Return the minimal environment the helper runs from, as ``entrypoint.sh`` runs it.
+
+    ``ENCRYPTION_KEY`` is deliberately absent: the whole point of the helper is
+    what it does when nothing supplied one.
+
+    :param directory: The working directory, which is also where the databases
+        and the state directory live.
+    :return: The variables to start the helper with.
+    """
+    return {
+        "PATH": os.environ["PATH"],
+        "PYTHONPATH": str(BASE_DIR),
+        "EXTENSIONS_STATE_DIR": str(directory / "state"),
+        **database_environment(directory),
+    }
+
+
+def watch_probe(options: DatabaseOptions) -> None:
+    """Let the extensions probe wait for ``WATCHED_WAIT_SECONDS``, then end it.
+
+    :param options: The database options to probe.
+    """
+
+    async def watch() -> None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                helper.probe_until_answered("extensions", options),
+                WATCHED_WAIT_SECONDS,
+            )
+
+    asyncio.run(watch())
+
+
 def run_helper(
     directory: Path, *, timeout: float | None = None, **environment: str
 ) -> subprocess.CompletedProcess[str]:
-    """Run the helper as ``entrypoint.sh`` runs it, from a minimal environment.
-
-    ``ENCRYPTION_KEY`` is deliberately absent from the base: the whole point of
-    the helper is what it does when nothing supplied one.
+    """Run the helper as ``entrypoint.sh`` runs it, from :func:`helper_environment`.
 
     :param directory: The working directory, which is also where the databases
         and the state directory live.
@@ -338,16 +369,10 @@ def run_helper(
     :param environment: Variables to add over the base.
     :return: The completed run, whose stdout carries the resolved key.
     """
-    base = {
-        "PATH": os.environ["PATH"],
-        "PYTHONPATH": str(BASE_DIR),
-        "EXTENSIONS_STATE_DIR": str(directory / "state"),
-        **database_environment(directory),
-    }
     return subprocess.run(
         [sys.executable, str(HELPER_SCRIPT)],
         cwd=str(directory),
-        env={**base, **environment},
+        env={**helper_environment(directory), **environment},
         capture_output=True,
         text=True,
         check=False,
@@ -705,10 +730,7 @@ def test_a_database_that_comes_up_during_the_wait_gets_the_key_minted(
         [sys.executable, str(HELPER_SCRIPT)],
         cwd=str(fresh_deployment),
         env={
-            "PATH": os.environ["PATH"],
-            "PYTHONPATH": str(BASE_DIR),
-            "EXTENSIONS_STATE_DIR": str(fresh_deployment / "state"),
-            **database_environment(fresh_deployment),
+            **helper_environment(fresh_deployment),
             "EXTENSIONS__DATABASE__NAME": str(late / DATABASE_FILENAMES["EXTENSIONS"]),
         },
         stdout=subprocess.PIPE,
@@ -746,14 +768,7 @@ def test_the_wait_is_reported_again_at_the_report_interval(
     )
     options = DatabaseOptions(NAME=str(tmp_path / "missing" / "extensions.db"))
 
-    async def watch() -> None:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(
-                helper.probe_until_answered("extensions", options),
-                WATCHED_WAIT_SECONDS,
-            )
-
-    asyncio.run(watch())
+    watch_probe(options)
     reports = capsys.readouterr().err.count("Waiting for the extensions database")
 
     assert (
@@ -787,14 +802,7 @@ def test_a_database_that_never_answers_is_retried_past_one_attempt(
         NAME="extensions",
     )
 
-    async def watch() -> None:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(
-                helper.probe_until_answered("extensions", options),
-                WATCHED_WAIT_SECONDS,
-            )
-
-    asyncio.run(watch())
+    watch_probe(options)
 
     assert capsys.readouterr().err.count("last error: TimeoutError") >= MIN_REPORTS
 
@@ -822,14 +830,7 @@ def test_a_database_that_is_still_starting_is_waited_on(
         NAME="extensions",
     )
 
-    async def watch() -> None:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(
-                helper.probe_until_answered("extensions", options),
-                WATCHED_WAIT_SECONDS,
-            )
-
-    asyncio.run(watch())
+    watch_probe(options)
 
     assert (
         capsys.readouterr().err.count("last error: CannotConnectNowError")
