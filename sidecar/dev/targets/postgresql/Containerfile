@@ -17,10 +17,7 @@ RUN dnf install -y oracle-epel-release-el9 \
         python3-pip gzip tar hostname procps-ng iproute sudo \
     && dnf clean all
 
-# The container runs privileged, which a Docker host with AppArmor, such as
-# Colima's VM, leaves unconfined. There the setuid unix_chkpwd cannot read
-# /etc/shadow, so PAM's account check fails and every sudo is refused. root
-# passes that check through pam_rootok instead, which reads nothing.
+# See targets/mysql/Containerfile for why root passes sudo's account check here.
 RUN sed -i '0,/^account/s//account    sufficient   pam_rootok.so\naccount/' /etc/pam.d/sudo \
     && grep -q '^account    sufficient   pam_rootok.so' /etc/pam.d/sudo
 
