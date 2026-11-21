@@ -37,6 +37,7 @@ from tests.app.extensions.apps.mysql_backups.restore.conftest import (
     Layout,
     NEW_SERVER_ID,
 )
+from tests.conftest import require_file_name
 
 _BACKUP_METHODS = ("backup_mycnf", "get_included_config", "get_default_mycnf")
 #: The longest archive name that still fits 255 bytes once ``.xbcrypt`` is appended.
@@ -214,8 +215,10 @@ class TestRoundTrip:
         """Flag the copy as skipped and keep the others when a source cannot be named."""
         etc_my = layout.allowed_file
         conf_d = layout.allowed_dir / "conf.d"
+        source = basename(conf_d)
+        require_file_name(conf_d, source)
         etc_my.write_text(f"[mysqld]\n!includedir {conf_d}\n")
-        (conf_d / basename(conf_d)).write_text("[mysqld]\n")
+        (conf_d / source).write_text("[mysqld]\n")
         backup = _backup(str(etc_my))
 
         backup.backup_mycnf(str(layout.datadir))

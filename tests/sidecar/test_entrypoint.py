@@ -27,6 +27,7 @@ from uuid import uuid4
 import pytest
 from cryptography.fernet import Fernet
 
+from tests.conftest import require_bash_4
 from tests.sidecar.conftest import (
     ENTRYPOINT,
     schema_steps,
@@ -194,6 +195,7 @@ class FakeContainer:
             **({} if encryption_key is None else {"ENCRYPTION_KEY": encryption_key}),
             **inputs,
         }
+        require_bash_4()
         return subprocess.run(
             [str(self.app_dir / ENTRYPOINT.name)],
             env=environment,
@@ -234,6 +236,7 @@ class FakeContainer:
         :param inputs: Deployment inputs to place in the environment.
         :return: The running entrypoint.
         """
+        require_bash_4()
         return subprocess.Popen(
             [str(self.app_dir / ENTRYPOINT.name)],
             env={
