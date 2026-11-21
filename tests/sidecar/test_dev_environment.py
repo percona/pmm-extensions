@@ -92,3 +92,31 @@ def test_pmm_advertises_its_compose_service_name(compose: dict[str, Any]) -> Non
     environment = compose["services"]["pmm-server"]["environment"]
 
     assert environment["PMM_PUBLIC_ADDRESS"] == "pmm-server"
+
+
+def test_root_passes_sudo_account_check_in_every_privileged_host(
+    compose: dict[str, Any],
+) -> None:
+    """Let ``root`` use ``sudo`` in every privileged host, on any Docker host.
+
+    A Docker host with AppArmor leaves a privileged container unconfined. There the setuid ``unix_chkpwd`` cannot read ``/etc/shadow``, so without
+    ``pam_rootok`` PAM refuses every ``sudo``, and the PostgreSQL host's
+    entrypoint and any task that declares ``sudo`` fail.
+    """
+    containerfiles = {
+        name: COMPOSE_FILE.parent
+        / service["build"]["context"]
+        / service["build"]["dockerfile"]
+        for name, service in compose["services"].items()
+        if service.get("privileged") and "build" in service
+    }
+    with_sudo = {
+        name: path.read_text(encoding="utf-8")
+        for name, path in containerfiles.items()
+        if " sudo" in path.read_text(encoding="utf-8")
+    }
+
+    assert set(with_sudo) == {"mysql-host", "postgresql-host"}
+    assert [
+        name for name, text in with_sudo.items() if "pam_rootok.so" not in text
+    ] == []
