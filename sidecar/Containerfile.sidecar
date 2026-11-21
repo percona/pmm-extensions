@@ -17,7 +17,8 @@ RUN groupadd --gid 1001 extensions && \
 
 # Owned by root: the owner of a directory can rename and delete any entry in
 # it, so either one owned by extensions would let that user replace what the
-# image ships. extensions writes only to $HOME/state, /tmp and mounted volumes.
+# image ships. extensions writes only to $HOME/state, $APP_HOME/var (made
+# below), /tmp and mounted volumes.
 ENV HOME=/home/extensions
 ENV APP_HOME=$HOME/app
 RUN install -d -o 0 -g 1001 -m 0750 $HOME && \

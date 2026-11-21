@@ -360,9 +360,9 @@ def test_runtime_files_resolve_under_the_writable_directory(
     """Point each relative path a program writes at run time into ``var/``.
 
     Both settings resolve against ``BASE_DIR``, which is the app directory in
-    the image. A path anywhere else there fails with ``Permission denied`` at run time: the
-    worker exits at start, and a diagnostics send fails when it stages its
-    bundle.
+    the image. A path anywhere else there fails with ``Permission denied`` at
+    run time: the worker exits at start, and a diagnostics send fails when it
+    stages its bundle.
     """
     assert Path(resolve()).relative_to(BASE_DIR).parts[0] == RUNTIME_WRITABLE_DIR
 

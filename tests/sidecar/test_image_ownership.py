@@ -35,14 +35,16 @@ RUNTIME_UID = "1001"
 ROOT_UID = "0"
 
 ARCHIVE_DIRECTORY_MODE = 0o775
+"""The mode ``git archive`` gives a directory under its default ``tar.umask``."""
+
 ARCHIVE_FILE_MODE = 0o664
-"""The modes ``git archive`` gives its entries under its default ``tar.umask`` of ``0002``."""
+"""The mode ``git archive`` gives a file under its default ``tar.umask``."""
 
 INSTALL_DIRECTORY = re.compile(
     r"\binstall -d -o (?P<owner>\S+) -g \S+ -m (?P<mode>\d+) (?P<target>\S+)"
 )
 RECURSIVE_CHMOD = re.compile(r"^RUN chmod -R (?P<mode>\S+) \$APP_HOME$")
-CLAUSE = re.compile(r"^(?P<who>[ugoa]*)(?P<op>[+-=])(?P<perms>[rwxX]*)$")
+CLAUSE = re.compile(r"^(?P<who>[ugoa]*)(?P<op>[-+=])(?P<perms>[rwxX]*)$")
 
 WHO_BITS = {"u": 0o700, "g": 0o070, "o": 0o007}
 PERM_BITS = {"r": 0o444, "w": 0o222, "x": 0o111}
