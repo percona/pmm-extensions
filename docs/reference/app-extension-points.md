@@ -23,6 +23,8 @@ Turns derived routes on and off. The value is an `AppCapabilities` object.
 
 A capability that is off removes the derived route. For `list` and `detail`, the app must then supply the route in `extra_routes`: see [`extra_routes`](#extra_routes).
 
+This holds for an app with a form model. A `script_source` app derives its routes from the source, and its capabilities do not remove them. An extra `GET /` there is shadowed by the source's own list route.
+
 <!-- src: app/extensions/apps/checksums/app.py :: app -->
 ```python
 app = TaskExecutionApp(
@@ -69,11 +71,12 @@ Replace how a derived route builds its response body. The route itself stays der
 
 | Argument | Replaces |
 |---|---|
-| `response_builder` | The body of each task in the list response. It also builds the create response when the app sets neither `detail_response_builder` nor `create_response_builder`. |
+| `response_builder` | The body of each task in the list response. It also builds the create response when the app sets none of `detail_response_builder`, `create_response_builder` and `create_response_model`. |
 | `response_model` | The model of that body. Set it to the class that `response_builder` returns. Construction rejects a mismatch. |
-| `detail_response_builder` | The body of the detail response. It also builds the create response when the app sets no `create_response_builder`. |
+| `detail_response_builder` | The body of the detail response. It also builds the create response when the app sets neither `create_response_builder` nor `create_response_model`. |
 | `detail_response_model` | The model of the detail body. |
 | `create_response_builder` | The body of the create response, and of the derived `PUT` response. It cannot be combined with `create_response_model`. |
+| `create_response_model` | The model of the create response. Without `create_response_builder`, the framework builds the create body from this model. |
 
 Every builder must accept a `context` keyword. The framework rejects one that does not when the app is constructed.
 
@@ -150,7 +153,7 @@ The helpers that such a function calls are in `app/extensions/apps/framework/cas
 
 | Helpers | Behavior on failure |
 |---|---|
-| `cascade_create_*` | Stop at the first failure, try to delete the tasks already created in reverse order, and raise the original exception. A delete that fails is logged and does not stop the others, so a failed rollback can leave tasks behind. They return `None`. |
+| `cascade_create_*` | Stop at the first failure, try to delete the tasks already created in reverse order, and raise the original exception. A delete that fails is logged and does not stop the others, so a failed rollback can leave tasks behind. A task that the server stored after its create timed out is not deleted either. They return `None`. |
 | `cascade_update_*`, `cascade_delete_*` | Continue, and return a `CascadeResult`. Call `raise_if_failed(op="update")` or `raise_if_failed(op="delete")` on it to turn a partial failure into HTTP 500. |
 
 ## `script_source`
