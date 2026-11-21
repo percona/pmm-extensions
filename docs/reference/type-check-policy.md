@@ -12,7 +12,7 @@ To run the check, see [Run the type check](../how-to/run-the-type-check.md).
 |---|---|
 | Included | `app`, `tests`, `scripts`, `sidecar` |
 | Excluded | every `migrations` directory, and `frontend` |
-| Python version | 3.11, the oldest version the project supports |
+| Python version | 3.14, the only version the project supports |
 
 ## Enforcement
 
