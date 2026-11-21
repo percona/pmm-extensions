@@ -889,7 +889,10 @@ class BaseManager:
             unique keys, whether declared as a unique index or a
             ``UniqueConstraint``.
         :raises HTTPBadRequestException: If any other DatabaseError occurs during
-            commit.
+            commit. The failure is logged by model name and database error, never
+            by the instance: after a failed commit its attributes can be expired,
+            and a text form that reads one would load it outside the async
+            context and raise in place of this exception.
         """
         for field in flag_modified_fields:
             flag_modified(instance, field)
@@ -902,7 +905,7 @@ class BaseManager:
             await session.rollback()
             duplicate_columns = unique_violation_columns(cls.Model.__table__, error)
             if duplicate_columns is None:
-                logger.exception("DatabaseError saving instance %s", instance)
+                logger.exception("Could not save a %s", cls.Model.__name__)
                 raise HTTPBadRequestException from None
             # Drop columns marked exclude=True (e.g. retirement_key) so the
             # conflict message only names caller-visible fields. Resolve the
@@ -931,7 +934,7 @@ class BaseManager:
                 detail = f"{cls.Model.__name__} already exists."
             raise HTTPConflictException(detail) from None
         except DatabaseError:
-            logger.exception("DatabaseError saving instance %s", instance)
+            logger.exception("Could not save a %s", cls.Model.__name__)
             raise HTTPBadRequestException from None
         else:
             logger.debug(

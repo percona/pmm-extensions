@@ -15,18 +15,22 @@
 
 """Tests for SnippetManager CRUD and its Core-backed list-query spec."""
 
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from app.core.db.list_query import build_search_predicate, ListQuery
+from app.core.exceptions import HTTPBadRequestException
 from app.core.pagination import PaginatedResponse, Pagination
 from app.extensions.snippets.crud import SnippetManager
 from app.extensions.snippets.list_query import SnippetApprovalFilter, SnippetListQuery
 from app.extensions.snippets.models import Snippet
+from tests.app.extensions.snippets.conftest import SeedSnippet
 
 _SPEC = SnippetManager.list_query_spec
 
@@ -782,3 +786,54 @@ class TestSnippetManagerListServiceTypes:
         page = await _filtered_page(session, service_type=service_types[0])
 
         assert [s.filename for s in page.items] == ["padded.sh"]
+
+
+async def _save_sizeless_snippet(
+    session: AsyncSession,
+    seed_snippet: SeedSnippet,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Clear a stored snippet's size and save it, expecting the bad-request answer.
+
+    A snippet's text form is its filename, which the rollback after the failed
+    commit has expired, so a log call that formats the instance would load it
+    outside the async context.
+
+    :param session: A session bound to the extensions tables.
+    :param seed_snippet: The factory persisting a snippet.
+    :param caplog: The log capture fixture, recording the failure's log record.
+    """
+    snippet = await seed_snippet(session, "sizeless.sh")
+    snippet.size = None
+
+    with (
+        caplog.at_level(logging.ERROR, logger="app.core.db.crud"),
+        pytest.raises(HTTPBadRequestException),
+    ):
+        await SnippetManager.save(session, snippet)
+
+    [record] = [r for r in caplog.records if r.name == "app.core.db.crud"]
+    assert "Snippet" in record.getMessage()
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], IntegrityError)
+
+
+@pytest.mark.asyncio
+class TestSnippetManagerSaveRejectedWrite:
+    """Test that a write the database rejects answers bad request."""
+
+    async def test_null_size_raises_bad_request(self, session, seed_snippet, caplog):
+        """Assert a snippet saved without a size raises the bad-request answer."""
+        await _save_sizeless_snippet(session, seed_snippet, caplog)
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+class TestSnippetManagerSaveRejectedWriteOnPostgres:
+    """Test the rejected write on a real PostgreSQL bind."""
+
+    async def test_null_size_raises_bad_request(
+        self, postgres_session, seed_snippet, caplog
+    ):
+        """Assert a snippet saved without a size raises the bad-request answer."""
+        await _save_sizeless_snippet(postgres_session, seed_snippet, caplog)
