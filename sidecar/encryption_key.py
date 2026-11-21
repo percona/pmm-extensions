@@ -179,7 +179,9 @@ class _TasksDatabase(_ServiceDatabase):
     DATABASE: DatabaseOptions = DatabaseOptions(NAME="tasks.db")
 
 
-SERVICE_DATABASES: dict[str, type[_ServiceDatabase]] = {
+SERVICE_DATABASES: dict[
+    str, type[_ExtensionsDatabase | _InventoryDatabase | _TasksDatabase]
+] = {
     "extensions": _ExtensionsDatabase,
     "inventory": _InventoryDatabase,
     "tasks": _TasksDatabase,
