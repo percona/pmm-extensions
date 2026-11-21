@@ -105,7 +105,7 @@ from app.tasks.models import (
     TaskLogType,
 )
 from app.tasks.periodic.models import PeriodicTaskExecuteRequest
-from app.tasks.run_result import maybe_record_run
+from app.tasks.run_result import maybe_record_run, RunResultCapture
 
 logger = logging.getLogger(__name__)
 
@@ -1231,12 +1231,14 @@ async def sync_queue_item(
         )
         return queue_item
     executor = get_executor_for_task(task)
+    run_result = RunResultCapture(executor)
     try:
         async with async_session() as writer_session:
             queue_item, pending_event = await executor.sync_task_history(
                 queue_item,
                 writer_session=writer_session,
                 defer_terminal_annotation=True,
+                on_terminal=run_result,
             )
     except Exception:
         await release_sync_lock(async_session, queue_id, claimed_at)
@@ -1268,7 +1270,7 @@ async def sync_queue_item(
         await await_annotation(saved, pending_event)
     await maybe_dispatch_chain(saved, was_running=was_running, await_annotations=True)
     if saved.status.is_terminal():
-        await maybe_record_run(saved.id, executor)
+        await maybe_record_run(queue_id, executor, run_result.result)
     return saved
 
 

@@ -1,5 +1,7 @@
 # PMM Extensions Task Execution — Data Flow Diagram
 
+This page describes the standalone deployment (v0.13.1 and earlier) except where it says otherwise, and a version for PMM Extensions inside PMM is planned.
+
 Customer-facing documentation of how data moves through **PMM Extensions** during a typical predefined task execution, including the parallel audit and logging path.
 
 ## Contents

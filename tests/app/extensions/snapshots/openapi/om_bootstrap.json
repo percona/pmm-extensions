@@ -4635,7 +4635,7 @@
   "paths": {
     "/api/apps/om_bootstrap/runs": {
       "get": {
-        "description": "Return runs, newest first, optionally narrowed to one status.\n\nThe intended caller is PMM's HA-leader-only stepper. It does not persist\nits own copy of which runs exist or where they are, so on every tick, and\nespecially right after a leader failover, it re-discovers every run still\nin flight from here (``status=running``) rather than from any state of its\nown.\n\n:param session: The database session.\n:param status: Restrict to runs in this status. Omit for any status.\n:param limit: How many to return.\n:return: The runs. Does **not** reconcile in-flight steps — unlike\n    :func:`get_bootstrap_run`, a caller polling a specific run for the\n    purpose of driving it forward should use that route instead.",
+        "description": "Return runs, newest first, optionally narrowed to one status or name.\n\nThe intended caller is PMM's HA-leader-only stepper. It does not persist\nits own copy of which runs exist or where they are, so on every tick, and\nespecially right after a leader failover, it re-discovers every run still\nin flight from here (``status=running``) rather than from any state of its\nown.\n\n:param session: The database session.\n:param status: Restrict to runs in this status. Omit for any status.\n:param replica_set_name: Restrict to runs creating this replica set, as\n    PMM asks before it accepts a name for an install. Omit for any name.\n:param limit: How many to return.\n:return: The runs. Does **not** reconcile in-flight steps — unlike\n    :func:`get_bootstrap_run`, a caller polling a specific run for the\n    purpose of driving it forward should use that route instead.",
         "operationId": "om_bootstrap_list_bootstrap_runs_api_apps_om_bootstrap_runs_get",
         "parameters": [
           {
@@ -4652,6 +4652,22 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "replica_set_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Replica Set Name"
             }
           },
           {

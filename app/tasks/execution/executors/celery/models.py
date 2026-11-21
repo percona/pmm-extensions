@@ -28,7 +28,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.utils import utc_now
 from app.tasks.crud import TaskHistoryManager
-from app.tasks.execution.models import BaseExecutor
+from app.tasks.execution.models import BaseExecutor, TerminalRunHook
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
     CELERY_LOCAL_TARGET,
@@ -231,22 +231,24 @@ class CeleryExecutor(BaseExecutor):
         self,
         queue_item: TaskHistory,
         writer_session: AsyncSession | None = None,  # noqa: ARG002
+        on_terminal: TerminalRunHook | None = None,
     ) -> TaskHistory:
         """Return the queue_item unchanged.
 
         Celery tasks run synchronously within ``dispatch_task``, so no
         additional synchronization is needed. The ``writer_session`` parameter
         is accepted to satisfy the base class contract and intentionally
-        ignored.
+        ignored. So is ``on_terminal``: this sync never resolves a run to a
+        terminal status, and the backend keeps a finished run's files.
 
         :param queue_item: The task history record.
-        :type queue_item: TaskHistory
         :param writer_session: Ignored. Present only to match the
             ``BaseExecutor`` signature.
-        :type writer_session: AsyncSession | None
+        :param on_terminal: Ignored. Present only to match the
+            ``BaseExecutor`` signature.
         :return: The unchanged task history.
-        :rtype: TaskHistory
         """
+        del on_terminal
         return queue_item
 
     async def _stop_task(self, queue_item: TaskHistory) -> None:

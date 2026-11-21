@@ -39,10 +39,11 @@ from sqlalchemy import (
     Table,
     Text,
     text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool, StaticPool
 from sqlalchemy.sql import column
@@ -64,6 +65,7 @@ from app.core.db.utils import (
     pg_advisory_xact_lock,
     translate_metadata_schemas,
     try_pg_advisory_xact_lock,
+    unique_violation_columns,
 )
 from app.core.settings_override.constants import SETTINGOVERRIDE_MIGRATION_LOCK_KEY
 from app.core.utils.fields import AsyncDatabaseEngine, DatabaseDialect
@@ -1636,3 +1638,176 @@ class TestPgAdvisoryXactLockOnRealPostgres:
                 )
 
         assert setting == "0"
+
+
+class _ConstraintNamingError(Exception):
+    """Stand in for a PostgreSQL driver error, which names the violated key.
+
+    :param constraint_name: The constraint name the database reports.
+    """
+
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__(
+            f'duplicate key value violates unique constraint "{constraint_name}"'
+        )
+        self.constraint_name = constraint_name
+
+
+def _violation_of(constraint_name: str) -> IntegrityError:
+    """Build the integrity error SQLAlchemy raises for a named constraint.
+
+    :param constraint_name: The constraint name the database reports.
+    :return: The wrapped error, as ``BaseManager.save()`` receives it.
+    """
+    return IntegrityError("INSERT", {}, _ConstraintNamingError(constraint_name))
+
+
+class TestUniqueViolationColumnsOfAnUnnamedKey:
+    """Test resolving a violation of a unique key declared without a name.
+
+    A library's table can declare ``unique=True`` on a column, or a bare
+    ``UniqueConstraint``, and leave the naming to the database. PostgreSQL then
+    reports a name the declared key does not carry.
+    """
+
+    def test_column_level_key_resolves_by_the_name_postgresql_gives_it(self):
+        """Assert an unnamed single-column key is found by its default name."""
+        table = Table(
+            "schedule",
+            MetaData(),
+            Column("id", Integer, primary_key=True),
+            Column("name", Text, unique=True),
+        )
+
+        columns = unique_violation_columns(table, _violation_of("schedule_name_key"))
+
+        assert columns == ["name"]
+
+    def test_composite_key_resolves_to_every_column_in_declared_order(self):
+        """Assert an unnamed composite key is found, with all its columns."""
+        table = Table(
+            "solar",
+            MetaData(),
+            Column("id", Integer, primary_key=True),
+            Column("event", Text),
+            Column("latitude", Integer),
+            UniqueConstraint("event", "latitude"),
+        )
+
+        columns = unique_violation_columns(
+            table, _violation_of("solar_event_latitude_key")
+        )
+
+        assert columns == ["event", "latitude"]
+
+    def test_named_key_is_not_found_by_a_default_name(self):
+        """Assert a key that carries a name is matched by that name only."""
+        table = Table(
+            "schedule",
+            MetaData(),
+            Column("id", Integer, primary_key=True),
+            Column("name", Text),
+            UniqueConstraint("name", name="uq_schedule_name"),
+        )
+
+        assert (
+            unique_violation_columns(table, _violation_of("schedule_name_key")) is None
+        )
+        assert unique_violation_columns(table, _violation_of("uq_schedule_name")) == [
+            "name"
+        ]
+
+    def test_another_constraint_of_the_table_resolves_to_no_key(self):
+        """Assert a violation of some other constraint is not read as a duplicate."""
+        table = Table(
+            "schedule",
+            MetaData(),
+            Column("id", Integer, primary_key=True),
+            Column("name", Text, unique=True),
+        )
+
+        assert (
+            unique_violation_columns(table, _violation_of("schedule_priority_check"))
+            is None
+        )
+
+
+_UNNAMED_KEY_METADATA = MetaData()
+_unnamed_key_probe = Table(
+    "unnamed_key_probe",
+    _UNNAMED_KEY_METADATA,
+    Column("id", Integer, primary_key=True),
+    Column("name", Text, unique=True),
+    Column("event", Text),
+    Column("latitude", Integer),
+    UniqueConstraint("event", "latitude"),
+)
+
+
+@pytest_asyncio.fixture
+async def unnamed_key_probe_session(
+    postgres_engine: AsyncEngine,
+) -> AsyncGenerator[AsyncSession]:
+    """Create the unnamed-key probe table on real PostgreSQL and yield a session.
+
+    PostgreSQL names both unique keys here itself, which is the state the
+    resolution has to recognize.
+    """
+    async with postgres_engine.begin() as conn:
+        await conn.run_sync(_UNNAMED_KEY_METADATA.create_all)
+    async_session_maker = get_async_session_maker_from_engine(postgres_engine)
+    try:
+        async with async_session_maker() as session:
+            yield session
+    finally:
+        async with postgres_engine.begin() as conn:
+            await conn.run_sync(_UNNAMED_KEY_METADATA.drop_all)
+
+
+@pytest.mark.postgres
+class TestUniqueViolationColumnsOfAnUnnamedKeyOnRealPostgres:
+    """Resolve violations of unnamed keys from the errors PostgreSQL itself raises.
+
+    Siblings to the unit tests above, which hand the resolution a constraint name
+    written into the test. Here the name comes from the database.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("first", "second", "expected_columns"),
+        [
+            pytest.param(
+                {"id": 1, "name": "taken"},
+                {"id": 2, "name": "taken"},
+                ["name"],
+                id="column-level key",
+            ),
+            pytest.param(
+                {"id": 1, "event": "sunrise", "latitude": 10},
+                {"id": 2, "event": "sunrise", "latitude": 10},
+                ["event", "latitude"],
+                id="composite key",
+            ),
+        ],
+    )
+    async def test_violation_resolves_to_the_key_columns(
+        self,
+        unnamed_key_probe_session: AsyncSession,
+        first: dict[str, object],
+        second: dict[str, object],
+        expected_columns: list[str],
+    ):
+        """Assert a duplicate row's error resolves to the violated key's columns."""
+        await unnamed_key_probe_session.exec(_unnamed_key_probe.insert().values(first))
+        await unnamed_key_probe_session.commit()
+
+        with pytest.raises(IntegrityError) as raised:
+            await unnamed_key_probe_session.exec(
+                _unnamed_key_probe.insert().values(second)
+            )
+        await unnamed_key_probe_session.rollback()
+
+        assert (
+            unique_violation_columns(_unnamed_key_probe, raised.value)
+            == expected_columns
+        )

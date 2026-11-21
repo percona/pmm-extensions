@@ -1,0 +1,676 @@
+{
+  "export": {
+    "format": "standalone-sep-export",
+    "version": 1,
+    "schedules": [
+      {
+        "name": "run_svcdocs-a-mydumper_every_1_day_6791739818912467822",
+        "task": "svcdocs-a-mydumper",
+        "start_time": null,
+        "enabled": true,
+        "description": "",
+        "execute_request": null,
+        "interval": {
+          "every": 1,
+          "period": "days"
+        },
+        "crontab": null,
+        "id": 7,
+        "last_run_at": null,
+        "total_run_count": 0,
+        "date_changed": "2026-11-18T22:16:54.313056Z",
+        "period": "every 1 day",
+        "next_run_at": "2026-11-19T22:25:00.242299Z"
+      },
+      {
+        "name": "run_svcdocs-a-xtrabackup_0_2_*_*_*_6791739818912467822",
+        "task": "svcdocs-a-xtrabackup",
+        "start_time": null,
+        "enabled": true,
+        "description": "",
+        "execute_request": null,
+        "interval": null,
+        "crontab": {
+          "minute": "0",
+          "hour": "2",
+          "day_of_week": "*",
+          "day_of_month": "*",
+          "month_of_year": "*",
+          "timezone": "UTC"
+        },
+        "id": 8,
+        "last_run_at": null,
+        "total_run_count": 0,
+        "date_changed": "2026-11-18T22:16:58.723733Z",
+        "period": "0 2 * * *",
+        "next_run_at": "2026-11-19T02:00:00Z"
+      },
+      {
+        "name": "run_svcdocs-a-xtrabackup-rsync_30_3_*_*_0_6791739818912467822",
+        "task": "svcdocs-a-xtrabackup-rsync",
+        "start_time": null,
+        "enabled": true,
+        "description": "",
+        "execute_request": null,
+        "interval": null,
+        "crontab": {
+          "minute": "30",
+          "hour": "3",
+          "day_of_week": "0",
+          "day_of_month": "*",
+          "month_of_year": "*",
+          "timezone": "America/New_York"
+        },
+        "id": 9,
+        "last_run_at": null,
+        "total_run_count": 0,
+        "date_changed": "2026-11-18T22:17:04.041093Z",
+        "period": "30 3 * * 0",
+        "next_run_at": "2026-11-22T08:30:00Z"
+      },
+      {
+        "name": "run_svcdocs-b-xtrabackup_every_12_hours_6791739818912467822",
+        "task": "svcdocs-b-xtrabackup",
+        "start_time": null,
+        "enabled": true,
+        "description": "",
+        "execute_request": null,
+        "interval": {
+          "every": 12,
+          "period": "hours"
+        },
+        "crontab": null,
+        "id": 10,
+        "last_run_at": null,
+        "total_run_count": 0,
+        "date_changed": "2026-11-18T22:17:09.437185Z",
+        "period": "every 12 hours",
+        "next_run_at": "2026-11-19T10:25:00.248311Z"
+      }
+    ],
+    "tasks": {
+      "items": [
+        {
+          "id": 9,
+          "created_at": "2026-11-18T22:15:50Z",
+          "updated_at": "2026-11-18T22:21:28Z",
+          "name": "svcdocs-b-xtrabackup",
+          "data": {
+            "task": "run-python",
+            "meta": {
+              "config": "ALL_SERVERS:\n  BACKUP_DIR: /var/backups/svcdocs\n  BINLOG_RUN_ALL: true\n  CHECK_DISK_SPACE: true\n  COMPRESS: true\n  DEFAULTS_FILE: /root/.my.cnf\n  ENCRYPT: false\n  ENCRYPT_USING_TMPDIR: false\n  HARDLINK: true\n  MYDUMPER_DESYNC_PXC: false\n  MYDUMPER_DUMP_TRIGGERS: false\n  MYDUMPER_USE_NUMA: false\n  ONLY_IF_READ_ONLY: false\n  ONLY_IF_RUNNING_REPLICA: false\n  POST_RUN_ENCRYPT: false\n  SKIP_S3_SAFETY_CHECK: false\n  USE_FTWRL_GUARDIAN: false\n  XTRABACKUP_DEFAULTS_FILE: /root/.my.cnf\n  XTRABACKUP_DESYNC_PXC: false\n  XTRABACKUP_KILL_QUERIES: false\n  XTRABACKUP_LOCK_DDL: false\n  XTRABACKUP_PREPARE: false\n  XTRABACKUP_REPLICA_INFO: false\n  XTRABACKUP_RSYNC: false\n  XTRABACKUP_STOP_REPLICA: false\n  XTRABACKUP_VERIFY: true\nSERVER_LIST:\n- ALIAS: 172.31.213.12\n  BACKUP_TYPE: X\n  HOST: localhost\n  PORT: 3306\n  UPLOAD: []\n",
+              "target": "svcdocs-mysql-b",
+              "requirements": "packaging\nPyYAML\nPyMySQL[rsa,ed25519]\nboto3\nfilelock",
+              "_service_name": "svcdocs-mysql-b",
+              "_connectivity_host": "172.31.213.12",
+              "_connectivity_port": 3306,
+              "_connectivity_service_type": "mysql"
+            },
+            "payload": "file://app/sep/plugins/mysql_backups/xtrabackup_payload"
+          },
+          "backend": "proxy",
+          "owner": "BACKUPS",
+          "is_template": false,
+          "protected": false,
+          "alert_on_fail": false,
+          "anonymize_mask": null,
+          "deleted_at": null,
+          "created_by": "de34e378-d0f1-4313-be5b-3bb59f99e5d8",
+          "last_updated_by": "de34e378-d0f1-4313-be5b-3bb59f99e5d8"
+        },
+        {
+          "id": 8,
+          "created_at": "2026-11-18T22:15:45Z",
+          "updated_at": "2026-11-18T22:21:22Z",
+          "name": "svcdocs-a-xtrabackup-rsync",
+          "data": {
+            "task": "run-python",
+            "meta": {
+              "config": "ALL_SERVERS:\n  BACKUP_DIR: /var/backups/svcdocs-up\n  BINLOG_RUN_ALL: true\n  CHECK_DISK_SPACE: true\n  COMPRESS: true\n  DEFAULTS_FILE: /root/.my.cnf\n  ENCRYPT: false\n  ENCRYPT_USING_TMPDIR: false\n  HARDLINK: true\n  MYDUMPER_DESYNC_PXC: false\n  MYDUMPER_DUMP_TRIGGERS: false\n  MYDUMPER_USE_NUMA: false\n  ONLY_IF_READ_ONLY: false\n  ONLY_IF_RUNNING_REPLICA: false\n  POST_RUN_ENCRYPT: false\n  RSYNC_PATH: /var/backups/svcdocs-rsync\n  SKIP_S3_SAFETY_CHECK: false\n  USE_FTWRL_GUARDIAN: false\n  XTRABACKUP_DEFAULTS_FILE: /root/.my.cnf\n  XTRABACKUP_DESYNC_PXC: false\n  XTRABACKUP_KILL_QUERIES: false\n  XTRABACKUP_LOCK_DDL: false\n  XTRABACKUP_PREPARE: false\n  XTRABACKUP_REPLICA_INFO: false\n  XTRABACKUP_RSYNC: false\n  XTRABACKUP_STOP_REPLICA: false\n  XTRABACKUP_VERIFY: true\nSERVER_LIST:\n- ALIAS: 172.31.213.11\n  BACKUP_TYPE: X\n  HOST: localhost\n  PORT: 3306\n  UPLOAD:\n  - rsync\n",
+              "target": "svcdocs-mysql-a",
+              "requirements": "packaging\nPyYAML\nPyMySQL[rsa,ed25519]\nboto3\nfilelock",
+              "_service_name": "svcdocs-mysql-a",
+              "_connectivity_host": "172.31.213.11",
+              "_connectivity_port": 3306,
+              "_connectivity_service_type": "mysql"
+            },
+            "payload": "file://app/sep/plugins/mysql_backups/xtrabackup_payload"
+          },
+          "backend": "proxy",
+          "owner": "BACKUPS",
+          "is_template": false,
+          "protected": false,
+          "alert_on_fail": false,
+          "anonymize_mask": null,
+          "deleted_at": null,
+          "created_by": "de34e378-d0f1-4313-be5b-3bb59f99e5d8",
+          "last_updated_by": "de34e378-d0f1-4313-be5b-3bb59f99e5d8"
+        },
+        {
+          "id": 7,
+          "created_at": "2026-11-18T22:15:41Z",
+          "updated_at": "2026-11-18T22:21:17Z",
+          "name": "svcdocs-a-xtrabackup",
+          "data": {
+            "task": "run-python",
+            "meta": {
+              "config": "ALL_SERVERS:\n  BACKUP_DIR: /var/backups/svcdocs\n  BINLOG_RUN_ALL: true\n  CHECK_DISK_SPACE: true\n  COMPRESS: true\n  DEFAULTS_FILE: /root/.my.cnf\n  ENCRYPT: false\n  ENCRYPT_USING_TMPDIR: false\n  HARDLINK: true\n  MYDUMPER_DESYNC_PXC: false\n  MYDUMPER_DUMP_TRIGGERS: false\n  MYDUMPER_USE_NUMA: false\n  ONLY_IF_READ_ONLY: false\n  ONLY_IF_RUNNING_REPLICA: false\n  POST_RUN_ENCRYPT: false\n  SKIP_S3_SAFETY_CHECK: false\n  USE_FTWRL_GUARDIAN: false\n  XTRABACKUP_COPIES: 2\n  XTRABACKUP_DEFAULTS_FILE: /root/.my.cnf\n  XTRABACKUP_DESYNC_PXC: false\n  XTRABACKUP_KILL_QUERIES: false\n  XTRABACKUP_LOCK_DDL: false\n  XTRABACKUP_PREPARE: false\n  XTRABACKUP_REPLICA_INFO: false\n  XTRABACKUP_RSYNC: false\n  XTRABACKUP_STOP_REPLICA: false\n  XTRABACKUP_VERIFY: true\nSERVER_LIST:\n- ALIAS: 172.31.213.11\n  BACKUP_TYPE: X\n  HOST: localhost\n  PORT: 3306\n  UPLOAD: []\n",
+              "target": "svcdocs-mysql-a",
+              "requirements": "packaging\nPyYAML\nPyMySQL[rsa,ed25519]\nboto3\nfilelock",
+              "_service_name": "svcdocs-mysql-a",
+              "_connectivity_host": "172.31.213.11",
+              "_connectivity_port": 3306,
+              "_connectivity_service_type": "mysql"
+            },
+            "payload": "file://app/sep/plugins/mysql_backups/xtrabackup_payload"
+          },
+          "backend": "proxy",
+          "owner": "BACKUPS",
+          "is_template": false,
+          "protected": false,
+          "alert_on_fail": false,
+          "anonymize_mask": null,
+          "deleted_at": null,
+          "created_by": "de34e378-d0f1-4313-be5b-3bb59f99e5d8",
+          "last_updated_by": "de34e378-d0f1-4313-be5b-3bb59f99e5d8"
+        },
+        {
+          "id": 6,
+          "created_at": "2026-11-18T22:15:29Z",
+          "updated_at": null,
+          "name": "svcdocs-a-mydumper",
+          "data": {
+            "task": "run-python",
+            "meta": {
+              "config": "ALL_SERVERS:\n  BACKUP_DIR: /var/backups/svcdocs\n  BINLOG_RUN_ALL: true\n  CHECK_DISK_SPACE: true\n  COMPRESS: true\n  DEFAULTS_FILE: /root/.my.cnf\n  ENCRYPT: false\n  ENCRYPT_USING_TMPDIR: false\n  HARDLINK: true\n  MYDUMPER_DAILY_PURGE: 7\n  MYDUMPER_DESYNC_PXC: false\n  MYDUMPER_DUMP_TRIGGERS: true\n  MYDUMPER_EXTRA_ARGS: ''\n  MYDUMPER_USE_NUMA: false\n  ONLY_IF_READ_ONLY: false\n  ONLY_IF_RUNNING_REPLICA: false\n  POST_RUN_ENCRYPT: false\n  SKIP_S3_SAFETY_CHECK: false\n  USE_FTWRL_GUARDIAN: true\n  XTRABACKUP_DESYNC_PXC: false\n  XTRABACKUP_KILL_QUERIES: false\n  XTRABACKUP_LOCK_DDL: false\n  XTRABACKUP_PREPARE: false\n  XTRABACKUP_REPLICA_INFO: false\n  XTRABACKUP_RSYNC: false\n  XTRABACKUP_STOP_REPLICA: false\n  XTRABACKUP_VERIFY: false\nSERVER_LIST:\n- ALIAS: 172.31.213.11\n  BACKUP_TYPE: M\n  HOST: 172.31.213.11\n  PORT: 3306\n  UPLOAD: []\n",
+              "target": "svcdocs-mysql-a",
+              "requirements": "packaging\nPyYAML\nPyMySQL[rsa,ed25519]\nboto3\nfilelock",
+              "_service_name": "svcdocs-mysql-a",
+              "_connectivity_host": "172.31.213.11",
+              "_connectivity_port": 3306,
+              "_connectivity_service_type": "mysql"
+            },
+            "payload": "file://app/sep/plugins/mysql_backups/mydumper_payload"
+          },
+          "backend": "proxy",
+          "owner": "BACKUPS",
+          "is_template": false,
+          "protected": false,
+          "alert_on_fail": false,
+          "anonymize_mask": null,
+          "deleted_at": null,
+          "created_by": "de34e378-d0f1-4313-be5b-3bb59f99e5d8",
+          "last_updated_by": null
+        }
+      ],
+      "total": 4,
+      "offset": 0,
+      "limit": 100
+    },
+    "services": {
+      "items": [
+        {
+          "external_id": "2c848d33-f32f-4b20-a6ef-6b93533a074d",
+          "name": "svcdocs-mysql-a",
+          "type": "mysql",
+          "port": 3306,
+          "environment": "",
+          "cluster": "",
+          "replication_set": "",
+          "custom_labels": {},
+          "node_id": 2,
+          "id": 2,
+          "created_at": "2026-11-18T22:13:59Z",
+          "updated_at": null,
+          "schemas": [],
+          "node": {
+            "id": 2,
+            "created_at": "2026-11-18T22:13:59",
+            "address": "172.31.213.11",
+            "external_id": "d3954415-bcbf-4a77-900b-1c574d890def",
+            "source": "pmm",
+            "type": "container",
+            "updated_at": null,
+            "name": "svcdocs-mysql-a"
+          }
+        },
+        {
+          "external_id": "2d7e672a-af56-46fc-b075-b0738b02f221",
+          "name": "svcdocs-mysql-b",
+          "type": "mysql",
+          "port": 3306,
+          "environment": "",
+          "cluster": "",
+          "replication_set": "",
+          "custom_labels": {},
+          "node_id": 1,
+          "id": 1,
+          "created_at": "2026-11-18T22:13:58Z",
+          "updated_at": null,
+          "schemas": [
+            {
+              "id": 1,
+              "name": "employees",
+              "service_id": 1,
+              "created_at": "2026-11-18T22:15:15",
+              "updated_at": null
+            }
+          ],
+          "node": {
+            "id": 1,
+            "created_at": "2026-11-18T22:13:58",
+            "address": "172.31.213.12",
+            "external_id": "091220bc-cb10-49f9-96d1-d55aaf692775",
+            "source": "pmm",
+            "type": "container",
+            "updated_at": null,
+            "name": "svcdocs-mysql-b"
+          }
+        }
+      ],
+      "total": 2,
+      "offset": 0,
+      "limit": 100
+    }
+  },
+  "pmm": {
+    "me_admin": {
+      "id": "7d1a0f9f-e98d-5614-9425-8b8f3dc56eec",
+      "username": "admin",
+      "email": "admin@localhost",
+      "firstName": "",
+      "lastName": "",
+      "role": "super_admin",
+      "createdTime": "2026-11-18T22:32:14Z",
+      "updatedTime": "2026-11-18T22:32:14Z",
+      "fullName": "",
+      "isActive": true,
+      "isAdmin": true
+    },
+    "me_viewer": {
+      "id": "7d127483-b7c3-5e8e-858a-6834969873a7",
+      "username": "svcdocs-viewer",
+      "email": "svcdocs-viewer",
+      "firstName": "",
+      "lastName": "",
+      "role": "viewer",
+      "createdTime": "2026-11-18T22:32:15Z",
+      "updatedTime": "2026-11-18T22:32:15Z",
+      "fullName": "",
+      "isActive": true,
+      "isAdmin": false
+    },
+    "system_schedules": [
+      {
+        "name": "tasks__inventory_sync",
+        "task": "inventory-sync",
+        "start_time": "2026-11-18T21:37:01Z",
+        "enabled": true,
+        "description": "",
+        "execute_request": {
+          "meta": {
+            "syncer": "app.extensions.sync.syncers.pmm.PMMSyncer",
+            "follower_syncers": [
+              "app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer",
+              "app.extensions.sync.syncers.system_facts.syncer.UnmeasuredHostFactsSyncer"
+            ]
+          },
+          "payload": null,
+          "eta": null,
+          "anonymize_mask": null,
+          "chain_task_names": null,
+          "chain_on_failure": false
+        },
+        "interval": {
+          "every": 15,
+          "period": "minutes"
+        },
+        "crontab": null,
+        "id": 5,
+        "last_run_at": "2026-11-18T22:22:21.220357Z",
+        "last_run_status": "success",
+        "total_run_count": 4,
+        "date_changed": "2026-11-18T22:22:30.763323Z",
+        "period": "every 15 minutes",
+        "next_runs": [
+          "2026-11-18T22:37:21.220357Z",
+          "2026-11-18T22:52:21.220357Z",
+          "2026-11-18T23:07:21.220357Z"
+        ],
+        "next_run_at": "2026-11-18T22:37:21.220357Z",
+        "timezone": "UTC"
+      },
+      {
+        "name": "tasks__inventory_sync__app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer",
+        "task": "inventory-sync",
+        "start_time": "2026-11-18T21:37:01Z",
+        "enabled": true,
+        "description": "",
+        "execute_request": {
+          "meta": {
+            "syncer": "app.extensions.sync.syncers.system_facts.syncer.SystemFactsSyncer"
+          },
+          "payload": null,
+          "eta": null,
+          "anonymize_mask": null,
+          "chain_task_names": null,
+          "chain_on_failure": false
+        },
+        "interval": {
+          "every": 1,
+          "period": "days"
+        },
+        "crontab": null,
+        "id": 6,
+        "last_run_at": "2026-11-18T21:37:21.242881Z",
+        "last_run_status": "success",
+        "total_run_count": 1,
+        "date_changed": "2026-11-18T21:40:21.873658Z",
+        "period": "every 1 day",
+        "next_runs": [
+          "2026-11-19T21:37:21.242881Z",
+          "2026-11-20T21:37:21.242881Z",
+          "2026-11-21T21:37:21.242881Z"
+        ],
+        "next_run_at": "2026-11-19T21:37:21.242881Z",
+        "timezone": "UTC"
+      },
+      {
+        "name": "tasks__inventory_sync__app.extensions.sync.syncers.system_facts.syncer.UnmeasuredHostFactsSyncer",
+        "task": "inventory-sync",
+        "start_time": "2026-11-18T21:37:01Z",
+        "enabled": true,
+        "description": "",
+        "execute_request": {
+          "meta": {
+            "syncer": "app.extensions.sync.syncers.system_facts.syncer.UnmeasuredHostFactsSyncer"
+          },
+          "payload": null,
+          "eta": null,
+          "anonymize_mask": null,
+          "chain_task_names": null,
+          "chain_on_failure": false
+        },
+        "interval": {
+          "every": 15,
+          "period": "minutes"
+        },
+        "crontab": null,
+        "id": 7,
+        "last_run_at": "2026-11-18T22:22:21.663561Z",
+        "last_run_status": "success",
+        "total_run_count": 4,
+        "date_changed": "2026-11-18T22:22:30.977951Z",
+        "period": "every 15 minutes",
+        "next_runs": [
+          "2026-11-18T22:37:21.663561Z",
+          "2026-11-18T22:52:21.663561Z",
+          "2026-11-18T23:07:21.663561Z"
+        ],
+        "next_run_at": "2026-11-18T22:37:21.663561Z",
+        "timezone": "UTC"
+      },
+      {
+        "name": "extensions__inventory_collection",
+        "task": "inventory-collection",
+        "start_time": null,
+        "enabled": true,
+        "description": "",
+        "execute_request": null,
+        "interval": {
+          "every": 1,
+          "period": "days"
+        },
+        "crontab": null,
+        "id": 10,
+        "last_run_at": null,
+        "last_run_status": null,
+        "total_run_count": 0,
+        "date_changed": "2026-11-18T21:37:02.851704Z",
+        "period": "every 1 day",
+        "next_runs": [
+          "2026-11-19T22:32:15Z",
+          "2026-11-20T22:32:15Z",
+          "2026-11-21T22:32:15Z"
+        ],
+        "next_run_at": "2026-11-19T22:32:15Z",
+        "timezone": "UTC"
+      }
+    ],
+    "services": [
+      {
+        "external_id": "2c848d33-f32f-4b20-a6ef-6b93533a074d",
+        "name": "svcdocs-mysql-a",
+        "type": "mysql",
+        "port": 3306,
+        "environment": "",
+        "cluster": "",
+        "replication_set": "",
+        "custom_labels": {},
+        "node_id": 3,
+        "last_synced_at": "2026-11-18T22:30:06.390993Z",
+        "last_sync_error": null,
+        "sync_failing_since": null,
+        "consecutive_failures": 0,
+        "newest_attempt_at": "2026-11-18T22:30:06.390993Z",
+        "retired_at": null,
+        "id": 3,
+        "created_at": "2026-11-18T21:39:57Z",
+        "updated_at": "2026-11-18T22:30:06.405261Z",
+        "schemas": [],
+        "node": {
+          "id": 3,
+          "created_at": "2026-11-18T21:39:57Z",
+          "updated_at": "2026-11-18T22:30:06.415790Z",
+          "retired_at": null,
+          "last_synced_at": "2026-11-18T22:30:06.382677Z",
+          "last_sync_error": null,
+          "sync_failing_since": null,
+          "consecutive_failures": 0,
+          "newest_attempt_at": "2026-11-18T22:30:06.382677Z",
+          "address": "172.31.213.11",
+          "name": "svcdocs-mysql-a",
+          "external_id": "d3954415-bcbf-4a77-900b-1c574d890def",
+          "source": "pmm",
+          "type": "container"
+        }
+      },
+      {
+        "external_id": "2d7e672a-af56-46fc-b075-b0738b02f221",
+        "name": "svcdocs-mysql-b",
+        "type": "mysql",
+        "port": 3306,
+        "environment": "",
+        "cluster": "",
+        "replication_set": "",
+        "custom_labels": {},
+        "node_id": 2,
+        "last_synced_at": "2026-11-18T22:22:21.675628Z",
+        "last_sync_error": null,
+        "sync_failing_since": null,
+        "consecutive_failures": 0,
+        "newest_attempt_at": "2026-11-18T22:22:21.675628Z",
+        "retired_at": null,
+        "id": 2,
+        "created_at": "2026-11-18T21:39:56Z",
+        "updated_at": "2026-11-18T22:22:21.710259Z",
+        "schemas": [
+          {
+            "name": "employees",
+            "service_id": 2,
+            "last_synced_at": "2026-11-18T22:30:37.635618Z",
+            "last_sync_error": null,
+            "sync_failing_since": null,
+            "consecutive_failures": 0,
+            "newest_attempt_at": "2026-11-18T22:30:37.635618Z",
+            "id": 1,
+            "created_at": "2026-11-18T22:30:37Z",
+            "updated_at": "2026-11-18T22:30:37.956532Z",
+            "retired_at": null
+          }
+        ],
+        "node": {
+          "id": 2,
+          "created_at": "2026-11-18T21:39:56Z",
+          "updated_at": "2026-11-18T22:30:06.360751Z",
+          "retired_at": null,
+          "last_synced_at": "2026-11-18T22:30:06.321930Z",
+          "last_sync_error": null,
+          "sync_failing_since": null,
+          "consecutive_failures": 0,
+          "newest_attempt_at": "2026-11-18T22:30:06.321930Z",
+          "address": "172.31.213.12",
+          "name": "svcdocs-mysql-b",
+          "external_id": "091220bc-cb10-49f9-96d1-d55aaf692775",
+          "source": "pmm",
+          "type": "container"
+        }
+      }
+    ],
+    "created_task": {
+      "name": "svcdocs-a-xtrabackup-rsync",
+      "status": null,
+      "last_executed_at": null,
+      "id": 12,
+      "backend": "proxy",
+      "data": {
+        "task": "run-python",
+        "meta": {
+          "config": "ALL_SERVERS:\n  BACKUP_DIR: /var/backups/svcdocs-up\n  BINLOG_RUN_ALL: true\n  CHECK_DISK_SPACE: true\n  COMPRESS: true\n  COMPRESSION_ALGORITHM: zstd\n  DEFAULTS_FILE: /root/.my.cnf\n  ENCRYPT: false\n  ENCRYPTION_FORMAT: none\n  ENCRYPT_USING_TMPDIR: false\n  HARDLINK: true\n  MYDUMPER_DESYNC_PXC: false\n  MYDUMPER_DUMP_TRIGGERS: false\n  MYDUMPER_USE_NUMA: false\n  ONLY_IF_READ_ONLY: false\n  ONLY_IF_RUNNING_REPLICA: false\n  POST_RUN_ENCRYPT: false\n  RSYNC_PATH: /var/backups/svcdocs-rsync\n  SKIP_S3_SAFETY_CHECK: false\n  UPLOAD_QUIET: false\n  USE_FTWRL_GUARDIAN: false\n  XTRABACKUP_DEFAULTS_FILE: /root/.my.cnf\n  XTRABACKUP_DESYNC_PXC: false\n  XTRABACKUP_KILL_QUERIES: false\n  XTRABACKUP_LOCK_DDL: false\n  XTRABACKUP_PREPARE: false\n  XTRABACKUP_QUIET: false\n  XTRABACKUP_REPLICA_INFO: false\n  XTRABACKUP_RSYNC: false\n  XTRABACKUP_STOP_REPLICA: false\n  XTRABACKUP_VERIFY: true\nSERVER_LIST:\n- ALIAS: 172.31.213.11\n  BACKUP_TYPE: X\n  HOST: localhost\n  PORT: 3306\n  UPLOAD:\n  - rsync\n",
+          "target": "svcdocs-mysql-a",
+          "requirements": "packaging\nPyYAML\nPyMySQL[rsa,ed25519]\nfilelock",
+          "_service_name": "svcdocs-mysql-a",
+          "_connectivity_host": "172.31.213.11",
+          "_connectivity_port": 3306,
+          "_connectivity_service_type": "mysql",
+          "_service_id": 3
+        },
+        "payload": "file://app/extensions/apps/mysql_backups/xtrabackup_rsync_payload",
+        "_form": {
+          "alert_on_fail": false,
+          "task_name": "svcdocs-a-xtrabackup-rsync",
+          "hostname": "svcdocs-mysql-a",
+          "service_id": 3,
+          "backup_type": "X",
+          "alias": "172.31.213.11",
+          "backup_dir": "/var/backups/svcdocs-up",
+          "mydumper_daily_purge": null,
+          "mydumper_weekly_purge": null,
+          "mydumper_dump_triggers": false,
+          "mydumper_desync_pxc": false,
+          "mydumper_use_numa": false,
+          "mydumper_extra_args": null,
+          "mydumper_verbose": null,
+          "xtrabackup_copies": null,
+          "xtrabackup_kill_queries": false,
+          "xtrabackup_kill_queries_timeout": null,
+          "xtrabackup_kill_query_type": null,
+          "xtrabackup_verify": true,
+          "xtrabackup_prepare": false,
+          "xtrabackup_prepare_memory": null,
+          "xtrabackup_desync_pxc": false,
+          "xtrabackup_rsync": false,
+          "xtrabackup_replica_info": false,
+          "xtrabackup_defaults_file": "/root/.my.cnf",
+          "xtrabackup_extra_args": null,
+          "xtrabackup_incremental_method": null,
+          "xtrabackup_incremental_cycle": null,
+          "xtrabackup_local_ssh_destination": null,
+          "xtrabackup_stop_replica": false,
+          "xtrabackup_lock_ddl": false,
+          "xtrabackup_quiet": false,
+          "xtrabackup_bin_cmd": null,
+          "binlog_prefix": null,
+          "binlog_purge_days": null,
+          "binlog_extra_args": null,
+          "binlog_compress_cmd": null,
+          "binlog_cmd": null,
+          "binlog_run_all": true,
+          "binlog_alternative_host": null,
+          "hardlink": true,
+          "compress": true,
+          "check_disk_space": true,
+          "only_if_running_replica": false,
+          "only_if_read_only": false,
+          "use_ftwrl_guardian": false,
+          "logging_dir": null,
+          "defaults_file": "/root/.my.cnf",
+          "compression_algorithm": null,
+          "encryption_format": "none",
+          "xtrabackup_aes256_keyfile": null,
+          "encrypt": false,
+          "encrypt_using_tmpdir": false,
+          "post_run_encrypt": false,
+          "encryption_recipient": null,
+          "upload": [
+            "rsync"
+          ],
+          "s3_bucket": null,
+          "s3_storage_class": null,
+          "skip_s3_safety_check": false,
+          "upload_quiet": false,
+          "awscli_s3_upload_extra_args": null,
+          "gs_bucket": null,
+          "rsync_path": "/var/backups/svcdocs-rsync"
+        }
+      },
+      "protected": false,
+      "alert_on_fail": false,
+      "anonymize_mask": null,
+      "created_at": "2026-11-18T22:32:32Z",
+      "updated_at": null,
+      "created_by": "admin",
+      "last_updated_by": null,
+      "connectivity_warning": null,
+      "hostname": "svcdocs-mysql-a",
+      "backup_type": "X",
+      "anonymized_entities": []
+    },
+    "created_schedule": {
+      "name": "run_svcdocs-a-xtrabackup-rsync_30_3_*_*_0_8b5e9e785fc521f1",
+      "task": "svcdocs-a-xtrabackup-rsync",
+      "start_time": null,
+      "enabled": false,
+      "description": "",
+      "execute_request": null,
+      "interval": null,
+      "crontab": {
+        "minute": "30",
+        "hour": "3",
+        "day_of_week": "0",
+        "day_of_month": "*",
+        "month_of_year": "*",
+        "timezone": "America/New_York"
+      },
+      "id": 16,
+      "last_run_at": null,
+      "last_run_status": null,
+      "total_run_count": 0,
+      "date_changed": "2026-11-18T22:32:32.907704Z",
+      "period": "30 3 * * 0",
+      "next_runs": [],
+      "next_run_at": null,
+      "timezone": "America/New_York"
+    },
+    "hosts": [
+      {
+        "id": "pmm-server",
+        "name": "pmm-server",
+        "address": "127.0.0.1",
+        "can_elevate": false
+      },
+      {
+        "id": "svcdocs-mysql-a",
+        "name": "svcdocs-mysql-a",
+        "address": "172.31.213.11",
+        "can_elevate": true
+      },
+      {
+        "id": "svcdocs-mysql-b",
+        "name": "svcdocs-mysql-b",
+        "address": "172.31.213.12",
+        "can_elevate": true
+      }
+    ]
+  }
+}

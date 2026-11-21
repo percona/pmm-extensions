@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Aggregate container health for the consolidated PMM Extensions side-car.
-# Exit 0 only if every non-one-shot supervisord program is RUNNING, all four
-# schema steps completed, all three API /health endpoints return 200, and the
-# bundled Valkey broker answers PING.
+# Exit 0 only if the entrypoint resolved the Grafana token, every non-one-shot
+# supervisord program is RUNNING, all four schema steps completed, all three API
+# /health endpoints return 200, and the bundled Valkey broker answers PING.
 #
 # An API program still inside its wait_for_schema.sh gate reports RUNNING, so
 # the process-state loop below cannot distinguish waiting from serving: the HTTP
@@ -10,6 +10,17 @@
 set -o errexit -o nounset -o pipefail
 
 conf=/home/extensions/app/supervisord.conf
+
+# Asserted first, because it is the answer for both states it covers: an
+# entrypoint still waiting for PMM, where no program below exists yet, and
+# programs that started after a mint no retry could clear, where every check
+# below passes while sign-in, the PMM client and the task executor hold no
+# credential.
+if [[ ! -f /tmp/grafana-token.ok ]]; then
+    echo 'unhealthy: PMM Extensions holds no Grafana service-account token;' \
+        'the container log says what the start is waiting for, or why the mint failed' >&2
+    exit 1
+fi
 
 # Only the migration one-shots may sit in EXITED; every other program must be
 # RUNNING. A failed upgrade also lands in EXITED and is indistinguishable here,
