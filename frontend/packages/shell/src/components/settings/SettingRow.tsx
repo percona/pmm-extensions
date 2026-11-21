@@ -67,7 +67,12 @@ export default function SettingRow({ setting }: SettingRowProps) {
   const editable = isEditable(setting);
   const applicable = setting.is_applicable !== false;
   const fieldError = settingErrorMessage(patch.error, setting.key);
-  const canSave = isSaveable(setting, edit) && !patch.isPending;
+  // One write per row at a time. A Reset that lands while a save is in flight
+  // would be overwritten in the field by the save's late echo (and a Save
+  // during a pending Reset races it at the server), leaving the field on a
+  // value the server no longer holds.
+  const writing = patch.isPending || reset.isPending;
+  const canSave = isSaveable(setting, edit) && !writing;
   const showReset = setting.has_override;
 
   const handleChange = (value: EditValue) => {
@@ -85,11 +90,20 @@ export default function SettingRow({ setting }: SettingRowProps) {
         value: toPatchValue(setting, edit),
       },
       {
-        onSuccess: () => {
-          // Drop the typed plaintext for secrets: the refetch returns the same
-          // redacted literal, so the resync effect won't fire and the real
-          // value would otherwise linger in the input and React state.
-          if (setting.is_secret) {
+        onSuccess: (saved) => {
+          // Reseed the field from the server's echo of this key rather than the
+          // typed text: secrets come back redacted (an empty field) and
+          // credential URLs come back with the password masked, so no typed
+          // plaintext lingers in the input or React state. The resync effect
+          // can't cover this: a password-only change leaves the masked value,
+          // and so the effect's dependency, unchanged.
+          const entry = Array.isArray(saved)
+            ? saved.find((item) => item.key === setting.key)
+            : undefined;
+          if (entry) {
+            setEdit(toInitialEditValue(entry));
+          } else if (setting.is_secret) {
+            // No echo for this key: still drop a typed secret.
             setEdit('');
           }
           showSuccess(`Saved ${setting.key}`);
@@ -192,12 +206,7 @@ export default function SettingRow({ setting }: SettingRowProps) {
                 Save
               </Button>
               {showReset ? (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  disabled={reset.isPending}
-                  onClick={handleReset}
-                >
+                <Button size="small" variant="outlined" disabled={writing} onClick={handleReset}>
                   Reset to default
                 </Button>
               ) : null}
@@ -224,12 +233,7 @@ export default function SettingRow({ setting }: SettingRowProps) {
           <Stack direction="row" spacing={1} alignItems="center">
             <Chip size="small" variant="outlined" label="override present" />
             <Box>
-              <Button
-                size="small"
-                variant="outlined"
-                disabled={reset.isPending}
-                onClick={handleReset}
-              >
+              <Button size="small" variant="outlined" disabled={writing} onClick={handleReset}>
                 Reset to default
               </Button>
             </Box>
