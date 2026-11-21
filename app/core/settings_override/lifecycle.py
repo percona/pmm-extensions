@@ -605,7 +605,7 @@ async def settings_override_refresher(
     enabled: bool | None = None,
     callbacks: CallbackRegistry | None = None,
     seed_timeout: float | None = None,
-) -> AsyncGenerator[None, None]:
+) -> AsyncGenerator[None]:
     """Run the background override refresher for the duration of a lifespan.
 
     Start the periodic refresher on enter (when ``enabled``), then cancel and

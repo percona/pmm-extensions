@@ -102,7 +102,7 @@ async def sqlite_session_maker() -> AsyncGenerator[async_sessionmaker[AsyncSessi
 @pytest_asyncio.fixture(name="session")
 async def session_fixture(
     sqlite_session_maker: async_sessionmaker[AsyncSession],
-) -> AsyncGenerator[AsyncSession, None]:
+) -> AsyncGenerator[AsyncSession]:
     """Create an async db session for testing."""
     async with sqlite_session_maker() as session:
         yield session

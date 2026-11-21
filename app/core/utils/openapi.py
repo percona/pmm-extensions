@@ -134,7 +134,7 @@ def _wrapper_inner_ref(schema: Any) -> str | None:
     """
     try:
         ref = schema["properties"]["items"]["items"]["$ref"]
-    except (KeyError, TypeError):
+    except KeyError, TypeError:
         return None
     if isinstance(ref, str) and ref.startswith(_SCHEMA_REF_PREFIX):
         return ref[len(_SCHEMA_REF_PREFIX) :]

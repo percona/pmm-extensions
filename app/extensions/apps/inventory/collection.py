@@ -137,7 +137,7 @@ def _positive_ids(values: Iterable[Any]) -> set[int]:
     for value in values:
         try:
             entity_id = int(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             logger.debug(
                 "Ignoring non-integer %s meta value %r", SERVICE_ID_META_KEY, value
             )

@@ -110,6 +110,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import requests
 import urllib3
@@ -258,7 +259,7 @@ def render_dashboard(graphs: list, dashboard_uid: str, path_to_graphs: str, **kw
 
   render_graphs(graphs, dashboard_params, path_to_graphs)
 
-def render_graphs(graphs: list[str], dashboard_params: dict[str, str], path_to_graphs: str) -> None:
+def render_graphs(graphs: list[str], dashboard_params: dict[str, Any], path_to_graphs: str) -> None:
 
   headers = build_header()
 
@@ -289,15 +290,17 @@ def render_graphs(graphs: list[str], dashboard_params: dict[str, str], path_to_g
         # Check if the title of this graph/panel is one we are interested in
         if p["title"].strip() not in graphs:
           if args.verbose:
-            print(f"-- Ignoring graph {p['title']}")
+            print("-- Ignoring graph {}".format(p["title"]))
           continue
 
-        print(f"-- Rendering graph '{p['title']}'...")
+        print("-- Rendering graph '{}'...".format(p["title"]))
 
         # URL for PNG:
         # /graph/render/d-solo/mysql-innodb/mysql-innodb-details?from=1668010751705&to=1668032351705&var-interval=%24__auto_interval_interval&var-environment=All&var-node_name=srq-ngdb1&var-crop_host=srq-ngdb1&var-service_name=srq-ngdb1&var-region=&var-cluster=&var-node_id=%2Fnode_id%2F33c8c8be-d0fc-48bf-81f8-33ef3c01dc06&var-agent_id=%2Fagent_id%2Fe6c467b7-1a3f-4e25-97d9-a52fba32219d&var-service_id=%2Fservice_id%2F53e25f23-f037-4b36-a934-5c7c7d02d2af&var-az=&var-node_type=remote&var-node_model=&var-replication_set=SRQ-NGDB&var-version=5.7.15-log&var-service_type=All&var-database=All&var-username=All&var-schema=All&orgId=1&refresh=1m&panelId=23&width=1000&height=500&tz=America%2FChicago
         # /graph/render/d-solo/node-instance-summary/node-summary?from=1685935680566&to=1685978880566&var-interval=%24__auto_interval_interval&var-region=All&var-node_type=All&var-environment=All&var-node_name=db04&var-cpu=All&var-service_name=All&var-cluster=All&var-replication_set=All&var-database=All&var-service_type=All&var-username=All&var-schema=All&orgId=1&refresh=1m&var-node_id=%2Fnode_id%2F510634b7-93e5-4d94-ad89-6de3d8e8dec7&panelId=2&width=1000&height=500&tz=America%2FChicago
-        url = f"{PMMSERVER}/graph/render/d-solo/{dashboard_params['uid']}/{dashboard_params['slug']}"
+        url = "{}/graph/render/d-solo/{}/{}".format(
+            PMMSERVER, dashboard_params["uid"], dashboard_params["slug"]
+        )
         params = {
           "refresh": "1m",
           "orgId": 1,
@@ -332,11 +335,11 @@ def render_graphs(graphs: list[str], dashboard_params: dict[str, str], path_to_g
 
           # Write the file contents in the response to a local file
           filename = get_valid_filename(p["title"])
-          graph_image = Path(f"{path_to_graphs}/{dashboard_params['uid']}_{filename}.png")
+          graph_image = Path("{}/{}_{}.png".format(path_to_graphs, dashboard_params["uid"], filename))
           graph_image.write_bytes(response.content)
 
         else:
-          print(f"!! Non-200 Unable to render graph {p['title']}")
+          print("!! Non-200 Unable to render graph {}".format(p["title"]))
 
   except Exception:
     print("!! render_graph Error !!")
@@ -403,7 +406,7 @@ def list_services(pmm_version: str) -> None:
 
     # Get list of nodes
     # This returns an array of dictionaries based on what 'type' (generic, container, rds, etc) of node is being monitored
-    url = f"{PMMSERVER}/{API_ENDPOINTS[pmm_version]['LIST_NODES']}"
+    url = "{}/{}".format(PMMSERVER, API_ENDPOINTS[pmm_version]["LIST_NODES"])
     if pmm_version == "2":
       response = requests.post(url, headers=headers, timeout=30, verify=VERIFY_SSL)
     else:
@@ -414,7 +417,7 @@ def list_services(pmm_version: str) -> None:
       raise CollectPmmError(nodes["message"])
 
     # Get list of services
-    url = f"{PMMSERVER}/{API_ENDPOINTS[pmm_version]['LIST_SERVICES']}"
+    url = "{}/{}".format(PMMSERVER, API_ENDPOINTS[pmm_version]["LIST_SERVICES"])
     if pmm_version == "2":
       response = requests.post(url, headers=headers, timeout=30, verify=VERIFY_SSL)
     else:
@@ -429,13 +432,13 @@ def list_services(pmm_version: str) -> None:
     for nodetype in nodes:
       print(f"- {nodetype}")
       for node in nodes[nodetype]:
-        print(f"-- {node['node_name']} ({node['address']})")
+        print("-- {} ({})".format(node["node_name"], node["address"]))
 
     print("\n## Services")
     for servicetype in services:
       print(f"- {servicetype}")
       for service in services[servicetype]:
-        print(f"-- Name: {service['service_name']}")
+        print("-- Name: {}".format(service["service_name"]))
 
   except requests.exceptions.RequestException:
     print(f"!! Unable to connect to PMM server at '{PMMSERVER}'. Check the URL.")

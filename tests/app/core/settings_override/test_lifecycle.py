@@ -77,7 +77,7 @@ from tests.app.db_schema import apply_schema
 
 
 @pytest_asyncio.fixture(name="session_maker")
-async def session_maker_fixture() -> AsyncGenerator[async_sessionmaker, None]:
+async def session_maker_fixture() -> AsyncGenerator[async_sessionmaker]:
     """Provide an in-memory SQLite session maker bound to a fresh schema."""
     # scaffolding-dup-ok: this duplication predates the change that
     # re-annotated the fixture's return type; promoting it against

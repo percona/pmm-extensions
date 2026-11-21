@@ -132,7 +132,7 @@ def mock_run_sync_funcs(mocker: MockerFixture) -> dict[str, AsyncMock]:
 
 
 @pytest.fixture
-def mock_syncers_dep() -> Generator[list[Any], None, None]:
+def mock_syncers_dep() -> Generator[list[Any]]:
     """Mock ``SyncersDep`` with one inventory-capable and one non-capable syncer.
 
     ``build_available_syncers`` reads ``type(syncer).__module__`` and

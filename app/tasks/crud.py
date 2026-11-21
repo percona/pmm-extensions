@@ -153,7 +153,7 @@ class TaskManager(BaseSQLModelManager):
         owner: str | None = None,
         batch_size: int = ACTIVE_TASK_BATCH_SIZE,
         query_options: Sequence = (),
-    ) -> AsyncGenerator[list[Task], None]:
+    ) -> AsyncGenerator[list[Task]]:
         """Yield every active task in ascending-id batches.
 
         For whole-population passes, where :meth:`list_active` would materialize
@@ -992,7 +992,7 @@ class TaskHistoryLogManager(BaseSQLModelManager):
         task_history_id: int,
         *,
         source: str | None = None,
-    ) -> AsyncGenerator[TaskHistoryLog, None]:
+    ) -> AsyncGenerator[TaskHistoryLog]:
         """Yield chunk rows in ``(source, stream, start_offset)`` order.
 
         :param session: The SQLAlchemy asynchronous session to use for query
@@ -1061,7 +1061,7 @@ class TaskHistoryLogManager(BaseSQLModelManager):
         *,
         source: str | None = None,
         stream: TaskLogType | None = None,
-    ) -> AsyncGenerator[TaskHistoryLog, None]:
+    ) -> AsyncGenerator[TaskHistoryLog]:
         """Yield chunk rows newest-first within each ``(source, stream)`` group.
 
         Ordering is ``(source, stream, start_offset DESC)`` so callers can scan

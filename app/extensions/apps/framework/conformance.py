@@ -163,7 +163,7 @@ def check_item_display_names_declared(
     ]
 
 
-def check_capability_route_consistency(app: "TaskExecutionApp") -> list[str]:
+def check_capability_route_consistency(app: TaskExecutionApp) -> list[str]:
     """Return violations where derived routes disagree with the capability flags.
 
     Assert each verb toggle on ``app.capabilities`` matches the presence of its
@@ -225,7 +225,7 @@ def check_capability_route_consistency(app: "TaskExecutionApp") -> list[str]:
     return violations
 
 
-def _detail_response_model(app: "TaskExecutionApp") -> type[BaseModel]:
+def _detail_response_model(app: TaskExecutionApp) -> type[BaseModel]:
     """Return the model the detail view renders against.
 
     The detail route renders the explicit ``detail_response_model`` when set, else
@@ -265,7 +265,7 @@ def _rendered_names(model: type[BaseModel]) -> frozenset[str]:
     return serialized_field_names(model) | attribute_names
 
 
-def check_actor_fields_resolvable(app: "TaskExecutionApp") -> list[str]:
+def check_actor_fields_resolvable(app: TaskExecutionApp) -> list[str]:
     """Return a violation when an app renders actor fields with no username map.
 
     A list or detail response model that renders any of
@@ -295,7 +295,7 @@ def check_actor_fields_resolvable(app: "TaskExecutionApp") -> list[str]:
     ]
 
 
-def check_view_fields_reference_real_fields(app: "TaskExecutionApp") -> list[str]:
+def check_view_fields_reference_real_fields(app: TaskExecutionApp) -> list[str]:
     """Return violations where a detail-view path's root is not a serialized field.
 
     Validate the root segment (before the first ``.``, stripped of any ``[N]``) of
@@ -335,7 +335,7 @@ def check_view_fields_reference_real_fields(app: "TaskExecutionApp") -> list[str
     ]
 
 
-def check_schema_derivation_succeeds(app: "TaskExecutionApp") -> list[str]:
+def check_schema_derivation_succeeds(app: TaskExecutionApp) -> list[str]:
     """Return a violation when the app's create model fails to derive a schema.
 
     Skip ``schema=`` passthrough apps (no create model). Otherwise derive the form
@@ -359,7 +359,7 @@ def check_schema_derivation_succeeds(app: "TaskExecutionApp") -> list[str]:
     return []
 
 
-def _iter_route_signatures(registry: Iterable["BaseApp"]) -> Iterator[tuple[str, str]]:
+def _iter_route_signatures(registry: Iterable[BaseApp]) -> Iterator[tuple[str, str]]:
     """Yield the ``(mounted_path, method)`` signature of every registry route.
 
     :param registry: The apps to walk (the ``AppRegistry`` is one such iterable).
@@ -377,7 +377,7 @@ def _iter_route_signatures(registry: Iterable["BaseApp"]) -> Iterator[tuple[str,
                 yield (f"/api/apps/{app.key}{path}", method)
 
 
-def check_route_collisions(registry: Iterable["BaseApp"]) -> list[str]:
+def check_route_collisions(registry: Iterable[BaseApp]) -> list[str]:
     """Return violations where two registry routes share a ``(path, method)``.
 
     :param registry: The apps whose mounted route signatures are tallied (the
@@ -392,7 +392,7 @@ def check_route_collisions(registry: Iterable["BaseApp"]) -> list[str]:
     ]
 
 
-def check_child_app_registration(registry: Iterable["BaseApp"]) -> list[str]:
+def check_child_app_registration(registry: Iterable[BaseApp]) -> list[str]:
     """Return violations where a parent/child app binding is inconsistent.
 
     Assert the structural invariants of the ``child_apps`` mechanism: every app a

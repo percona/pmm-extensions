@@ -270,7 +270,7 @@ class TestAuditSingleTask:
             secret: str
 
             @model_validator(mode="after")
-            def _reject(self) -> "_Leaky":
+            def _reject(self) -> _Leaky:
                 raise ValueError(f"rejected {self.secret}")
 
         with pytest.raises(ValidationError) as exc_info:

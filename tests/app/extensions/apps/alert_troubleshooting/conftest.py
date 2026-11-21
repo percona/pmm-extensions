@@ -15,42 +15,17 @@
 
 """Define shared fixtures for the alert_troubleshooting plugin tests."""
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
 import pytest
-import pytest_asyncio
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.core.db.utils import get_async_session_maker_from_engine
-from app.core.utils import json_serializer
 from app.extensions.deps import get_session
 from app.extensions.main import extensions_app
 from app.extensions.snippets.crud import SnippetManager
 from app.extensions.snippets.models.snippet import Snippet
-from tests.app.db_schema import apply_schema
-
-
-@pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
-    """Create an async database session backed by in-memory SQLite."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite://",
-        json_serializer=json_serializer,
-        poolclass=StaticPool,
-    )
-    async with engine.begin() as conn:
-        await apply_schema(conn, SQLModel.metadata)
-    async_session_maker = get_async_session_maker_from_engine(engine)
-    try:
-        async with async_session_maker() as session:
-            yield session
-    finally:
-        await engine.dispose()
 
 
 @pytest.fixture

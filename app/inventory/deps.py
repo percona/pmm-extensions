@@ -51,7 +51,7 @@ from app.inventory.models import (
 )
 
 
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_session() -> AsyncGenerator[AsyncSession]:
     """Yield an asynchronous database session for FastAPI routes.
 
     This function provides a dependency for FastAPI routes that yields an `AsyncSession`

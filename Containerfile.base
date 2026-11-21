@@ -3,7 +3,7 @@
 ###########
 
 # Use an official Python runtime as a parent image
-FROM docker.io/library/python:3.11.14-slim AS builder
+FROM docker.io/library/python:3.14.10-slim AS builder
 
 # Set work directory
 WORKDIR /usr/src/extensions

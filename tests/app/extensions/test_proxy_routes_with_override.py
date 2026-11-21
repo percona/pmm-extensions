@@ -63,7 +63,7 @@ from tests.app.db_schema import apply_schema
 
 
 @pytest_asyncio.fixture
-async def override_session_maker() -> AsyncGenerator[async_sessionmaker, None]:
+async def override_session_maker() -> AsyncGenerator[async_sessionmaker]:
     """Provide an in-memory SQLite session maker for the override store."""
     # scaffolding-dup-ok: this duplication predates the change that
     # re-annotated the fixture's return type; promoting it against
