@@ -468,7 +468,7 @@ class BaseSyncer(BaseCaseInsensitiveModel):
         self,
         entity_type: SyncInventoryEntityTypeEnum,
         created_entity: CreatedEntity | None,
-    ) -> AsyncGenerator[SyncItem, None]:
+    ) -> AsyncGenerator[SyncItem]:
         """Manage the synchronization lifecycle of a SyncItem.
 
         This asynchronous context manager handles the synchronization lifecycle of a
@@ -1578,7 +1578,7 @@ class BaseTaskSyncer(BaseSyncer):
                     await self.tasks_api.get(f"/history/{task_history_id}")
                 )
                 status = task_history["status"]
-            except (HTTPException, ClientError):
+            except HTTPException, ClientError:
                 logger.exception("Error getting task history")
 
         if status in [TaskHistoryStatusEnum.PENDING, TaskHistoryStatusEnum.RUNNING]:

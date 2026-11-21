@@ -83,7 +83,7 @@ class Task(TaskBase, BaseSQLModel, table=True):
             "is_template",
         ),
     )
-    history: list["TaskHistory"] = Relationship(back_populates="task")
+    history: list[TaskHistory] = Relationship(back_populates="task")
     deleted_at: UTCDatetime | None = SQLField(
         sa_type=DateTimeWithTimezone,  # ty: ignore[invalid-argument-type]
         default=None,

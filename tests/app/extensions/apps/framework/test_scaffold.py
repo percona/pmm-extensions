@@ -165,7 +165,7 @@ def _force_wizard(
     *,
     prompt_answers: dict[str, object] | None = None,
     confirm: object = True,
-) -> "_WizardStub":
+) -> _WizardStub:
     """Force the interactive branch and stub the ``rich`` prompt seams.
 
     :param monkeypatch: The pytest monkeypatch fixture.

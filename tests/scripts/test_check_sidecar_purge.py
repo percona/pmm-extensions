@@ -51,7 +51,7 @@ RUN dpkg --purge --force-remove-essential \\
 """
 
 RECIPE_PREFIX = """\
-FROM docker.io/library/python:3.11.16-slim
+FROM docker.io/library/python:3.14.10-slim
 
 # An apt-get comment before the purge is ordinary prose.
 RUN apt-get update && \\

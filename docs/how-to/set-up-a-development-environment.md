@@ -5,8 +5,8 @@ This page takes you from nothing to a checkout where the tests, the linters and 
 ## Prerequisites
 
 - Git and `make`.
-- Python 3.11.9 to 3.13. Versions 3.12.0 to 3.12.2 do not work.
-- Pango, which WeasyPrint loads when the tests import the `report` app. [WeasyPrint's installation page](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html) names the package for each system. On macOS, that page's Homebrew package can also install a newer Python as `python3`. Give `make venv` an interpreter from the range above.
+- Python 3.14.
+- Pango, which WeasyPrint loads when the tests import the `report` app. [WeasyPrint's installation page](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html) names the package for each system. On macOS, that page's Homebrew package can also install a newer Python as `python3`. Give `make venv` a Python 3.14 interpreter.
 - Linux or macOS. The steps were tested on Linux x86-64 and on macOS on Apple Silicon. On macOS, part of the test suite does not pass: see [Run the tests](#run-the-tests).
 
 ## Clone the repository
@@ -22,10 +22,10 @@ This page takes you from nothing to a checkout where the tests, the linters and 
 
 Start from a shell with no virtualenv active. When one is active, `make venv` installs the project into that virtualenv and creates no `venv/`.
 
-1. Build the virtualenv with an interpreter from the supported range that you have. The example uses Python 3.12:
+1. Build the virtualenv with Python 3.14:
 
    ```bash
-   make venv PYTHON=python3.12
+   make venv PYTHON=python3.14
    ```
 
    `PYTHON` is the interpreter that the virtualenv is built from. Give a full path when the interpreter is not on your `PATH`.
@@ -38,10 +38,10 @@ Start from a shell with no virtualenv active. When one is active, `make venv` in
 
    The version in that line changes with each release.
 
-   If the interpreter is outside the supported range, the command stops before it creates anything:
+   If the interpreter is not a Python 3.14, the command stops before it creates anything:
 
    ```text
-   venv: Python 3.14.10 is not supported. Use 3.11.9 to 3.13, except 3.12.0 to 3.12.2. Example: make venv PYTHON=python3.12
+   venv: Python 3.12.7 is not supported. Use 3.14. Example: make venv PYTHON=python3.14
    ```
 
 2. Activate the virtualenv:
@@ -79,7 +79,7 @@ Start from a shell with no virtualenv active. When one is active, `make venv` in
    The output ends with a line such as:
 
    ```text
-   8 passed in 0.05s
+   11 passed in 0.16s
    ```
 
 2. Run the whole suite:

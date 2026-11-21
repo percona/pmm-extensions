@@ -174,7 +174,7 @@ def reconstruct_mysql_backups_form(
 
     try:
         parsed = parse_backup_task_data({"name": task.name, "data": task.data})
-    except (KeyError, TypeError, yaml.YAMLError):
+    except KeyError, TypeError, yaml.YAMLError:
         return None
 
     hostname = parsed.get("hostname")

@@ -55,7 +55,7 @@ from app.tasks.models import (
 logger = logging.getLogger(__name__)
 
 
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_session() -> AsyncGenerator[AsyncSession]:
     """Yield an asynchronous database session for FastAPI routes.
 
     This function provides a dependency for FastAPI routes that yields an

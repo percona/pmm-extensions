@@ -28,7 +28,7 @@ _ANSWER = 42
 
 
 @pytest.fixture
-def original_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
+def original_loop() -> Generator[asyncio.AbstractEventLoop]:
     """Restore the app's loop and the current loop after the test.
 
     :return: The loop the app carried before the test ran.

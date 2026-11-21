@@ -212,7 +212,7 @@ async def _refresh_single_check(
     """Refresh one check, returning its name on failure or ``None`` on success."""
     try:
         await pmm_api.start_advisor_checks(names=[name])
-    except (KeyError, IndexError, OSError):
+    except KeyError, IndexError, OSError:
         logger.warning("Refresh timeout for check %s", name)
         return name
     return None
@@ -365,7 +365,7 @@ async def collect_alerts(
             day = time.strftime("%d %B %Y", time.gmtime(entry.time / 1000))
             daily[day] += 1
             daily_per_host[entry.node_name][day] += 1
-        except (OverflowError, OSError):
+        except OverflowError, OSError:
             logger.warning("Failed to format alert time %s", entry.time)
 
     alerts.sort(key=lambda a: a.time, reverse=True)
@@ -824,7 +824,7 @@ async def _collect_section(
     try:
         result = await collectors[section]()
         setattr(report, section, result)
-    except (KeyError, IndexError, OSError, LookupError):
+    except KeyError, IndexError, OSError, LookupError:
         logger.exception("Failed to collect %s data", section)
 
 
@@ -858,7 +858,7 @@ async def generate_report(
 
     try:
         nodes_raw, services_raw, active_types = await _fetch_base_inventory(pmm_api)
-    except (KeyError, IndexError, OSError):
+    except KeyError, IndexError, OSError:
         logger.exception("Failed to fetch base PMM inventory")
         nodes_raw, services_raw, active_types = {}, {}, set()
 

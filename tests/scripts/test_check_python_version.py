@@ -47,6 +47,8 @@ def requires_python() -> SpecifierSet:
         (3, 12, 3),
         (3, 13, 9),
         (3, 14, 0),
+        (3, 14, 10),
+        (3, 15, 0),
     ],
 )
 def test_is_supported_mirrors_requires_python(version: tuple[int, int, int]) -> None:

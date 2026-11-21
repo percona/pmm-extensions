@@ -201,7 +201,7 @@ def decrypt_request_leaves(
             continue
         try:
             container[name] = json.loads(decrypt(value))
-        except (DecryptionError, json.JSONDecodeError):
+        except DecryptionError, json.JSONDecodeError:
             unreadable.append(path)
     if unreadable:
         # One line per document rather than per leaf: a key rotation makes every

@@ -249,7 +249,7 @@ async def alerts_api_restore(
     except HTTPException:
         logger.exception("Failed to restore alert configuration from backup")
         raise
-    except (OSError, ClientError):
+    except OSError, ClientError:
         logger.exception("Failed to restore alert configuration from backup")
         raise HTTPBadGatewayException(detail="Upstream PMM error") from None
     return RestoreResponse(status="success", details=details)
@@ -292,7 +292,7 @@ async def alerts_api_pagerduty_save(
             response = PagerDutyResponse(status="created")
 
         await ensure_pagerduty_notification_route(pmm_api, PAGERDUTY_CONTACT_POINT_NAME)
-    except (HTTPException, OSError, ClientError):
+    except HTTPException, OSError, ClientError:
         logger.exception("Failed to save PagerDuty contact point")
         raise HTTPBadGatewayException(
             detail="Failed to save PagerDuty configuration"
@@ -315,7 +315,7 @@ async def alerts_api_pagerduty_delete(
     """
     try:
         contact_points = await pmm_api.list_contact_points()
-    except (HTTPException, OSError, ClientError):
+    except HTTPException, OSError, ClientError:
         logger.exception("Failed to delete PagerDuty contact point")
         raise HTTPBadGatewayException(
             detail="Failed to delete PagerDuty configuration"
@@ -332,7 +332,7 @@ async def alerts_api_pagerduty_delete(
         ]
         await pmm_api.update_notification_policy(policy)
         await pmm_api.delete_contact_point(pd_cp.uid)
-    except (HTTPException, OSError, ClientError):
+    except HTTPException, OSError, ClientError:
         logger.exception("Failed to delete PagerDuty contact point")
         raise HTTPBadGatewayException(
             detail="Failed to delete PagerDuty configuration"
@@ -361,7 +361,7 @@ async def _has_conflicting_rule(
     """
     try:
         rules = await pmm_api.list_rules()
-    except (HTTPException, OSError, ClientError):
+    except HTTPException, OSError, ClientError:
         logger.exception("Failed to list rules while classifying rule failure")
         return False
     return any(

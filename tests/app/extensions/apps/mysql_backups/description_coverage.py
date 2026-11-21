@@ -23,6 +23,7 @@ apps are only partly described, so promoting them to a registry-wide
 conformance rule would fail them.
 """
 
+import inspect
 import re
 from collections import Counter
 from typing import Any
@@ -58,7 +59,7 @@ def _declared_names(create_model: type[TaskFormModel]) -> set[str]:
         name
         for klass in create_model.__mro__
         if klass not in _SHARED_BASE_CHAIN
-        for name in vars(klass).get("__annotations__", ())
+        for name in inspect.get_annotations(klass)
     }
     return (served - set(TaskFormModel.model_fields)) | (re_declared & served)
 

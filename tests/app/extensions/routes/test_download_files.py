@@ -62,7 +62,7 @@ async def _mock_rejected_file_stream(
     *,
     detail: Any = None,
     headers: dict[str, str] | None = None,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """Raise ``HTTPException`` immediately before yielding any bytes.
 
     :param status_code: Upstream status carried by the raised ``HTTPException``.
@@ -74,7 +74,7 @@ async def _mock_rejected_file_stream(
     yield  # pragma: no cover — makes this an async generator
 
 
-async def _mock_transport_failure_file_stream() -> AsyncGenerator[bytes, None]:
+async def _mock_transport_failure_file_stream() -> AsyncGenerator[bytes]:
     """Raise a connection-level error before yielding any bytes.
 
     :return: Never yields; exists only to satisfy the async-generator protocol.
@@ -83,7 +83,7 @@ async def _mock_transport_failure_file_stream() -> AsyncGenerator[bytes, None]:
     yield  # pragma: no cover — makes this an async generator
 
 
-async def _mock_empty_file_stream() -> AsyncGenerator[bytes, None]:
+async def _mock_empty_file_stream() -> AsyncGenerator[bytes]:
     """Yield nothing, simulating a genuinely empty upstream file.
 
     :return: An empty async byte stream.
@@ -96,7 +96,7 @@ async def _mock_gated_file_stream(
     priming_chunk: bytes,
     rest: bytes,
     release: asyncio.Event,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """Yield a priming chunk, then wait for ``release`` before yielding the rest.
 
     :param priming_chunk: First bytes that let error priming commit the HTTP status.
@@ -111,7 +111,7 @@ async def _mock_gated_file_stream(
 
 async def _mock_blocked_after_prime_file_stream(
     priming_chunk: bytes,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """Yield a priming chunk then block forever, simulating an in-flight stream.
 
     :param priming_chunk: First bytes that let error priming commit the HTTP status.

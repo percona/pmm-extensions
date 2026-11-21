@@ -236,7 +236,7 @@ class AtwSendStatusEnum(EnumFieldMixin, StrEnum):
     FAILED = "failed"
 
     @classmethod
-    def active_statuses(cls) -> frozenset["AtwSendStatusEnum"]:
+    def active_statuses(cls) -> frozenset[AtwSendStatusEnum]:
         """Return the statuses a send can still leave on its own.
 
         :return: The non-terminal statuses.

@@ -32,11 +32,10 @@ consumer.
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Generic, Protocol, runtime_checkable
+from typing import Annotated, Any, Generic, Protocol, runtime_checkable, TypeVar
 
 from fastapi import Query
 from pydantic import BaseModel, Field
-from typing_extensions import TypeVar
 
 from app.core.exceptions import HTTPBadRequestException, HTTPNotFoundException
 from app.core.pagination import Pagination

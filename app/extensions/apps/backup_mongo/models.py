@@ -598,7 +598,7 @@ class _StorageConfigValidatorMixin:
     """
 
     @model_validator(mode="after")
-    def _validate_storage(self) -> "_StorageConfigValidatorMixin":
+    def _validate_storage(self) -> _StorageConfigValidatorMixin:
         """Reject an incomplete or unsupported per-task storage config at create time."""
         validate_storage_config(
             self.storage_type,
@@ -619,7 +619,7 @@ class _SelectiveBackupValidatorMixin:
     """
 
     @model_validator(mode="after")
-    def _validate_selective_backup(self) -> "_SelectiveBackupValidatorMixin":
+    def _validate_selective_backup(self) -> _SelectiveBackupValidatorMixin:
         """Reject ``with_users_and_roles`` unless namespaces are all ``db.*``."""
         validate_selective_users_and_roles(
             self.backup_namespaces,

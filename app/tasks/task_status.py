@@ -88,7 +88,7 @@ class TaskHistoryStatusEnum(StrEnum):
         return self.is_finished() or self == TaskHistoryStatusEnum.LOST
 
     @classmethod
-    def active_statuses(cls) -> frozenset["TaskHistoryStatusEnum"]:
+    def active_statuses(cls) -> frozenset[TaskHistoryStatusEnum]:
         """Return the statuses whose executions are still in flight.
 
         These are the non-terminal statuses (``PENDING`` / ``RUNNING``); a new
@@ -99,7 +99,7 @@ class TaskHistoryStatusEnum(StrEnum):
         return frozenset({cls.PENDING, cls.RUNNING})
 
     @classmethod
-    def interrupted_statuses(cls) -> frozenset["TaskHistoryStatusEnum"]:
+    def interrupted_statuses(cls) -> frozenset[TaskHistoryStatusEnum]:
         """Return the terminal statuses of a run that was ended rather than finished.
 
         Tracking of the run was lost, its placement went stale, or it was stopped:

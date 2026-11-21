@@ -487,7 +487,7 @@ class SyncOptions(BaseLowercaseModel):
 def validate_scheduled_syncers(
     configured: Iterable[SyncOptions],
     pinned: str | None,
-    schedules: Iterable["InventorySyncSchedule"],
+    schedules: Iterable[InventorySyncSchedule],
 ) -> None:
     """Raise when an inventory-sync schedule names a syncer absent from ``SYNCERS``.
 

@@ -334,7 +334,7 @@ class ArchivesCreate(TaskFormModel):
     ] = None
 
     @model_validator(mode="after")
-    def _check_destination_presence(self) -> "ArchivesCreate":
+    def _check_destination_presence(self) -> ArchivesCreate:
         """Require a destination for an archiving run; forbid one when deleting.
 
         The destination one-of is a group, so this self-vs-``delete_data``

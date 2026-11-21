@@ -118,7 +118,7 @@ def refresher_enabled_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest_asyncio.fixture(name="override_db")
 async def override_db_fixture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncGenerator[async_sessionmaker, None]:
+) -> AsyncGenerator[async_sessionmaker]:
     """Point ``EXTENSIONS__DATABASE__*`` at a fresh SQLite file with the schema.
 
     :param tmp_path: The per-test directory holding the database file.
