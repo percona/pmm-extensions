@@ -1795,8 +1795,8 @@ REAL_SHAPED_SECRETS = (
 class TestAdminCnfRedaction:
     """Show the admin config for diagnosis without ever printing a credential.
 
-    Under macOS's bash 3.2 every case here fails and the script's other cases
-    pass, so these are the ones that need bash 4.
+    Under macOS's bash 3.2 about half of these cases fail and none of the
+    script's other cases do, so this class is the part that needs bash 4.
     """
 
     @pytest.fixture(autouse=True)
