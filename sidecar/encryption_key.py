@@ -27,8 +27,10 @@ wrote it, and :mod:`~app.core.settings_override.cache` warns and skips a row it
 cannot decrypt rather than failing the load, so minting a replacement over
 surviving ciphertext brings the container up green with the affected overrides
 silently reverted to their YAML values. Minting therefore happens only where all
-three service databases are provably free of ciphertext, and any database that
-cannot be reached counts as unproven.
+three service databases are free of ciphertext, checked twice. A database that does not
+answer proves nothing either way, so the helper waits for it, without a bound:
+PMM starts this container beside its own, not after it, so on a first start its
+PostgreSQL is routinely still coming up.
 
 The freshness probe reads the databases through :class:`_ServiceDatabase`
 subclasses rather than the services' own settings classes. Those resolve the
@@ -36,8 +38,7 @@ same ``<PREFIX>__DATABASE__*`` sources (environment, dotenv, ``SECRETS_DIR``
 file, YAML profile) while requiring no ``ENCRYPTION_KEY`` of their own, which
 the key-less path this helper runs on could not supply.
 
-Deployment inputs, all optional: ``EXTENSIONS_STATE_DIR`` and
-``EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT``.
+Deployment inputs, all optional: ``EXTENSIONS_STATE_DIR``.
 """
 
 import asyncio
@@ -65,16 +66,31 @@ from app.core.settings_override.models import SettingOverride
 from app.core.utils.fields import credential_url_password
 from sidecar.runtime import (
     DEFAULT_STATE_DIR,
-    positive_timeout,
     RETRY_INTERVAL_SECONDS,
     state_dir,
 )
 from sidecar.runtime import warn as runtime_warn
 
+#: What a probe attempt may fail with and still be retried: anything a database
+#: that is down, starting or refusing connections raises. SQLAlchemy wraps
+#: errors raised while a query runs, but asyncpg's own server refusals at
+#: connect time (``CannotConnectNowError`` while PostgreSQL starts,
+#: ``TooManyConnectionsError``, ``InvalidPasswordError``) escape it unwrapped,
+#: as do socket errors; :class:`TimeoutError` subclasses :class:`OSError`, so an
+#: abandoned attempt is covered too. asyncpg ships in the optional
+#: ``postgresql`` Poetry group, so its base class is added only where it can be
+#: imported, keeping a SQLite-only install able to import this module.
+RETRIED_PROBE_ERRORS: tuple[type[Exception], ...]
+try:
+    from asyncpg.exceptions import PostgresError
+except ImportError:
+    RETRIED_PROBE_ERRORS = (SQLAlchemyError, OSError)
+else:
+    RETRIED_PROBE_ERRORS = (SQLAlchemyError, OSError, PostgresError)
+
 __all__ = [
     "DEFAULT_STATE_DIR",
     "RETRY_INTERVAL_SECONDS",
-    "probe_timeout",
     "state_dir",
     "warn",
 ]
@@ -84,29 +100,38 @@ warn = partial(runtime_warn, "encryption-key")
 PERSISTED_FILENAME = "ENCRYPTION_KEY"
 LOCK_FILENAME = ".ENCRYPTION_KEY.lock"
 
-DEFAULT_PROBE_TIMEOUT_SECONDS = 60.0
-"""How long the probe keeps waiting for the databases, across all three.
+PROBE_ATTEMPT_TIMEOUT_SECONDS = 30.0
+"""How long one probe of one database may run before it is abandoned and retried.
 
-The supervised migration steps wait for postgres unboundedly
-(``supervisord.conf``: ``until nc -z ...; do sleep 1; done``), so on a first
-start the databases are routinely not up yet, which is exactly when the mint
-path runs. A probe that refused on the first connection error would make PID 1
-die on the ordinary cold start this feature exists to serve.
+A database that accepts the connection and never answers would otherwise hold
+one attempt for as long as the driver's own connect timeout allows.
+"""
+
+WAIT_REPORT_INTERVAL_SECONDS = 30.0
+"""The least time between two reports from a start still waiting for a database."""
+
+RETIRED_TIMEOUT_INPUT = "EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT"
+"""A probe bound a deployment may still set, which nothing reads."""
+
+FRESHNESS_PASSES = 2
+"""How many times the three databases are checked before a key is minted.
+
+See :func:`assert_every_database_is_fresh` for why one pass is not enough.
 """
 
 LOCK_POLL_INTERVAL_SECONDS = 0.2
 """How often a start re-tries the state lock while a peer holds it."""
 
-LOCK_WAIT_PROBE_BUDGETS = 2.0
-"""How many probe budgets a start waits for a peer before it refuses.
+LOCK_WAIT_SECONDS = 120.0
+"""How long a start waits for a peer holding the state lock before it refuses.
 
-A peer holding the lock is running one freshness probe and four file
-operations, so its turn is bounded by :func:`probe_timeout` and little else.
-Deriving the wait from that same knob rather than a second one keeps a
-deployment that raised the probe bound from refusing on a peer merely using it.
-Waiting unboundedly instead would leave PID 1 blocked with nothing on stderr,
-which is the illegible failure this helper exists to replace: ``flock`` is
-released when a peer dies, but not when one is merely stopped.
+The bound a deployment that never set the retired probe timeout already had:
+twice that timeout's 60 s default. A peer holding the lock is running one
+freshness probe and four file operations. Waiting unboundedly instead would
+leave PID 1 blocked on a peer that is merely stopped, since ``flock`` is
+released when a peer dies but not when it is paused. A peer that is itself
+waiting for the databases holds the lock for as long as they do not answer,
+so a second start beside it refuses after this bound and is restarted.
 """
 
 KEY_BYTES = 32
@@ -177,7 +202,9 @@ class _TasksDatabase(_ServiceDatabase):
     DATABASE: DatabaseOptions = DatabaseOptions(NAME="tasks.db")
 
 
-SERVICE_DATABASES: dict[str, type[_ServiceDatabase]] = {
+SERVICE_DATABASES: dict[
+    str, type[_ExtensionsDatabase | _InventoryDatabase | _TasksDatabase]
+] = {
     "extensions": _ExtensionsDatabase,
     "inventory": _InventoryDatabase,
     "tasks": _TasksDatabase,
@@ -189,22 +216,17 @@ the lost key can sit in any one of the three.
 """
 
 
-def probe_timeout() -> float:
-    """Return how long each freshness probe may wait for its database.
+def report_retired_timeout() -> None:
+    """Say that a probe bound the deployment sets is not read.
 
-    :return: The bound in seconds.
+    Such a deployment waits past the value it set, and this line is what keeps
+    that from being silent.
     """
-    return positive_timeout(
-        "EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT", DEFAULT_PROBE_TIMEOUT_SECONDS, warn
-    )
-
-
-def lock_timeout() -> float:
-    """Return how long a start waits for a peer to finish its turn.
-
-    :return: The bound in seconds.
-    """
-    return probe_timeout() * LOCK_WAIT_PROBE_BUDGETS
+    if (os.environ.get(RETIRED_TIMEOUT_INPUT) or "").strip():
+        warn(
+            f"{RETIRED_TIMEOUT_INPUT} is set but no longer read: a start that has "
+            "to mint an ENCRYPTION_KEY waits until the databases answer."
+        )
 
 
 def mounted_key() -> str | None:
@@ -353,7 +375,8 @@ def state_lock(directory: Path) -> Iterator[None]:
 
     :param directory: The state directory to lock within, created when absent.
     :raises EncryptionKeyError: If the directory or its lock file cannot be
-        opened for writing, or a peer holds the lock past :func:`lock_timeout`.
+        opened for writing, or a peer holds the lock past
+        :data:`LOCK_WAIT_SECONDS`.
     """
     previous_umask = os.umask(0o077)
     try:
@@ -386,7 +409,7 @@ def _acquire_lock(handle: TextIO, directory: Path) -> None:
     :param directory: The state directory, for the diagnostic.
     :raises EncryptionKeyError: If a peer holds the lock past the bound.
     """
-    deadline = time.monotonic() + lock_timeout()
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
     while True:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -394,12 +417,15 @@ def _acquire_lock(handle: TextIO, directory: Path) -> None:
             if time.monotonic() >= deadline:
                 raise EncryptionKeyError(
                     f"Another start held the lock on "
-                    f"{directory / LOCK_FILENAME} for over {lock_timeout():g}s. "
+                    f"{directory / LOCK_FILENAME} for over {LOCK_WAIT_SECONDS:g}s. "
                     f"Refusing to probe and mint beside it, since two starts "
                     f"minting together leave each unable to read the rows the "
                     f"other wrote. Check whether a second side-car runs against "
-                    f"this state directory, or raise "
-                    f"EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT, which this bound follows. "
+                    f"this state directory: one that is waiting for the "
+                    f"databases holds the lock until they answer, and one that "
+                    f"is paused holds it until it is resumed or stopped. Stop "
+                    f"the second side-car, or pass the same ENCRYPTION_KEY "
+                    f"explicitly to every side-car that uses these databases. "
                     f"Nothing was minted or written."
                 ) from error
         else:
@@ -494,6 +520,9 @@ async def service_holds_ciphertext(options: DatabaseOptions) -> bool:
     :raises SQLAlchemyError: If the database rejects the connection or query.
     :raises OSError: If the endpoint cannot be reached at all, which asyncpg
         surfaces as the socket error rather than wrapping it.
+    :raises asyncpg.exceptions.PostgresError: If a PostgreSQL server refuses
+        the connection itself, for instance while it is still starting, which
+        asyncpg raises at connect time without SQLAlchemy wrapping it.
     :raises ValueError: If a stored value is not decodable JSON, which the
         column's own type raises while reading the result.
     """
@@ -511,73 +540,73 @@ async def service_holds_ciphertext(options: DatabaseOptions) -> bool:
         await engine.dispose()
 
 
-async def probe_until_deadline(
-    service: str, options: DatabaseOptions, deadline: float
-) -> bool:
+async def probe_until_answered(service: str, options: DatabaseOptions) -> bool:
     """Return whether one service holds ciphertext, waiting for it to answer.
 
-    Connection failures are retried until ``deadline`` rather than refused on
-    sight, because the databases being unreachable is the *ordinary* first-start
-    condition, not an exceptional one. A value that cannot be decoded is not
-    retried: it is deterministic, and re-reading it only delays the refusal.
+    The wait has no bound. A database that does not answer is the ordinary
+    first-start condition, and giving up on it would exit the container on the
+    start this helper exists to serve. Every error in
+    :data:`RETRIED_PROBE_ERRORS` is retried, which includes a server that
+    refuses the connection while it starts. A value that cannot be decoded is
+    not retried: it is deterministic, and re-reading it only delays the
+    refusal.
 
     :param service: The service being probed, for the diagnostics.
     :param options: The service's resolved database options.
-    :param deadline: The monotonic clock reading to give up at.
     :return: Whether a Fernet token appears in any stored value.
-    :raises EncryptionKeyError: If the database cannot be read before the
-        deadline, or holds a value that cannot be decoded.
+    :raises EncryptionKeyError: If the database holds a value that cannot be
+        decoded.
     """
-    last_error: Exception | None = None
+    next_report = time.monotonic()
+    last_error = "no attempt completed"
     while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise EncryptionKeyError(
-                f"Could not reach the {service} database within "
-                f"{probe_timeout():g}s ({last_error}). {_unproven_remedy()}"
-            ) from last_error
         try:
-            return await asyncio.wait_for(
-                service_holds_ciphertext(options), timeout=remaining
-            )
+            async with asyncio.timeout(PROBE_ATTEMPT_TIMEOUT_SECONDS):
+                return await service_holds_ciphertext(options)
         except ValueError as error:
             raise EncryptionKeyError(
                 f"The {service} database holds an override value that could "
                 f"not be decoded ({error}). {_ciphertext_remedy()}"
             ) from error
-        # TimeoutError subclasses OSError, so the bound and a refused
-        # connection arrive through one clause.
-        except (SQLAlchemyError, OSError) as error:
-            last_error = error
-        # Capped at what is left, so a refused connection -- which fails
-        # instantly -- cannot overshoot the deadline by a whole interval.
-        await asyncio.sleep(
-            min(RETRY_INTERVAL_SECONDS, max(deadline - time.monotonic(), 0.0))
-        )
+        except RETRIED_PROBE_ERRORS as error:
+            last_error = f"{type(error).__name__}: {error}"
+        if time.monotonic() >= next_report:
+            warn(
+                f"Waiting for the {service} database to answer before the "
+                f"ENCRYPTION_KEY is minted (last error: {last_error}). Check "
+                "EXTENSIONS_DB_HOST and EXTENSIONS_DB_PORT if PMM's PostgreSQL "
+                "is up."
+            )
+            next_report = time.monotonic() + WAIT_REPORT_INTERVAL_SECONDS
+        await asyncio.sleep(RETRY_INTERVAL_SECONDS)
 
 
 async def assert_every_database_is_fresh() -> None:
-    """Raise unless all three service databases are provably free of ciphertext.
+    """Raise unless all three service databases are free of ciphertext.
 
-    One deadline covers all three, so a side-car waiting on a database that
-    never comes up delays the container start by the timeout once rather than
-    once per service.
+    Waits for each database in turn until it answers, then checks all three
+    again. A side-car that already holds the key can write encrypted overrides
+    to a database that passed while this start waited for a later one, and the
+    wait has no bound; the second pass sees such a write. It runs once every
+    database answers, so it takes as long as three queries. A write that lands
+    after it is not seen: no lock covers the writers, and only supplying the
+    same ``ENCRYPTION_KEY`` to every side-car on these databases rules it out.
 
-    :raises EncryptionKeyError: If any database holds ciphertext, or cannot be
-        read. Both refuse: a deployment whose freshness cannot be *proven* is
-        one where minting may be destructive.
+    :raises EncryptionKeyError: If any database holds ciphertext, or a value
+        that cannot be decoded. Both refuse: a deployment whose freshness cannot
+        be *proven* is one where minting may be destructive.
     :raises ValidationError: If a service's ``<PREFIX>__DATABASE__*`` settings
         do not resolve, which surfaces as a traceback rather than a diagnostic
         because it is a misconfiguration of the container, not a state the
         deployment can be in.
     """
-    deadline = time.monotonic() + probe_timeout()
-    for service, settings_cls in SERVICE_DATABASES.items():
-        if await probe_until_deadline(service, settings_cls().DATABASE, deadline):
-            raise EncryptionKeyError(
-                f"The {service} database already holds encrypted override "
-                f"values. {_ciphertext_remedy()}"
-            )
+    for _ in range(FRESHNESS_PASSES):
+        for service, settings_cls in SERVICE_DATABASES.items():
+            if await probe_until_answered(service, settings_cls().DATABASE):
+                raise EncryptionKeyError(
+                    f"The {service} database already holds encrypted override "
+                    f"values. {_ciphertext_remedy()}"
+                )
 
 
 def _ciphertext_remedy() -> str:
@@ -593,24 +622,6 @@ def _ciphertext_remedy() -> str:
         "key as ENCRYPTION_KEY, or pass any newly generated key if this "
         "deployment was never encrypted and the value is plaintext that merely "
         "looks like a token."
-    )
-
-
-def _unproven_remedy() -> str:
-    """Return the remediation for a refusal that could not read the data at all.
-
-    Deliberately not :func:`_ciphertext_remedy`: nothing here says the
-    deployment holds ciphertext, so pointing the operator at a key restore
-    would send them after a backup for what is usually a database still
-    starting.
-
-    :return: What the operator has to do.
-    """
-    return (
-        "Refusing to mint a new ENCRYPTION_KEY without proving the deployment "
-        "holds no data a new key could not decrypt. Bring the database up and "
-        "restart the container, check EXTENSIONS_DB_HOST and EXTENSIONS_DB_PORT, or raise "
-        "EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT. Nothing was minted or written."
     )
 
 
@@ -652,6 +663,7 @@ def main() -> int:
 
     :return: The process exit status.
     """
+    report_retired_timeout()
     try:
         # The settings stack binds its logging handlers to whatever stdout is
         # when it is first resolved, so without this a log record would land

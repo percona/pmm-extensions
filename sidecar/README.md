@@ -308,21 +308,28 @@ either at-rest shape: a leaf carrying the `extensions.enc.v1.` envelope marker, 
 bare Fernet token from before that envelope shipped. Testing only the bare shape
 would read a deployment whose overrides were all written under the envelope as
 holding none, because the marker's leading `.` puts the value outside base64 and
-so outside the structural check. Anything else refuses: ciphertext found, a value
-it cannot parse, or a database it cannot reach — freshness unproven is treated
-exactly like freshness disproven.
+so outside the structural check. Anything else refuses: ciphertext found, or a
+value it cannot parse — freshness unproven is treated exactly like freshness
+disproven.
 The probe runs *only* on the mint path, so an ordinary restart opens no database
 connection and pays no startup latency.
 
-An unreachable database is **retried**, not refused on sight, because a first
-start routinely runs while pmm-server's postgres is still coming up — the same
-condition the supervised migration steps wait out. `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT`
-bounds that wait across all three databases together (60s by default); only
-exhausting it refuses, and the message then points at the database rather than
-at a key restore. It also bounds how long a start waits for a peer side-car
-holding the state lock — twice the probe budget — so two containers sharing one
-state volume serialise rather than mint beside each other, and neither waits on
-the other forever.
+A database that does not answer is **waited on**, without a bound, because a
+first start routinely runs while pmm-server's postgres is still coming up — the
+same condition the supervised migration steps wait out. Each attempt is given up
+after 30 seconds and retried 3 seconds later, and an `[encryption-key]` line names
+the database and the last error at most every 30 seconds. The key is minted once
+all three databases have answered and passed the check, and passed it again in a
+second pass right after: a side-car that already holds the key may have written to
+a database that passed while this one waited for another. A database that answers
+with a fault no wait clears, such as a rejected password, is waited on in the
+same way, with that fault in the line. `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` is
+not read; a start that has to mint, with it set, logs one line saying so.
+
+Two containers sharing one state volume serialise on a lock in it rather than
+mint beside each other. A start waits up to 120 seconds for a peer that holds
+the lock, then refuses and exits. A peer that is itself waiting for the
+databases holds the lock until they answer.
 
 Note that a minted key is exported into every supervised program's environment,
 where a key mounted under `SECRETS_DIR` deliberately is not. Mount the key
@@ -459,23 +466,24 @@ Two limitations follow from minting through Grafana's admin API:
 
 A Compose file that starts the side-car with a plain `depends_on: pmm-server`
 starts it when the `pmm-server` container has started, not when PMM is healthy.
-The side-car copes with that by itself: `entrypoint.sh` waits for the two things
+The side-car copes with that by itself: `entrypoint.sh` waits for the things
 PMM supplies while it starts, says what it is waiting for, and hands off to
-`supervisord` only when it has both.
+`supervisord` only when it has them.
 
 | It waits for | When | What the container log says |
 |---|---|---|
 | The `SECRET_KEY` file | `SECRETS_DIR` is set, and neither the environment nor a file under it supplies a key | `[entrypoint] Waiting for PMM to publish SECRET_KEY under <directory>.`, every 10 seconds. When the file is there and the side-car cannot read it, the line says so instead and names the uid and groups it runs as |
+| The three service databases in PMM's PostgreSQL | The start has to mint `ENCRYPTION_KEY`: no key is supplied by the environment, a file under `SECRETS_DIR` or the state directory | `[encryption-key] Waiting for the <service> database to answer before the ENCRYPTION_KEY is minted (last error: …).`, at least 30 seconds apart |
 | A Grafana that can mint the token | The start has to mint: no token is configured or mounted, and none that Grafana still accepts is persisted | `[grafana-mint] Waiting for Grafana at <endpoint> to accept the service-account mint (last answer: …).`, at least 30 seconds apart |
 
-Neither wait has a bound. PMM owns both the key and Grafana, so a bound could
+None of these waits has a bound. PMM owns the key, its PostgreSQL and Grafana, so a bound could
 only give up on a slow PMM, and the five programs read the token once, from
 `supervisord`'s environment: a token minted after they started could not reach
 them without a restart. The schema one-shots wait for PMM's PostgreSQL the same
 way. While the entrypoint waits, the container's health is `starting` through
 the `HEALTHCHECK` start period and five failed probes after it, about three and
 a half minutes in all, and `unhealthy` from then on. It turns healthy without a
-restart when the wait ends. A stop signal during either wait ends the
+restart when the wait ends. A stop signal during any of these waits ends the
 entrypoint within a second, with exit status 143.
 
 The Grafana wait covers what a server that is still starting answers: a refused
@@ -493,9 +501,9 @@ moment the other files may still be missing.
 `EXTENSIONS_GRAFANA_MINT_TIMEOUT` is not read. A deployment that sets it gets
 one `[grafana-mint]` line saying so.
 
-One earlier step keeps a bound: on a start that has to mint `ENCRYPTION_KEY`,
-the probe of the service databases gives up after
-`EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` seconds and the container exits — see
+A start that has to mint `ENCRYPTION_KEY` waits for the service databases the
+same way, and a stop signal during that wait ends the entrypoint the same way —
+see
 [The encryption key is minted, but only onto a fresh deployment](#the-encryption-key-is-minted-but-only-onto-a-fresh-deployment).
 
 ## What the settings API will and will not change
