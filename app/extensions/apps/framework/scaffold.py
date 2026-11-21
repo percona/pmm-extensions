@@ -1332,9 +1332,12 @@ def resolve_config(
 
 
 def _print_summary(result: ScaffoldResult) -> None:
-    """Summarize where the app was written and how to ship it in the sidecar.
+    """Summarize where the app was written, what to commit, and how to ship it.
 
-    The registration the scaffolder writes is the one the test suite reads.
+    The registration the scaffolder writes is the one the test suite reads, and
+    that suite also wants the new app's API snapshots and the regenerated API
+    client, which ``make regen-specs`` writes. The summary names that step
+    rather than running it, because it needs the frontend toolchain.
     ``sidecar/settings.yaml`` decides which apps the image ships, so the summary
     prints the line to add there instead of writing it.
 
@@ -1360,6 +1363,12 @@ def _print_summary(result: ScaffoldResult) -> None:
         f"{payload_note}"
         f"{script_note}"
         f"\n{registration}\n"
+        "\nBefore you commit, create the app's API snapshots and regenerate the "
+        "API client:\n"
+        "      make regen-specs\n"
+        "Commit the files it writes under tests/app/extensions/snapshots/ and "
+        "frontend/packages/api/ with the app.\n"
+        "See docs/how-to/update-api-snapshots.md.\n"
         "\nTo run the app inside PMM, add this line under EXTENSIONS.APPS in "
         "sidecar/settings.yaml:\n"
         f"      - MODULE_NAME: {result.name}\n"
