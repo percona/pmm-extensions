@@ -16,6 +16,7 @@
 
 import asyncio
 import base64
+import contextlib
 import fcntl
 import os
 import socket
@@ -33,6 +34,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import create_engine, insert
 
 from app import BASE_DIR
+from app.core.db.config import DatabaseOptions
 from app.core.encryption import is_encrypted, mark_ciphertext
 from app.core.settings_override.models import SettingOverride
 from sidecar import encryption_key as helper
@@ -70,41 +72,40 @@ output do not both stay inside."""
 UNREACHABLE_PORT = 1
 """A privileged port nothing in the test environment listens on."""
 
-SHORT_PROBE_TIMEOUT = "1.5"
-"""Short enough that an unreachable database is refused inside a test's patience."""
-
-LOCK_WAIT_SECONDS = float(SHORT_PROBE_TIMEOUT) * helper.LOCK_WAIT_PROBE_BUDGETS
-"""How long the helper waits on a peer's lock before refusing.
-
-Derived rather than restated so the bound below and the elapsed-time assertion
-that reads it cannot drift from the helper's own budget arithmetic.
-"""
-
 HELPER_STARTUP_ALLOWANCE_SECONDS = 60.0
-"""Slack over the lock wait for interpreter start and the helper's imports.
+"""How long a helper run that should finish may take, imports included.
 
 Deliberately generous. This bound is a hang guard, not a performance assertion:
-the only thing it has to distinguish is "refused after waiting" from "never came
-back", and the elapsed-time assertion below is what pins the waiting. Sizing it
-close to the observed cost instead made it fail on load -- at ``6.0`` it raised
-``TimeoutExpired`` during a full ``-n auto`` run whose captured stderr already
-carried the correct refusal, so the helper had done its job and only the bound
-disagreed. Interpreter start plus the settings-stack import is the variable part
-and it swings with CPU contention and page-cache state, which is why the margin
-is wide rather than fitted. It still sits under the 120s ``pytest-timeout``
-ceiling, so this bound fires first and kills the child rather than leaving the
-global guard to orphan it.
+interpreter start plus the settings-stack import swings with CPU contention and
+page-cache state, which is why the margin is wide rather than fitted. It still
+sits under the 120s ``pytest-timeout`` ceiling, so this bound fires first and
+kills the child rather than leaving the global guard to orphan it.
 """
 
-BLOCKED_RUN_SECONDS = LOCK_WAIT_SECONDS + HELPER_STARTUP_ALLOWANCE_SECONDS
-"""A subprocess bound comfortably past the lock wait, so a timeout means a hang."""
+STILL_WAITING_SECONDS = 15.0
+"""How long a run aimed at an unreachable database is watched before it is ended.
 
-RETRIED_PROBE_TIMEOUT = 2.0
-"""A bound long enough that reaching it can only mean the probe retried.
-
-A refused connection returns instantly, so a run that spends this long before
-giving up cannot have refused on the first error.
+Long enough for the interpreter start and the first probe, whose failure is
+reported at once, so the report is in the captured stderr when the run is ended.
 """
+
+SHORT_LOCK_WAIT_SECONDS = 1.0
+"""The lock bound a case swaps in, so a refusal arrives inside the test's patience."""
+
+SHORT_INTERVAL_SECONDS = 0.05
+"""The retry interval a case swaps in to watch several attempts in under a second."""
+
+SHORT_REPORT_INTERVAL_SECONDS = 0.3
+"""The report interval a case swaps in, several retries long."""
+
+WATCHED_WAIT_SECONDS = 1.0
+"""How long an in-process case lets a probe wait before it ends it."""
+
+MIN_REPORTS = 2
+"""The fewest reports a wait longer than one report interval must make."""
+
+RETIRED_TIMEOUT_INPUT = "EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT"
+"""The variable that bounded the probe, which a deployment may still set."""
 
 RESTORE_HINT = "pmm-extensions-state"
 """What a refusal has to name so an operator can act on it."""
@@ -239,7 +240,6 @@ def run_helper(
         "PATH": os.environ["PATH"],
         "PYTHONPATH": str(BASE_DIR),
         "EXTENSIONS_STATE_DIR": str(directory / "state"),
-        "EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT": SHORT_PROBE_TIMEOUT,
         **database_environment(directory),
     }
     return subprocess.run(
@@ -539,74 +539,170 @@ def test_an_absent_override_table_counts_as_fresh(tmp_path: Path):
     assert result.stdout.strip()
 
 
+def run_until_ended(
+    directory: Path, seconds: float, **environment: str
+) -> subprocess.TimeoutExpired:
+    """Run the helper, end it after ``seconds``, and return what it wrote meanwhile.
+
+    :param directory: The working directory passed to :func:`run_helper`.
+    :param seconds: How long to let it run.
+    :param environment: Variables to add over the base.
+    :return: The expiry, carrying the stdout and stderr captured before it.
+    """
+    with pytest.raises(subprocess.TimeoutExpired) as expired:
+        run_helper(directory, timeout=seconds, **environment)
+    return expired.value
+
+
+def captured(stream: bytes | str | None) -> str:
+    """Return a stream captured by :class:`subprocess.TimeoutExpired` as text.
+
+    :param stream: The stream, which the expiry carries as bytes even in text mode.
+    :return: The decoded text, empty when nothing was captured.
+    """
+    if isinstance(stream, bytes):
+        return stream.decode("utf-8", errors="replace")
+    return stream or ""
+
+
 @pytest.mark.parametrize("prefix", SERVICE_PREFIXES)
-def test_an_unreachable_database_refuses_the_mint(fresh_deployment: Path, prefix: str):
-    """Refuse where freshness cannot be proven, for any one of the three."""
-    result = run_helper(fresh_deployment, **unreachable_environment(prefix))
-
-    assert result.returncode != 0
-    assert not result.stdout.strip()
-    assert not persisted_key_path(fresh_deployment).exists()
-
-
-def test_a_database_that_never_answers_refuses_within_the_timeout(
-    fresh_deployment: Path, stalled_database_port: int
+def test_an_unreachable_database_is_waited_on_rather_than_refused(
+    fresh_deployment: Path, prefix: str
 ):
-    """Refuse on the bound, not just on a connection the kernel rejects outright.
+    """Wait for a database that does not answer, for any one of the three.
 
-    A side-car started while its database is still coming up sees this shape
-    rather than a refusal, and it is the one that could hang the container
-    start indefinitely.
+    A first start runs while PMM's PostgreSQL is routinely still coming up, and
+    a start that gave up would exit the container. The wait names the database
+    and the last error, and says nothing of a key restore, which is not what an
+    unreachable database calls for.
     """
-    result = run_helper(
-        fresh_deployment, **unreachable_environment("EXTENSIONS", stalled_database_port)
+    expired = run_until_ended(
+        fresh_deployment, STILL_WAITING_SECONDS, **unreachable_environment(prefix)
     )
+    stderr = captured(expired.stderr)
 
-    assert result.returncode != 0
-    assert not result.stdout.strip()
+    assert f"Waiting for the {prefix.lower()} database" in stderr
+    assert "last error:" in stderr
+    assert "backup" not in stderr
+    assert not captured(expired.stdout).strip()
     assert not persisted_key_path(fresh_deployment).exists()
 
 
-def test_an_unreachable_database_is_retried_rather_than_refused_on_sight(
+def test_a_database_that_comes_up_during_the_wait_gets_the_key_minted(
     fresh_deployment: Path,
 ):
-    """Keep waiting for a database that is not up yet, which a cold start is.
+    """Mint once a database that did not answer at first answers and is fresh.
 
-    The supervised migration steps wait for postgres unboundedly, so on a first
-    start the databases are routinely still coming up, which is exactly when
-    the mint path runs. A refused connection fails instantly, so refusing on
-    the first error would kill the container in the ordinary case rather than
-    an exceptional one. Refusing only after the bound is what distinguishes the
-    two, and it is visible in the wall clock.
+    The extensions database is aimed at a file in a directory that does not
+    exist yet, which SQLite cannot open, and the directory is created once the
+    helper has reported the wait. Reaching the key afterwards takes a second
+    attempt at least.
     """
-    started = time.monotonic()
-
-    result = run_helper(
-        fresh_deployment,
-        EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT=str(RETRIED_PROBE_TIMEOUT),
-        **unreachable_environment("EXTENSIONS"),
+    late = fresh_deployment / "late"
+    process = subprocess.Popen(
+        [sys.executable, str(HELPER_SCRIPT)],
+        cwd=str(fresh_deployment),
+        env={
+            "PATH": os.environ["PATH"],
+            "PYTHONPATH": str(BASE_DIR),
+            "EXTENSIONS_STATE_DIR": str(fresh_deployment / "state"),
+            **database_environment(fresh_deployment),
+            "EXTENSIONS__DATABASE__NAME": str(late / DATABASE_FILENAMES["EXTENSIONS"]),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
-    elapsed = time.monotonic() - started
+    try:
+        assert process.stderr is not None
+        waiting = next(line for line in process.stderr if "Waiting for the" in line)
+        late.mkdir()
+        stdout, stderr = process.communicate(timeout=HELPER_STARTUP_ALLOWANCE_SECONDS)
+    finally:
+        process.kill()
 
-    assert result.returncode != 0
-    assert elapsed >= RETRIED_PROBE_TIMEOUT
-    assert not persisted_key_path(fresh_deployment).exists()
+    assert "Waiting for the extensions database" in waiting
+    assert process.returncode == 0, stderr
+    assert stdout.strip() == persisted_key_path(fresh_deployment).read_text(
+        encoding="utf-8"
+    )
 
 
-def test_the_unreachable_refusal_does_not_send_the_operator_after_a_backup(
-    fresh_deployment: Path,
+def test_the_wait_is_reported_again_at_the_report_interval(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ):
-    """Say the database is unreachable, not that a key needs restoring.
+    """Report a long wait more than once, but not once per attempt.
 
-    A database still starting is the common cause here, and the ciphertext
-    remedy (restore the key from a backup of the state volume) is both
-    inapplicable and expensive to act on.
+    With attempts several times as frequent as reports, the count of reports in
+    a watched window sits between two and one per report interval.
     """
-    result = run_helper(fresh_deployment, **unreachable_environment("EXTENSIONS"))
+    monkeypatch.setattr(helper, "RETRY_INTERVAL_SECONDS", SHORT_INTERVAL_SECONDS)
+    monkeypatch.setattr(
+        helper, "WAIT_REPORT_INTERVAL_SECONDS", SHORT_REPORT_INTERVAL_SECONDS
+    )
+    options = DatabaseOptions(NAME=str(tmp_path / "missing" / "extensions.db"))
 
-    assert result.returncode != 0
-    assert "EXTENSIONS_DB_HOST" in result.stderr
-    assert "backup" not in result.stderr
+    async def watch() -> None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                helper.probe_until_answered("extensions", options),
+                WATCHED_WAIT_SECONDS,
+            )
+
+    asyncio.run(watch())
+    reports = capsys.readouterr().err.count("Waiting for the extensions database")
+
+    assert (
+        MIN_REPORTS
+        <= reports
+        <= WATCHED_WAIT_SECONDS / SHORT_REPORT_INTERVAL_SECONDS + 1
+    )
+
+
+def test_a_database_that_never_answers_is_retried_past_one_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stalled_database_port: int,
+):
+    """Abandon an attempt that hangs and report it, rather than hang on it.
+
+    A port that completes the handshake and then says nothing is what a
+    database that is still starting can look like. One attempt is bounded, so
+    the wait goes on with the timeout as its last error.
+    """
+    monkeypatch.setattr(helper, "PROBE_ATTEMPT_TIMEOUT_SECONDS", SHORT_INTERVAL_SECONDS)
+    monkeypatch.setattr(helper, "RETRY_INTERVAL_SECONDS", SHORT_INTERVAL_SECONDS)
+    options = DatabaseOptions(
+        ENGINE="postgresql+asyncpg",
+        HOST="127.0.0.1",
+        PORT=stalled_database_port,
+        USER="extensions",
+        NAME="extensions",
+    )
+
+    async def watch() -> None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                helper.probe_until_answered("extensions", options),
+                WATCHED_WAIT_SECONDS,
+            )
+
+    asyncio.run(watch())
+
+    assert "last error: TimeoutError" in capsys.readouterr().err
+
+
+def test_the_retired_timeout_is_reported_and_not_read(fresh_deployment: Path):
+    """Say once that the variable is no longer read, and mint as without it."""
+    result = run_helper(fresh_deployment, **{RETIRED_TIMEOUT_INPUT: "3"})
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        result.stderr.count(f"{RETIRED_TIMEOUT_INPUT} is set but no longer read") == 1
+    )
+    assert result.stdout.strip()
 
 
 def test_an_unparseable_stored_value_refuses_the_mint(tmp_path: Path):
@@ -670,7 +766,9 @@ def test_two_concurrent_starts_converge_on_one_key(fresh_deployment: Path):
     )
 
 
-def test_a_peer_holding_the_state_lock_defers_then_refuses(fresh_deployment: Path):
+def test_a_peer_holding_the_state_lock_defers_then_refuses(
+    fresh_deployment: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Wait for a peer's turn rather than probing and minting beside it.
 
     The convergence test above cannot see this by itself: because
@@ -680,21 +778,28 @@ def test_a_peer_holding_the_state_lock_defers_then_refuses(fresh_deployment: Pat
     makes the dependence on it observable at all.
 
     The wait is bounded, so a peer that never releases is refused with a
-    diagnostic naming the lock rather than leaving PID 1 blocked on it.
+    diagnostic naming the lock rather than leaving PID 1 blocked on it. Its
+    remedy no longer names the retired probe timeout, which no longer moves
+    the bound.
     """
-    lock_path = fresh_deployment / "state" / helper.LOCK_FILENAME
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(helper, "LOCK_WAIT_SECONDS", SHORT_LOCK_WAIT_SECONDS)
+    directory = fresh_deployment / "state"
+    lock_path = directory / helper.LOCK_FILENAME
+    directory.mkdir()
 
     with lock_path.open("w", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         started = time.monotonic()
-        result = run_helper(fresh_deployment, timeout=BLOCKED_RUN_SECONDS)
+        with (
+            pytest.raises(helper.EncryptionKeyError) as refused,
+            helper.state_lock(directory),
+        ):
+            pass
         elapsed = time.monotonic() - started
 
-    assert result.returncode != 0
-    assert not result.stdout.strip()
-    assert elapsed >= LOCK_WAIT_SECONDS
-    assert str(lock_path) in result.stderr
+    assert elapsed >= SHORT_LOCK_WAIT_SECONDS
+    assert str(lock_path) in str(refused.value)
+    assert RETIRED_TIMEOUT_INPUT not in str(refused.value)
     assert not persisted_key_path(fresh_deployment).exists()
 
 

@@ -43,8 +43,19 @@ trap 'exit 143' TERM INT
 # it avoids. Unlike the Grafana mint, the failure is not absorbed -- a non-zero
 # exit means minting could not be proven safe, and starting anyway is what
 # silently reverts every encrypted override to its YAML default.
+# The helper waits for as long as PMM's PostgreSQL does not answer, so it is read
+# over a process substitution and waited on, as the token helper below is: the
+# trap above runs only once a foreground command returns, and `wait` is what a
+# signal interrupts. `exit` rather than errexit, which does not apply to `wait`
+# in an `if` condition.
 if [[ -z ${ENCRYPTION_KEY:-} ]] && ! secret_file_supplies ENCRYPTION_KEY; then
-    ENCRYPTION_KEY="$(python3 "$app_dir/encryption_key.py")"
+    exec {encryption_key_fd}< <(exec python3 "$app_dir/encryption_key.py")
+    if ! wait "$!"; then
+        exit 1
+    fi
+    read -r ENCRYPTION_KEY <&"$encryption_key_fd" || true
+    exec {encryption_key_fd}<&-
+    unset encryption_key_fd
     export ENCRYPTION_KEY
 fi
 
