@@ -1600,6 +1600,118 @@ EVERY_VALUE_CRONTAB = {
 }
 
 
+class TestPeriodicTaskNameLength:
+    """Test the schedule name limit and the way out for a name stored over it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("length", "expected_status"),
+        [
+            pytest.param(
+                PERIODIC_TASK_NAME_MAX_LENGTH,
+                status.HTTP_201_CREATED,
+                id="at the limit",
+            ),
+            pytest.param(
+                PERIODIC_TASK_NAME_MAX_LENGTH + 1,
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                id="over it",
+            ),
+        ],
+    )
+    async def test_named_create(
+        self,
+        periodic_test_client,
+        tasks_session,
+        celery_beat_session: AsyncSession,
+        length: int,
+        expected_status: int,
+    ):
+        """Assert a name up to the limit is stored and a longer one is refused."""
+        await TaskManager.create(
+            tasks_session,
+            TaskWrite.model_validate(TaskFactory.build(name="my-task")),
+        )
+        payload = {"name": "n" * length, "interval": {"every": 1, "period": "days"}}
+
+        response = periodic_test_client.post("/my-task/periodic/", json=payload)
+
+        assert response.status_code == expected_status
+        rows = await celery_beat_session.exec(select(PeriodicTask.name))
+        if expected_status == status.HTTP_201_CREATED:
+            assert rows.all() == [("n" * length,)]
+        else:
+            assert response.json()["detail"][0]["loc"] == ["body", "name"]
+            assert rows.all() == []
+
+    @pytest.mark.asyncio
+    async def test_rename_over_the_limit_answers_422(
+        self,
+        periodic_test_client,
+        celery_beat_session: AsyncSession,
+    ):
+        """Assert a rename to a name over the limit is refused and changes nothing."""
+        renamed = await _add_periodic_task(
+            celery_beat_session, name="short", task_name="my-task"
+        )
+        renamed_id = renamed.id
+
+        response = periodic_test_client.put(
+            f"/periodic/{renamed_id}",
+            json=RENAME_TO_TAKEN_BODY
+            | {"name": "n" * (PERIODIC_TASK_NAME_MAX_LENGTH + 1)},
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.json()["detail"][0]["loc"] == ["body", "name"]
+        rows = await celery_beat_session.exec(select(PeriodicTask.name))
+        assert rows.all() == [("short",)]
+
+    @pytest.mark.asyncio
+    async def test_update_keeping_a_stored_over_long_name_answers_422(
+        self,
+        periodic_test_client,
+        celery_beat_session: AsyncSession,
+    ):
+        """Assert an update that keeps a stored over-long name is refused."""
+        legacy_name = "n" * (PERIODIC_TASK_NAME_MAX_LENGTH + 1)
+        legacy = await _add_periodic_task(
+            celery_beat_session, name=legacy_name, task_name="my-task"
+        )
+        legacy_id = legacy.id
+
+        response = periodic_test_client.put(
+            f"/periodic/{legacy_id}", json=RENAME_TO_TAKEN_BODY | {"name": legacy_name}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.json()["detail"][0]["loc"] == ["body", "name"]
+        rows = await celery_beat_session.exec(select(PeriodicTask.name))
+        assert rows.all() == [(legacy_name,)]
+
+    @pytest.mark.asyncio
+    async def test_renaming_a_stored_over_long_name_to_a_valid_one_succeeds(
+        self,
+        periodic_test_client,
+        celery_beat_session: AsyncSession,
+    ):
+        """Assert a stored over-long name can be replaced with one that fits."""
+        legacy = await _add_periodic_task(
+            celery_beat_session,
+            name="n" * (PERIODIC_TASK_NAME_MAX_LENGTH + 1),
+            task_name="my-task",
+        )
+        legacy_id = legacy.id
+
+        response = periodic_test_client.put(
+            f"/periodic/{legacy_id}", json=RENAME_TO_TAKEN_BODY | {"name": "fits"}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        rows = await celery_beat_session.exec(select(PeriodicTask.name))
+        assert rows.all() == [("fits",)]
+
+
 @pytest.mark.postgres
 class TestPeriodicTaskNameLengthOnPostgres:
     """Test that a schedule name longer than its column is refused, not a 500.
