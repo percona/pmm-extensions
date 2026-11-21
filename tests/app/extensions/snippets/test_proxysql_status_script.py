@@ -404,7 +404,6 @@ class ProxysqlHarness:
         :param args: Options passed after ``--defaults-file``.
         :return: The argument vector.
         """
-        require_bash_4()
         return ["bash", str(SCRIPT), "--defaults-file", str(self.admin_cnf), *args]
 
     def _env(self) -> dict[str, str]:
@@ -1794,7 +1793,16 @@ REAL_SHAPED_SECRETS = (
 
 
 class TestAdminCnfRedaction:
-    """Show the admin config for diagnosis without ever printing a credential."""
+    """Show the admin config for diagnosis without ever printing a credential.
+
+    Under macOS's bash 3.2 every case here fails and the script's other cases
+    pass, so these are the ones that need bash 4.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _needs_bash_4(self) -> None:
+        """Skip each case unless ``bash`` on ``PATH`` is version 4 or later."""
+        require_bash_4()
 
     @pytest.mark.parametrize(
         "args",
