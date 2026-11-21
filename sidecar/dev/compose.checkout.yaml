@@ -1,0 +1,12 @@
+# Run the code of this checkout in the sidecar, in place of the image's own.
+# Add it with a second `-f`; restart the `pmm-extensions` service after a change.
+#
+# `sidecar/settings.yaml` is mounted too, so the apps listed there are the apps
+# the sidecar serves.
+
+services:
+  pmm-extensions:
+    volumes:
+      - ../../app:/home/extensions/app/app:ro
+      - ../../snippets:/home/extensions/app/snippets:ro
+      - ../settings.yaml:/home/extensions/app/settings.yaml:ro

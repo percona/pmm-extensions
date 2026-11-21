@@ -20,7 +20,9 @@ The ``make startapp-check`` CI gate exercises the Makefile/CLI/``settings.yaml``
 path end-to-end — which the in-process ``test_scaffold.py`` deliberately bypasses
 — by scaffolding a throwaway app per flavor through
 ``python app/extensions/apps/framework/scaffold.py`` and running the contract test it
-generates.
+generates. With all three registered, it then runs framework conformance once: a
+scaffold can pass its own contract test and still break a rule that holds across
+the registry.
 The throwaway packages and the ``settings.yaml`` edit are reverted in a
 ``finally`` even when a flavor fails, so a failed run never dirties the worktree
 or breaks the next run's clobber guard.
@@ -37,6 +39,10 @@ PLUGINS_DIR = REPO_ROOT / "app" / "extensions" / "apps"
 TESTS_DIR = REPO_ROOT / "tests" / "app" / "extensions" / "apps"
 SCAFFOLDER = REPO_ROOT / "app" / "extensions" / "apps" / "framework" / "scaffold.py"
 FLAVORS = ("task", "script", "base")
+CONFORMANCE_TESTS = (
+    "tests/app/extensions/apps/framework/test_conformance.py",
+    "tests/app/extensions/apps/framework/test_form_dsl_conformance.py",
+)
 
 
 def _run(*args: str) -> None:
@@ -47,8 +53,8 @@ def _run(*args: str) -> None:
 def main() -> int:
     """Run the scaffold-and-test loop over every flavor, restoring the worktree.
 
-    :return: ``0`` when every flavor scaffolds and its generated tests pass,
-        ``1`` when any flavor fails.
+    :return: ``0`` when every flavor scaffolds, its generated tests pass and
+        framework conformance passes over all three, ``1`` otherwise.
     """
     settings_backup = SETTINGS_FILE.read_text()
     names = [f"_scaffold_ci_{flavor}" for flavor in FLAVORS]
@@ -72,6 +78,8 @@ def main() -> int:
                 f"tests/app/extensions/apps/{name}/",
                 "-q",
             )
+        print("== framework conformance over the scaffolded apps ==", flush=True)
+        _run(sys.executable, "-m", "pytest", *CONFORMANCE_TESTS, "-q")
     except subprocess.CalledProcessError as error:
         print(f"startapp-check failed: {error}", file=sys.stderr)
         exit_code = 1

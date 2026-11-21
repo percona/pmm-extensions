@@ -13,9 +13,9 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Keep the diagnostic script authoring guide's taxonomy in step with the code.
+"""Keep the diagnostic categories reference page in step with the code.
 
-Script authors copy member names from the guide's permitted-values table, and a
+Script authors copy member names from the page's permitted-values table, and a
 name the taxonomy does not define is discarded silently, so a stale table files
 scripts nowhere without any failure to show for it.
 """
@@ -26,7 +26,7 @@ import re
 from app.extensions.apps.atw.categories import ATWCategory, ParentCategory
 
 _REPO_ROOT = pathlib.Path(__file__).parents[2]
-_GUIDE_PATH = _REPO_ROOT / "docs/development/diagnostic-script-authoring.md"
+_GUIDE_PATH = _REPO_ROOT / "docs/reference/diagnostic-categories.md"
 
 _ROW_RE = re.compile(
     r"^\| `(?P<name>[A-Z_]+)` \| (?P<label>[^|]+?) \| (?P<parent>[^|]+?) \|$"
@@ -58,12 +58,12 @@ _NUMBER_WORDS = [
 
 
 def _guide_text() -> str:
-    """Return the authoring guide's text."""
+    """Return the reference page's text."""
     return _GUIDE_PATH.read_text(encoding="utf-8")
 
 
 class TestAuthoringGuideTaxonomy:
-    """Verify the guide's permitted-values table matches ``ATWCategory``."""
+    """Verify the page's permitted-values table matches ``ATWCategory``."""
 
     def test_table_rows_match_the_taxonomy(self) -> None:
         """Verify each member appears once, in order, with its label and parent."""

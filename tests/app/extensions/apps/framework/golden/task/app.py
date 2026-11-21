@@ -21,20 +21,19 @@ Set ``group`` / ``nav_order`` to place the app in the sidebar, or
 ``service_type`` plus ``list_filter=ListFilterConfig(...)`` to expose list filters.
 """
 
-from app.extensions.apps.golden_task.models import GoldenTaskForm
+from app.extensions.apps.golden_task.models import GoldenTaskForm, OWNER
 from app.extensions.apps.golden_task.spec import build_golden_task_spec
 from app.extensions.apps.golden_task.views import golden_task_views
 from app.extensions.apps.framework.apps import AppCapabilities, TaskExecutionApp
-from app.tasks.models import ANY_OWNER
 
 app = TaskExecutionApp(
     name="golden_task",
     display_name="Golden Task",
-    item_display_name="Golden Task",
-    item_display_name_plural="Golden Task",
+    item_display_name="Golden Task task",
+    item_display_name_plural="Golden Task tasks",
     uri_path="/golden_task",
     description="TODO: describe what the Golden Task task does.",
-    owner=ANY_OWNER,
+    owner=OWNER,
     create_model=GoldenTaskForm,
     views=golden_task_views,
     task_spec_builder=build_golden_task_spec,

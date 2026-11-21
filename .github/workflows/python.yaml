@@ -59,7 +59,7 @@ jobs:
           cache: poetry
       # Sync explicitly: the `venv` prerequisite no-ops against the runner's
       # pre-seeded environment, and ty resolves imports against what is actually
-      # installed. See docs/development/ty-policy.md under `Enforcement`.
+      # installed. See docs/reference/type-check-policy.md under `Enforcement`.
       - name: Install dependencies
         run: poetry sync --no-root --all-extras --all-groups
       - name: Hold error-severity diagnostics at zero

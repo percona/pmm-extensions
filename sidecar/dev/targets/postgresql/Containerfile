@@ -1,0 +1,28 @@
+# A PostgreSQL host that can run PMM Extensions tasks: Percona Distribution for
+# PostgreSQL 17, pgBackRest and PMM Client in one container, with sample data.
+# The backup runs on the host that holds the data directory, so they share it.
+ARG PMM_CLIENT_IMAGE=percona/pmm-client:3.10.0
+FROM ${PMM_CLIENT_IMAGE} AS pmmclient
+
+FROM docker.io/library/oraclelinux:9
+
+# See targets/mysql/Containerfile for why this one install skips the signature check.
+RUN dnf install -y --nogpgcheck https://repo.percona.com/yum/percona-release-latest.noarch.rpm \
+    && percona-release setup -y ppg-17
+
+# percona-pgbackrest needs libssh2, which Oracle Linux 9 carries only in EPEL.
+RUN dnf install -y oracle-epel-release-el9 \
+    && dnf install -y \
+        percona-postgresql17-server percona-postgresql17-contrib percona-pgbackrest \
+        python3-pip gzip tar hostname procps-ng iproute sudo \
+    && dnf clean all
+
+COPY --from=pmmclient /usr/local/percona/pmm /usr/local/percona/pmm
+ENV PATH="/usr/local/percona/pmm/bin:/usr/pgsql-17/bin:${PATH}"
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+
+EXPOSE 5432
+
+# The health check is in ../../compose.yaml: an image built in OCI format drops one.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

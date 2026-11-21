@@ -172,7 +172,7 @@ python-version = "3.11"
 [tool.ty.src]
 # The checked surface is defined here rather than by a path argument, so that this
 # list and `make typecheck` cannot drift apart: the target passes no path arguments.
-# See docs/development/ty-policy.md.
+# See docs/reference/type-check-policy.md.
 include = [
     "app",
     "tests",
@@ -186,11 +186,11 @@ exclude = [
 ]
 
 [tool.ty.rules]
-# Severity policy. Rationale, hit counts and per-rule justification live in
-# docs/development/ty-policy.md, which is where the measurements are kept; a
-# trailing comment here carries only a reason the rule name and its severity do
-# not already give. An unlisted rule is an error, so a rule that starts firing
-# after a code change or a ty upgrade arrives loud by design.
+# Severity policy. docs/reference/type-check-policy.md has one row per rule
+# named here, with its level and what it mostly reports; a trailing comment
+# here carries only a reason the rule name and its severity do not already
+# give, and no measurement. An unlisted rule is an error, so a rule that starts
+# firing after a code change or a ty upgrade arrives loud by design.
 all = "error"
 
 # Softened to `warn`: sampling found each of these mixes genuine defects with
@@ -245,8 +245,8 @@ missing-override-decorator = "ignore"   # PEP 698 `@override` is not a conventio
 # discriminant that establishes that, and `check` mode proves no first-party
 # diagnostic was suppressed alongside. Files where the rule also reports genuine
 # defects are absent here and take per-site `# ty: ignore[rule]` comments
-# instead, because an override cannot discriminate within a file. Groups, counts
-# and the residual baseline: docs/development/ty-policy.md.
+# instead, because an override cannot discriminate within a file. The groups are
+# listed in docs/reference/type-check-policy.md under `Diagnostic groups`.
 
 [[tool.ty.overrides]]
 # `Settings` subclasses reach the proxy-installed `_set_snapshot` / `get_snapshot` /
