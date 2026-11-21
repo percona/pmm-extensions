@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def main_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def main_lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Manage the app's lifespan.
 
     Initializes the Tasks database data, the periodic tasks data, and ensures that the

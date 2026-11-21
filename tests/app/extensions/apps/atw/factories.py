@@ -13,7 +13,12 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Define the DB-model factories for the Support diagnostics app's tests."""
+"""Define the DB-model factories for the Support diagnostics app's tests.
+
+Each factory sets ``__set_relationships__ = False``: polyfactory 3 otherwise
+builds a fresh parent row for every relationship, and tests that scope by
+foreign key would see that parent instead of the one they created.
+"""
 
 from polyfactory import Use
 from polyfactory.factories.sqlalchemy_factory import SQLAlchemyFactory
@@ -28,11 +33,15 @@ class AtwIncidentFactory(SQLAlchemyFactory[AtwIncident]):
     stamps it; polyfactory otherwise fills the nullable column at random.
     """
 
+    __set_relationships__ = False
+
     closed_at = None
 
 
 class AtwIncidentExecutionFactory(SQLAlchemyFactory[AtwIncidentExecution]):
     """Define factory for AtwIncidentExecution instances."""
+
+    __set_relationships__ = False
 
 
 class AtwSendLogFactory(SQLAlchemyFactory[AtwSendLog]):
@@ -41,5 +50,7 @@ class AtwSendLogFactory(SQLAlchemyFactory[AtwSendLog]):
     ``detail`` is pinned to an empty mapping because polyfactory cannot generate a
     value for the untyped JSON column.
     """
+
+    __set_relationships__ = False
 
     detail = Use(dict)

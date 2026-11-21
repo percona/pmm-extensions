@@ -76,7 +76,7 @@ CHUNKS_AT_OR_BELOW_OFFSET = 2
 
 
 def _default_list_query(
-    manager: type[TaskManager] | type[TaskHistoryManager],
+    manager: type[TaskManager | TaskHistoryManager],
 ) -> ListQuery:
     """Build a default ListQuery from a manager's list_query_spec.
 
@@ -90,7 +90,7 @@ def _default_list_query(
 
 
 def _list_query(
-    manager: type[TaskManager] | type[TaskHistoryManager],
+    manager: type[TaskManager | TaskHistoryManager],
     *,
     sort: str | None = None,
     search: str | None = None,

@@ -151,7 +151,7 @@ async def reconcile_step(tasks_api: RemoteAPI, step: StepRecord) -> StepRecord:
         return step
     try:
         payload = await tasks_api.get(f"/history/{step.task_history_id}")
-    except (HTTPNotFoundException, HTTPGoneException):
+    except HTTPNotFoundException, HTTPGoneException:
         return step.model_copy(
             update={
                 "status": StepStatus.FAILED,
@@ -160,7 +160,7 @@ async def reconcile_step(tasks_api: RemoteAPI, step: StepRecord) -> StepRecord:
                 "the dispatch's outcome is unknown",
             }
         )
-    except (HTTPException, aiohttp.ClientError, OSError):
+    except HTTPException, aiohttp.ClientError, OSError:
         logger.warning(
             "Could not read task history %s for step %r; leaving it running",
             step.task_history_id,
@@ -220,7 +220,7 @@ async def _failure_detail(
         logs = await asyncio.wait_for(
             read_step_logs(tasks_api, task_history_id), LOG_READ_TIMEOUT_S
         )
-    except (HTTPException, aiohttp.ClientError, OSError):
+    except HTTPException, aiohttp.ClientError, OSError:
         # The reason alone is still better than leaving the step running: logs that
         # cannot be read now (gone from the executor, or slow) may never be. The
         # timeout lands here too, since TimeoutError is an OSError.

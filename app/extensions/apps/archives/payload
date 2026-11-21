@@ -192,7 +192,7 @@ def main() -> None:
                 elif conf["swp_drp"] == 2:
                     # SWAP-ARCHIVE-DROP
                     # SWAP
-                    src_tbl_swapped = f"{src_tbl}_{conf['swp_table_suffix']}"
+                    src_tbl_swapped = "{}_{}".format(src_tbl, conf["swp_table_suffix"])
                     ret = swap_create_table(src_db, src_tbl, src_tbl_swapped, conf)
                     if ret == 0:
                         # ARCHIVE

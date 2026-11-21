@@ -10,7 +10,7 @@ FROM localhost/extensions:builder AS builder
 
 # Consolidated PMM Extensions side-car: the five PMM Extensions services plus a bundled Valkey broker
 # under one supervisord. No frontend SPA — the UI is served by PMM.
-FROM docker.io/library/python:3.11.16-slim
+FROM docker.io/library/python:3.14.10-slim
 
 RUN groupadd --gid 1001 extensions && \
     useradd --gid extensions --shell /usr/sbin/nologin --home-dir /home/extensions --uid 1001 --create-home extensions
@@ -96,7 +96,8 @@ COPY --from=docker.io/valkey/valkey:8-bookworm \
 
 # Container process manager; pinned here rather than in poetry.lock because the
 # standalone image shares that lock and does not use supervisord
-RUN pip install --no-cache-dir supervisor==4.3.0
+RUN pip install --no-cache-dir supervisor==4.3.0 && \
+    pip uninstall --yes pip
 
 # Side-car runtime inputs; alembic.ini backs the migration one-shots
 COPY --chown=0:1001 --chmod=440 ./alembic.ini .
