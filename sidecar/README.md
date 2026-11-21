@@ -126,9 +126,10 @@ A setting variable can also be set directly. It then overrides only itself: `EXT
 | `GF_SECURITY_ADMIN_USER` | `admin` | The Grafana administrator that requests the token. Used only when the sidecar holds no valid token. |
 | `GF_SECURITY_ADMIN_PASSWORD` | `admin` | Its password. Removed from the environment before the services start. |
 | `EXTENSIONS_STATE_DIR` | `/home/extensions/state` | Where the token and a generated encryption key are stored. |
-| `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` | `60` | Seconds to wait for the databases before a key is generated. |
 
 `EXTENSIONS_GRAFANA_MINT_TIMEOUT` is not read. A deployment that sets it gets one `[grafana-mint]` log line that says so.
+
+`EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` is not read either. A start that must generate `ENCRYPTION_KEY` while it is set logs one `[encryption-key]` line that says so.
 
 ### What is not an input
 
@@ -147,31 +148,35 @@ A setting variable can also be set directly. It then overrides only itself: `EXT
 | `ENCRYPTION_KEY` | The variable. A file in `SECRETS_DIR`. A key stored by an earlier start. A new key. | `<state>/ENCRYPTION_KEY`, mode 0600, when generated |
 | Grafana token | `EXTENSIONS_GRAFANA_TOKEN`, or one of the two token settings. A token stored by an earlier start. A new token. | `<state>/grafana_service_account_token`, mode 0600, when requested |
 
-A new encryption key is generated only when none of the three service databases holds an encrypted value. If one does, or if a database cannot be read within the timeout, the container does not start. A lost key cannot be recovered.
+A new encryption key is generated only when none of the three service databases holds an encrypted value. If one does, or if a value cannot be parsed, the container does not start. A lost key cannot be recovered.
+
+Two containers that share one state volume take turns through a lock in it, so they do not both generate a key. A start waits up to 120 seconds for a peer that holds the lock, then exits. A peer that waits for the databases holds the lock until they answer.
 
 A new Grafana token belongs to a service account named `pmm-extensions` with the `Admin` role. A stored token is checked with one call at startup. If Grafana rejects it, a new one is requested. If Grafana does not answer, the stored token is used.
 
 ## Starting before PMM is ready
 
-A Compose file with a plain `depends_on: pmm-server` starts the sidecar when the `pmm-server` container has started, not when PMM is healthy. `entrypoint.sh` then waits for the two things that PMM supplies while it starts. It starts `supervisord` only when it has both.
+A Compose file with a plain `depends_on: pmm-server` starts the sidecar when the `pmm-server` container has started, not when PMM is healthy. `entrypoint.sh` then waits for what PMM supplies while it starts. It starts `supervisord` only when it has all of it.
 
 | It waits for | When | What the container log says |
 |---|---|---|
 | The `SECRET_KEY` file | `SECRETS_DIR` is set, and neither the environment nor a file in that directory supplies a key. | A line that starts with `[entrypoint] Waiting for PMM to publish SECRET_KEY under <directory>`, every 10 seconds. When the file exists and the sidecar cannot read it, the line says so. It then names the user ID and the groups that the sidecar runs as. |
+| The three service databases in PMM's PostgreSQL | The start must generate `ENCRYPTION_KEY`. No key is supplied by the environment, by a file in `SECRETS_DIR` or by the state directory. | A line that starts with `[encryption-key] Waiting for the <service> database to answer before the ENCRYPTION_KEY is minted`, at least 30 seconds apart. The line gives the last error. |
 | A Grafana that can create the token | The start must request a token. None is configured or mounted, and either none is stored or Grafana rejected the stored one. | A line that starts with `[grafana-mint] Waiting for Grafana at <endpoint> to accept the service-account mint`, at least 30 seconds apart. The line gives Grafana's last answer. |
 
 | Fact | Detail |
 |---|---|
-| Time limit | Neither wait has one. |
+| Time limit | None of the waits has one. |
 | Health during a wait | `starting` for about three and a half minutes, and `unhealthy` after that. The container turns healthy without a restart when the wait ends. |
 | A stop signal during a wait | The entrypoint ends in about a second, with exit status 143. |
 | What the Grafana wait covers | A refused or timed-out connection, and HTTP 500, 502, 503 or 504. Each attempt is given up after 30 seconds and repeated 3 seconds later. |
-| A fault that no wait can clear | A rejected administrator credential, an endpoint that does not serve Grafana's API, or a Grafana certificate that fails verification. It is reported once, in a `[grafana-mint]` line, and not tried again. The programs then start without a token, and sign-in and the inventory copy do not work. The container reports unhealthy until the fault is removed and the container is started again. |
-| A start that already holds a token | It does not wait. A configured or mounted token skips the request. A stored token is used without a check while Grafana does not answer. |
+| A Grafana fault that no wait can clear | A rejected administrator credential, an endpoint that does not serve Grafana's API, or a Grafana certificate that fails verification. It is reported once, in a `[grafana-mint]` line, and not tried again. The programs then start without a token, and sign-in and the inventory copy do not work. The container reports unhealthy until the fault is removed and the container is started again. |
+| A start that already holds a token | It does not wait for Grafana. A configured or mounted token skips the request. A stored token is used without a check while Grafana does not answer. |
 | After the key file appears | The entrypoint reads the directory once more, one second later. PMM writes the key first and the three database passwords directly after it. |
-| The encryption-key step | It keeps its time limit. On a start that must generate `ENCRYPTION_KEY`, the container exits when the databases do not answer within `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` seconds. |
+| What the database wait covers | A database that does not answer, and one that answers with a fault that no wait clears, such as a rejected password. The line then names that fault. Each attempt is given up after 30 seconds and repeated 3 seconds later. |
+| Before the key is generated | All three databases must answer and pass the check, and then pass it again. A sidecar that already holds the key may have written to one database while this start waited for another. |
 
-For why neither wait has a time limit, see [Why the sidecar waits for PMM](../docs/explanation/architecture.md#why-the-sidecar-waits-for-pmm).
+For why the waits have no time limit, see [Why the sidecar waits for PMM](../docs/explanation/architecture.md#why-the-sidecar-waits-for-pmm).
 
 ## Settings an administrator may change
 
