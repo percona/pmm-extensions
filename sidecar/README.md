@@ -319,7 +319,9 @@ first start routinely runs while pmm-server's postgres is still coming up — th
 same condition the supervised migration steps wait out. Each attempt is given up
 after 30 seconds and retried 3 seconds later, and an `[encryption-key]` line names
 the database and the last error at most every 30 seconds. The key is minted once
-all three databases have answered and passed the check. A database that answers
+all three databases have answered and passed the check, and passed it again in a
+second pass right after: a side-car that already holds the key may have written to
+a database that passed while this one waited for another. A database that answers
 with a fault no wait clears, such as a rejected password, is waited on in the
 same way, with that fault in the line. `EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT` is
 not read; a start that has to mint, with it set, logs one line saying so.

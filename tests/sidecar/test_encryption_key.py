@@ -752,6 +752,60 @@ def test_a_database_that_comes_up_during_the_wait_gets_the_key_minted(
     )
 
 
+def test_ciphertext_written_to_a_checked_database_during_the_wait_refuses_the_mint(
+    fresh_deployment: Path,
+):
+    """Check every database again once all have answered, before minting.
+
+    A running side-car that holds its key can write encrypted overrides to the
+    extensions database after it passed, while this start still waits for the
+    inventory database. The inventory database is aimed at a file in a
+    directory that does not exist yet; the ciphertext is written once the wait
+    is reported, and the directory created after it.
+    """
+    late = fresh_deployment / "late"
+    process = subprocess.Popen(
+        [sys.executable, str(HELPER_SCRIPT)],
+        cwd=str(fresh_deployment),
+        env={
+            **helper_environment(fresh_deployment),
+            "INVENTORY__DATABASE__NAME": str(late / DATABASE_FILENAMES["INVENTORY"]),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stderr is not None
+        waiting = next(line for line in process.stderr if "Waiting for the" in line)
+        engine = create_engine(
+            f"sqlite:///{fresh_deployment / DATABASE_FILENAMES['EXTENSIONS']}"
+        )
+        with engine.begin() as connection:
+            connection.execute(
+                insert(SettingOverride.__table__),
+                [
+                    {
+                        "setting_class": "EXTENSIONS_SETTINGS",
+                        "key": "KEY_0",
+                        "value": ciphertext(),
+                        "is_active": True,
+                    }
+                ],
+            )
+        engine.dispose()
+        late.mkdir()
+        stdout, stderr = process.communicate(timeout=HELPER_STARTUP_ALLOWANCE_SECONDS)
+    finally:
+        process.kill()
+
+    assert "Waiting for the inventory database" in waiting
+    assert process.returncode != 0
+    assert "The extensions database already holds encrypted override" in stderr
+    assert not stdout.strip()
+    assert not persisted_key_path(fresh_deployment).exists()
+
+
 def test_the_wait_is_reported_again_at_the_report_interval(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

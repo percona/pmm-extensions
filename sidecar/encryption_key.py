@@ -27,7 +27,7 @@ wrote it, and :mod:`~app.core.settings_override.cache` warns and skips a row it
 cannot decrypt rather than failing the load, so minting a replacement over
 surviving ciphertext brings the container up green with the affected overrides
 silently reverted to their YAML values. Minting therefore happens only where all
-three service databases are provably free of ciphertext. A database that does not
+three service databases are free of ciphertext, checked twice. A database that does not
 answer proves nothing either way, so the helper waits for it, without a bound:
 PMM starts this container beside its own, not after it, so on a first start its
 PostgreSQL is routinely still coming up.
@@ -112,6 +112,12 @@ WAIT_REPORT_INTERVAL_SECONDS = 30.0
 
 RETIRED_TIMEOUT_INPUT = "EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT"
 """A probe bound a deployment may still set, which nothing reads."""
+
+FRESHNESS_PASSES = 2
+"""How many times the three databases are checked before a key is minted.
+
+See :func:`assert_every_database_is_fresh` for why one pass is not enough.
+"""
 
 LOCK_POLL_INTERVAL_SECONDS = 0.2
 """How often a start re-tries the state lock while a peer holds it."""
@@ -576,10 +582,15 @@ async def probe_until_answered(service: str, options: DatabaseOptions) -> bool:
 
 
 async def assert_every_database_is_fresh() -> None:
-    """Raise unless all three service databases are provably free of ciphertext.
+    """Raise unless all three service databases are free of ciphertext.
 
-    Waits for each database in turn until it answers, so the key is minted only
-    once all three have answered and passed the check.
+    Waits for each database in turn until it answers, then checks all three
+    again. A side-car that already holds the key can write encrypted overrides
+    to a database that passed while this start waited for a later one, and the
+    wait has no bound; the second pass sees such a write. It runs once every
+    database answers, so it takes as long as three queries. A write that lands
+    after it is not seen: no lock covers the writers, and only supplying the
+    same ``ENCRYPTION_KEY`` to every side-car on these databases rules it out.
 
     :raises EncryptionKeyError: If any database holds ciphertext, or a value
         that cannot be decoded. Both refuse: a deployment whose freshness cannot
@@ -589,12 +600,13 @@ async def assert_every_database_is_fresh() -> None:
         because it is a misconfiguration of the container, not a state the
         deployment can be in.
     """
-    for service, settings_cls in SERVICE_DATABASES.items():
-        if await probe_until_answered(service, settings_cls().DATABASE):
-            raise EncryptionKeyError(
-                f"The {service} database already holds encrypted override "
-                f"values. {_ciphertext_remedy()}"
-            )
+    for _ in range(FRESHNESS_PASSES):
+        for service, settings_cls in SERVICE_DATABASES.items():
+            if await probe_until_answered(service, settings_cls().DATABASE):
+                raise EncryptionKeyError(
+                    f"The {service} database already holds encrypted override "
+                    f"values. {_ciphertext_remedy()}"
+                )
 
 
 def _ciphertext_remedy() -> str:
