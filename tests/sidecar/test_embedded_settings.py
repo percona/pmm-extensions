@@ -15,6 +15,7 @@
 """Verify the baked PMM-embedded settings profile."""
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from app.core.config import Settings
 from app.core.requests import RemoteAPI
 from app.core.utils import import_var
 from app.extensions.api.routes.settings import EXTENSIONS_ADMIN_SETTINGS_CLASSES
+from app.extensions.apps.atw.config import AtwSettings
 from app.extensions.apps.framework.registry import (
     build_app_registry,
     collect_app_owned_settings_classes,
@@ -334,6 +336,35 @@ def test_profile_writes_pool_sizing_into_the_shared_database(
 def test_profile_pins_worker_concurrency():
     """Pin the prefork concurrency the connection budget assumes."""
     assert Settings().CELERY.worker_concurrency == EMBEDDED_WORKER_CONCURRENCY
+
+
+RUNTIME_WRITABLE_DIR = "var"
+"""The one directory under the app directory the image lets the side-car write.
+
+``Containerfile.sidecar`` makes it, owned by ``extensions``; every other entry
+under the app directory is read-only to that user.
+"""
+
+
+@pytest.mark.usefixtures("embedded_profile_cwd")
+@pytest.mark.parametrize(
+    "resolve",
+    [
+        pytest.param(lambda: Settings().CELERY.worker_state_db, id="worker-state"),
+        pytest.param(lambda: AtwSettings().bundle_dir, id="atw-bundles"),
+    ],
+)
+def test_runtime_files_resolve_under_the_writable_directory(
+    resolve: Callable[[], str],
+):
+    """Point each relative path a program writes at run time into ``var/``.
+
+    Both settings resolve against ``BASE_DIR``, which is the app directory in
+    the image. A path anywhere else there fails with ``Permission denied`` at run time: the
+    worker exits at start, and a diagnostics send fails when it stages its
+    bundle.
+    """
+    assert Path(resolve()).relative_to(BASE_DIR).parts[0] == RUNTIME_WRITABLE_DIR
 
 
 @pytest.mark.usefixtures("embedded_profile_cwd")

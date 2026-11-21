@@ -154,10 +154,10 @@ ENV PYTHONUNBUFFERED=1
 # the supplementary group 0, as PMM's compose file starts it, could write there.
 RUN chmod -R u+X,g+X,go-w $APP_HOME
 
-# The one directory under $APP_HOME the side-car writes: the Celery worker keeps
-# its state file here (CELERY.WORKER_STATE_DB in settings.yaml, a path relative
-# to the worker's working directory). Made after the chmod above, which would
-# add group search to it.
+# The one directory under $APP_HOME the side-car writes: the Celery worker's
+# state file and the atw app's staged bundles go here (CELERY.WORKER_STATE_DB and
+# EXTENSIONS.ATW.bundle_dir in settings.yaml, both relative to $APP_HOME). Made
+# after the chmod above, which would add group search to it.
 RUN install -d -o 1001 -g 1001 -m 0700 $APP_HOME/var
 
 USER extensions

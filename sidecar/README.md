@@ -558,7 +558,8 @@ neither rename nor delete an entry in them nor create a new one, and nothing und
 is writable by group or other. That holds with the supplementary group 0 too, which PMM's
 compose file adds so the side-car can read the secrets PMM writes for that group. The one
 exception is `$APP_HOME/var` (`0700 extensions:extensions`), where the Celery worker keeps its
-state file (`CELERY.WORKER_STATE_DB`); it lives in the container and is lost when the container
+state file (`CELERY.WORKER_STATE_DB`) and the `atw` app stages a diagnostics bundle while it
+uploads (`EXTENSIONS.ATW.bundle_dir`); it lives in the container and is lost when the container
 is recreated. Any other path a program writes under `$APP_HOME` at run time needs a writable
 volume mounted there — at minimum `EXTENSIONS.artifact_dir`, which defaults to
 `data/health-reports`, for a deployment that enables the `report` app:
