@@ -199,8 +199,11 @@ For why neither wait has a time limit, see [Why the sidecar waits for PMM](../do
 |---|---|---|
 | `/home/extensions/state` | The Grafana token and a generated `ENCRYPTION_KEY` | Always. Without it, a recreated container loses the key, and a deployment with encrypted values does not start. |
 | The path in `SECRETS_DIR` | The secret files that PMM writes | Read-only, shared with PMM Server |
+| `/home/extensions/app/data/health-reports` (`EXTENSIONS.artifact_dir`) | The reports that the `report` app writes | Writable, when the deployment enables the `report` app. Without it, a recreated container loses the reports. |
 
-The files under `/home/extensions/app` belong to `root`, and the `extensions` user cannot change their content. The directory itself belongs to `extensions`, so that user can add, remove and replace the entries directly in it. The state directory is the only path the image creates for the sidecar to write to by design.
+Every process runs as the `extensions` user, and that user cannot change anything that the image ships. `/home/extensions` and `/home/extensions/app` both belong to `root:extensions` with the mode `0750`. So `extensions` cannot add, remove or rename an entry in them, and nothing under `/home/extensions/app` is writable by group or other. This also holds with the supplementary group 0, which PMM's Compose file adds so that the sidecar can read the secrets that PMM writes.
+
+The sidecar writes only to `/home/extensions/state`, `/home/extensions/app/var`, `/tmp` and mounted volumes. `/home/extensions/app/var` belongs to `extensions` with the mode `0700`. It holds the Celery worker's state file (`CELERY.WORKER_STATE_DB`) and the diagnostics bundle that the `atw` app stages while it uploads (`EXTENSIONS.ATW.bundle_dir`). It is not a volume, so a recreated container loses it. Any other path that a program writes under `/home/extensions/app` needs a writable volume there.
 
 ## Health
 
