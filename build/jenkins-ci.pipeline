@@ -16,12 +16,6 @@ pipeline {
 			name: 'defaultCmd',
 			defaultValue: '--log-level=DEBUG'
 		)
-		choice(
-			name: 'pyVersion',
-			choices: [
-				'3.11'
-			]
-		)
 		booleanParam(
 			name: 'pushImage',
 			defaultValue: false,
@@ -42,9 +36,6 @@ pipeline {
 	environment {
 		BUILD_OPTIONS = ''
 		CMD = "${defaultCmd}"
-
-		PYTHON = "python${pyVersion}"
-		PYTHON_VERSION = "${pyVersion}"
 
 		RELEASE_VER = "${releaseTag}"
 
@@ -75,8 +66,7 @@ pipeline {
 		stage('Perform audit') {
 			steps {
 				build job: 'PMM-Extensions/Audit', parameters: [
-					[$class: 'StringParameterValue', name: 'releaseTag', value: "${RELEASE_VER}"],
-					[$class: 'StringParameterValue', name: 'pyVersion', value: "${PYTHON_VERSION}"]
+					[$class: 'StringParameterValue', name: 'releaseTag', value: "${RELEASE_VER}"]
 				], propagate: true, wait: true
 			}
 		}
@@ -85,7 +75,6 @@ pipeline {
 			steps {
 				build job: 'PMM-Extensions/Build', parameters: [
 					[$class: 'StringParameterValue', name: 'releaseTag', value: "${RELEASE_VER}"],
-					[$class: 'StringParameterValue', name: 'pyVersion', value: "${PYTHON_VERSION}"],
 					[$class: 'BooleanParameterValue', name: 'pushImage', value: Boolean.valueOf("${params.pushImage}")],
 					[$class: 'BooleanParameterValue', name: 'pushImageDocker', value: Boolean.valueOf("${params.pushImageDocker}")]
 				], propagate: true, wait: true
@@ -95,8 +84,7 @@ pipeline {
 		/*stage('Deploy') {
 			steps {
 				build job: 'PMM-Extensions/Deploy', parameters: [
-					string(name: 'releaseTag', value: "${RELEASE_VER}"),
-					string(name: 'pyVersion', value: "${PYTHON_VERSION}")
+					string(name: 'releaseTag', value: "${RELEASE_VER}")
 				], propagate: true, wait: true
 			}
 		}*/

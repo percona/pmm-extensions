@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-from collections.abc import (  # noqa: TC003 — validate_call resolves these at runtime
+from collections.abc import (
     Awaitable,
     Callable,
 )

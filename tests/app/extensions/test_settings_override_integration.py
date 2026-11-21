@@ -63,7 +63,7 @@ OVERRIDE_EVERY_MINUTES = 30
 
 
 @pytest_asyncio.fixture(name="override_session_maker")
-async def _override_session_maker() -> AsyncGenerator[async_sessionmaker, None]:
+async def _override_session_maker() -> AsyncGenerator[async_sessionmaker]:
     """Provide an in-memory SQLite session maker isolated from the main test DB."""
     # scaffolding-dup-ok: this duplication predates the change that
     # re-annotated the fixture's return type; promoting it against
@@ -920,7 +920,7 @@ class TestBootAppliesLoggingOverride:
             """Stub ``extensions_startup`` so the test does not hit the real PMM Extensions DB."""
 
         @asynccontextmanager
-        async def _no_op_tasks_lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+        async def _no_op_tasks_lifespan(_app: FastAPI) -> AsyncGenerator[None]:
             """Stub ``tasks_lifespan`` so the test does not hit the real tasks DB."""
             yield
 

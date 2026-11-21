@@ -350,7 +350,7 @@ class TaskExecutionRequestJSON(AutoJSON):
             request = TaskExecutionRequest.model_validate(
                 document, context=STORED_REQUEST_CONTEXT
             )
-        except (ValidationError, TypeError):
+        except ValidationError, TypeError:
             return value
         request.mark_unreadable_leaves(unreadable)
         return request

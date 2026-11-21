@@ -24,9 +24,8 @@ from __future__ import annotations
 
 import sys
 
-MINIMUM = (3, 11, 9)
-EXCLUDED = ((3, 12, 0), (3, 12, 1), (3, 12, 2))
-UPPER_BOUND = (3, 14, 0)
+MINIMUM = (3, 14, 0)
+UPPER_BOUND = (3, 15, 0)
 
 
 def is_supported(version: tuple[int, int, int]) -> bool:
@@ -35,7 +34,7 @@ def is_supported(version: tuple[int, int, int]) -> bool:
     :param version: The interpreter's major, minor and micro numbers.
     :return: ``True`` when the project can be installed on that interpreter.
     """
-    return MINIMUM <= version < UPPER_BOUND and version not in EXCLUDED
+    return MINIMUM <= version < UPPER_BOUND
 
 
 def main() -> int:
@@ -48,7 +47,7 @@ def main() -> int:
         return 0
     print(
         f"venv: Python {'.'.join(str(part) for part in version)} is not supported. "
-        "Use 3.11.9 to 3.13, except 3.12.0 to 3.12.2. Example: make venv PYTHON=python3.12",
+        "Use 3.14. Example: make venv PYTHON=python3.14",
         file=sys.stderr,
     )
     return 1

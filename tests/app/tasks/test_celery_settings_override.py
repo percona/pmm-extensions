@@ -92,7 +92,7 @@ def _write_cert(path: Path, *, not_valid_after: datetime) -> None:
 
 
 @pytest_asyncio.fixture(name="override_session_maker")
-async def _override_session_maker() -> AsyncGenerator[async_sessionmaker, None]:
+async def _override_session_maker() -> AsyncGenerator[async_sessionmaker]:
     """Provide an in-memory SQLite session maker isolated from the main test DB."""
     # scaffolding-dup-ok: this duplication predates the change that
     # re-annotated the fixture's return type; promoting it against

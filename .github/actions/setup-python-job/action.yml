@@ -1,10 +1,9 @@
 name: Setup Python job
-description: Checkout repo, install Poetry, setup Python
+description: >-
+  Install Poetry and set up Python. The Python version is pinned here, not taken
+  from callers, so every job runs the interpreter its own checkout requires,
+  including a run replayed against a newer or older ref.
 inputs:
-  python-version:
-    description: Version of Python to use
-    required: true
-    default: "3.11"
   cache:
     description: Type of cache to use
     required: false
@@ -27,5 +26,5 @@ runs:
     - name: Setup Python
       uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
       with:
-        python-version: ${{ inputs.python-version }}
+        python-version: "3.14.10"
         cache: ${{ inputs.cache }}

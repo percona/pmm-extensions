@@ -162,7 +162,7 @@ class SyncHealthReporter:
         self,
         entity_type: SyncInventoryEntityTypeEnum,
         created_entity: CreatedEntity,
-    ) -> AsyncGenerator[SyncHealthAttempt, None]:
+    ) -> AsyncGenerator[SyncHealthAttempt]:
         """Write the entity's sync-health columns from this attempt's outcome.
 
         Nests inside ``manage_sync_item`` so a failure is recorded before that

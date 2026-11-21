@@ -34,7 +34,6 @@ jobs:
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
         with:
-          python-version: "3.11.9"
           cache: poetry
 
       - name: Install test dependencies

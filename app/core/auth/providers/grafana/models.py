@@ -251,7 +251,7 @@ class GrafanaUser(BaseUser):
         return payload
 
     @staticmethod
-    def _mint(user: "GrafanaUser", token_type: _TokenType) -> str:
+    def _mint(user: GrafanaUser, token_type: _TokenType) -> str:
         """Mint a signed identity assertion of ``token_type`` for ``user``.
 
         :param user: The user whose identity the assertion carries.
@@ -266,7 +266,7 @@ class GrafanaUser(BaseUser):
         return _TOKEN_SERIALIZER.dumps(payload)
 
     @staticmethod
-    def _oauth_token_for(user: "GrafanaUser", grafana: GrafanaSDK) -> OAuthToken:
+    def _oauth_token_for(user: GrafanaUser, grafana: GrafanaSDK) -> OAuthToken:
         """Build an OAuth token pair (access + refresh) for ``user``.
 
         :param user: The authenticated user.
@@ -430,7 +430,7 @@ class GrafanaUser(BaseUser):
         return GrafanaUser._oauth_token_for(user, grafana)
 
     @staticmethod
-    async def _user_from_ambient_session(session: str) -> "GrafanaUser | None":
+    async def _user_from_ambient_session(session: str) -> GrafanaUser | None:
         """Read the identity behind an ambient Grafana session cookie.
 
         ``GrafanaException`` is itself an ``HTTPException``, so the non-401
@@ -602,7 +602,7 @@ class GrafanaUser(BaseUser):
                 cls._from_service_account_record(record)
                 for record in await cls._service_account_records()
             ]
-        except (HTTPException, TimeoutError, ClientError, ValueError):
+        except HTTPException, TimeoutError, ClientError, ValueError:
             logger.warning(
                 "Failed to list Grafana service accounts; naming org users only.",
                 exc_info=True,

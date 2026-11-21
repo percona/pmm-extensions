@@ -66,9 +66,9 @@ The state volume therefore matters. A lost token costs one new token. A lost enc
 
 ## Why the sidecar waits for PMM
 
-A Compose file can start the sidecar as soon as the `pmm-server` container has started, before PMM is healthy. Two things that the sidecar needs do not exist yet: the `SECRET_KEY` file, and a Grafana that can create the token. The sidecar waits for both, and neither wait has a time limit.
+A Compose file can start the sidecar as soon as the `pmm-server` container has started, before PMM is healthy. Things that the sidecar needs do not exist yet: the `SECRET_KEY` file, and a Grafana that can create the token. A start that must generate `ENCRYPTION_KEY` also needs PMM's PostgreSQL, to check that no database holds a value encrypted under a lost key. The sidecar waits for each of these, and no wait has a time limit.
 
-PMM owns the key and Grafana, so a time limit could only give up on a slow PMM. The programs read the token once, from the environment that `supervisord` starts them with. A token that is created later cannot reach them without a restart. The four schema programs wait for PMM's PostgreSQL in the same way.
+PMM owns the key, its PostgreSQL and Grafana, so a time limit could only give up on a slow PMM. The programs read the token once, from the environment that `supervisord` starts them with. A token that is created later cannot reach them without a restart. The four schema programs wait for PMM's PostgreSQL in the same way.
 
 PMM writes the key first and the three database passwords directly after it. So the sidecar reads the directory once more, one second after the key appears.
 

@@ -186,7 +186,7 @@ class FilePreview(NamedTuple):
 
     @staticmethod
     async def _parse_frontmatter(
-        f: "AsyncTextIOWrapper",
+        f: AsyncTextIOWrapper,
         max_scan_lines: int,
     ) -> tuple[list[str], list[str]]:
         """Read lines from an open file and separate preamble from frontmatter.
@@ -209,6 +209,7 @@ class FilePreview(NamedTuple):
         lines_scanned = 0
 
         while lines_scanned < max_scan_lines:
+            # ty-attr-ok: aiofiles attaches readline at import time through its delegate_to_executor decorator
             line = await f.readline()
             if not line:
                 break
@@ -901,7 +902,7 @@ class Snippet(BaseSnippet, BaseSQLModel, table=True):
         """
         return self.is_approved and super().can_execute
 
-    async def update_from_snippet(self, snippet: "Snippet") -> None:
+    async def update_from_snippet(self, snippet: Snippet) -> None:
         """Update file-derived fields from another snippet without changing approval.
 
         Leave ``approved_at``, ``updated_by``, and ``reason`` unchanged.

@@ -598,7 +598,7 @@ async def stream_task_history_logs(
         )
     else:
 
-        async def _stream_finished_logs() -> AsyncGenerator[str, None]:
+        async def _stream_finished_logs() -> AsyncGenerator[str]:
             async for log in iter_task_history_logs(
                 session,
                 task_history,
@@ -778,7 +778,7 @@ async def sync_task_history(
                 "sync_in_progress_started_at",
             ],
         )
-    except (HTTPBadRequestException, HTTPConflictException):
+    except HTTPBadRequestException, HTTPConflictException:
         await release_sync_lock(async_session, history_id, claimed_at)
         raise
     synced = await _get_history_for_response(session, saved)

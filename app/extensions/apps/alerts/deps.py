@@ -95,7 +95,7 @@ async def get_pmm_present_names(pmm_api: PMMAPIDep) -> set[str] | None:
     try:
         templates = await pmm_api.list_templates()
         return {t.name for t in templates}
-    except (HTTPException, OSError, ClientError):
+    except HTTPException, OSError, ClientError:
         logger.warning("Failed to fetch PMM alert templates", exc_info=True)
         return None
 
@@ -149,7 +149,7 @@ async def get_or_create_alert_folder(pmm_api: PMMAPIDep) -> Folder | None:
         return None
     try:
         return await find_or_create_alert_folder(pmm_api)
-    except (HTTPException, OSError, ClientError):
+    except HTTPException, OSError, ClientError:
         logger.warning("Failed to get or create alert folder in PMM", exc_info=True)
         return None
 
@@ -189,7 +189,7 @@ async def get_pagerduty_status(pmm_api: PMMAPIDep) -> dict[str, Any] | None:
         return None
     try:
         contact_points = await pmm_api.list_contact_points()
-    except (HTTPException, OSError, ClientError):
+    except HTTPException, OSError, ClientError:
         logger.warning("Failed to fetch PagerDuty contact point status", exc_info=True)
         return None
 

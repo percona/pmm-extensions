@@ -382,7 +382,7 @@ async def iter_task_history_logs(
     *,
     source: str | None = None,
     tail_lines: int | None = None,
-) -> AsyncGenerator[TaskLog, None]:
+) -> AsyncGenerator[TaskLog]:
     """Yield ``TaskLog`` records for a finished task history.
 
     When the chunk store has any row for ``task_history``, chunks are streamed
@@ -472,7 +472,7 @@ def iter_legacy_blob(
     *,
     source: str | None,
     chunk_size: int = 65536,
-) -> Generator[TaskLog, None, None]:
+) -> Generator[TaskLog]:
     """Yield ``TaskLog`` records from the legacy ``tracking["task_logs"]`` blob.
 
     Mirrors the behavior of the removed ``TaskHistory.iter_logs`` method so the
