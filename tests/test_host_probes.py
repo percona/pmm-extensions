@@ -61,6 +61,20 @@ class TestDeveloperCheckout:
         with pytest.raises(pytest.skip.Exception, match="needs GNU xargs"):
             require_gnu("xargs", path=str(tmp_path))
 
+    def test_a_bash_that_cannot_start_skips(self, tmp_path: Path) -> None:
+        """Skip, not error, when ``bash`` is found but its interpreter is missing."""
+        _tool(tmp_path, "bash", "").write_text("#!/nonexistent/interpreter\n")
+
+        with pytest.raises(pytest.skip.Exception, match="bash 4"):
+            require_bash_4(path=str(tmp_path))
+
+    def test_a_tool_that_cannot_start_skips(self, tmp_path: Path) -> None:
+        """Skip, not error, when the tool is found but its interpreter is missing."""
+        _tool(tmp_path, "xargs", "").write_text("#!/nonexistent/interpreter\n")
+
+        with pytest.raises(pytest.skip.Exception, match="needs GNU xargs"):
+            require_gnu("xargs", path=str(tmp_path))
+
     def test_a_gnu_tool_runs(self, tmp_path: Path) -> None:
         """Let the case run when the tool reports GNU."""
         _tool(tmp_path, "xargs", "echo 'xargs (GNU findutils) 4.10.0'")

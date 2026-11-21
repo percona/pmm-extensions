@@ -91,19 +91,22 @@ def skip_unless_ci(reason: str) -> None:
 
 @functools.cache
 def _bash_major_version(bash: str | None) -> int:
-    """Return the major version of ``bash``, or 0 when it is missing or unreadable.
+    """Return the major version of ``bash``, or 0 when it is missing or cannot run.
 
     :param bash: The resolved path of ``bash``, or ``None``.
     :return: The major version.
     """
     if bash is None:
         return 0
-    probe = subprocess.run(
-        [bash, "-c", "echo ${BASH_VERSINFO[0]}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        probe = subprocess.run(
+            [bash, "-c", "echo ${BASH_VERSINFO[0]}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return 0
     version = probe.stdout.strip()
     return int(version) if version.isdigit() else 0
 
@@ -124,11 +127,14 @@ def _is_gnu(executable: str) -> bool:
     """Return whether ``executable`` is the GNU build of its tool.
 
     :param executable: The resolved path of the tool.
-    :return: ``True`` when its ``--version`` names GNU.
+    :return: ``True`` when its ``--version`` names GNU; ``False`` when it cannot run.
     """
-    probe = subprocess.run(
-        [executable, "--version"], capture_output=True, text=True, check=False
-    )
+    try:
+        probe = subprocess.run(
+            [executable, "--version"], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return False
     return probe.returncode == 0 and "GNU" in probe.stdout
 
 
