@@ -22,8 +22,10 @@ import os
 import socket
 import stat
 import string
+import struct
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -109,6 +111,25 @@ RETIRED_TIMEOUT_INPUT = "EXTENSIONS_ENCRYPTION_PROBE_TIMEOUT"
 
 RESTORE_HINT = "pmm-extensions-state"
 """What a refusal has to name so an operator can act on it."""
+
+LENGTH_FIELD_BYTES = 4
+"""The size of the length every PostgreSQL message carries, which counts itself."""
+
+LEADING_HEADER_BYTES = 8
+"""The length and protocol code a client's first message opens with, and the
+whole of an SSLRequest."""
+
+SSL_REQUEST_CODE = 80877103
+"""The protocol code a PostgreSQL client sends in place of a version to ask for TLS."""
+
+STARTING_UP_ERROR_FIELDS = (
+    b"SFATAL\0VFATAL\0C57P03\0Mthe database system is starting up\0\0"
+)
+"""The ``ErrorResponse`` body a PostgreSQL that is still starting answers a
+connection with: SQLSTATE 57P03, which asyncpg raises as ``CannotConnectNowError``."""
+
+FAKE_SERVER_POLL_SECONDS = 0.1
+"""How often the fake server's accept loop checks whether its fixture has ended."""
 
 
 def fernet_key() -> str:
@@ -219,6 +240,87 @@ def stalled_database_port() -> Iterator[int]:
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
         yield listener.getsockname()[1]
+
+
+def receive_exactly(connection: socket.socket, size: int) -> bytes:
+    """Read ``size`` bytes from ``connection``, or fewer if the peer hangs up.
+
+    :param connection: The accepted client connection.
+    :param size: How many bytes to read.
+    :return: The bytes read.
+    """
+    received = b""
+    while len(received) < size:
+        chunk = connection.recv(size - len(received))
+        if not chunk:
+            break
+        received += chunk
+    return received
+
+
+def refuse_as_starting_up(connection: socket.socket) -> None:
+    """Answer one client the way a PostgreSQL that is still starting does.
+
+    Declines TLS if the client asks for it, reads the startup message, and
+    answers it with the 57P03 ``ErrorResponse`` before hanging up.
+
+    :param connection: The accepted client connection.
+    """
+    header = receive_exactly(connection, LEADING_HEADER_BYTES)
+    if len(header) < LEADING_HEADER_BYTES:
+        return
+    length, code = struct.unpack("!ii", header)
+    if length == LEADING_HEADER_BYTES and code == SSL_REQUEST_CODE:
+        connection.sendall(b"N")
+        header = receive_exactly(connection, LENGTH_FIELD_BYTES)
+        if len(header) < LENGTH_FIELD_BYTES:
+            return
+        (length,) = struct.unpack("!i", header)
+        receive_exactly(connection, length - LENGTH_FIELD_BYTES)
+    else:
+        receive_exactly(connection, length - LEADING_HEADER_BYTES)
+    connection.sendall(
+        b"E"
+        + struct.pack("!i", len(STARTING_UP_ERROR_FIELDS) + LENGTH_FIELD_BYTES)
+        + STARTING_UP_ERROR_FIELDS
+    )
+
+
+@pytest.fixture
+def starting_database_port() -> Iterator[int]:
+    """Return a port where a fake PostgreSQL refuses every connection as starting up.
+
+    A real server that is still starting answers the startup message with
+    SQLSTATE 57P03 rather than leaving it unanswered, and asyncpg raises that
+    at connect time without SQLAlchemy wrapping it. That is the refusal this
+    fixture reproduces, for as many connections as the test makes.
+
+    :return: The listening port.
+    """
+    stopped = threading.Event()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(FAKE_SERVER_POLL_SECONDS)
+
+        def serve() -> None:
+            while not stopped.is_set():
+                try:
+                    connection, _ = listener.accept()
+                except TimeoutError:
+                    continue
+                with connection:
+                    connection.settimeout(WATCHED_WAIT_SECONDS)
+                    with contextlib.suppress(OSError):
+                        refuse_as_starting_up(connection)
+
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+        try:
+            yield listener.getsockname()[1]
+        finally:
+            stopped.set()
+            server.join()
 
 
 def run_helper(
@@ -670,10 +772,13 @@ def test_a_database_that_never_answers_is_retried_past_one_attempt(
 
     A port that completes the handshake and then says nothing is what a
     database that is still starting can look like. One attempt is bounded, so
-    the wait goes on with the timeout as its last error.
+    the wait goes on with the timeout as its last error. Every attempt is
+    reported, so more than one timeout in the output is what shows the wait
+    went on past the first rather than ending after it.
     """
     monkeypatch.setattr(helper, "PROBE_ATTEMPT_TIMEOUT_SECONDS", SHORT_INTERVAL_SECONDS)
     monkeypatch.setattr(helper, "RETRY_INTERVAL_SECONDS", SHORT_INTERVAL_SECONDS)
+    monkeypatch.setattr(helper, "WAIT_REPORT_INTERVAL_SECONDS", 0)
     options = DatabaseOptions(
         ENGINE="postgresql+asyncpg",
         HOST="127.0.0.1",
@@ -691,7 +796,45 @@ def test_a_database_that_never_answers_is_retried_past_one_attempt(
 
     asyncio.run(watch())
 
-    assert "last error: TimeoutError" in capsys.readouterr().err
+    assert capsys.readouterr().err.count("last error: TimeoutError") >= MIN_REPORTS
+
+
+def test_a_database_that_is_still_starting_is_waited_on(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    starting_database_port: int,
+):
+    """Retry a server that refuses the connection as starting up, not crash on it.
+
+    PostgreSQL answers SQLSTATE 57P03 while it starts, and asyncpg raises that
+    at connect time as its own exception rather than one SQLAlchemy wraps, so
+    it is neither a ``SQLAlchemyError`` nor an ``OSError``. It is the first
+    thing a database PMM is still bringing up answers, so it is waited on like
+    one that does not answer at all.
+    """
+    monkeypatch.setattr(helper, "RETRY_INTERVAL_SECONDS", SHORT_INTERVAL_SECONDS)
+    monkeypatch.setattr(helper, "WAIT_REPORT_INTERVAL_SECONDS", 0)
+    options = DatabaseOptions(
+        ENGINE="postgresql+asyncpg",
+        HOST="127.0.0.1",
+        PORT=starting_database_port,
+        USER="extensions",
+        NAME="extensions",
+    )
+
+    async def watch() -> None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                helper.probe_until_answered("extensions", options),
+                WATCHED_WAIT_SECONDS,
+            )
+
+    asyncio.run(watch())
+
+    assert (
+        capsys.readouterr().err.count("last error: CannotConnectNowError")
+        >= MIN_REPORTS
+    )
 
 
 def test_the_retired_timeout_is_reported_and_not_read(fresh_deployment: Path):
@@ -780,7 +923,9 @@ def test_a_peer_holding_the_state_lock_defers_then_refuses(
     The wait is bounded, so a peer that never releases is refused with a
     diagnostic naming the lock rather than leaving PID 1 blocked on it. Its
     remedy no longer names the retired probe timeout, which no longer moves
-    the bound.
+    the bound, and does not send the operator to separate state volumes:
+    two key-less side-cars on separate volumes against the same databases hold
+    separate locks and can each mint a different key.
     """
     monkeypatch.setattr(helper, "LOCK_WAIT_SECONDS", SHORT_LOCK_WAIT_SECONDS)
     directory = fresh_deployment / "state"
@@ -800,6 +945,8 @@ def test_a_peer_holding_the_state_lock_defers_then_refuses(
     assert elapsed >= SHORT_LOCK_WAIT_SECONDS
     assert str(lock_path) in str(refused.value)
     assert RETIRED_TIMEOUT_INPUT not in str(refused.value)
+    assert "own state volume" not in str(refused.value)
+    assert "same ENCRYPTION_KEY" in str(refused.value)
     assert not persisted_key_path(fresh_deployment).exists()
 
 

@@ -71,6 +71,23 @@ from sidecar.runtime import (
 )
 from sidecar.runtime import warn as runtime_warn
 
+#: What a probe attempt may fail with and still be retried: anything a database
+#: that is down, starting or refusing connections raises. SQLAlchemy wraps
+#: errors raised while a query runs, but asyncpg's own server refusals at
+#: connect time (``CannotConnectNowError`` while PostgreSQL starts,
+#: ``TooManyConnectionsError``, ``InvalidPasswordError``) escape it unwrapped,
+#: as do socket errors; :class:`TimeoutError` subclasses :class:`OSError`, so an
+#: abandoned attempt is covered too. asyncpg ships in the optional
+#: ``postgresql`` Poetry group, so its base class is added only where it can be
+#: imported, keeping a SQLite-only install able to import this module.
+RETRIED_PROBE_ERRORS: tuple[type[Exception], ...]
+try:
+    from asyncpg.exceptions import PostgresError
+except ImportError:
+    RETRIED_PROBE_ERRORS = (SQLAlchemyError, OSError)
+else:
+    RETRIED_PROBE_ERRORS = (SQLAlchemyError, OSError, PostgresError)
+
 __all__ = [
     "DEFAULT_STATE_DIR",
     "RETRY_INTERVAL_SECONDS",
@@ -400,9 +417,10 @@ def _acquire_lock(handle: TextIO, directory: Path) -> None:
                     f"other wrote. Check whether a second side-car runs against "
                     f"this state directory: one that is waiting for the "
                     f"databases holds the lock until they answer, and one that "
-                    f"is paused holds it until it is resumed or stopped. Give "
-                    f"each side-car its own state volume, or pass ENCRYPTION_KEY "
-                    f"explicitly. Nothing was minted or written."
+                    f"is paused holds it until it is resumed or stopped. Stop "
+                    f"the second side-car, or pass the same ENCRYPTION_KEY "
+                    f"explicitly to every side-car that uses these databases. "
+                    f"Nothing was minted or written."
                 ) from error
         else:
             return
@@ -496,6 +514,9 @@ async def service_holds_ciphertext(options: DatabaseOptions) -> bool:
     :raises SQLAlchemyError: If the database rejects the connection or query.
     :raises OSError: If the endpoint cannot be reached at all, which asyncpg
         surfaces as the socket error rather than wrapping it.
+    :raises asyncpg.exceptions.PostgresError: If a PostgreSQL server refuses
+        the connection itself, for instance while it is still starting, which
+        asyncpg raises at connect time without SQLAlchemy wrapping it.
     :raises ValueError: If a stored value is not decodable JSON, which the
         column's own type raises while reading the result.
     """
@@ -518,8 +539,11 @@ async def probe_until_answered(service: str, options: DatabaseOptions) -> bool:
 
     The wait has no bound. A database that does not answer is the ordinary
     first-start condition, and giving up on it would exit the container on the
-    start this helper exists to serve. A value that cannot be decoded is not
-    retried: it is deterministic, and re-reading it only delays the refusal.
+    start this helper exists to serve. Every error in
+    :data:`RETRIED_PROBE_ERRORS` is retried, which includes a server that
+    refuses the connection while it starts. A value that cannot be decoded is
+    not retried: it is deterministic, and re-reading it only delays the
+    refusal.
 
     :param service: The service being probed, for the diagnostics.
     :param options: The service's resolved database options.
@@ -538,9 +562,7 @@ async def probe_until_answered(service: str, options: DatabaseOptions) -> bool:
                 f"The {service} database holds an override value that could "
                 f"not be decoded ({error}). {_ciphertext_remedy()}"
             ) from error
-        # TimeoutError subclasses OSError, so an abandoned attempt and a
-        # refused connection arrive through one clause.
-        except (SQLAlchemyError, OSError) as error:
+        except RETRIED_PROBE_ERRORS as error:
             last_error = f"{type(error).__name__}: {error}"
         if time.monotonic() >= next_report:
             warn(
