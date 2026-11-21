@@ -77,7 +77,7 @@ A task runs on a host that has PMM Client and the tool the task calls. The envir
     Container pmm-extensions-dev-mysql-host-1 Healthy
    ```
 
-To start the PostgreSQL host too, add `--profile postgresql`. On macOS with Colima, the PostgreSQL host stops at its first start. Colima's Docker runs AppArmor, and `sudo` then fails inside the host's container.
+To start the PostgreSQL host too, add `--profile postgresql`. On macOS with Colima, whose Docker runs AppArmor, both hosts start and run a backup task.
 
 Give the same profiles to every later `docker compose` command. Compose ignores a service whose profile is not named. The same holds for a second `-f` file: a command without it recreates the containers without what that file adds.
 
