@@ -135,6 +135,11 @@ Scaffolded 'task' app 'diskfree':
 
 Registered 'diskfree' DISABLED in settings.yaml.
 
+Before you commit, create the app's API snapshots and regenerate the API client:
+      make regen-specs
+Commit the files it writes under tests/app/extensions/snapshots/ and frontend/packages/api/ with the app.
+See docs/how-to/update-api-snapshots.md.
+
 To run the app inside PMM, add this line under EXTENSIONS.APPS in sidecar/settings.yaml:
       - MODULE_NAME: diskfree
 Then follow docs/how-to/run-in-local-pmm.md.
