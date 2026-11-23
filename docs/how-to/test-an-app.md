@@ -7,6 +7,56 @@ This page shows which tests cover an app, how to run them, and how to test a rul
 - A development environment with the virtualenv active: see [Set up a development environment](set-up-a-development-environment.md).
 - An app that the scaffolder generated, with its test package under `tests/app/extensions/apps/<name>/`.
 
+## Run every check for one app
+
+One command runs what CI asks of one app. The later sections explain each suite and show how to run it alone.
+
+1. Run the checks for an app of this repository:
+
+   ```bash
+   make app-check NAME=checksums
+   ```
+
+   The output has one line for each suite:
+
+   ```text
+   the app's tests: passed
+   framework conformance: passed
+   what an app must not do: passed
+   snapshots: passed
+   OpenAPI files: passed
+   the list of apps that ship: passed
+   ```
+
+   The command exits with status 0 when every suite passed. A suite that failed prints `FAILED, see` and the path of its log. The other suites still run. The command regenerates nothing.
+
+2. For an app that is not in this repository, name its directory too:
+
+   ```bash
+   make app-check NAME=checksums APP_DIR=/path/to/checksums
+   ```
+
+   `APP_DIR` is the app's package, with the app's tests in a `tests` directory beside it. The command copies both into your checkout, runs the first three suites, and removes the copies:
+
+   ```text
+   the app's tests: passed
+   framework conformance: passed
+   what an app must not do: passed
+   ```
+
+   The other three suites describe the apps of this repository. The command refuses a name that your checkout already holds. To run such an app, see [Run an app outside the repository](run-an-app-outside-the-repository.md).
+
+The suite "what an app must not do" reads the app's Python and does not run it. It fails for four things:
+
+- An import of a module that starts a process or opens a connection: `subprocess`, `socket`, `requests`, `httpx`, `urllib.request`, `urllib3`, `http.client`, `aiohttp` or `asyncio.subprocess`.
+- A call that does the same, evaluates text, or imports a module by name: `os.system`, `os.popen`, the `os.exec`, `os.spawn` and `os.posix_spawn` functions, `asyncio.create_subprocess_exec`, `asyncio.create_subprocess_shell`, `asyncio.open_connection`, `eval`, `exec`, `importlib.import_module` and `__import__`.
+- A command that the framework's spec classes did not build: a spec builder that returns something else, or a `RunCommandSpec` whose `args` did not come from `shlex.join`.
+- An import of a module of the app's payload from the app's other code. That import runs the payload's code inside PMM Extensions.
+
+Each finding names the file and the line. The suite does not read a file under `payload/` or `payloads/`, except each `__init__.py` there. A payload runs on the database host, and what it does there is the app's purpose.
+
+The suite reads names, so it is a check for a reviewer and not a barrier: code that hides a name passes it.
+
 ## Run the app's own tests
 
 1. Run every test in the app's test package:
@@ -136,7 +186,7 @@ Tests do not run an app's task on a host. The PostgreSQL Backups app passed all 
 
 ## Verify
 
-The app's own tests, the two conformance modules and the two snapshot modules pass. For a new app, `tests/app/test_openapi_specs_fresh.py` passes too. One task of the app has finished with the status `success` in a local PMM.
+`make app-check NAME=<name>` prints `passed` for every suite and exits with status 0. One task of the app has finished with the status `success` in a local PMM.
 
 ## Next steps
 

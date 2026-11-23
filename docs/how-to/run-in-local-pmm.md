@@ -181,6 +181,68 @@ PMM Extensions copies the services from PMM's inventory every 15 minutes. A new 
 
    The output is `success`. While the backup runs, it is `running`.
 
+## Run a task with one command
+
+`sidecar/dev/run-task.py` makes the calls of the last three sections for you. It needs Python 3.11 or later, and no virtualenv.
+
+1. Write the create request to a file, `second-backup.json`. Name the service in `service`, and the script looks up its identifier:
+
+   ```json
+   {
+     "task_name": "second-backup",
+     "hostname": "mysql-host",
+     "service": "dev-mysql",
+     "backup_type": "X",
+     "backup_dir": "/var/backups/dev"
+   }
+   ```
+
+2. Run the task:
+
+   ```bash
+   python3 sidecar/dev/run-task.py --app mysql_backups --body second-backup.json
+   ```
+
+   The script creates the task, runs it, and waits for its end. It prints the task's record, and then what the tool printed on the host. The record starts with the status:
+
+   ```text
+   {
+     "name": "second-backup",
+     "status": "success",
+   ```
+
+   The last line of the output is the result:
+
+   ```text
+   data: {"status": "success"}
+   ```
+
+The exit status tells how the run ended:
+
+| Exit status | Meaning |
+|---|---|
+| 0 | The task ended with the status `success`. |
+| 1 | The task ended with another status. The output still holds what the tool printed. |
+| 2 | The API refused a request. The message is the API's own. An unknown service name lists the names that PMM has. |
+| 3 | The task did not end within `--timeout` seconds. The default is 600. |
+
+The script reads `PMM_PORT` and `PMM_ADMIN_PASSWORD`, or takes `--port` and `--password`. It never deletes a task, so a second run needs another `task_name`.
+
+To see which fields an app's form has, give `--schema` in place of `--body`:
+
+```bash
+python3 sidecar/dev/run-task.py --app mysql_backups --schema
+```
+
+The output has one line for each field, with its type, whether it is required, its default and its choices. A field's description follows on a line of its own:
+
+```text
+Task
+  task_name  string  required
+  hostname  host  required
+  service_id  service  required
+```
+
 ## Run the code in your checkout
 
 The stack runs the code inside the released image. A second Compose file runs your checkout's code in its place. It mounts three paths into the `pmm-extensions` container, read-only: `app/`, `snippets/` and `sidecar/settings.yaml`.
