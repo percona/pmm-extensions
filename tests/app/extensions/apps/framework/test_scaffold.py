@@ -619,6 +619,42 @@ def test_summary_names_the_sidecar_settings_line(
     assert "changelog" not in out.lower()
 
 
+@pytest.mark.parametrize(
+    "settings_changed",
+    [
+        pytest.param(True, id="newly registered"),
+        pytest.param(False, id="already registered"),
+    ],
+)
+def test_summary_names_the_snapshot_step(
+    capsys: pytest.CaptureFixture[str], *, settings_changed: bool
+) -> None:
+    """Tell the contributor to create and commit the new app's API snapshots.
+
+    Without them six snapshot and spec-freshness tests fail, so the step is
+    printed whether or not this run changed the settings.
+    """
+    result = scaffold.ScaffoldResult(
+        name="diskfree",
+        flavor=scaffold.Flavor.TASK,
+        app_dir=scaffold.PLUGINS_DIR / "diskfree",
+        tests_dir=scaffold.TESTS_DIR / "diskfree",
+        written=[],
+        settings_changed=settings_changed,
+        enabled=False,
+        payload_written=None,
+        script_written=None,
+    )
+
+    scaffold._print_summary(result)
+
+    out = capsys.readouterr().out
+    assert "make regen-specs" in out
+    assert "tests/app/extensions/snapshots/" in out
+    assert "frontend/packages/api/" in out
+    assert "docs/how-to/update-api-snapshots.md" in out
+
+
 def test_summary_notes_preexisting_registration(
     tmp_settings: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
