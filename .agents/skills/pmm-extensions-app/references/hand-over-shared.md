@@ -30,14 +30,14 @@ Other people need a public place on the internet to take the app from. Ask for i
 > 2. No. Create one for me.
 > 3. Not now. Keep the app as it is. (Nothing is lost: you can offer it later.)
 
-For the second answer, creating the page is publishing: it waits for the yes below. For the third, the hand-over ends as the private one does.
+For the second answer, creating the page is publishing: it waits for the yes below. It also needs the GitHub CLI on this machine, signed in as the person. When that is missing, do not install it and do not sign in for the person. Say that you cannot create the page from here, that the person can create an empty public repository in a browser and give you its address, and that the app stays on this machine as it is. For the third, the hand-over ends as the private one does.
 
 Then show what will be published: the address, the list of files, and the sentence that anyone on the internet can read them. Ask whether to publish. Without a yes, stop: the notes say what is ready.
 
 After the yes:
 
 1. Write the address into `repository` in `app.yaml`, and save a copy of the work.
-2. Push the workspace's branch to that repository, or the branch with one commit when "Read what would become public" made one.
+2. Push the workspace's branch to that repository, or the branch with one commit when "Read what would become public" made one. When Git refuses the push, stop: say what Git answered, and that whoever manages that repository has to give this machine the right to push. Everything prepared stays on this machine.
 3. Write the list entry to `.app-work/<app>/list-entry.yaml`: the fields of `app.yaml`, with `commit` set to the commit that you pushed. An entry names a commit, not a branch, because the entry describes what ran at that commit.
 
 ## 4. The list of apps

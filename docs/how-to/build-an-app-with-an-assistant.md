@@ -8,12 +8,17 @@ An app runs inside PMM Extensions and has the same reach: see the second paragra
 
 ## Prerequisites
 
-- An AI coding assistant that reads skills in the Agent Skills format, signed in. [What was run](#what-was-run) lists what was tested.
-- Git.
-- The GitHub CLI with the `skill` command. `gh skill --help` prints its usage when you have it.
-- Docker with Compose, and what else [Run PMM Extensions in a local PMM](run-in-local-pmm.md#prerequisites) lists. The assistant runs your app on a test PMM there.
+What you need depends on how far the work goes. The assistant checks your machine at the start and tells you what is missing. It installs nothing: ask the person who administers the machine.
 
-When your machine lacks one of these, ask the person who administers it. The assistant tells you what is missing, and does not install it.
+| For | You need | Without it |
+|---|---|---|
+| Any work | An AI coding assistant that can run commands and that reads skills in the Agent Skills format, signed in. [What was run](#what-was-run) lists what was tested. Git, `python3` and access to `github.com`. | The work cannot start. |
+| The app's checks | What [Set up a development environment](set-up-a-development-environment.md#prerequisites) lists: `make`, the Python version of that page, and Pango. | The app is built and tried on a server, and its checks do not run. Such an app stays private until the checks have run on another machine. |
+| A run on a test database server | What [Run PMM Extensions in a local PMM](run-in-local-pmm.md#prerequisites) lists. That is Docker with Compose and not rootless Podman, an architecture that the page names, a free port, and disk space for the images. | The app is built and checked, and the work ends there. No run on a database server is made. |
+| An app that you offer to others | A public repository of your own, and the right to push to it from this machine. | The app stays on your machine, and the assistant says what is missing. |
+| An app that you propose for PMM itself | A GitHub account that can push to `percona/pmm-extensions` or fork it. For the image, what [Get an app into a PMM release](get-an-app-into-a-pmm-release.md#prerequisites) lists: Podman and buildah. For PMM's menu, what [Add an app to the PMM UI](add-an-app-to-the-pmm-ui.md#prerequisites) lists: Node.js and `pnpm`. | The assistant prepares the change on your machine and publishes nothing. Without Podman and buildah it runs the app from the branch, and writes down that the image was not built. |
+
+You do not need the GitHub CLI. When it is on your machine and signed in, the assistant uses it for two things. It asks GitHub whether you can push to the repository, and it opens a pull request for you.
 
 ## Start a new app
 
@@ -32,13 +37,14 @@ Use this start when you want a tool, a command or a script of yours to run from 
    git clone https://github.com/percona/pmm-extensions .framework
    ```
 
-3. Install the skill for your assistant. For Claude Code:
+3. Copy the skill to where your assistant reads skills. For Claude Code:
 
    ```bash
-   gh skill install .framework pmm-extensions-app --from-local --allow-hidden-dirs --agent claude-code
+   mkdir -p .claude/skills
+   cp -R .framework/.agents/skills/pmm-extensions-app .claude/skills/
    ```
 
-   For Cursor, give `--agent cursor`. `gh skill install --help` lists the other assistants. The command needs `--allow-hidden-dirs` because the repository keeps the skill in a directory whose name starts with a dot.
+   For Cursor, Codex and GitHub Copilot, copy it to `.agents/skills/` in place of `.claude/skills/`. With the GitHub CLI, `gh skill install .framework pmm-extensions-app --from-local --allow-hidden-dirs` makes the same copy.
 
 4. Start the assistant in the directory, and say what you need in your own words. For example:
 

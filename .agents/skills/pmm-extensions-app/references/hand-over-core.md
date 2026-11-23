@@ -10,13 +10,13 @@ Ask, in the words of `the-person.md`. With a number, use it as `CONTRIBUTING.md`
 
 ## 2. Where the work will go
 
-Ask GitHub whether the person can push to the repository. This reads, and publishes nothing:
+Find out whether the person can push to the repository. When the GitHub CLI is on this machine and signed in, ask GitHub. This reads, and publishes nothing:
 
 ```bash
 gh api repos/percona/pmm-extensions --jq .permissions.push
 ```
 
-`true` means a branch in the repository. Anything else, or no answer, means a fork, as `CONTRIBUTING.md` describes. Tell the person in one sentence which one it is.
+`true` means a branch in the repository. Anything else means a fork, as `CONTRIBUTING.md` describes. No answer means a fork too: the command is not there, it is not signed in, or it fails. Never install the GitHub CLI, and never sign in for the person. Tell the person in one sentence which one it is.
 
 ## 3. Put the app into a branch
 
@@ -62,6 +62,8 @@ Show the person what would be published, in one message: where it goes, the bran
 
 - Without a yes, stop. Write into `.app-work/<app>/state.md` what is ready and what is open. Nothing has left the machine.
 - After a yes, push the branch and open the pull request, as "Open the pull requests" of `docs/how-to/get-an-app-into-a-pmm-release.md` says. Give the person its address.
+
+Publishing needs two things at this moment, and you install neither. The first is the right to push from this machine, to the repository or to the person's fork. When Git refuses the push, stop as `when-the-answer-is-no.md` says under "No ticket number, or no right to publish": say what Git answered and who can help. The branch and the text of the pull request stay on this machine. The second is a way to open the pull request. With the GitHub CLI signed in, open it yourself. Without it, push the branch, and give the person the address that GitHub prints for a new pull request and the text in `.app-work/<app>/pull-request.md` to paste there.
 
 A pull request in a second repository is a second thing to publish. Show it and ask again.
 

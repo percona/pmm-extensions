@@ -10,13 +10,14 @@ The skill states the order of the work, what to ask the person, and where to sto
 
 An assistant that starts in a clone of this repository reads the skill from the clone. Nothing is installed.
 
-For work in another directory, one command copies the skill to where an assistant reads it. Run it in that directory, with a clone of this repository as the source:
+For work in another directory, copy the skill to where the assistant reads skills there, from a clone of this repository. For Claude Code:
 
 ```bash
-gh skill install <clone> pmm-extensions-app --from-local --allow-hidden-dirs --agent claude-code
+mkdir -p .claude/skills
+cp -R <clone>/.agents/skills/pmm-extensions-app .claude/skills/
 ```
 
-Use `--agent cursor` for Cursor. The command needs `--allow-hidden-dirs` because the skill is in a directory whose name starts with a dot.
+For Cursor, Codex and GitHub Copilot the place is `.agents/skills/`. The GitHub CLI makes the same copy with `gh skill install <clone> pmm-extensions-app --from-local --allow-hidden-dirs`. It needs the flag because the skill is in a directory whose name starts with a dot.
 
 Claude Code can also install the skill as a plugin, from the marketplace file of a clone:
 
@@ -31,7 +32,7 @@ The tests have three tiers. Change a file of the skill only after you saw the te
 
 ### Tier 0: no model
 
-It checks the skill against the Agent Skills specification and installs it with `gh skill install`. A second module checks every path that a file here names.
+It checks the skill against the Agent Skills specification, runs the copy commands that the pages give, and installs the skill with `gh skill install` where the GitHub CLI has that command. A second module checks every path that a file here names.
 
 ```bash
 pytest assistant/evals/static tests/docs/test_assistant_references.py -q

@@ -26,11 +26,12 @@ Do each step only when its result is not there yet. Change nothing that exists, 
    git clone https://github.com/percona/pmm-extensions .framework
    ```
 
-4. Install the skill from that checkout where it is missing, so that the person can go on with another assistant. The first command puts it in the directory `skills/pmm-extensions-app/` of `.claude/` in the workspace, and the second in the same directory of `.agents/`. When the `gh` command has no `skill` subcommand, copy the directory `.agents/skills/pmm-extensions-app` of the checkout to `.agents/skills/pmm-extensions-app` of the workspace instead.
+4. Copy the skill from that checkout to the two places where assistants read skills, so that the person can go on with another assistant. Copy to a place only when the skill is not there yet.
 
    ```bash
-   gh skill install .framework pmm-extensions-app --from-local --allow-hidden-dirs --agent claude-code --scope project
-   gh skill install .framework pmm-extensions-app --from-local --allow-hidden-dirs --agent cursor --scope project
+   mkdir -p .claude/skills .agents/skills
+   cp -R .framework/.agents/skills/pmm-extensions-app .claude/skills/
+   cp -R .framework/.agents/skills/pmm-extensions-app .agents/skills/
    ```
 
 The workspace then looks like this:

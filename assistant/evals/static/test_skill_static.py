@@ -298,3 +298,75 @@ def test_the_cases_run_against_a_plugin_built_from_the_one_copy_of_the_skill() -
     assert (built / "evals" / "lib" / "place-repo.sh").is_file()
     assert sorted(path.name for path in (built / "evals").glob("*/prompt.md"))
     assert not (built / "evals" / "static").exists()
+
+
+PERSON_PAGE = REPO_ROOT / "docs" / "how-to" / "build-an-app-with-an-assistant.md"
+COPY_SOURCE = f".framework/{SKILL_PATH}"
+FENCE_RE = re.compile(r"^[ \t]*```bash\n(.*?)^[ \t]*```", re.DOTALL | re.MULTILINE)
+
+
+def copy_commands(text: str) -> list[str]:
+    """Return the shell blocks of a Markdown text that copy the skill out of a clone.
+
+    :param text: The Markdown text.
+    :return: Each fenced ``bash`` block that names the skill's directory in
+        the framework checkout, without its indentation.
+    """
+    blocks = [
+        "\n".join(line.strip() for line in block.splitlines())
+        for block in FENCE_RE.findall(text)
+    ]
+    return [block for block in blocks if COPY_SOURCE in block]
+
+
+def test_no_file_of_the_skill_installs_with_the_github_cli() -> None:
+    """Keep the GitHub CLI out of what the skill needs to reach another assistant."""
+    found = [
+        str(path.relative_to(SKILL_DIR))
+        for path in skill_files()
+        if "gh skill" in path.read_text(encoding="utf-8")
+    ]
+    assert found == []
+
+
+def test_the_page_for_the_person_runs_no_github_cli_command() -> None:
+    """Keep the GitHub CLI out of the commands that the person must run."""
+    blocks = FENCE_RE.findall(PERSON_PAGE.read_text(encoding="utf-8"))
+    assert blocks
+    assert [
+        block for block in blocks if re.search(r"^\s*gh ", block, re.MULTILINE)
+    ] == []
+
+
+@pytest.mark.parametrize(
+    ("source", "places"),
+    [
+        (PERSON_PAGE, [".claude/skills"]),
+        (
+            SKILL_DIR / "references" / "workspace.md",
+            [".claude/skills", ".agents/skills"],
+        ),
+    ],
+)
+def test_the_copy_commands_put_the_whole_skill_where_an_assistant_reads_it(
+    tmp_path: Path, source: Path, places: list[str]
+) -> None:
+    """Run the copy commands that a file gives, and compare every file with its source.
+
+    :param tmp_path: The directory that stands for the person's workspace.
+    :param source: The file that gives the commands.
+    :param places: The directories that must hold the skill afterwards.
+    """
+    bash = shutil.which("bash")
+    assert bash is not None
+    (commands,) = copy_commands(source.read_text(encoding="utf-8"))
+    shutil.copytree(SKILL_DIR, tmp_path / COPY_SOURCE)
+    subprocess.run([bash, "-e", "-c", commands], cwd=tmp_path, check=True)
+    wanted = sorted(str(path.relative_to(SKILL_DIR)) for path in skill_files())
+    for place in places:
+        copied = tmp_path / place / SKILL_NAME
+        assert wanted == sorted(
+            str(path.relative_to(copied))
+            for path in copied.rglob("*")
+            if path.is_file()
+        )
