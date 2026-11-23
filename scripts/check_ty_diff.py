@@ -130,7 +130,6 @@ class Source:
         :param text: The file's contents, line endings already normalised.
         :return: The parsed source.
         :raises SyntaxError: When ``text`` does not parse.
-        :raises ValueError: When ``text`` holds a null byte, on Python 3.11.
         :raises RecursionError: When ``text`` nests too deeply to parse.
         :raises MemoryError: When ``text`` nests too deeply to parse.
         """
@@ -476,9 +475,9 @@ def parse_sources(root: Path, paths: Iterable[str]) -> dict[str, Source]:
             # The parser rejects a byte order mark left in a str, and ty does
             # not count one as a column.
             sources[path] = Source.parse(file.read_text(encoding="utf-8-sig"))
-        # ValueError covers undecodable bytes and, on 3.11, a null byte; the
-        # parser raises RecursionError or MemoryError on pathological nesting.
-        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
+        # ValueError covers undecodable bytes; the parser raises RecursionError
+        # or MemoryError on pathological nesting.
+        except OSError, SyntaxError, ValueError, RecursionError, MemoryError:
             continue
     return sources
 

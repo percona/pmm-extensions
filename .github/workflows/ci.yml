@@ -198,6 +198,13 @@ jobs:
               - 'sidecar/wait_for_schema.sh'
               - 'sidecar/clear_sentinels.sh'
               - 'sidecar/Containerfile.sidecar'
+              # tests/test_python_version_pins.py reads these, so a change to
+              # one alone must still run the tier that checks it.
+              - 'Containerfile.base'
+              - 'build/jenkins-*.pipeline'
+              - '.pre-commit-config.yaml'
+              - '.github/actions/setup-python-job/**'
+              - '.github/workflows/**'
               - 'Makefile'
               - 'frontend/packages/api/specs/**'
               # The snippet front-matter authoring rules are enforced by a
@@ -254,9 +261,9 @@ jobs:
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Setup Python
-        uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
+        uses: ./.github/actions/setup-python-job
         with:
-          python-version: "3.11"
+          cache: ""
 
       - name: Install pre-commit
         run: python -m pip install pre-commit==4.5.1
@@ -314,9 +321,9 @@ jobs:
           ref: ${{ github.event.pull_request.number && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
 
       - name: Setup Python
-        uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
+        uses: ./.github/actions/setup-python-job
         with:
-          python-version: "3.11"
+          cache: ""
 
       - name: Install pre-commit
         run: python -m pip install pre-commit==4.5.1
@@ -357,7 +364,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@28f2168f4d98ee0445e3c6321f6e6616c83dd5ec # v6.2.0
         with:
-          python-version: "3.11"
+          python-version: "3.14.10"
 
       - name: Install pre-commit
         run: python -m pip install pre-commit==4.5.1
@@ -459,8 +466,6 @@ jobs:
 
       - name: Setup Python
         uses: ./.github/actions/setup-python-job
-        with:
-          python-version: "3.11.9"
 
       # Sync explicitly: the `venv` prerequisite no-ops against the runner's
       # pre-seeded environment, and ty then resolves no third-party import —

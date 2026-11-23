@@ -15,21 +15,14 @@
 
 """Test correlation ID propagation in BaseRemoteAPI._request."""
 
-from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.core.log import clear_log_context, set_log_context
+from app.core.log import set_log_context
 from app.core.requests.remote_api import BaseRemoteAPI
 
-
-@pytest.fixture(autouse=True)
-def _reset_context() -> Generator[None, None, None]:
-    """Reset log context before and after each test."""
-    clear_log_context()
-    yield
-    clear_log_context()
+pytestmark = pytest.mark.usefixtures("reset_log_context")
 
 
 @pytest.fixture

@@ -28,6 +28,7 @@ helpers) are stubbed, at the ``RemoteAPI`` seam where possible.
 import gzip
 import json
 from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -749,7 +750,7 @@ class TestPerformMethods:
         )
         bound_mysql_syncer.inventory_api.post.side_effect = [table_data]
 
-        async def tables_iter() -> AsyncGenerator[dict, None]:
+        async def tables_iter() -> AsyncGenerator[dict[str, Any]]:
             yield table_data
 
         mysql_schema = MySQLSchema.model_validate(
@@ -966,7 +967,7 @@ class TestStreamsAndParsing:
             return_value=QueuedDecompressor(),
         )
 
-        async def chunks() -> AsyncGenerator[bytes, None]:
+        async def chunks() -> AsyncGenerator[bytes]:
             for _ in pieces:
                 yield b"ignored"
 
@@ -991,7 +992,7 @@ class TestStreamsAndParsing:
 
         async def fake_stream(
             _url: str, params: dict | None = None
-        ) -> AsyncGenerator[bytes, None]:
+        ) -> AsyncGenerator[bytes]:
             for start in range(0, len(comp), 8):
                 yield comp[start : start + 8]
 
@@ -1375,7 +1376,7 @@ class TestTombstoneReconciliation:
         created_schema.tables = [retired]
         table_data = created_table.model_dump()
 
-        async def tables_iter() -> AsyncGenerator[dict, None]:
+        async def tables_iter() -> AsyncGenerator[dict[str, Any]]:
             yield table_data
 
         mysql_schema = MySQLSchema.model_validate(
@@ -1427,7 +1428,7 @@ class TestTombstoneReconciliation:
         created_schema.tables = [created_table, tombstone]
         table_data = created_table.model_dump()
 
-        async def tables_iter() -> AsyncGenerator[dict, None]:
+        async def tables_iter() -> AsyncGenerator[dict[str, Any]]:
             yield table_data
 
         mysql_schema = MySQLSchema.model_validate(

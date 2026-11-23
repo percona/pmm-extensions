@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 
 @functools.cache
-def _default_operator_config() -> "OperatorConfig":
+def _default_operator_config() -> OperatorConfig:
     """Build the default Presidio anonymizer operator config.
 
     The ``presidio_anonymizer`` import is deferred to first call so it stays off
@@ -45,7 +45,7 @@ def _default_operator_config() -> "OperatorConfig":
     return OperatorConfig("replace", {})
 
 
-def _anonymizer_operators() -> dict[str, "OperatorConfig"]:
+def _anonymizer_operators() -> dict[str, OperatorConfig]:
     """Return the operator configuration mapping used by the anonymizer engine."""
     return {"DEFAULT": _default_operator_config()}
 
@@ -60,7 +60,7 @@ class PresidioEngineManager:
         self._engine_lock = threading.RLock()
 
     @property
-    def nlp_engine(self) -> "NlpEngine":
+    def nlp_engine(self) -> NlpEngine:
         """Initialize and return the NLP engine.
 
         This property initializes the NLP engine if it hasn't been created yet,
@@ -84,7 +84,7 @@ class PresidioEngineManager:
         return self._nlp_engine
 
     @property
-    def analyzer(self) -> "AnalyzerEngine":
+    def analyzer(self) -> AnalyzerEngine:
         """Initialize and return the Analyzer engine.
 
         This property initializes the Analyzer engine if it hasn't been created yet,
@@ -106,7 +106,7 @@ class PresidioEngineManager:
         return self._analyzer_engine
 
     @property
-    def anonymizer(self) -> "AnonymizerEngine":
+    def anonymizer(self) -> AnonymizerEngine:
         """Initialize and return the Anonymizer engine.
 
         This property initializes the Anonymizer engine if it hasn't been created yet.

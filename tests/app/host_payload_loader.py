@@ -29,7 +29,8 @@ to fail for real.
 
 It is its own module rather than part of that one because it runs under the
 payload's interpreter: it imports only the standard library, and it must stay
-valid Python 3.9 even though ruff lints it for 3.11.
+valid Python 3.9, which is why ``[tool.ruff.per-file-target-version]`` lints it
+for 3.9 rather than for the project's target.
 """
 
 import importlib.abc

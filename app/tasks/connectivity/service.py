@@ -386,7 +386,7 @@ async def _iter_logs(
     session: AsyncSession,
     task_history: TaskHistory,
     source: str,
-) -> AsyncGenerator[TaskLog, None]:
+) -> AsyncGenerator[TaskLog]:
     """Yield ``source`` logs from either legacy or chunked storage.
 
     :param session: The async database session.
@@ -407,7 +407,7 @@ async def _iter_logs(
 async def _iter_run_script_logs(
     session: AsyncSession,
     task_history: TaskHistory,
-) -> AsyncGenerator[TaskLog, None]:
+) -> AsyncGenerator[TaskLog]:
     """Yield ``run-script`` logs from either legacy or chunked storage.
 
     :param session: The async database session.
@@ -492,7 +492,7 @@ async def _parse_check_result(
             error=result.get("error"),
             task_history_id=task_history.id,
         )
-    except (json.JSONDecodeError, AttributeError):
+    except json.JSONDecodeError, AttributeError:
         return ConnectivityCheckResponse(
             success=False,
             error="Failed to parse connectivity check output",

@@ -10,7 +10,7 @@
 #
 # Neither build declares a layer cache. That is what keeps the scan honest: the
 # shipping stage of sidecar/Containerfile.sidecar is FROM a mutable tag
-# (docker.io/library/python:3.11.16-slim), so a reused cache entry would scan a
+# (docker.io/library/python:3.14.10-slim), so a reused cache entry would scan a
 # digest that never ships and would hide the upstream drift this job exists to
 # find. A hosted runner starts with an empty image store, so both FROM refs are
 # re-resolved from the registry every run without asking for it.

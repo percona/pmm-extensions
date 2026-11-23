@@ -82,7 +82,7 @@ class ErrorPrimingStreamingResponse(StreamingResponse):
             self.body_iterator = body_iter
         else:
 
-            async def primed() -> AsyncGenerator[Any, None]:
+            async def primed() -> AsyncGenerator[Any]:
                 yield first_chunk
                 async for chunk in body_iter:
                     yield chunk
@@ -193,7 +193,7 @@ async def task_history_file_stream(
     task_history_id: int,
     request: Request,
     access_token: str,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """Stream a task history's archived file content as raw bytes.
 
     Yields the file payload chunk-by-chunk from ``/history/{id}/file/`` without

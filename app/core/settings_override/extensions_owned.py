@@ -164,7 +164,7 @@ def extensions_override_database() -> DatabaseOptions:
 @asynccontextmanager
 async def extensions_owned_overrides_refresher(
     *setting_classes: str,
-) -> AsyncGenerator[None, None]:
+) -> AsyncGenerator[None]:
     """Refresh the named PMM Extensions-owned classes from the PMM Extensions database.
 
     Builds an engine of its own for the lifespan and disposes it on exit, so a

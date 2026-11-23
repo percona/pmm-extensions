@@ -164,7 +164,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         self,
         queue_item: TaskHistory,
         start_offsets: dict[str, dict[str, int]] | None = None,
-    ) -> AsyncGenerator[TaskLog | None, None]:
+    ) -> AsyncGenerator[TaskLog | None]:
         """Stream logs from a task history record.
 
         Retrieves the allocation details and concurrently streams stdout and stderr logs
@@ -232,7 +232,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         chunk_size: int = _ONE_MEBIBYTE,
         *,
         anonymize: bool = True,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Stream a file from a task history record.
 
         :param queue_item: The task history record for tracking the file.

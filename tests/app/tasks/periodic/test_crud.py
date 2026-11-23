@@ -16,16 +16,19 @@
 """Define test cases for periodic task CRUD operations."""
 
 import json
+import logging
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy_celery_beat import IntervalSchedule
 from sqlalchemy_celery_beat.models import Period, PeriodicTask
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
+from app.core.exceptions import HTTPBadRequestException
 from app.tasks.periodic.crud import PeriodicTaskManager
 
 CELERY_TASK_NAME = "app.tasks.celery.execute_task_by_name"
@@ -223,6 +226,71 @@ class TestPeriodicTaskManagerSave:
         )
         saved = await PeriodicTaskManager.save(celery_beat_session, instance)
         assert saved.task == CELERY_TASK_NAME
+
+
+async def _save_nameless_periodic_task(
+    session: AsyncSession, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Clear a stored schedule's name and save it, expecting the bad-request answer.
+
+    The schedule's text form reads its related interval row, which the rollback
+    after the failed commit has expired, so a log call that formats the
+    instance would load it outside the async context.
+
+    :param session: A session bound to the celery-beat tables.
+    :param caplog: The log capture fixture, recording the failure's log record.
+    """
+    schedule = IntervalSchedule(every=5, period=Period.HOURS)
+    session.add(schedule)
+    await session.flush()
+    instance = await PeriodicTaskManager.save(
+        session,
+        PeriodicTask(
+            name="nameless",
+            task=CELERY_TASK_NAME,
+            kwargs=json.dumps({"task_name": "test"}),
+            enabled=True,
+            description="",
+            schedule_model=schedule,
+        ),
+    )
+    instance.name = None
+
+    with (
+        caplog.at_level(logging.ERROR, logger="app.core.db.crud"),
+        pytest.raises(HTTPBadRequestException),
+    ):
+        await PeriodicTaskManager.save(session, instance)
+
+    [record] = [r for r in caplog.records if r.name == "app.core.db.crud"]
+    assert "PeriodicTask" in record.getMessage()
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], IntegrityError)
+
+
+class TestPeriodicTaskManagerSaveRejectedWrite:
+    """Test that a write the database rejects answers bad request."""
+
+    @pytest.mark.asyncio
+    async def test_null_name_raises_bad_request(
+        self, celery_beat_session: AsyncSession, caplog: pytest.LogCaptureFixture
+    ):
+        """Assert a schedule saved without a name raises the bad-request answer."""
+        await _save_nameless_periodic_task(celery_beat_session, caplog)
+
+
+@pytest.mark.postgres
+class TestPeriodicTaskManagerSaveRejectedWriteOnPostgres:
+    """Test the rejected write on a real PostgreSQL bind."""
+
+    @pytest.mark.asyncio
+    async def test_null_name_raises_bad_request(
+        self,
+        postgres_celery_beat_session: AsyncSession,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Assert a schedule saved without a name raises the bad-request answer."""
+        await _save_nameless_periodic_task(postgres_celery_beat_session, caplog)
 
 
 class TestPeriodicTaskManagerListByTaskNames:

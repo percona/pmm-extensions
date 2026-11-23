@@ -15,22 +15,14 @@
 
 """Define shared fixtures for sync tests."""
 
-from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock
 
-import pytest_asyncio
 from pydantic import UUID4
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.core.db.utils import get_async_session_maker_from_engine
-from app.core.utils import json_serializer
 from app.extensions.crud import SyncInstanceManager
 from app.extensions.inventory import CreatedNode
-from tests.app.db_schema import apply_schema
 
 #: The path suffix every per-entity sync-health write carries.
 SYNC_HEALTH_PATH_SUFFIX = "/sync-health"
@@ -94,24 +86,3 @@ async def close_run(
     await SyncInstanceManager.finalize_run(
         session, sync_instance_id, failed=False, snapshot_complete=snapshot_complete
     )
-
-
-@pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
-    """Create an async db session for testing."""
-    # scaffolding-dup-ok: this duplication predates the change that
-    # re-annotated the fixture's return type; promoting it against
-    # its sibling bootstrap is a cross-tree refactor of its own.
-    engine = create_async_engine(
-        "sqlite+aiosqlite://",
-        json_serializer=json_serializer,
-        poolclass=StaticPool,
-    )
-    async with engine.begin() as conn:
-        await apply_schema(conn, SQLModel.metadata)
-    async_session_maker = get_async_session_maker_from_engine(engine)
-    try:
-        async with async_session_maker() as session:
-            yield session
-    finally:
-        await engine.dispose()

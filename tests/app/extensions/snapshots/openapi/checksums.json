@@ -94,6 +94,7 @@
         "type": "object"
       },
       "checksums__ChecksumsForm": {
+        "additionalProperties": false,
         "description": "Define the model-first create/update body and schema source for Checksums.\n\nThe single source of the JSON request body (the field types and defaults the\nserver validates) *and* the derived ``GET /schema`` form (driven by the\n:class:`Ui` / reference / :class:`Choices` markers). Field set, types, and\nmodel defaults match the previous hand-written request body; the form-display\ndefaults that differ from the model default are carried on ``Ui(default=...)``.\n\nField declaration order is load-bearing. The spec builder assembles\n``--databases`` / ``--tables`` from the multi-value reference fields, then the\nframework's ``build_command_args`` emits the remaining ``ArgFormat`` value args\n(in field order) followed by all flag args (in field order). Section order\n(Task, Data, Recursion, Flags, Advanced) follows each section's first field.\n``progress`` is declared last to land at the end of the value args, and\n``Ui(order=...)`` pins the Advanced section's display order where it diverges\nfrom declaration order. The ``task_name`` / ``hostname`` Task-section fields\nand the ``alert_on_fail`` capability control are inherited from\n:class:`TaskFormModel` (``alert_on_fail`` is ``Hidden``, off-schema).",
         "properties": {
           "alert_on_fail": {

@@ -1454,7 +1454,7 @@ def _collect_reference_errors(
 
 
 def _collect_basefield_gate_errors(
-    field: "AnyField",
+    field: AnyField,
     declared_field_names: set[str],
     errors: list[str],
     *,
@@ -1485,7 +1485,7 @@ def _collect_basefield_gate_errors(
 
 
 def _collect_section_gate_errors(
-    section: "FormSection",
+    section: FormSection,
     section_label: str,
     declared_field_names: set[str],
     errors: list[str],
