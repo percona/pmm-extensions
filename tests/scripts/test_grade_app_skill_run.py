@@ -366,3 +366,17 @@ def test_the_owner_is_read_without_quotes_and_without_a_comment(
 ) -> None:
     """Read the owner as YAML gives it, where the whole rest of the line was once taken."""
     assert grader.owner_of(entry) == owner
+
+
+def test_a_clone_is_served_by_a_mount_on_the_released_image(tmp_path: Path) -> None:
+    """Add the Compose file that mounts the clone's code, when no image is given."""
+    files, variables = grader.served_from(tmp_path, None)
+    assert files == ["-f", f"{tmp_path}/compose.checkout.yaml"]
+    assert variables == {}
+
+
+def test_a_clone_is_served_by_an_image_that_was_built_from_it(tmp_path: Path) -> None:
+    """Leave the mount out and name the image, when the released image cannot run the clone."""
+    files, variables = grader.served_from(tmp_path, "localhost/extensions:HEAD")
+    assert files == []
+    assert variables == {"PMM_EXTENSIONS_IMAGE": "localhost/extensions:HEAD"}

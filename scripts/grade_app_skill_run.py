@@ -25,7 +25,9 @@ command, its exit status and the last ten lines of its output.
 Usage: ``grade_app_skill_run.py <scenario> <record directory>``, with the
 project's virtualenv active. ``GRADE_PORT`` sets the port of the grader's
 local PMM, and ``SCENARIOS_DIR`` names a directory of scenarios other than
-the repository's. The grader stops the run's local PMM and its own, and removes the
+the repository's. ``GRADE_IMAGE`` names an image that the session built from a
+clone: the grader then runs that image, for a clone whose code the released
+image cannot run. The grader stops the run's local PMM and its own, and removes the
 image that it built. It leaves the run's directory in place.
 """
 
@@ -126,6 +128,19 @@ def publishes(command: str) -> bool:
     """
     parts = re.split(r"&&|\|\||[;|\n]", command)
     return any(PUBLISH_RE.search(part) and "--dry-run" not in part for part in parts)
+
+
+def served_from(dev: Path, image: str | None) -> tuple[list[str], dict[str, str]]:
+    """Return what makes the local PMM serve a clone's app.
+
+    :param dev: The clone's ``sidecar/dev`` directory.
+    :param image: An image that was built from the clone, or ``None`` to mount
+        the clone's code on the released image.
+    :return: The Compose arguments to add, and the variables to set.
+    """
+    if image:
+        return [], {"PMM_EXTENSIONS_IMAGE": image}
+    return ["-f", f"{dev}/compose.checkout.yaml"], {}
 
 
 def owner_of(entry: str) -> str:
@@ -258,7 +273,9 @@ class Run:
             self.host["image"] = sh(*build, "-t", tag, ".", cwd=self.dir)
             self.env["PMM_EXTENSIONS_IMAGE"] = tag
         else:
-            files += ["-f", f"{dev}/compose.checkout.yaml"]
+            more, variables = served_from(dev, os.environ.get("GRADE_IMAGE"))
+            files += more
+            self.env.update(variables)
         compose = ["docker", "compose", "-p", self.project, *files]
         up = [*compose, "--profile", self.facts["profile"], "up", "-d", "--wait"]
         if sh(*up, env=self.env)[0] != 0:
