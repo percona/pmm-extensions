@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "pmm-extensions",
-      "source": "./assistant",
+      "source": "./.agents",
       "description": "Build, port and maintain PMM Extensions apps with an AI assistant."
     }
   ]

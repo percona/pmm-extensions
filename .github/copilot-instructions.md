@@ -12,7 +12,7 @@ PMM Extensions is a FastAPI application with three mounted sub-applications, eac
 
 A PMM Extensions app is a package under `app/extensions/apps/<name>/` that exports one app object from `app.py`. The framework derives the app's routes, its form and its validation from that object and from the form model in `models.py` (`docs/explanation/app-framework.md`). `Annotated[..., Depends(...)]` aliases live in `deps.py`.
 
-To build, port or fix an app with a person who does not write Python, follow the skill in `assistant/skills/pmm-extensions-app/SKILL.md`.
+To build, port or fix an app with a person who does not write Python, follow the skill in `.agents/skills/pmm-extensions-app/SKILL.md`.
 
 The UI is **API-first + React** — see `api-first.instructions.md` for rules that apply when a PR touches the API gateway, app schemas, or `frontend/packages/`. The server-rendered Jinja2 layer has been removed; the only Jinja left renders the report PDF.
 

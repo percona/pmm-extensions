@@ -35,10 +35,10 @@ Use this start when you want a tool, a command or a script of yours to run from 
 3. Install the skill for your assistant. For Claude Code:
 
    ```bash
-   gh skill install .framework pmm-extensions-app --from-local --agent claude-code
+   gh skill install .framework pmm-extensions-app --from-local --allow-hidden-dirs --agent claude-code
    ```
 
-   For Cursor, give `--agent cursor`. `gh skill install --help` lists the other assistants.
+   For Cursor, give `--agent cursor`. `gh skill install --help` lists the other assistants. The command needs `--allow-hidden-dirs` because the repository keeps the skill in a directory whose name starts with a dot.
 
 4. Start the assistant in the directory, and say what you need in your own words. For example:
 
@@ -52,15 +52,9 @@ Use this start for an app that this repository already holds. That is an app tha
 
 1. Clone the repository, and change to the clone.
 
-2. For Claude Code, install the skill from the clone:
+2. Start the assistant in the clone, and say what you need.
 
-   ```bash
-   gh skill install . pmm-extensions-app --from-local --agent claude-code
-   ```
-
-   Cursor and the other assistants that read `.agents/skills/` find the skill in the clone. They need no command.
-
-3. Start the assistant in the clone, and say what you need.
+The clone holds the skill where assistants read skills: Claude Code reads it from `.claude/skills/`, and Cursor, Codex and GitHub Copilot read it from `.agents/skills/`. You install nothing.
 
 ## What you are asked
 

@@ -412,16 +412,13 @@ frontend/packages/e2e/playwright-report/data/*
 frontend/packages/e2e/test-results/*
 
 # IA agents config, tools and cache
-.claude/
-# The app skill, where assistants other than Claude Code read skills: a link to
-# assistant/skills/pmm-extensions-app. Everything else under .agents/ stays
-# ignored, here and in a contributor's own ignore file.
-!/.agents/
-/.agents/*
-!/.agents/skills/
-/.agents/skills/*
-!/.agents/skills/pmm-extensions-app
-# Results of `claude plugin eval assistant` and of the outcome runs
+.claude/*
+!.claude/skills/
+# The helper of the evaluation cases, which the virtualenv rule `[Ll]ib` above
+# would hide
+!/assistant/evals/lib/
+# The plugin that tier 1 builds, and the results of tier 1 and of the outcome runs
+/assistant/tier1-plugin/
 /assistant/evals/results/
 /assistant/evals/outcome/runs/
 .codex/

@@ -15,8 +15,8 @@
 
 """Reference-integrity test for the files that an AI assistant reads.
 
-The files under ``assistant/`` and the tracked instruction files for agents
-tell an assistant which files of this repository to read and which commands to run.
+The skills under ``.agents/skills/``, the files under ``assistant/`` and the
+tracked instruction files for agents tell an assistant which files of this repository to read and which commands to run.
 No test runs that prose, so a renamed file would leave it pointing nowhere.
 This module enforces two contracts on every Markdown file among them:
 
@@ -36,6 +36,7 @@ import pytest
 
 _REPO_ROOT = pathlib.Path(__file__).parents[2]
 _ASSISTANT_ROOT = _REPO_ROOT / "assistant"
+_SKILLS_ROOT = _REPO_ROOT / ".agents" / "skills"
 _PATH_STARTS = (
     "app/",
     "docs/",
@@ -43,6 +44,7 @@ _PATH_STARTS = (
     "tests/",
     "scripts/",
     "assistant/",
+    ".agents/",
     ".github/",
     "Makefile",
     "CONTRIBUTING.md",
@@ -77,10 +79,14 @@ def _tracked_agents_files() -> list[pathlib.Path]:
 def _assistant_files() -> list[pathlib.Path]:
     """Return every Markdown file that an assistant reads.
 
-    :return: The Markdown files under ``assistant/``, then the tracked
-        instruction files for agents.
+    :return: The Markdown files of the skills and those under ``assistant/``,
+        then the tracked instruction files for agents.
     """
-    return [*sorted(_ASSISTANT_ROOT.rglob("*.md")), *_tracked_agents_files()]
+    return [
+        *sorted(_SKILLS_ROOT.rglob("*.md")),
+        *sorted(_ASSISTANT_ROOT.rglob("*.md")),
+        *_tracked_agents_files(),
+    ]
 
 
 def _named_paths(text: str) -> list[str]:
@@ -144,10 +150,8 @@ def _forbidden_words(text: str) -> list[str]:
 
 def test_every_named_path_exists() -> None:
     """Fail when an assistant's file names a path that is not in the repository."""
-    if not (_ASSISTANT_ROOT / "skills").is_dir():
-        pytest.skip("no skill under assistant/skills/ yet")
     files = _assistant_files()
-    assert files, "assistant/skills/ exists and no Markdown file was collected"
+    assert any(file.is_relative_to(_SKILLS_ROOT) for file in files)
     assert _missing_paths(files) == []
 
 

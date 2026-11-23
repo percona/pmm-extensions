@@ -31,7 +31,11 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SKILL_NAME = "pmm-extensions-app"
-SKILL_DIR = REPO_ROOT / "assistant" / "skills" / SKILL_NAME
+SKILL_PATH = f".agents/skills/{SKILL_NAME}"
+SKILL_DIR = REPO_ROOT / SKILL_PATH
+LINK = f".claude/skills/{SKILL_NAME}"
+EVALS_DIR = REPO_ROOT / "assistant" / "evals"
+HELPER_RE = re.compile(r"\.\./(lib/[\w.-]+)")
 SKILL_FILE = SKILL_DIR / "SKILL.md"
 PERSON_FILE = SKILL_DIR / "references" / "the-person.md"
 MAX_NAME_LENGTH = 64
@@ -171,6 +175,60 @@ def test_git_holds_every_file_of_the_skill() -> None:
     assert on_disk == sorted(listed)
 
 
+def index_entry(path: str) -> tuple[str, str]:
+    """Return what Git's index holds for one path.
+
+    The index is read, and not the directory, because a contributor's checkout
+    may leave a path out of its working tree.
+
+    :param path: The path, from the repository's root.
+    :return: The entry's mode and the text of its blob. Two empty strings when
+        Git tracks no such path.
+    """
+    git = shutil.which("git")
+    assert git is not None
+    listed = subprocess.run(
+        [git, "ls-files", "--stage", "--", path],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    if not listed:
+        return "", ""
+    blob = subprocess.run(
+        [git, "cat-file", "blob", listed[1]],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return listed[0], blob
+
+
+def test_the_skill_is_a_directory_of_files_where_assistants_read_skills() -> None:
+    """Keep the skill's files themselves in the directory that most assistants read."""
+    assert index_entry(f"{SKILL_PATH}/SKILL.md")[0] == "100644"
+
+
+def test_the_other_place_is_a_link_to_the_skill() -> None:
+    """Keep one copy of the skill, with a link where Claude Code looks for it."""
+    assert index_entry(LINK) == ("120000", f"../../{SKILL_PATH}")
+
+
+def test_git_holds_every_helper_that_a_case_runs() -> None:
+    """Fail for a helper that a clone would lack, such as one that an ignore rule hides."""
+    scripts = sorted(EVALS_DIR.glob("*/place-files.sh"))
+    assert scripts
+    helpers = {
+        f"assistant/evals/{helper}"
+        for script in scripts
+        for helper in HELPER_RE.findall(script.read_text(encoding="utf-8"))
+    }
+    assert helpers
+    assert sorted(h for h in helpers if not index_entry(h)[0]) == []
+
+
 @pytest.mark.parametrize("agent", sorted(INSTALL_TARGETS))
 def test_gh_skill_install_puts_the_whole_skill_where_the_assistant_reads_it(
     tmp_path: Path, agent: str
@@ -194,6 +252,7 @@ def test_gh_skill_install_puts_the_whole_skill_where_the_assistant_reads_it(
             str(REPO_ROOT),
             SKILL_NAME,
             "--from-local",
+            "--allow-hidden-dirs",
             "--agent",
             agent,
             "--scope",
@@ -210,3 +269,32 @@ def test_gh_skill_install_puts_the_whole_skill_where_the_assistant_reads_it(
         if not (installed / path.relative_to(SKILL_DIR)).is_file()
     ]
     assert missing == []
+
+
+def test_tier_1_builds_its_plugin_from_the_one_copy_of_the_skill() -> None:
+    """Build the plugin that tier 1 runs, and compare its skill with the tracked one."""
+    bash = shutil.which("bash")
+    assert bash is not None
+    built = Path(
+        subprocess.run(
+            [bash, str(EVALS_DIR / "run-tier1.sh"), "--build-only"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    copies = {
+        str(path.relative_to(SKILL_DIR)): path.read_bytes() for path in skill_files()
+    }
+    copied = built / "skills" / SKILL_NAME
+    assert copies
+    assert {
+        str(path.relative_to(copied)): path.read_bytes()
+        for path in sorted(copied.rglob("*"))
+        if path.is_file()
+    } == copies
+    assert (built / ".claude-plugin" / "plugin.json").is_file()
+    assert (built / "evals" / "lib" / "place-repo.sh").is_file()
+    assert sorted(path.name for path in (built / "evals").glob("*/prompt.md"))
+    assert not (built / "evals" / "static").exists()

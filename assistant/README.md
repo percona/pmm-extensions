@@ -4,24 +4,29 @@ This directory holds what an AI assistant needs to build, port and maintain a PM
 
 | Path | Holds |
 |---|---|
-| `skills/pmm-extensions-app/` | The skill, in the Agent Skills format: `SKILL.md`, the stage files under `references/`, and the files of a new app workspace under `assets/`. |
-| `.claude-plugin/plugin.json` | A plugin manifest. The first tier of tests loads the skill through it. |
 | `evals/` | The skill's tests. |
+
+The skill itself is in `.agents/skills/pmm-extensions-app/`, where assistants read skills: `SKILL.md`, the stage files under `references/`, and the files of a new app workspace under `assets/`. `.claude/skills/pmm-extensions-app` is a link to it, for Claude Code. `.agents/.claude-plugin/plugin.json` is a plugin manifest, and `.claude-plugin/marketplace.json` lists that plugin.
 
 The skill states the order of the work, what to ask the person, and where to stop. It states no fact about the framework: each fact is on a page under `docs/`, and the skill names the page. When a page lacks a fact, change the page.
 
 ## Install the skill
 
-One command copies the skill to where an assistant reads it. Run it in the directory where you work, with a clone of this repository as the source:
+An assistant that starts in a clone of this repository reads the skill from the clone. Nothing is installed.
+
+For work in another directory, one command copies the skill to where an assistant reads it. Run it in that directory, with a clone of this repository as the source:
 
 ```bash
-gh skill install . pmm-extensions-app --from-local --agent claude-code
+gh skill install <clone> pmm-extensions-app --from-local --allow-hidden-dirs --agent claude-code
 ```
 
-Use `--agent cursor` for Cursor. Without `--from-local`, the command takes a repository's name, and installs the skill of that repository's latest release:
+Use `--agent cursor` for Cursor. The command needs `--allow-hidden-dirs` because the skill is in a directory whose name starts with a dot.
+
+Claude Code can also install the skill as a plugin, from the marketplace file of a clone:
 
 ```bash
-gh skill install percona/pmm-extensions pmm-extensions-app --agent claude-code
+claude plugin marketplace add <clone> --scope project
+claude plugin install pmm-extensions@percona-pmm-extensions --scope project
 ```
 
 ## Run the tests
@@ -38,10 +43,10 @@ pytest assistant/evals/static tests/docs/test_assistant_references.py -q
 
 ### Tier 1: what the assistant decides
 
-Each directory under `evals/` with a `prompt.md` is one case: one request, and graders for the first answer. `claude plugin eval` runs each case with the skill and without it. The cases need Claude Code 2.1.269 or later and a signed-in account. The runs use that account.
+Each directory under `evals/` with a `prompt.md` is one case: one request, and graders for the first answer. `claude plugin eval` runs each case with the skill and without it. It wants the cases inside the plugin that they test, so `evals/run-tier1.sh` first builds that plugin in `assistant/tier1-plugin/`, which Git ignores: the manifest, a copy of the skill and a copy of the cases. The script passes its arguments on. The cases need Claude Code 2.1.269 or later and a signed-in account. The runs use that account.
 
 ```bash
-claude plugin eval assistant --runs 3 --model sonnet --trust-plugin --no-publish \
+assistant/evals/run-tier1.sh --runs 3 --model sonnet --trust-plugin --no-publish \
   --scaffold --allow-tools Read,Glob,Grep,Skill,Bash
 ```
 

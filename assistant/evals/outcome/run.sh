@@ -86,7 +86,7 @@ rm -rf "$run/framework/assistant/evals" "$run/framework/scripts/grade_app_skill_
     "$run/framework/tests/scripts/test_grade_app_skill_run.py"
 as_dana git -C "$run/framework" add --all
 if [[ $arm == pages ]]; then # the arm without the skill gets the pages only: no skill, and no line that points to it
-    (cd "$run/framework" && rm -rf assistant .agents .claude-plugin docs/how-to/build-an-app-with-an-assistant.md &&
+    (cd "$run/framework" && rm -rf assistant .agents .claude .claude-plugin docs/how-to/build-an-app-with-an-assistant.md &&
         git grep -lI -e pmm-extensions-app -e build-an-app-with-an-assistant | xargs -r sed -i -e '/pmm-extensions-app/d' -e '/build-an-app-with-an-assistant/d') || exit 2
     as_dana git -C "$run/framework" add --all
 fi
@@ -107,9 +107,11 @@ else
     as_dana git clone --quiet "file://$run/framework" "$dir" || exit 2
     git -C "$dir" remote set-url origin https://github.com/percona/pmm-extensions.git
 fi
-if [[ $arm == skill ]]; then # also over the copy of an earlier run: the skill under test is this checkout's
+# A clone holds the skill where the assistant reads it. A workspace gets it installed, also over
+# the copy of an earlier run: the skill under test is this checkout's.
+if [[ $arm == skill && $kind == workspace ]]; then
     (cd "$dir" && as_dana gh skill install "$run/framework" pmm-extensions-app --from-local \
-        --agent claude-code --scope project --force > /dev/null 2>&1) || exit 2
+        --allow-hidden-dirs --agent claude-code --scope project --force > /dev/null 2>&1) || exit 2
 fi
 git -C "$dir" rev-parse HEAD > "$run/start-commit" 2> /dev/null || true
 
