@@ -93,7 +93,9 @@ default:
     # mounted DATABASE__PASSWORD or EXTENSIONS__DATABASE__PASSWORD reaches it without an
     # env-visible URI.
     RESULT_EXPIRES: 3600
-    WORKER_STATE_DB: celery_worker_state
+    # Relative to the worker's working directory, the app directory, which the
+    # side-car cannot write; the image makes var/ writable for this file.
+    WORKER_STATE_DB: var/celery_worker_state
     # Each prefork child builds its own engines, so this bounds the worker's share
     # of the connection budget recorded above the DATABASE block. Celery's default
     # is one child per CPU the container sees, which is every core on the host.
@@ -269,6 +271,10 @@ default:
     PROXY_HEADERS: true
     SSL_CERTFILE: null
     SSL_KEYFILE: null
+    # Relative to the app directory, which the side-car cannot write; the image
+    # makes var/ writable for the bundles a diagnostics send stages.
+    ATW:
+      bundle_dir: var/atw-bundles
     APPS:
       - MODULE_NAME: inventory
         # PMM owns the embedded inventory UI; this app is API-only here.
