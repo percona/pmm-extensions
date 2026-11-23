@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_5a65a24dc7b2ad41_config_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -352,7 +352,7 @@
     <p class="run"><span class="n"><a id="t268" href="#t268">268</a></span><span class="t">        <span class="nam">v3_major</span> <span class="op">=</span> <span class="num">3</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t269" href="#t269">269</a></span><span class="t">        <span class="key">try</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t270" href="#t270">270</a></span><span class="t">            <span class="nam">version</span> <span class="op">=</span> <span class="key">await</span> <span class="nam">self</span><span class="op">.</span><span class="nam">get_version</span><span class="op">(</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t271" href="#t271">271</a></span><span class="t">        <span class="key">except</span> <span class="op">(</span><span class="nam">TypeError</span><span class="op">,</span> <span class="nam">KeyError</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t271" href="#t271">271</a></span><span class="t">        <span class="key">except</span> <span class="nam">TypeError</span><span class="op">,</span> <span class="nam">KeyError</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t272" href="#t272">272</a></span><span class="t">            <span class="nam">self</span><span class="op">.</span><span class="nam">logger</span><span class="op">.</span><span class="nam">exception</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t273" href="#t273">273</a></span><span class="t">                <span class="str">&quot;Failed to retrieve PMM version, defaulting to %s&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t274" href="#t274">274</a></span><span class="t">                <span class="str">&quot;v3&quot;</span> <span class="key">if</span> <span class="nam">self</span><span class="op">.</span><span class="nam">default_to_v3</span> <span class="key">else</span> <span class="str">&quot;v2&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
@@ -361,7 +361,7 @@
     <p class="pln"><span class="n"><a id="t277" href="#t277">277</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t278" href="#t278">278</a></span><span class="t">        <span class="key">try</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t279" href="#t279">279</a></span><span class="t">            <span class="nam">is_older</span> <span class="op">=</span> <span class="nam">int</span><span class="op">(</span><span class="nam">version</span><span class="op">.</span><span class="nam">split</span><span class="op">(</span><span class="str">&quot;.&quot;</span><span class="op">)</span><span class="op">[</span><span class="num">0</span><span class="op">]</span><span class="op">)</span> <span class="op">&lt;</span> <span class="nam">v3_major</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t280" href="#t280">280</a></span><span class="t">        <span class="key">except</span> <span class="op">(</span><span class="nam">AttributeError</span><span class="op">,</span> <span class="nam">ValueError</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t280" href="#t280">280</a></span><span class="t">        <span class="key">except</span> <span class="nam">AttributeError</span><span class="op">,</span> <span class="nam">ValueError</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t281" href="#t281">281</a></span><span class="t">            <span class="nam">self</span><span class="op">.</span><span class="nam">logger</span><span class="op">.</span><span class="nam">exception</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t282" href="#t282">282</a></span><span class="t">                <span class="str">&quot;Failed to parse PMM version, defaulting to %s: %s&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t283" href="#t283">283</a></span><span class="t">                <span class="str">&quot;v3&quot;</span> <span class="key">if</span> <span class="nam">self</span><span class="op">.</span><span class="nam">default_to_v3</span> <span class="key">else</span> <span class="str">&quot;v2&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
@@ -412,7 +412,7 @@
     <p class="run"><span class="n"><a id="t328" href="#t328">328</a></span><span class="t">            <span class="key">async</span> <span class="key">with</span> <span class="nam">asyncio</span><span class="op">.</span><span class="nam">timeout</span><span class="op">(</span><span class="nam">PROBE_TIMEOUT_SECONDS</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t329" href="#t329">329</a></span><span class="t">                <span class="nam">version_data</span> <span class="op">=</span> <span class="nam">as_json_object</span><span class="op">(</span><span class="key">await</span> <span class="nam">self</span><span class="op">.</span><span class="nam">get</span><span class="op">(</span><span class="nam">probe_path</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t330" href="#t330">330</a></span><span class="t">            <span class="nam">version</span> <span class="op">=</span> <span class="nam">version_data</span><span class="op">[</span><span class="str">&quot;version&quot;</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t331" href="#t331">331</a></span><span class="t">        <span class="key">except</span> <span class="op">(</span><span class="nam">KeyError</span><span class="op">,</span> <span class="nam">TypeError</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t331" href="#t331">331</a></span><span class="t">        <span class="key">except</span> <span class="nam">KeyError</span><span class="op">,</span> <span class="nam">TypeError</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t332" href="#t332">332</a></span><span class="t">            <span class="key">return</span> <span class="nam">build_connectivity_result</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t333" href="#t333">333</a></span><span class="t">                <span class="nam">service</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t334" href="#t334">334</a></span><span class="t">                <span class="nam">ConnectivityStatusEnum</span><span class="op">.</span><span class="nam">REACHABLE</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
@@ -1246,7 +1246,7 @@
             <a class="nav" href="z_5a65a24dc7b2ad41_config_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
     </div>
 </footer>

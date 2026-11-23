@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_44c9d2de7125f39e_markers_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -304,7 +304,7 @@
     <p class="run"><span class="n"><a id="t220" href="#t220">220</a></span><span class="t">    <span class="key">return</span> <span class="nam">_find_marker</span><span class="op">(</span><span class="nam">metadata</span><span class="op">,</span> <span class="nam">_REF_TYPES</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t221" href="#t221">221</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t222" href="#t222">222</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t223" href="#t223">223</a></span><span class="t"><span class="key">def</span> <span class="nam">iter_service_refs</span><span class="op">(</span><span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="str">&quot;AppFormModel&quot;</span><span class="op">]</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">Iterator</span><span class="op">[</span><span class="nam">ServiceRef</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t223" href="#t223">223</a></span><span class="t"><span class="key">def</span> <span class="nam">iter_service_refs</span><span class="op">(</span><span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="nam">AppFormModel</span><span class="op">]</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">Iterator</span><span class="op">[</span><span class="nam">ServiceRef</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t224" href="#t224">224</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Yield every ``ServiceRef`` marker declared by ``model``.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t225" href="#t225">225</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t226" href="#t226">226</a></span><span class="t"><span class="str">    Walk the model&#x27;s top-level fields and the branch models of any</span>&nbsp;</span><span class="r"></span></p>
@@ -972,7 +972,7 @@
     <p class="run"><span class="n"><a id="t888" href="#t888">888</a></span><span class="t">    <span class="key">return</span> <span class="nam">field_class</span><span class="op">(</span><span class="op">**</span><span class="nam">common</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t889" href="#t889">889</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t890" href="#t890">890</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t891" href="#t891">891</a></span><span class="t"><span class="key">def</span> <span class="nam">_derive_field_specs</span><span class="op">(</span><span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="str">&quot;AppFormModel&quot;</span><span class="op">]</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">list</span><span class="op">[</span><span class="nam">_FieldSpec</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t891" href="#t891">891</a></span><span class="t"><span class="key">def</span> <span class="nam">_derive_field_specs</span><span class="op">(</span><span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="nam">AppFormModel</span><span class="op">]</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">list</span><span class="op">[</span><span class="nam">_FieldSpec</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t892" href="#t892">892</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Return one :class:`_FieldSpec` per model field, in declaration order.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t893" href="#t893">893</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t894" href="#t894">894</a></span><span class="t"><span class="str">    Skip a field carrying a :class:`Hidden` marker before the ``Ui`` requirement</span>&nbsp;</span><span class="r"></span></p>
@@ -1005,7 +1005,7 @@
     <p class="run"><span class="n"><a id="t921" href="#t921">921</a></span><span class="t">    <span class="key">return</span> <span class="nam">specs</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t922" href="#t922">922</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t923" href="#t923">923</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t924" href="#t924">924</a></span><span class="t"><span class="key">def</span> <span class="nam">_runtime_form_fields</span><span class="op">(</span><span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="str">&quot;AppFormModel&quot;</span><span class="op">]</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">list</span><span class="op">[</span><span class="nam">BaseField</span> <span class="op">|</span> <span class="nam">OneOfGroup</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t924" href="#t924">924</a></span><span class="t"><span class="key">def</span> <span class="nam">_runtime_form_fields</span><span class="op">(</span><span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="nam">AppFormModel</span><span class="op">]</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">list</span><span class="op">[</span><span class="nam">BaseField</span> <span class="op">|</span> <span class="nam">OneOfGroup</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t925" href="#t925">925</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Return runtime rule-plan fields, using one-of groups where required.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t926" href="#t926">926</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t927" href="#t927">927</a></span><span class="t"><span class="str">    Gate-only :class:`StringField` projections are enough for ordinary leaves.</span>&nbsp;</span><span class="r"></span></p>
@@ -1099,7 +1099,7 @@
     <p class="pln"><span class="n"><a id="t1015" href="#t1015">1015</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1016" href="#t1016">1016</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t1017" href="#t1017">1017</a></span><span class="t"><span class="key">def</span> <span class="nam">derive_form_sections</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t1018" href="#t1018">1018</a></span><span class="t">    <span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="str">&quot;AppFormModel&quot;</span><span class="op">]</span><span class="op">,</span> <span class="nam">layout</span><span class="op">:</span> <span class="nam">FormLayout</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t1018" href="#t1018">1018</a></span><span class="t">    <span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="nam">AppFormModel</span><span class="op">]</span><span class="op">,</span> <span class="nam">layout</span><span class="op">:</span> <span class="nam">FormLayout</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t1019" href="#t1019">1019</a></span><span class="t"><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">list</span><span class="op">[</span><span class="nam">FormSection</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1020" href="#t1020">1020</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Return the form sections derived from ``model``, ordered by ``model``.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1021" href="#t1021">1021</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
@@ -1168,7 +1168,7 @@
     <p class="pln"><span class="n"><a id="t1084" href="#t1084">1084</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1085" href="#t1085">1085</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t1086" href="#t1086">1086</a></span><span class="t"><span class="key">def</span> <span class="nam">derive_app_schema</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t1087" href="#t1087">1087</a></span><span class="t">    <span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="str">&quot;AppFormModel&quot;</span><span class="op">]</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t1087" href="#t1087">1087</a></span><span class="t">    <span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="nam">AppFormModel</span><span class="op">]</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t1088" href="#t1088">1088</a></span><span class="t">    <span class="nam">layout</span><span class="op">:</span> <span class="nam">FormLayout</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t1089" href="#t1089">1089</a></span><span class="t">    <span class="op">*</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t1090" href="#t1090">1090</a></span><span class="t">    <span class="nam">name</span><span class="op">:</span> <span class="nam">str</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
@@ -1233,7 +1233,7 @@
     <p class="run run2"><span class="n"><a id="t1149" href="#t1149">1149</a></span><span class="t">    <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1150" href="#t1150">1150</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1151" href="#t1151">1151</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1152" href="#t1152">1152</a></span><span class="t"><span class="key">def</span> <span class="nam">build_runtime_schema</span><span class="op">(</span><span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="str">&quot;AppFormModel&quot;</span><span class="op">]</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AppSchema</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1152" href="#t1152">1152</a></span><span class="t"><span class="key">def</span> <span class="nam">build_runtime_schema</span><span class="op">(</span><span class="nam">model</span><span class="op">:</span> <span class="nam">type</span><span class="op">[</span><span class="nam">AppFormModel</span><span class="op">]</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AppSchema</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1153" href="#t1153">1153</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Return a single-section ``AppSchema`` for runtime rule-plan extraction.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1154" href="#t1154">1154</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1155" href="#t1155">1155</a></span><span class="t"><span class="str">    Section-scoped and plugin-scoped rules are hoisted to plugin scope because</span>&nbsp;</span><span class="r"></span></p>
@@ -1269,7 +1269,7 @@
             <a class="nav" href="z_44c9d2de7125f39e_markers_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
     </div>
 </footer>

@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_5a65a24dc7b2ad41_inventory_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -388,7 +388,7 @@
     <p class="run"><span class="n"><a id="t304" href="#t304">304</a></span><span class="t">    <span class="key">return</span> <span class="op">{</span><span class="nam">str</span><span class="op">(</span><span class="nam">user</span><span class="op">.</span><span class="nam">id</span><span class="op">)</span><span class="op">:</span> <span class="nam">user</span><span class="op">.</span><span class="nam">username</span> <span class="key">for</span> <span class="nam">user</span> <span class="key">in</span> <span class="nam">users</span><span class="op">}</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t305" href="#t305">305</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t306" href="#t306">306</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t307" href="#t307">307</a></span><span class="t"><span class="key">async</span> <span class="key">def</span> <span class="nam">get_session</span><span class="op">(</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">AsyncSession</span><span class="op">,</span> <span class="key">None</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t307" href="#t307">307</a></span><span class="t"><span class="key">async</span> <span class="key">def</span> <span class="nam">get_session</span><span class="op">(</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">AsyncSession</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t308" href="#t308">308</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Yield an asynchronous database session for FastAPI routes.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t309" href="#t309">309</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t310" href="#t310">310</a></span><span class="t"><span class="str">    This function provides a dependency for FastAPI routes that yields an ``AsyncSession``</span>&nbsp;</span><span class="r"></span></p>
@@ -864,7 +864,7 @@
     <p class="pln"><span class="n"><a id="t780" href="#t780">780</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t781" href="#t781">781</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t782" href="#t782">782</a></span><span class="t"><span class="key">async</span> <span class="key">def</span> <span class="nam">get_executor_hosts_context</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t783" href="#t783">783</a></span><span class="t">    <span class="nam">executor_hosts</span><span class="op">:</span> <span class="str">&quot;ExecutorHosts&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t783" href="#t783">783</a></span><span class="t">    <span class="nam">executor_hosts</span><span class="op">:</span> <span class="nam">ExecutorHosts</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t784" href="#t784">784</a></span><span class="t">    <span class="nam">inventory_api</span><span class="op">:</span> <span class="nam">InventoryAPI</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t785" href="#t785">785</a></span><span class="t"><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">ExecutorHostsContext</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t786" href="#t786">786</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Build an enriched executor hosts context with inventory display names.</span>&nbsp;</span><span class="r"></span></p>
@@ -883,7 +883,7 @@
     <p class="run run2"><span class="n"><a id="t799" href="#t799">799</a></span><span class="t">            <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t800" href="#t800">800</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t801" href="#t801">801</a></span><span class="t">        <span class="nam">display_names</span> <span class="op">=</span> <span class="op">{</span><span class="nam">node</span><span class="op">[</span><span class="str">&quot;address&quot;</span><span class="op">]</span><span class="op">:</span> <span class="nam">node</span><span class="op">[</span><span class="str">&quot;name&quot;</span><span class="op">]</span> <span class="key">for</span> <span class="nam">node</span> <span class="key">in</span> <span class="nam">nodes</span><span class="op">}</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t802" href="#t802">802</a></span><span class="t">    <span class="key">except</span> <span class="op">(</span><span class="nam">HTTPException</span><span class="op">,</span> <span class="nam">TypeError</span><span class="op">,</span> <span class="nam">KeyError</span><span class="op">,</span> <span class="nam">OSError</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t802" href="#t802">802</a></span><span class="t">    <span class="key">except</span> <span class="nam">HTTPException</span><span class="op">,</span> <span class="nam">TypeError</span><span class="op">,</span> <span class="nam">KeyError</span><span class="op">,</span> <span class="nam">OSError</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t803" href="#t803">803</a></span><span class="t">        <span class="nam">logger</span><span class="op">.</span><span class="nam">warning</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t804" href="#t804">804</a></span><span class="t">            <span class="str">&quot;Failed to fetch inventory nodes for display names&quot;</span><span class="op">,</span> <span class="nam">exc_info</span><span class="op">=</span><span class="key">True</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t805" href="#t805">805</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
@@ -1186,7 +1186,7 @@
             <a class="nav" href="z_5a65a24dc7b2ad41_inventory_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
     </div>
 </footer>

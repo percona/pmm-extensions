@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_4d841bdcdb1786ba_constants_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -356,7 +356,7 @@
     <p class="run run2"><span class="n"><a id="t272" href="#t272">272</a></span><span class="t">        <span class="nam">self</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t273" href="#t273">273</a></span><span class="t">        <span class="nam">queue_item</span><span class="op">:</span> <span class="nam">TaskHistory</span><span class="op">,</span>  <span class="com"># noqa: ARG002</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t274" href="#t274">274</a></span><span class="t">        <span class="nam">start_offsets</span><span class="op">:</span> <span class="nam">dict</span><span class="op">[</span><span class="nam">str</span><span class="op">,</span> <span class="nam">dict</span><span class="op">[</span><span class="nam">str</span><span class="op">,</span> <span class="nam">int</span><span class="op">]</span><span class="op">]</span> <span class="op">|</span> <span class="key">None</span> <span class="op">=</span> <span class="key">None</span><span class="op">,</span>  <span class="com"># noqa: ARG002</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t275" href="#t275">275</a></span><span class="t">    <span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">TaskLog</span><span class="op">,</span> <span class="key">None</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t275" href="#t275">275</a></span><span class="t">    <span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">TaskLog</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t276" href="#t276">276</a></span><span class="t">        <span class="str">&quot;&quot;&quot;Return an empty live-log stream for Celery tasks.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t277" href="#t277">277</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t278" href="#t278">278</a></span><span class="t"><span class="str">        Celery tasks finish synchronously inside ``dispatch_task``, so the</span>&nbsp;</span><span class="r"></span></p>
@@ -383,7 +383,7 @@
     <p class="run run2"><span class="n"><a id="t299" href="#t299">299</a></span><span class="t">        <span class="nam">chunk_size</span><span class="op">:</span> <span class="nam">int</span> <span class="op">=</span> <span class="num">1024</span> <span class="op">*</span> <span class="num">1024</span><span class="op">,</span>  <span class="com"># noqa: ARG002</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t300" href="#t300">300</a></span><span class="t">        <span class="op">*</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t301" href="#t301">301</a></span><span class="t">        <span class="nam">anonymize</span><span class="op">:</span> <span class="nam">bool</span> <span class="op">=</span> <span class="key">True</span><span class="op">,</span>  <span class="com"># noqa: ARG002</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t302" href="#t302">302</a></span><span class="t">    <span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">bytes</span><span class="op">,</span> <span class="key">None</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t302" href="#t302">302</a></span><span class="t">    <span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">bytes</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t303" href="#t303">303</a></span><span class="t">        <span class="str">&quot;&quot;&quot;Raise NotImplementedError.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t304" href="#t304">304</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t305" href="#t305">305</a></span><span class="t"><span class="str">        Celery tasks do not produce downloadable files.</span>&nbsp;</span><span class="r"></span></p>
@@ -422,7 +422,7 @@
             <a class="nav" href="z_4d841bdcdb1786ba_constants_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
     </div>
 </footer>

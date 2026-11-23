@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_fabc837f9b5d9671_config_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -1151,7 +1151,7 @@
     <p class="pln"><span class="n"><a id="t1067" href="#t1067">1067</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1068" href="#t1068">1068</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t1069" href="#t1069">1069</a></span><span class="t"><span class="op">@</span><span class="nam">asynccontextmanager</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1070" href="#t1070">1070</a></span><span class="t"><span class="key">async</span> <span class="key">def</span> <span class="nam">default_lifespan</span><span class="op">(</span><span class="nam">app</span><span class="op">:</span> <span class="nam">FastAPI</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="key">None</span><span class="op">,</span> <span class="key">None</span><span class="op">]</span><span class="op">:</span>  <span class="com"># noqa: ARG001</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1070" href="#t1070">1070</a></span><span class="t"><span class="key">async</span> <span class="key">def</span> <span class="nam">default_lifespan</span><span class="op">(</span><span class="nam">app</span><span class="op">:</span> <span class="nam">FastAPI</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="key">None</span><span class="op">]</span><span class="op">:</span>  <span class="com"># noqa: ARG001</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1071" href="#t1071">1071</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Define the default manager for the application&#x27;s lifespan.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1072" href="#t1072">1072</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1073" href="#t1073">1073</a></span><span class="t"><span class="str">    Ensures that the active auth provider&#x27;s SDK and any extra client sessions are</span>&nbsp;</span><span class="r"></span></p>
@@ -1178,9 +1178,9 @@
     <p class="pln"><span class="n"><a id="t1094" href="#t1094">1094</a></span><span class="t"><span class="str">    still letting callers explicitly set the value to ``None``.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1095" href="#t1095">1095</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1096" href="#t1096">1096</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1097" href="#t1097">1097</a></span><span class="t">    <span class="nam">_instance</span><span class="op">:</span> <span class="str">&quot;_UnsetType | None&quot;</span> <span class="op">=</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1097" href="#t1097">1097</a></span><span class="t">    <span class="nam">_instance</span><span class="op">:</span> <span class="nam">_UnsetType</span> <span class="op">|</span> <span class="key">None</span> <span class="op">=</span> <span class="key">None</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1098" href="#t1098">1098</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t1099" href="#t1099">1099</a></span><span class="t">    <span class="key">def</span> <span class="nam">__new__</span><span class="op">(</span><span class="nam">cls</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="str">&quot;_UnsetType&quot;</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t1099" href="#t1099">1099</a></span><span class="t">    <span class="key">def</span> <span class="nam">__new__</span><span class="op">(</span><span class="nam">cls</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">_UnsetType</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="par run show_par"><span class="n"><a id="t1100" href="#t1100">1100</a></span><span class="t">        <span class="key">if</span> <span class="nam">cls</span><span class="op">.</span><span class="nam">_instance</span> <span class="key">is</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"><span class="annotate short">1100&#x202F;&#x219B;&#x202F;1102</span><span class="annotate long">line 1100 didn't jump to line 1102 because the condition on line 1100 was always true</span></span></p>
     <p class="run"><span class="n"><a id="t1101" href="#t1101">1101</a></span><span class="t">            <span class="nam">cls</span><span class="op">.</span><span class="nam">_instance</span> <span class="op">=</span> <span class="nam">super</span><span class="op">(</span><span class="op">)</span><span class="op">.</span><span class="nam">__new__</span><span class="op">(</span><span class="nam">cls</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t1102" href="#t1102">1102</a></span><span class="t">        <span class="key">return</span> <span class="nam">cls</span><span class="op">.</span><span class="nam">_instance</span>&nbsp;</span><span class="r"></span></p>
@@ -1285,7 +1285,7 @@
             <a class="nav" href="z_fabc837f9b5d9671_config_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
     </div>
 </footer>

@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_9f5ad95eb04b6705_engine_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -237,7 +237,7 @@
     <p class="run run2"><span class="n"><a id="t153" href="#t153">153</a></span><span class="t">        <span class="nam">owner</span><span class="op">:</span> <span class="nam">str</span> <span class="op">|</span> <span class="key">None</span> <span class="op">=</span> <span class="key">None</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t154" href="#t154">154</a></span><span class="t">        <span class="nam">batch_size</span><span class="op">:</span> <span class="nam">int</span> <span class="op">=</span> <span class="nam">ACTIVE_TASK_BATCH_SIZE</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t155" href="#t155">155</a></span><span class="t">        <span class="nam">query_options</span><span class="op">:</span> <span class="nam">Sequence</span> <span class="op">=</span> <span class="op">(</span><span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t156" href="#t156">156</a></span><span class="t">    <span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">list</span><span class="op">[</span><span class="nam">Task</span><span class="op">]</span><span class="op">,</span> <span class="key">None</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t156" href="#t156">156</a></span><span class="t">    <span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">list</span><span class="op">[</span><span class="nam">Task</span><span class="op">]</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t157" href="#t157">157</a></span><span class="t">        <span class="str">&quot;&quot;&quot;Yield every active task in ascending-id batches.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t158" href="#t158">158</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t159" href="#t159">159</a></span><span class="t"><span class="str">        For whole-population passes, where :meth:`list_active` would materialize</span>&nbsp;</span><span class="r"></span></p>
@@ -1076,7 +1076,7 @@
     <p class="run run2"><span class="n"><a id="t992" href="#t992">992</a></span><span class="t">        <span class="nam">task_history_id</span><span class="op">:</span> <span class="nam">int</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t993" href="#t993">993</a></span><span class="t">        <span class="op">*</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t994" href="#t994">994</a></span><span class="t">        <span class="nam">source</span><span class="op">:</span> <span class="nam">str</span> <span class="op">|</span> <span class="key">None</span> <span class="op">=</span> <span class="key">None</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t995" href="#t995">995</a></span><span class="t">    <span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">TaskHistoryLog</span><span class="op">,</span> <span class="key">None</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t995" href="#t995">995</a></span><span class="t">    <span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">TaskHistoryLog</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t996" href="#t996">996</a></span><span class="t">        <span class="str">&quot;&quot;&quot;Yield chunk rows in ``(source, stream, start_offset)`` order.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t997" href="#t997">997</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t998" href="#t998">998</a></span><span class="t"><span class="str">        :param session: The SQLAlchemy asynchronous session to use for query</span>&nbsp;</span><span class="r"></span></p>
@@ -1145,7 +1145,7 @@
     <p class="run run2"><span class="n"><a id="t1061" href="#t1061">1061</a></span><span class="t">        <span class="op">*</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t1062" href="#t1062">1062</a></span><span class="t">        <span class="nam">source</span><span class="op">:</span> <span class="nam">str</span> <span class="op">|</span> <span class="key">None</span> <span class="op">=</span> <span class="key">None</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t1063" href="#t1063">1063</a></span><span class="t">        <span class="nam">stream</span><span class="op">:</span> <span class="nam">TaskLogType</span> <span class="op">|</span> <span class="key">None</span> <span class="op">=</span> <span class="key">None</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run run2"><span class="n"><a id="t1064" href="#t1064">1064</a></span><span class="t">    <span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">TaskHistoryLog</span><span class="op">,</span> <span class="key">None</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t1064" href="#t1064">1064</a></span><span class="t">    <span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">AsyncGenerator</span><span class="op">[</span><span class="nam">TaskHistoryLog</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1065" href="#t1065">1065</a></span><span class="t">        <span class="str">&quot;&quot;&quot;Yield chunk rows newest-first within each ``(source, stream)`` group.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1066" href="#t1066">1066</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1067" href="#t1067">1067</a></span><span class="t"><span class="str">        Ordering is ``(source, stream, start_offset DESC)`` so callers can scan</span>&nbsp;</span><span class="r"></span></p>
@@ -1731,7 +1731,7 @@
             <a class="nav" href="z_9f5ad95eb04b6705_engine_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
     </div>
 </footer>

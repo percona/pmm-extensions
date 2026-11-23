@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="index.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -172,7 +172,7 @@
     <p class="run"><span class="n"><a id="t88" href="#t88">88</a></span><span class="t">        <span class="key">return</span> <span class="nam">self</span><span class="op">.</span><span class="nam">is_finished</span><span class="op">(</span><span class="op">)</span> <span class="key">or</span> <span class="nam">self</span> <span class="op">==</span> <span class="nam">TaskHistoryStatusEnum</span><span class="op">.</span><span class="nam">LOST</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t89" href="#t89">89</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t90" href="#t90">90</a></span><span class="t">    <span class="op">@</span><span class="nam">classmethod</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t91" href="#t91">91</a></span><span class="t">    <span class="key">def</span> <span class="nam">active_statuses</span><span class="op">(</span><span class="nam">cls</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">frozenset</span><span class="op">[</span><span class="str">&quot;TaskHistoryStatusEnum&quot;</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t91" href="#t91">91</a></span><span class="t">    <span class="key">def</span> <span class="nam">active_statuses</span><span class="op">(</span><span class="nam">cls</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">frozenset</span><span class="op">[</span><span class="nam">TaskHistoryStatusEnum</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t92" href="#t92">92</a></span><span class="t">        <span class="str">&quot;&quot;&quot;Return the statuses whose executions are still in flight.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t93" href="#t93">93</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t94" href="#t94">94</a></span><span class="t"><span class="str">        These are the non-terminal statuses (``PENDING`` / ``RUNNING``); a new</span>&nbsp;</span><span class="r"></span></p>
@@ -183,7 +183,7 @@
     <p class="run"><span class="n"><a id="t99" href="#t99">99</a></span><span class="t">        <span class="key">return</span> <span class="nam">frozenset</span><span class="op">(</span><span class="op">{</span><span class="nam">cls</span><span class="op">.</span><span class="nam">PENDING</span><span class="op">,</span> <span class="nam">cls</span><span class="op">.</span><span class="nam">RUNNING</span><span class="op">}</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t100" href="#t100">100</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t101" href="#t101">101</a></span><span class="t">    <span class="op">@</span><span class="nam">classmethod</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t102" href="#t102">102</a></span><span class="t">    <span class="key">def</span> <span class="nam">interrupted_statuses</span><span class="op">(</span><span class="nam">cls</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">frozenset</span><span class="op">[</span><span class="str">&quot;TaskHistoryStatusEnum&quot;</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t102" href="#t102">102</a></span><span class="t">    <span class="key">def</span> <span class="nam">interrupted_statuses</span><span class="op">(</span><span class="nam">cls</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">frozenset</span><span class="op">[</span><span class="nam">TaskHistoryStatusEnum</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t103" href="#t103">103</a></span><span class="t">        <span class="str">&quot;&quot;&quot;Return the terminal statuses of a run that was ended rather than finished.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t104" href="#t104">104</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t105" href="#t105">105</a></span><span class="t"><span class="str">        Tracking of the run was lost, its placement went stale, or it was stopped:</span>&nbsp;</span><span class="r"></span></p>
@@ -231,7 +231,7 @@
             <a class="nav" href="index.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.17.3">coverage.py v7.17.3</a>,
-            created at 2026-11-20 17:27 +0000
+            created at 2026-11-23 14:59 +0000
         </p>
     </div>
 </footer>
