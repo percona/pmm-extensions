@@ -75,7 +75,7 @@ FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 @dataclass(frozen=True, slots=True)
 class Finding:
-    """One thing an app does that it must not.
+    """Hold one thing an app does that it must not.
 
     :param path: The file that holds it.
     :param line: The line, counted from 1.
@@ -190,7 +190,7 @@ def _values_bound_to(function: FunctionNode, name: str) -> list[ast.AST]:
     :param name: The variable's name.
     :return: The assigned expressions. Empty when the function never assigns it.
     """
-    values = []
+    values: list[ast.AST] = []
     for node in _own_nodes(function):
         if isinstance(node, ast.Assign):
             targets = node.targets
@@ -198,7 +198,7 @@ def _values_bound_to(function: FunctionNode, name: str) -> list[ast.AST]:
             targets = [node.target]
         else:
             continue
-        if any(
+        if node.value is not None and any(
             isinstance(target, ast.Name) and target.id == name for target in targets
         ):
             values.append(node.value)

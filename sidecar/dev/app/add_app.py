@@ -35,7 +35,7 @@ ENTRY_INDENT = "      "
 
 
 class ProfileError(Exception):
-    """The profile is not one that this step can edit."""
+    """Report a profile that this step cannot edit."""
 
 
 def listed_apps(profile: Path) -> list[str]:

@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Tier 0 of the app skill's tests: what can be checked with no model.
+"""Tests of the app skill that need no model.
 
 The skill must work in any assistant that reads the Agent Skills format, so
 these tests hold it to the specification and to nothing that one assistant
@@ -175,7 +175,11 @@ def test_git_holds_every_file_of_the_skill() -> None:
 def test_gh_skill_install_puts_the_whole_skill_where_the_assistant_reads_it(
     tmp_path: Path, agent: str
 ) -> None:
-    """Install from this checkout and compare every file with its source."""
+    """Install from this checkout and compare every file with its source.
+
+    :param tmp_path: The directory that stands for the person's project.
+    :param agent: The assistant to install for, as ``gh skill install`` names it.
+    """
     gh = shutil.which("gh")
     if gh is None or subprocess.run([gh, "skill", "--help"], check=False).returncode:
         pytest.skip("the GitHub CLI has no `gh skill` command on this machine")

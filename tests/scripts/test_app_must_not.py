@@ -76,6 +76,18 @@ def build_fixture_spec(form, resolved):
     return RunCommandSpec(command="pt-summary", args=shlex.join([]))
 """
 
+DECLARED_ARGS_SPEC = """\
+import shlex
+
+from app.extensions.apps.framework.spec import RunCommandSpec
+
+
+def build_fixture_spec(form, resolved):
+    args: str
+    args = shlex.join(["--no-version-check"])
+    return RunCommandSpec(command="pt-summary", args=args)
+"""
+
 
 def make_app(tmp_path: Path, **files: str) -> Path:
     """Write a fixture app and return its directory.
@@ -106,6 +118,11 @@ def messages(app_dir: Path) -> list[str]:
 def test_an_app_that_follows_the_rules_has_no_finding(tmp_path: Path) -> None:
     """Pass an app whose builder returns a framework spec from ``shlex.join``."""
     assert app_must_not.check_app(make_app(tmp_path)) == []
+
+
+def test_a_variable_that_is_declared_before_its_value_passes(tmp_path: Path) -> None:
+    """Pass arguments whose variable has an annotation on a line of its own."""
+    assert messages(make_app(tmp_path, spec=DECLARED_ARGS_SPEC)) == []
 
 
 def test_the_checksums_app_of_the_tree_passes() -> None:

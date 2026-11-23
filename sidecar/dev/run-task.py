@@ -56,7 +56,7 @@ REQUEST_TIMEOUT_SECONDS = 60
 
 @dataclass(frozen=True, slots=True)
 class Request:
-    """One request to the local PMM.
+    """Hold one request to the local PMM.
 
     :param method: The HTTP method.
     :param path: The path on the local PMM, with its query string.
@@ -72,7 +72,7 @@ class Request:
 
 @dataclass(frozen=True, slots=True)
 class Response:
-    """The answer to one request.
+    """Hold the answer to one request.
 
     :param status: The HTTP status.
     :param body: The answer's body.
@@ -88,7 +88,7 @@ Send = Callable[[Request], Response]
 
 
 class RefusedError(Exception):
-    """The API refused a request, or the request cannot be made."""
+    """Report that the API refused a request, or that the request cannot be made."""
 
 
 def make_sender(port: int) -> Send:
@@ -185,6 +185,20 @@ class LocalPmm:
             raise RefusedError(message)
         self._token = json.loads(answer.body)["access_token"]
 
+    def _with_token(self, method: str, path: str, data: bytes | None) -> Response:
+        """Send one request with the token that the session holds now.
+
+        :param method: The HTTP method.
+        :param path: The path on the local PMM.
+        :param data: The request's body, if it has one.
+        :return: The answer, whatever its status.
+        """
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+        }
+        return self._send(Request(method, path, data, headers))
+
     def call(self, method: str, path: str, body: Any = None) -> Response:
         """Send one request with the token, and get a new token once on a 401.
 
@@ -195,15 +209,10 @@ class LocalPmm:
         :raises RefusedError: When the API refuses the request.
         """
         data = None if body is None else json.dumps(body).encode()
-        for attempt in (1, 2):
-            headers = {
-                "Authorization": f"Bearer {self._token}",
-                "Content-Type": "application/json",
-            }
-            answer = self._send(Request(method, path, data, headers))
-            if answer.status != HTTP_UNAUTHORIZED or attempt > 1:
-                break
+        answer = self._with_token(method, path, data)
+        if answer.status == HTTP_UNAUTHORIZED:
             self._exchange()
+            answer = self._with_token(method, path, data)
         if answer.status >= HTTP_ERROR:
             message = f"{method} {path} answered {answer.status}: {_detail(answer)}"
             raise RefusedError(message)

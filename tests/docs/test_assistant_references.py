@@ -164,14 +164,15 @@ def test_no_file_holds_a_forbidden_word() -> None:
 def test_a_missing_path_is_reported_with_its_file(tmp_path: pathlib.Path) -> None:
     """Name the file and the path, for a backticked string and for a link."""
     scratch = tmp_path / "SKILL.md"
+    absent = "app/tasks/models.py"
     scratch.write_text(
-        "Read `app/tasks/models.py` and [the page](docs/how-to/no-such-page.md#top).\n"
+        f"Read `{absent}` and [the page](docs/how-to/no-such-page.md#top).\n"
         "Run `make app-check NAME=<app>` and read `docs/how-to/test-an-app.md`.\n"
         "The tests are in `tests/app/extensions/apps/<app>/`.\n",
         encoding="utf-8",
     )
     assert _missing_paths([scratch]) == [
-        f"{scratch}: app/tasks/models.py",
+        f"{scratch}: {absent}",
         f"{scratch}: docs/how-to/no-such-page.md",
     ]
 

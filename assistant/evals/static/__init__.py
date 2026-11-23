@@ -13,4 +13,4 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Tier 0 of the app skill's tests: checks that need no model."""
+"""Tests of the app skill that need no model."""

@@ -104,8 +104,9 @@ def a_repository(directory: Path, **files: str) -> str:
 
 
 def test_the_grader_removes_no_directory() -> None:
-    """A record names the run's directory, so the grader must not delete by that name."""
+    """Keep the grader from deleting by a name that a record gives it."""
     source = Path(grader.__file__).read_text(encoding="utf-8")
+    assert "def main" in source
     assert "rmtree" not in source
 
 

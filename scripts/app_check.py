@@ -17,7 +17,7 @@
 """Run every check that CI asks of one app, behind ``make app-check``.
 
 For an app in the tree, ``make app-check NAME=<app>`` runs six suites: the
-app's own tests, framework conformance, "what an app must not do", the two
+app's own tests, framework conformance, "what an app must not do", the
 snapshot modules, the test that the OpenAPI files are fresh, and the test that
 pins the list of apps that ship.
 
@@ -64,7 +64,7 @@ NOT_APPS = ("framework", "shared")
 
 
 class UsageError(Exception):
-    """The app is not where the arguments say it is."""
+    """Report that the app is not where the arguments say it is."""
 
 
 def suites(name: str, *, outside: bool) -> list[Suite]:
@@ -76,7 +76,7 @@ def suites(name: str, *, outside: bool) -> list[Suite]:
     """
     pytest = (sys.executable, "-m", "pytest")
     framework = f"{TESTS_PATH}/framework"
-    every_app = [
+    every_app: list[Suite] = [
         ("the app's tests", (*pytest, f"{TESTS_PATH}/{name}", "-q")),
         (
             "framework conformance",
@@ -92,7 +92,7 @@ def suites(name: str, *, outside: bool) -> list[Suite]:
             (sys.executable, "scripts/app_must_not.py", f"{APPS_PATH}/{name}"),
         ),
     ]
-    tree_only = [
+    tree_only: list[Suite] = [
         (
             "snapshots",
             (
