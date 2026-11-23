@@ -52,6 +52,7 @@ from pathlib import Path
 import pytest
 
 from app.extensions.snippets.config import snippets_settings
+from tests.conftest import require_bash_4
 
 SCRIPT = snippets_settings.SNIPPETS_DIR / "proxysql_status.sh"
 _cap = re.search(
@@ -1792,7 +1793,16 @@ REAL_SHAPED_SECRETS = (
 
 
 class TestAdminCnfRedaction:
-    """Show the admin config for diagnosis without ever printing a credential."""
+    """Show the admin config for diagnosis without ever printing a credential.
+
+    Under macOS's bash 3.2 about half of these cases fail and none of the
+    script's other cases do, so this class is the part that needs bash 4.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _needs_bash_4(self) -> None:
+        """Skip each case unless ``bash`` on ``PATH`` is version 4 or later."""
+        require_bash_4()
 
     @pytest.mark.parametrize(
         "args",
