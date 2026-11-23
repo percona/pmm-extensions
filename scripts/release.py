@@ -26,9 +26,9 @@ Subcommands:
 - ``prep``: optional prep step. Creates ``release/vX.Y.Z`` from ``main``
   HEAD, dispatches the Jira ``version-create`` automation webhook to lock
   the ``fixVersion=sep-next`` scope, opens the ``main`` dev-version-bump
-  PR, smoke-builds the wheel, and triggers an internal-registry-only
-  Jenkins build before rc1 publishes to Docker Hub. No version bump, no
-  tag.
+  PR, smoke-builds the wheel, and triggers a Jenkins build that builds
+  and verifies the image without pushing it, before rc1 publishes to
+  Docker Hub. No version bump, no tag.
 - ``rc``: cut release candidate ``vX.Y.ZrcN``. ``RC=1`` runs from
   ``main`` (legacy fresh-from-main path) or, if a prior ``prep`` already
   pushed ``release/vX.Y.Z``, from that existing branch (after-prep
@@ -814,13 +814,10 @@ def _print_prep_next_steps(
     """Print the prep "Next steps" block on stdout.
 
     :param version: The X.Y.Z release version (no ``v`` prefix).
-    :type version: str
     :param head_sha: The HEAD commit SHA of the freshly-pushed release branch
-        — the operator needs it to identify the internal-registry image tag.
-    :type head_sha: str
+        — the commit the operator builds when the Jenkins trigger was skipped.
     :param jira_version_created: When ``True``, omit the "Create Jira version"
         reminder.
-    :type jira_version_created: bool
     """
     print()
     print("Next steps:")
@@ -829,8 +826,9 @@ def _print_prep_next_steps(
         print(f"  {step}. Create Jira version {version} (if not already created)")
         step += 1
     print(
-        f"  {step}. If the Jenkins trigger above was skipped, build the "
-        f"internal-registry image for {head_sha} (needs JENKINS_* credentials): "
+        f"  {step}. If the Jenkins trigger above was skipped, build and verify "
+        f"the image for {head_sha} without pushing it "
+        "(needs JENKINS_* credentials): "
         f"make trigger-jenkins TAG={head_sha} "
         "PUSH_IMAGE_DOCKER=false"
     )
@@ -881,9 +879,9 @@ def cmd_prep(version: str, *, sign_via_github_api: bool) -> int:
 
     Carries the scope-lock side effects of today's atomic ``cmd_rc(RC=1)`` —
     create + push the release branch, fire the Jira version-create webhook,
-    open the dev-bump PR on main, smoke-build the wheel, and trigger an
-    internal-only Jenkins build (``pushImageDocker=false``) tagged by HEAD
-    SHA. The follow-up ``cmd_rc(RC=1)`` does the version bump, tag,
+    open the dev-bump PR on main, smoke-build the wheel, and trigger a
+    Jenkins build of HEAD that pushes no image (``pushImageDocker=false``).
+    The follow-up ``cmd_rc(RC=1)`` does the version bump, tag,
     GH pre-release, and the Docker-Hub-pushing Jenkins build.
 
     :param version: The X.Y.Z release version (no ``v`` prefix).
@@ -1459,7 +1457,7 @@ def build_parser() -> argparse.ArgumentParser:
         "prep",
         help=(
             "Prep a release: create release branch, lock scope, "
-            "trigger an internal-registry-only Jenkins build "
+            "trigger a Jenkins build that pushes no image "
             "before rc1 is published to Docker Hub."
         ),
     )
