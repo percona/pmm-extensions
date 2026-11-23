@@ -46,7 +46,7 @@ class BaseAuthProvider(ABC):
     supports_ambient_session: ClassVar[bool] = False
 
     @asynccontextmanager
-    async def lifespan(self) -> AsyncGenerator[None, None]:
+    async def lifespan(self) -> AsyncGenerator[None]:
         """Yield control while the provider's resources are active.
 
         Default to a no-op for providers whose SDK needs no async setup or

@@ -15,10 +15,12 @@
 
 """Tests for the ``scripts/check_nomad_payload_size.py`` CLI."""
 
+import gzip
 import sys
 
 import pytest
 
+from app.tasks.execution import utils as dispatch_utils
 from tests.scripts import load_script, write_file
 
 check_nomad_payload_size = load_script("check_nomad_payload_size")
@@ -32,6 +34,16 @@ def hello(name: str = "world") -> str:
     """Return a friendly greeting."""
     return f"hello, {name}"
 '''
+
+REQUOTABLE_SCRIPT = '''\
+"""A module whose f-string holds a quoted subscript."""
+
+import os
+
+print(f"{os.environ['HOME']}/.my.cnf")
+'''
+
+UNREPRESENTABLE_SCRIPT = 'print(f"{42:\\N{NO-BREAK SPACE}>5}")\n'
 
 INVALID_SCRIPT = "def oops(:\n"
 USAGE_ERROR_EXIT_CODE = 2
@@ -53,28 +65,46 @@ def test_check_payload_uses_minified_text_for_size(tmp_path, monkeypatch):
     """Gzip-compress the minified source in ``check_payload``, not the original text."""
     path = write_file(tmp_path, "verbose.py", VERBOSE_SCRIPT)
     seen = {}
-    real_minify = check_nomad_payload_size.minify
+    real_minify = dispatch_utils.minify
 
     def spy_minify(src, **kwargs):
         out = real_minify(src, **kwargs)
         seen["minified"] = out
         return out
 
-    monkeypatch.setattr(check_nomad_payload_size, "minify", spy_minify)
+    monkeypatch.setattr(dispatch_utils, "minify", spy_minify)
     monkeypatch.setattr(check_nomad_payload_size, "NOMAD_PAYLOAD_SIZE_LIMIT", 0)
     _, size = check_nomad_payload_size.check_payload(str(path))
     assert len(seen["minified"]) < len(VERBOSE_SCRIPT)
     assert size > 0
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(REQUOTABLE_SCRIPT, id="requotable"),
+        pytest.param(UNREPRESENTABLE_SCRIPT, id="unrepresentable"),
+    ],
+)
+def test_payload_size_measures_an_unminifiable_source_as_written(
+    tmp_path, source: str
+) -> None:
+    """Measure a source dispatch sends as written at its unminified size.
+
+    :param tmp_path: The directory the payload is written to.
+    :param source: Valid Python dispatch does not minify.
+    """
+    path = write_file(tmp_path, "payload.py", source)
+
+    size = check_nomad_payload_size.payload_size(str(path))
+
+    assert size == len(gzip.compress(source.encode("utf-8")))
+
+
 def test_check_payload_falls_back_on_syntax_error(tmp_path, monkeypatch):
-    """Ignore ``SyntaxError`` from ``minify`` in ``check_payload`` and use raw source."""
+    """Measure source that is not Python as written in ``check_payload``."""
     path = write_file(tmp_path, "broken.py", INVALID_SCRIPT)
 
-    def raise_syntax(src, **kwargs):
-        raise SyntaxError("boom")
-
-    monkeypatch.setattr(check_nomad_payload_size, "minify", raise_syntax)
     monkeypatch.setattr(check_nomad_payload_size, "NOMAD_PAYLOAD_SIZE_LIMIT", 0)
     result = check_nomad_payload_size.check_payload(str(path))
     assert result is not None

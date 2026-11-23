@@ -56,7 +56,7 @@ class PaginationParent(BaseSQLModel, table=True):
     __tablename__ = "test_pagination_parent"
 
     name: str
-    items: list["PaginationItem"] = Relationship(back_populates="parent")
+    items: list[PaginationItem] = Relationship(back_populates="parent")
 
 
 class PaginationItem(BaseSQLModel, table=True):
@@ -268,7 +268,7 @@ class ExcludedOnlyUniqueManager(BaseSQLModelManager):
 
 
 @pytest_asyncio.fixture(name="session_engine")
-async def session_engine_fixture() -> AsyncGenerator[AsyncEngine, None]:
+async def session_engine_fixture() -> AsyncGenerator[AsyncEngine]:
     """Create the schema-loaded engine every CRUD session in this module shares.
 
     :return: An in-memory engine with every ``SQLModel`` table created.
@@ -293,7 +293,7 @@ async def session_engine_fixture() -> AsyncGenerator[AsyncEngine, None]:
 @pytest_asyncio.fixture(name="session")
 async def session_fixture(
     session_engine: AsyncEngine,
-) -> AsyncGenerator[AsyncSession, None]:
+) -> AsyncGenerator[AsyncSession]:
     """Create an isolated async database session for CRUD pagination tests.
 
     :param session_engine: The engine the session is bound to.

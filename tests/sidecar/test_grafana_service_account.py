@@ -268,7 +268,7 @@ class HelperRun:
 
 
 @pytest_asyncio.fixture
-async def grafana_stub() -> AsyncGenerator[GrafanaStub, None]:
+async def grafana_stub() -> AsyncGenerator[GrafanaStub]:
     """Stand a Grafana stub up on loopback for the duration of the test.
 
     :return: The running stub.

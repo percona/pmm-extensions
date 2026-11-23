@@ -258,7 +258,7 @@ class SystemFactsSyncer(BaseTaskSyncer):
         result = await self.wait_for_task_output(**meta)
         try:
             data = json.loads(result.stdout)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             logger.warning(
                 "System facts payload returned non-JSON output for node %s",
                 created_node.id,
@@ -373,7 +373,7 @@ class SystemFactsSyncer(BaseTaskSyncer):
         result = await self.wait_for_task_output(**meta)
         try:
             data = json.loads(result.stdout)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             logger.warning(
                 "System facts payload returned non-JSON output for service %s",
                 created_service.id,

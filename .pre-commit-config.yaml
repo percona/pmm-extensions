@@ -1,6 +1,6 @@
 ---
 default_language_version:
-  python: python3
+  python: python3.14
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: f12be1ebaa5351c1fc76472de98db2c3446c8253  # v0.16.10
@@ -50,7 +50,7 @@ repos:
         description: "Ensure dispatch payloads stay under Nomad 16 KiB limit after minify+gzip"
         entry: python3 scripts/check_nomad_payload_size.py
         language: python
-        additional_dependencies: ["python-minifier==2.11.3"]
+        additional_dependencies: ["python-minifier==3.4.0"]
         files: ^app/extensions/apps/(?!dipper/)(?:.*/)?(?:payload(?:/.*)?|[^/]*_payload)$
         pass_filenames: true
       - id: check-dead-code

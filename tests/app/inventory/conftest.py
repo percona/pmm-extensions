@@ -77,7 +77,7 @@ from tests.app.factories import (
 
 
 @pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
+async def session_fixture() -> AsyncGenerator[AsyncSession]:
     """Create an async database session for testing."""
     engine = create_async_engine(
         "sqlite+aiosqlite://",

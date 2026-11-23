@@ -382,7 +382,7 @@ def _raise_stream_line_too_big(size: int, path: str) -> NoReturn:
 
 async def _iter_lines_from_chunks(
     chunks: AsyncIterator[bytes], path: str
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """Yield newline-terminated lines from an async iterator of byte chunks.
 
     Buffer chunks from ``chunks`` and yield each newline-terminated slice with
@@ -489,8 +489,8 @@ def _pool_wait_trace_config(logger: logging.Logger, target: str) -> TraceConfig:
 
 
 async def _close_logging_failures(
-    clients: Sequence["BaseRemoteAPI"],
-    close: Callable[["BaseRemoteAPI"], Awaitable[None]] | None = None,
+    clients: Sequence[BaseRemoteAPI],
+    close: Callable[[BaseRemoteAPI], Awaitable[None]] | None = None,
     *,
     action: str = "closing",
 ) -> None:
@@ -551,7 +551,7 @@ class PendingCloses:
         """Reject further deferrals; late retirements must close immediately."""
         self._sealed = True
 
-    def add(self, client: "BaseRemoteAPI") -> bool:
+    def add(self, client: BaseRemoteAPI) -> bool:
         """Remember ``client`` until it drains or :meth:`force_close` runs.
 
         :param client: The client whose close was deferred.
@@ -565,7 +565,7 @@ class PendingCloses:
         self._clients[id(client)] = client
         return True
 
-    def track(self, client: "BaseRemoteAPI") -> None:
+    def track(self, client: BaseRemoteAPI) -> None:
         """Remember ``client`` until a successful close removes it.
 
         Unlike :meth:`add`, this registers even when sealed so an immediate
@@ -577,7 +577,7 @@ class PendingCloses:
         """
         self._clients[id(client)] = client
 
-    def discard(self, client: "BaseRemoteAPI") -> None:
+    def discard(self, client: BaseRemoteAPI) -> None:
         """Drop ``client`` after a normal deferred close.
 
         :param client: The client that closed (or was force-closed).
@@ -969,7 +969,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         self._pending_closes = pending
 
     @asynccontextmanager
-    async def hold(self) -> AsyncGenerator[Self, None]:
+    async def hold(self) -> AsyncGenerator[Self]:
         """Count the caller as an in-flight consumer for the duration of the block.
 
         A consumer that resolved this client keeps it for every call it makes,
@@ -1407,7 +1407,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
         *,
         long_lived: bool = False,
         **kwargs: Any,
-    ) -> AsyncGenerator[ClientResponse, None]:
+    ) -> AsyncGenerator[ClientResponse]:
         """Perform an HTTP request and hand back its open response.
 
         :param method: The HTTP method to use for the request.
@@ -1479,7 +1479,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
 
     async def stream_chunks(
         self, path: str, method: str = "GET", **kwargs: Any
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Perform a streaming HTTP request and yield raw byte chunks as they arrive.
 
         Use this for binary, gzip, or any non-line-oriented payload. For NDJSON
@@ -1513,7 +1513,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
                     code_key = getattr(self, "error_code_key", None)
                     try:
                         response_data = await response.json()
-                    except (ContentTypeError, ValueError):
+                    except ContentTypeError, ValueError:
                         text = await response.text()
                         fallback = text or "An unexpected error occurred on the server."
                         self._raise_stream_http_error(
@@ -1553,7 +1553,7 @@ class BaseRemoteAPI(BaseCaseInsensitiveModel):
 
     async def stream(
         self, path: str, method: str = "GET", **kwargs: Any
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Perform a streaming HTTP request and yield response content one line at a time.
 
         Buffer chunks across newline boundaries and yield each newline-terminated

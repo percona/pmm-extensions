@@ -63,7 +63,7 @@ async def task_history_events_event_stream(
     task_history_id: int,
     request: Request,
     access_token: str,
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[str]:
     """Yield incremental execution events for a task history.
 
     The Tasks API returns events oldest-first; only the tail after the last emitted
@@ -156,7 +156,7 @@ async def task_logs_event_stream(
 
 async def _log_data_frames(
     tasks_client: TasksClient, task_history_id: int, request: Request, access_token: str
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[str]:
     """Yield a task history's log lines from the Tasks API as SSE data frames.
 
     :param tasks_client: The TaskAPI client for interacting with the Tasks service.
@@ -186,7 +186,7 @@ async def _log_data_frames(
 
 async def _reconciled_log_frames(
     tasks_client: TasksClient, task_history_id: int, request: Request, access_token: str
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[str]:
     """Yield a task history's log frames, then the frame its reconciled status calls for.
 
     :param tasks_client: The TaskAPI client for interacting with the Tasks service.
@@ -236,7 +236,7 @@ async def _reconciled_log_frames(
 # SEP-130
 async def task_history_logs_event_stream(
     tasks_client: TasksClient, task_history_id: int, request: Request, access_token: str
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[str]:
     """Stream logs from a task history as server-sent events.
 
     Streams log lines for a given task history ID from the Tasks API and yields them
