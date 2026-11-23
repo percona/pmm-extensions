@@ -15,8 +15,8 @@
 
 """Reference-integrity test for the files that an AI assistant reads.
 
-The files under ``assistant/`` and the tracked ``AGENTS.md`` files tell an
-assistant which files of this repository to read and which commands to run.
+The files under ``assistant/`` and the tracked instruction files for agents
+tell an assistant which files of this repository to read and which commands to run.
 No test runs that prose, so a renamed file would leave it pointing nowhere.
 This module enforces two contracts on every Markdown file among them:
 
@@ -57,7 +57,7 @@ _SENTENCE_STARTS = (".", "!", "?", ":", "|", "#", "*", "-", ">", "(")
 
 
 def _tracked_agents_files() -> list[pathlib.Path]:
-    """Return the ``AGENTS.md`` files that Git tracks, in any directory.
+    """Return the instruction files for agents that Git tracks, in any directory.
 
     :return: The files. Empty when Git is absent or this is no repository.
     """
@@ -78,7 +78,7 @@ def _assistant_files() -> list[pathlib.Path]:
     """Return every Markdown file that an assistant reads.
 
     :return: The Markdown files under ``assistant/``, then the tracked
-        ``AGENTS.md`` files.
+        instruction files for agents.
     """
     return [*sorted(_ASSISTANT_ROOT.rglob("*.md")), *_tracked_agents_files()]
 

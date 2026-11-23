@@ -68,7 +68,7 @@ INSTALL_TARGETS = {"claude-code": ".claude/skills", "cursor": ".agents/skills"}
 
 
 def frontmatter() -> dict[str, str]:
-    """Return the YAML frontmatter of ``SKILL.md``.
+    """Return the YAML frontmatter of the skill's main file.
 
     :return: The frontmatter's keys and values.
     """
@@ -88,7 +88,7 @@ def skill_files() -> list[Path]:
 def question_templates() -> list[str]:
     """Return the questions that the skill gives the assistant word for word.
 
-    A question template is a block-quoted line of ``references/the-person.md``.
+    A question template is a block-quoted line of the reference about the person.
 
     :return: The lines, without the quote mark.
     """
@@ -116,7 +116,7 @@ def test_the_frontmatter_names_no_tool_of_one_assistant() -> None:
 
 
 def test_the_skill_file_is_short() -> None:
-    """Keep ``SKILL.md`` small enough to be read whole at every start."""
+    """Keep the skill's main file small enough to be read whole at every start."""
     lines = SKILL_FILE.read_text(encoding="utf-8").splitlines()
     assert len(lines) < MAX_SKILL_LINES
 
