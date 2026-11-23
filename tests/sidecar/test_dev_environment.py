@@ -19,6 +19,7 @@ Each test pins one property that lets the stack start beside a PMM a developer
 already runs, or that keeps the pair on one released version.
 """
 
+import re
 from typing import Any
 
 import pytest
@@ -92,3 +93,90 @@ def test_pmm_advertises_its_compose_service_name(compose: dict[str, Any]) -> Non
     environment = compose["services"]["pmm-server"]["environment"]
 
     assert environment["PMM_PUBLIC_ADDRESS"] == "pmm-server"
+
+
+PAM_ROOTOK_RULE = "account    sufficient   pam_rootok.so"
+"""The rule that lets ``root`` pass ``sudo``'s account check without ``unix_chkpwd``."""
+
+PAM_ROOTOK_GUARD = f"grep -q '^{PAM_ROOTOK_RULE}' /etc/pam.d/sudo"
+"""The build step that fails the image unless the rule is in ``sudo``'s account stack."""
+
+
+def _run_instructions(containerfile: str) -> list[str]:
+    """Return the active ``RUN`` instructions of a Containerfile, continuations joined.
+
+    :param containerfile: The Containerfile's text.
+    :return: Each ``RUN`` instruction on one line; commented lines are left out.
+    """
+    joined = re.sub(r"\\\n", " ", containerfile)
+    return [
+        line.strip() for line in joined.splitlines() if line.strip().startswith("RUN ")
+    ]
+
+
+def _lets_root_use_sudo(containerfile: str) -> bool:
+    """Return whether an active ``RUN`` adds the rule and fails the build without it.
+
+    :param containerfile: The Containerfile's text.
+    :return: ``True`` when one ``RUN`` edits ``/etc/pam.d/sudo`` and checks the result.
+    """
+    return any(
+        "/etc/pam.d/sudo" in run and PAM_ROOTOK_RULE in run and PAM_ROOTOK_GUARD in run
+        for run in _run_instructions(containerfile)
+    )
+
+
+@pytest.mark.parametrize(
+    "containerfile",
+    [
+        pytest.param(
+            f"# RUN sed -i 'x' /etc/pam.d/sudo \\\n#    && {PAM_ROOTOK_GUARD}\n",
+            id="commented-out",
+        ),
+        pytest.param(
+            "RUN sed -i '0,/^auth/s//auth    sufficient   pam_rootok.so\\nauth/' "
+            "/etc/pam.d/sudo \\\n    && grep -q '^auth    sufficient   pam_rootok.so' "
+            "/etc/pam.d/sudo\n",
+            id="auth-stack",
+        ),
+        pytest.param(
+            f"RUN sed -i 's/x/{PAM_ROOTOK_RULE}/' /etc/pam.d/sudo\n", id="unchecked"
+        ),
+    ],
+)
+def test_a_pam_edit_that_does_not_reach_the_account_stack_is_rejected(
+    containerfile: str,
+) -> None:
+    """Reject an edit that is commented out, targets ``auth``, or is not checked."""
+    assert not _lets_root_use_sudo(containerfile)
+
+
+def test_root_passes_sudo_account_check_in_every_privileged_host(
+    compose: dict[str, Any],
+) -> None:
+    """Let ``root`` use ``sudo`` in every privileged host, on any Docker host.
+
+    A Docker host with AppArmor leaves a privileged container unconfined. There
+    the setuid ``unix_chkpwd`` cannot read ``/etc/shadow``, so without
+    ``pam_rootok`` PAM refuses every ``sudo``, and the PostgreSQL host's
+    entrypoint and any task that declares ``sudo`` fail.
+    """
+    containerfiles = {
+        name: (
+            COMPOSE_FILE.parent
+            / service["build"]["context"]
+            / service["build"]["dockerfile"]
+        ).read_text(encoding="utf-8")
+        for name, service in compose["services"].items()
+        if service.get("privileged") and "build" in service
+    }
+    with_sudo = {
+        name: text
+        for name, text in containerfiles.items()
+        if any(" sudo" in run for run in _run_instructions(text))
+    }
+
+    assert set(with_sudo) == {"mysql-host", "postgresql-host"}
+    assert [
+        name for name, text in with_sudo.items() if not _lets_root_use_sudo(text)
+    ] == []

@@ -31,6 +31,13 @@ RUN dnf install -y \
         zstd lz4 gnupg2 rsync sudo \
     && dnf clean all
 
+# The container runs privileged, which a Docker host with AppArmor, such as
+# Colima's VM, leaves unconfined. There the setuid unix_chkpwd cannot read
+# /etc/shadow, so PAM's account check fails and every sudo is refused. root
+# passes that check through pam_rootok instead, which reads nothing.
+RUN sed -i '0,/^account/s//account    sufficient   pam_rootok.so\naccount/' /etc/pam.d/sudo \
+    && grep -q '^account    sufficient   pam_rootok.so' /etc/pam.d/sudo
+
 COPY --from=pmmclient /usr/local/percona/pmm /usr/local/percona/pmm
 ENV PATH="/usr/local/percona/pmm/bin:${PATH}"
 
