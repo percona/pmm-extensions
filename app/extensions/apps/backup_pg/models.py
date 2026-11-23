@@ -20,7 +20,6 @@ from typing import Annotated, Any, Literal
 
 from annotated_types import Ge
 from pydantic import (
-    ConfigDict,
     model_validator,
     StringConstraints,
 )
@@ -135,11 +134,9 @@ class BackupPgForm(TaskFormModel):
     builder injects :attr:`BackupType.PGBACKREST`. The ``task_name`` / ``hostname``
     Task-section fields and the ``alert_on_fail`` capability control are inherited
     from :class:`TaskFormModel` (``alert_on_fail`` is ``Hidden``, off-schema).
-    ``extra="forbid"`` rejects unknown fields (for example a stale FE submitting
-    ``host`` / ``port``, which the payload pins itself).
+    Unknown fields are rejected by the inherited ``extra="forbid"`` (for example a
+    stale FE submitting ``host`` / ``port``, which the payload pins itself).
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     service_id: Annotated[
         int,

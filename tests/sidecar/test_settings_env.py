@@ -31,6 +31,7 @@ from app.core.config import Settings
 from app.extensions.config import ExtensionsSettings
 from app.inventory.config import InventorySettings
 from app.tasks.config import TasksSettings
+from tests.conftest import require_bash_4
 from tests.sidecar.conftest import SETTINGS_ENV_HELPER, SIDECAR_DIR
 
 SUPERVISORD_EXPANSION = re.compile(r"%\(ENV_([A-Za-z0-9_]+)\)s")
@@ -87,6 +88,7 @@ def source_helper_then(command: str, **inputs: str) -> subprocess.CompletedProce
     :param inputs: The deployment inputs to place in the environment.
     :return: The completed ``bash`` run, whose stdout is a NUL-delimited ``env``.
     """
+    require_bash_4()
     return subprocess.run(
         ["bash", "-c", helper_script(command)],
         env={"PATH": os.environ["PATH"], **inputs},
@@ -123,6 +125,7 @@ def waiting_helper(**inputs: str) -> Iterator[tuple[subprocess.Popen[str], str]]
     :param inputs: The deployment inputs to place in the environment.
     :return: The running helper and the first line it wrote to stderr.
     """
+    require_bash_4()
     process = subprocess.Popen(
         ["bash", "-c", helper_script()],
         env={"PATH": os.environ["PATH"], **inputs},

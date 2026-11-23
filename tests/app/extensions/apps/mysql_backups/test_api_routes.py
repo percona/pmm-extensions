@@ -33,6 +33,7 @@ from tests.app.extensions.path_unsafe_task_names import (
     PATH_PARAM_UNSAFE_TASKS,
     PATH_UNSAFE_TASKS,
 )
+from tests.app.extensions.unknown_body_field import assert_unknown_field_rejected
 
 BEARER_HEADERS = {"Authorization": "Bearer test-token"}
 
@@ -931,6 +932,77 @@ class TestUpdateRenameGuard:
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         mock_task_api_dep.put.assert_not_called()
+
+
+class TestUnknownBodyField:
+    """Test that create and update refuse a body key the form does not declare.
+
+    ``encrypt_backups`` is not a field (the form's field is ``encrypt``). Before
+    the rejection, both calls succeeded and saved a task without encryption.
+    """
+
+    def test_create_refuses_an_unknown_field(
+        self, test_client, mock_task_api_dep, mock_inventory_api_dep, created_service
+    ):
+        """Answer 422 naming the key, and create nothing."""
+        mock_inventory_api_dep.get = AsyncMock(
+            return_value=created_service.model_dump()
+        )
+        mock_task_api_dep.post = AsyncMock(return_value=build_backup_task())
+        body = build_backup_write_body(
+            service_id=created_service.id, encrypt_backups=True
+        )
+
+        response = test_client.post(
+            "/api/apps/mysql_backups/", json=body, headers=BEARER_HEADERS
+        )
+
+        assert_unknown_field_rejected(response, "encrypt_backups")
+        mock_task_api_dep.post.assert_not_called()
+
+    def test_update_refuses_an_unknown_field(
+        self, test_client, mock_task_api_dep, mock_inventory_api_dep, created_service
+    ):
+        """Answer 422 naming the key, and change nothing."""
+        task = build_backup_task()
+        mock_inventory_api_dep.get = AsyncMock(
+            return_value=created_service.model_dump()
+        )
+        empty_page = {"items": [], "total": 0, "offset": 0, "limit": 50}
+        mock_task_api_dep.get = AsyncMock(side_effect=chain([task], repeat(empty_page)))
+        mock_task_api_dep.put = AsyncMock(return_value=task)
+        body = build_backup_write_body(
+            service_id=created_service.id, encrypt_backups=True
+        )
+
+        response = test_client.put(
+            f"/api/apps/mysql_backups/{task['name']}", json=body, headers=BEARER_HEADERS
+        )
+
+        assert_unknown_field_rejected(response, "encrypt_backups")
+        mock_task_api_dep.put.assert_not_called()
+
+    def test_create_accepts_a_declared_field_the_form_hides(
+        self, test_client, mock_task_api_dep, mock_inventory_api_dep, created_service
+    ):
+        """Accept ``alert_on_fail``: declared by the model, absent from the schema.
+
+        PMM's UI sends it whenever the app has the alert capability.
+        """
+        mock_inventory_api_dep.get = AsyncMock(
+            return_value=created_service.model_dump()
+        )
+        mock_task_api_dep.post = AsyncMock(return_value=build_backup_task())
+        body = build_backup_write_body(
+            service_id=created_service.id, alert_on_fail=True
+        )
+
+        response = test_client.post(
+            "/api/apps/mysql_backups/", json=body, headers=BEARER_HEADERS
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED, response.text
+        assert mock_task_api_dep.post.call_args.kwargs["json"]["alert_on_fail"] is True
 
 
 class TestUpdateReselectsThePayloadVariant:

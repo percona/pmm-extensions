@@ -24,7 +24,10 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.utils.date_time import make_datetime_utc
 from app.tasks.crud import TaskHistoryManager
-from app.tasks.periodic.models import resolve_task_name
+from app.tasks.periodic.models import (
+    PERIODIC_TASK_NAME_MAX_LENGTH,
+    resolve_task_name,
+)
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -69,15 +72,22 @@ def generate_periodic_task_name(task_name: str, period: str, kwargs: str) -> str
     (``"a b"`` vs ``"a_b"``) would otherwise render identically once a
     digest over ``kwargs`` alone happened to match.
 
+    A name longer than :data:`PERIODIC_TASK_NAME_MAX_LENGTH` is shortened by
+    cutting the visible prefix, never the digest, so a long task name or a long
+    crontab still yields a name that fits and two schedules still get two names.
+    A name that fits is returned whole.
+
     :param task_name: Name of the task the periodic schedule executes.
     :param period: The schedule's period.
     :param kwargs: The periodic task's JSON-encoded ``kwargs`` string.
-    :return: A name stable across processes and ``PYTHONHASHSEED`` values for
-        this ``(task_name, period, kwargs)`` triple.
+    :return: A name of at most :data:`PERIODIC_TASK_NAME_MAX_LENGTH` characters,
+        stable across processes and ``PYTHONHASHSEED`` values for this
+        ``(task_name, period, kwargs)`` triple.
     """
     digest_input = f"{task_name}\x00{period}\x00{kwargs}".encode()
     digest = hashlib.blake2b(digest_input, digest_size=8).hexdigest()
-    return f"run_{task_name}_{period}_{digest}".replace(" ", "_")
+    visible = f"run_{task_name}_{period}".replace(" ", "_")
+    return f"{visible[: PERIODIC_TASK_NAME_MAX_LENGTH - len(digest) - 1]}_{digest}"
 
 
 async def attach_last_run_status(

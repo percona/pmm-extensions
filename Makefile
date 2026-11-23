@@ -423,7 +423,6 @@ endif
 		| curl -sSf -k --config - \
 			-X POST "$${JENKINS_URL}/job/PMM-Extensions/job/$${jenkins_job}/buildWithParameters" \
 			--data-urlencode "releaseTag=$${tag}" \
-			--data-urlencode "pushImage=true" \
 			--data-urlencode "pushImageDocker=$(PUSH_IMAGE_DOCKER)" 2>&1; then \
 		echo "    Jenkins build triggered successfully."; \
 		if [ -n "$(WEBHOOK_URL_ENV)" ] && [ -n "$(WEBHOOK_AUTH_ENV)" ]; then \

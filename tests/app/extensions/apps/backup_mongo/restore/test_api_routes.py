@@ -35,6 +35,10 @@ from app.extensions.inventory import CreatedService
 from app.tasks.anonymizer.entities import PIIEntity
 from app.tasks.models import TaskBackendEnum, TaskHistoryStatusEnum
 from tests.app.extensions.apps.framework.kit import EXECUTE_CREATED_AT, EXECUTE_STATUS
+from tests.app.extensions.unknown_body_field import (
+    assert_unknown_field_rejected,
+    UNKNOWN_FIELD,
+)
 from tests.app.factories import TaskFactory
 
 API_BASE = "/api/apps/backup_mongo/restore"
@@ -688,6 +692,18 @@ class TestRestoreMongoApiCreate:
         )
         mock_task_api_dep.post.assert_not_awaited()
 
+    def test_create_refuses_an_unknown_field(
+        self, test_client, mock_task_api_dep, mongo_service: CreatedService
+    ) -> None:
+        """Answer 422 naming a key the body model does not declare, creating nothing."""
+        body = build_restore_write_body(service_id=mongo_service.id)
+        body[UNKNOWN_FIELD] = "value"
+
+        response = test_client.post(f"{API_BASE}/", json=body)
+
+        assert_unknown_field_rejected(response)
+        mock_task_api_dep.post.assert_not_called()
+
     def test_create_rolls_back_on_mid_chain_failure(
         self,
         test_client,
@@ -921,6 +937,28 @@ class TestRestoreMongoApiDelete:
 
 class TestRestoreMongoApiUpdate:
     """Tests for PUT /api/apps/backup_mongo/restore/{task_name}."""
+
+    def test_update_refuses_an_unknown_field(
+        self,
+        test_client,
+        mock_task_api_dep,
+        mock_inventory_api_dep,
+        mongo_service: CreatedService,
+    ) -> None:
+        """Answer 422 naming a key the body model does not declare, changing nothing."""
+        parent = build_restore_task("parent-restore")
+        mock_inventory_api_dep.get = AsyncMock(return_value=mongo_service.model_dump())
+        mock_task_api_dep.get = mock_task_api_get_by_path({"/parent-restore": parent})
+        mock_task_api_dep.put = AsyncMock(return_value=parent)
+        body = build_restore_write_body(
+            task_name="parent-restore", service_id=mongo_service.id
+        )
+        body[UNKNOWN_FIELD] = "value"
+
+        response = test_client.put(f"{API_BASE}/parent-restore", json=body)
+
+        assert_unknown_field_rejected(response)
+        mock_task_api_dep.put.assert_not_called()
 
     def test_update_puts_config_payload_to_parent_and_refreshes_children(
         self,
