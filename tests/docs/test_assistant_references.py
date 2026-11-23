@@ -69,7 +69,7 @@ def _tracked_agents_files() -> list[pathlib.Path]:
             text=True,
             check=True,
         ).stdout
-    except (OSError, subprocess.CalledProcessError):
+    except OSError, subprocess.CalledProcessError:
         return []
     return [_REPO_ROOT / line for line in listing.splitlines() if line]
 
