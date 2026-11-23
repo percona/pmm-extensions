@@ -16,10 +16,10 @@ Look for `.app-work/*/state.md` in the working directory. When one exists, read 
 
 ## 3. Make the workspace
 
-Do each step only when its result is not there yet. Change nothing that exists.
+Do each step only when its result is not there yet. Change nothing that exists, with the one exception in step 2.
 
 1. Make the directory a Git repository: `git init`.
-2. Copy the files of `assets/workspace/` of this skill into it: `app.yaml` under its own name, `gitignore` as `.gitignore`, and `instructions.md` as `AGENTS.md`. Create `CLAUDE.md` with the one line `@AGENTS.md`. The two files tell any assistant that starts here later to follow this skill.
+2. Copy the files of `assets/workspace/` of this skill into it: `app.yaml` under its own name, `gitignore` as `.gitignore`, and `instructions.md` as `AGENTS.md`. When the directory has a `.gitignore` already, add to it each line of `gitignore` that it lacks, and change no other line: your notes hold the passwords of the local PMM, and Git must never save them. Create `CLAUDE.md` with the one line `@AGENTS.md`. The two files tell any assistant that starts here later to follow this skill.
 3. Get the framework checkout:
 
    ```bash

@@ -104,3 +104,11 @@ def test_a_profile_with_no_app_list_exits_with_a_message(
     assert add_app.main([str(profile), "diskfree"]) == 1
     assert "APPS" in capsys.readouterr().err
     assert profile.read_text(encoding="utf-8").count("diskfree") == 0
+
+
+def test_the_image_takes_write_access_to_the_app_from_group_and_others() -> None:
+    """Keep a container that joins group 0 from changing the app it runs."""
+    containerfile = (SCRIPT.parent / "Containerfile").read_text(encoding="utf-8")
+    modes = [line for line in containerfile.splitlines() if "chmod -R" in line]
+    assert modes
+    assert all("go-w" in line for line in modes)

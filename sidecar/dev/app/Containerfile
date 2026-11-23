@@ -21,7 +21,7 @@ COPY --chown=0:0 add_app.py /usr/local/share/pmm-extensions/add_app.py
 
 # The profile is the base image's own, with one line added. A copied profile
 # would replace the settings of a newer base.
-RUN chmod -R a+rX /home/extensions/app/app/extensions/apps/${APP} && \
+RUN chmod -R a+rX,go-w /home/extensions/app/app/extensions/apps/${APP} && \
     chmod 444 /usr/local/share/pmm-extensions/add_app.py && \
     python /usr/local/share/pmm-extensions/add_app.py /home/extensions/app/settings.yaml "${APP}"
 USER extensions

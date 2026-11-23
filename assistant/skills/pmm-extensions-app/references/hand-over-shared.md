@@ -13,9 +13,12 @@ Everything in the workspace's repository becomes public, with its history. Befor
 ```bash
 git ls-files
 git log --oneline
+git log -p
 ```
 
-Look for the name of a customer, the name of a real server, an address inside a company, and a password or a key. Look in the brief, in the tests, in the request files and in the commit messages. Take out what you find, and say so.
+Look for the name of a customer, the name of a real server, an address inside a company, and a password or a key. Look in the brief, in the tests, in the request files and in the commit messages. Look in the earlier versions of every file too: `git log -p` shows them, and a line that you took out of a file is still in the commit before.
+
+Take out of the files what you find, and say so. When a thing is in an earlier commit or in a commit message, the branch as it is must not be pushed. Make a branch with one commit that holds the files as they are now, read `git log -p` of that branch, and publish that branch in step 3.
 
 ## 3. Ask before anything leaves the machine
 
@@ -34,7 +37,7 @@ Then show what will be published: the address, the list of files, and the senten
 After the yes:
 
 1. Write the address into `repository` in `app.yaml`, and save a copy of the work.
-2. Push the workspace's branch to that repository.
+2. Push the workspace's branch to that repository, or the branch with one commit when "Read what would become public" made one.
 3. Write the list entry to `.app-work/<app>/list-entry.yaml`: the fields of `app.yaml`, with `commit` set to the commit that you pushed. An entry names a commit, not a branch, because the entry describes what ran at that commit.
 
 ## 4. The list of apps
