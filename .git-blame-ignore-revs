@@ -7,3 +7,5 @@ bc744cfbde11dc69547e0a8b69a147d7bd5279e0
 162660fff82d70a0bd2ea7a253b7aefe755e63cf
 # Upgrade ruff to 0.16.10
 91ba47b5d9f6e1f37a8249df54fa0405b8a4b232
+# Move to Python 3.14 (py314 lint and format sweep)
+05c4adf967421bcfc906ebe6e75ad342712432bf
