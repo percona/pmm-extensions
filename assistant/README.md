@@ -43,7 +43,7 @@ pytest assistant/evals/static tests/docs/test_assistant_references.py -q
 
 ### Tier 1: what the assistant decides
 
-Each directory under `evals/` with a `prompt.md` is one case: one request, and graders for the first answer. `claude plugin eval` runs each case with the skill and without it. It wants the cases inside the plugin that they test, so `evals/run-tier1.sh` first builds that plugin in `assistant/tier1-plugin/`, which Git ignores: the manifest, a copy of the skill and a copy of the cases. The script passes its arguments on. The cases need Claude Code 2.1.269 or later and a signed-in account. The runs use that account.
+Each directory under `evals/` with a `prompt.md` is one case: one request, and graders for the first answer. `claude plugin eval` runs each case with the skill and without it. It wants the cases inside the plugin that they test, so `evals/run-tier1.sh` first builds that plugin beside `evals/`, in a directory `tier1-plugin` that Git ignores: the manifest, a copy of the skill and a copy of the cases. The script passes its arguments on. The cases need Claude Code 2.1.269 or later and a signed-in account. The runs use that account.
 
 ```bash
 assistant/evals/run-tier1.sh --runs 3 --model sonnet --trust-plugin --no-publish \

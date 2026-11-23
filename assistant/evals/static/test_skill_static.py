@@ -271,8 +271,8 @@ def test_gh_skill_install_puts_the_whole_skill_where_the_assistant_reads_it(
     assert missing == []
 
 
-def test_tier_1_builds_its_plugin_from_the_one_copy_of_the_skill() -> None:
-    """Build the plugin that tier 1 runs, and compare its skill with the tracked one."""
+def test_the_cases_run_against_a_plugin_built_from_the_one_copy_of_the_skill() -> None:
+    """Build the plugin that the cases run against, and compare its skill with the tracked one."""
     bash = shutil.which("bash")
     assert bash is not None
     built = Path(
