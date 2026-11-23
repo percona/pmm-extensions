@@ -30,7 +30,7 @@
 | app/core/celery/db.py                                                                                                               |        8 |        0 |        0 |        0 |    100% |           |
 | app/core/celery/deps.py                                                                                                             |       10 |        0 |        0 |        0 |    100% |           |
 | app/core/celery/migrations.py                                                                                                       |        6 |        0 |        0 |        0 |    100% |           |
-| app/core/celery/models.py                                                                                                           |       68 |        1 |        8 |        1 |     97% |       107 |
+| app/core/celery/models.py                                                                                                           |       68 |        0 |        8 |        0 |    100% |           |
 | app/core/celery/schedules.py                                                                                                        |       44 |        1 |       16 |        1 |     97% |       178 |
 | app/core/celery/utils.py                                                                                                            |       35 |        0 |       12 |        0 |    100% |           |
 | app/core/config.py                                                                                                                  |      310 |        7 |       66 |        6 |     97% |267-\>exit, 399, 668, 894, 974, 1048, 1061, 1100-\>1102, 1105 |
@@ -389,7 +389,7 @@
 | app/extensions/sync/exceptions.py                                                                                                   |       36 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/fields.py                                                                                                       |       21 |        0 |        0 |        0 |    100% |           |
 | app/extensions/sync/health.py                                                                                                       |       86 |        0 |       22 |        2 |     98% |234-\>238, 235-\>234 |
-| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       17 |     90% |122-124, 129-130, 146, 165, 171-\>173, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
+| app/extensions/sync/models.py                                                                                                       |      402 |       30 |      104 |       16 |     90% |122-124, 128, 130, 146, 165, 259-\>276, 399-\>393, 846-\>exit, 864, 878, 898-899, 985, 999, 1058-\>exit, 1109, 1122, 1146-1148, 1181-\>exit, 1226, 1239, 1296-\>exit, 1341, 1479-1481, 1591-1593, 1598-1604, 1608 |
 | app/extensions/sync/syncers/mysql/payload.py                                                                                        |      176 |       47 |       54 |        5 |     70% |158-\>166, 242-246, 251-256, 269-275, 279-302, 356-\>372, 375, 396-404, 423 |
 | app/extensions/sync/syncers/mysql/syncer.py                                                                                         |      241 |        3 |       94 |        5 |     98% |111, 605, 716, 819-\>823, 821-\>820 |
 | app/extensions/sync/syncers/pmm.py                                                                                                  |      186 |        1 |       50 |        2 |     99% |118-\>122, 162 |
@@ -546,15 +546,15 @@
 | app/tasks/models/tables.py                                                                                                          |      104 |        0 |       14 |        0 |    100% |           |
 | app/tasks/periodic/crud.py                                                                                                          |       31 |        0 |        0 |        0 |    100% |           |
 | app/tasks/periodic/deps.py                                                                                                          |       11 |        0 |        0 |        0 |    100% |           |
-| app/tasks/periodic/models.py                                                                                                        |      131 |        4 |       28 |        4 |     95% |323, 370, 384, 431 |
+| app/tasks/periodic/models.py                                                                                                        |      134 |        4 |       28 |        4 |     95% |331, 379, 393, 440 |
 | app/tasks/periodic/routes.py                                                                                                        |       72 |        2 |       12 |        2 |     95% |171-\>173, 193-196 |
-| app/tasks/periodic/utils.py                                                                                                         |       33 |        0 |        8 |        0 |    100% |           |
+| app/tasks/periodic/utils.py                                                                                                         |       34 |        0 |        8 |        0 |    100% |           |
 | app/tasks/reference\_fence.py                                                                                                       |       47 |        2 |        2 |        0 |     96% |   157-158 |
-| app/tasks/routes.py                                                                                                                 |      251 |        1 |       46 |        2 |     99% |252-\>256, 291 |
+| app/tasks/routes.py                                                                                                                 |      251 |        1 |       46 |        1 |     99% |       291 |
 | app/tasks/run\_result.py                                                                                                            |       73 |        0 |       18 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35719** | **1507** | **8636** |  **672** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35723** | **1506** | **8636** |  **669** | **94%** |           |
 
 
 ## Setup coverage badge
