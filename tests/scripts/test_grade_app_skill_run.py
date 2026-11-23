@@ -332,3 +332,37 @@ def test_a_workspace_that_names_its_owner_passes_the_brief_check(
     """Pass a brief with its three sections beside an ``app.yaml`` that names an owner."""
     run = a_workspace(tmp_path, "maintainer: Dana\nreviewed-by-percona: false\n")
     assert grader.brief(run)[0] is True
+
+
+def test_an_app_whose_name_starts_another_apps_name_is_not_listed(
+    tmp_path: Path,
+) -> None:
+    """Fail a port whose app is not in the profile, though a longer name there starts with it."""
+    start = a_repository(
+        tmp_path / "clone",
+        sidecar__settings_yaml="APPS:\n  - MODULE_NAME: checksums\n",
+    )
+    (tmp_path / "clone" / "sidecar" / "settings_yaml").rename(
+        tmp_path / "clone" / "sidecar" / "settings.yaml"
+    )
+    git(tmp_path / "clone", "add", "--all")
+    git(tmp_path / "clone", "commit", "--quiet", "--message", "profile")
+    start = git(tmp_path / "clone", "rev-parse", "HEAD")
+    run = a_run(dir=tmp_path / "clone", meta={"start_commit": start}, app="check")
+    assert grader.paths(run)[0] is False
+
+
+@pytest.mark.parametrize(
+    ("entry", "owner"),
+    [
+        ("maintainer: Dana\n", "Dana"),
+        ('maintainer: "Dana Example"  # the person\n', "Dana Example"),
+        ("maintainer: 'Dana'\n", "Dana"),
+        ("maintainer:\nreviewed-by-percona: false\n", ""),
+    ],
+)
+def test_the_owner_is_read_without_quotes_and_without_a_comment(
+    entry: str, owner: str
+) -> None:
+    """Read the owner as YAML gives it, where the whole rest of the line was once taken."""
+    assert grader.owner_of(entry) == owner

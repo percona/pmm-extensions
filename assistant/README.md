@@ -1,10 +1,6 @@
 # Files for AI assistants
 
-This directory holds what an AI assistant needs to build, port and maintain a PMM Extensions app with a person who knows databases and not Python. The page for that person is [Build an app with an assistant](../docs/how-to/build-an-app-with-an-assistant.md).
-
-| Path | Holds |
-|---|---|
-| `evals/` | The skill's tests. |
+This directory holds the tests of the skill with which an AI assistant builds, ports and maintains a PMM Extensions app, together with a person who knows databases and not Python. The tests are in `evals/`. The page for that person is [Build an app with an assistant](../docs/how-to/build-an-app-with-an-assistant.md).
 
 The skill itself is in `.agents/skills/pmm-extensions-app/`, where assistants read skills: `SKILL.md`, the stage files under `references/`, and the files of a new app workspace under `assets/`. `.claude/skills/pmm-extensions-app` is a link to it, for Claude Code. `.agents/.claude-plugin/plugin.json` is a plugin manifest, and `.claude-plugin/marketplace.json` lists that plugin.
 

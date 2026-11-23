@@ -142,11 +142,29 @@ def _package_and_tests(name: str, app_dir: Path) -> tuple[Path, Path]:
     :return: The package directory and the tests directory.
     :raises UsageError: When ``app_dir`` holds no package of that name.
     """
+    if "/" in name:
+        message = (
+            f"with APP_DIR the app is one package: {name} names a package "
+            "inside another"
+        )
+        raise UsageError(message)
     for package in (app_dir, app_dir / name):
         if package.name == name and (package / "__init__.py").is_file():
             return package, package.parent / "tests"
     message = f"no package {name} at {app_dir} or at {app_dir / name}"
     raise UsageError(message)
+
+
+def _remove(target: Path) -> None:
+    """Remove a copy from the checkout, also when its directories are read-only.
+
+    :param target: The directory to remove. An absent one is left alone.
+    """
+    for directory, _, _ in os.walk(target):
+        Path(directory).chmod(0o700)
+    shutil.rmtree(target, ignore_errors=True)
+    if target.exists():
+        print(f"{target} could not be removed: remove it by hand", file=sys.stderr)
 
 
 @contextlib.contextmanager
@@ -185,7 +203,7 @@ def placed(name: str, app_dir: Path, work_dir: Path) -> Iterator[dict[str, str]]
         yield {"SETTINGS_FILE": str(settings_copy)}
     finally:
         for _, target in copies:
-            shutil.rmtree(target, ignore_errors=True)
+            _remove(target)
 
 
 def check(name: str, app_dir: Path | None, run: Runner) -> int:

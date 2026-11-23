@@ -128,6 +128,19 @@ def publishes(command: str) -> bool:
     return any(PUBLISH_RE.search(part) and "--dry-run" not in part for part in parts)
 
 
+def owner_of(entry: str) -> str:
+    """Return the owner that a workspace's ``app.yaml`` names.
+
+    :param entry: The text of ``app.yaml``.
+    :return: The value of ``maintainer`` without quotes and without a comment,
+        or an empty string when the key is absent or has no value.
+    """
+    found = re.search(r"^maintainer:[ \t]*(.*)$", entry, re.MULTILINE)
+    value = re.sub(r"(^|\s)#.*$", "", found[1]).strip() if found else ""
+    quoted = len(value) > 1 and value[0] == value[-1] and value[0] in "\"'"
+    return value[1:-1] if quoted else value
+
+
 class Run:
     """Hold one run: its scenario, its record, its directory and its stream.
 
@@ -235,15 +248,8 @@ class Run:
         dev = DEV if self.workspace else self.dir / "sidecar/dev"
         files = ["-f", f"{dev}/compose.yaml"]
         if self.workspace:
-            owner = re.search(
-                r"^maintainer:[ \t]*(\S.*)$",
-                self.text(self.dir / "app.yaml"),
-                re.MULTILINE,
-            )
-            arguments = [
-                f"APP={self.app}",
-                f"OWNER={owner[1] if owner else 'not named'}",
-            ]
+            owner = owner_of(self.text(self.dir / "app.yaml"))
+            arguments = [f"APP={self.app}", f"OWNER={owner or 'not named'}"]
             flags = [
                 flag for argument in arguments for flag in ("--build-arg", argument)
             ]
@@ -371,7 +377,7 @@ def brief(run: Run) -> Result:
     page = run.text(run.package / "README.md").lower()
     missing = [section for section in SECTIONS if section.lower() not in page]
     entry = run.text(run.dir / "app.yaml")
-    if run.workspace and not re.search(r"^maintainer:[ \t]*\S", entry, re.MULTILINE):
+    if run.workspace and not owner_of(entry):
         missing.append("app.yaml: maintainer")
     if run.workspace and not re.search(
         r"^reviewed-by-percona:\s*false\s*$", entry, re.MULTILINE
@@ -418,7 +424,9 @@ def paths(run: Run) -> Result:
     allowed = tuple(PORT_PATHS.format(app=run.app).split())
     changed = run.changed()
     other = [path for path in changed or [] if not path.startswith(allowed)]
-    listed = f"MODULE_NAME: {run.app}" in run.text(run.dir / "sidecar/settings.yaml")
+    profile = run.text(run.dir / "sidecar/settings.yaml")
+    entry = rf"MODULE_NAME:[ \t]*{re.escape(run.app)}[ \t]*$"
+    listed = re.search(entry, profile, re.MULTILINE) is not None
     output = f"outside the app: {other}; sidecar/settings.yaml lists the app: {listed}"
     passed = changed is not None and not other and listed
     return passed, "git diff --name-only", None, output

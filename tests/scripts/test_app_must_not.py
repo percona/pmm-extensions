@@ -305,3 +305,34 @@ def test_main_exits_2_for_a_directory_that_is_not_there(
     missing = tmp_path / "nothing"
     assert app_must_not.main([str(missing)]) == app_must_not.EXIT_NO_APP
     assert str(missing) in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import asyncio\n\nasyncio.subprocess.create_subprocess_shell("id")\n',
+        'import asyncio as aio\n\naio.subprocess.create_subprocess_exec("id")\n',
+        'import asyncio\n\nasyncio.get_running_loop().subprocess_shell(None, "id")\n',
+        "def start(loop):\n    return loop.subprocess_exec(None, 'id')\n",
+    ],
+)
+def test_a_process_started_through_a_longer_name_is_reported(
+    tmp_path: Path, source: str
+) -> None:
+    """Report a process that is started through a module's attribute or an event loop."""
+    assert len(messages(make_app(tmp_path, deps=source))) == 1
+
+
+@pytest.mark.parametrize(
+    ("statement", "call"),
+    [
+        ("from shlex import join", "join"),
+        ("import shlex as words", "words.join"),
+    ],
+)
+def test_shlex_join_under_another_name_passes(
+    tmp_path: Path, statement: str, call: str
+) -> None:
+    """Pass arguments that ``shlex.join`` built, whatever name the file gives it."""
+    spec = GOOD_SPEC.replace("import shlex", statement).replace("shlex.join", call)
+    assert messages(make_app(tmp_path, spec=spec)) == []

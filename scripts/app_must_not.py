@@ -65,6 +65,10 @@ FORBIDDEN_CALLS = (
     "__import__",
 )
 FORBIDDEN_CALL_PREFIXES = ("os.exec", "os.spawn", "os.posix_spawn")
+FORBIDDEN_METHODS = ("subprocess_exec", "subprocess_shell")
+#: A forbidden module that is an attribute of a package an app may import: its
+#: functions can be called with no import of the module itself.
+REACHABLE_MODULES = tuple(f"{name}." for name in FORBIDDEN_MODULES if "." in name)
 SPEC_CLASSES = ("RunCommandSpec", "RunPythonSpec")
 PAYLOAD_DIRECTORIES = ("payload", "payloads")
 EXIT_FINDINGS = 1
@@ -104,22 +108,35 @@ def _is_forbidden_call(name: str) -> bool:
     :param name: The dotted name of a function.
     :return: ``True`` when calling it, or importing it, is a finding.
     """
-    return name in FORBIDDEN_CALLS or name.startswith(FORBIDDEN_CALL_PREFIXES)
+    return (
+        name in FORBIDDEN_CALLS
+        or name.startswith(FORBIDDEN_CALL_PREFIXES)
+        or name.startswith(REACHABLE_MODULES)
+        or name.rpartition(".")[2] in FORBIDDEN_METHODS
+    )
 
 
 def _module_aliases(tree: ast.Module) -> dict[str, str]:
     """Return the other names that a file gives to modules.
 
     :param tree: The file's syntax tree.
-    :return: The module's name for each alias of ``import module as alias``.
+    :return: The module's name for each alias of ``import module as alias``, and
+        ``module.name`` for each name that ``from module import name`` binds.
     """
-    return {
-        alias.asname: alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-        if alias.asname
-    }
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            aliases.update(
+                {alias.asname: alias.name for alias in node.names if alias.asname}
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            aliases.update(
+                {
+                    alias.asname or alias.name: f"{node.module}.{alias.name}"
+                    for alias in node.names
+                }
+            )
+    return aliases
 
 
 def _imported_names(node: ast.Import | ast.ImportFrom) -> list[str]:
@@ -138,13 +155,28 @@ def _call_name(node: ast.Call) -> str:
     """Return the dotted name that a call names, or an empty string.
 
     :param node: The call.
-    :return: ``name`` for ``name(...)``, ``owner.name`` for ``owner.name(...)``.
+    :return: ``name`` for ``name(...)`` and ``a.b.name`` for ``a.b.name(...)``.
+        For a method of a value that has no name, such as the result of a
+        call, a dot and the method's name.
     """
-    if isinstance(node.func, ast.Name):
-        return node.func.id
-    if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-        return f"{node.func.value.id}.{node.func.attr}"
-    return ""
+    parts = []
+    target = node.func
+    while isinstance(target, ast.Attribute):
+        parts.append(target.attr)
+        target = target.value
+    parts.append(target.id if isinstance(target, ast.Name) else "")
+    return ".".join(reversed(parts))
+
+
+def _resolved(name: str, aliases: dict[str, str]) -> str:
+    """Return a dotted name with the file's own name for a module spelled out.
+
+    :param name: The dotted name, as the file writes it.
+    :param aliases: The module's name for each alias that the file gives one.
+    :return: The name with its first part replaced, when that part is an alias.
+    """
+    first, dot, rest = name.partition(".")
+    return f"{aliases[first]}{dot}{rest}" if first in aliases else name
 
 
 def _is_spec_call(node: ast.AST | None) -> bool:
@@ -158,15 +190,19 @@ def _is_spec_call(node: ast.AST | None) -> bool:
     )
 
 
-def _is_safe_args(node: ast.AST) -> bool:
+def _is_safe_args(node: ast.AST, aliases: dict[str, str]) -> bool:
     """Tell whether ``node`` is an argument string that cannot carry a shell word.
 
     :param node: The expression given as a ``RunCommandSpec``'s ``args``.
+    :param aliases: The module's name for each alias that the file gives one.
     :return: ``True`` for a ``shlex.join(...)`` call and for a string literal.
     """
     if isinstance(node, ast.Constant):
         return isinstance(node.value, str)
-    return isinstance(node, ast.Call) and _call_name(node) == "shlex.join"
+    return (
+        isinstance(node, ast.Call)
+        and _resolved(_call_name(node), aliases) == "shlex.join"
+    )
 
 
 def _own_nodes(function: FunctionNode) -> Iterator[ast.AST]:
@@ -290,16 +326,14 @@ def _check_call(
     :param aliases: The module's name for each alias that the file gives one.
     :return: The finding's message, or ``None``.
     """
-    name = _call_name(node)
-    owner, dot, attribute = name.rpartition(".")
-    name = f"{aliases[owner]}{dot}{attribute}" if owner in aliases else name
+    name = _resolved(_call_name(node), aliases)
     if _is_forbidden_call(name):
         return (
             f"calls {name}(): an app starts no process, opens no connection, "
             "evaluates no text and imports no module by name"
         )
     if name.split(".")[-1] == "RunCommandSpec" and not _holds(
-        function, _spec_args(node), _is_safe_args
+        function, _spec_args(node), lambda value: _is_safe_args(value, aliases)
     ):
         return (
             "builds the args of a RunCommandSpec without shlex.join: a form "

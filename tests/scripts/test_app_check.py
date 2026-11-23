@@ -277,3 +277,28 @@ def test_an_app_dir_with_no_package_exits_2(
     arguments = ["--name", "diskfree", "--app-dir", str(empty)]
     assert app_check.main(arguments, run=recorder([])) == app_check.EXIT_USAGE
     assert str(empty) in capsys.readouterr().err
+
+
+def test_a_read_only_app_outside_the_tree_is_removed_after_the_run(
+    tree: Path, outside_app: Path
+) -> None:
+    """Remove the copy of an app whose directories nobody may write to."""
+    payload = outside_app / "payload"
+    payload.mkdir()
+    (payload / "tool.sh").write_text("", encoding="utf-8")
+    payload.chmod(0o555)
+    try:
+        arguments = ["--name", "diskfree", "--app-dir", str(outside_app)]
+        assert app_check.main(arguments, run=recorder([])) == 0
+    finally:
+        payload.chmod(0o755)
+    assert not (tree / "app" / "extensions" / "apps" / "diskfree").exists()
+
+
+def test_a_nested_name_with_an_app_dir_exits_2_and_says_why(
+    tree: Path, outside_app: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Say that an app outside the tree is one package, where the search once just failed."""
+    arguments = ["--name", "group/diskfree", "--app-dir", str(outside_app)]
+    assert app_check.main(arguments, run=recorder([])) == app_check.EXIT_USAGE
+    assert "one package" in capsys.readouterr().err
