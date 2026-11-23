@@ -4,7 +4,7 @@
 #
 # Usage: run.sh <scenario> <arm> <n> [model]
 #   scenario  a directory under scenarios/: C1, P1, M1, M2, K1
-#   arm       skill (installed as `gh skill install` writes it) or pages (no skill)
+#   arm       skill (copied into a workspace as the page for the person says) or pages (no skill)
 #   n         the number of the run
 #   model     the assistant's model (default: sonnet)
 # Environment:
@@ -100,6 +100,7 @@ if [[ $kind == workspace ]]; then
         mkdir -p "$dir"
     fi
     if [[ $arm == pages ]]; then
+        rm -rf "$dir/.framework" # the copy of an earlier run brings its own
         as_dana git clone --quiet "$run/framework" "$dir/.framework" || exit 2
         request+=$'\n\n'"The PMM Extensions repository is cloned in the directory .framework here. Its README lists the documentation."
     fi
@@ -107,11 +108,12 @@ else
     as_dana git clone --quiet "file://$run/framework" "$dir" || exit 2
     git -C "$dir" remote set-url origin https://github.com/percona/pmm-extensions.git
 fi
-# A clone holds the skill where the assistant reads it. A workspace gets it installed, also over
-# the copy of an earlier run: the skill under test is this checkout's.
+# A clone holds the skill where the assistant reads it. A workspace gets a copy, as the page for
+# the person says, also over the copy of an earlier run: the skill under test is this checkout's.
 if [[ $arm == skill && $kind == workspace ]]; then
-    (cd "$dir" && as_dana gh skill install "$run/framework" pmm-extensions-app --from-local \
-        --allow-hidden-dirs --agent claude-code --scope project --force > /dev/null 2>&1) || exit 2
+    rm -rf "$dir/.claude/skills/pmm-extensions-app"
+    mkdir -p "$dir/.claude/skills" || exit 2
+    cp -R "$run/framework/.agents/skills/pmm-extensions-app" "$dir/.claude/skills/" || exit 2
 fi
 git -C "$dir" rev-parse HEAD > "$run/start-commit" 2> /dev/null || true
 
