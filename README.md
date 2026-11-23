@@ -31,10 +31,12 @@ To use PMM Extensions, read PMM's documentation. The pages below are for people 
 | Goal | Page |
 |---|---|
 | Build a first app, step by step | [Build your first app](docs/tutorials/first-app.md) |
+| Get an app with an AI assistant, without writing Python | [Build an app with an assistant](docs/how-to/build-an-app-with-an-assistant.md) |
 | Set up a checkout for development | [Set up a development environment](docs/how-to/set-up-a-development-environment.md) |
 | Run PMM Extensions on your machine | [Run PMM Extensions in a local PMM](docs/how-to/run-in-local-pmm.md) |
 | Test an app | [Test an app](docs/how-to/test-an-app.md) |
 | Make an app of this repository run inside PMM | [Port an app](docs/how-to/port-an-app.md) |
+| Run an app that is not in this repository | [Run an app outside the repository](docs/how-to/run-an-app-outside-the-repository.md) |
 | Give an app a page in PMM's UI | [Add an app to the PMM UI](docs/how-to/add-an-app-to-the-pmm-ui.md) |
 | Build the image and ship an app | [Get an app into a PMM release](docs/how-to/get-an-app-into-a-pmm-release.md) |
 | Move MySQL backup schedules from a standalone instance to PMM | [Migrate MySQL backup schedules from standalone SEP](docs/how-to/migrate-from-standalone-sep.md) |
