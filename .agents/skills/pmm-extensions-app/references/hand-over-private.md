@@ -20,7 +20,7 @@ Follow "Build an image with the app" of `docs/how-to/run-an-app-outside-the-repo
 
 Follow "Run the image" of the same page: the local PMM runs your image, with no mount, and one run ends with success. Then read the image's labels, as "Verify" of that page shows.
 
-This run is the one that counts for the hand-over. Add it to "What was tried, and what was not" in the brief.
+This run is the one that counts for the hand-over. Add it to "What was tried, and what was not" in the brief, with the PMM Extensions version that the image is built on. The checks ran against the framework checkout and not against that version. So the brief also says that what this one run did not reach was not tried on it.
 
 ## 4. PMM's menu
 

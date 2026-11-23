@@ -53,5 +53,6 @@ Fill "What was tried, and what was not" in the brief:
 - The run: the status, the server, the version of PMM, the date.
 - What the run proves, in one or two plain sentences.
 - What it does not prove on this test server. For example: the test server has no replica, so the run cannot show a difference between two servers.
+- For an app in a workspace, which PMM Extensions the app met. The checks ran against the framework checkout: write the commit that `git -C .framework rev-parse --short HEAD` prints. The run on the server used the released PMM Extensions of the local PMM: write its version. Then say that a part of the app which this one run did not reach was not tried on the released version.
 
 Add the PMM version to `ran-on` in `app.yaml`. Save a copy of the work, and write the stage into `.app-work/<app>/state.md`. Leave the local PMM running: stage 7 uses it. When all work is done, stop it as "Stop and remove" of the local PMM page says.
