@@ -79,7 +79,7 @@ def sh(
     cwd: Path = REPO_ROOT,
     stdin: str | None = None,
     timeout: float = 3600,
-    **env: str,
+    env: dict[str, str] | None = None,
 ) -> Done:
     """Run a command and return its exit status and its output.
 
@@ -95,7 +95,7 @@ def sh(
         done = subprocess.run(
             command,
             cwd=cwd,
-            env={**os.environ, **env},
+            env={**os.environ, **(env or {})},
             input=stdin,
             capture_output=True,
             text=True,
@@ -255,8 +255,8 @@ class Run:
             files += ["-f", f"{dev}/compose.checkout.yaml"]
         compose = ["docker", "compose", "-p", self.project, *files]
         up = [*compose, "--profile", self.facts["profile"], "up", "-d", "--wait"]
-        if sh(*up, **self.env)[0] != 0:
-            sh(*up, **self.env)
+        if sh(*up, env=self.env)[0] != 0:
+            sh(*up, env=self.env)
         body = self.record / "graded-run.json"
         body.write_text(json.dumps(self.facts["body"]), encoding="utf-8")
         run_task = [
@@ -267,11 +267,11 @@ class Run:
             "--body",
             str(body),
         ]
-        self.host["task"] = sh(*run_task, **self.env)
+        self.host["task"] = sh(*run_task, env=self.env)
         if "help" in self.facts:
             tool = self.facts["help"].split()
             self.host["help"] = sh(
-                *compose, "exec", "-T", self.facts["host"], *tool, **self.env
+                *compose, "exec", "-T", self.facts["host"], *tool, env=self.env
             )
         return self.host
 

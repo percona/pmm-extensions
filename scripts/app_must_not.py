@@ -175,7 +175,7 @@ def _own_nodes(function: FunctionNode) -> Iterator[ast.AST]:
     :param function: The function to walk.
     :return: Every node that belongs to ``function`` itself.
     """
-    pending = list(function.body)
+    pending: list[ast.AST] = list(function.body)
     while pending:
         node = pending.pop()
         yield node
