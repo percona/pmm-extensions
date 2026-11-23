@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: p3-port-mongodb-backups
+context:
+  scaffold_script: place-files.sh
