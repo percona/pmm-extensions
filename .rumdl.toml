@@ -1,0 +1,4 @@
+[MD013]
+line-length = 0
+reflow = true
+reflow-mode = "normalize"

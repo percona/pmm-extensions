@@ -114,6 +114,12 @@ repos:
         args: ["--diff", "--write", "--indent=4", "--case-indent", "--space-redirects", "--simplify"]
         types: [shell]
 
+  - repo: https://github.com/rvben/rumdl-pre-commit
+    rev: 03a7d1a4936b5889602852175bca2d39acb3281e  # v0.3.0
+    hooks:
+      - id: rumdl
+        files: ^(README\.md|CONTRIBUTING\.md|sidecar/README\.md|docs/(writing-standard\.md|app-status\.md|(tutorials|how-to|reference|explanation)/.*\.md))$
+
   - repo: https://github.com/gitleaks/gitleaks
     rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # v8.30.1
     hooks:

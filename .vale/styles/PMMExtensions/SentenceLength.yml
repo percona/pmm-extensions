@@ -1,0 +1,6 @@
+extends: occurrence
+message: "Split this sentence: it runs over 25 words."
+scope: sentence
+level: error
+max: 25
+token: \b(\w+)\b
