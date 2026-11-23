@@ -247,6 +247,8 @@ Task
 
 The stack runs the code inside the released image. A second Compose file runs your checkout's code in its place. It mounts three paths into the `pmm-extensions` container, read-only: `app/`, `snippets/` and `sidecar/settings.yaml`.
 
+The mount needs a released image whose Python can run your checkout's code. [Set up a development environment](set-up-a-development-environment.md#prerequisites) names the Python version that the checkout needs. When the image's Python is older than that, the `pmm-extensions` container does not start. On `main` this is so while the released image has an older Python than `main` needs. Then build an image from your checkout and set `PMM_EXTENSIONS_IMAGE` to it: see [Build the image](get-an-app-into-a-pmm-release.md#build-the-image). The steps below are for a checkout that the released image can run.
+
 1. Start the stack with the second file:
 
    ```bash

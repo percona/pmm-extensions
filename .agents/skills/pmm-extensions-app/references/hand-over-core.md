@@ -44,7 +44,7 @@ For an app that is already in a clone, as after a port, the branch exists. Go on
 
 ## 5. The image, and PMM's menu
 
-1. Follow `docs/how-to/get-an-app-into-a-pmm-release.md` from "Build the image" to "Run the image in the local PMM". When the machine lacks what "Prerequisites" of that page lists, do not install it. Run the app from the branch instead, as "Run the code in your checkout" of `docs/how-to/run-in-local-pmm.md` shows, and write under "What was tried, and what was not" that the image was not built here.
+1. Follow `docs/how-to/get-an-app-into-a-pmm-release.md` from "Build the image" to "Run the image in the local PMM". When the machine lacks what "Prerequisites" of that page lists, do not install it. Run the app from the branch instead, as "Run the code in your checkout" of `docs/how-to/run-in-local-pmm.md` shows, and write under "What was tried, and what was not" that the image was not built here. When that section says that the released image cannot run this branch's code either, no run was made here: write that down in the same place.
 2. Read `in-pmm-ui.md`.
 
 ## 6. The text of the pull request
