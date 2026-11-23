@@ -208,6 +208,17 @@ class TestAuditSingleTask:
         assert outcome.label == "valid"
         assert outcome.finding is None
 
+    def test_a_retired_key_in_the_stamp_is_not_reported(self):
+        """Leave out a stamp whose only difference is a key the form no longer declares.
+
+        The edit form submits only the fields the schema declares, so the key is
+        not part of the save the audit predicts, although a request carrying it
+        is rejected.
+        """
+        stamp = _stamp(retired_setting="value")
+
+        assert _audit_single_task(_task(form=stamp), BackupCreate).label == "valid"
+
     def test_the_supplied_model_decides_the_verdict(self):
         """Accept under the laxer model exactly what the strict one rejects.
 

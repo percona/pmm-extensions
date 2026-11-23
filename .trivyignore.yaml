@@ -126,3 +126,38 @@ vulnerabilities:
       one, if the image ever installs systemd-homed, or if valkey-server stops
       linking libsystemd.
     expired_at: 2027-02-19
+
+  # --- openssl ----------------------------------------------------------------
+  - id: CVE-2026-124709
+    purls:
+      - pkg:deb/debian/libssl3t64
+      - pkg:deb/debian/openssl
+      - pkg:deb/debian/openssl-provider-legacy
+    statement: >-
+      libssl3t64, openssl and openssl-provider-legacy. Denial of service via a
+      memory leak in QUIC stream handling. Reaching it requires a QUIC
+      connection, and nothing in the image opens one. Five programs link the
+      system libssl: CPython's _ssl extension, valkey-server, valkey-cli and
+      apt's http method import no OpenSSL QUIC method, listener or stream
+      entry point, and the openssl CLI, which does (s_client -quic), is run by
+      nothing in the image. No locked dependency speaks QUIC (no aioquic, qh3,
+      niquests or hypercorn), and psycopg2-binary's libpq and libldap link
+      their own bundled libssl, not this package. Trivy
+      reports it against all three binary packages built from the openssl
+      source, and libssl3t64 cannot be removed because CPython's ssl module
+      and valkey link it. No upstream fix. Remove when Debian ships one, or if
+      PMM Extensions starts serving or making QUIC/HTTP-3 connections.
+    expired_at: 2027-02-19
+  - id: CVE-2026-107494
+    purls:
+      - pkg:deb/debian/libssl3t64
+      - pkg:deb/debian/openssl
+      - pkg:deb/debian/openssl-provider-legacy
+    statement: >-
+      libssl3t64, openssl and openssl-provider-legacy. Denial of service via
+      unbounded QUIC frame queueing. Reaching it requires a QUIC connection,
+      and nothing in the image opens one: the same argument as
+      CVE-2026-124709, which covers all five programs that link the system
+      libssl. No upstream fix. Remove when Debian ships one, or if PMM
+      Extensions starts serving or making QUIC/HTTP-3 connections.
+    expired_at: 2027-02-19

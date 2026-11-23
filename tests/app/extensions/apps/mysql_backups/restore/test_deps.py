@@ -291,6 +291,31 @@ def test_served_stamp_declares_the_source_its_stored_values_imply():
     assert served["ssh_key"] == "prod-key"
 
 
+def test_served_stamp_is_repaired_when_it_holds_a_retired_key():
+    """Repair a pre-declaration stamp that also holds a key the form no longer declares.
+
+    A request carrying that key is rejected, but the stamp was saved before the
+    key was retired; it must still open on the transport its values imply. The
+    served stamp leaves the retired key out, so saving the form sends no such key.
+    """
+    task = _restore_task(
+        {
+            "task_name": "restore-task",
+            "hostname": "executor-1",
+            "backup_type": BackupType.XTRABACKUP.value,
+            "backup_source": "db01:/backups/xb/latest",
+            "ssh_user": "deploy",
+            "ssh_key": "prod-key",
+            "retired_setting": "value",
+        }
+    )
+
+    served = build_restore_api_task_response(task).data[RESERVED_FORM_KEY]
+
+    assert served["source_transport"] == SourceTransport.SSH.value
+    assert "retired_setting" not in served
+
+
 def test_served_stamp_keeps_a_declaration_the_operator_already_made():
     """Leave a stamp that already declares its source untouched."""
     stored_form = {

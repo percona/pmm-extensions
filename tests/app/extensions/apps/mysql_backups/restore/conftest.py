@@ -190,9 +190,11 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Layout]:
     """Build a scratch config tree and the datadir a restore reads from.
 
     The working directory moves to an empty scratch dir so a relative decode that
-    slips through lands somewhere the tests can see, never in the repository.
+    slips through lands somewhere the tests can see, never in the repository. The
+    root is under the resolved ``/tmp``, so a path made absolute from the working
+    directory names the same file where ``/tmp`` is a link, as on macOS.
     """
-    root = Path("/tmp") / f"cnfroot{uuid.uuid4().hex}"
+    root = Path("/tmp").resolve() / f"cnfroot{uuid.uuid4().hex}"
     allowed_dir = root / "etc" / "mysql"
     (allowed_dir / "conf.d").mkdir(parents=True)
     (root / "etc" / "mysql-evil").mkdir()

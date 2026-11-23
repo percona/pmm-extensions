@@ -47,6 +47,12 @@ from tests.app.extensions.apps.mysql_backups.restore.conftest import (
 #: The exit status every restore script reserves for a failed restore.
 FAILED_EXIT_STATUS = 2
 
+#: The port the stand-in restore probes to learn whether MySQL has stopped.
+PROBED_PORT = 3307
+
+#: The client option file the stand-in restore reads its connection settings from.
+DEFAULTS_FILE = "/home/backupuser/.my.cnf"
+
 
 class _BackupError(Exception):
     """Mirror the payloads' ``BackupError``, which carries its text as ``message``."""
@@ -248,6 +254,8 @@ def _restore_on(host: _Host) -> types.SimpleNamespace:
     )
     restore = types.SimpleNamespace(
         custom_mysql_init_command="/usr/local/bin/mysql-init",
+        port=PROBED_PORT,
+        defaults_cnf_file=DEFAULTS_FILE,
         logger=Recorder(),
         _query_mysql=host.query,
     )
@@ -285,6 +293,33 @@ class TestStopWait:
 
         assert _restore_on(host).signal_mysqld("stop") == 0
         assert len(host.sleeps) == answered
+
+    def test_every_wait_for_the_stop_is_printed(self) -> None:
+        """Pin one printed line per wait, naming the port and the option file.
+
+        A socket set in that option file replaces the port, so the line names both.
+        """
+        answered = 3
+        restore = _restore_on(_Host(answers=answered))
+
+        restore.signal_mysqld("stop")
+
+        waits = [
+            line for line in restore.logger.infos if "still accepts connections" in line
+        ]
+        assert len(waits) == answered
+        assert all(f"port {PROBED_PORT}" in line for line in waits)
+        assert all(DEFAULTS_FILE in line for line in waits)
+
+    def test_a_stop_that_worked_at_once_prints_no_wait(self) -> None:
+        """Pin that a restore whose stop worked does not report a wait."""
+        host = _Host(answers=0)
+        restore = _restore_on(host)
+
+        restore.signal_mysqld("stop")
+
+        assert host.probes == 1
+        assert not any("still accepts" in line for line in restore.logger.infos)
 
     def test_no_restore_step_runs_after_a_failed_stop(self) -> None:
         """Pin that nothing is copied into the data directory after a failed stop."""

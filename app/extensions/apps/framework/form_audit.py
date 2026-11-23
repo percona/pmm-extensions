@@ -214,6 +214,10 @@ def _route_create_model(entry: FormBackfillEntry) -> type[AppFormModel]:
 def _audit_single_task(task: Task, model: type[AppFormModel]) -> _TaskAuditOutcome:
     """Classify one task's stamp against the model its routes enforce.
 
+    Validates with ``extra="ignore"``: the edit form submits only the fields the
+    schema declares, so a key the form has since retired is not part of the save
+    whose outcome this predicts.
+
     :param task: The task row to classify.
     :param model: The create model to validate the stamp against.
     :return: The outcome label and, for a rejected stamp, its finding.
@@ -225,7 +229,7 @@ def _audit_single_task(task: Task, model: type[AppFormModel]) -> _TaskAuditOutco
         return _TaskAuditOutcome("unreadable")
 
     try:
-        model.model_validate(stored_form)
+        model.model_validate(stored_form, extra="ignore")
     except ValidationError as exc:
         return _TaskAuditOutcome(finding=_finding_from_error(task, exc))
     return _TaskAuditOutcome("valid")

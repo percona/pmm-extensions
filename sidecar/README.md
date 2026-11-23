@@ -8,7 +8,7 @@ For why the image works this way, see [How the sidecar runs inside PMM](../docs/
 
 | Property | Value |
 |---|---|
-| Published name | `percona/pmm-extensions` on Docker Hub |
+| Published name | `percona/pmm-extensions` on Docker Hub. Release candidates go to `perconalab/pmm-extensions`. |
 | Tags | The full version, such as `3.10.0`, and the moving tags `3.10`, `3` and `latest`. The version is PMM's. |
 | Architecture | amd64 |
 | Local build | `make builder`, then `make image`. The result is tagged `extensions:<RELEASE_VER>`. See [Get an app into a PMM release](../docs/how-to/get-an-app-into-a-pmm-release.md). |
