@@ -1,0 +1,7 @@
+# Serve a PMM UI built from a percona/pmm checkout, in place of the image's own.
+# It is a file of its own because Compose cannot make one mount optional.
+
+services:
+  pmm-server:
+    volumes:
+      - ${PMM_UI_DIST:?Set PMM_UI_DIST to a built ui/apps/pmm/dist}:/usr/share/pmm-ui:ro

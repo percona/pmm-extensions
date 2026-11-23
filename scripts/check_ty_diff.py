@@ -26,9 +26,8 @@ diagnostic) without adding anything.
 
 Attribution is a baseline delta rather than a test of whether a diagnostic sits on
 an added line, because an annotation change lands its consequences at call sites
-the edit itself need not touch. That, the batching policy ``--per-file`` exists to
-escape, and the advisory status of the CI job are recorded in
-``docs/development/ty-policy.md``.
+the edit itself need not touch. The advisory status of the CI job is recorded in
+``docs/reference/type-check-policy.md`` under ``Enforcement``.
 
 The exit status is the whole signal: non-zero when the branch adds a diagnostic.
 """

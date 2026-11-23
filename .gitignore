@@ -115,6 +115,7 @@ mutants/
 .venv
 env
 venv/
+.poetry-venv/
 ENV/
 env.bak/
 venv.bak/
@@ -419,3 +420,8 @@ graphify-out/
 # its cleanup runs; the names carry a uuid so nothing ever collides with them
 app/extensions/apps/_scaffold_ci_*/
 tests/app/extensions/apps/_scaffold_ci_*/
+
+# Vale binary and the style packages `vale sync` downloads
+.vale/bin/
+.vale/styles/Google/
+.vale/styles/.vale-config/

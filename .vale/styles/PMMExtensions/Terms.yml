@@ -1,0 +1,9 @@
+extends: substitution
+message: "Use '%s', not '%s'."
+level: error
+ignorecase: true
+swap:
+  side-cars?: sidecar
+  plugins?: app
+  lets you: enables you to
+  allows you to: enables you to
