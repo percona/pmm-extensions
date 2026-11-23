@@ -17,14 +17,9 @@ pipeline {
 			defaultValue: '--log-level=DEBUG'
 		)
 		booleanParam(
-			name: 'pushImage',
-			defaultValue: false,
-			description: 'Push the image to the registry'
-		)
-		booleanParam(
 			name: 'pushImageDocker',
 			defaultValue: false,
-			description: 'Push the image to the Docker registry'
+			description: 'Push the image to Docker Hub'
 		)
 	}
 
@@ -75,7 +70,6 @@ pipeline {
 			steps {
 				build job: 'PMM-Extensions/Build', parameters: [
 					[$class: 'StringParameterValue', name: 'releaseTag', value: "${RELEASE_VER}"],
-					[$class: 'BooleanParameterValue', name: 'pushImage', value: Boolean.valueOf("${params.pushImage}")],
 					[$class: 'BooleanParameterValue', name: 'pushImageDocker', value: Boolean.valueOf("${params.pushImageDocker}")]
 				], propagate: true, wait: true
 			}

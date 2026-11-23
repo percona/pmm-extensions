@@ -6,8 +6,9 @@ broker under a single PID 1, so the whole product ships as one container with
 one log stream.
 
 Build it with `make image` (tag `extensions:${RELEASE_VER}`, no suffix). This is the
-only image PMM Extensions ships; Jenkins builds and publishes that one tag to the internal
-registry, and to Docker Hub when the build's `pushImageDocker` parameter is set.
+only image PMM Extensions ships; Jenkins builds that one tag and, when the build's
+`pushImageDocker` parameter is set, publishes it to Docker Hub: release candidates to
+`perconalab/pmm-extensions`, everything else to `percona/pmm-extensions`.
 
 The image is **app-restricted**: the app strip is switched on, so it ships only
 the app packages the settings profile activates — see [App set](#app-set).
