@@ -736,6 +736,31 @@ class TestEncryptionFormatStampRepair:
             == EncryptionFormat.GPG
         )
 
+    def test_a_stamp_holding_a_retired_key_is_still_repaired(self):
+        """Repair and save a stamp that also holds a key the form no longer declares.
+
+        The create and update routes reject an undeclared key, but a stamp saved
+        before a field was retired still holds it, and that alone must not leave
+        the stamp unrepaired. The saved stamp leaves the retired key out.
+        """
+        task = _legacy_mysql_backup_task(name="mysql-encrypted")
+        task.data[RESERVED_FORM_KEY] = self._stamp(
+            encrypt=True,
+            encryption_recipient="ops@example.com",
+            retired_setting="value",
+        )
+        lookup = _lookup(
+            _service(9, name="mysql-prod", address="10.0.0.5", port=3306),
+        )
+
+        outcome = _backfill_single_task(task, FORM_BACKFILL_ENTRIES[0], _ctx(lookup))
+
+        assert outcome.label == "repaired"
+        assert outcome.stamped_data is not None
+        repaired = outcome.stamped_data[RESERVED_FORM_KEY]
+        assert repaired["encryption_format"] == EncryptionFormat.GPG
+        assert "retired_setting" not in repaired
+
 
 class TestBinaryCompressionBackfillLeniency:
     """Reconstruct a stored pairing the create form now rejects."""
