@@ -148,3 +148,16 @@ vulnerabilities:
       and valkey link it. No upstream fix. Remove when Debian ships one, or if
       PMM Extensions starts serving or making QUIC/HTTP-3 connections.
     expired_at: 2027-02-19
+  - id: CVE-2026-107494
+    purls:
+      - pkg:deb/debian/libssl3t64
+      - pkg:deb/debian/openssl
+      - pkg:deb/debian/openssl-provider-legacy
+    statement: >-
+      libssl3t64, openssl and openssl-provider-legacy. Denial of service via
+      unbounded QUIC frame queueing. Reaching it requires a QUIC connection,
+      and nothing in the image opens one: the same argument as
+      CVE-2026-124709, which covers all five programs that link the system
+      libssl. No upstream fix. Remove when Debian ships one, or if PMM
+      Extensions starts serving or making QUIC/HTTP-3 connections.
+    expired_at: 2027-02-19
