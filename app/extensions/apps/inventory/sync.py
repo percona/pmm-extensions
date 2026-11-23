@@ -183,7 +183,7 @@ async def start_followers(
                     },
                 },
             )
-        except (OSError, KombuError):
+        except OSError, KombuError:
             logger.exception(
                 "Could not start %s after %s's first inventory sync", follower, leader
             )

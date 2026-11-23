@@ -333,7 +333,7 @@ class TestXtrabackupBinaryCompressionMatrix:
 
     @pytest.mark.parametrize("model", [BackupCreate, BackupConfigAll])
     def test_both_models_reject_a_binary_outside_the_enum(
-        self, model: type[BackupCreate] | type[BackupConfigAll]
+        self, model: type[BackupCreate | BackupConfigAll]
     ):
         """Refuse a binary the vocabulary does not declare.
 

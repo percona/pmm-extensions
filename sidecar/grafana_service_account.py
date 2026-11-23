@@ -251,7 +251,7 @@ async def validate_token(provider: GrafanaSDK, token: str) -> TokenStateEnum:
         if error.status_code == status.HTTP_403_FORBIDDEN:
             return TokenStateEnum.FORBIDDEN
         return TokenStateEnum.UNREACHABLE
-    except (ClientError, TimeoutError):
+    except ClientError, TimeoutError:
         return TokenStateEnum.UNREACHABLE
     return TokenStateEnum.ACCEPTED
 

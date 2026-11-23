@@ -169,7 +169,7 @@ DEFAULT_LOGGING_DIR = os.getenv(
     str(Path(CURRENT_USER_HOME_DIR) / ".local" / "percona" / "logs" / "backup"),
 )
 DEFAULT_LOGGING_STDOUT = True
-DEFAULT_MYCNF = f"{os.environ.get('HOME') or CURRENT_USER_HOME_DIR}/.my.cnf"
+DEFAULT_MYCNF = "{}/.my.cnf".format(os.environ.get("HOME") or CURRENT_USER_HOME_DIR)
 LOGGING_FORMAT = "%(asctime)s PID<%(process)d> %(levelname)s::%(alias)s%(message)s"
 LOGGING_FORMAT_DEBUG = (
     "%(asctime)s PID<%(process)d> %(levelname)s:%(lineno)d:%(alias)s%(message)s"
@@ -1200,7 +1200,7 @@ class Backup(BaseBackup):
         result = self._query_mysql("SELECT @@basedir, @@datadir")
         possible_files = ["/etc/my.cnf", "/etc/mysql/my.cnf", "/usr/local/etc/my.cnf"]
         if result["@@basedir"]:
-            possible_files += [f"{result['@@basedir']}/my.cnf", f"{result['@@datadir']}/mysqld-auto.cnf"]
+            possible_files += ["{}/my.cnf".format(result["@@basedir"]), "{}/mysqld-auto.cnf".format(result["@@datadir"])]
 
         return ",".join(f for f in possible_files if Path(f).is_file())
 

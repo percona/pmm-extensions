@@ -21,6 +21,7 @@ import re
 import pytest
 from sqlalchemy_celery_beat import PeriodicTask
 
+from app.tasks.periodic.models import PERIODIC_TASK_NAME_MAX_LENGTH
 from app.tasks.periodic.utils import (
     generate_periodic_task_name,
     resolve_schedule_task_name,
@@ -172,3 +173,64 @@ class TestGeneratedPeriodicTaskName:
         )
 
         assert space_name != underscore_name
+
+
+#: The rendered period of a crontab whose every field lists every value, longer
+#: on its own than a schedule name may be.
+_EVERY_VALUE_CRONTAB_PERIOD = " ".join(
+    [
+        ",".join(str(minute) for minute in range(60)),
+        ",".join(str(hour) for hour in range(24)),
+        ",".join(str(day) for day in range(1, 32)),
+        ",".join(str(month) for month in range(1, 13)),
+        ",".join(str(day) for day in range(7)),
+    ]
+)
+
+
+class TestGeneratedPeriodicTaskNameLength:
+    """Test that a generated name fits the schedule's name column."""
+
+    def test_longest_task_name_fits(self):
+        """Assert a 255-character task name still yields a name that fits."""
+        name = generate_periodic_task_name(
+            "t" * 255, "every 10 minutes", '{"task_name": null}'
+        )
+
+        assert len(name) <= PERIODIC_TASK_NAME_MAX_LENGTH
+        assert re.search(r"_[0-9a-f]{16}$", name)
+
+    def test_long_crontab_period_fits(self):
+        """Assert a crontab period longer than the column yields a fitting name."""
+        name = generate_periodic_task_name(
+            "my-task", _EVERY_VALUE_CRONTAB_PERIOD, '{"task_name": null}'
+        )
+
+        assert len(name) <= PERIODIC_TASK_NAME_MAX_LENGTH
+        assert name.startswith("run_my-task_0,1,2")
+
+    def test_shortened_names_of_distinct_periods_differ(self):
+        """Give two long names that differ only past the cut distinct names."""
+        first = generate_periodic_task_name(
+            "t" * 255, "every 10 minutes", '{"task_name": null}'
+        )
+        second = generate_periodic_task_name(
+            "t" * 255, "every 20 minutes", '{"task_name": null}'
+        )
+
+        assert first != second
+
+    def test_name_that_fits_is_not_shortened(self):
+        """Assert a name that fits is the full ``run_<task>_<period>_<digest>`` form."""
+        name = generate_periodic_task_name(
+            "t" * 200, "every 10 minutes", '{"task_name": null}'
+        )
+
+        assert name.startswith(f"run_{'t' * 200}_every_10_minutes_")
+        assert len(name) == len(f"run_{'t' * 200}_every_10_minutes_") + 16
+
+    def test_column_length_matches_the_library_column(self):
+        """Pin the request limit to the length the beat library gives the column."""
+        assert PeriodicTask.__table__.c.name.type.length == (
+            PERIODIC_TASK_NAME_MAX_LENGTH
+        )

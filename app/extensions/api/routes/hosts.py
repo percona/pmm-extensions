@@ -181,7 +181,7 @@ async def list_hosts(
         display_names = address_to_name_index(
             (node["name"], node["address"]) for node in nodes
         )
-    except (HTTPException, TypeError, KeyError, OSError, ValidationError):
+    except HTTPException, TypeError, KeyError, OSError, ValidationError:
         display_names = {}
 
     capabilities: dict[str, bool | None] = {}
@@ -192,7 +192,7 @@ async def list_hosts(
             )
         )
         capabilities = _capabilities_by_executor(nodes, observations, executor_hosts)
-    except (HTTPException, TypeError, KeyError, OSError, ValidationError):
+    except HTTPException, TypeError, KeyError, OSError, ValidationError:
         capabilities = {}
 
     return sorted(

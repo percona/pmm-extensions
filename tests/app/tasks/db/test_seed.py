@@ -62,6 +62,7 @@ from app.tasks.models import (
 )
 from tests.app.host_payloads import missing_interpreter_is_fatal
 from tests.app.tasks.conftest import MYSQL_SYNCER, PMM_SYNCER
+from tests.conftest import require_gnu
 
 FIFTEEN_MINUTES = IntervalSchedule(every=15, period=Period.MINUTES)
 
@@ -546,7 +547,11 @@ class TestArtifactLauncher:
         env: dict[str, str],
         path: str = "/usr/bin:/bin",
     ) -> subprocess.CompletedProcess:
-        """Run a launcher string with Nomad's directory references resolved."""
+        """Run a launcher string with Nomad's directory references resolved.
+
+        Both launchers hand their argument file to GNU ``xargs --arg-file``.
+        """
+        require_gnu("xargs", path=path)
         resolved = script.replace("${NOMAD_TASK_DIR}", str(task_dir)).replace(
             "${NOMAD_ALLOC_DIR}", str(alloc_dir)
         )

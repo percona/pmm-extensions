@@ -182,7 +182,7 @@ async def asgi_stream(
     method: str = "GET",
     query_string: bytes = b"",
     headers: Mapping[str, str] | None = None,
-) -> AsyncGenerator[ASGIStream, None]:
+) -> AsyncGenerator[ASGIStream]:
     """Send one request into ``app`` and yield its response while it is still open.
 
     Control returns to the caller as soon as the app has sent its

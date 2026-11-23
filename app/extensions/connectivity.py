@@ -128,7 +128,7 @@ async def _fetch_connectivity_result(
             exc.detail if isinstance(exc.detail, str) else "Connectivity check failed"
         )
         return ConnectivityResult(success=False, error=error, task_history_id=None)
-    except (OSError, TimeoutError, ClientError):
+    except OSError, TimeoutError, ClientError:
         logger.debug("Could not reach Tasks API for connectivity check", exc_info=True)
         return ConnectivityResult(
             success=False, error="Could not reach the Tasks API", task_history_id=None

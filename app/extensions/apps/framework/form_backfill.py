@@ -252,6 +252,11 @@ def _repair_existing_stamp(
     fills the gaps the form has since grown rather than re-deriving the whole body
     from the task's config.
 
+    The repaired stamp is validated with ``extra="ignore"``: the create model
+    rejects an undeclared key in a request, but a stored stamp can hold a key the
+    form has since retired, and that alone must not leave the stamp unrepaired.
+    The saved stamp is the validated model, so the retired key is dropped.
+
     :param task: The stamped task row.
     :param entry: The declaring app's backfill entry.
     :param ctx: Shared backfill context.
@@ -287,7 +292,9 @@ def _repair_existing_stamp(
         return _TaskBackfillOutcome("skipped_existing")
 
     try:
-        validated_form = entry.create_model.model_validate(repaired_form)
+        validated_form = entry.create_model.model_validate(
+            repaired_form, extra="ignore"
+        )
     except ValidationError as exc:
         # Without ``include_input``: an error carries the value that failed, and a
         # form body can hold a GPG recipient or a key-file path.
@@ -333,6 +340,10 @@ def _reconstruct_validate_stamp(
 ) -> _TaskBackfillOutcome:
     """Reconstruct, validate, and stamp ``data['_form']`` for an eligible task.
 
+    Validates with ``extra="ignore"``, as :func:`_repair_existing_stamp` does: a
+    reconstructor reads stored config, and a key the form no longer declares is
+    dropped from the stamp rather than skipping the task.
+
     :param task: The legacy task row to backfill.
     :param entry: The declaring app's backfill entry.
     :param ctx: Shared backfill context.
@@ -357,7 +368,7 @@ def _reconstruct_validate_stamp(
         return _TaskBackfillOutcome("skipped_unreconstructable")
 
     try:
-        validated_form = entry.create_model.model_validate(raw_form)
+        validated_form = entry.create_model.model_validate(raw_form, extra="ignore")
     except ValidationError as exc:
         # Without ``include_input``: an error carries the value that failed, and a
         # form body can hold a GPG recipient or a key-file path.

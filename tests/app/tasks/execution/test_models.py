@@ -70,7 +70,7 @@ class ConcreteExecutor(BaseExecutor):
         self,
         queue_item: TaskHistory,
         start_offsets: dict[str, dict[str, int]] | None = None,
-    ) -> AsyncGenerator[TaskLog, None]:
+    ) -> AsyncGenerator[TaskLog]:
         """Yield nothing."""
         return
         yield
@@ -82,7 +82,7 @@ class ConcreteExecutor(BaseExecutor):
         chunk_size: int = 1024 * 1024,
         *,
         anonymize: bool = True,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Yield nothing."""
         return
         yield
@@ -132,7 +132,7 @@ class StopStubExecutor(ConcreteExecutor):
         status: TaskHistoryStatusEnum | None = None,
         finished_at: datetime | None = None,
         stop_error: BaseException | None = None,
-    ) -> "StopStubExecutor":
+    ) -> StopStubExecutor:
         """Build an executor whose backend reports the given state.
 
         :param status: The status the sync resolves the record to, or None to

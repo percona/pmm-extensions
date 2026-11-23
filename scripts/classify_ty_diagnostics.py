@@ -546,7 +546,7 @@ def corpus_fingerprints(source: Path | None = None) -> frozenset[Fingerprint]:
     path = CORPUS_TEST if source is None else source
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, UnicodeDecodeError, SyntaxError):
+    except OSError, UnicodeDecodeError, SyntaxError:
         return frozenset()
 
     bindings = _module_strings(tree)

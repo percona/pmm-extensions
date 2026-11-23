@@ -15,12 +15,15 @@
 
 """Define tests for CRUD pagination helpers."""
 
+import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, UTC
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import Column, Index, Integer, UniqueConstraint
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlmodel import col, Relationship, SQLModel
 from sqlmodel import Field as SQLField
@@ -56,7 +59,7 @@ class PaginationParent(BaseSQLModel, table=True):
     __tablename__ = "test_pagination_parent"
 
     name: str
-    items: list["PaginationItem"] = Relationship(back_populates="parent")
+    items: list[PaginationItem] = Relationship(back_populates="parent")
 
 
 class PaginationItem(BaseSQLModel, table=True):
@@ -268,7 +271,7 @@ class ExcludedOnlyUniqueManager(BaseSQLModelManager):
 
 
 @pytest_asyncio.fixture(name="session_engine")
-async def session_engine_fixture() -> AsyncGenerator[AsyncEngine, None]:
+async def session_engine_fixture() -> AsyncGenerator[AsyncEngine]:
     """Create the schema-loaded engine every CRUD session in this module shares.
 
     :return: An in-memory engine with every ``SQLModel`` table created.
@@ -293,7 +296,7 @@ async def session_engine_fixture() -> AsyncGenerator[AsyncEngine, None]:
 @pytest_asyncio.fixture(name="session")
 async def session_fixture(
     session_engine: AsyncEngine,
-) -> AsyncGenerator[AsyncSession, None]:
+) -> AsyncGenerator[AsyncSession]:
     """Create an isolated async database session for CRUD pagination tests.
 
     :param session_engine: The engine the session is bound to.
@@ -1635,6 +1638,84 @@ class TestSaveUniqueViolation:
             match="UniqueKeyModel with the same key already exists",
         ):
             await UniqueKeyManager.save(session, row)
+
+
+def _refuse_text_form(instance: object) -> str:
+    """Fail the test if anything formats the instance.
+
+    :param instance: The model instance being formatted.
+    :raises AssertionError: Always.
+    """
+    raise AssertionError(f"formatted a {type(instance).__name__} after a failed commit")
+
+
+class TestSaveRejectedWrite:
+    """Test the bad-request answer of ``save()`` when the database rejects a write.
+
+    The failure is logged without formatting the instance: after a failed commit
+    its attributes can be expired, and a text form that reads one would load it
+    outside the async context.
+    """
+
+    @pytest.mark.asyncio
+    async def test_integrity_error_does_not_format_the_instance(
+        self,
+        session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Assert a NOT NULL breach is logged by model and error, not by instance."""
+        row = await UniqueKeyManager.save(session, UniqueKeyModel(key="gamma"))
+        row.key = None
+        monkeypatch.setattr(UniqueKeyModel, "__str__", _refuse_text_form)
+
+        with (
+            caplog.at_level(logging.ERROR, logger="app.core.db.crud"),
+            pytest.raises(HTTPBadRequestException),
+        ):
+            await UniqueKeyManager.save(session, row)
+
+        [record] = [r for r in caplog.records if r.name == "app.core.db.crud"]
+        assert "UniqueKeyModel" in record.getMessage()
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], IntegrityError)
+
+    @pytest.mark.asyncio
+    async def test_other_database_error_raises_bad_request(
+        self,
+        session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Assert a commit failing with a non-integrity error answers bad request.
+
+        The commit is replaced on a real session because neither SQLite nor
+        asyncpg raises a ``DatabaseError`` other than ``IntegrityError`` from a
+        commit on demand.
+        """
+        row = await UniqueKeyManager.save(session, UniqueKeyModel(key="delta"))
+        row.label = "changed"
+        monkeypatch.setattr(UniqueKeyModel, "__str__", _refuse_text_form)
+        monkeypatch.setattr(
+            session,
+            "commit",
+            AsyncMock(
+                side_effect=OperationalError(
+                    "UPDATE", {}, Exception("server closed the connection")
+                )
+            ),
+        )
+
+        with (
+            caplog.at_level(logging.ERROR, logger="app.core.db.crud"),
+            pytest.raises(HTTPBadRequestException),
+        ):
+            await UniqueKeyManager.save(session, row)
+
+        [record] = [r for r in caplog.records if r.name == "app.core.db.crud"]
+        assert "UniqueKeyModel" in record.getMessage()
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], OperationalError)
 
 
 @pytest.mark.postgres

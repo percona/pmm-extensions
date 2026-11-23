@@ -28,6 +28,10 @@ from app.extensions.apps.framework.schema import EXECUTION_HOST_LABEL
 from app.extensions.connectivity import clear_connectivity_caches
 from app.extensions.inventory import CreatedService
 from app.tasks.models import TaskBackendEnum, TaskHistoryStatusEnum
+from tests.app.extensions.unknown_body_field import (
+    assert_unknown_field_rejected,
+    UNKNOWN_FIELD,
+)
 from tests.app.factories import TaskFactory
 
 API_BASE = "/api/apps/alters"
@@ -423,6 +427,30 @@ class TestAltersApiCreate:
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
         mock_task_api_dep.post.assert_not_called()
 
+    def test_create_refuses_an_unknown_field(
+        self,
+        test_client,
+        mock_task_api_dep,
+        mock_inventory_api_dep,
+        created_service,
+    ) -> None:
+        """POST answers 422 naming a key the form does not declare, creating nothing."""
+        configure_cascade_create_mocks(
+            mock_task_api_dep,
+            mock_inventory_api_dep,
+            created_service,
+            DEFAULT_TASK_NAME,
+        )
+        body = build_alters_write_body(
+            task_name=DEFAULT_TASK_NAME, service_id=created_service.id
+        )
+        body[UNKNOWN_FIELD] = "value"
+
+        response = test_client.post(f"{API_BASE}/?check_connectivity=false", json=body)
+
+        assert_unknown_field_rejected(response)
+        mock_task_api_dep.post.assert_not_called()
+
     def test_create_stamps_form_input_on_parent_task(
         self,
         test_client,
@@ -458,6 +486,40 @@ class TestAltersApiCreate:
 
 class TestAltersApiUpdate:
     """Tests for PUT /api/apps/alters/{task_name}."""
+
+    @pytest.mark.usefixtures("_mock_check_for_conflicted_running_tasks")
+    def test_update_refuses_an_unknown_field(
+        self,
+        test_client,
+        mock_task_api_dep,
+        mock_inventory_api_dep,
+        created_service,
+    ) -> None:
+        """PUT answers 422 naming a key the form does not declare, changing nothing."""
+        group = build_alters_task_group(DEFAULT_PARENT_NAME)
+        mock_task_api_dep.get = AsyncMock(
+            side_effect=[
+                group["parent"],
+                NOMAD_HOSTS,
+                group["parent"],
+                {"items": []},
+            ]
+        )
+        mock_inventory_api_dep.get = AsyncMock(
+            return_value=created_service.model_dump()
+        )
+        mock_task_api_dep.put = AsyncMock(return_value=group["parent"])
+        body = build_alters_write_body(
+            task_name=DEFAULT_PARENT_NAME, service_id=created_service.id
+        )
+        body[UNKNOWN_FIELD] = "value"
+
+        response = test_client.put(
+            f"{API_BASE}/{DEFAULT_PARENT_NAME}?check_connectivity=false", json=body
+        )
+
+        assert_unknown_field_rejected(response)
+        mock_task_api_dep.put.assert_not_called()
 
     @pytest.mark.usefixtures("_mock_check_for_conflicted_running_tasks")
     def test_update_puts_parent_and_satellites(

@@ -1168,7 +1168,7 @@ class TestCheckConnectivityRealSession:
         session: AsyncSession,
         run_python_task: Task,
         async_session_maker,
-        advancing_clock: "_AdvancingClock",
+        advancing_clock: _AdvancingClock,
     ) -> None:
         """Verify the connect budget is charged for wall time spent off ``sleep``.
 

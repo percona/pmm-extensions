@@ -184,11 +184,11 @@ class SnippetMetaParametersValidationResult(NamedTuple):
     :type errors: list[str]
     """
 
-    parameters: list["SnippetMetaParameter"]
+    parameters: list[SnippetMetaParameter]
     errors: list[str]
 
     @property
-    def visible_parameters(self) -> list["SnippetMetaParameter"]:
+    def visible_parameters(self) -> list[SnippetMetaParameter]:
         """Return the parameters that are rendered in execution forms.
 
         Parameters marked ``hidden`` are excluded. They remain in
@@ -523,7 +523,7 @@ class SnippetMetaParameter(BaseModel):
         return self
 
     def _validate_gate_references(
-        self, conditions: list["SnippetVisibilityCondition"]
+        self, conditions: list[SnippetVisibilityCondition]
     ) -> None:
         """Reject gate conditions that self-reference or name a non-identifier.
 

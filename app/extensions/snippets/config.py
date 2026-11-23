@@ -242,7 +242,7 @@ class SnippetFilter(NamedTuple):
         return run_pydantic_type_validator(cls, data)
 
     @classmethod
-    def normalize_value(cls, entity: "SnippetFilter") -> Self:
+    def normalize_value(cls, entity: SnippetFilter) -> Self:
         """Normalize the value of the filter entity based on its type.
 
         :param entity: The SnippetFilter instance to normalize.

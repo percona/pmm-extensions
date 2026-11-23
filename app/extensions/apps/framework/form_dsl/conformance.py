@@ -97,7 +97,7 @@ def _schema_form_fields(
 
 
 def check_form_conformance(
-    model: type["AppFormModel"], schema: AppSchema, *, entity_name: str | None = None
+    model: type[AppFormModel], schema: AppSchema, *, entity_name: str | None = None
 ) -> list[str]:
     """Return human-readable disagreements between ``model`` and ``schema``.
 

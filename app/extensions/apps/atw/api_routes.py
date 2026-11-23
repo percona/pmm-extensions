@@ -625,7 +625,7 @@ async def atw_batch_execute(
         proxies = await resolve_atw_proxy_tasks(
             script.execution_task_name for script in resolved.values()
         )
-    except (HTTPException, OSError, RuntimeError):
+    except HTTPException, OSError, RuntimeError:
         # Resolution failure is never item-specific — it affects every item the same
         # way — so it degrades the whole batch to unwrapped dispatch rather than
         # failing a request whose dispatches may well succeed. Outcomes then come
@@ -719,7 +719,7 @@ async def _resolve_page_snippets(
         return await resolve_snippets(
             [execution.snippet_filename for execution in executions]
         )
-    except (HTTPException, OSError):
+    except HTTPException, OSError:
         logger.warning(ATW_SNIPPET_RESOLUTION_WARNING, exc_info=True)
         return {}
 

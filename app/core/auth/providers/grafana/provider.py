@@ -46,7 +46,7 @@ class GrafanaAuthProvider(GrafanaSDK, BaseAuthProvider):
     supports_ambient_session: ClassVar[bool] = True
 
     @asynccontextmanager
-    async def lifespan(self) -> AsyncGenerator[None, None]:
+    async def lifespan(self) -> AsyncGenerator[None]:
         """Open the Grafana SDK's async context for the application's lifespan.
 
         :yield: ``None`` while the SDK's client session is open.

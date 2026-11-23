@@ -15,21 +15,15 @@
 
 """Define shared fixtures for the snippets plugin tests."""
 
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import Iterator
 
 import pytest
-import pytest_asyncio
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.datastructures import URL
 
 from app.api.deps import require_minimum_role_for_unsafe_methods
 from app.core.auth.providers.casdoor.models import CasdoorUser
-from app.core.db.utils import get_async_session_maker_from_engine
-from app.core.utils import json_serializer
 from app.extensions.deps import (
     get_current_user,
     get_session,
@@ -37,28 +31,6 @@ from app.extensions.deps import (
 )
 from app.extensions.main import extensions_app
 from app.extensions.snippets.config import snippets_settings
-from tests.app.db_schema import apply_schema
-
-
-@pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
-    """Create an async database session backed by in-memory SQLite."""
-    # scaffolding-dup-ok: this duplication predates the change that
-    # re-annotated the fixture's return type; promoting it against
-    # its sibling bootstrap is a cross-tree refactor of its own.
-    engine = create_async_engine(
-        "sqlite+aiosqlite://",
-        json_serializer=json_serializer,
-        poolclass=StaticPool,
-    )
-    async with engine.begin() as conn:
-        await apply_schema(conn, SQLModel.metadata)
-    async_session_maker = get_async_session_maker_from_engine(engine)
-    try:
-        async with async_session_maker() as session:
-            yield session
-    finally:
-        await engine.dispose()
 
 
 @pytest.fixture(autouse=True)
