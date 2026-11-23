@@ -34,10 +34,12 @@ from app.extensions.apps.backup_mongo.restore.models import (
     RestoreCreate,
     RestoreTaskWrite,
 )
+from app.extensions.apps.backup_mongo.restore.schema import restore_mongo_schema
 from app.extensions.inventory import CreatedService
 from app.extensions.models import SyncInventoryEntityTypeEnum
 from app.inventory.models import ServiceTypeEnum
 from app.tasks.models import Task, TaskBackendEnum, TaskWrite
+from tests.app.extensions.unknown_body_field import edit_page_body
 from tests.app.factories import (
     MOCK_ACTOR_USERNAMES,
     MOCK_CREATOR_ID,
@@ -255,15 +257,17 @@ class TestRestoreFormRoundTrip:
     def test_stamped_create_form_revalidates_as_put_body(
         self, restore_create: RestoreCreate
     ) -> None:
-        """Re-validate the stored create form as the PUT body model.
+        """Re-validate what the edit page submits from the stored form as the PUT body.
 
-        The generic edit page resubmits the stored ``_form`` (a
-        :class:`RestoreCreate` dump) as the PUT body; :class:`RestoreTaskWrite`
-        must accept it so the round-trip does not fail validation.
+        The edit page seeds its fields from the stored ``_form`` (a
+        :class:`RestoreCreate` dump) and submits only the fields the published
+        form declares; :class:`RestoreTaskWrite` must accept that body.
         """
         stamped = restore_create.model_dump(mode="json")
 
-        body = RestoreTaskWrite.model_validate(stamped)
+        body = RestoreTaskWrite.model_validate(
+            edit_page_body(stamped, restore_mongo_schema.model_dump(mode="json"))
+        )
 
         assert body.task_name == restore_create.task_name
         assert body.backup_type == restore_create.backup_type

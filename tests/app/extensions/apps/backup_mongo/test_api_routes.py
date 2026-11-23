@@ -28,6 +28,10 @@ from app.extensions.apps.backup_mongo.models import BackupType, OWNER
 from app.extensions.apps.framework.spec import RESERVED_FORM_KEY
 from app.extensions.inventory import CreatedService
 from app.tasks.models import TaskBackendEnum, TaskHistoryStatusEnum
+from tests.app.extensions.unknown_body_field import (
+    assert_unknown_field_rejected,
+    UNKNOWN_FIELD,
+)
 from tests.app.factories import TaskFactory
 
 API_BASE = "/api/apps/backup_mongo"
@@ -611,6 +615,18 @@ class TestBackupMongoApiCreate:
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
+    def test_create_refuses_an_unknown_field(
+        self, test_client, mock_task_api_dep, mongo_service: CreatedService
+    ) -> None:
+        """Answer 422 naming a key the body model does not declare, creating nothing."""
+        body = build_backup_write_body(service_id=mongo_service.id)
+        body[UNKNOWN_FIELD] = "value"
+
+        response = test_client.post(f"{API_BASE}/", json=body)
+
+        assert_unknown_field_rejected(response)
+        mock_task_api_dep.post.assert_not_called()
+
 
 class TestBackupMongoApiDetail:
     """Tests for GET /api/apps/backup_mongo/{task_name}."""
@@ -787,6 +803,28 @@ class TestBackupMongoApiDelete:
 
 class TestBackupMongoApiUpdate:
     """Tests for PUT /api/apps/backup_mongo/{task_name}."""
+
+    def test_update_refuses_an_unknown_field(
+        self,
+        test_client,
+        mock_task_api_dep,
+        mock_inventory_api_dep,
+        mongo_service: CreatedService,
+    ) -> None:
+        """Answer 422 naming a key the body model does not declare, changing nothing."""
+        parent = build_backup_task("parent-backup")
+        mock_inventory_api_dep.get = AsyncMock(return_value=mongo_service.model_dump())
+        mock_task_api_dep.get = mock_task_api_get_by_path({"/parent-backup": parent})
+        mock_task_api_dep.put = AsyncMock(return_value=parent)
+        body = build_backup_write_body(
+            task_name="parent-backup", service_id=mongo_service.id
+        )
+        body[UNKNOWN_FIELD] = "value"
+
+        response = test_client.put(f"{API_BASE}/parent-backup", json=body)
+
+        assert_unknown_field_rejected(response)
+        mock_task_api_dep.put.assert_not_called()
 
     def test_update_puts_parent_and_derived_and_restamps_form(
         self,
