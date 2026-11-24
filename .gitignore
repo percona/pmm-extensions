@@ -115,6 +115,7 @@ mutants/
 .venv
 env
 venv/
+.poetry-venv/
 ENV/
 env.bak/
 venv.bak/
@@ -411,7 +412,15 @@ frontend/packages/e2e/playwright-report/data/*
 frontend/packages/e2e/test-results/*
 
 # IA agents config, tools and cache
-.claude/
+.claude/*
+!.claude/skills/
+# The helper of the evaluation cases, which the virtualenv rule `[Ll]ib` above
+# would hide
+!/assistant/evals/lib/
+# The plugin that tier 1 builds, and the results of tier 1 and of the outcome runs
+/assistant/tier1-plugin/
+/assistant/evals/results/
+/assistant/evals/outcome/runs/
 .codex/
 graphify-out/
 
@@ -419,3 +428,8 @@ graphify-out/
 # its cleanup runs; the names carry a uuid so nothing ever collides with them
 app/extensions/apps/_scaffold_ci_*/
 tests/app/extensions/apps/_scaffold_ci_*/
+
+# Vale binary and the style packages `vale sync` downloads
+.vale/bin/
+.vale/styles/Google/
+.vale/styles/.vale-config/

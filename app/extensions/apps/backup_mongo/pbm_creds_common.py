@@ -241,7 +241,7 @@ def _append_pbm_restore_yes_if_supported(cmd: list[str]) -> None:
             check=False,
             timeout=_PBM_RESTORE_HELP_TIMEOUT_SECONDS,
         )
-        help_text = f"{help_proc.stdout or ''}{help_proc.stderr or ''}"
+        help_text = (help_proc.stdout or "") + (help_proc.stderr or "")
         if "--yes" in help_text:
             cmd.append("--yes")
     except OSError as err:

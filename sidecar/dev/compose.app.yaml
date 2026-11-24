@@ -1,0 +1,13 @@
+# Runs one app that is not in this repository, on the released image, by a
+# mount. Use it with compose.yaml:
+#
+#   docker compose -f sidecar/dev/compose.yaml -f sidecar/dev/compose.app.yaml up -d --wait
+#
+# docs/how-to/run-an-app-outside-the-repository.md is the page for this file.
+# All three values are required. The two paths are absolute: Compose resolves a
+# relative path against the directory of the first file, not against yours.
+services:
+  pmm-extensions:
+    volumes:
+      - ${APP_DIR:?set APP_DIR to the absolute path of the app's package}:/home/extensions/app/app/extensions/apps/${APP_NAME:?set APP_NAME to the app's module name}:ro
+      - ${APP_PROFILE:?set APP_PROFILE to the absolute path of a settings profile that lists the app}:/home/extensions/app/settings.yaml:ro

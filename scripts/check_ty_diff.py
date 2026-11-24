@@ -26,9 +26,8 @@ diagnostic) without adding anything.
 
 Attribution is a baseline delta rather than a test of whether a diagnostic sits on
 an added line, because an annotation change lands its consequences at call sites
-the edit itself need not touch. That, the batching policy ``--per-file`` exists to
-escape, and the advisory status of the CI job are recorded in
-``docs/development/ty-policy.md``.
+the edit itself need not touch. The advisory status of the CI job is recorded in
+``docs/reference/type-check-policy.md`` under ``Enforcement``.
 
 The exit status is the whole signal: non-zero when the branch adds a diagnostic.
 """
@@ -131,7 +130,6 @@ class Source:
         :param text: The file's contents, line endings already normalised.
         :return: The parsed source.
         :raises SyntaxError: When ``text`` does not parse.
-        :raises ValueError: When ``text`` holds a null byte, on Python 3.11.
         :raises RecursionError: When ``text`` nests too deeply to parse.
         :raises MemoryError: When ``text`` nests too deeply to parse.
         """
@@ -477,9 +475,9 @@ def parse_sources(root: Path, paths: Iterable[str]) -> dict[str, Source]:
             # The parser rejects a byte order mark left in a str, and ty does
             # not count one as a column.
             sources[path] = Source.parse(file.read_text(encoding="utf-8-sig"))
-        # ValueError covers undecodable bytes and, on 3.11, a null byte; the
-        # parser raises RecursionError or MemoryError on pathological nesting.
-        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
+        # ValueError covers undecodable bytes; the parser raises RecursionError
+        # or MemoryError on pathological nesting.
+        except OSError, SyntaxError, ValueError, RecursionError, MemoryError:
             continue
     return sources
 

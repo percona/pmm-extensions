@@ -1,0 +1,53 @@
+# A MySQL host that can run PMM Extensions tasks: Percona Server, XtraBackup,
+# mydumper, Percona Toolkit and PMM Client in one container, with sample data.
+# PMM Client supervises the Nomad client that makes the host selectable.
+ARG PMM_CLIENT_IMAGE=percona/pmm-client:3.10.0
+FROM ${PMM_CLIENT_IMAGE} AS pmmclient
+
+FROM docker.io/library/oraclelinux:9
+
+# The percona-release package is signed by a key that no repository has given
+# rpm yet, so this one install skips the check. It then imports the keys that
+# verify everything below.
+RUN dnf install -y --nogpgcheck https://repo.percona.com/yum/percona-release-latest.noarch.rpm \
+    && percona-release setup -y ps84lts \
+    && percona-release enable pt \
+    && percona-release enable pxb-84-lts
+
+# mydumper is not in the Percona repositories. It ships its own.
+RUN rpm --import 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x79EA15C0E82E34BA' \
+    && printf '%s\n' '[mydumper]' 'name=MyDumper' \
+        'baseurl=https://mydumper.github.io/mydumper/repo/yum/$releasever' \
+        'enabled=1' 'gpgcheck=1' > /etc/yum.repos.d/mydumper.repo
+
+# python3-pip and gzip serve the tasks that build a virtualenv and unpack their
+# result. zstd, lz4, gnupg2 and rsync back the compression, encryption and
+# upload options the backup forms offer. sudo is there because a script that
+# declares `sudo: always` calls it even when the task already runs as root.
+RUN dnf install -y \
+        percona-server-server percona-toolkit python3-PyMySQL \
+        percona-xtrabackup-84 mydumper \
+        python3-pip gzip tar hostname procps-ng iproute \
+        zstd lz4 gnupg2 rsync sudo \
+    && dnf clean all
+
+# The container runs privileged, which a Docker host with AppArmor, such as
+# Colima's VM, leaves unconfined. There the setuid unix_chkpwd cannot read
+# /etc/shadow, so PAM's account check fails and every sudo is refused. root
+# passes that check through pam_rootok instead, which reads nothing.
+RUN sed -i '0,/^account/s//account    sufficient   pam_rootok.so\naccount/' /etc/pam.d/sudo \
+    && grep -q '^account    sufficient   pam_rootok.so' /etc/pam.d/sudo
+
+COPY --from=pmmclient /usr/local/percona/pmm /usr/local/percona/pmm
+ENV PATH="/usr/local/percona/pmm/bin:${PATH}"
+
+# Unpacked at build time, so the first start needs no download.
+ADD https://github.com/datacharmer/test_db/releases/download/v1.0.7/test_db-1.0.7.tar.gz /opt/
+RUN tar -xzf /opt/test_db-1.0.7.tar.gz -C /opt && rm -f /opt/test_db-1.0.7.tar.gz
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+
+EXPOSE 3306
+
+# The health check is in ../../compose.yaml: an image built in OCI format drops one.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

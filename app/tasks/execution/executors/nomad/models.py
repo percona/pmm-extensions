@@ -94,7 +94,7 @@ from app.tasks.execution.executors.nomad.steps import (
     LOG_CAPTURE_HOLD_DEFAULT_SECONDS,
     NomadStep,
 )
-from app.tasks.execution.models import BaseExecutor
+from app.tasks.execution.models import BaseExecutor, TerminalRunHook
 from app.tasks.execution.utils import gzip_compress, minify_file_content
 from app.tasks.logs.line_split import split_complete_lines, WithheldLineBuffer
 from app.tasks.logs.log_reader import decompress_legacy_logs
@@ -558,7 +558,7 @@ def _detect_step_sentinel(
         try:
             if int(event_exit_code) == exit_code:
                 return True
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return False
 
@@ -621,7 +621,7 @@ def _append_exit_code_suffix(
     desc_lower = description.lower()
     try:
         code_int = int(exit_code)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         if str(exit_code).lower() not in desc_lower:
             parts.append(f"(exit code {exit_code})")
         return
@@ -711,7 +711,7 @@ def _sortable_nomad_tracking_event(
     ts_raw = ev.get("Time")
     try:
         ts_ns = int(ts_raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
     event_type = ev.get("Type")
@@ -951,7 +951,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         return self.log_stream_max_connections
 
     @asynccontextmanager
-    async def _private_executor(self) -> AsyncGenerator[Self, None]:
+    async def _private_executor(self) -> AsyncGenerator[Self]:
         """Yield a private executor, entered for one call and closed after it.
 
         Every ported call goes through :meth:`nomad_json`, and the inherited
@@ -1691,7 +1691,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         self.backend.job.deregister_job(job_id)
         try:
             alloc = self.get_allocation_for_task_history(queue_item)
-        except (AllocationNotFoundError, BaseNomadException):
+        except AllocationNotFoundError, BaseNomadException:
             logger.debug(
                 "No allocation to release a log-capture hold on for task history %s",
                 queue_item.id,
@@ -2169,6 +2169,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         self,
         queue_item: TaskHistory,
         writer_session: AsyncSession | None = None,
+        on_terminal: TerminalRunHook | None = None,
     ) -> TaskHistory:
         """Synchronize the task history with the current state of the task in Nomad.
 
@@ -2191,9 +2192,18 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         resolves to LOST: an allocation that started no task produced no exit
         code to have earned SUCCESS.
 
+        The tracking metadata is brought up to date before the logs are
+        persisted, because ``on_terminal`` runs inside that step and a file
+        read resolves the allocation from the tracking metadata: after a
+        reschedule it must name the allocation that produced the terminal
+        status, not the one before it.
+
         :param queue_item: The task history record for tracking this execution.
         :param writer_session: The dedicated session to use for log chunk
             persistence. When ``None``, log persistence is skipped.
+        :param on_terminal: The caller's hook for a run this sync resolves to a
+            terminal status, awaited before the log-capture hold is released.
+            Not called when ``writer_session`` is ``None``.
         :return: The updated task history with execution details.
         """
         if queue_item.status != TaskHistoryStatusEnum.RUNNING:
@@ -2230,6 +2240,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 capture_hold_ready=capture_hold_ready,
             )
 
+        queue_item.execution_request.tracking.update(
+            allocation_id=alloc["ID"],
+            job_id=job_id,
+            evaluation_id=alloc["EvalID"],
+            task_states=task_states,
+        )
         if writer_session is not None:
             await self._persist_nomad_task_logs(
                 writer_session=writer_session,
@@ -2237,14 +2253,9 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 alloc=alloc,
                 previous_allocation_id=previous_allocation_id,
                 capture_hold_ready=capture_hold_ready,
+                on_terminal=on_terminal,
             )
 
-        queue_item.execution_request.tracking.update(
-            allocation_id=alloc["ID"],
-            job_id=job_id,
-            evaluation_id=alloc["EvalID"],
-            task_states=task_states,
-        )
         queue_item.execution_request.tracking.pop("task_logs", None)
         return queue_item
 
@@ -2396,6 +2407,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         alloc: dict[str, Any],
         previous_allocation_id: str | None,
         capture_hold_ready: bool = False,
+        on_terminal: TerminalRunHook | None = None,
     ) -> None:
         """Persist this sync cycle's delta logs into the chunk store.
 
@@ -2417,6 +2429,14 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
             verdict and the release signal: while it is ``False`` some producer
             may still be writing, so no stream can be called drained and the
             hold must not be cut short.
+        :param on_terminal: The caller's hook for a run that has reached a
+            terminal status. It is awaited after the logs are stored and before
+            the hold is released, so a read it makes comes before the release
+            that lets a client short of disk space collect the allocation. That
+            is best effort, not a guarantee that the files are there: the hold
+            also ends by itself at its deadline, and an allocation registered
+            before the hold existed has none. The hold is released whether the
+            hook returns or raises.
         """
         alloc_id = alloc["ID"]
         alloc_epoch = alloc["CreateIndex"]
@@ -2464,8 +2484,12 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 drain_failures=drain_failures,
                 capture_hold_ready=capture_hold_ready,
             )
-            if capture_hold_ready:
-                await self._release_capture_hold(alloc)
+            try:
+                if on_terminal is not None:
+                    await on_terminal(queue_item)
+            finally:
+                if capture_hold_ready:
+                    await self._release_capture_hold(alloc)
 
     async def _record_capture_outcomes(
         self,
@@ -2596,7 +2620,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 _CAPTURE_HOLD_RELEASE_SIGNAL,
                 task=NomadStep.LOG_CAPTURE_HOLD,
             )
-        except (BaseNomadException, ValueError):
+        except BaseNomadException, ValueError:
             # ``signal_allocation`` decodes the response body, so a non-JSON or
             # empty body surfaces as a ValueError rather than a Nomad error.
             logger.warning(
@@ -3183,7 +3207,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
                 request_offset, confirm = await self._place_reconnect(
                     alloc["ID"], step, log_type, files, params, pending
                 )
-            except (TimeoutError, ClientError):
+            except TimeoutError, ClientError:
                 return (_NOMAD_LOG_STREAM_CLIENT_ERROR, alloc, stream_start)
             state, alloc, stream_start = await stream(
                 alloc=alloc,
@@ -4182,7 +4206,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         self,
         queue_item: TaskHistory,
         start_offsets: dict[str, dict[str, int]] | None = None,
-    ) -> AsyncGenerator[TaskLog | None, None]:
+    ) -> AsyncGenerator[TaskLog | None]:
         """Stream logs from a task history record.
 
         Retrieves the allocation details and concurrently streams stdout and stderr logs
@@ -4254,7 +4278,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         chunk_size: int = _ONE_MEBIBYTE,
         *,
         anonymize: bool = True,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Stream a file from the allocation's filesystem in chunks.
 
         Directories are archived on the fly and streamed as a tar.gz archive.
@@ -4326,7 +4350,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
 
     async def _iter_directory_entries(
         self, alloc_id: str, path: str, relative_prefix: str
-    ) -> AsyncGenerator[tuple[str, str, bool, int], None]:
+    ) -> AsyncGenerator[tuple[str, str, bool, int]]:
         """Yield directory entries recursively with absolute and relative paths."""
         async with self._request(
             "GET", f"/v1/client/fs/ls/{alloc_id}", params={"path": path}
@@ -4406,7 +4430,7 @@ class NomadExecutor(StoredCredentialHeaderMixin, BaseExecutor, BaseRemoteAPI):
         path: str,
         *,
         anonymize: bool = True,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Archive a directory on the fly and stream it as a tar.gz archive."""
         queue = asyncio.Queue()
         root_name = Path(path.rstrip("/")).name or "archive"

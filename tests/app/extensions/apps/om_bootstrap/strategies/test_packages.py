@@ -56,6 +56,7 @@ from app.extensions.apps.om_bootstrap.strategy import (
 from app.extensions.apps.shared.om.task_failure import describe_task_failure
 from app.tasks.execution.executors.nomad.steps import NomadStep
 from app.tasks.models import TaskLogType
+from tests.conftest import require_gnu
 
 
 def _rs_initiate_config(action: StepAction) -> dict:
@@ -135,6 +136,8 @@ def _run_step(
     :param action: The step's action.
     :param tmp_path: The test's scratch directory, where the script is written.
     :param bin_dir: The directory of tools the step can run, and all of ``PATH``.
+        A ``df`` linked from the host has to be GNU's, for ``--output=avail``;
+        a stand-in script written there runs anywhere.
     :return: The finished script.
     """
     for tool in ("sh", "timeout"):
@@ -142,6 +145,9 @@ def _run_step(
             real = shutil.which(tool)
             assert real is not None
             (bin_dir / tool).symlink_to(real)
+    real_df = bin_dir / "df"
+    if real_df.is_symlink():
+        require_gnu(str(real_df))
     script = tmp_path / "step.sh"
     script.write_text(build_step_script(action))
     return subprocess.run(

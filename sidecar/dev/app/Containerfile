@@ -1,0 +1,38 @@
+# A released PMM Extensions image plus one app that is not in this repository.
+# Build it in a directory that holds the app's package, this file and add_app.py:
+#
+#   docker build --build-arg APP=<module name> --build-arg OWNER="<who owns the app>" \
+#     -f Containerfile -t <image name> .
+#
+# docs/how-to/run-an-app-outside-the-repository.md is the page for this file.
+ARG BASE=percona/pmm-extensions:3.10.0
+FROM ${BASE}
+ARG APP
+ARG OWNER
+
+USER root
+RUN if [ -z "${APP}" ] || [ -z "${OWNER}" ]; then \
+        echo "give --build-arg APP=<module name> and --build-arg OWNER=<who owns the app>" >&2; \
+        exit 1; \
+    fi
+
+COPY --chown=0:0 ${APP}/ /home/extensions/app/app/extensions/apps/${APP}/
+COPY --chown=0:0 add_app.py /usr/local/share/pmm-extensions/add_app.py
+
+# The profile is the base image's own, with one line added. A copied profile
+# would replace the settings of a newer base.
+RUN chmod -R a+rX,go-w /home/extensions/app/app/extensions/apps/${APP} && \
+    chmod 444 /usr/local/share/pmm-extensions/add_app.py && \
+    python /usr/local/share/pmm-extensions/add_app.py /home/extensions/app/settings.yaml "${APP}"
+USER extensions
+
+# The build fails here when the app does not load on this base. The two keys
+# exist for this one step and are in no layer.
+RUN SECRET_KEY=load-check-load-check-load-check-load-check \
+    ENCRYPTION_KEY="$(python -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')" \
+    python -c "import sys; from app.extensions.apps.framework.registry import get_app_registry; keys = sorted(get_app_registry().keys()); print('apps in this image:', ', '.join(keys)); sys.exit(0 if '${APP}' in keys else 1)"
+
+LABEL org.opencontainers.image.title="PMM Extensions with the app ${APP}" \
+      pmm-extensions.app.name="${APP}" \
+      pmm-extensions.app.owner="${OWNER}" \
+      pmm-extensions.app.reviewed-by-percona="false"

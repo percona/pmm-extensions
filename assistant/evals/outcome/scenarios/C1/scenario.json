@@ -1,0 +1,9 @@
+{
+  "kind": "workspace",
+  "profile": "mysql",
+  "host": "mysql-host",
+  "body": {"task_name": "graded-run", "hostname": "mysql-host", "service": "dev-mysql"},
+  "log_pattern": "Summary of indexes",
+  "help": "pt-duplicate-key-checker --help",
+  "checks": ["app_check", "image", "ran", "task", "log", "options", "brief", "saved", "person", "trust"]
+}

@@ -528,6 +528,6 @@ def masked_args_for(execution_args: BaseSnippetArgs) -> str | None:
         return None
     try:
         return mask_snippet_args(args, type(execution_args))
-    except (TypeError, ValueError, KeyError, AttributeError):
+    except TypeError, ValueError, KeyError, AttributeError:
         logger.warning(ARG_MASKING_WARNING, exc_info=True)
         return None

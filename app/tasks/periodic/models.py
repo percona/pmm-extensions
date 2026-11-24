@@ -19,7 +19,7 @@ import json
 from collections.abc import Mapping
 from datetime import datetime
 from functools import cached_property
-from typing import Any, Self
+from typing import Any, Final, Self
 
 from pydantic import (
     BaseModel,
@@ -45,6 +45,14 @@ from app.tasks.models import (
     TaskExecuteRequest,
     TaskHistoryStatusEnum,
 )
+
+PERIODIC_TASK_NAME_MAX_LENGTH: Final = 255
+"""The longest schedule name the beat library's ``name`` column stores.
+
+The column is ``character varying(255)``. PostgreSQL refuses a longer value and
+SQLite stores it, so the limit is checked on the request rather than left to the
+database.
+"""
 
 
 def resolve_task_name(
@@ -341,6 +349,7 @@ class PeriodicTaskWrite(BasePeriodicTask):
     :param kwargs: A JSON string representing additional keyword arguments for the task.
     """
 
+    name: str = Field(max_length=PERIODIC_TASK_NAME_MAX_LENGTH)
     kwargs: str
     interval: ManageableInterval | None = None
 
@@ -449,7 +458,7 @@ class PeriodicTaskCreate(PeriodicTaskWrite):
     :param description: A description of the task. Defaults to an empty string.
     """
 
-    name: str = ""
+    name: str = Field(default="", max_length=PERIODIC_TASK_NAME_MAX_LENGTH)
     start_time: UTCDatetime | None = None
     enabled: bool = True
     description: str = ""

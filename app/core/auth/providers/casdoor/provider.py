@@ -39,7 +39,7 @@ class CasdoorAuthProvider(CasdoorSDK, BaseAuthProvider):
     user_model: ClassVar[type[BaseUser]] = CasdoorUser
 
     @asynccontextmanager
-    async def lifespan(self) -> AsyncGenerator[None, None]:
+    async def lifespan(self) -> AsyncGenerator[None]:
         """Open the Casdoor SDK's async context for the application's lifespan.
 
         :yield: ``None`` while the SDK's client session is open.

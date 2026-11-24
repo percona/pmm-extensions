@@ -60,6 +60,7 @@ from app.core.celery.models import IntervalSchedule
 from app.core.config import settings
 from app.core.db.utils import get_async_session_maker_from_engine
 from app.core.health import HEALTH_PATH
+from app.core.log import clear_log_context
 from app.core.requests import RemoteAPI
 from app.core.settings_override.proxy import OverridableSettingsProxy
 from app.core.utils import json_serializer
@@ -249,6 +250,14 @@ class HealthProbeServer:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+
+
+@pytest.fixture
+def reset_log_context() -> Iterator[None]:
+    """Clear the log context before and after the test that requests this."""
+    clear_log_context()
+    yield
+    clear_log_context()
 
 
 @pytest.fixture(name="pmm_is_the_only_syncer")
@@ -675,7 +684,7 @@ def postgres_async_url() -> URL:
 
 
 @pytest_asyncio.fixture
-async def postgres_engine() -> AsyncGenerator[AsyncEngine, None]:
+async def postgres_engine() -> AsyncGenerator[AsyncEngine]:
     """Provide a real-PostgreSQL ``AsyncEngine`` for dialect-specific SQL tests.
 
     Connect through the already-present ``asyncpg`` driver to the DSN in
@@ -764,7 +773,7 @@ async def postgres_session(
 @pytest_asyncio.fixture
 async def contending_sessions(
     postgres_engine: AsyncEngine,
-) -> AsyncGenerator[tuple[AsyncSession, AsyncSession], None]:
+) -> AsyncGenerator[tuple[AsyncSession, AsyncSession]]:
     """Yield two sessions on independent connections of the same engine.
 
     One session cannot contend with itself for an advisory lock: the lock
@@ -786,7 +795,7 @@ async def contending_sessions(
 
 
 @pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
+async def session_fixture() -> AsyncGenerator[AsyncSession]:
     """Create an async db session for testing."""
     engine = create_async_engine(
         "sqlite+aiosqlite://",
@@ -900,7 +909,7 @@ def unauthenticated_client() -> Iterator[TestClient]:
 @pytest_asyncio.fixture
 async def async_test_client(
     regular_user: CasdoorUser,
-) -> AsyncGenerator[AsyncClient, None]:
+) -> AsyncGenerator[AsyncClient]:
     """Yield an authenticated async cookie-auth client for the PMM Extensions app.
 
     See :func:`test_client` for the gate-override rationale.

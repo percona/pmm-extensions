@@ -207,7 +207,7 @@ async def _generate_health_report(
                 refresh=refresh,
                 sections=sections,
             )
-        except (OSError, ValueError, LookupError, RuntimeError):
+        except OSError, ValueError, LookupError, RuntimeError:
             logger.exception("Failed to generate health report")
             return
 
@@ -237,7 +237,7 @@ async def _generate_health_report(
         pdf_bytes = await generate_pdf_report(report)
         result = await upload_pdf_report(report, pdf_bytes)
         logger.info("Health report uploaded to ServiceNow: %s", result)
-    except (OSError, ValueError, RuntimeError, HTTPException, DeliveryPlanError):
+    except OSError, ValueError, RuntimeError, HTTPException, DeliveryPlanError:
         logger.exception("Failed to upload health report to ServiceNow")
 
 

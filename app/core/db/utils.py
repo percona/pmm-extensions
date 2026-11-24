@@ -22,7 +22,6 @@ import re
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from itertools import chain
 from typing import Any, Final
 
 from alembic.runtime.migration import MigrationContext
@@ -300,25 +299,48 @@ def idempotent_insert(engine_name: str, table: Any) -> GenericInsert:
     raise NotImplementedError(f"idempotent_insert: unsupported dialect {engine_name!r}")
 
 
+def _postgresql_generated_constraint_name(constraint: UniqueConstraint) -> str:
+    """Return the name PostgreSQL gives a unique constraint declared without one.
+
+    PostgreSQL joins the table name, the column names and the suffix ``key`` when
+    it creates the constraint. Two cases give a different name, and in both the
+    key stays unresolved. A result longer than 63 bytes is shortened, which this
+    does not reproduce. A table or column renamed afterwards keeps the name the
+    constraint was created with.
+
+    :param constraint: The unnamed unique constraint, attached to its table.
+    :return: The generated constraint name.
+    """
+    return "_".join(
+        [constraint.table.name, *(column.name for column in constraint.columns), "key"]
+    )
+
+
 def _columns_of_named_unique_key(table: Table, name: str) -> list[str] | None:
     """Resolve a unique index or constraint name to the column names it spans.
+
+    A constraint declared without a name is matched by the name PostgreSQL
+    generates for it. A library's table can leave the naming to the database
+    (``unique=True`` on a column does), and the violation is still a duplicate.
 
     :param table: The table whose declared unique keys are searched.
     :param name: The index or constraint name the database reported.
     :return: The key's column names, or ``None`` if no declared unique key bears
         that name.
     """
-    declared_keys = chain(
-        (index for index in table.indexes if index.unique),
-        (
-            constraint
-            for constraint in table.constraints
-            if isinstance(constraint, UniqueConstraint)
-        ),
-    )
-    for key in declared_keys:
-        if key.name == name:
-            return [column.name for column in key.columns]
+    for index in table.indexes:
+        if index.unique and index.name == name:
+            return [column.name for column in index.columns]
+    for constraint in table.constraints:
+        if not isinstance(constraint, UniqueConstraint):
+            continue
+        declared_name = (
+            _postgresql_generated_constraint_name(constraint)
+            if constraint.name is None
+            else constraint.name
+        )
+        if declared_name == name:
+            return [column.name for column in constraint.columns]
     return None
 
 

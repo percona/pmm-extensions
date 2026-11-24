@@ -28,7 +28,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.utils import utc_now
 from app.tasks.crud import TaskHistoryManager
-from app.tasks.execution.models import BaseExecutor
+from app.tasks.execution.models import BaseExecutor, TerminalRunHook
 from app.tasks.logs.log_writer import TaskHistoryLogWriter
 from app.tasks.models import (
     CELERY_LOCAL_TARGET,
@@ -231,22 +231,24 @@ class CeleryExecutor(BaseExecutor):
         self,
         queue_item: TaskHistory,
         writer_session: AsyncSession | None = None,  # noqa: ARG002
+        on_terminal: TerminalRunHook | None = None,
     ) -> TaskHistory:
         """Return the queue_item unchanged.
 
         Celery tasks run synchronously within ``dispatch_task``, so no
         additional synchronization is needed. The ``writer_session`` parameter
         is accepted to satisfy the base class contract and intentionally
-        ignored.
+        ignored. So is ``on_terminal``: this sync never resolves a run to a
+        terminal status, and the backend keeps a finished run's files.
 
         :param queue_item: The task history record.
-        :type queue_item: TaskHistory
         :param writer_session: Ignored. Present only to match the
             ``BaseExecutor`` signature.
-        :type writer_session: AsyncSession | None
+        :param on_terminal: Ignored. Present only to match the
+            ``BaseExecutor`` signature.
         :return: The unchanged task history.
-        :rtype: TaskHistory
         """
+        del on_terminal
         return queue_item
 
     async def _stop_task(self, queue_item: TaskHistory) -> None:
@@ -270,7 +272,7 @@ class CeleryExecutor(BaseExecutor):
         self,
         queue_item: TaskHistory,  # noqa: ARG002
         start_offsets: dict[str, dict[str, int]] | None = None,  # noqa: ARG002
-    ) -> AsyncGenerator[TaskLog, None]:
+    ) -> AsyncGenerator[TaskLog]:
         """Return an empty live-log stream for Celery tasks.
 
         Celery tasks finish synchronously inside ``dispatch_task``, so the
@@ -297,7 +299,7 @@ class CeleryExecutor(BaseExecutor):
         chunk_size: int = 1024 * 1024,  # noqa: ARG002
         *,
         anonymize: bool = True,  # noqa: ARG002
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Raise NotImplementedError.
 
         Celery tasks do not produce downloadable files.

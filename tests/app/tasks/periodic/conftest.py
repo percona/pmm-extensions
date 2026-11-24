@@ -44,7 +44,7 @@ CELERY_TASK_NAME = "app.tasks.celery.execute_task_by_name"
 @pytest_asyncio.fixture
 async def postgres_celery_beat_session(
     postgres_engine: AsyncEngine,
-) -> AsyncGenerator[AsyncSession, None]:
+) -> AsyncGenerator[AsyncSession]:
     """Create a real-PostgreSQL session for celery-beat tables.
 
     Real-PG sibling of ``celery_beat_session``. The celery-beat tables declare a
@@ -69,7 +69,7 @@ async def postgres_celery_beat_session(
 
 
 @pytest_asyncio.fixture(name="tasks_session")
-async def tasks_session_fixture() -> AsyncGenerator[AsyncSession, None]:
+async def tasks_session_fixture() -> AsyncGenerator[AsyncSession]:
     """Create an async db session for tasks tables."""
     # scaffolding-dup-ok: this duplication predates the change that
     # re-annotated the fixture's return type; promoting it against

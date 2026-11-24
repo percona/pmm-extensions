@@ -234,7 +234,7 @@ async def _create_proxy_task(
     """
     try:
         return as_json_object(await tasks_api.post("/", json=task_write.model_dump()))
-    except (HTTPConflictException, HTTPBadRequestException):
+    except HTTPConflictException, HTTPBadRequestException:
         logger.info(
             "ATW proxy task %s was created concurrently; validating the winner.",
             task_write.name,

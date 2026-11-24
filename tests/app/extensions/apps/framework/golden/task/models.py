@@ -25,6 +25,8 @@ from app.extensions.apps.framework.form_dsl import (
     Ui,
 )
 
+OWNER = "GOLDEN_TASK"
+
 
 class GoldenTaskForm(TaskFormModel):
     """Declare the create/update body and ``GET /schema`` source for Golden Task.

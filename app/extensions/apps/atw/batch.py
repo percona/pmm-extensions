@@ -415,6 +415,6 @@ async def fetch_task_history(
     """
     try:
         return as_json_object(await tasks_api.get(f"/history/{task_history_id}"))
-    except (HTTPException, OSError):
+    except HTTPException, OSError:
         logger.warning(ATW_HYDRATION_WARNING, task_history_id, exc_info=True)
         return {}

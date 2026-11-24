@@ -422,7 +422,7 @@ class GrafanaSDK(RemoteAPI):
             if _is_grafana_verdict(exc, refusal):
                 return None
             failed_status = exc.status_code
-        except (TimeoutError, ClientError, ValueError):
+        except TimeoutError, ClientError, ValueError:
             self.logger.warning(
                 "Grafana did not answer %s while verifying a service-account token.",
                 path,

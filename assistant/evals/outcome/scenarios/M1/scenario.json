@@ -1,0 +1,9 @@
+{
+  "kind": "clone",
+  "app": "backup_pg",
+  "profile": "postgresql",
+  "host": "postgresql-host",
+  "body": {"task_name": "graded-run", "hostname": "postgresql-host", "service": "dev-postgresql", "stanza": "dev", "backup_dir": "/var/lib/pgsql/backups", "pgbackrest_bin": "/usr/bin/pgbackrest", "pgbackrest_config_file": "/etc/pgbackrest.conf", "pgbackrest_backup_type": "incr"},
+  "log_pattern": "OK Backup complete",
+  "checks": ["app_check", "ran", "task", "log", "new_test", "framework", "person"]
+}

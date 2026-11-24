@@ -119,7 +119,7 @@ class DeliveryPlanResolution:
             )
 
     @classmethod
-    def resolved(cls, plan: DeliveryPlan) -> "DeliveryPlanResolution":
+    def resolved(cls, plan: DeliveryPlan) -> DeliveryPlanResolution:
         """Return the resolution for a deployment that can deliver.
 
         :param plan: The plan to deliver with.
@@ -130,7 +130,7 @@ class DeliveryPlanResolution:
     @classmethod
     def unavailable(
         cls, reason: str, code: DeliveryUnavailableCode
-    ) -> "DeliveryPlanResolution":
+    ) -> DeliveryPlanResolution:
         """Return the resolution for a deployment that cannot deliver.
 
         :param reason: The operator-facing reason, from this module's constants.
@@ -140,7 +140,7 @@ class DeliveryPlanResolution:
         return cls(plan=None, unavailable_reason=reason, code=code)
 
     @classmethod
-    def unconfigured(cls) -> "DeliveryPlanResolution":
+    def unconfigured(cls) -> DeliveryPlanResolution:
         """Return the resolution for a deployment with no usable receiver.
 
         Names the outcome the three unconfigured paths below share, so each

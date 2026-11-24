@@ -300,7 +300,7 @@ _ACTIVE_NOMAD_STUBS: list[Any] = []
 
 
 @pytest.fixture(autouse=True)
-def _stop_nomad_api_stubs() -> Generator[None, None, None]:
+def _stop_nomad_api_stubs() -> Generator[None]:
     """Undo any Nomad HTTP stub a test installed through :func:`_build_executor`."""
     yield
     while _ACTIVE_NOMAD_STUBS:
@@ -486,7 +486,7 @@ def _stub_nomad_api(
     nodes: Any = None,
     register: Any = None,
     dispatch: Any = None,
-) -> Generator[list[tuple[str, str, dict[str, Any]]], None, None]:
+) -> Generator[list[tuple[str, str, dict[str, Any]]]]:
     """Answer the executor's ported Nomad calls, yielding the calls it recorded.
 
     See :func:`_nomad_router` for the routing and for what each argument accepts.
@@ -11360,6 +11360,196 @@ class TestNomadSyncWithCaptureHold:
         mock_backend.client.allocation.signal_allocation.assert_not_called()
 
 
+class TestNomadTerminalHook:
+    """Cover the caller's hook, which runs before the hold is released."""
+
+    @staticmethod
+    def _held(run_script_state: str = "dead") -> dict[str, Any]:
+        """Return the task states of a run whose hold step is running."""
+        return {
+            NomadStep.RUN_SCRIPT: {"State": run_script_state, "Failed": False},
+            NomadStep.LOG_CAPTURE_HOLD: {"State": "running", "Failed": False},
+        }
+
+    @staticmethod
+    def _backend(
+        mock_nomad_cls, task_states: dict[str, Any], *, job_status: str = "running"
+    ) -> MagicMock:
+        """Wire a backend returning one allocation, ``alloc-2``, and its job."""
+        mock_backend = MagicMock()
+        mock_nomad_cls.return_value = mock_backend
+        mock_backend.allocation.get_allocation.return_value = {
+            "ID": "alloc-2",
+            "JobID": "job-1",
+            "EvalID": "eval-1",
+            "CreateIndex": ALLOCATION_CREATE_INDEX,
+            "ClientStatus": NomadAllocStatusEnum.RUNNING,
+            "TaskStates": task_states,
+            "ModifyTime": 1_700_000_000_000_000_000,
+        }
+        mock_backend.client.stream_logs.stream.return_value = ""
+        _stub_nomad_calls(job={"ID": "job-1", "Status": job_status, "Stop": False})
+        return mock_backend
+
+    @staticmethod
+    def _queue_item(history: TaskHistory) -> TaskHistory:
+        """Return ``history`` as a RUNNING run last seen on ``alloc-1``."""
+        history.status = TaskHistoryStatusEnum.RUNNING
+        history.anonymize_mask = 0
+        history.execution_request.tracking = {
+            "allocation_id": "alloc-1",
+            "evaluation_id": "eval-1",
+            "job_id": "job-1",
+        }
+        return history
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_runs_before_the_hold_is_released(
+        self,
+        mock_nomad_cls,
+        session: AsyncSession,
+        created_task_with_history: TaskHistory,
+    ) -> None:
+        """Assert the hook runs after the logs are stored and before the release.
+
+        The hook also has to see the allocation that produced the terminal
+        status: a file read resolves the allocation from the run's tracking
+        data, which here still names the allocation before a reschedule.
+        """
+        task_states = self._held()
+        task_states[NomadStep.RUN_SCRIPT].update(
+            StartedAt="2024-01-01T00:00:00Z", FinishedAt="2024-01-01T00:00:05Z"
+        )
+        mock_backend = self._backend(mock_nomad_cls, task_states)
+        stdout = (NomadStep.RUN_SCRIPT, TaskLogType.STDOUT)
+        mock_backend.client.stream_logs.stream.side_effect = (
+            TestPersistNomadTaskLogsCursorDurability._offset_aware_stream(
+                {stdout: "backup done\n"}
+            )
+        )
+        signal = mock_backend.client.allocation.signal_allocation
+        seen: list[tuple[TaskHistoryStatusEnum, str, int, str, str | None]] = []
+
+        async def hook(queue_item: TaskHistory) -> None:
+            tracking = queue_item.execution_request.tracking
+            assert tracking is not None
+            chunks = await TaskHistoryLogManager.list_chunks_for_task(
+                session, queue_item.id
+            )
+            stored = "".join(
+                chunk.content
+                for chunk in sorted(chunks, key=lambda c: c.start_offset)
+                if (chunk.source, chunk.stream) == stdout
+            )
+            verdicts = await TestNomadCaptureOutcomes._verdicts(session, queue_item.id)
+            seen.append(
+                (
+                    queue_item.status,
+                    tracking["allocation_id"],
+                    signal.call_count,
+                    stored,
+                    verdicts.get(stdout),
+                )
+            )
+
+        executor = _build_executor(terminal_log_drain_max_attempts=0)
+
+        await executor._sync_task_history(
+            self._queue_item(created_task_with_history),
+            writer_session=session,
+            on_terminal=hook,
+        )
+
+        assert seen == [
+            (
+                TaskHistoryStatusEnum.SUCCESS,
+                "alloc-2",
+                0,
+                "backup done\n",
+                LogCaptureStatusEnum.COMPLETE,
+            )
+        ]
+        signal.assert_called_once_with(
+            "alloc-2", "SIGTERM", task=NomadStep.LOG_CAPTURE_HOLD
+        )
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_a_failing_hook_does_not_keep_the_hold(
+        self,
+        mock_nomad_cls,
+        session: AsyncSession,
+        created_task_with_history: TaskHistory,
+    ) -> None:
+        """Assert the hold is released when the hook raises."""
+        mock_backend = self._backend(mock_nomad_cls, self._held())
+        error = RuntimeError("hook failed")
+        executor = _build_executor(terminal_log_drain_max_attempts=0)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await executor._sync_task_history(
+                self._queue_item(created_task_with_history),
+                writer_session=session,
+                on_terminal=AsyncMock(side_effect=error),
+            )
+
+        assert exc_info.value is error
+        mock_backend.client.allocation.signal_allocation.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_does_not_run_while_the_run_is_running(
+        self,
+        mock_nomad_cls,
+        session: AsyncSession,
+        created_task_with_history: TaskHistory,
+    ) -> None:
+        """Assert a sync that leaves the run RUNNING does not call the hook."""
+        self._backend(mock_nomad_cls, self._held("running"))
+        hook = AsyncMock()
+        executor = _build_executor(terminal_log_drain_max_attempts=0)
+
+        result = await executor._sync_task_history(
+            self._queue_item(created_task_with_history),
+            writer_session=session,
+            on_terminal=hook,
+        )
+
+        assert result.status == TaskHistoryStatusEnum.RUNNING
+        hook.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.tasks.execution.executors.nomad.models.Nomad")
+    async def test_runs_for_a_run_that_has_no_hold(
+        self,
+        mock_nomad_cls,
+        session: AsyncSession,
+        created_task_with_history: TaskHistory,
+    ) -> None:
+        """Assert a run registered before the hold existed still gets the hook."""
+        mock_backend = self._backend(
+            mock_nomad_cls,
+            {NomadStep.RUN_SCRIPT: {"State": "dead", "Failed": False}},
+            job_status=NOMAD_DEAD_JOB_STATUS,
+        )
+        mock_backend.allocation.get_allocation.return_value["ClientStatus"] = (
+            NomadAllocStatusEnum.COMPLETE
+        )
+        hook = AsyncMock()
+        executor = _build_executor(terminal_log_drain_max_attempts=0)
+
+        result = await executor._sync_task_history(
+            self._queue_item(created_task_with_history),
+            writer_session=session,
+            on_terminal=hook,
+        )
+
+        assert result.status == TaskHistoryStatusEnum.SUCCESS
+        hook.assert_awaited_once_with(result)
+        mock_backend.client.allocation.signal_allocation.assert_not_called()
+
+
 class TestNomadCaptureOutcomeDrainFailures:
     """Cover that a failure during the terminal drain reaches the verdict."""
 
@@ -11723,7 +11913,7 @@ class TestPortedNomadCallsUseTheDocumentedEndpoints:
     @contextmanager
     def _capture(
         body: Any,
-    ) -> Generator[list[tuple[str, str, dict[str, Any]]], None, None]:
+    ) -> Generator[list[tuple[str, str, dict[str, Any]]]]:
         """Answer every request with ``body``, recording the requests made.
 
         Patched on the class, not on the executor under test: an un-entered
@@ -11861,7 +12051,7 @@ class TestPortedNomadCallsKeepTheirErrorContract:
 
     @staticmethod
     @contextmanager
-    def _failing_request(exc: Exception) -> Generator[None, None, None]:
+    def _failing_request(exc: Exception) -> Generator[None]:
         """Make the executor's next request fail with ``exc``.
 
         :param exc: Raised in place of sending the request.
@@ -12031,7 +12221,7 @@ class TestPortedNomadCallsRunOnAnUnenteredExecutor:
 
     @staticmethod
     @contextmanager
-    def _answer(body: Any) -> Generator[list[Any], None, None]:
+    def _answer(body: Any) -> Generator[list[Any]]:
         """Answer every request with ``body``, recording the session used.
 
         Patches ``aiohttp.ClientSession.request`` rather than the executor's

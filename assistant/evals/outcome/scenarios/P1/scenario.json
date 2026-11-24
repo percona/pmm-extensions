@@ -1,0 +1,10 @@
+{
+  "kind": "clone",
+  "app": "checksums",
+  "profile": "mysql",
+  "host": "mysql-host",
+  "body": {"task_name": "graded-run", "hostname": "mysql-host", "service": "dev-mysql", "recursion_method": "none", "databases": ["employees"]},
+  "log_pattern": "TS ERRORS +DIFFS",
+  "help": "pt-table-checksum --help",
+  "checks": ["app_check", "ran", "task", "log", "options", "brief", "paths", "person"]
+}

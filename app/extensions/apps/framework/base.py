@@ -148,7 +148,7 @@ class BaseApp(BaseModel):
     api_router: APIRouter | None = None
     app_schema: AppSchema | None = Field(default=None, alias="schema")
     parent_key: str | None = None
-    child_apps: tuple["BaseApp", ...] = ()
+    child_apps: tuple[BaseApp, ...] = ()
     requires_apps: tuple[str, ...] = ()
     artifact_base_dirs: SkipValidation[Mapping[str, Callable[[], Path]]] = Field(
         default_factory=dict
