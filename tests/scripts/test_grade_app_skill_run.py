@@ -380,3 +380,14 @@ def test_a_clone_is_served_by_an_image_that_was_built_from_it(tmp_path: Path) ->
     files, variables = grader.served_from(tmp_path, "localhost/extensions:HEAD")
     assert files == []
     assert variables == {"PMM_EXTENSIONS_IMAGE": "localhost/extensions:HEAD"}
+
+
+def test_a_command_gets_the_image_of_the_graders_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hand the image named for the grader to a command, beside the call's own variables."""
+    monkeypatch.setenv("PMM_EXTENSIONS_IMAGE", "example/extensions:1.2.3-rc1")
+    status, output = grader.sh(
+        "sh", "-c", 'echo "$PMM_EXTENSIONS_IMAGE on $PMM_PORT"', env={"PMM_PORT": "1"}
+    )
+    assert (status, output) == (0, "example/extensions:1.2.3-rc1 on 1\n")

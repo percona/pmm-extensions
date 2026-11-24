@@ -25,10 +25,13 @@ command, its exit status and the last ten lines of its output.
 Usage: ``grade_app_skill_run.py <scenario> <record directory>``, with the
 project's virtualenv active. ``GRADE_PORT`` sets the port of the grader's
 local PMM, and ``SCENARIOS_DIR`` names a directory of scenarios other than
-the repository's. ``GRADE_IMAGE`` names an image that the session built from a
-clone: the grader then runs that image, for a clone whose code the released
-image cannot run. The grader stops the run's local PMM and its own, and removes the
-image that it built. It leaves the run's directory in place.
+the repository's. A clone's code is mounted on the image that
+``PMM_EXTENSIONS_IMAGE`` names in the grader's environment, or on the default
+image: name a release candidate there when the default image cannot run the
+clone. ``GRADE_IMAGE`` names an image that the session built from a clone: the
+grader then runs that image with no mount, whatever ``PMM_EXTENSIONS_IMAGE``
+says. The grader stops the run's local PMM and its own, and removes the image
+that it built. It leaves the run's directory in place.
 """
 
 import fcntl
@@ -135,7 +138,7 @@ def served_from(dev: Path, image: str | None) -> tuple[list[str], dict[str, str]
 
     :param dev: The clone's ``sidecar/dev`` directory.
     :param image: An image that was built from the clone, or ``None`` to mount
-        the clone's code on the released image.
+        the clone's code on the image that the environment selects.
     :return: The Compose arguments to add, and the variables to set.
     """
     if image:

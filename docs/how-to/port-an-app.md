@@ -79,6 +79,8 @@ All three exit with status 0. [Test an app](test-an-app.md) describes what each 
 
 Tests do not run a task on a host. Run one before you open a pull request.
 
+The steps mount your checkout's code, as [Run the code in your checkout](run-in-local-pmm.md#run-the-code-in-your-checkout) explains. When your checkout needs a newer Python than the image has, that section says which image to set first.
+
 1. Start the local PMM with your checkout's code and the PostgreSQL host:
 
    ```bash

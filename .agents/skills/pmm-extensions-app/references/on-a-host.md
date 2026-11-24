@@ -9,9 +9,9 @@ Tests do not run a tool on a server. This stage runs the app once on a database 
 | in an app workspace | "Try the app by a mount" of `docs/how-to/run-an-app-outside-the-repository.md` |
 | in a clone of `percona/pmm-extensions` | "Run the code in your checkout" of `docs/how-to/run-in-local-pmm.md` |
 
-For a clone, that section says first when the released image cannot run the clone's code. Then take its other way, the image built from the clone. When the machine lacks what that build needs, do not install it: this is "No database server to try it on" in `when-the-answer-is-no.md`.
+For a clone, that section says first when the image cannot run the clone's code, and which image to set then. Set that image and keep the mount. Build an image only where the section says so. When the machine lacks what that build needs, do not install it: this is "No database server to try it on" in `when-the-answer-is-no.md`.
 
-Use the port and the passwords that stage 0 wrote into `.app-work/local-pmm.md`. After each change to the app's code, restart the container as the page says, or the old code keeps running.
+Use the port and the passwords that stage 0 wrote into `.app-work/local-pmm.md`. When you set an image, write it into that file too. A command of yours does not keep what an earlier command exported, so give the port, the passwords and the image on every command that starts or restarts a container. After each change to the app's code, restart the container as the page says, or the old code keeps running.
 
 ## 2. Give the tool something to find
 
