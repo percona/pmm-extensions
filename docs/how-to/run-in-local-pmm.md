@@ -265,6 +265,8 @@ To see the Python of an image, run:
 docker run --rm --entrypoint python3 perconalab/pmm-extensions:3.11.0-rc1 --version
 ```
 
+When no candidate has the Python that your checkout needs, build an image from your checkout and set `PMM_EXTENSIONS_IMAGE` to it: see [Build the image](get-an-app-into-a-pmm-release.md#build-the-image).
+
 When the default image's Python can run your checkout, leave the variable unset. `unset PMM_EXTENSIONS_IMAGE` removes it from the shell.
 
 1. Start the stack with the second file:
