@@ -9,7 +9,7 @@ For why the image works this way, see [How the sidecar runs inside PMM](../docs/
 | Property | Value |
 |---|---|
 | Published name | `percona/pmm-extensions` on Docker Hub. Release candidates go to `perconalab/pmm-extensions`. |
-| Tags | The full version, such as `3.10.0`, and the moving tags `3.10`, `3` and `latest`. The version is PMM's. |
+| Tags | The full version, such as `3.10.0`, and the moving tags `3.10`, `3` and `latest`. The version is PMM's. A release candidate has the version, `-rc` and its number, such as `3.11.0-rc1`. `3.11.0-rc` names the newest candidate of that version. |
 | Architecture | amd64 |
 | Local build | `make builder`, then `make image`. The result is tagged `extensions:<RELEASE_VER>`. See [Get an app into a PMM release](../docs/how-to/get-an-app-into-a-pmm-release.md). |
 | Manifest format | docker. The OCI format drops the `HEALTHCHECK` instruction. |
