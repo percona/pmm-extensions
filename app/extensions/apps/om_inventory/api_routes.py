@@ -671,11 +671,12 @@ async def request_scan(body: ScanWrite, session: SessionDep) -> ProbeRunAccepted
     scheduler and the driver call it.
 
     Answered with ``202``: a scan dispatches host work and is never performed on the
-    request path. The run's host collection is not wired yet, so :func:`run_scan`
-    records the run ``SKIPPED`` for now; the route, the dedupe and the recording are
-    the parts in use.
+    request path. The subjects the scan collects on are persisted with the run so
+    :func:`run_scan` reads them back off the row; an empty list terminates the run
+    with nothing scanned.
 
-    :param body: The scan request: its profile, idempotency key and subject.
+    :param body: The scan request: its profile, idempotency key, subject and the
+        members the subject resolves to.
     :param session: The database session.
     :raises HTTPServiceUnavailableException: When ``ENABLED`` is off, or the scan
         could not be queued, in which case its run is recorded failed.
@@ -700,6 +701,7 @@ async def request_scan(body: ScanWrite, session: SessionDep) -> ProbeRunAccepted
                 profile=body.profile,
                 idempotency_key=body.idempotency_key,
                 requested_by_operation=_operation_uuid(body.operation_id),
+                subjects=[subject.model_dump(mode="json") for subject in body.subjects],
                 updated_at=utc_now(),
             ),
         )

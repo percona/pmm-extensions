@@ -115,6 +115,45 @@ class TestRequestScan:
         delay.assert_called_once_with(str(run.id))
 
     @pytest.mark.asyncio
+    async def test_persists_the_subjects_with_the_run(
+        self, api: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Store the members a scan collects on so the worker reads them off the row.
+
+        :param api: The authenticated client.
+        :param session: The database session the route shares.
+        """
+        with patch.object(celery_module.run_om_scan, "delay"):
+            await api.post(
+                f"{BASE}/scans",
+                json={
+                    "profile": "managed",
+                    "cluster_id": "cl-1",
+                    "idempotency_key": "cl-1:managed:43",
+                    "subjects": [
+                        {
+                            "subject_kind": "member",
+                            "subject_key": "m-1",
+                            "host": "host-a",
+                            "service_id": "svc-1",
+                        }
+                    ],
+                },
+            )
+
+        (run,) = await ProbeRunManager.list(session)
+        assert run.subjects == [
+            {
+                "subject_kind": "member",
+                "subject_key": "m-1",
+                "host": "host-a",
+                "connect_host": None,
+                "service_id": "svc-1",
+                "port": None,
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_a_repeated_key_fulfils_once(
         self, api: AsyncClient, session: AsyncSession
     ) -> None:

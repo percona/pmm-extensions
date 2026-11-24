@@ -204,7 +204,9 @@ class TestProbeAllTargets:
         run_id = uuid4()
         handed: dict[str, UUID | None] = {}
 
-        async def fake_probe_host(_api, host, _entries, *, run_id=None):
+        async def fake_probe_host(
+            _api, host, _entries, *, run_id=None, scan_units=None
+        ):
             handed[host] = run_id
             return type("R", (), {"executor_host": host})()
 

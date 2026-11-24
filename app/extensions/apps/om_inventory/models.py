@@ -67,7 +67,7 @@ from sqlmodel.sql.sqltypes import AutoString
 
 from app.core.db.models import BaseSQLModel, BaseUUIDSQLModel, DateTimeWithTimezone
 from app.core.utils.date_time import utc_now
-from app.core.utils.fields import NonEmptyStr, UTCDatetime
+from app.core.utils.fields import NonEmptyStr, TcpPort, UTCDatetime
 
 #: The symbolic schema every table here declares. See the module docstring for why it
 #: is spelled rather than imported.
@@ -583,6 +583,18 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
             nullable=True,
         ),
     )
+    # The members a scan collects on, resolved by pmm-managed and sent with the scan
+    # request, so the run's worker reads them back here rather than from the request.
+    # Shaped like ``nodes``: a non-null JSON list defaulting to ``[]``, since the
+    # monitored sweep carries none and an operation scan may resolve to none.
+    subjects: list[dict[str, Any]] = SQLField(
+        default_factory=list,
+        sa_column=Column(
+            JSON().with_variant(postgresql.JSONB(astext_type=Text()), "postgresql"),
+            nullable=False,
+            server_default=text("('[]')"),
+        ),
+    )
     error: str | None = SQLField(default=None)
     idempotency_key: str | None = SQLField(default=None, sa_type=Text)
 
@@ -942,14 +954,44 @@ class HostResponse(FreshnessResponse):
     services: list[ServiceResponse] = Field(default_factory=list)
 
 
+class ScanSubject(BaseModel):
+    """Name one host a scan collects facts on, and the key its observation lands under.
+
+    pmm-managed resolves a cluster or operation to its live members and sends one of
+    these per member: the observation key it will read the facts back under, and the
+    host address the facts are collected on. ``service_id`` is PMM's service id, equal
+    to :attr:`OmService.external_id`, when the member maps to one.
+
+    :param subject_kind: What ``subject_key`` names.
+    :param subject_key: The key pmm-managed reads this member's observation back under.
+    :param host: The member's host, where its probe is dispatched and, unless
+        ``connect_host`` overrides it, where the scan connects to collect its facts.
+    :param connect_host: The host the scan connects to, when it differs from the
+        dispatch ``host``; ``None`` connects to ``host``.
+    :param service_id: PMM's service id for the member, or ``None`` when it has none.
+    :param port: The port the member's mongod listens on, as pmm-managed registered
+        it; ``None`` falls back to the service's cached port and then the MongoDB
+        default, so the scan does not depend on the monitored sweep having run.
+    """
+
+    subject_kind: ObservationSubjectKind
+    subject_key: NonEmptyStr
+    host: NonEmptyStr
+    connect_host: NonEmptyStr | None = None
+    service_id: str | None = None
+    port: TcpPort | None = None
+
+
 class ScanWrite(BaseModel):
     """Ask om_inventory to scan one subject under a profile.
 
     pmm-managed posts this to request a scan: the profile picks the fact set and the
     credential, the idempotency key folds a retried request into one fulfilment, and
     the subject is named as a driver operation or a managed cluster, exactly one of
-    the two. The ``monitored`` profile is the estate sweep and has its own path, so it
-    is not a scan a request may ask for.
+    the two. ``subjects`` is that subject resolved to the members a scan collects on;
+    it is empty while a subject's member resolution is not yet wired, and the run then
+    terminates with nothing scanned. The ``monitored`` profile is the estate sweep and
+    has its own path, so it is not a scan a request may ask for.
 
     :param profile: The scan profile, one of the observation profiles and never
         ``monitored``.
@@ -958,12 +1000,15 @@ class ScanWrite(BaseModel):
         operation.
     :param cluster_id: The managed cluster the scan is for, when the subject is a
         cluster.
+    :param subjects: The members to collect facts on, each with the key its
+        observation lands under; empty when the subject resolves to none.
     """
 
     profile: ScanProfile
     idempotency_key: NonEmptyStr
     operation_id: str | None = None
     cluster_id: str | None = None
+    subjects: list[ScanSubject] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_subject_and_profile(self) -> "ScanWrite":

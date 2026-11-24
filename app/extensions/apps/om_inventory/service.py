@@ -91,7 +91,9 @@ from app.extensions.apps.om_inventory.models import (
     ProbeRun,
     ProbeRunStatus,
     ScanFailure,
+    ScanSubject,
 )
+from app.extensions.apps.om_inventory.observations import ingest_collected
 from app.extensions.apps.om_inventory.payload.probe import (
     CLUSTER_ROLE_CONFIGSVR,
     STATUS_FAILED,
@@ -109,9 +111,8 @@ SWITCHED_OFF_DETAIL = "Operations Inventory is switched off"
 AUTO_SCAN_OFF_DETAIL = "Automatic scans are off"
 """Why a scheduled sweep was skipped while ``AUTO_SCAN`` is off."""
 
-SCAN_PENDING_DISPATCH_DETAIL = "scan not run: on-host collection is not yet available"
-"""Why a requested scan is recorded ``SKIPPED``: :func:`run_scan` records the run and
-the collectors and ingest seam are built, but the host dispatch that runs them is not."""
+SCAN_SYSTEMD_UNITS: tuple[str, ...] = ("mongod", "pbm-agent")
+"""The systemd units a scan reads with ``systemctl show`` on each member's host."""
 
 HEARTBEAT_INTERVAL = RUN_LEASE / 4
 """How often a sweep writes its run to show it is alive."""
@@ -1432,19 +1433,48 @@ async def run_probe(
     return run_id
 
 
+async def _finish_scan(
+    session: AsyncSession, run_id: UUID, status: ProbeRunStatus
+) -> None:
+    """Record a scan run's terminal status, unless it already reached one.
+
+    :param session: The database session.
+    :param run_id: The run to finish.
+    :param status: The terminal status to write.
+    """
+    await ProbeRunManager.update_running(
+        session, run_id, {"status": status, "finished_at": utc_now()}
+    )
+
+
+def _scan_terminal_status(observed: int, total: int) -> ProbeRunStatus:
+    """Pick a scan's terminal status from how many subjects it observed.
+
+    :param observed: Subjects whose facts were collected and stored.
+    :param total: Subjects the scan was asked to collect.
+    :return: ``FAILED`` when none were observed, including a scan with no subjects,
+        ``SUCCESS`` when every subject was, and ``PARTIAL`` when some were.
+    """
+    if observed == 0:
+        return ProbeRunStatus.FAILED
+    if observed == total:
+        return ProbeRunStatus.SUCCESS
+    return ProbeRunStatus.PARTIAL
+
+
 async def run_scan(run_id: UUID) -> UUID:
     """Run one requested scan and record its subjects' observations.
 
-    The run row is created by ``POST /scans`` before the work starts, so this renews
-    its lease, then - once the host dispatch is built - collects each subject's facts
-    and stores them through
-    :func:`~app.extensions.apps.om_inventory.observations.ingest_collected`. The
-    host-side step that runs the scan payload on each member and captures its output
-    is not wired yet, so until it is the run is recorded ``SKIPPED`` with the reason
-    named rather than left ``RUNNING`` to hold the subjects until its lease runs out.
+    The run row and its subjects are created by ``POST /scans`` before the work
+    starts, so this renews the lease, reads the subjects back off the row, dispatches
+    the probe to each subject's host under :data:`SCAN_SYSTEMD_UNITS` to capture its
+    systemd and PBM output, and stores one observation per subject through
+    :func:`~app.extensions.apps.om_inventory.observations.ingest_collected`. A scan
+    handed no subjects terminates at once as ``FAILED``, having scanned nothing.
 
     :param run_id: The scan run's id, created by the scans endpoint.
     :return: The run's id.
+    :raises sqlalchemy.exc.DBAPIError: When a subject's observation write is refused.
     """
     session_maker = get_async_session_maker()
     async with session_maker() as session:
@@ -1453,10 +1483,72 @@ async def run_scan(run_id: UUID) -> UUID:
                 "OM inventory: scan %s not started -- it is no longer running", run_id
             )
             return run_id
-        if await skip_running_run(session, run_id, SCAN_PENDING_DISPATCH_DETAIL):
-            logger.info(
-                "OM inventory: scan %s skipped -- %s",
-                run_id,
-                SCAN_PENDING_DISPATCH_DETAIL,
-            )
+        run = await ProbeRunManager.get(session, id=run_id)
+        if run is None:
+            return run_id
+        subjects = [ScanSubject.model_validate(subject) for subject in run.subjects]
+        profile = run.profile
+
+    if not subjects:
+        async with session_maker() as session:
+            await _finish_scan(session, run_id, ProbeRunStatus.FAILED)
+        logger.info(
+            "OM inventory: scan %s failed -- it was asked to scan nothing", run_id
+        )
+        return run_id
+
+    collected_at = utc_now()
+    token = get_internal_token()
+    observed = 0
+    try:
+        async with _heartbeat(run_id):
+            async with _held_clients() as (_, tasks_api):
+                with tasks_api.auth(token):
+                    results = await probe_all(
+                        tasks_api,
+                        [],
+                        executor_hosts={subject.host for subject in subjects},
+                        run_id=run_id,
+                        scan_units=list(SCAN_SYSTEMD_UNITS),
+                    )
+            async with session_maker() as session:
+                for subject in subjects:
+                    result = results.get(subject.host)
+                    host_record = result.host_record if result is not None else None
+                    if host_record is None:
+                        continue
+                    applied = await ingest_collected(
+                        session,
+                        subject_kind=subject.subject_kind,
+                        subject_key=subject.subject_key,
+                        profile=profile,
+                        scan_id=run_id,
+                        collected_at=collected_at,
+                        systemd_units=host_record.get("systemd_units") or {},
+                        pbm_status=host_record.get("pbm_status"),
+                        probe_facts=None,
+                    )
+                    if applied:
+                        observed += 1
+                await session.commit()
+    except RunLostError:
+        logger.warning(
+            "OM inventory: scan %s stopped -- it was failed while it ran", run_id
+        )
+        return run_id
+    except Exception as exc:
+        logger.exception("OM inventory: scan %s failed", run_id)
+        await _fail_run(run_id, str(exc))
+        return run_id
+
+    status = _scan_terminal_status(observed, len(subjects))
+    async with session_maker() as session:
+        await _finish_scan(session, run_id, status)
+    logger.info(
+        "OM inventory: scan %s %s -- %d of %d subject(s) observed",
+        run_id,
+        status,
+        observed,
+        len(subjects),
+    )
     return run_id
