@@ -12,3 +12,9 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+"""Tests of the pages under ``docs/`` and of the files that name them."""
+
+import pathlib
+
+DOCS_ROOT = pathlib.Path(__file__).parents[2] / "docs"

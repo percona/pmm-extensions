@@ -23,8 +23,9 @@ whose container does not start finds the image before the first start.
 
 import pathlib
 
+from tests.docs import DOCS_ROOT
+
 _REPO_ROOT = pathlib.Path(__file__).parents[2]
-_DOCS_ROOT = _REPO_ROOT / "docs"
 _MOUNT_FILE = "compose.checkout.yaml"
 _SECTION_PAGE = "run-in-local-pmm.md"
 _SECTION_LINK = f"{_SECTION_PAGE}#run-the-code-in-your-checkout"
@@ -69,7 +70,7 @@ def _mount_pages() -> list[pathlib.Path]:
     """
     return sorted(
         page
-        for page in _DOCS_ROOT.rglob("*.md")
+        for page in DOCS_ROOT.rglob("*.md")
         if page.name != _SECTION_PAGE
         and _first_mount_command(page.read_text(encoding="utf-8")) is not None
     )
@@ -89,7 +90,7 @@ def test_every_page_with_a_mount_command_links_the_section_first() -> None:
 
 def test_the_section_that_the_pages_link_exists() -> None:
     """Fail when the section's heading is gone, since every link would then lead nowhere."""
-    page = _DOCS_ROOT / "how-to" / _SECTION_PAGE
+    page = DOCS_ROOT / "how-to" / _SECTION_PAGE
     assert _SECTION_HEADING in page.read_text(encoding="utf-8").splitlines()
 
 
