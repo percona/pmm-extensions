@@ -249,13 +249,15 @@ The stack runs the code inside the released image. A second Compose file runs yo
 
 The mount needs an image whose Python can run your checkout's code. [Set up a development environment](set-up-a-development-environment.md#prerequisites) names the Python version that the checkout needs. When the image's Python is older than that, the `pmm-extensions` container does not start. This happens when `main` moves to a newer Python before a release has it.
 
-Then use a release candidate of the next version. Release candidates are published as `perconalab/pmm-extensions`. The tag is the version, `-rc` and the number of the candidate, such as `3.11.0-rc1`. The tag without the number, such as `3.11.0-rc`, names the newest candidate of that version. Set the image before the first step:
+Then use a release candidate of the next version. Release candidates are published as `perconalab/pmm-extensions`. The tag is the version, `-rc` and the number of the candidate, such as `3.11.0-rc1`. The tag without the number, such as `3.11.0-rc`, names the newest candidate of that version.
+
+Set the image before the first step. For example, while `3.10.0` was the default version, a checkout of `main` ran on the first candidate of `3.11.0`:
 
 ```bash
 export PMM_EXTENSIONS_IMAGE=perconalab/pmm-extensions:3.11.0-rc1
 ```
 
-The shell keeps the variable for every later command of this page. Another shell needs the same line again, or its next command puts the default image back. That line was run against `main` while the default image was `percona/pmm-extensions:3.10.0`. PMM itself stays at `PMM_VERSION`.
+The shell keeps the variable for every later command of this page. Another shell needs the same line again, or its next command puts the default image back. PMM itself stays at `PMM_VERSION`.
 
 To see the Python of an image, run:
 

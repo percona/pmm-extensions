@@ -28,7 +28,9 @@ _DOCS_ROOT = _REPO_ROOT / "docs"
 _MOUNT_FILE = "compose.checkout.yaml"
 _SECTION_PAGE = "run-in-local-pmm.md"
 _SECTION_LINK = f"{_SECTION_PAGE}#run-the-code-in-your-checkout"
+_SECTION_HEADING = "## Run the code in your checkout"
 _FENCE = "```"
+_FENCES = (_FENCE, "~~~")
 
 
 def _first_mount_command(text: str) -> int | None:
@@ -41,7 +43,7 @@ def _first_mount_command(text: str) -> int | None:
     offset = 0
     fenced = False
     for line in text.splitlines(keepends=True):
-        if line.lstrip().startswith(_FENCE):
+        if line.lstrip().startswith(_FENCES):
             fenced = not fenced
         elif fenced and _MOUNT_FILE in line:
             return offset
@@ -83,6 +85,12 @@ def test_every_page_with_a_mount_command_links_the_section_first() -> None:
     ]
     assert pages
     assert late == []
+
+
+def test_the_section_that_the_pages_link_exists() -> None:
+    """Fail when the section's heading is gone, since every link would then lead nowhere."""
+    page = _DOCS_ROOT / "how-to" / _SECTION_PAGE
+    assert _SECTION_HEADING in page.read_text(encoding="utf-8").splitlines()
 
 
 def test_a_link_below_the_command_does_not_count() -> None:
