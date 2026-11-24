@@ -28,7 +28,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.utils import utc_now
 from app.tasks.crud import TaskHistoryManager, TaskManager
-from app.tasks.execution.models import _TERMINAL_STATUS_EVENT_MAP, BaseExecutor
+from app.tasks.execution.models import (
+    _TERMINAL_STATUS_EVENT_MAP,
+    BaseExecutor,
+    TerminalRunHook,
+)
 from app.tasks.models import (
     FileMetadata,
     TaskBackendEnum,
@@ -43,6 +47,8 @@ from tests.app.factories import TaskFactory
 
 class ConcreteExecutor(BaseExecutor):
     """Provide a minimal concrete implementation of BaseExecutor for testing."""
+
+    received_terminal_hook: TerminalRunHook | None = None
 
     async def dispatch_task(
         self,
@@ -64,7 +70,7 @@ class ConcreteExecutor(BaseExecutor):
         self,
         queue_item: TaskHistory,
         start_offsets: dict[str, dict[str, int]] | None = None,
-    ) -> AsyncGenerator[TaskLog, None]:
+    ) -> AsyncGenerator[TaskLog]:
         """Yield nothing."""
         return
         yield
@@ -76,7 +82,7 @@ class ConcreteExecutor(BaseExecutor):
         chunk_size: int = 1024 * 1024,
         *,
         anonymize: bool = True,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Yield nothing."""
         return
         yield
@@ -91,8 +97,10 @@ class ConcreteExecutor(BaseExecutor):
         self,
         queue_item: TaskHistory,
         writer_session: AsyncSession | None = None,
+        on_terminal: TerminalRunHook | None = None,
     ) -> TaskHistory:
-        """Return the queue item unchanged."""
+        """Keep the hook received and return the queue item unchanged."""
+        self.received_terminal_hook = on_terminal
         return queue_item
 
 
@@ -124,7 +132,7 @@ class StopStubExecutor(ConcreteExecutor):
         status: TaskHistoryStatusEnum | None = None,
         finished_at: datetime | None = None,
         stop_error: BaseException | None = None,
-    ) -> "StopStubExecutor":
+    ) -> StopStubExecutor:
         """Build an executor whose backend reports the given state.
 
         :param status: The status the sync resolves the record to, or None to
@@ -150,6 +158,7 @@ class StopStubExecutor(ConcreteExecutor):
         self,
         queue_item: TaskHistory,
         writer_session: AsyncSession | None = None,
+        on_terminal: TerminalRunHook | None = None,
     ) -> TaskHistory:
         """Return the record as the configured backend state resolves it."""
         self._sync_calls.append((queue_item, writer_session))
@@ -520,7 +529,9 @@ class TestSyncTaskHistory:
         with patch.object(ConcreteExecutor, "_sync_task_history", mock_sync):
             result, pending_event = await executor.sync_task_history(queue_item)
 
-        mock_sync.assert_awaited_once_with(queue_item, writer_session=None)
+        mock_sync.assert_awaited_once_with(
+            queue_item, writer_session=None, on_terminal=None
+        )
         assert result is queue_item
         assert pending_event is None
 
@@ -536,7 +547,21 @@ class TestSyncTaskHistory:
         with patch.object(ConcreteExecutor, "_sync_task_history", mock_sync):
             await executor.sync_task_history(queue_item, writer_session)
 
-        mock_sync.assert_awaited_once_with(queue_item, writer_session=writer_session)
+        mock_sync.assert_awaited_once_with(
+            queue_item, writer_session=writer_session, on_terminal=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_forwards_the_terminal_hook(self, executor: ConcreteExecutor):
+        """Assert sync_task_history hands the caller's hook to _sync_task_history."""
+        queue_item = MagicMock(spec=TaskHistory)
+        queue_item.task = MagicMock()
+        queue_item.task.alert_on_fail = False
+        hook = AsyncMock()
+
+        await executor.sync_task_history(queue_item, on_terminal=hook)
+
+        assert executor.received_terminal_hook is hook
 
     @pytest.mark.asyncio
     async def test_alerts_when_alert_on_fail_is_true(self, executor: ConcreteExecutor):
@@ -823,7 +848,12 @@ class TestStopTaskRegression:
         )
         saved_history = await TaskHistoryManager.save(session, queue_item)
 
-        async def fake_sync(item: TaskHistory, *, writer_session=None) -> TaskHistory:
+        async def fake_sync(
+            item: TaskHistory,
+            *,
+            writer_session: AsyncSession | None = None,
+            on_terminal: TerminalRunHook | None = None,
+        ) -> TaskHistory:
             return item
 
         captured = []

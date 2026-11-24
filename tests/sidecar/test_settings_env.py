@@ -18,7 +18,8 @@ import os
 import re
 import shlex
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -30,6 +31,7 @@ from app.core.config import Settings
 from app.extensions.config import ExtensionsSettings
 from app.inventory.config import InventorySettings
 from app.tasks.config import TasksSettings
+from tests.conftest import require_bash_4
 from tests.sidecar.conftest import SETTINGS_ENV_HELPER, SIDECAR_DIR
 
 SUPERVISORD_EXPANSION = re.compile(r"%\(ENV_([A-Za-z0-9_]+)\)s")
@@ -52,6 +54,19 @@ FERNET_KEY = Fernet.generate_key().decode("ascii")
 """A real key rather than a placeholder, so these cases carry a value the
 settings classes would accept."""
 
+WAITING_FOR_THE_KEY = "Waiting for PMM to publish SECRET_KEY"
+"""What the gate says while a mounted secrets directory holds no key yet."""
+
+POLLS_OBSERVED_SECONDS = 1.5
+"""Longer than the gate's one-second poll, so a gate that is still running
+afterwards read the directory again and chose to keep waiting."""
+
+KEY_IS_PUBLISHED = "SECRET_KEY is published"
+"""What the gate says when it first finds the key, before it reads the rest."""
+
+GATE_EXIT_SECONDS = 15
+"""Ample for the gate to see a published key, settle and finish."""
+
 
 def source_helper(**inputs: str) -> subprocess.CompletedProcess[str]:
     """Run the helper from an otherwise empty environment.
@@ -73,7 +88,23 @@ def source_helper_then(command: str, **inputs: str) -> subprocess.CompletedProce
     :param inputs: The deployment inputs to place in the environment.
     :return: The completed ``bash`` run, whose stdout is a NUL-delimited ``env``.
     """
-    script = "\n".join(
+    require_bash_4()
+    return subprocess.run(
+        ["bash", "-c", helper_script(command)],
+        env={"PATH": os.environ["PATH"], **inputs},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def helper_script(command: str = "") -> str:
+    """Return the shell that sources the helper the way ``entrypoint.sh`` does.
+
+    :param command: The shell to run once the helper has been sourced.
+    :return: The script, ending in a NUL-delimited ``env``.
+    """
+    return "\n".join(
         [
             CALLER_SHELL_OPTIONS,
             f". {shlex.quote(str(SETTINGS_ENV_HELPER))}",
@@ -81,12 +112,47 @@ def source_helper_then(command: str, **inputs: str) -> subprocess.CompletedProce
             "env -0",
         ]
     )
-    return subprocess.run(
-        ["bash", "-c", script],
+
+
+@contextmanager
+def waiting_helper(**inputs: str) -> Iterator[tuple[subprocess.Popen[str], str]]:
+    """Start the helper where its key gate has to wait, and yield it once it speaks.
+
+    The first stderr line is read before yielding, so a case acts only after the
+    gate has reached its wait. A gate that exits instead yields an empty line
+    and a finished process rather than hanging the case.
+
+    :param inputs: The deployment inputs to place in the environment.
+    :return: The running helper and the first line it wrote to stderr.
+    """
+    require_bash_4()
+    process = subprocess.Popen(
+        ["bash", "-c", helper_script()],
         env={"PATH": os.environ["PATH"], **inputs},
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
+    )
+    assert process.stderr is not None
+    try:
+        yield process, process.stderr.readline()
+    finally:
+        process.kill()
+        process.communicate()
+
+
+def finish(
+    process: subprocess.Popen[str], first_line: str
+) -> subprocess.CompletedProcess[str]:
+    """Let a waiting helper run to its end and return the whole run.
+
+    :param process: A helper started by :func:`waiting_helper`.
+    :param first_line: The stderr line :func:`waiting_helper` already consumed.
+    :return: The completed run, with that line restored to its stderr.
+    """
+    stdout, stderr = process.communicate(timeout=GATE_EXIT_SECONDS)
+    return subprocess.CompletedProcess(
+        process.args, process.returncode, stdout, first_line + stderr
     )
 
 
@@ -159,12 +225,17 @@ def apply_environment(
 def test_missing_secret_key_aborts_with_an_actionable_message(
     secret_key: dict[str, str],
 ):
-    """Reject a missing key, which each supervisord child would resolve differently."""
+    """Reject a missing key at once where the deployment supplies its own.
+
+    With no secrets directory nothing will publish a key later, so both ways of
+    supplying one are named and the start ends.
+    """
     result = source_helper(**secret_key)
 
     assert result.returncode != 0
     assert "SECRET_KEY" in result.stderr
     assert "openssl rand -hex 32" in result.stderr
+    assert "SECRETS_DIR" in result.stderr
 
 
 def test_database_host_and_port_defaults_are_exported():
@@ -404,33 +475,131 @@ def test_secret_key_from_a_file_starts_the_script_without_exporting_it(tmp_path:
     assert "SECRET_KEY" not in environment
 
 
-def test_the_missing_key_message_names_the_file_channel(tmp_path: Path):
-    """Name both ways of supplying the key when neither is in place."""
+def test_the_gate_waits_for_pmm_to_publish_the_key(tmp_path: Path):
+    """Start once the key arrives, having said what the wait was for.
+
+    PMM owns the key and writes it while it starts, which Compose does not order
+    ahead of this container. Generating a key is the one piece of advice that is
+    wrong there, so the wait never gives it.
+    """
     secrets_dir = write_secrets(tmp_path)
 
-    result = source_helper(SECRETS_DIR=secrets_dir)
+    with waiting_helper(SECRETS_DIR=secrets_dir) as (process, first_line):
+        write_secrets(tmp_path, SECRET_KEY="published-by-pmm")
+        result = finish(process, first_line)
 
-    assert result.returncode != 0
-    assert "SECRET_KEY" in result.stderr
-    assert "openssl rand -hex 32" in result.stderr
-    assert "SECRETS_DIR" in result.stderr
+    environment = exported(result)
+    assert WAITING_FOR_THE_KEY in first_line
+    assert secrets_dir in first_line
+    assert "openssl" not in result.stderr
+    assert environment["EXTENSIONS_DB_HOST"] == "pmm-server"
+    assert "SECRET_KEY" not in environment
 
 
-@pytest.mark.parametrize("contents", ["", "\n  \n"], ids=["empty", "whitespace-only"])
-def test_a_blank_secret_key_file_does_not_satisfy_the_gate(
-    tmp_path: Path, contents: str
-):
-    """Fail fast on a key file that strips to nothing.
+def test_a_file_published_just_after_the_key_is_still_read(tmp_path: Path):
+    """Read the directory again after the key appears, not at that instant.
 
-    The settings classes reject an empty key outright, so admitting one here
-    trades this gate's single actionable line for five crashing children.
+    PMM publishes its files as consecutive renames with the key first, so the
+    instant the key appears is the one instant the rest may still be missing.
+    The second file is written only once the gate has reported the key, so a
+    gate that settled on the read which found the key cannot have seen it.
     """
-    secrets_dir = write_secrets(tmp_path, SECRET_KEY=contents)
+    secrets_dir = write_secrets(tmp_path)
 
-    result = source_helper(SECRETS_DIR=secrets_dir)
+    with waiting_helper(SECRETS_DIR=secrets_dir) as (process, first_line):
+        assert process.stderr is not None
+        write_secrets(tmp_path, SECRET_KEY="published-by-pmm")
+        reported = first_line
+        while KEY_IS_PUBLISHED not in reported:
+            line = process.stderr.readline()
+            assert line, f"the gate exited before it reported the key: {reported}"
+            reported += line
+        write_secrets(tmp_path, EXTENSIONS__DATABASE__HOST="published-later")
+        environment = exported(finish(process, reported))
 
-    assert result.returncode != 0
-    assert "SECRET_KEY" in result.stderr
+    assert environment["EXTENSIONS_DB_HOST"] == "published-later"
+    assert "EXTENSIONS__DATABASE__HOST" not in environment
+
+
+def absent_directory(tmp_path: Path) -> str:
+    """Name a secrets directory nothing has created yet.
+
+    :param tmp_path: The per-test temporary directory.
+    :return: The path ``SECRETS_DIR`` should name.
+    """
+    return str(tmp_path / "not-mounted-yet")
+
+
+def escaping_key_symlink(tmp_path: Path) -> str:
+    """Mount a key that resolves outside the directory, which no settings class reads.
+
+    :param tmp_path: The per-test temporary directory.
+    :return: The directory ``SECRETS_DIR`` should name.
+    """
+    outside = tmp_path / "outside"
+    outside.write_text("escaped-value", encoding="utf-8")
+    secrets_dir = write_secrets(tmp_path)
+    (Path(secrets_dir) / "SECRET_KEY").symlink_to(outside)
+    return secrets_dir
+
+
+@pytest.mark.parametrize(
+    "build_secrets_dir",
+    [
+        absent_directory,
+        write_secrets,
+        lambda tmp_path: write_secrets(tmp_path, SECRET_KEY=""),
+        lambda tmp_path: write_secrets(tmp_path, SECRET_KEY="\n  \n"),
+        escaping_key_symlink,
+    ],
+    ids=[
+        "no-directory",
+        "no-file",
+        "empty-file",
+        "whitespace-only",
+        "escaping-symlink",
+    ],
+)
+def test_the_gate_keeps_waiting_while_no_file_holds_a_key(
+    tmp_path: Path, build_secrets_dir: Callable[[Path], str]
+):
+    """Hold the start for as long as the directory supplies no usable key.
+
+    A blank file is what a key looks like part-way through being published, and
+    the settings classes reject an empty key outright. Admitting one would
+    trade this gate's one line for five crashing children.
+    """
+    secrets_dir = build_secrets_dir(tmp_path)
+
+    with (
+        waiting_helper(SECRETS_DIR=secrets_dir) as (process, first_line),
+        pytest.raises(subprocess.TimeoutExpired),
+    ):
+        process.wait(timeout=POLLS_OBSERVED_SECONDS)
+
+    assert WAITING_FOR_THE_KEY in first_line
+    assert "openssl" not in first_line
+
+
+def test_the_gate_names_a_key_file_it_cannot_read(tmp_path: Path):
+    """Say that the key is there and unreadable, rather than that PMM is late.
+
+    A side-car outside group 0 sees exactly this, and waiting for PMM to
+    publish a key it has already published would never end or explain itself.
+    """
+    secrets_dir = write_secrets(tmp_path, SECRET_KEY="published-by-pmm")
+    (Path(secrets_dir) / "SECRET_KEY").chmod(0o000)
+
+    with (
+        waiting_helper(SECRETS_DIR=secrets_dir) as (process, first_line),
+        pytest.raises(subprocess.TimeoutExpired),
+    ):
+        process.wait(timeout=POLLS_OBSERVED_SECONDS)
+
+    assert "cannot read it" in first_line
+    assert secrets_dir in first_line
+    assert WAITING_FOR_THE_KEY not in first_line
+    assert "Permission denied" not in first_line
 
 
 def test_a_blank_secret_key_variable_does_not_shadow_the_file(tmp_path: Path):
@@ -674,18 +843,6 @@ def test_a_symlink_escaping_the_directory_does_not_supply_a_name(tmp_path: Path)
 
     assert environment["EXTENSIONS__DATABASE__HOST"] == "pmm-server"
     assert environment["EXTENSIONS_DB_HOST"] == "pmm-server"
-
-
-def test_a_symlink_escaping_the_directory_does_not_satisfy_the_gate(tmp_path: Path):
-    """Reject an escaping key file, which no settings class would read either."""
-    outside = tmp_path / "outside"
-    outside.write_text("escaped-value", encoding="utf-8")
-    secrets_dir = write_secrets(tmp_path)
-    (Path(secrets_dir) / "SECRET_KEY").symlink_to(outside)
-
-    result = source_helper(SECRETS_DIR=secrets_dir)
-
-    assert result.returncode != 0
 
 
 def test_a_kubernetes_projected_secret_is_supplied(tmp_path: Path):

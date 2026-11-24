@@ -1,0 +1,161 @@
+# A local PMM with PMM Extensions beside it, on released images.
+# How to use it: docs/how-to/run-in-local-pmm.md
+#
+# The pair mirrors the `extensions` profile of percona/pmm's docker-compose.yml.
+# What differs is what lets it run on a developer's machine: names scoped to
+# this project, one port on 127.0.0.1, one variable for the version, and a start
+# period long enough for a cold PMM.
+
+name: pmm-extensions-dev
+
+services:
+  pmm-server:
+    image: percona/pmm-server:${PMM_VERSION:-3.10.0}
+    platform: linux/amd64
+    hostname: pmm-server
+    # The probe is the one the image ships. It is repeated here because Podman
+    # drops an image's health check when it pulls, and the services below wait
+    # on this one. The start period is longer than the image's 90 s: a cold
+    # start can need more, and a dependent service would then fail the first
+    # `up` instead of waiting.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/v1/server/readyz"]
+      interval: 4s
+      timeout: 2s
+      retries: 3
+      start_period: 300s
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${PMM_ADMIN_PASSWORD:-admin}
+      PMM_ENABLE_EXTENSIONS: "1"
+      # PMM Extensions runs its tasks through PMM's Nomad.
+      PMM_ENABLE_NOMAD: "1"
+      # Nomad clients in the other containers dial this address. `localhost`
+      # would make each of them dial itself.
+      PMM_PUBLIC_ADDRESS: pmm-server
+    ports:
+      - "127.0.0.1:${PMM_PORT:-8443}:8443"
+    volumes:
+      - pmm-data:/srv
+      # PMM writes the secrets PMM Extensions reads into this volume.
+      - pmm-extensions:/srv/extensions
+
+  # PMM routes /extensions/ to this service name.
+  pmm-extensions:
+    image: ${PMM_EXTENSIONS_IMAGE:-percona/pmm-extensions:${PMM_VERSION:-3.10.0}}
+    platform: linux/amd64
+    # PMM Extensions needs PMM's secrets, Grafana and PostgreSQL. They exist
+    # once PMM is healthy, not once its container has started.
+    depends_on:
+      pmm-server:
+        condition: service_healthy
+    # PMM writes the secrets as group 0, and the image's user reads them through it.
+    group_add:
+      - "0"
+    environment:
+      SECRETS_DIR: /run/secrets/extensions
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${PMM_ADMIN_PASSWORD:-admin}
+      # Task executors download scripts from here. The path is part of the value.
+      BASE_URL: http://pmm-extensions:9000/extensions
+    volumes:
+      - pmm-extensions:/run/secrets/extensions:ro
+      - pmm-extensions-state:/home/extensions/state
+
+  # A database host is one container that holds the database, its backup tools
+  # and PMM Client. Nomad's client needs control of cgroups to place a task,
+  # hence `privileged` and the host's cgroup tree.
+  mysql-host:
+    profiles:
+      - mysql
+    build:
+      context: targets/mysql
+      dockerfile: Containerfile
+      args:
+        PMM_CLIENT_IMAGE: percona/pmm-client:${PMM_VERSION:-3.10.0}
+    image: pmm-extensions-dev/mysql-host:${PMM_VERSION:-3.10.0}
+    hostname: mysql-host
+    depends_on:
+      pmm-server:
+        condition: service_healthy
+    # Healthy means ready to run a task: MySQL answers, the sample data is
+    # loaded and the service is registered with PMM. The start period covers
+    # the import.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /run/dev-host-ready && mysqladmin --defaults-file=/root/.my.cnf --protocol=socket ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 600s
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
+      MYSQL_BACKUP_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
+      MYSQL_PMM_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
+      PMM_AGENT_SERVER_ADDRESS: pmm-server:8443
+      PMM_AGENT_SERVER_USERNAME: admin
+      PMM_AGENT_SERVER_PASSWORD: ${PMM_ADMIN_PASSWORD:-admin}
+      PMM_AGENT_SERVER_INSECURE_TLS: "1"
+      PMM_AGENT_CONFIG_FILE: /usr/local/percona/pmm/config/pmm-agent.yaml
+      PMM_AGENT_SETUP_NODE_NAME: mysql-host
+      PMM_AGENT_SETUP_NODE_TYPE: container
+      PMM_AGENT_PATHS_NOMAD_DATA_DIR: /var/lib/nomad
+    privileged: true
+    cgroup: host
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # Off the image layer, so the node keeps its id when the container is recreated.
+      - mysql-pmm-config:/usr/local/percona/pmm/config
+      - mysql-nomad:/var/lib/nomad
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+  postgresql-host:
+    profiles:
+      - postgresql
+    build:
+      context: targets/postgresql
+      dockerfile: Containerfile
+      args:
+        PMM_CLIENT_IMAGE: percona/pmm-client:${PMM_VERSION:-3.10.0}
+    image: pmm-extensions-dev/postgresql-host:${PMM_VERSION:-3.10.0}
+    hostname: postgresql-host
+    depends_on:
+      pmm-server:
+        condition: service_healthy
+    # Healthy means ready to run a task: PostgreSQL answers, the stanza exists
+    # and the service is registered with PMM.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /run/dev-host-ready && pg_isready -h 127.0.0.1 -p 5432"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 300s
+    environment:
+      POSTGRESQL_PMM_PASSWORD: ${DEV_DATABASE_PASSWORD:-pmm-extensions-dev}
+      PMM_AGENT_SERVER_ADDRESS: pmm-server:8443
+      PMM_AGENT_SERVER_USERNAME: admin
+      PMM_AGENT_SERVER_PASSWORD: ${PMM_ADMIN_PASSWORD:-admin}
+      PMM_AGENT_SERVER_INSECURE_TLS: "1"
+      PMM_AGENT_CONFIG_FILE: /usr/local/percona/pmm/config/pmm-agent.yaml
+      PMM_AGENT_SETUP_NODE_NAME: postgresql-host
+      PMM_AGENT_SETUP_NODE_TYPE: container
+      PMM_AGENT_PATHS_NOMAD_DATA_DIR: /var/lib/nomad
+    privileged: true
+    cgroup: host
+    volumes:
+      - postgresql-data:/var/lib/pgsql
+      - postgresql-backups:/var/lib/pgbackrest
+      - postgresql-pmm-config:/usr/local/percona/pmm/config
+      - postgresql-nomad:/var/lib/nomad
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+volumes:
+  pmm-data:
+  pmm-extensions:
+  pmm-extensions-state:
+  mysql-data:
+  mysql-pmm-config:
+  mysql-nomad:
+  postgresql-data:
+  postgresql-backups:
+  postgresql-pmm-config:
+  postgresql-nomad:

@@ -106,7 +106,7 @@ from app.tasks.periodic.utils import (
     generate_periodic_task_name,
 )
 from app.tasks.reference_fence import hold_reference_write_fence
-from app.tasks.run_result import maybe_record_run
+from app.tasks.run_result import maybe_record_run, RunResultCapture
 
 logger = logging.getLogger(__name__)
 
@@ -598,7 +598,7 @@ async def stream_task_history_logs(
         )
     else:
 
-        async def _stream_finished_logs() -> AsyncGenerator[str, None]:
+        async def _stream_finished_logs() -> AsyncGenerator[str]:
             async for log in iter_task_history_logs(
                 session,
                 task_history,
@@ -753,10 +753,11 @@ async def sync_task_history(
 
     history_id = cast("int", task_history.id)
     async_session = get_async_session_maker()
+    run_result = RunResultCapture(executor)
     try:
         async with async_session() as writer_session:
             updated, _pending_event = await executor.sync_task_history(
-                task_history, writer_session=writer_session
+                task_history, writer_session=writer_session, on_terminal=run_result
             )
     except Exception:
         await release_sync_lock(async_session, history_id, claimed_at)
@@ -777,13 +778,13 @@ async def sync_task_history(
                 "sync_in_progress_started_at",
             ],
         )
-    except (HTTPBadRequestException, HTTPConflictException):
+    except HTTPBadRequestException, HTTPConflictException:
         await release_sync_lock(async_session, history_id, claimed_at)
         raise
     synced = await _get_history_for_response(session, saved)
     await maybe_dispatch_chain(synced, was_running=True)
     if synced.status.is_terminal():
-        await maybe_record_run(cast("int", synced.id), executor)
+        await maybe_record_run(cast("int", synced.id), executor, run_result.result)
     await _populate_log_metadata(session, [synced])
     return synced
 

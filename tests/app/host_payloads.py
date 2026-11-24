@@ -16,7 +16,7 @@
 """Find the Python files PMM Extensions ships to executor hosts and check them against 3.9.
 
 Executor hosts run payloads under their own ``python3``, which can be as old as
-:data:`MINIMUM_HOST_PYTHON`, while the suite runs under 3.11. The guard in
+:data:`MINIMUM_HOST_PYTHON`, while the suite runs under 3.14. The guard in
 :mod:`tests.app.test_host_payloads` closes that gap with two branches, because
 each catches what the other misses: :func:`load_under` loads each file under a
 real 3.9 interpreter, which catches syntax, module-level APIs and annotations
@@ -24,8 +24,8 @@ evaluated at definition time; :func:`static_violations` runs ``vermin`` over the
 same files, which catches standard-library APIs used only inside function bodies,
 which loading never executes. Neither sees a ``X | Y`` type union evaluated
 inside a function body, so :func:`runtime_union_violations` looks for those. All
-three read the unminified source, so none depends on
-``TASKS.NOMAD.MINIFY_PAYLOAD``.
+three read the unminified source; what dispatch sends once minified has its own
+tests in :mod:`tests.app.test_host_payloads`.
 
 The file set is derived rather than listed. :func:`discover_host_payloads` takes
 the payload naming conventions, every literal ``payload_uri(__file__, "...")``

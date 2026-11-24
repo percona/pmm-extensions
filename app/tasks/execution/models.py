@@ -17,7 +17,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -37,6 +37,10 @@ from app.tasks.models import (
 
 logger = logging.getLogger(__name__)
 _ONE_MEBIBYTE = 1024 * 1024
+#: A caller's hook for a run that has just reached a terminal status, awaited
+#: before the backend releases the run's files; whether they are still there
+#: is best effort. See :meth:`BaseExecutor.sync_task_history`.
+TerminalRunHook = Callable[[TaskHistory], Awaitable[None]]
 _TERMINAL_STATUS_EVENT_MAP = {
     TaskHistoryStatusEnum.SUCCESS: "COMPLETED",
     TaskHistoryStatusEnum.FAILED: "FAILED",
@@ -160,7 +164,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         self,
         queue_item: TaskHistory,
         start_offsets: dict[str, dict[str, int]] | None = None,
-    ) -> AsyncGenerator[TaskLog | None, None]:
+    ) -> AsyncGenerator[TaskLog | None]:
         """Stream logs from a task history record.
 
         Retrieves the allocation details and concurrently streams stdout and stderr logs
@@ -228,7 +232,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         chunk_size: int = _ONE_MEBIBYTE,
         *,
         anonymize: bool = True,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Stream a file from a task history record.
 
         :param queue_item: The task history record for tracking the file.
@@ -267,6 +271,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         writer_session: AsyncSession | None = None,
         *,
         defer_terminal_annotation: bool = False,
+        on_terminal: TerminalRunHook | None = None,
     ) -> tuple[TaskHistory, str | None]:
         """Sync the task history with the backend and trigger the configured alerts.
 
@@ -279,6 +284,11 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
             await the terminal PMM annotation here; return its event label for
             the caller to handle after persisting the row. When ``False``
             (default), schedule it as a fire-and-forget background task.
+        :param on_terminal: A hook the executor awaits with the run once the
+            sync has resolved it to a terminal status and before the backend
+            lets go of the run's files; whether the files are still there then
+            is best effort. A backend that keeps a finished run's files never
+            calls it, and neither does a sync that gets no ``writer_session``.
         :return: The updated task history and, when
             ``defer_terminal_annotation`` is ``True`` and a RUNNING-to-terminal
             transition occurred, the PMM event label to await after save;
@@ -286,7 +296,7 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         """
         was_running = queue_item.status == TaskHistoryStatusEnum.RUNNING
         queue_item = await self._sync_task_history(
-            queue_item, writer_session=writer_session
+            queue_item, writer_session=writer_session, on_terminal=on_terminal
         )
         if queue_item.task.alert_on_fail:
             await queue_item.alert_for_status()
@@ -305,14 +315,14 @@ class BaseExecutor(BaseCaseInsensitiveModel, ABC):
         self,
         queue_item: TaskHistory,
         writer_session: AsyncSession | None = None,
+        on_terminal: TerminalRunHook | None = None,
     ) -> TaskHistory:
         """Sync the task history with the backend.
 
         :param queue_item: The task history record for tracking this execution.
-        :type queue_item: TaskHistory
         :param writer_session: Optional dedicated session the executor may use
             for side-effect writes such as log persistence.
-        :type writer_session: AsyncSession | None
+        :param on_terminal: The caller's hook, as
+            :meth:`sync_task_history` documents it.
         :return: The updated task history with execution details.
-        :rtype: TaskHistory
         """

@@ -147,9 +147,14 @@ def _lift(
 
 def _rsync_rsh() -> Callable[..., str]:
     """Return the payload's module-level ``rsync_rsh``, with ``shlex`` supplied."""
-    rsync_rsh = load_function("rsync_rsh", payload_path=RESTORE_PAYLOAD_PATH)
-    rsync_rsh.__globals__["shlex"] = shlex
-    return cast("Callable[..., str]", rsync_rsh)
+    return cast(
+        "Callable[..., str]",
+        load_function(
+            "rsync_rsh",
+            extra_namespace={"shlex": shlex},
+            payload_path=RESTORE_PAYLOAD_PATH,
+        ),
+    )
 
 
 def _restorer(stub_bin: StubBin, *, s3_tool: str = "awscli") -> types.SimpleNamespace:

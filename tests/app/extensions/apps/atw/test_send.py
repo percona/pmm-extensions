@@ -274,7 +274,7 @@ def _fake_tasks_api(
 @pytest_asyncio.fixture(name="send_session")
 async def send_session_fixture(
     mocker: MockerFixture, tmp_path: Path, delivery_plan: DeliveryPlan
-) -> AsyncGenerator[AsyncSession, None]:
+) -> AsyncGenerator[AsyncSession]:
     """Yield a session whose maker and bundle directory the orchestrator uses.
 
     ``run_send`` opens its own session, so the maker it reaches for is pointed at

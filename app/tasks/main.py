@@ -86,7 +86,7 @@ _OVERRIDE_REBIND_CALLBACKS: CallbackRegistry = {
 
 
 @asynccontextmanager
-async def tasks_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def tasks_lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Manage the part of the Tasks API's lifespan every run mode enters.
 
     Initializes the Tasks database data and starts the settings-override
@@ -135,7 +135,7 @@ async def tasks_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 @asynccontextmanager
-async def tasks_standalone_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def tasks_standalone_lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Manage the Tasks API's lifespan when it runs standalone.
 
     Wraps :func:`tasks_lifespan` with the refresher for the PMM

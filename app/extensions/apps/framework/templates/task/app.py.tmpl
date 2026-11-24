@@ -21,12 +21,11 @@ Set ``group`` / ``nav_order`` to place the app in the sidebar, or
 ``service_type`` plus ``list_filter=ListFilterConfig(...)`` to expose list filters.
 """
 
-from app.extensions.apps.<< name >>.models import << class_prefix >>Form
+from app.extensions.apps.<< name >>.models import << class_prefix >>Form, OWNER
 from app.extensions.apps.<< name >>.spec import build_<< name >>_spec
 from app.extensions.apps.<< name >>.views import << name >>_views
 from app.extensions.apps.framework.apps import AppCapabilities, TaskExecutionApp
-<< nav_icon_import_line >>from app.tasks.models import ANY_OWNER
-
+<< nav_icon_import_line >>
 app = TaskExecutionApp(
     name="<< name >>",
     display_name=<< display_name_repr >>,
@@ -34,7 +33,7 @@ app = TaskExecutionApp(
     item_display_name_plural=<< item_display_name_plural_repr >>,
     uri_path="/<< name >>",
     description=<< description_repr >>,
-    owner=ANY_OWNER,
+    owner=OWNER,
     create_model=<< class_prefix >>Form,
     views=<< name >>_views,
     task_spec_builder=build_<< name >>_spec,

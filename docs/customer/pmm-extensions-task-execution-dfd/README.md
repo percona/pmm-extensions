@@ -1,5 +1,7 @@
 # PMM Extensions Task Execution — Data Flow Diagram
 
+This page describes the standalone deployment (v0.13.1 and earlier) except where it says otherwise, and a version for PMM Extensions inside PMM is planned.
+
 Customer-facing documentation of how data moves through **PMM Extensions** during a typical predefined task execution, including the parallel audit and logging path.
 
 ## Contents
@@ -10,7 +12,7 @@ Customer-facing documentation of how data moves through **PMM Extensions** durin
 | [`pmm-extensions-task-execution-sequence.mmd`](pmm-extensions-task-execution-sequence.mmd) | Sequence diagram (time-ordered detail) |
 | [`data-capture-redaction-retention.md`](data-capture-redaction-retention.md) | What PMM Extensions captures, redacts, stores, exposes, and retains for task output |
 | [`security-review-checklist.md`](security-review-checklist.md) | Security sign-off before customer delivery (DFD §1–7, Nomad §8) |
-| [`../nomad-driver-deployment.md`](../nomad-driver-deployment.md) | Nomad `raw_exec` driver, deployment topology, non-root agent, API access |
+| [`../../explanation/architecture.md`](../../explanation/architecture.md) | For PMM Extensions inside PMM: how the sidecar runs, and what it expects from Nomad |
 | [`exports/pmm-extensions-task-execution-dfd.pdf`](exports/pmm-extensions-task-execution-dfd.pdf) | Exported PDF — main DFD (regenerate after `.mmd` changes) |
 | [`exports/pmm-extensions-task-execution-sequence.pdf`](exports/pmm-extensions-task-execution-sequence.pdf) | Exported PDF — sequence diagram |
 
@@ -158,6 +160,6 @@ Complete [`security-review-checklist.md`](security-review-checklist.md) and obta
 ## Out of scope
 
 - Certificate-based **user** login (not implemented in default PMM Extensions)
-- Full Nomad/PMM deployment topology (see [Nomad driver & deployment](../nomad-driver-deployment.md))
+- Full Nomad/PMM deployment topology (for PMM Extensions inside PMM, see [What the sidecar expects from Nomad](../../explanation/architecture.md#what-the-sidecar-expects-from-nomad))
 - Celery-only (non-Nomad) executors except where noted
 - Inventory sync flows unrelated to task execution

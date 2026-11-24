@@ -30,6 +30,7 @@ import pytest
 
 from app import BASE_DIR
 from app.extensions.routes.artifacts import collect_base_dirs
+from app.tasks.execution.utils import holds_requotable_f_string, minify_file_content
 from tests.app.host_payloads import (
     CHECK_PYTHON_ENV,
     discover_host_payloads,
@@ -47,6 +48,10 @@ from tests.app.host_payloads import (
 
 ARTIFACT_DIRS = [thunk() for thunk in collect_base_dirs().values()]
 DISCOVERED = discover_host_payloads(BASE_DIR, ARTIFACT_DIRS)
+
+INLINE_PAYLOAD = """import os
+print(f"{os.getenv('HOME')}/.my.cnf")
+"""
 
 
 def _relative(path: Path) -> str:
@@ -77,6 +82,58 @@ def test_every_host_payload_loads_under_the_minimum_python(
     error = load_under(py39, payload, tmp_path, LOAD_ARGV.get(_relative(payload), ()))
 
     assert error is None, f"{_relative(payload)} does not load:\n{error}"
+
+
+@pytest.mark.parametrize("payload", DISCOVERED, ids=_relative)
+def test_every_host_payload_loads_minified_under_the_minimum_python(
+    py39: str, payload: Path, tmp_path: Path
+) -> None:
+    """Load each shipped file under the oldest host Python as dispatch minifies it.
+
+    :param py39: The minimum-version interpreter.
+    :param payload: The shipped file.
+    :param tmp_path: The scratch directory the minified copy is written to.
+    """
+    minified = tmp_path / "minified" / payload.name
+    minified.parent.mkdir()
+    minified.write_text(
+        minify_file_content(payload.read_text(encoding="utf-8")), encoding="utf-8"
+    )
+
+    error = load_under(py39, minified, tmp_path, LOAD_ARGV.get(_relative(payload), ()))
+
+    assert error is None, f"{_relative(payload)} does not load once minified:\n{error}"
+
+
+@pytest.mark.parametrize("payload", DISCOVERED, ids=_relative)
+def test_dispatch_minifies_every_host_payload(payload: Path) -> None:
+    """Refuse a shipped file that dispatch would send unminified.
+
+    :param payload: The shipped file.
+    """
+    source = payload.read_text(encoding="utf-8")
+
+    assert not holds_requotable_f_string(source), (
+        f"{_relative(payload)} has a quoted literal inside an f-string field, so "
+        "dispatch sends it unminified: bind the value to a name or use str.format"
+    )
+    assert minify_file_content(source) != source, (
+        f"{_relative(payload)} is sent unminified at dispatch"
+    )
+
+
+def test_an_inline_payload_survives_dispatch_under_the_minimum_python(
+    py39: str, tmp_path: Path
+) -> None:
+    """Load an inline payload under the oldest host Python as dispatch sends it.
+
+    :param py39: The minimum-version interpreter.
+    :param tmp_path: The scratch directory the dispatched text is written to.
+    """
+    dispatched = tmp_path / "inline_payload"
+    dispatched.write_text(minify_file_content(INLINE_PAYLOAD), encoding="utf-8")
+
+    assert load_under(py39, dispatched, tmp_path) is None
 
 
 def test_no_host_payload_uses_a_newer_standard_library() -> None:

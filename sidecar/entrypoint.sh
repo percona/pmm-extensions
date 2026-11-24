@@ -2,6 +2,8 @@
 # Side-car PID 1: expand the per-deployment inputs into canonical settings
 # variables, mint the bundled Valkey broker's credential for this container run,
 # resolve PMM Extensions' Grafana service-account token, then hand off to supervisord.
+# It waits, without a bound, for the two things PMM supplies while it starts: the
+# SECRET_KEY file and a Grafana that can mint the token.
 #
 # The credential reaches valkey-server through a generated config file rather
 # than a --requirepass flag, and reaches healthcheck.sh by being read back out of
@@ -12,6 +14,19 @@ set -o errexit -o nounset -o pipefail
 # Resolved from this script rather than written absolute so the start path can be
 # exercised outside an image; in the image it is $APP_HOME either way.
 app_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Published once the Grafana token step below ends with a token, or with nothing
+# to resolve; healthcheck.sh requires it. Cleared ahead of everything that can
+# wait -- the key gate in settings-env.sh first of all -- because /tmp survives a
+# container restart, and the previous run's marker would report this start as
+# holding a token it has not resolved yet.
+grafana_token_sentinel=/tmp/grafana-token.ok
+rm -f "$grafana_token_sentinel"
+
+# This script is PID 1 until it execs supervisord, and a PID 1 with no handler
+# for a signal is never sent it. Without this, a stop that arrives during
+# either wait below runs out its grace period and ends in a kill.
+trap 'exit 143' TERM INT
 
 # Sourced first, so a misconfigured container's first log line is the actionable
 # message rather than a Valkey mint that was never going to be reached.
@@ -28,8 +43,19 @@ app_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # it avoids. Unlike the Grafana mint, the failure is not absorbed -- a non-zero
 # exit means minting could not be proven safe, and starting anyway is what
 # silently reverts every encrypted override to its YAML default.
+# The helper waits for as long as PMM's PostgreSQL does not answer, so it is read
+# over a process substitution and waited on, as the token helper below is: the
+# trap above runs only once a foreground command returns, and `wait` is what a
+# signal interrupts. `exit` rather than errexit, which does not apply to `wait`
+# in an `if` condition.
 if [[ -z ${ENCRYPTION_KEY:-} ]] && ! secret_file_supplies ENCRYPTION_KEY; then
-    ENCRYPTION_KEY="$(python3 "$app_dir/encryption_key.py")"
+    exec {encryption_key_fd}< <(exec python3 "$app_dir/encryption_key.py")
+    if ! wait "$!"; then
+        exit 1
+    fi
+    read -r ENCRYPTION_KEY <&"$encryption_key_fd" || true
+    exec {encryption_key_fd}<&-
+    unset encryption_key_fd
     export ENCRYPTION_KEY
 fi
 
@@ -63,19 +89,34 @@ EOF
 export CELERY__BROKER_URL="redis://:${valkey_password}@127.0.0.1:6379/0"
 export CELERY__RESULT_BACKEND="redis://:${valkey_password}@127.0.0.1:6379/1"
 
-# Absorbing the helper's failure is load-bearing under errexit: auth degrading to
-# what it does today is survivable, a PID 1 that dies before supervisord is not.
-# The value arrives by command substitution for the same reason the Valkey
-# password above does -- an argv is readable across the whole PID namespace.
-grafana_token="$(python3 "$app_dir/grafana_service_account.py")" || grafana_token=""
-if [[ -n $grafana_token ]]; then
-    export_grafana_token "$grafana_token"
+# The helper waits for a Grafana that is still starting, so a non-zero exit is a
+# fault no wait clears, such as a rejected admin credential. Absorbing it is
+# load-bearing under errexit: a PID 1 that died on it would be restarted into
+# the same failed sign-in, which is how Grafana comes to lock the admin account.
+# The programs start without the token instead, and the sentinel left unwritten
+# is what keeps that container from reporting healthy.
+# The value arrives over a pipe for the same reason the Valkey password above
+# arrives by command substitution -- an argv is readable across the whole PID
+# namespace. It is a process substitution waited on, not a command
+# substitution, because the shell runs the trap above only once a foreground
+# command returns, and this helper can wait for as long as PMM takes to start.
+# `wait` is what a signal interrupts.
+exec {grafana_token_fd}< <(exec python3 "$app_dir/grafana_service_account.py")
+if wait "$!"; then
+    # The helper's one line may end without a newline, which `read` reports as
+    # a failure after it has assigned the value.
+    read -r grafana_token <&"$grafana_token_fd" || true
+    if [[ -n ${grafana_token:-} ]]; then
+        export_grafana_token "$grafana_token"
+    fi
+    touch "$grafana_token_sentinel"
 fi
+exec {grafana_token_fd}<&-
 
 # The admin pair is more privileged than the token it mints and only the step
 # above reads it, so leaving it exported would hand every supervised program a
 # Grafana administrator credential for the life of the container.
-unset grafana_token GF_SECURITY_ADMIN_USER GF_SECURITY_ADMIN_PASSWORD
+unset grafana_token grafana_token_fd GF_SECURITY_ADMIN_USER GF_SECURITY_ADMIN_PASSWORD
 
 # /tmp survives a container restart, and each schema one-shot clears its own
 # sentinel only after being spawned -- concurrently with the API programs now

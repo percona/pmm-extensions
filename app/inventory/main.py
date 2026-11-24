@@ -61,7 +61,7 @@ async def get_summary_inventory(session: SessionDep) -> dict[str, int]:
 
 
 @asynccontextmanager
-async def inventory_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: ARG001
+async def inventory_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None]:  # noqa: ARG001
     """Run the ``INVENTORY_SETTINGS`` override refresher for the lifespan.
 
     Kept separate from :func:`inventory_lifespan` so the combined ``app.main:app``
@@ -84,7 +84,7 @@ async def inventory_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, Non
 
 
 @asynccontextmanager
-async def inventory_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def inventory_lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Manage the Inventory API's lifespan when it runs standalone.
 
     Wraps :func:`inventory_overrides_lifespan` with :func:`default_lifespan`

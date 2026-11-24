@@ -79,6 +79,10 @@ from tests.app.extensions.apps.framework.kit import (
     SYNTH_CREATED_BY_NAME,
     SYNTH_EXECUTOR_HOST,
 )
+from tests.app.extensions.unknown_body_field import (
+    assert_unknown_field_rejected,
+    UNKNOWN_FIELD,
+)
 from tests.app.factories import (
     CasdoorUserFactory,
     MOCK_CREATED_SCHEMA_ID,
@@ -649,6 +653,25 @@ class DerivedRouterContractTests:
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
         assert mock_task_api.create_count == 0
 
+    def test_create_rejects_an_unknown_field(
+        self, contract_client: TestClient, mock_task_api: Any
+    ) -> None:
+        """Assert a valid body plus an undeclared key 422s naming it, creating nothing."""
+        if not self.app_def.capabilities.create:
+            pytest.skip("create capability disabled")
+        body = build_valid_create_body(
+            self.app_def, create_body_overrides=self.create_body_overrides
+        )
+        if body is None:
+            pytest.skip("no derivable create body (schema= passthrough)")
+        body[UNKNOWN_FIELD] = "value"
+        base = app_base_url(self.app_def)
+
+        response = post_create_body(contract_client, f"{base}/", self.app_def, body)
+
+        assert_unknown_field_rejected(response)
+        assert mock_task_api.create_count == 0
+
     def test_create_connectivity_warning(
         self, contract_client: TestClient, mocker: MockerFixture
     ) -> None:
@@ -1059,6 +1082,29 @@ class DerivedRouterContractTests:
         response = contract_client.put(f"{base}/{SEEDED_TASK_NAME}", json=body)
 
         assert response.status_code == status.HTTP_200_OK
+
+    def test_update_rejects_an_unknown_field(
+        self, contract_client: TestClient, mock_task_api: Any
+    ) -> None:
+        """Assert a ``PUT`` carrying an undeclared key 422s naming it, changing nothing."""
+        if not self.app_def.capabilities.update:
+            pytest.skip("update capability disabled")
+        if self.app_def.update_handler is not None:
+            pytest.skip("a full update_handler declares its own body")
+        body = build_valid_create_body(
+            self.app_def,
+            task_name=SEEDED_TASK_NAME,
+            create_body_overrides=self.create_body_overrides,
+        )
+        if body is None:
+            pytest.skip("no derivable update body (schema= passthrough)")
+        body[UNKNOWN_FIELD] = "value"
+        base = app_base_url(self.app_def)
+
+        response = contract_client.put(f"{base}/{SEEDED_TASK_NAME}", json=body)
+
+        assert_unknown_field_rejected(response)
+        assert mock_task_api.last_update_payload is None
 
     def test_update_round_trips_stored_form(
         self, contract_client: TestClient, mock_task_api: Any

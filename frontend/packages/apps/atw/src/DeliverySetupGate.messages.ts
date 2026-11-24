@@ -33,10 +33,11 @@ export const DELIVERY_PLAN_KEY = 'DIAGNOSTICS_DELIVERY';
 /**
  * Product copy for the setup screen.
  *
- * `heading`, `title`, `description` and `consentNote` are shared with the
- * PMM-embedded copy of this app (`ServiceNowSetupGate.messages.ts`) and must
- * stay word-for-word identical — only the call to action differs, because the
- * side-car has no guided ServiceNow form to send an operator to.
+ * This copy is specific to PMM Extensions. PMM's own `ServiceNowSetupGate` (and
+ * its `ServiceNowSetupGate.messages.ts`) was removed in PMM-15405: the
+ * PMM-embedded app has no setup screen and relies only on
+ * `send_disabled_reasons` next to the Send control, so there is no PMM copy to
+ * keep in sync with.
  */
 export const Messages = {
   loading: 'Checking the ServiceNow connection…',

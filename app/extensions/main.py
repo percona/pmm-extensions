@@ -241,7 +241,7 @@ async def _reseed_system_periodic_tasks(_: SnapshotChange) -> None:
 
 
 @asynccontextmanager
-async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def extensions_overrides_lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Wire the PMM Extensions side settings override refresher into a lifespan.
 
     Start the background refresher for the duration of the wrapped block over
@@ -377,7 +377,7 @@ def validate_inventory_sync_syncers() -> None:
 
 
 @asynccontextmanager
-async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def extensions_lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Manage PMM Extensions' lifespan.
 
     Initializes the PMM Extensions periodic task database and the RemoteAPI clients for

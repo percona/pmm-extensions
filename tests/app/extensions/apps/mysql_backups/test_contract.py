@@ -61,6 +61,10 @@ from tests.app.extensions.apps.mysql_backups.description_coverage import (
     assert_every_declared_field_is_described,
     assert_schema_serves_only_declared_descriptions,
 )
+from tests.app.extensions.unknown_body_field import (
+    assert_unknown_field_rejected,
+    UNKNOWN_FIELD,
+)
 from tests.app.factories import MOCK_CREATED_SERVICE_ID
 
 _NEW_TASK_NAME = "contract-new-backup"
@@ -238,6 +242,32 @@ class TestMysqlBackupsContract(DerivedRouterContractTests):
         meta = mock_task_api.last_create_payload["data"]["meta"]
         assert meta["target"] == SYNTH_EXECUTOR_HOST
         assert meta["target"] != meta[CONNECTIVITY_META_HOST_KEY]
+
+    def test_create_rejects_an_unknown_field(
+        self, contract_client: Any, mock_task_api: Any
+    ) -> None:
+        """Reject a valid body plus an undeclared key with 422 naming it, before any POST."""
+        body = _valid_body()
+        body[UNKNOWN_FIELD] = "value"
+        base = app_base_url(self.app_def)
+
+        response = contract_client.post(f"{base}/", json=body)
+
+        assert_unknown_field_rejected(response)
+        assert mock_task_api.create_count == 0
+
+    def test_update_rejects_an_unknown_field(
+        self, contract_client: Any, mock_task_api: Any
+    ) -> None:
+        """Reject a ``PUT`` carrying an undeclared key with 422 naming it, changing nothing."""
+        body = _valid_body(task_name=SEEDED_TASK_NAME)
+        body[UNKNOWN_FIELD] = "value"
+        base = app_base_url(self.app_def)
+
+        response = contract_client.put(f"{base}/{SEEDED_TASK_NAME}", json=body)
+
+        assert_unknown_field_rejected(response)
+        assert mock_task_api.last_update_payload is None
 
     def test_update_200(self, contract_client: Any) -> None:
         """Update a task via a real ``PUT /{task_name}``, rebuilding the spec, returning 200."""

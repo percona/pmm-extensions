@@ -2103,8 +2103,9 @@ class MyDumper(Backup):
         )
         self.backup_dir = self.backup_server_dir / self.today_str
         self.work_dir = self.backup_server_dir / (
-            f".{self.today_str}.{time.strftime('%H%M%S')}."
-            f"{os.getpid()}{PARTIAL_SUFFIX}"
+            ".{}.{}.{}{}".format(
+                self.today_str, time.strftime("%H%M%S"), os.getpid(), PARTIAL_SUFFIX
+            )
         )
         self.latest_link = self.backup_server_dir / "latest"
         self.prev_backup_dir = self.backup_server_dir / yesterday_str

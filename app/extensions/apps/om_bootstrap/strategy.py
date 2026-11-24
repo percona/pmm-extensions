@@ -133,7 +133,7 @@ class MemberConfig(BaseModel):
     bind_ip: str | None = Field(default=None, pattern=NO_CONTROL_CHARS_PATTERN)
 
     @model_validator(mode="after")
-    def _priority_matches_role(self) -> "MemberConfig":
+    def _priority_matches_role(self) -> MemberConfig:
         """Reject a priority MongoDB would refuse for this member's role.
 
         ``rs.initiate`` rejects a non-voting, hidden, or delayed member unless
@@ -192,6 +192,8 @@ class BootstrapSpec(BaseModel):
         defaults.
     :param create_admin_user: Whether the run also creates the customer's own
         administrator, alongside PMM's monitoring user.
+    :param hosts: Every host in the run, in run order: the names ``rs.initiate``
+        gives the members, which ``pre_check`` checks each host can resolve.
     """
 
     install_method: InstallMethod
@@ -205,6 +207,7 @@ class BootstrapSpec(BaseModel):
     bind_ip: str
     member_configs: dict[str, MemberConfig] = {}
     create_admin_user: bool = False
+    hosts: list[str]
 
 
 class StepAction(BaseModel):

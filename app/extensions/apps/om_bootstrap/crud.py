@@ -24,6 +24,7 @@ a documented reason — freshness columns a blanket update would silently wipe.
 design), so the manager's generic ``save``/``update`` need no override.
 """
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlmodel import col, select
@@ -32,6 +33,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.db.crud import BaseSQLModelManager
 from app.core.exceptions import HTTPNotFoundException
 from app.extensions.apps.om_bootstrap.models import BootstrapRun, BootstrapRunStatus
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql import ColumnElement
 
 __all__ = ["BootstrapRunManager"]
 
@@ -87,11 +91,12 @@ class BootstrapRunManager(BaseSQLModelManager):
         session: AsyncSession,
         *,
         status: BootstrapRunStatus | None = None,
+        replica_set_name: str | None = None,
         # pagination-ok: bounded by `limit` (capped at 100 by the route) and by
         # the number of concurrently in-flight bootstrap runs.
         limit: int = 100,
     ) -> list[BootstrapRun]:
-        """Return runs, newest first, optionally narrowed to one status.
+        """Return runs, newest first, optionally narrowed to one status or name.
 
         The intended caller is PMM's HA-leader-only stepper: on every tick, and
         especially right after a leader failover, it needs to discover every
@@ -100,10 +105,16 @@ class BootstrapRunManager(BaseSQLModelManager):
 
         :param session: The database session.
         :param status: Restrict to runs in this status. ``None`` for any status.
+        :param replica_set_name: Restrict to runs creating this replica set.
+            ``None`` for any name.
         :param limit: How many to return.
         :return: The runs.
         """
-        whereclause = () if status is None else (col(BootstrapRun.status) == status,)
+        clauses: list[ColumnElement[bool]] = []
+        if status is not None:
+            clauses.append(col(BootstrapRun.status) == status)
+        if replica_set_name is not None:
+            clauses.append(col(BootstrapRun.replica_set_name) == replica_set_name)
         return await cls.list(
-            session, *whereclause, order_by=_NEWEST_STARTED_FIRST, limit=limit
+            session, *clauses, order_by=_NEWEST_STARTED_FIRST, limit=limit
         )

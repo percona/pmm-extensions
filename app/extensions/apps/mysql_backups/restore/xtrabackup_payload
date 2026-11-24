@@ -1526,6 +1526,7 @@ class Restorer(object):  # pylint: disable=too-many-instance-attributes
         self.logger.info('>>>>>>>>>>>>>>>>>> Restore started')
 
         rst = None
+        exit_status = STATUS_OK
         for server_data in servers:
             self.backup_type = server_data.get('BACKUP_TYPE')
 
@@ -1544,16 +1545,20 @@ class Restorer(object):  # pylint: disable=too-many-instance-attributes
                     self.logger.error('Restore failed for this host')
                     rst.textfile_collector_write_status(STATUS_CRITICAL, backup_running=0)
                     rst.notify(STATUS_CRITICAL, exc.message)
+                    exit_status = STATUS_CRITICAL
                 except Exception:
                     self.logger.exception('Unhandled exception occurred')
                     rst.textfile_collector_write_status(STATUS_CRITICAL, backup_running=0)
                     rst.notify(STATUS_CRITICAL, 'Unhandled exception during restore.')
+                    exit_status = STATUS_CRITICAL
         time_spent = time.time() - start_time
         self.logger.info('>>>>>>>>>>>>>>>>>> Restore finished. Total duration: %s',
                          format_seconds_to_hhmmss(time_spent))
 
         # Release lock
         lock_file.free_lock()
+
+        return exit_status
 
 class Xtrabackup(Restore):
     """Restore Xtrabackup for individual server."""
@@ -2068,14 +2073,19 @@ class Xtrabackup(Restore):
             while True:
                 try:
                     self._query_mysql('select 1')
-                    self.logger.debug('Connection are still accepted after stopping MySQL')
-                    attempts += 1
-                    if attempts > MAX_ATTEMPTS:
-                        raise BackupError('Failed to stop MySQL in {total_attempts}'.format(total_attempts=attempts))
-                    time.sleep(SLEEP_INTERVAL)
                 except (BackupError, OperationalError):
                     self.logger.debug('MySQL is no longer accepting connections')
                     break
+                self.logger.debug('Connection are still accepted after stopping MySQL')
+                attempts += 1
+                if attempts > MAX_ATTEMPTS:
+                    raise BackupError('Failed to stop MySQL in {total_attempts}'.format(total_attempts=attempts))
+                self.logger.info(
+                    'MySQL still accepts connections after the stop command '
+                    '(port %s, or the socket set under [client] in %s). '
+                    'Checking again in %s seconds, check %s of %s',
+                    self.port, self.defaults_cnf_file, SLEEP_INTERVAL, attempts, MAX_ATTEMPTS)
+                time.sleep(SLEEP_INTERVAL)
         return proc.returncode
 
     def decrypt_decompress(self, path):
@@ -2397,7 +2407,7 @@ def main():
     options = parse_args()
 
     restore_runner = Restorer(options)
-    restore_runner.run()
+    sys.exit(restore_runner.run())
 
 def parse_args():
     """Parse Arguments"""

@@ -1,10 +1,12 @@
 # Security Review Checklist — PMM Extensions Task Execution DFD
 
+This page describes the standalone deployment (v0.13.1 and earlier) except where it says otherwise, and a version for PMM Extensions inside PMM is planned.
+
 Complete this checklist before sending customer-facing task-execution or Nomad materials.
 
 **DFD deliverables:** [`exports/pmm-extensions-task-execution-dfd.pdf`](exports/pmm-extensions-task-execution-dfd.pdf) (and optional sequence PDF)
 **Diagram sources:** `pmm-extensions-task-execution-dfd.mmd`, `pmm-extensions-task-execution-sequence.mmd`
-**Companion docs:** [`README.md`](README.md), [`../nomad-driver-deployment.md`](../nomad-driver-deployment.md)
+**Companion docs:** [`README.md`](README.md), and for PMM Extensions inside PMM, [How the sidecar runs inside PMM](../../explanation/architecture.md)
 
 ---
 
@@ -91,13 +93,13 @@ Complete this checklist before sending customer-facing task-execution or Nomad m
 | 7.1 | PDF was regenerated from the reviewed `.mmd` commit | ☐ | ☐ | |
 | 7.2 | README code-mapping table spot-checked against current codebase | ☐ | ☐ | |
 | 7.3 | Sequence diagram (if provided) consistent with main DFD | ☐ | ☐ | |
-| 7.4 | [`nomad-driver-deployment.md`](../nomad-driver-deployment.md) spot-checked against GAS `automation/nomad.yaml` and PMM Extensions job templates (if sending Nomad doc) | ☐ | ☐ | N/A if DFD only |
+| 7.4 | Nomad deployment material spot-checked against GAS `automation/nomad.yaml` and PMM Extensions job templates (if sending Nomad material) | ☐ | ☐ | N/A if DFD only |
 
 ---
 
 ## 8. Nomad driver and deployment
 
-Complete **§8** when delivering [`nomad-driver-deployment.md`](../nomad-driver-deployment.md) to the customer (with or without the DFD PDF).
+Complete **§8** when delivering Nomad deployment material for the standalone deployment to the customer (with or without the DFD PDF). This repository no longer holds a Nomad page for the standalone deployment. For PMM Extensions inside PMM, see [What the sidecar expects from Nomad](../../explanation/architecture.md#what-the-sidecar-expects-from-nomad).
 
 | # | Question | Pass | Fail | Notes |
 |---|----------|:----:|:----:|-------|
@@ -109,7 +111,7 @@ Complete **§8** when delivering [`nomad-driver-deployment.md`](../nomad-driver-
 | 8.6 | **Nomad ACL is not enabled**; API access scoped by **mTLS client certificates** is stated (no overstatement of ACL “users”) | ☐ | ☐ | |
 | 8.7 | PMM Extensions Tasks → Nomad uses **`global-client-nomad`** cert paths consistent with customer `prod-settings` / cert mount layout | ☐ | ☐ | |
 | 8.8 | Optional `sep_nomad_readable_by_all` widening of key permissions called out if enabled in customer env | ☐ | ☐ | N/A if false |
-| 8.9 | Nomad doc **engineering lead sign-off** (§8 of nomad doc) completed | ☐ | ☐ | |
+| 8.9 | Nomad material **engineering lead sign-off** completed | ☐ | ☐ | |
 
 ---
 

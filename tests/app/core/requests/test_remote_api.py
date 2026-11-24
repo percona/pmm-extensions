@@ -1259,7 +1259,7 @@ class TestDrainOnRebind:
         await remote_api.close()
 
 
-async def _achunks(chunks: list[bytes]) -> AsyncGenerator[bytes, None]:
+async def _achunks(chunks: list[bytes]) -> AsyncGenerator[bytes]:
     """Yield each chunk from ``chunks`` as an async iterator.
 
     :param chunks: The chunk payloads, in arrival order.

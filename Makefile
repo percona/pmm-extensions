@@ -12,20 +12,26 @@ export RELEASE_VER
 # versions"). Pre-installing means Poetry sees the plugin in its env and skips
 # the resolve entirely.
 POETRY_VERSION?=2.4.0
+# Poetry gets a virtualenv of its own. Installed into the project's, its
+# dependencies become importable there, and `ty` then type-checks the project
+# against packages that poetry.lock does not hold.
+POETRY_VENV?=.poetry-venv
 ifdef VIRTUAL_ENV
     VENV=${VIRTUAL_ENV}
 else
     VENV?=venv
 endif
 VENV_BIN?="${VENV}/bin"
+START_PKGS=pip wheel
 ifdef POETRY
-	START_PKGS=pip wheel
 	VIRTUAL_ENV=$$("${POETRY}" env info --path)
 	VENV=${VIRTUAL_ENV}
 	VENV_BIN="${VENV}/bin"
+	POETRY_BOOTSTRAP=true
 else
-	START_PKGS=pip wheel poetry==${POETRY_VERSION} poetry-plugin-export
-	POETRY="${VENV_BIN}/poetry"
+	POETRY="${POETRY_VENV}/bin/poetry"
+	POETRY_BOOTSTRAP={ [ -x "${POETRY_VENV}/bin/python" ] || "${VENV_BIN}"/python -m venv "${POETRY_VENV}"; } && \
+		"${POETRY_VENV}/bin/pip" install --no-cache poetry==${POETRY_VERSION} poetry-plugin-export
 endif
 PIP?="${VENV_BIN}/pip"
 APPS=tasks inventory extensions
@@ -64,13 +70,32 @@ DARWIN_DYLD = if [ "$$(uname -s)" = "Darwin" ]; then \
 # while bin/python stays on the interpreter it was built with. Every tool in it
 # then dies with ModuleNotFoundError: No module named 'encodings', one command
 # later, in something unrelated.
+#
+# The recipe is one shell command so that a virtualenv this run created is
+# removed when any later step fails. A half-built one would satisfy the guard
+# on the next run and fail the same way.
 venv: pyproject.toml poetry.lock
-	@[ ! -z "${VIRTUAL_ENV}" ] || [ -d "${VENV}" ] || { \
+	@created=0; \
+	if [ -z "${VIRTUAL_ENV}" ] && [ ! -d "${VENV}" ]; then \
+		if [ -e "${VENV}" ] || [ -L "${VENV}" ]; then \
+			echo "venv: ${VENV} exists and is not a directory" >&2; \
+			exit 1; \
+		fi; \
+		"${PYTHON}" scripts/check_python_version.py || exit 1; \
 		echo "venv: building ${VENV} with $$("${PYTHON}" -V) ($$(command -v "${PYTHON}"))"; \
-		"${PYTHON}" -m venv "${VENV}"; \
+		created=1; \
+	fi; \
+	{ \
+		{ [ "$$created" -eq 0 ] || "${PYTHON}" -m venv "${VENV}"; } && \
+		"${PIP}" install --no-cache ${START_PKGS} && \
+		${POETRY_BOOTSTRAP} && \
+		source "${VENV_BIN}"/activate && \
+		"${POETRY}" install --all-extras --all-groups; \
+	} || { \
+		status=$$?; \
+		[ "$$created" -eq 0 ] || rm -rf "${VENV}"; \
+		exit $$status; \
 	}
-	@"${PIP}" install --no-cache ${START_PKGS};
-	@source "${VENV_BIN}"/activate; "${POETRY}" install --all-extras --all-groups
 
 build: venv app/
 	@source "${VENV_BIN}"/activate; "${POETRY}" build --format wheel --output dist
@@ -90,10 +115,22 @@ builder:
 	@podman image exists "extensions:builder" && podman image rm "extensions:builder" || true
 	@buildah build -f Containerfile.base --compress --force-rm --squash --no-cache --format oci --memory 100M --isolation rootless --tag "extensions:builder"
 
+# buildah's own error for a missing base image does not name the target that
+# builds it.
+image-preflight:
+	@command -v podman > /dev/null 2>&1 && command -v buildah > /dev/null 2>&1 || { \
+		echo "image: podman and buildah are required." >&2; \
+		exit 1; \
+	}
+	@podman image exists "extensions:builder" || { \
+		echo "image: no extensions:builder image. Run 'make builder' first." >&2; \
+		exit 1; \
+	}
+
 # The app-restricted PMM-embedded image is the only artifact PMM Extensions ships. Which
 # apps survive is sidecar/settings.yaml's EXTENSIONS.APPS.
 # docker format, not oci: OCI silently discards the HEALTHCHECK instruction
-image: pack
+image: image-preflight pack
 	@podman image exists "extensions:$$RELEASE_VER" && podman image rm "extensions:$$RELEASE_VER" || true
 	@buildah build -f sidecar/Containerfile.sidecar --compress --force-rm --squash --no-cache --format docker --memory 100M --isolation rootless --build-arg EXTENSIONS_RESTRICT_APPS=1 --tag "extensions:$$RELEASE_VER"
 
@@ -108,7 +145,7 @@ ruff: venv
 # Passes no paths, so `[tool.ty.src]` stays the single definition of the surface.
 # `--python` is load-bearing: VIRTUAL_ENV is never exported, so ty would resolve
 # imports against whichever interpreter is first on PATH.
-# See docs/development/ty-policy.md under `Enforcement`.
+# See docs/reference/type-check-policy.md under `Enforcement`.
 typecheck: venv
 	@"${VENV_BIN}"/ty check --python "${VENV}"
 
@@ -118,11 +155,21 @@ typecheck: venv
 # `typecheck_diff` job: the job still fails and shows red when the branch adds a
 # diagnostic in a changed non-test Python file. It forces every `warn` rule to
 # `error` before diffing, so it reports what a severity-respecting local check does not.
-# See docs/development/ty-policy.md under `Enforcement`.
+# See docs/reference/type-check-policy.md under `Enforcement`.
 typecheck-diff: venv
 	@"${VENV_BIN}"/python -m scripts.check_ty_diff $(if $(PER_FILE),--per-file,)
 
 lint: ruff
+
+# The pages the documentation linters check. A page joins the list when it is
+# rewritten to docs/writing-standard.md; the rumdl hook in
+# .pre-commit-config.yaml carries the same list as its `files:` pattern.
+DOCS_LINT_PATHS ?= README.md CONTRIBUTING.md sidecar/README.md docs/writing-standard.md docs/app-status.md docs/tutorials docs/how-to docs/reference docs/explanation
+
+docs-lint:
+	@[ -x .vale/bin/vale ] || bash scripts/install_vale.sh
+	@.vale/bin/vale sync
+	@.vale/bin/vale $(wildcard $(DOCS_LINT_PATHS))
 
 audit: bandit pip-audit
 
@@ -149,7 +196,7 @@ form-audit: venv
 	@"${VENV_BIN}"/python -m app.extensions.apps.framework.form_audit $(AUDIT_ARGS)
 
 pip-audit: venv
-	@"${POETRY}" run pip-audit --verbose --progress-spinner=off \
+	@source "${VENV_BIN}"/activate; "${POETRY}" run pip-audit --verbose --progress-spinner=off \
 		$$($(PYTHON) -c "import tomllib,pathlib;c=tomllib.loads(pathlib.Path('pyproject.toml').read_text());print(' '.join(f'--ignore-vuln {v}' for v in c.get('tool',{}).get('pip-audit',{}).get('ignore-vulnerabilities',[])))" 2>/dev/null)
 
 bandit: venv
@@ -376,7 +423,6 @@ endif
 		| curl -sSf -k --config - \
 			-X POST "$${JENKINS_URL}/job/PMM-Extensions/job/$${jenkins_job}/buildWithParameters" \
 			--data-urlencode "releaseTag=$${tag}" \
-			--data-urlencode "pushImage=true" \
 			--data-urlencode "pushImageDocker=$(PUSH_IMAGE_DOCKER)" 2>&1; then \
 		echo "    Jenkins build triggered successfully."; \
 		if [ -n "$(WEBHOOK_URL_ENV)" ] && [ -n "$(WEBHOOK_AUTH_ENV)" ]; then \
@@ -435,4 +481,4 @@ lint-pipelines:
 	done; \
 	if [ "$${failures}" -ne 0 ]; then exit 1; fi
 
-.PHONY: venv build pack builder image format ruff typecheck typecheck-diff lint audit run-pre-commit dev-backend dev-frontend backfill-legacy-forms form-audit pip-audit bandit makemigrations makemigrations-plugin migrate checkmigrations mergemigrations test regen-specs regen-pbm-payloads regen-pbm-payloads-check regen-xtrabackup-variants regen-xtrabackup-variants-check smoke-xtrabackup-variants check-nomad-payload-size check-sidecar-purge release-prep release-rc release-stable trigger-jenkins lint-pipelines encryption-key changelog-add changelog-check changelog-list startapp startapp-check
+.PHONY: venv build pack builder image-preflight image format ruff typecheck typecheck-diff lint docs-lint audit run-pre-commit dev-backend dev-frontend backfill-legacy-forms form-audit pip-audit bandit makemigrations makemigrations-plugin migrate checkmigrations mergemigrations test regen-specs regen-pbm-payloads regen-pbm-payloads-check regen-xtrabackup-variants regen-xtrabackup-variants-check smoke-xtrabackup-variants check-nomad-payload-size check-sidecar-purge release-prep release-rc release-stable trigger-jenkins lint-pipelines encryption-key changelog-add changelog-check changelog-list startapp startapp-check

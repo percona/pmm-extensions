@@ -1991,7 +1991,7 @@ export interface paths {
     };
     /**
      * List Bootstrap Runs
-     * @description Return runs, newest first, optionally narrowed to one status.
+     * @description Return runs, newest first, optionally narrowed to one status or name.
      *
      *     The intended caller is PMM's HA-leader-only stepper. It does not persist
      *     its own copy of which runs exist or where they are, so on every tick, and
@@ -2001,6 +2001,8 @@ export interface paths {
      *
      *     :param session: The database session.
      *     :param status: Restrict to runs in this status. Omit for any status.
+     *     :param replica_set_name: Restrict to runs creating this replica set, as
+     *         PMM asks before it accepts a name for an install. Omit for any name.
      *     :param limit: How many to return.
      *     :return: The runs. Does **not** reconcile in-flight steps — unlike
      *         :func:`get_bootstrap_run`, a caller polling a specific run for the
@@ -7001,50 +7003,31 @@ export interface components {
      *     logical, physical, status, and incremental siblings.
      *
      *     :param task_name: The name of the task to be created.
-     *     :type task_name: NonEmptyStr
      *     :param hostname: The target hostname for the task execution.
-     *     :type hostname: NonEmptyStr
      *     :param service_id: The Inventory ID of the MongoDB service to connect to.
-     *     :type service_id: int
      *     :param alert_on_fail: If True, send an alert if the task fails.
-     *     :type alert_on_fail: bool
      *     :param pitr_oplog_span_min: PITR oplog span in minutes.
-     *     :type pitr_oplog_span_min: int | None
      *     :param pitr_enabled: Whether PITR is enabled.
-     *     :type pitr_enabled: bool
      *     :param pitr_compression: PITR compression algorithm.
-     *     :type pitr_compression: str | None
      *     :param storage_type: Storage backend type (``s3`` or ``filesystem``); required.
-     *     :type storage_type: str
      *     :param storage_s3_region: S3 region when ``storage_type`` is ``s3``.
-     *     :type storage_s3_region: str | None
      *     :param storage_s3_bucket: S3 bucket when ``storage_type`` is ``s3``.
-     *     :type storage_s3_bucket: str | None
      *     :param storage_s3_prefix: S3 key prefix when ``storage_type`` is ``s3``.
-     *     :type storage_s3_prefix: str | None
      *     :param storage_s3_endpoint_url: S3 endpoint URL when ``storage_type`` is ``s3``.
-     *     :type storage_s3_endpoint_url: str | None
      *     :param storage_filesystem_path: Filesystem path when ``storage_type`` is
      *         ``filesystem``.
-     *     :type storage_filesystem_path: str | None
      *     :param backup_priority: Node priority mapping as YAML.
-     *     :type backup_priority: str | None
      *     :param backup_compression: Backup snapshot compression algorithm.
-     *     :type backup_compression: CompressionAlgorithm | None
      *     :param backup_compression_level: Backup compression level.
-     *     :type backup_compression_level: int | None
      *     :param backup_timeouts_starting_status: PBM starting-status timeout in seconds.
-     *     :type backup_timeouts_starting_status: int | None
      *     :param backup_oplog_span_min: Logical backup oplog span in minutes.
-     *     :type backup_oplog_span_min: float | None
      *     :param backup_num_parallel_collections: Parallel collections for logical backup.
-     *     :type backup_num_parallel_collections: int | None
      *     :param backup_namespaces: Selective ``--ns`` namespaces for logical backups.
-     *     :type backup_namespaces: str | None
      *     :param backup_with_users_and_roles: Opt-in ``--with-users-and-roles`` for ``db.*``.
-     *     :type backup_with_users_and_roles: bool
      *     :param credentials_path: Path to MongoDB URI credentials on the Nomad node.
-     *     :type credentials_path: str | None
+     *
+     *     A key the model does not declare is rejected with ``422`` rather than
+     *     dropped, as on every task create and update body.
      */
     backup_mongo__BackupTaskWrite: {
       /**
@@ -7275,36 +7258,24 @@ export interface components {
      *     force-resync children.
      *
      *     :param task_name: The name of the task to be created.
-     *     :type task_name: NonEmptyStr
      *     :param hostname: The target hostname for the task execution.
-     *     :type hostname: NonEmptyStr
      *     :param service_id: Optional Inventory ID of the MongoDB service.
-     *     :type service_id: int | None
      *     :param backup_type: Type of backup to restore from (logical or physical).
-     *     :type backup_type: BackupType
      *     :param backup_source: Backup name or timestamp to restore from.
-     *     :type backup_source: NonEmptyStr
      *     :param restore_namespace_filter: Optional database or collection namespace
      *         filter for a logical restore.
-     *     :type restore_namespace_filter: str | None
      *     :param restore_batch_size: Number of documents to buffer.
-     *     :type restore_batch_size: int | None
      *     :param restore_num_insertion_workers: Insertion workers per collection.
-     *     :type restore_num_insertion_workers: int | None
      *     :param restore_num_parallel_collections: Parallel collections for logical restore.
-     *     :type restore_num_parallel_collections: int | None
      *     :param restore_num_download_workers: Download workers for physical restore.
-     *     :type restore_num_download_workers: int | None
      *     :param restore_max_download_buffer_mb: Max S3 download buffer in MB.
-     *     :type restore_max_download_buffer_mb: int | None
      *     :param restore_download_chunk_mb: S3 download chunk size in MB.
-     *     :type restore_download_chunk_mb: int | None
      *     :param restore_mongod_location: Custom path to mongod binaries.
-     *     :type restore_mongod_location: str | None
      *     :param restore_mongod_location_map: Per-node mongod paths as YAML.
-     *     :type restore_mongod_location_map: str | None
      *     :param credentials_path: Path to MongoDB URI credentials on the Nomad node.
-     *     :type credentials_path: str | None
+     *
+     *     A key the model does not declare is rejected with ``422`` rather than
+     *     dropped, as on every task create and update body.
      */
     backup_mongo__RestoreTaskWrite: {
       /** Backup Source */
@@ -7354,8 +7325,8 @@ export interface components {
      *     builder injects :attr:`BackupType.PGBACKREST`. The ``task_name`` / ``hostname``
      *     Task-section fields and the ``alert_on_fail`` capability control are inherited
      *     from :class:`TaskFormModel` (``alert_on_fail`` is ``Hidden``, off-schema).
-     *     ``extra="forbid"`` rejects unknown fields (for example a stale FE submitting
-     *     ``host`` / ``port``, which the payload pins itself).
+     *     Unknown fields are rejected by the inherited ``extra="forbid"`` (for example a
+     *     stale FE submitting ``host`` / ``port``, which the payload pins itself).
      */
     backup_pg__BackupPgForm: {
       /**
@@ -15649,6 +15620,7 @@ export interface operations {
     parameters: {
       query?: {
         status?: components['schemas']['om_bootstrap__BootstrapRunStatus'] | null;
+        replica_set_name?: string | null;
         limit?: number;
       };
       header?: never;

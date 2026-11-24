@@ -15,29 +15,58 @@
 
 """Define utilities shared across the task executors."""
 
+import ast
 from gzip import GzipFile
 from io import BytesIO
 
 from python_minifier import minify
 
+MINIFIER_ERRORS = (SyntaxError, ValueError, RuntimeError, TypeError, AssertionError)
+
+
+def holds_requotable_f_string(content: str) -> bool:
+    """Return whether ``content`` has an f-string the minifier could re-quote.
+
+    A string or bytes literal, or another f-string, inside a replacement field
+    is where the minifier may reuse the enclosing quote, which parses only on
+    Python 3.12 and later.
+
+    :param content: Python source.
+    :return: Whether any replacement field holds a quoted literal.
+    :raises SyntaxError: When ``content`` is not Python source.
+    :raises RecursionError: When ``content`` nests too deeply to parse.
+    """
+    for node in ast.walk(ast.parse(content)):
+        if not isinstance(node, ast.FormattedValue):
+            continue
+        for inner in ast.walk(node.value):
+            if isinstance(inner, ast.JoinedStr):
+                return True
+            if isinstance(inner, ast.Constant) and isinstance(inner.value, str | bytes):
+                return True
+    return False
+
 
 def minify_file_content(content: str, file_ext: str = "") -> str:
-    """Minify Python file content.
+    """Return Python source minified for dispatch, unless that could break old hosts.
 
-    Minify the given Python code string if the file extension is ".py" or not
-    specified. For other file types, return the content unchanged.
+    Content with a file extension other than ``py`` is returned as is. So is
+    Python source holding an f-string the minifier could re-quote: minified on
+    Python 3.12 or later, it may not parse on an executor host's older
+    interpreter. Source the minifier cannot parse or represent is returned as is
+    too, since minifying only shrinks the payload.
 
-    :param content: The content to be minified.
-    :type content: str
-    :param file_ext: The file extension indicating the type of content.
-    :type file_ext: str, optional
-    :return: The minified content if applicable, otherwise the original content.
-    :rtype: str
+    :param content: The file content.
+    :param file_ext: The file extension; anything but empty or ``py`` is returned as is.
+    :return: The minified source, or ``content`` when it is not Python, holds an
+        f-string the minifier could re-quote, or cannot be minified.
     """
     file_ext = file_ext.lstrip(".").lower()
     if file_ext and file_ext != "py":
         return content
     try:
+        if holds_requotable_f_string(content):
+            return content
         return minify(
             content,
             remove_annotations=True,
@@ -53,7 +82,7 @@ def minify_file_content(content: str, file_ext: str = "") -> str:
             remove_explicit_return_none=True,
             remove_builtin_exception_brackets=True,
         )
-    except SyntaxError:
+    except MINIFIER_ERRORS:
         return content
 
 

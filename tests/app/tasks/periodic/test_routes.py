@@ -39,6 +39,7 @@ from app.tasks.models import (
     TaskHistoryStatusEnum,
     TaskWrite,
 )
+from app.tasks.periodic.models import PERIODIC_TASK_NAME_MAX_LENGTH
 from app.tasks.reference_fence import hold_reference_collection_fence
 from tests.app.advisory_locks import isolate_reference_fence
 from tests.app.factories import TaskFactory
@@ -63,6 +64,17 @@ OVERFLOWS_CADENCE_TIMEDELTA = 2_000_000_000
 #: A ``start_time`` close enough to ``datetime.max`` that the runs after the
 #: first overflow, whatever the cadence.
 OVERFLOWS_FROM_START_TIME = "9999-12-31T23:00:00Z"
+
+#: The update body that renames a schedule to ``taken``, a name the rename tests
+#: give to another schedule first.
+RENAME_TO_TAKEN_BODY = {
+    "name": "taken",
+    "task": "my-task",
+    "start_time": None,
+    "enabled": True,
+    "description": "",
+    "interval": {"every": 10, "period": "minutes"},
+}
 
 
 async def _add_periodic_task(
@@ -1116,6 +1128,34 @@ class TestDuplicateUnnamedPeriodicTaskAttach:
         assert len(rows.all()) == 1
 
 
+class TestRenamePeriodicTaskOntoExistingName:
+    """Test that a rename cannot take another schedule's name."""
+
+    @pytest.mark.asyncio
+    async def test_rename_onto_an_existing_name_gets_409(
+        self,
+        periodic_test_client,
+        celery_beat_session: AsyncSession,
+    ):
+        """Assert renaming a schedule to a name in use is refused and changes nothing."""
+        await _add_periodic_task(celery_beat_session, name="taken", task_name="my-task")
+        renamed = await _add_periodic_task(
+            celery_beat_session, name="free", task_name="my-task"
+        )
+        response = periodic_test_client.put(
+            f"/periodic/{renamed.id}", json=RENAME_TO_TAKEN_BODY
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.json() == {
+            "detail": "PeriodicTask with the same name already exists."
+        }
+        rows = await celery_beat_session.exec(
+            select(PeriodicTask.name).order_by(PeriodicTask.name)
+        )
+        assert rows.all() == [("free",), ("taken",)]
+
+
 class TestDeletePeriodicTask:
     """Test the DELETE /periodic/{periodic_task_id} endpoint."""
 
@@ -1469,3 +1509,319 @@ async def test_update_periodic_task_answers_503_while_a_batch_holds_the_fence(
     assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
     await celery_beat_session.refresh(created_periodic_task)
     assert created_periodic_task.kwargs == original_kwargs
+
+
+@pytest.mark.postgres
+class TestDuplicatePeriodicTaskNameOnPostgres:
+    """Test that a duplicate schedule name is a conflict on a real PostgreSQL.
+
+    The beat tables belong to ``sqlalchemy_celery_beat``, which declares the
+    unique key on ``name`` without naming it. PostgreSQL reports a violation by
+    the constraint's name alone, so only a real PostgreSQL bind shows whether
+    that key is recognized; SQLite spells the column into its message.
+    """
+
+    @pytest.mark.asyncio
+    async def test_second_identical_create_answers_409(
+        self,
+        mocker,
+        postgres_session_maker,
+        postgres_celery_beat_session: AsyncSession,
+        regular_user,
+    ):
+        """Assert a repeat of an unnamed create request answers 409."""
+        isolate_reference_fence(mocker)
+        async with postgres_session_maker() as tasks_session:
+            await TaskManager.create(
+                tasks_session,
+                TaskWrite.model_validate(TaskFactory.build(name="my-task")),
+            )
+        payload = {"interval": {"every": 1, "period": "days"}, "enabled": False}
+
+        async with tasks_api_client(
+            regular_user, postgres_session_maker, postgres_celery_beat_session
+        ) as client:
+            first = await client.post("/my-task/periodic/", json=payload)
+            second = await client.post("/my-task/periodic/", json=payload)
+
+        assert first.status_code == status.HTTP_201_CREATED
+        assert second.status_code == status.HTTP_409_CONFLICT
+        assert second.json() == {
+            "detail": "PeriodicTask with the same name already exists."
+        }
+        rows = await postgres_celery_beat_session.exec(
+            select(PeriodicTask).where(PeriodicTask.name == first.json()["name"])
+        )
+        assert len(rows.all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_rename_onto_an_existing_name_answers_409(
+        self,
+        mocker,
+        postgres_session_maker,
+        postgres_celery_beat_session: AsyncSession,
+        regular_user,
+    ):
+        """Assert renaming a schedule to another schedule's name answers 409."""
+        isolate_reference_fence(mocker)
+        await _add_periodic_task(
+            postgres_celery_beat_session, name="taken", task_name="my-task"
+        )
+        renamed = await _add_periodic_task(
+            postgres_celery_beat_session, name="free", task_name="my-task"
+        )
+        renamed_id = renamed.id
+
+        async with tasks_api_client(
+            regular_user, postgres_session_maker, postgres_celery_beat_session
+        ) as client:
+            response = await client.put(
+                f"/periodic/{renamed_id}", json=RENAME_TO_TAKEN_BODY
+            )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.json() == {
+            "detail": "PeriodicTask with the same name already exists."
+        }
+        rows = await postgres_celery_beat_session.exec(
+            select(PeriodicTask.name).order_by(PeriodicTask.name)
+        )
+        assert rows.all() == [("free",), ("taken",)]
+
+
+#: A crontab whose every field lists every value. Its rendered period is longer
+#: on its own than a schedule name may be.
+EVERY_VALUE_CRONTAB = {
+    "minute": ",".join(str(minute) for minute in range(60)),
+    "hour": ",".join(str(hour) for hour in range(24)),
+    "day_of_month": ",".join(str(day) for day in range(1, 32)),
+    "month_of_year": ",".join(str(month) for month in range(1, 13)),
+    "day_of_week": ",".join(str(day) for day in range(7)),
+}
+
+
+class TestPeriodicTaskNameLength:
+    """Test the schedule name limit and the way out for a name stored over it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("length", "expected_status"),
+        [
+            pytest.param(
+                PERIODIC_TASK_NAME_MAX_LENGTH,
+                status.HTTP_201_CREATED,
+                id="at the limit",
+            ),
+            pytest.param(
+                PERIODIC_TASK_NAME_MAX_LENGTH + 1,
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                id="over it",
+            ),
+        ],
+    )
+    async def test_named_create(
+        self,
+        periodic_test_client,
+        tasks_session,
+        celery_beat_session: AsyncSession,
+        length: int,
+        expected_status: int,
+    ):
+        """Assert a name up to the limit is stored and a longer one is refused."""
+        await TaskManager.create(
+            tasks_session,
+            TaskWrite.model_validate(TaskFactory.build(name="my-task")),
+        )
+        payload = {"name": "n" * length, "interval": {"every": 1, "period": "days"}}
+
+        response = periodic_test_client.post("/my-task/periodic/", json=payload)
+
+        assert response.status_code == expected_status
+        rows = await celery_beat_session.exec(select(PeriodicTask.name))
+        if expected_status == status.HTTP_201_CREATED:
+            assert rows.all() == [("n" * length,)]
+        else:
+            assert response.json()["detail"][0]["loc"] == ["body", "name"]
+            assert rows.all() == []
+
+    @pytest.mark.asyncio
+    async def test_rename_over_the_limit_answers_422(
+        self,
+        periodic_test_client,
+        celery_beat_session: AsyncSession,
+    ):
+        """Assert a rename to a name over the limit is refused and changes nothing."""
+        renamed = await _add_periodic_task(
+            celery_beat_session, name="short", task_name="my-task"
+        )
+        renamed_id = renamed.id
+
+        response = periodic_test_client.put(
+            f"/periodic/{renamed_id}",
+            json=RENAME_TO_TAKEN_BODY
+            | {"name": "n" * (PERIODIC_TASK_NAME_MAX_LENGTH + 1)},
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.json()["detail"][0]["loc"] == ["body", "name"]
+        rows = await celery_beat_session.exec(select(PeriodicTask.name))
+        assert rows.all() == [("short",)]
+
+    @pytest.mark.asyncio
+    async def test_update_keeping_a_stored_over_long_name_answers_422(
+        self,
+        periodic_test_client,
+        celery_beat_session: AsyncSession,
+    ):
+        """Assert an update that keeps a stored over-long name is refused."""
+        legacy_name = "n" * (PERIODIC_TASK_NAME_MAX_LENGTH + 1)
+        legacy = await _add_periodic_task(
+            celery_beat_session, name=legacy_name, task_name="my-task"
+        )
+        legacy_id = legacy.id
+
+        response = periodic_test_client.put(
+            f"/periodic/{legacy_id}", json=RENAME_TO_TAKEN_BODY | {"name": legacy_name}
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.json()["detail"][0]["loc"] == ["body", "name"]
+        rows = await celery_beat_session.exec(select(PeriodicTask.name))
+        assert rows.all() == [(legacy_name,)]
+
+    @pytest.mark.asyncio
+    async def test_renaming_a_stored_over_long_name_to_a_valid_one_succeeds(
+        self,
+        periodic_test_client,
+        celery_beat_session: AsyncSession,
+    ):
+        """Assert a stored over-long name can be replaced with one that fits."""
+        legacy = await _add_periodic_task(
+            celery_beat_session,
+            name="n" * (PERIODIC_TASK_NAME_MAX_LENGTH + 1),
+            task_name="my-task",
+        )
+        legacy_id = legacy.id
+
+        response = periodic_test_client.put(
+            f"/periodic/{legacy_id}", json=RENAME_TO_TAKEN_BODY | {"name": "fits"}
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        rows = await celery_beat_session.exec(select(PeriodicTask.name))
+        assert rows.all() == [("fits",)]
+
+
+@pytest.mark.postgres
+class TestPeriodicTaskNameLengthOnPostgres:
+    """Test that a schedule name longer than its column is refused, not a 500.
+
+    The column is ``character varying(255)``, which only PostgreSQL enforces;
+    SQLite stores a longer name.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("length", "expected_status"),
+        [
+            pytest.param(255, status.HTTP_201_CREATED, id="at the limit"),
+            pytest.param(256, status.HTTP_422_UNPROCESSABLE_ENTITY, id="over it"),
+        ],
+    )
+    async def test_named_create(
+        self,
+        mocker,
+        postgres_session_maker,
+        postgres_celery_beat_session: AsyncSession,
+        regular_user,
+        length: int,
+        expected_status: int,
+    ):
+        """Assert a name up to the limit is stored and a longer one is refused."""
+        isolate_reference_fence(mocker)
+        async with postgres_session_maker() as tasks_session:
+            await TaskManager.create(
+                tasks_session,
+                TaskWrite.model_validate(TaskFactory.build(name="my-task")),
+            )
+        payload = {"name": "n" * length, "interval": {"every": 1, "period": "days"}}
+
+        async with tasks_api_client(
+            regular_user, postgres_session_maker, postgres_celery_beat_session
+        ) as client:
+            response = await client.post("/my-task/periodic/", json=payload)
+
+        assert response.status_code == expected_status
+        rows = await postgres_celery_beat_session.exec(select(PeriodicTask.name))
+        if expected_status == status.HTTP_201_CREATED:
+            assert rows.all() == [("n" * length,)]
+        else:
+            assert response.json()["detail"][0]["loc"] == ["body", "name"]
+            assert rows.all() == []
+
+    @pytest.mark.asyncio
+    async def test_rename_over_the_limit_answers_422(
+        self,
+        mocker,
+        postgres_session_maker,
+        postgres_celery_beat_session: AsyncSession,
+        regular_user,
+    ):
+        """Assert a rename to a name over the limit is refused and changes nothing."""
+        isolate_reference_fence(mocker)
+        renamed = await _add_periodic_task(
+            postgres_celery_beat_session, name="short", task_name="my-task"
+        )
+        renamed_id = renamed.id
+
+        async with tasks_api_client(
+            regular_user, postgres_session_maker, postgres_celery_beat_session
+        ) as client:
+            response = await client.put(
+                f"/periodic/{renamed_id}",
+                json=RENAME_TO_TAKEN_BODY | {"name": "n" * 256},
+            )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.json()["detail"][0]["loc"] == ["body", "name"]
+        rows = await postgres_celery_beat_session.exec(select(PeriodicTask.name))
+        assert rows.all() == [("short",)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("task_name", "schedule"),
+        [
+            pytest.param(
+                "t" * 255,
+                {"interval": {"every": 1, "period": "days"}},
+                id="longest task name",
+            ),
+            pytest.param(
+                "my-task", {"crontab": EVERY_VALUE_CRONTAB}, id="longest crontab"
+            ),
+        ],
+    )
+    async def test_unnamed_create_gets_a_name_that_fits(
+        self,
+        mocker,
+        postgres_session_maker,
+        postgres_celery_beat_session: AsyncSession,
+        regular_user,
+        task_name: str,
+        schedule: dict[str, object],
+    ):
+        """Assert an unnamed create stores a generated name that fits the column."""
+        isolate_reference_fence(mocker)
+        async with postgres_session_maker() as tasks_session:
+            await TaskManager.create(
+                tasks_session,
+                TaskWrite.model_validate(TaskFactory.build(name=task_name)),
+            )
+
+        async with tasks_api_client(
+            regular_user, postgres_session_maker, postgres_celery_beat_session
+        ) as client:
+            response = await client.post(f"/{task_name}/periodic/", json=schedule)
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert len(response.json()["name"]) <= PERIODIC_TASK_NAME_MAX_LENGTH

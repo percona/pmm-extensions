@@ -45,7 +45,7 @@ class OverridableSettingsProxy(LazyProxy[T]):
 
     __slots__ = ("_snapshot",)
 
-    def __init__(self, factory: "Callable[[], T]") -> None:
+    def __init__(self, factory: Callable[[], T]) -> None:
         super().__init__(factory)
         object.__setattr__(self, "_snapshot", _EMPTY_SNAPSHOT)
 

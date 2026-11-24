@@ -1067,7 +1067,7 @@ class BaseYamlAppSettings(BaseYamlSettings):
 
 
 @asynccontextmanager
-async def default_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: ARG001
+async def default_lifespan(app: FastAPI) -> AsyncGenerator[None]:  # noqa: ARG001
     """Define the default manager for the application's lifespan.
 
     Ensures that the active auth provider's SDK and any extra client sessions are
@@ -1094,9 +1094,9 @@ class _UnsetType:
     still letting callers explicitly set the value to ``None``.
     """
 
-    _instance: "_UnsetType | None" = None
+    _instance: _UnsetType | None = None
 
-    def __new__(cls) -> "_UnsetType":
+    def __new__(cls) -> _UnsetType:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
