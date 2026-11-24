@@ -110,6 +110,8 @@ _STEP_PARAMS: dict[str, dict[str, str]] = {
 }
 
 _SH = shutil.which("sh") or "/bin/sh"
+#: Seconds a test waits for a step's shell to start; only a failing run gets near it.
+_STEP_START_TIMEOUT = 10
 
 _REFUSED = "MongoNetworkError: connect ECONNREFUSED 127.0.0.1:27017"
 #: Which ping the stand-in mongod first answers in the readiness-wait tests.
@@ -266,15 +268,19 @@ class TestBuildStep:
             env={"PATH": str(bin_dir), "TMPDIR": str(scratch)},
             start_new_session=True,
         )
-        for _ in range(100):
-            if any(scratch.iterdir()):
-                break
-            time.sleep(0.05)
-        assert any(scratch.iterdir())
+        try:
+            deadline = time.monotonic() + _STEP_START_TIMEOUT
+            while not any(scratch.iterdir()) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert any(scratch.iterdir())
 
-        os.killpg(step.pid, signal.SIGTERM)
+            os.killpg(step.pid, signal.SIGTERM)
 
-        assert step.wait(timeout=10) == 128 + signal.SIGTERM
+            assert step.wait(timeout=10) == 128 + signal.SIGTERM
+        finally:
+            if step.poll() is None:
+                os.killpg(step.pid, signal.SIGKILL)
+                step.wait()
         assert list(scratch.iterdir()) == []
 
     def test_configure_repository_uses_dnf_on_rocky(self) -> None:
