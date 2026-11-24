@@ -137,6 +137,20 @@ def _failed_record() -> dict:
     return {"status": "failed", "error": "connection refused"}
 
 
+def _install_node_subject(subject_key: str, host: str) -> dict:
+    """Build one stored install-node scan subject, which carries no service.
+
+    :param subject_key: The key the subject's observation lands under.
+    :param host: The subject's host address.
+    :return: The subject as a JSON-shaped dict.
+    """
+    return {
+        "subject_kind": ObservationSubjectKind.INSTALL_NODE.value,
+        "subject_key": subject_key,
+        "host": host,
+    }
+
+
 def _host_result(host: str, records: dict[str, dict] | None = None) -> HostProbeResult:
     """Build a probe result carrying a host record with scan output.
 
@@ -278,6 +292,53 @@ class TestRunScan:
         assert kept["database.set_name"] == "rs0"
         assert kept["database.config_sha256"] == "a" * 64
         assert kept["binary_version"] == "7.0.14"
+        assert "process.argv" not in kept
+
+    @pytest.mark.asyncio
+    async def test_folds_in_host_readiness_facts_for_an_install_node(
+        self, session: AsyncSession
+    ) -> None:
+        """Carry an install node's host readiness facts, dropping the unlisted ones.
+
+        :param session: The database session.
+        """
+        run = await ProbeRunManager.save(
+            session,
+            ProbeRun(
+                profile=ScanProfile.INSTALL_CHECK,
+                subjects=[_install_node_subject("node-a", "host-a")],
+            ),
+        )
+        result = HostProbeResult(
+            executor_host="host-a",
+            host_record={
+                "system": {"os_id": "ubuntu", "os_version_id": "22.04"},
+                "repo": {"reachable": True, "error": None},
+                "install_readiness": {
+                    "package_manager": "apt",
+                    "data_dir_free_bytes": 50 * 1024**3,
+                },
+                "process": {"running": False, "argv": ["--keyFile", "/etc/mongod.key"]},
+            },
+            records={},
+        )
+
+        async with _patched(session, {"host-a": result}) as ingest:
+            await run_scan(run.id)
+
+        kwargs = ingest.await_args.kwargs
+        assert kwargs["subject_kind"] is ObservationSubjectKind.INSTALL_NODE
+        probe_facts = kwargs["probe_facts"]
+        assert probe_facts is not None
+        kept = ingestible_facts(probe_facts["facts"], probe_facts["classes"])
+        assert kept["repo.reachable"] is True
+        assert kept["install_readiness.package_manager"] == "apt"
+        assert kept["install_readiness.package_manager_present"] is True
+        assert kept["install_readiness.data_dir_free_bytes"] == 50 * 1024**3
+        assert kept["install_readiness.no_mongod"] is True
+        assert kept["system.os_id"] == "ubuntu"
+        assert kept["process.running"] is False
+        assert "repo.error" not in kept
         assert "process.argv" not in kept
 
     @pytest.mark.asyncio
