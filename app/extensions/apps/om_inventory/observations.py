@@ -37,11 +37,12 @@ from app.extensions.apps.om_inventory.models import (
     ObservationSubjectKind,
     ScanProfile,
 )
+from app.extensions.apps.om_inventory.scan_facts import collect_scan_facts
 from app.extensions.apps.shared.om.classification import FactClass, ingestible_facts
 from app.extensions.apps.shared.om.config import om_schema
 from app.extensions.config import extensions_settings
 
-__all__ = ["ingest_observation"]
+__all__ = ["ingest_collected", "ingest_observation"]
 
 
 async def ingest_observation(
@@ -89,3 +90,54 @@ async def ingest_observation(
         literal(ingestible, postgresql.JSONB(astext_type=Text())),
     )
     return (await session.exec(select(call))).one()
+
+
+async def ingest_collected(
+    session: AsyncSession,
+    *,
+    subject_kind: ObservationSubjectKind,
+    subject_key: str,
+    profile: ScanProfile,
+    scan_id: UUID,
+    collected_at: datetime,
+    systemd_units: Mapping[str, str],
+    pbm_status: str | None,
+    probe_facts: Mapping[str, Any] | None = None,
+) -> bool:
+    """Parse a scan's captured host output and store it as an observation.
+
+    The seam the scan dispatch calls once it has a subject's captured output: it
+    parses the systemd and PBM output and folds in the estate payload's facts with
+    :func:`~app.extensions.apps.om_inventory.scan_facts.collect_scan_facts`, then
+    records the result through :func:`ingest_observation`, which drops anything secret
+    on the way in. The caller commits the session.
+
+    :param session: The session to record through; the caller commits it.
+    :param subject_kind: What ``subject_key`` names.
+    :param subject_key: The opaque key pmm-managed sent with the scan request.
+    :param profile: The scan profile the facts were collected under; never
+        :attr:`ScanProfile.MONITORED`.
+    :param scan_id: The run that produced the facts; its profile must match.
+    :param collected_at: When the host collected the facts.
+    :param systemd_units: Each unit's captured ``systemctl show`` output, by unit name.
+    :param pbm_status: The captured ``pbm status --out json`` output, or ``None``.
+    :param probe_facts: The estate payload's facts and classes, or ``None``.
+    :return: Whether the observation was applied, which is ``False`` when a newer
+        result for the subject already exists.
+    :raises json.JSONDecodeError: When ``pbm_status`` is not valid JSON.
+    :raises sqlalchemy.exc.DBAPIError: When the composite foreign key or a
+        constraint refuses the row.
+    """
+    facts, classes = collect_scan_facts(
+        systemd_units=systemd_units, pbm_status=pbm_status, probe_facts=probe_facts
+    )
+    return await ingest_observation(
+        session,
+        subject_kind=subject_kind,
+        subject_key=subject_key,
+        profile=profile,
+        scan_id=scan_id,
+        collected_at=collected_at,
+        facts=facts,
+        classes=classes,
+    )

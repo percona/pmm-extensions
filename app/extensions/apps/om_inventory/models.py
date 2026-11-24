@@ -47,7 +47,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import (
     CheckConstraint,
     Column,
@@ -67,7 +67,7 @@ from sqlmodel.sql.sqltypes import AutoString
 
 from app.core.db.models import BaseSQLModel, BaseUUIDSQLModel, DateTimeWithTimezone
 from app.core.utils.date_time import utc_now
-from app.core.utils.fields import UTCDatetime
+from app.core.utils.fields import NonEmptyStr, UTCDatetime
 
 #: The symbolic schema every table here declares. See the module docstring for why it
 #: is spelled rather than imported.
@@ -480,6 +480,8 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
         the run was only ever asked about one host — and because the single-flight
         guard has nothing to compare against.
     :param error: The failure detail when the sweep itself raised.
+    :param idempotency_key: The key a scan request carried, so a retried request
+        fulfils once; ``None`` for the scheduled estate sweep, which carries none.
     """
 
     __tablename__ = "om_inventory_run"
@@ -496,6 +498,10 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
         # The composite-FK target OmObservation references, so an observation can
         # cite only a run of its own profile.
         UniqueConstraint("id", "profile", name="uq_om_inventory_run_id_profile"),
+        # A scan request fulfils once: a repeat with the same key finds this run
+        # rather than starting a second. NULLs are distinct, so the scheduled sweep's
+        # absent key never collides with another's.
+        Index("ix_om_inventory_run_idempotency_key", "idempotency_key", unique=True),
         {"schema": OM_SCHEMA},
     )
 
@@ -578,6 +584,7 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
         ),
     )
     error: str | None = SQLField(default=None)
+    idempotency_key: str | None = SQLField(default=None, sa_type=Text)
 
 
 class OmObservation(BaseSQLModel, table=True):
@@ -933,3 +940,57 @@ class HostResponse(FreshnessResponse):
     address: str | None = None
     executor_host: str | None = None
     services: list[ServiceResponse] = Field(default_factory=list)
+
+
+class ScanWrite(BaseModel):
+    """Ask om_inventory to scan one subject under a profile.
+
+    pmm-managed posts this to request a scan: the profile picks the fact set and the
+    credential, the idempotency key folds a retried request into one fulfilment, and
+    the subject is named as a driver operation or a managed cluster, exactly one of
+    the two. The ``monitored`` profile is the estate sweep and has its own path, so it
+    is not a scan a request may ask for.
+
+    :param profile: The scan profile, one of the observation profiles and never
+        ``monitored``.
+    :param idempotency_key: The key that makes a retried request fulfil once.
+    :param operation_id: The driver operation the scan is for, when the subject is an
+        operation.
+    :param cluster_id: The managed cluster the scan is for, when the subject is a
+        cluster.
+    """
+
+    profile: ScanProfile
+    idempotency_key: NonEmptyStr
+    operation_id: str | None = None
+    cluster_id: str | None = None
+
+    @model_validator(mode="after")
+    def _check_subject_and_profile(self) -> "ScanWrite":
+        """Require a scan profile and exactly one subject.
+
+        :return: The validated request.
+        :raises ValueError: When the profile is ``monitored`` or the request names
+            neither or both of an operation and a cluster.
+        """
+        if self.profile not in ScanProfile.observation_profiles():
+            raise ValueError("profile must name a scan, not the monitored sweep")
+        if (self.operation_id is None) == (self.cluster_id is None):
+            raise ValueError("exactly one of operation_id or cluster_id is required")
+        return self
+
+
+class ObservationResponse(BaseModel):
+    """Return one subject's current facts and when they were collected.
+
+    The single ``collected_at`` dates every fact in ``facts``; pmm-managed's start
+    gate drops a fact older than its declared max age, so the age must travel with the
+    facts. The facts are secret-free by contract, classified on the host before they
+    were stored.
+
+    :param facts: The subject's non-secret facts, by fact name.
+    :param collected_at: When the host collected them.
+    """
+
+    facts: dict[str, Any] = Field(default_factory=dict)
+    collected_at: UTCDatetime

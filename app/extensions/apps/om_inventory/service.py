@@ -109,6 +109,10 @@ SWITCHED_OFF_DETAIL = "Operations Inventory is switched off"
 AUTO_SCAN_OFF_DETAIL = "Automatic scans are off"
 """Why a scheduled sweep was skipped while ``AUTO_SCAN`` is off."""
 
+SCAN_PENDING_DISPATCH_DETAIL = "scan not run: on-host collection is not yet available"
+"""Why a requested scan is recorded ``SKIPPED``: :func:`run_scan` records the run and
+the collectors and ingest seam are built, but the host dispatch that runs them is not."""
+
 HEARTBEAT_INTERVAL = RUN_LEASE / 4
 """How often a sweep writes its run to show it is alive."""
 
@@ -1425,4 +1429,34 @@ async def run_probe(
         outcome.resolved,
         outcome.answered,
     )
+    return run_id
+
+
+async def run_scan(run_id: UUID) -> UUID:
+    """Run one requested scan and record its subjects' observations.
+
+    The run row is created by ``POST /scans`` before the work starts, so this renews
+    its lease, then - once the host dispatch is built - collects each subject's facts
+    and stores them through
+    :func:`~app.extensions.apps.om_inventory.observations.ingest_collected`. The
+    host-side step that runs the scan payload on each member and captures its output
+    is not wired yet, so until it is the run is recorded ``SKIPPED`` with the reason
+    named rather than left ``RUNNING`` to hold the subjects until its lease runs out.
+
+    :param run_id: The scan run's id, created by the scans endpoint.
+    :return: The run's id.
+    """
+    session_maker = get_async_session_maker()
+    async with session_maker() as session:
+        if not await touch_run(session, run_id):
+            logger.info(
+                "OM inventory: scan %s not started -- it is no longer running", run_id
+            )
+            return run_id
+        if await skip_running_run(session, run_id, SCAN_PENDING_DISPATCH_DETAIL):
+            logger.info(
+                "OM inventory: scan %s skipped -- %s",
+                run_id,
+                SCAN_PENDING_DISPATCH_DETAIL,
+            )
     return run_id

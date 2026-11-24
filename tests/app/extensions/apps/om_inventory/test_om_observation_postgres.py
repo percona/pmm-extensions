@@ -46,7 +46,10 @@ from app.extensions.apps.om_inventory.models import (
     ProbeRun,
     ScanProfile,
 )
-from app.extensions.apps.om_inventory.observations import ingest_observation
+from app.extensions.apps.om_inventory.observations import (
+    ingest_collected,
+    ingest_observation,
+)
 from app.extensions.apps.shared.om.classification import FactClass
 from app.extensions.apps.shared.om.config import om_schema
 from app.extensions.config import extensions_settings
@@ -208,3 +211,33 @@ async def test_the_composite_fk_refuses_a_cross_profile_run(
             classes={"host": FactClass.PUBLIC},
         )
     await observation_session.rollback()
+
+
+async def test_ingest_collected_parses_and_stores_scan_output(
+    observation_session: AsyncSession,
+) -> None:
+    """Parse captured systemd, PBM and payload output and store it as one document."""
+    run = await _seed_run(observation_session, ScanProfile.MANAGED)
+    applied = await ingest_collected(
+        observation_session,
+        subject_kind=ObservationSubjectKind.MEMBER,
+        subject_key="m1",
+        profile=ScanProfile.MANAGED,
+        scan_id=run.id,
+        collected_at=utc_now(),
+        systemd_units={"mongod.service": "ActiveState=active\nSubState=running"},
+        pbm_status=json.dumps(
+            {"backups": {"storage": {"type": "s3"}}, "nodes": [{"h": "a"}]}
+        ),
+        probe_facts={
+            "facts": {"installed_version": "7.0.14"},
+            "classes": {"installed_version": FactClass.PUBLIC},
+        },
+    )
+    await observation_session.commit()
+    assert applied is True
+
+    stored = await _stored(observation_session, "m1")
+    assert stored.facts["unit.mongod.service.active_state"] == "active"
+    assert stored.facts["pbm.storage_type"] == "s3"
+    assert stored.facts["installed_version"] == "7.0.14"

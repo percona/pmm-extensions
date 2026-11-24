@@ -76,9 +76,10 @@ from app.core.settings_override.api import (
     SettingResponse,
     SettingsPatch,
 )
+from app.core.utils.date_time import utc_now
 from app.core.utils.fields import UTCDatetime
 from app.extensions.apps.framework.api import schema_endpoint
-from app.extensions.apps.om_inventory.celery import run_om_probe
+from app.extensions.apps.om_inventory.celery import run_om_probe, run_om_scan
 from app.extensions.apps.om_inventory.config import (
     om_inventory_settings,
     OmInventorySettings,
@@ -90,6 +91,7 @@ from app.extensions.apps.om_inventory.crud import (
     delete_service,
     fail_running_run,
     get_host,
+    get_observation,
     get_run,
     get_service,
     list_services,
@@ -97,10 +99,13 @@ from app.extensions.apps.om_inventory.crud import (
     OmServiceManager,
     ProbeRunManager,
     recent_runs,
+    run_by_idempotency_key,
 )
 from app.extensions.apps.om_inventory.models import (
     EnabledWrite,
     HostResponse,
+    ObservationResponse,
+    ObservationSubjectKind,
     OmHost,
     OmService,
     ProbeCounts,
@@ -110,6 +115,8 @@ from app.extensions.apps.om_inventory.models import (
     ProbeRunDetail,
     ProbeRunFailingNode,
     ProbeRunResponse,
+    ScanProfile,
+    ScanWrite,
     ServiceResponse,
     TriggerRequest,
 )
@@ -629,6 +636,136 @@ async def _queue_sweep(
         await fail_running_run(session, run.id, QUEUE_UNAVAILABLE_DETAIL)
         raise HTTPServiceUnavailableException(detail=QUEUE_UNAVAILABLE_DETAIL) from exc
     return run
+
+
+def _operation_uuid(operation_id: str | None) -> UUID | None:
+    """Read a scan request's operation id as a UUID for the run's trace link.
+
+    The operation id arrives as an opaque string; a value that is not a UUID is left
+    off the run rather than failing the request, since ``requested_by_operation`` is a
+    trace link and the idempotency key already identifies the request.
+
+    :param operation_id: The scan request's operation id, or ``None``.
+    :return: The id as a UUID, or ``None`` when it is absent or not a UUID.
+    """
+    if operation_id is None:
+        return None
+    try:
+        return UUID(operation_id)
+    except ValueError:
+        return None
+
+
+@router.post("/scans", status_code=http_status.HTTP_202_ACCEPTED)
+@require_minimum_role(UserRole.ADMIN)
+@admit_service_principal
+async def request_scan(body: ScanWrite, session: SessionDep) -> ProbeRunAccepted:
+    """Request a scan of one subject, fulfilling once per idempotency key.
+
+    pmm-managed posts here to have om_inventory scan a managed cluster on the settings
+    cadence, or an operation's subject before a step runs. A repeat carrying the same
+    idempotency key finds the run already recorded under it rather than starting a
+    second, so a retried request fulfils once; the unique key settles a race between
+    two requests arriving together. Admins act in Operations for MongoDB, so the route
+    is admin-gated, and it also admits the service principal, which is how the
+    scheduler and the driver call it.
+
+    Answered with ``202``: a scan dispatches host work and is never performed on the
+    request path. The run's host collection is not wired yet, so :func:`run_scan`
+    records the run ``SKIPPED`` for now; the route, the dedupe and the recording are
+    the parts in use.
+
+    :param body: The scan request: its profile, idempotency key and subject.
+    :param session: The database session.
+    :raises HTTPServiceUnavailableException: When ``ENABLED`` is off, or the scan
+        could not be queued, in which case its run is recorded failed.
+    :return: The queued, or already-recorded, scan run.
+    """
+    if not om_inventory_settings.ENABLED:
+        raise HTTPServiceUnavailableException(detail=SWITCHED_OFF_DETAIL)
+
+    existing = await run_by_idempotency_key(session, body.idempotency_key)
+    if existing is not None:
+        return ProbeRunAccepted(
+            run_id=existing.id,
+            status=str(existing.status),
+            started_at=existing.started_at,
+            scope=existing.scope,
+        )
+
+    try:
+        run = await ProbeRunManager.save(
+            session,
+            ProbeRun(
+                profile=body.profile,
+                idempotency_key=body.idempotency_key,
+                requested_by_operation=_operation_uuid(body.operation_id),
+                updated_at=utc_now(),
+            ),
+        )
+    except HTTPConflictException:
+        # A request under the same key won the unique index between the read above
+        # and this write; return the run it recorded rather than a conflict.
+        won = await run_by_idempotency_key(session, body.idempotency_key)
+        if won is None:
+            raise
+        return ProbeRunAccepted(
+            run_id=won.id,
+            status=str(won.status),
+            started_at=won.started_at,
+            scope=won.scope,
+        )
+
+    try:
+        run_om_scan.delay(str(run.id))
+    except (OSError, KombuError) as exc:
+        logger.exception("OM inventory: could not queue scan %s", run.id)
+        await fail_running_run(session, run.id, QUEUE_UNAVAILABLE_DETAIL)
+        raise HTTPServiceUnavailableException(detail=QUEUE_UNAVAILABLE_DETAIL) from exc
+    return ProbeRunAccepted(
+        run_id=run.id,
+        status=str(run.status),
+        started_at=run.started_at,
+        scope=run.scope,
+    )
+
+
+@router.get("/observations/{subject_key}")
+async def get_subject_observation(
+    subject_key: str,
+    session: SessionDep,
+    subject_kind: Annotated[
+        ObservationSubjectKind,
+        Query(description="What the subject key names."),
+    ],
+    profile: Annotated[
+        ScanProfile,
+        Query(description="The scan profile the facts were collected under."),
+    ],
+) -> ObservationResponse:
+    """Return a subject's current facts, and when they were collected.
+
+    The contract pmm-managed's start gate reads: it recomputes its report digest from
+    these facts and drops any older than the fact's declared max age, so a subject no
+    scan has reported must read as absent. The facts are secret-free, dropped on the
+    host before they were stored.
+
+    :param subject_key: The opaque key pmm-managed sent with the scan request.
+    :param session: The database session.
+    :param subject_kind: What ``subject_key`` names.
+    :param profile: The scan profile the facts were collected under.
+    :raises HTTPNotFoundException: When no scan has reported the subject, which
+        pmm-managed reads as absent rather than an error.
+    :return: The subject's facts and their collection time.
+    """
+    observation = await get_observation(session, subject_kind, subject_key, profile)
+    if observation is None:
+        raise HTTPNotFoundException(
+            detail=f"No {profile.value} observation for {subject_key}"
+        )
+    return ObservationResponse(
+        facts=observation.facts, collected_at=observation.collected_at
+    )
 
 
 @router.get("/config")
