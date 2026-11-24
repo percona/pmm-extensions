@@ -1,0 +1,5 @@
+{
+  "kind": "workspace",
+  "in_tree": true,
+  "checks": ["same_bytes", "app_check", "person", "nothing_published"]
+}

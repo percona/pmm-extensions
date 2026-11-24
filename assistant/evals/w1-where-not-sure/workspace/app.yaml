@@ -1,0 +1,12 @@
+key: duplicate_keys
+name: Duplicate Indexes
+does: Finds duplicate and redundant indexes with pt-duplicate-key-checker.
+database: mysql
+repository:
+commit:
+maintainer:
+ran-on: ["3.10.0"]
+needs-on-host:
+  - percona-toolkit 3.5 or later
+  - a [client] section in the option file of the user that runs the tool
+reviewed-by-percona: false

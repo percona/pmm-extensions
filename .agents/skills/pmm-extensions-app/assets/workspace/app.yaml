@@ -1,0 +1,12 @@
+# One app of PMM Extensions that is not part of PMM: who owns it, where it is,
+# and what it ran on. The fields are those of one entry in a list of apps.
+key:
+name:
+does:
+database:
+repository:
+commit:
+maintainer:
+ran-on: []
+needs-on-host: []
+reviewed-by-percona: false

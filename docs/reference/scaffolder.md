@@ -10,6 +10,12 @@ make startapp NAME=<name> [VARIABLE=<value> ...]
 
 The target runs `app/extensions/apps/framework/scaffold.py` with the project's Python interpreter.
 
+The script imports nothing outside the standard library, so it also runs without the virtualenv. Each variable of the table below is an option of the script: `NAME` is `--name`, `DISPLAY_NAME` is `--display-name`, and `NO_INPUT` is `--no-input`.
+
+```bash
+python3 app/extensions/apps/framework/scaffold.py --name diskfree --type task --no-input --command df
+```
+
 ## How it asks for values
 
 | Situation | Behavior |
@@ -51,6 +57,10 @@ A default record name that differs from the display name is what lets a new `tas
 |---|---|---|
 | `run-command` | A `RunCommandSpec`: a program name and an argument string built from the form's `ArgFormat` fields. | A program that is already on the host. |
 | `run-python` | A `RunPythonSpec`: a serialized configuration, a list of pip requirements and a `file://` payload address. | A Python payload that is sent with the task. |
+
+The generated `run-command` builder does not point the program at the service that the user picked. `resolved.service` holds that service, with `node.address` and `port`. A tool that connects to a database takes them as its own options: `build_checksums_arg_prefix` in `app/extensions/apps/checksums/spec.py` builds them for `pt-table-checksum`.
+
+A `run-python` payload travels with each task. It must stay under 16 KiB after it is minified and compressed, and a commit check, `scripts/check_nomad_payload_size.py`, measures it. A longer script belongs in a `script` app, which keeps the script as a file of its own.
 
 ## Generated files
 

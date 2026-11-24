@@ -8,9 +8,11 @@ PMM Extensions is a FastAPI application with three mounted sub-applications, eac
 
 - `app/inventory/` — nodes, services, schemas, tables; mounted at `/api/inventory`.
 - `app/tasks/` — task execution, the Nomad and Celery executors, periodic tasks; mounted at `/api/tasks`.
-- `app/extensions/` — the PMM Extensions API gateway, OAuth, apps; mounted at `/`. It serves the React SPA's static assets, not server-rendered pages.
+- `app/extensions/` — the PMM Extensions API gateway, OAuth, apps; mounted at `/`. Inside PMM it serves the API only: the pages that a user sees are part of PMM's UI, in the `percona/pmm` repository (`docs/explanation/architecture.md`, "Where the UI lives").
 
-PMM Extensions apps are FastAPI routers under `app/extensions/apps/<name>/` with `routes.py`, `deps.py`, and optional `models.py`. `Annotated[..., Depends(...)]` aliases live in `deps.py`.
+A PMM Extensions app is a package under `app/extensions/apps/<name>/` that exports one app object from `app.py`. The framework derives the app's routes, its form and its validation from that object and from the form model in `models.py` (`docs/explanation/app-framework.md`). `Annotated[..., Depends(...)]` aliases live in `deps.py`.
+
+To build, port or fix an app with a person who does not write Python, follow the skill in `.agents/skills/pmm-extensions-app/SKILL.md`.
 
 The UI is **API-first + React** — see `api-first.instructions.md` for rules that apply when a PR touches the API gateway, app schemas, or `frontend/packages/`. The server-rendered Jinja2 layer has been removed; the only Jinja left renders the report PDF.
 
