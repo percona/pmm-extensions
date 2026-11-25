@@ -1508,6 +1508,7 @@ PROBE_FACT_ALLOWLIST: frozenset[str] = frozenset(
         "database.is_arbiter",
         "database.set_name",
         "database.state",
+        "database.config_sha256",
     }
 )
 

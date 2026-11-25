@@ -263,7 +263,7 @@ class TestRunScan:
         )
         record = {
             "binary_version": "7.0.14",
-            "database": {"set_name": "rs0", "state": 1},
+            "database": {"set_name": "rs0", "state": 1, "config_sha256": "a" * 64},
             "process": {"running": True, "argv": ["--keyFile", "/etc/mongod.key"]},
         }
         results = {"host-a": _host_result("host-a", records={"svc-m-1": record})}
@@ -276,6 +276,7 @@ class TestRunScan:
         assert probe_facts is not None
         kept = ingestible_facts(probe_facts["facts"], probe_facts["classes"])
         assert kept["database.set_name"] == "rs0"
+        assert kept["database.config_sha256"] == "a" * 64
         assert kept["binary_version"] == "7.0.14"
         assert "process.argv" not in kept
 
