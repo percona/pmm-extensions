@@ -26,7 +26,7 @@ The stack listens on `127.0.0.1` only. These variables change it:
 | `PMM_VERSION` | `3.10.0` | The version of PMM, PMM Extensions and PMM Client. All three use the same one. |
 | `PMM_PORT` | `8443` | The port on `127.0.0.1` where PMM listens. |
 | `PMM_ADMIN_PASSWORD` | `admin` | The password of PMM's `admin` user. |
-| `PMM_EXTENSIONS_IMAGE` | `percona/pmm-extensions:<PMM_VERSION>` | The PMM Extensions image, for an image that you built. |
+| `PMM_EXTENSIONS_IMAGE` | `percona/pmm-extensions:<PMM_VERSION>` | The PMM Extensions image. Set it for a release candidate or for an image that you built. |
 | `DEV_DATABASE_PASSWORD` | `pmm-extensions-dev` | The password of every database account on the database hosts. Use letters, digits, `-` and `_` only: the hosts write it into SQL and into option files as it is. |
 
 The default passwords are public. On a machine that other people can sign in to, set both passwords before the first start.
@@ -181,9 +181,93 @@ PMM Extensions copies the services from PMM's inventory every 15 minutes. A new 
 
    The output is `success`. While the backup runs, it is `running`.
 
+## Run a task with one command
+
+`sidecar/dev/run-task.py` makes the calls of the last three sections for you. It needs Python 3.11 or later, and no virtualenv.
+
+1. Write the create request to a file, `second-backup.json`. Name the service in `service`, and the script looks up its identifier:
+
+   ```json
+   {
+     "task_name": "second-backup",
+     "hostname": "mysql-host",
+     "service": "dev-mysql",
+     "backup_type": "X",
+     "backup_dir": "/var/backups/dev"
+   }
+   ```
+
+2. Run the task:
+
+   ```bash
+   python3 sidecar/dev/run-task.py --app mysql_backups --body second-backup.json
+   ```
+
+   The script creates the task, runs it, and waits for its end. It prints the task's record, and then what the tool printed on the host. The record starts with the status:
+
+   ```text
+   {
+     "name": "second-backup",
+     "status": "success",
+   ```
+
+   The last line of the output is the result:
+
+   ```text
+   data: {"status": "success"}
+   ```
+
+The exit status tells how the run ended:
+
+| Exit status | Meaning |
+|---|---|
+| 0 | The task ended with the status `success`. |
+| 1 | The task ended with another status. The output still holds what the tool printed. |
+| 2 | The API refused a request. The message is the API's own. An unknown service name lists the names that PMM has. |
+| 3 | The task did not end within `--timeout` seconds. The default is 600. |
+
+The script reads `PMM_PORT` and `PMM_ADMIN_PASSWORD`, or takes `--port` and `--password`. It never deletes a task, so a second run needs another `task_name`.
+
+To see which fields an app's form has, give `--schema` in place of `--body`:
+
+```bash
+python3 sidecar/dev/run-task.py --app mysql_backups --schema
+```
+
+The output has one line for each field, with its type, whether it is required, its default and its choices. A field's description follows on a line of its own:
+
+```text
+Task
+  task_name  string  required
+  hostname  host  required
+  service_id  service  required
+```
+
 ## Run the code in your checkout
 
 The stack runs the code inside the released image. A second Compose file runs your checkout's code in its place. It mounts three paths into the `pmm-extensions` container, read-only: `app/`, `snippets/` and `sidecar/settings.yaml`.
+
+The mount needs an image whose Python can run your checkout's code. [Set up a development environment](set-up-a-development-environment.md#prerequisites) names the Python version that the checkout needs. When the image's Python is older than that, the `pmm-extensions` container does not start. This happens when `main` moves to a newer Python before a release has it.
+
+Then use a release candidate of the next version. Release candidates are published as `perconalab/pmm-extensions`. The tag is the version, `-rc` and the number of the candidate, such as `3.11.0-rc1`. The tag without the number, such as `3.11.0-rc`, names the newest candidate of that version.
+
+Set the image before the first step. For example, while `3.10.0` was the default version, a checkout of `main` ran on the first candidate of `3.11.0`:
+
+```bash
+export PMM_EXTENSIONS_IMAGE=perconalab/pmm-extensions:3.11.0-rc1
+```
+
+The shell keeps the variable for every later command of this page. Another shell needs the same line again, or its next command puts the default image back. PMM itself stays at `PMM_VERSION`.
+
+To see the Python of an image, run:
+
+```bash
+docker run --rm --entrypoint python3 perconalab/pmm-extensions:3.11.0-rc1 --version
+```
+
+When no candidate has the Python that your checkout needs, build an image from your checkout and set `PMM_EXTENSIONS_IMAGE` to it: see [Build the image](get-an-app-into-a-pmm-release.md#build-the-image).
+
+When the default image's Python can run your checkout, leave the variable unset. `unset PMM_EXTENSIONS_IMAGE` removes it from the shell.
 
 1. Start the stack with the second file:
 
@@ -205,7 +289,7 @@ With your checkout's code, PMM's UI shows a banner that says PMM Server and PMM 
 
 Your checkout's schema steps change the database, and the released code cannot use a database that newer code changed. To go back to the released code, remove the data first: see [Stop and remove](#stop-and-remove).
 
-The second file replaces code. It does not install packages. When your checkout needs a Python package that the released image lacks, the container fails to start. Build an image from your checkout and set `PMM_EXTENSIONS_IMAGE` to it: see [Get an app into a PMM release](get-an-app-into-a-pmm-release.md).
+The second file replaces code. It does not install packages. When your checkout needs a Python package that the image lacks, the container fails to start. Build an image from your checkout and set `PMM_EXTENSIONS_IMAGE` to it: see [Get an app into a PMM release](get-an-app-into-a-pmm-release.md).
 
 ## Use your own database host
 

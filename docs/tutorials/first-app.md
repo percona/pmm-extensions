@@ -111,6 +111,8 @@ Inside PMM, PMM Extensions serves the apps that `sidecar/settings.yaml` lists.
 
 ## Start the local PMM with your code
 
+The steps mount your checkout's code, as [Run the code in your checkout](../how-to/run-in-local-pmm.md#run-the-code-in-your-checkout) explains. When your checkout needs a newer Python than the image has, that section says which image to set first.
+
 1. Start PMM, PMM Extensions and a MySQL host, with your checkout's code in place of the released code:
 
    ```bash

@@ -162,6 +162,8 @@ Two test files repeat the list of items. Without this step, four tests fail.
 
 The local PMM can serve a UI from a directory in place of the UI inside the PMM image.
 
+Step 1 also mounts your checkout's code, as [Run the code in your checkout](run-in-local-pmm.md#run-the-code-in-your-checkout) explains. When your checkout needs a newer Python than the image has, that section says which image to set first.
+
 1. From the root of your `pmm-extensions` checkout, start the local PMM with one more Compose file. Set `PMM_UI_DIST` to the full path of the build:
 
    ```bash

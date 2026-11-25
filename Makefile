@@ -370,6 +370,14 @@ startapp:
 startapp-check:
 	@$(DARWIN_DYLD) "${VENV_BIN}"/python scripts/startapp_check.py
 
+# Every check CI asks of one app: `make app-check NAME=<app>`. With
+# APP_DIR=<directory> the app is outside the tree and only the suites that
+# apply to such an app run. Values reach the script through the recipe shell
+# environment, as in `startapp`.
+app-check:
+	@$(DARWIN_DYLD) "${VENV_BIN}"/python scripts/app_check.py --name "$$NAME" \
+		$(if $(APP_DIR),--app-dir "$$APP_DIR")
+
 SIGN_FLAG := $(if $(SIGN_VIA_API),--sign-via-github-api,)
 PUSH_IMAGE_DOCKER ?= true
 JENKINS_MISSING = missing=""; \
@@ -481,4 +489,4 @@ lint-pipelines:
 	done; \
 	if [ "$${failures}" -ne 0 ]; then exit 1; fi
 
-.PHONY: venv build pack builder image-preflight image format ruff typecheck typecheck-diff lint docs-lint audit run-pre-commit dev-backend dev-frontend backfill-legacy-forms form-audit pip-audit bandit makemigrations makemigrations-plugin migrate checkmigrations mergemigrations test regen-specs regen-pbm-payloads regen-pbm-payloads-check regen-xtrabackup-variants regen-xtrabackup-variants-check smoke-xtrabackup-variants check-nomad-payload-size check-sidecar-purge release-prep release-rc release-stable trigger-jenkins lint-pipelines encryption-key changelog-add changelog-check changelog-list startapp startapp-check
+.PHONY: venv build pack builder image-preflight image format ruff typecheck typecheck-diff lint docs-lint audit run-pre-commit dev-backend dev-frontend backfill-legacy-forms form-audit pip-audit bandit makemigrations makemigrations-plugin migrate checkmigrations mergemigrations test regen-specs regen-pbm-payloads regen-pbm-payloads-check regen-xtrabackup-variants regen-xtrabackup-variants-check smoke-xtrabackup-variants check-nomad-payload-size check-sidecar-purge release-prep release-rc release-stable trigger-jenkins lint-pipelines encryption-key changelog-add changelog-check changelog-list startapp startapp-check app-check

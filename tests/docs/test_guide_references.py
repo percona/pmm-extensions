@@ -40,8 +40,9 @@ import re
 
 import pytest
 
+from tests.docs import DOCS_ROOT
+
 _REPO_ROOT = pathlib.Path(__file__).parents[2]
-_DOCS_ROOT = _REPO_ROOT / "docs"
 _PAGE_GLOBS = ("reference/*.md", "explanation/*.md", "tutorials/*.md", "how-to/*.md")
 _ELISION = "..."
 
@@ -155,7 +156,7 @@ def _pages_with_python_examples() -> list[pathlib.Path]:
     return sorted(
         path
         for glob in _PAGE_GLOBS
-        for path in _DOCS_ROOT.glob(glob)
+        for path in DOCS_ROOT.glob(glob)
         if "```python" in path.read_text(encoding="utf-8")
     )
 
@@ -331,7 +332,7 @@ def test_pages_with_examples_exist() -> None:
     A wrong glob would otherwise leave every parametrized test below with
     nothing to run, and the suite would pass while checking nothing.
     """
-    assert _PAGES, f"no page with a python block found under {_DOCS_ROOT}"
+    assert _PAGES, f"no page with a python block found under {DOCS_ROOT}"
 
 
 def test_at_least_one_src_marker() -> None:

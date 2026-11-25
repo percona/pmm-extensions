@@ -79,6 +79,8 @@ All three exit with status 0. [Test an app](test-an-app.md) describes what each 
 
 Tests do not run a task on a host. Run one before you open a pull request.
 
+The steps mount your checkout's code, as [Run the code in your checkout](run-in-local-pmm.md#run-the-code-in-your-checkout) explains. When your checkout needs a newer Python than the image has, that section says which image to set first.
+
 1. Start the local PMM with your checkout's code and the PostgreSQL host:
 
    ```bash
@@ -93,75 +95,40 @@ Tests do not run a task on a host. Run one before you open a pull request.
      --profile postgresql up -d --wait --force-recreate pmm-extensions
    ```
 
-2. Get a token in `TOKEN`: see [Call the API from a shell](run-in-local-pmm.md#call-the-api-from-a-shell).
-
-3. Confirm that PMM Extensions serves the app:
-
-   ```bash
-   curl -sk -H "Authorization: Bearer $TOKEN" \
-     https://127.0.0.1:8443/extensions/api/apps/ | python3 -c \
-     'import json,sys; [print(a["app_key"]) for a in json.load(sys.stdin)]'
-   ```
-
-   The output includes `backup_pg`.
-
-4. Copy the services from PMM's inventory now, and list them after ten seconds:
-
-   ```bash
-   curl -sk -X POST -H "Authorization: Bearer $TOKEN" -o /dev/null -w '%{http_code}\n' \
-     https://127.0.0.1:8443/extensions/api/apps/inventory/sync/
-   sleep 10
-   curl -sk -H "Authorization: Bearer $TOKEN" \
-     https://127.0.0.1:8443/extensions/api/extensions/services/ | python3 -c \
-     'import json,sys; [print(s["id"], s["type"], s["name"]) for s in json.load(sys.stdin)["items"]]'
-   ```
-
-   The output has a line for `dev-postgresql`. Note its identifier:
-
-   ```text
-   202
-   1 postgresql dev-postgresql
-   2 postgresql pmm-server-postgresql
-   ```
-
-5. Create a backup task. If the identifier in your list is not `1`, replace the `1` in the command:
-
-   ```bash
-   curl -sk -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-     -o /dev/null -w '%{http_code}\n' https://127.0.0.1:8443/extensions/api/apps/backup_pg/ \
-     -d '{"task_name":"first-pg-backup","hostname":"postgresql-host","service_id":1,"stanza":"dev","backup_dir":"/var/lib/pgsql/backups","pgbackrest_bin":"/usr/bin/pgbackrest","pgbackrest_config_file":"/etc/pgbackrest.conf","pgbackrest_backup_type":"incr"}'
-   ```
-
-   The output is `201`.
-
-6. Run the task:
-
-   ```bash
-   curl -sk -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-     https://127.0.0.1:8443/extensions/api/apps/backup_pg/first-pg-backup/execute -d '{}'
-   ```
-
-   The output names the run:
+2. Write the create request for a backup task to a file, `first-pg-backup.json`:
 
    ```json
-   {"task_name":"first-pg-backup","task_id":7,"status":"running","created_at":"2026-11-18T23:48:54Z"}
+   {
+     "task_name": "first-pg-backup",
+     "hostname": "postgresql-host",
+     "service": "dev-postgresql",
+     "stanza": "dev",
+     "backup_dir": "/var/lib/pgsql/backups",
+     "pgbackrest_bin": "/usr/bin/pgbackrest",
+     "pgbackrest_config_file": "/etc/pgbackrest.conf",
+     "pgbackrest_backup_type": "incr"
+   }
    ```
 
-7. After about 30 seconds, read the task's status:
+   To see the fields of your app's form, run `python3 sidecar/dev/run-task.py --app backup_pg --schema`.
+
+3. Create the task, run it, and wait for its end:
 
    ```bash
-   curl -sk -H "Authorization: Bearer $TOKEN" \
-     https://127.0.0.1:8443/extensions/api/apps/backup_pg/first-pg-backup | python3 -c \
-     'import json,sys; print(json.load(sys.stdin)["status"])'
+   python3 sidecar/dev/run-task.py --app backup_pg --body first-pg-backup.json
    ```
 
-   The output is `success`. While the backup runs, it is `running`.
+   The output is the task's record, and then what the tool printed on the host. The record starts with the status:
 
-When the task fails, read its log. Replace `7` with the `task_id` from step 6:
+   ```text
+   {
+     "name": "first-pg-backup",
+     "status": "success",
+   ```
 
-```bash
-curl -sk -H "Authorization: Bearer $TOKEN" https://127.0.0.1:8443/extensions/stream-logs/7
-```
+   The command exits with status 0 when the status is `success`. [Run a task with one command](run-in-local-pmm.md#run-a-task-with-one-command) lists the other exit statuses.
+
+   If the output is `POST /extensions/api/apps/backup_pg/ answered 404`, PMM Extensions does not serve the app. Restart the container as in step 1.
 
 A failure on the first run is likely. [App status](../app-status.md#how-the-cost-is-judged) says why.
 
