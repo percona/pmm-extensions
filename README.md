@@ -131,7 +131,7 @@
 | app/extensions/apps/alerts/restore.py                                                                                               |       97 |        0 |       26 |        0 |    100% |           |
 | app/extensions/apps/alters/api\_routes.py                                                                                           |       38 |        0 |        0 |        0 |    100% |           |
 | app/extensions/apps/alters/app.py                                                                                                   |       10 |        0 |        0 |        0 |    100% |           |
-| app/extensions/apps/alters/deps.py                                                                                                  |      211 |       11 |       62 |       12 |     92% |101, 131-\>143, 137-\>136, 141-\>136, 144, 220-\>222, 347, 417-418, 557, 580-581, 701, 712, 714, 754-\>758 |
+| app/extensions/apps/alters/deps.py                                                                                                  |      211 |       11 |       62 |       11 |     92% |101, 131-\>143, 137-\>136, 141-\>136, 144, 347, 417-418, 557, 580-581, 701, 712, 714, 754-\>758 |
 | app/extensions/apps/alters/form\_backfill.py                                                                                        |       32 |        1 |       10 |        1 |     95% |       102 |
 | app/extensions/apps/alters/models.py                                                                                                |       49 |        1 |        6 |        1 |     96% |       121 |
 | app/extensions/apps/alters/schema.py                                                                                                |        7 |        0 |        0 |        0 |    100% |           |
@@ -554,7 +554,7 @@
 | app/tasks/run\_result.py                                                                                                            |       73 |        0 |       18 |        0 |    100% |           |
 | app/tasks/settings/routes.py                                                                                                        |       13 |        0 |        0 |        0 |    100% |           |
 | app/tasks/task\_status.py                                                                                                           |       25 |        0 |        0 |        0 |    100% |           |
-| **TOTAL**                                                                                                                           | **35734** | **1507** | **8642** |  **671** | **94%** |           |
+| **TOTAL**                                                                                                                           | **35734** | **1507** | **8642** |  **670** | **94%** |           |
 
 
 ## Setup coverage badge
