@@ -22,7 +22,10 @@ and collects, for every target named in the task config:
   target by **port** — a host may run several mongods, and each target's facts have
   to be its own;
 * the installed version of the binary *that* process runs;
-* a handful of database commands, when ``probe_database`` is set.
+* a handful of **unauthenticated** database commands, when ``probe_database`` is set.
+  The payload offers no credentials: ``buildInfo`` and ``hello`` answer before any
+  login, and the facts that need one (``clusterRole``, ``storage_engine``) are read
+  by PMM through pmm-agent instead, so no credential file lives on the host.
 
 Once per dispatch, for the host itself:
 
@@ -46,8 +49,6 @@ The config arrives as JSON in ``NOMAD_META_CONFIG``::
         ...
       ],
       "probe_database": true,
-      "credentials_path": "/root/.mongodb_uri",   // absent = $HOME/.mongodb_uri
-      "auth_source": "admin",
       "connect_timeout_ms": 5000
     }
 
@@ -72,9 +73,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
-from urllib.parse import quote_plus, unquote_plus
 
-DEFAULT_AUTH_SOURCE = "admin"
 DEFAULT_CONNECT_TIMEOUT_MS = 5000
 
 #: Where an install puts mongod's data unless told otherwise: om_bootstrap's
@@ -84,11 +83,6 @@ DEFAULT_CONNECT_TIMEOUT_MS = 5000
 #: mounted on its own.
 DEFAULT_DATA_PATH = "/var/lib/mongo"
 
-#: MongoDB's ``AuthenticationFailed`` error code.
-AUTHENTICATION_FAILED = 18
-#: Basename of the node-side credentials file, under ``$HOME``. The same file the
-#: PBM payloads and the MongoDB Status payload read.
-DEFAULT_CREDENTIALS_BASENAME = ".mongodb_uri"
 #: Bound on captured subprocess output. These commands emit a line or two; anything
 #: larger means something unexpected ran and is not worth shipping through the log.
 MAX_COMMAND_OUTPUT = 8192
@@ -96,6 +90,9 @@ MAX_COMMAND_OUTPUT = 8192
 COMMAND_TIMEOUT_SEC = 15
 STATUS_OK = "ok"
 STATUS_FAILED = "failed"
+#: The ``sharding.clusterRole`` values :func:`parse_cluster_role` reports.
+CLUSTER_ROLE_CONFIGSVR = "configsvr"
+CLUSTER_ROLE_SHARDSVR = "shardsvr"
 
 
 def load_config():
@@ -186,6 +183,7 @@ def process_facts(process):
             "uptime_sec": None,
             "argv": None,
             "config_path": None,
+            "cluster_role": None,
         }
     return {
         "running": True,
@@ -194,6 +192,7 @@ def process_facts(process):
         "uptime_sec": process.get("uptime_sec"),
         "argv": process.get("argv"),
         "config_path": process.get("config_path"),
+        "cluster_role": process.get("cluster_role"),
     }
 
 
@@ -291,6 +290,44 @@ def parse_port(argv, config_path):
     return None
 
 
+def parse_cluster_role(argv, config_path):
+    """Read the sharding cluster role a mongod runs under, without a login.
+
+    The command line wins when it carries ``--configsvr`` or ``--shardsvr`` as an
+    argument of its own; otherwise the configuration file's ``sharding.clusterRole``
+    is read, the same credential-free source :func:`parse_port` already reads for the
+    port, because a config server ordinarily declares its role inside that file
+    rather than on argv. A quoted value is read without its quotes.
+
+    :param argv: The full command line.
+    :param config_path: The configuration file the process was started with.
+    :return: :data:`CLUSTER_ROLE_CONFIGSVR`, :data:`CLUSTER_ROLE_SHARDSVR`, or
+        ``None`` when neither source names one of them.
+    """
+    tokens = argv.split()
+    if "--configsvr" in tokens:
+        return CLUSTER_ROLE_CONFIGSVR
+    if "--shardsvr" in tokens:
+        return CLUSTER_ROLE_SHARDSVR
+    if not config_path:
+        return None
+    try:
+        with open(config_path, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line.startswith("clusterRole"):
+                    continue
+                remainder = line[len("clusterRole") :].lstrip()
+                if remainder.startswith(":"):
+                    value = remainder[1:].split("#")[0].strip().strip("\"'")
+                    if value in (CLUSTER_ROLE_CONFIGSVR, CLUSTER_ROLE_SHARDSVR):
+                        return value
+                    return None
+    except OSError:
+        return None
+    return None
+
+
 def collect_server_processes():
     """Return every mongod and mongos running on this host.
 
@@ -306,7 +343,7 @@ def collect_server_processes():
     executor runs on; ``etimes`` gives uptime in seconds directly.
 
     :return: One mapping per server process, each with its program, pid, uptime,
-        port, configuration path and command line.
+        port, configuration path, cluster role and command line.
     """
     processes = []
     for program in SERVER_PROGRAMS:
@@ -329,6 +366,7 @@ def collect_server_processes():
                     "uptime_sec": int(etimes) if etimes.isdigit() else None,
                     "port": parse_port(argv, config_path),
                     "config_path": config_path,
+                    "cluster_role": parse_cluster_role(argv, config_path),
                     "argv": argv,
                 }
             )
@@ -446,48 +484,16 @@ def binary_version(program, cache):
     return cache[program]
 
 
-def read_userinfo(credentials_path):
-    """Return percent-encoded ``user:pass@`` read from the node credentials file.
-
-    The file is the same one the PBM and MongoDB Status payloads read. Its contents
-    are accepted either as a full ``mongodb://user:pass@host:port`` URI or as the
-    bare ``user:pass@host:port`` form the sandbox writes; only the credentials are
-    taken, because host and port come from the config. A missing file is not an
-    error — an unauthenticated mongod is legitimate.
-
-    :param credentials_path: Path to the credentials file, or ``None`` to skip.
-    :return: The ``user:pass@`` prefix ready to splice into a URI, or ``""``.
-    """
-    if not credentials_path or not os.path.exists(credentials_path):
-        return ""
-    try:
-        with open(credentials_path, encoding="utf-8") as handle:
-            raw = handle.read().strip()
-    except OSError as err:
-        print(f"cannot read {credentials_path}: {err}", file=sys.stderr)
-        return ""
-    if not raw:
-        return ""
-    raw = raw.removeprefix("mongodb://")
-    if "@" not in raw:
-        return ""
-    userinfo = raw.rsplit("@", 1)[0]
-    if ":" not in userinfo:
-        return ""
-    user, _, password = userinfo.partition(":")
-    return f"{quote_plus(user)}:{quote_plus(password)}@"
-
-
-def build_uri(target, userinfo, auth_source, connect_timeout_ms):
+def build_uri(target, connect_timeout_ms):
     """Return the connection URI for one target.
 
-    ``directConnection=true`` makes the commands report *this* node rather than
-    whichever member the driver would otherwise elect to talk to; per-node facts are
-    the point.
+    No credentials are ever spliced in: the payload runs only the commands a mongod
+    answers before any login, and the facts that need one are read by PMM through
+    pmm-agent instead. ``directConnection=true`` makes those commands report *this*
+    node rather than whichever member the driver would otherwise elect to talk to;
+    per-node facts are the point.
 
     :param target: The target mapping carrying ``host`` and ``port``.
-    :param userinfo: The credentials prefix from :func:`read_userinfo`.
-    :param auth_source: The database to authenticate against.
     :param connect_timeout_ms: Connect and server-selection timeout.
     :return: The MongoDB connection URI.
     """
@@ -496,8 +502,6 @@ def build_uri(target, userinfo, auth_source, connect_timeout_ms):
         f"connectTimeoutMS={connect_timeout_ms}",
         f"serverSelectionTimeoutMS={connect_timeout_ms}",
     ]
-    if userinfo:
-        options.append(f"authSource={auth_source}")
     # Every value is bound to a name before the f-string rather than subscripted or
     # joined inside it. That is not style: the Tasks layer runs this file through
     # ``python-minifier`` before dispatch, and the minifier normalises inner string
@@ -513,54 +517,40 @@ def build_uri(target, userinfo, auth_source, connect_timeout_ms):
     host = target["host"]
     port = target["port"]
     query = "&".join(options)
-    return f"mongodb://{userinfo}{host}:{port}/?{query}"
+    return f"mongodb://{host}:{port}/?{query}"
 
 
-def collect_database_facts(
-    target, userinfo, auth_source, connect_timeout_ms, credentials_file=None
-):
+def collect_database_facts(target, connect_timeout_ms):
     """Return facts read from the database for one target, or why there are none.
 
-    An arbiter holds no data and therefore no users, so it rejects any login. With
-    credentials to offer, the server is first asked ``isMaster``, which needs no login:
-    an arbiter is then read without the credentials, any other server with them.
+    The payload offers no credentials: it runs only ``buildInfo`` and ``hello``, which
+    a mongod answers before any login, including an arbiter. The facts that need a
+    login (``clusterRole``, ``storage_engine``) are read by PMM through pmm-agent, so
+    no credential file lives on the host.
 
-    Failing to reach the database, or a rejected login, is a target-level failure:
-    the result carries ``error`` (see :func:`describe_database_error`),
-    ``error_type`` (the exception class name) and ``error_code`` (the server's error
-    code, ``None`` where there is none), and no facts.
+    Failing to reach the database is a target-level failure: the result carries
+    ``error`` (see :func:`describe_database_error`), ``error_type`` (the exception
+    class name) and ``error_code`` (the server's error code, ``None`` where there is
+    none), and no facts.
 
     Once connected, each command is run independently so one failure does not lose
-    the others — ``replSetGetStatus`` legitimately fails against a mongos or a
-    standalone, and that must not discard the ``buildInfo`` that came back fine.
-    Those failures go to ``command_errors`` and do not fail the target. An arbiter
-    read over the network refuses ``getCmdLineOpts`` and ``replSetGetStatus`` that
-    way.
+    the others.
 
     :param target: The target mapping carrying ``host`` and ``port``.
-    :param userinfo: The credentials prefix.
-    :param auth_source: The database to authenticate against.
     :param connect_timeout_ms: Connect and server-selection timeout.
-    :param credentials_file: Where ``userinfo`` was read from, named in the error
-        when the database rejects it.
     :return: A mapping of database facts and per-command errors, or of the
         target-level ``error``, ``error_type`` and ``error_code``.
     """
     from pymongo.errors import PyMongoError
 
     try:
-        uri = build_uri(target, "", "", connect_timeout_ms)
-        if userinfo and not is_arbiter(uri):
-            uri = build_uri(target, userinfo, auth_source, connect_timeout_ms)
-        facts = query_database(uri)
+        facts = query_database(build_uri(target, connect_timeout_ms))
     except PyMongoError as err:
         facts = {
-            "error": describe_database_error(
-                err, target, userinfo, credentials_file, connect_timeout_ms
-            ),
-            # Structured beside the text, so the orchestrator can tell a rejected
-            # password (``OperationFailure``, code 18) from an unreachable server
-            # (``ServerSelectionTimeoutError``, no code) without parsing the message.
+            "error": describe_database_error(err, target, connect_timeout_ms),
+            # Structured beside the text, so the orchestrator can tell an unreachable
+            # server (``ServerSelectionTimeoutError``, no code) from another failure
+            # without parsing the message.
             "error_type": type(err).__name__,
             "error_code": getattr(err, "code", None),
         }
@@ -586,11 +576,12 @@ def query_database(uri):
         # leave the record ``ok``. It also costs one connect timeout instead of one
         # per command.
         admin.command("ping")
+        # Only the commands a mongod answers before any login. The facts that need
+        # one (``clusterRole``, ``storage_engine``) are read by PMM through pmm-agent,
+        # so the payload carries no credential file to offer.
         for key, command in (
             ("build_info", "buildInfo"),
             ("hello", "hello"),
-            ("cmd_line_opts", "getCmdLineOpts"),
-            ("repl_set_status", "replSetGetStatus"),
         ):
             try:
                 facts[key] = json.loads(json.dumps(admin.command(command), default=str))
@@ -601,52 +592,21 @@ def query_database(uri):
     return facts
 
 
-def is_arbiter(uri):
-    """Return whether the server at ``uri`` is an arbiter, asked without a login.
-
-    A server that refuses the question is not an arbiter, which answers it before any
-    login, so it is read with the credentials as before.
-
-    :param uri: The server's connection URI without credentials.
-    :return: Whether ``isMaster`` reports ``arbiterOnly``.
-    :raises PyMongoError: When the server cannot be reached.
-    """
-    from pymongo import MongoClient
-    from pymongo.errors import OperationFailure
-
-    client = MongoClient(uri)
-    try:
-        # Not ``hello``, which MongoDB before 4.4.2 does not have.
-        return bool(client.admin.command("isMaster").get("arbiterOnly"))
-    except OperationFailure:
-        return False
-    finally:
-        client.close()
-
-
-def describe_database_error(err, target, userinfo, credentials_file, connect_timeout_ms):
+def describe_database_error(err, target, connect_timeout_ms):
     """Say why the database could not be queried, in terms an operator can act on.
 
-    pymongo's own text is written for whoever debugs the driver: a rejected password
-    comes with the server's whole reply appended, and a server-selection timeout with
-    the driver's topology description, which buries the one fact that matters - the
-    address that did not answer. Anything not recognised here keeps pymongo's text.
+    pymongo's own text is written for whoever debugs the driver: a server-selection
+    timeout comes with the driver's topology description, which buries the one fact
+    that matters - the address that did not answer. Anything not recognised here keeps
+    pymongo's text.
 
     :param err: What the driver raised.
     :param target: The target mapping carrying ``host`` and ``port``.
-    :param userinfo: The credentials prefix the payload connected with.
-    :param credentials_file: Where those credentials were read from, or ``None``.
     :param connect_timeout_ms: Connect and server-selection timeout.
     :return: The description.
     """
     host = target["host"]
     port = target["port"]
-    if getattr(err, "code", None) == AUTHENTICATION_FAILED:
-        user = unquote_plus(userinfo.split(":", 1)[0]) if userinfo else ""
-        described = f"the credentials for user {user}"
-        if credentials_file:
-            described += f" (from {credentials_file})"
-        return described + " were rejected"
     if type(err).__name__ == "ServerSelectionTimeoutError":
         # pymongo appends ", Timeout: ..., Topology Description: ..." to the
         # per-server errors, and " (configured timeouts: ...)" to each of those.
@@ -709,20 +669,14 @@ def summarise_database_facts(facts):
     """
     build_info = facts.get("build_info") or {}
     hello = facts.get("hello") or {}
-    repl = facts.get("repl_set_status") or {}
     summary = {
         "db_version": build_info.get("version"),
         "git_version": build_info.get("gitVersion"),
         "vendor": determine_vendor(build_info),
-        "storage_engine": (facts.get("cmd_line_opts") or {})
-        .get("parsed", {})
-        .get("storage", {})
-        .get("engine"),
         "is_writable_primary": hello.get("isWritablePrimary"),
         "is_arbiter": hello.get("arbiterOnly"),
         "msg": hello.get("msg"),
-        "set_name": hello.get("setName") or repl.get("set"),
-        "state": repl.get("myState"),
+        "set_name": hello.get("setName"),
     }
     for key in ERROR_KEYS:
         if key in facts:
@@ -780,13 +734,9 @@ def probe(target, config, host_facts, processes=(), versions=None):
         return record
 
     try:
-        credentials_file = credentials_path(config)
         record["database"] = collect_database_facts(
             target,
-            read_userinfo(credentials_file),
-            config.get("auth_source") or DEFAULT_AUTH_SOURCE,
             config.get("connect_timeout_ms") or DEFAULT_CONNECT_TIMEOUT_MS,
-            credentials_file,
         )
         if record["database"].get("error"):
             record["status"] = STATUS_FAILED
@@ -801,19 +751,6 @@ def probe(target, config, host_facts, processes=(), versions=None):
         record["error_code"] = None
         record["database"] = None
     return record
-
-
-def credentials_path(config):
-    """Return the credentials file path, defaulting under ``$HOME``.
-
-    :param config: The task config.
-    :return: The path to read credentials from, or ``None``.
-    """
-    configured = config.get("credentials_path")
-    if configured:
-        return configured
-    home = os.path.expanduser("~")
-    return os.path.join(home, DEFAULT_CREDENTIALS_BASENAME) if home else None
 
 
 #: The file every Percona repository client needs before it can install anything.

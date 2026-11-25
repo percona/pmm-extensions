@@ -129,38 +129,6 @@ router = APIRouter()
 schema_endpoint(router=router, plugin_schema=om_inventory_schema)
 
 
-#: Fields ``GET /config`` must not hand back even though the same settings class is
-#: readable by every authenticated caller here, not only admins (see ``_redact_config``).
-_REDACTED_CONFIG_KEYS = frozenset({"CREDENTIALS_PATH"})
-
-
-def _redact_config(responses: list[SettingResponse]) -> list[SettingResponse]:
-    """Redact fields too sensitive for this route's viewer-readable audience.
-
-    ``GET /config`` is gated only by ``IsApiAuthenticated`` — any logged-in PMM Extensions
-    user — because every PMM role may see Operations for MongoDB's configuration,
-    while the admin settings router serves the same class to admins only.
-    ``CREDENTIALS_PATH`` is the one field that wider audience must not see: it names
-    a file a MongoDB driver reads as a URI, and the settings class docstring already
-    calls it too sensitive to make writable, let alone world-readable to any
-    signed-in viewer.
-
-    The row still comes back, just with ``value`` forced to ``None``, rather than
-    being dropped: the class default is already ``None``, so a redacted read and a
-    genuinely unset deployment are indistinguishable, which is the honest answer,
-    and no consumer has to special-case a missing row.
-
-    :param responses: Every field's response, as collected for this settings class.
-    :return: The same responses, with redacted keys' ``value`` set to ``None``.
-    """
-    return [
-        response.model_copy(update={"value": None})
-        if response.key in _REDACTED_CONFIG_KEYS
-        else response
-        for response in responses
-    ]
-
-
 def _service_response(service: OmService) -> ServiceResponse:
     """Project one service row for the wire.
 
@@ -679,20 +647,14 @@ async def get_config(session: SessionDep) -> list[SettingResponse]:
     sweeping every 10 minutes" is answerable without also reading the
     deployment's YAML.
 
-    ``CREDENTIALS_PATH`` is the one exception: its row is present, with ``value``
-    forced to ``None`` regardless of the deployment's real setting. See
-    :func:`_redact_config` for why the whole route is not gated instead.
-
     :param session: The database session.
     :return: One row per configuration field.
     """
-    return _redact_config(
-        await collect_class_setting_responses(
-            session=session,
-            setting_class=OmInventorySettings.__name__,
-            settings_cls=OmInventorySettings,
-            proxy=om_inventory_settings,  # ty: ignore[invalid-argument-type]
-        )
+    return await collect_class_setting_responses(
+        session=session,
+        setting_class=OmInventorySettings.__name__,
+        settings_cls=OmInventorySettings,
+        proxy=om_inventory_settings,  # ty: ignore[invalid-argument-type]
     )
 
 

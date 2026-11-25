@@ -22,12 +22,6 @@ switch with no user behind the call, and **PMM's principal is not an admin**: th
 token resolves to the synthetic ``extensions-service`` user, so the settings router
 refuses it. That is asserted here rather than described, because a later change
 making the principal an admin would silently remove the reason.
-
-The other decision is ``CREDENTIALS_PATH`` staying cold. It names a file the payload
-reads on every database *host* and hands to a driver as a URI, so an overridable one
-would turn "configure this app" into "read a chosen file across the estate". A test
-asserts it is refused, because the difference between "not hot" and "not yet hot" is
-invisible in the field list.
 """
 
 import logging
@@ -57,7 +51,6 @@ from app.core.settings_override.lifecycle import publish_snapshot
 from app.core.settings_override.manager import SettingsOverrideManager
 from app.core.settings_override.models import setting_class_token, SettingOverride
 from app.core.settings_override.proxy import OverridableSettingsProxy
-from app.core.settings_override.registry import hot_field_names
 from app.core.utils.date_time import make_datetime_utc
 from app.extensions.apps.framework.registry import collect_app_owned_settings_classes
 from app.extensions.apps.om_inventory.api_routes import QUEUE_UNAVAILABLE_DETAIL
@@ -606,31 +599,6 @@ class TestGetConfig:
         assert rows["SCHEDULE__period"]["value"] == "minutes"
         assert rows["SCHEDULE__every"]["has_override"] is False
 
-    @pytest.mark.asyncio
-    async def test_credentials_path_is_redacted_for_this_routes_audience(
-        self, api: AsyncClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Redact ``CREDENTIALS_PATH`` to ``None`` here no matter what is deployed.
-
-        This route carries no ``@require_minimum_role``, so its only gate is
-        ``IsApiAuthenticated`` — any signed-in PMM Extensions user, not only admins. The same
-        settings class is also served at ``/api/extensions/admin/settings``, gated
-        ``IsApiAdmin``, so a value that is admin-only there must not be
-        viewer-readable here. Setting the field directly on the wrapped instance
-        (rather than relying on the default already being ``None``) proves this is
-        redaction, not coincidence.
-
-        :param api: The authenticated client.
-        :param monkeypatch: Restores the real value after the test.
-        """
-        monkeypatch.setattr(
-            om_inventory_settings, "CREDENTIALS_PATH", "/etc/mongodb_uri_prod"
-        )
-
-        rows = {row["key"]: row for row in (await api.get(f"{BASE}/config")).json()}
-
-        assert rows["CREDENTIALS_PATH"]["value"] is None
-
 
 class TestChangeConfig:
     """Update the app's configuration at runtime, through the admin settings router."""
@@ -804,27 +772,6 @@ class TestChangeConfig:
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert om_inventory_settings.RUN_RETENTION == DEFAULTS.RUN_RETENTION
-
-    @pytest.mark.asyncio
-    async def test_credentials_path_is_not_settable(
-        self, admin_api: AsyncClient
-    ) -> None:
-        """Reject a write to a cold field rather than silently ignoring it.
-
-        ``CREDENTIALS_PATH`` names a file read on every database host and handed to a
-        driver as a URI. Overridable, it would widen "configure this app" into "read a
-        chosen file across the estate", so it stays YAML/env only.
-
-        :param admin_api: The authenticated admin client.
-        """
-        response = await admin_api.patch(
-            ADMIN_SETTINGS, json={"CREDENTIALS_PATH": "/etc/passwd"}
-        )
-
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-        hot = hot_field_names(OmInventorySettings)
-        assert hot, "no hot fields at all would make the exclusion below vacuous"
-        assert "CREDENTIALS_PATH" not in hot
 
     @pytest.mark.asyncio
     async def test_an_override_can_be_cleared_back_to_the_deployment_value(

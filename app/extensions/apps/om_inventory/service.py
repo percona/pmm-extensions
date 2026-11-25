@@ -92,7 +92,10 @@ from app.extensions.apps.om_inventory.models import (
     ProbeRunStatus,
     ScanFailure,
 )
-from app.extensions.apps.om_inventory.payload.probe import STATUS_FAILED
+from app.extensions.apps.om_inventory.payload.probe import (
+    CLUSTER_ROLE_CONFIGSVR,
+    STATUS_FAILED,
+)
 from app.extensions.config import extensions_settings
 from app.extensions.db import get_async_session_maker
 from app.inventory.config import inventory_settings
@@ -167,40 +170,34 @@ def _dig(record: dict[str, Any], path: tuple[str, ...]) -> Any:
 #: ============  =========================================================
 #: arbiter       ``database.is_arbiter`` is true (``hello.arbiterOnly``)
 #: mongos        ``process.program == "mongos"``, or ``database.msg == "isdbgrid"``
-#: config        ``sharding.clusterRole == "configsvr"`` in ``getCmdLineOpts``,
-#:               or ``--configsvr`` in ``process.argv``
+#: config        ``process.cluster_role == "configsvr"`` (``sharding.clusterRole``
+#:               in the config file, or ``--configsvr`` in argv)
 #: mongod        otherwise, when a server process was found
 #: ============  =========================================================
 def classify_role(record: dict[str, Any]) -> str | None:
-    """Classify a service's role from what its probe record actually saw.
+    """Classify a service's role from the credential-free signals the probe saw.
 
     Deliberately not from ``process.program`` alone: an arbiter is a ``mongod``
     process too, and stopping there would fill the column with a value that is not
     wrong but is not the distinction it exists to make.
 
-    A config server is read from ``getCmdLineOpts``, not from the command line.
-    ``--configsvr`` as a flag is the rarer shape: a config server is ordinarily
-    started as ``mongod --config /etc/mongod.conf`` with ``sharding.clusterRole:
-    configsvr`` *inside* that file, so argv carries no trace of the role at all and
-    every config server in the estate reads as a plain ``mongod``. ``parsed`` is
-    mongod's own resolved view of both, which is why it is the source and the flag
-    is only a fallback for a record whose database facts did not come back.
+    A config server is read from ``process.cluster_role``, which the probe parses
+    from the mongod config file's ``sharding.clusterRole`` (and ``--configsvr`` on
+    argv) without a login - the same credential-free source it reads the port from.
+    PMM's own topology view resolves the role from the exporter's authenticated
+    ``cl_role`` metric; this is the estate's honest read of the same fact.
 
     :param record: One probe record for a service.
     :return: The role, or ``None`` when no server process was found for it.
     """
     database = record.get("database") or {}
     process = record.get("process") or {}
-    parsed = ((database.get("raw") or {}).get("cmd_line_opts") or {}).get(
-        "parsed"
-    ) or {}
-    cluster_role = (parsed.get("sharding") or {}).get("clusterRole")
 
     if database.get("is_arbiter"):
         return "arbiter"
     if process.get("program") == "mongos" or database.get("msg") == "isdbgrid":
         return "mongos"
-    if cluster_role == "configsvr" or "--configsvr" in (process.get("argv") or ""):
+    if process.get("cluster_role") == CLUSTER_ROLE_CONFIGSVR:
         return "config"
     if process.get("running"):
         return "mongod"
@@ -362,7 +359,6 @@ SERVICE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("version", ("database", "db_version")),
     ("git_version", ("database", "git_version")),
     ("vendor", ("database", "vendor")),
-    ("storage_engine", ("database", "storage_engine")),
     ("replication_set", ("database", "set_name")),
     *PROCESS_FIELDS,
 )

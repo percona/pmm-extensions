@@ -66,14 +66,6 @@ class OmInventorySettings(BaseYamlSettings):
     a job someone triggers by hand: nothing else refreshes a row, and a puller must
     never be the thing that waits for a Nomad job.
 
-    Every field is ``hot_field`` except ``CREDENTIALS_PATH``, which stays YAML/env only
-    on purpose. It names a file the payload reads off the *node* and hands to a MongoDB
-    driver as a URI; making it settable over the API would turn "change this app's
-    configuration" into "read a chosen file on every database host" — every other
-    field here only changes how PMM Extensions itself behaves, not what a probe reads off a
-    monitored machine's filesystem. It is a deployment fact, and it belongs with the
-    deployment.
-
     :cvar SETTINGS_PREFIXES: Places this section under ``EXTENSIONS.OM_INVENTORY``.
     :cvar CROSS_FIELD_RULES: The probe-timing relationships below, refused on load
         and on every API change rather than discovered mid-sweep.
@@ -93,12 +85,11 @@ class OmInventorySettings(BaseYamlSettings):
     :param SCHEDULE: How often the probe sweeps the estate, while ``ENABLED`` and
         ``AUTO_SCAN``. ``None`` unregisters the periodic job regardless of either;
         a switch-on that asks for a sweep still gets one while ``AUTO_SCAN`` is on.
-    :param PROBE_DATABASE: Whether the payload connects to mongod and runs database
-        commands. ``False`` collects process and OS facts only, which needs no credentials
-        — and still yields ``installed_version``, the field this app exists for.
-    :param CREDENTIALS_PATH: Node-side file holding the MongoDB URI to take credentials
-        from. ``None`` falls back to ``~/.mongodb_uri``, the same file the PBM payloads
-        read.
+    :param PROBE_DATABASE: Whether the payload connects to mongod and runs the
+        unauthenticated ``buildInfo`` and ``hello`` commands. It never offers
+        credentials; the facts that need a login are read by PMM through pmm-agent.
+        ``False`` collects process and OS facts only - and still yields
+        ``installed_version``, the field this app exists for.
     :param REPO_URL: The file each host fetches to prove it can reach Percona's
         repository. Configurable because an air-gapped estate mirrors it somewhere
         else, and checking the public one there would report every host as broken.
@@ -167,7 +158,6 @@ class OmInventorySettings(BaseYamlSettings):
         "https://repo.percona.com/percona/yum/PERCONA-PACKAGING-KEY", advanced=True
     )
     REPO_TIMEOUT: PositiveInt = hot_field(8, advanced=True)
-    CREDENTIALS_PATH: str | None = None
     CONNECT_TIMEOUT: PositiveInt = hot_field(5, advanced=True)
     TASK_TIMEOUT: PositiveInt = hot_field(180, advanced=True)
     POLL_INTERVAL: PositiveInt = hot_field(3, advanced=True)
