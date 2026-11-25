@@ -463,6 +463,7 @@ schema_endpoint(router=router, plugin_schema=om_bootstrap_schema)
 
 @router.post("/runs", status_code=http_status.HTTP_201_CREATED)
 @require_minimum_role(UserRole.ADMIN)
+@admit_service_principal
 async def trigger_run(session: SessionDep, request: TriggerRunRequest) -> RunResponse:
     """Create a bootstrap run, planning every host's steps up front.
 
