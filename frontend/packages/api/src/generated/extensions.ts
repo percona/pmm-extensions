@@ -2402,10 +2402,6 @@ export interface paths {
      *     sweeping every 10 minutes" is answerable without also reading the
      *     deployment's YAML.
      *
-     *     ``CREDENTIALS_PATH`` is the one exception: its row is present, with ``value``
-     *     forced to ``None`` regardless of the deployment's real setting. See
-     *     :func:`_redact_config` for why the whole route is not gated instead.
-     *
      *     :param session: The database session.
      *     :return: One row per configuration field.
      */

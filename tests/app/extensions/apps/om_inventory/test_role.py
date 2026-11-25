@@ -22,6 +22,10 @@
 it, and a router's own ``mongos`` line must not fall through to that fallback either.
 """
 
+from app.extensions.apps.om_inventory.payload.probe import (
+    CLUSTER_ROLE_CONFIGSVR,
+    CLUSTER_ROLE_SHARDSVR,
+)
 from app.extensions.apps.om_inventory.service import classify_role
 
 
@@ -41,26 +45,21 @@ def record(
     :param program: The server process's program, or ``None`` when none was found.
     :param argv: The server process's full command line.
     :param running: Whether a server process was found at all.
-    :param cluster_role: ``sharding.clusterRole`` as ``getCmdLineOpts`` resolves it -
-        how a real config server actually declares itself.
+    :param cluster_role: ``process.cluster_role`` as the probe parses it from the
+        mongod config file's ``sharding.clusterRole`` (or ``--configsvr`` on argv) -
+        how a real config server declares itself, read without a login.
     :return: The record.
     """
     return {
         "database": {
             "is_arbiter": is_arbiter,
             "msg": msg,
-            "raw": {
-                "cmd_line_opts": {
-                    "parsed": {"sharding": {"clusterRole": cluster_role}}
-                    if cluster_role
-                    else {}
-                }
-            },
         },
         "process": {
             "running": running,
             "program": program if running else None,
             "argv": argv if running else None,
+            "cluster_role": cluster_role if running else None,
         },
     }
 
@@ -85,36 +84,20 @@ class TestClassifyRole:
             == "mongos"
         )
 
-    def test_a_config_server_is_read_from_get_cmd_line_opts(self) -> None:
-        """Read a config server's role from ``getCmdLineOpts`` rather than argv.
+    def test_a_config_server_is_read_from_cluster_role(self) -> None:
+        """Read a config server's role from the probe's credential-free ``cluster_role``.
 
         Measured against this workspace's sharded sandbox, where every config server
-        runs as ``mongod --config /etc/mongod-node.conf`` and reports
-        ``parsed.sharding.clusterRole == "configsvr"``. Reading argv alone labelled
-        all three of them ``mongod``.
+        runs as ``mongod --config /etc/mongod-node.conf`` with ``sharding.clusterRole:
+        configsvr`` in that file. The probe parses it from the file (or ``--configsvr``
+        on argv) with no login, so a healthy config server is not mislabelled
+        ``mongod``.
         """
-        assert (
-            classify_role(
-                record(
-                    cluster_role="configsvr",
-                    argv="/usr/bin/mongod --config /etc/mongod-node.conf",
-                )
-            )
-            == "config"
-        )
-
-    def test_a_config_server_started_with_the_flag_is_still_config(self) -> None:
-        """Fall back to argv's ``--configsvr`` flag when database facts never came back."""
-        assert (
-            classify_role(
-                record(argv="/usr/bin/mongod --configsvr --config /etc/mongod.conf")
-            )
-            == "config"
-        )
+        assert classify_role(record(cluster_role=CLUSTER_ROLE_CONFIGSVR)) == "config"
 
     def test_a_shard_member_is_not_a_config_server(self) -> None:
-        """Treat a shardsvr's ``clusterRole`` as mongod, not as a config server."""
-        assert classify_role(record(cluster_role="shardsvr")) == "mongod"
+        """Treat a shardsvr's ``cluster_role`` as mongod, not as a config server."""
+        assert classify_role(record(cluster_role=CLUSTER_ROLE_SHARDSVR)) == "mongod"
 
     def test_an_ordinary_member_is_mongod(self) -> None:
         """Classify a running server process as mongod when none of the above match."""

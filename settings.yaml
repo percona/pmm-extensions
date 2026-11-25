@@ -159,7 +159,6 @@ default:
     #   PROBE_DATABASE: true
     #   REPO_URL: https://repo.percona.com/percona/yum/PERCONA-PACKAGING-KEY
     #   REPO_TIMEOUT: 8
-    #   CREDENTIALS_PATH: null  # falls back to ~/.mongodb_uri; YAML/env only, not hot
     #   CONNECT_TIMEOUT: 5
     #   TASK_TIMEOUT: 180
     #   POLL_INTERVAL: 3

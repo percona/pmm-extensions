@@ -186,6 +186,7 @@ class TestProcessFacts:
             "uptime_sec": None,
             "argv": None,
             "config_path": None,
+            "cluster_role": None,
         }
 
 

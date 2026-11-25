@@ -371,7 +371,6 @@ def build_config(entries: list[MappedService]) -> str:
                 for entry in entries
             ],
             "probe_database": om_inventory_settings.PROBE_DATABASE,
-            "credentials_path": om_inventory_settings.CREDENTIALS_PATH,
             "connect_timeout_ms": om_inventory_settings.CONNECT_TIMEOUT * 1000,
             "repo_url": om_inventory_settings.REPO_URL,
             "repo_timeout": om_inventory_settings.REPO_TIMEOUT,
