@@ -265,7 +265,8 @@ class TestBuildStep:
         )
         bin_dir = _recording_bin(tmp_path, ["dpkg"], real=("mktemp", "sleep"))
         curl = bin_dir / "curl"
-        curl.write_text("#!/bin/sh\nexec sleep 30\n")
+        started = tmp_path / "curl-started"
+        curl.write_text(f"#!/bin/sh\n: > {shlex.quote(str(started))}\nexec sleep 30\n")
         curl.chmod(0o755)
         scratch = tmp_path / "tmp"
         scratch.mkdir()
@@ -275,9 +276,11 @@ class TestBuildStep:
             start_new_session=True,
         )
         try:
+            # mktemp creates the file before the shell has its name, so wait for curl.
             deadline = time.monotonic() + _STEP_START_TIMEOUT
-            while not any(scratch.iterdir()) and time.monotonic() < deadline:
+            while not started.exists() and time.monotonic() < deadline:
                 time.sleep(0.05)
+            assert started.exists()
             assert any(scratch.iterdir())
 
             os.killpg(step.pid, signal.SIGTERM)
