@@ -26,6 +26,7 @@ installed on the node - so a stand-in module is put in its place.
 """
 
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -141,7 +142,7 @@ def collect(command: MagicMock) -> dict[str, Any]:
 
 
 def build_record(
-    modules: dict[str, ModuleType | None],
+    modules: Mapping[str, ModuleType | None],
 ) -> dict[str, Any]:
     """Run the payload's per-target :func:`~payload.probe` with ``modules`` imported.
 
@@ -335,11 +336,77 @@ class TestParseClusterRole:
 
         assert parse_cluster_role(f"mongod --config {config}", str(config)) is None
 
-    def test_configsvr_from_argv_wins(self) -> None:
+    @pytest.mark.parametrize(
+        "line",
+        ["#clusterRole: configsvr", "# clusterRole: configsvr"],
+        ids=["unspaced", "spaced"],
+    )
+    def test_a_commented_out_role_reads_as_none(
+        self, tmp_path: Path, line: str
+    ) -> None:
+        """Ignore a ``clusterRole`` line that is commented out."""
+        config = tmp_path / "mongod.conf"
+        config.write_text(f"sharding:\n  {line}\n", encoding="utf-8")
+
+        assert parse_cluster_role(f"mongod --config {config}", str(config)) is None
+
+    def test_an_inline_comment_is_not_part_of_the_role(self, tmp_path: Path) -> None:
+        """Read the role in front of a trailing comment."""
+        config = tmp_path / "mongod.conf"
+        config.write_text(
+            "sharding:\n  clusterRole: configsvr # the config replica set\n",
+            encoding="utf-8",
+        )
+
+        assert (
+            parse_cluster_role(f"mongod --config {config}", str(config))
+            == CLUSTER_ROLE_CONFIGSVR
+        )
+
+    def test_a_missing_config_file_reads_as_none(self, tmp_path: Path) -> None:
+        """Report no role, rather than fail, when the config file cannot be opened."""
+        config = tmp_path / "missing.conf"
+
+        assert parse_cluster_role(f"mongod --config {config}", str(config)) is None
+
+    def test_a_byte_that_is_not_utf8_does_not_hide_the_role(
+        self, tmp_path: Path
+    ) -> None:
+        """Read the role past a Latin-1 comment rather than fail the whole host."""
+        config = tmp_path / "mongod.conf"
+        config.write_bytes(
+            b"net:\n  port: 27019 # caf\xe9\nsharding:\n  clusterRole: configsvr\n"
+        )
+
+        assert (
+            parse_cluster_role(f"mongod --config {config}", str(config))
+            == CLUSTER_ROLE_CONFIGSVR
+        )
+
+    def test_configsvr_from_argv_needs_no_config_file(self) -> None:
         """Take ``--configsvr`` straight off the command line without reading a file."""
         assert (
             parse_cluster_role("/usr/bin/mongod --configsvr", None)
             == CLUSTER_ROLE_CONFIGSVR
+        )
+
+    @pytest.mark.parametrize(
+        ("flag", "declared", "role"),
+        [
+            ("--configsvr", "shardsvr", CLUSTER_ROLE_CONFIGSVR),
+            ("--shardsvr", "configsvr", CLUSTER_ROLE_SHARDSVR),
+        ],
+        ids=["configsvr", "shardsvr"],
+    )
+    def test_a_role_flag_on_argv_wins_over_the_config_file(
+        self, tmp_path: Path, flag: str, declared: str, role: str
+    ) -> None:
+        """Take the role from argv when the config file declares a different one."""
+        config = tmp_path / "mongod.conf"
+        config.write_text(f"sharding:\n  clusterRole: {declared}\n", encoding="utf-8")
+
+        assert (
+            parse_cluster_role(f"mongod --config {config} {flag}", str(config)) == role
         )
 
     def test_a_plain_mongod_has_no_cluster_role(self, tmp_path: Path) -> None:
@@ -385,3 +452,19 @@ class TestProbeRecord:
         assert "error" not in record
         assert record["database"]["db_version"] == "6.0.14"
         assert record["binary_version"] == "6.0.14"
+
+    def test_a_credential_file_in_home_is_never_used(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Connect without the login a ``~/.mongodb_uri`` on the host would offer."""
+        (tmp_path / ".mongodb_uri").write_text(
+            "mongodb://user:p%40ss@node00:27017/admin\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+        modules = fake_pymongo(answering())
+
+        record = build_record(modules)
+
+        assert record["status"] == STATUS_OK
+        uri = modules["pymongo"].MongoClient.call_args.args[0]
+        assert "@" not in uri

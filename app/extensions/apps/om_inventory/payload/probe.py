@@ -248,6 +248,26 @@ def parse_config_path(argv):
     return None
 
 
+def read_config_lines(config_path):
+    """Yield each line of a server's configuration file, stripped.
+
+    A byte that is not UTF-8, such as a Latin-1 comment, is replaced rather than
+    raised on, so it cannot fail the scan of the whole host.
+
+    :param config_path: The configuration file, or ``None``.
+    :return: The stripped lines, or none when there is no path or the file cannot be
+        read.
+    """
+    if not config_path:
+        return
+    try:
+        with open(config_path, encoding="utf-8", errors="replace") as handle:
+            for raw_line in handle:
+                yield raw_line.strip()
+    except OSError:
+        return
+
+
 def parse_port(argv, config_path):
     """Determine the port a server process listens on.
 
@@ -270,23 +290,16 @@ def parse_port(argv, config_path):
             if value.isdigit():
                 return int(value)
 
-    if not config_path:
-        return None
-    try:
-        with open(config_path, encoding="utf-8") as handle:
-            for raw_line in handle:
-                line = raw_line.strip()
-                # Matches the YAML `port: 27018` and the legacy `port=27018` alike,
-                # without taking a YAML parser as a dependency on the host.
-                if not line.startswith("port"):
-                    continue
-                remainder = line[len("port") :].lstrip()
-                if remainder.startswith((":", "=")):
-                    value = remainder[1:].strip().split("#")[0].strip()
-                    if value.isdigit():
-                        return int(value)
-    except OSError:
-        return None
+    for line in read_config_lines(config_path):
+        # Matches the YAML `port: 27018` and the legacy `port=27018` alike,
+        # without taking a YAML parser as a dependency on the host.
+        if not line.startswith("port"):
+            continue
+        remainder = line[len("port") :].lstrip()
+        if remainder.startswith((":", "=")):
+            value = remainder[1:].strip().split("#")[0].strip()
+            if value.isdigit():
+                return int(value)
     return None
 
 
@@ -309,22 +322,15 @@ def parse_cluster_role(argv, config_path):
         return CLUSTER_ROLE_CONFIGSVR
     if "--shardsvr" in tokens:
         return CLUSTER_ROLE_SHARDSVR
-    if not config_path:
-        return None
-    try:
-        with open(config_path, encoding="utf-8") as handle:
-            for raw_line in handle:
-                line = raw_line.strip()
-                if not line.startswith("clusterRole"):
-                    continue
-                remainder = line[len("clusterRole") :].lstrip()
-                if remainder.startswith(":"):
-                    value = remainder[1:].split("#")[0].strip().strip("\"'")
-                    if value in (CLUSTER_ROLE_CONFIGSVR, CLUSTER_ROLE_SHARDSVR):
-                        return value
-                    return None
-    except OSError:
-        return None
+    for line in read_config_lines(config_path):
+        if not line.startswith("clusterRole"):
+            continue
+        remainder = line[len("clusterRole") :].lstrip()
+        if remainder.startswith(":"):
+            value = remainder[1:].split("#")[0].strip().strip("\"'")
+            if value in (CLUSTER_ROLE_CONFIGSVR, CLUSTER_ROLE_SHARDSVR):
+                return value
+            return None
     return None
 
 
