@@ -177,6 +177,37 @@ class TestTriggerRun:
                 if step["name"] != "pre_check"
             )
 
+    def test_reports_the_install_manifest(
+        self, regular_user: CasdoorUser, session: AsyncSession
+    ) -> None:
+        """Carry the repo, packages and control unit a packages install leaves behind."""
+        client = api_client(regular_user, session, _fake_tasks_api())
+        response = client.post(
+            f"{BASE}/runs",
+            json={
+                "hosts": ["node00"],
+                "install_method": "packages",
+                "os": "ubuntu",
+                "mongodb_version": "8.0",
+                "replica_set_name": "rs-test",
+                "data_path": "/var/lib/mongo",
+                "log_path": "/var/log/mongodb/mongod.log",
+                "port": 27017,
+                "bind_ip": "0.0.0.0",
+            },
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        body = response.json()
+        assert body["repo"] == "psmdb-80"
+        assert body["packages"] == ["percona-server-mongodb"]
+        assert body["control_unit"] == "mongod"
+
+        reread = client.get(f"{BASE}/runs/{body['id']}")
+        assert reread.json()["repo"] == "psmdb-80"
+        assert reread.json()["packages"] == ["percona-server-mongodb"]
+        assert reread.json()["control_unit"] == "mongod"
+
     def test_accepts_per_host_member_configs(
         self, regular_user: CasdoorUser, session: AsyncSession
     ) -> None:

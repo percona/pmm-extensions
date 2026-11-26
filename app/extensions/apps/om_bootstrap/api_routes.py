@@ -85,6 +85,10 @@ from app.extensions.apps.om_bootstrap.releases import (
 )
 from app.extensions.apps.om_bootstrap.schema import om_bootstrap_schema
 from app.extensions.apps.om_bootstrap.strategies import strategy_for
+from app.extensions.apps.om_bootstrap.strategies.packages import (
+    install_manifest,
+    InstallManifest,
+)
 from app.extensions.apps.om_bootstrap.strategy import (
     BootstrapSpec,
     CREATE_ADMIN_USER_STEP,
@@ -246,6 +250,12 @@ class RunResponse(BaseModel):
         see :func:`cancel_run`. PMM's stepper treats this the same as a step
         exhausting its retries (force every host's rollback), never something
         ``om_bootstrap`` itself acts on.
+    :param repo: The package repository the install enabled, empty for an install
+        method with no manifest.
+    :param packages: The packages the install laid down, empty for an install
+        method with no manifest.
+    :param control_unit: The systemd unit controlling mongod, empty for an install
+        method with no manifest.
     """
 
     id: UUID
@@ -265,6 +275,9 @@ class RunResponse(BaseModel):
     run_steps: list[StepRecord]
     error: str | None
     cancel_requested: bool
+    repo: str = ""
+    packages: list[str] = Field(default_factory=list)
+    control_unit: str = ""
 
 
 def _run_response(
@@ -283,10 +296,16 @@ def _run_response(
     :param run_steps: See ``hosts`` — the run-level counterpart.
     :return: The run's full state.
     """
+    method = to_strategy_install_method(run.install_method)
+    manifest = (
+        install_manifest(run.mongodb_version)
+        if method is InstallMethod.PACKAGES
+        else InstallManifest(repo="", packages=[], control_unit="")
+    )
     return RunResponse(
         id=run.id,
         status=run.status,
-        install_method=to_strategy_install_method(run.install_method),
+        install_method=method,
         os=to_strategy_os(run.os),
         mongodb_version=run.mongodb_version,
         replica_set_name=run.replica_set_name,
@@ -303,6 +322,9 @@ def _run_response(
         run_steps=run_steps if run_steps is not None else parse_run_steps(run),
         error=run.error,
         cancel_requested=run.cancel_requested,
+        repo=manifest.repo,
+        packages=manifest.packages,
+        control_unit=manifest.control_unit,
     )
 
 
