@@ -13,17 +13,19 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Test the credential-free config_sha256 the scan produces for drift detection.
+"""Test the credential-free config facts a scan reads from the mongod config file.
 
 The hash is computed on the host over an allowlisted, non-secret projection of the
-mongod config, so no secret option is read, shipped, or hashed. These pin the
-projection against the server-side redaction helpers and assert a planted secret
-never reaches the record.
+mongod config, so no secret option is read, shipped, or hashed; the config path, the
+TLS mode and the keyFile path are read from the same file as their own member facts.
+These pin the projection against the server-side redaction helpers and assert a
+planted secret never reaches the record.
 """
 
 import hashlib
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from app.extensions.apps.om_inventory.payload import probe
@@ -80,6 +82,32 @@ def write_config(tmp_path: Path, text: str = SAMPLE_CONFIG) -> str:
     config = tmp_path / "mongod.conf"
     config.write_text(text, encoding="utf-8")
     return str(config)
+
+
+def probe_record_for(config_path: str) -> dict[str, Any]:
+    """Run the probe against a config path with the database read disabled.
+
+    With ``pymongo`` absent the database read fails, so the record carries only the
+    facts read from the config file and the host.
+
+    :param config_path: The mongod config file the probed process names.
+    :return: The probe record for a single mongod target.
+    """
+    target = {"service": "rs0-0", "service_id": "svc-1", "host": "n0", "port": 27017}
+    processes = [
+        {
+            "program": "mongod",
+            "pid": 1,
+            "uptime_sec": 5,
+            "port": 27017,
+            "config_path": config_path,
+            "argv": f"/usr/bin/mongod --config {config_path}",
+        }
+    ]
+    with patch.dict(sys.modules, {"pymongo": None, "pymongo.errors": None}):
+        return probe.probe(
+            target, {"probe_database": True}, {}, processes, versions={None: "7.0"}
+        )
 
 
 class TestParseConfigOptions:
@@ -184,33 +212,65 @@ class TestProbeRecordEmitsConfigSha256:
     ) -> None:
         """Emit the config hash though the database read failed.
 
-        With ``pymongo`` absent the database read fails, yet the hash is read from the
-        config file the process already names, so it survives on the record.
+        The hash is read from the config file the process already names, so it
+        survives on the record even when the database read could not run.
         """
         path = write_config(tmp_path)
-        target = {
-            "service": "rs0-0",
-            "service_id": "svc-1",
-            "host": "n0",
-            "port": 27017,
-        }
-        processes = [
-            {
-                "program": "mongod",
-                "pid": 1,
-                "uptime_sec": 5,
-                "port": 27017,
-                "config_path": path,
-                "argv": f"/usr/bin/mongod --config {path}",
-            }
-        ]
 
-        with patch.dict(sys.modules, {"pymongo": None, "pymongo.errors": None}):
-            record = probe.probe(
-                target, {"probe_database": True}, {}, processes, versions={None: "7.0"}
-            )
+        record = probe_record_for(path)
 
         assert isinstance(record["database"], dict)
         assert record["database"]["config_sha256"] == probe.config_sha256(
             probe.parse_config_options(path)
         )
+
+
+class TestParseKeyfilePath:
+    """Assert the credential-free keyFile path read takes only the path."""
+
+    def test_reads_the_keyfile_path(self, tmp_path: Path) -> None:
+        """Read ``security.keyFile`` as the member's keyfile path."""
+        assert probe.parse_keyfile_path(write_config(tmp_path)) == "/etc/mongo/keyfile"
+
+    def test_reads_a_quoted_keyfile_path_without_its_quotes(
+        self, tmp_path: Path
+    ) -> None:
+        """Strip the quotes from a quoted keyFile path."""
+        path = write_config(tmp_path, 'security:\n  keyFile: "/etc/mongo/keyfile"\n')
+        assert probe.parse_keyfile_path(path) == "/etc/mongo/keyfile"
+
+    def test_a_config_without_a_keyfile_has_none(self, tmp_path: Path) -> None:
+        """Return ``None`` when the config names no keyFile or cannot be read."""
+        no_keyfile = write_config(tmp_path, "net:\n  port: 27017\n")
+        assert probe.parse_keyfile_path(no_keyfile) is None
+        assert probe.parse_keyfile_path(None) is None
+
+
+class TestProbeRecordEmitsConfigFacts:
+    """Assert the probe record carries the config-file facts read without a login."""
+
+    def test_the_record_carries_the_config_file_tls_mode_and_keyfile_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Carry the config path, TLS mode and keyFile path from the config file."""
+        path = write_config(tmp_path)
+
+        database = probe_record_for(path)["database"]
+
+        assert database["config_file"] == path
+        assert database["tls_mode"] == "requireTLS"
+        assert database["keyfile_path"] == "/etc/mongo/keyfile"
+
+    def test_a_config_without_tls_or_keyfile_omits_those_facts(
+        self, tmp_path: Path
+    ) -> None:
+        """Omit the TLS mode and keyFile path when the config names neither."""
+        path = write_config(
+            tmp_path, "net:\n  port: 27017\nstorage:\n  dbPath: /data\n"
+        )
+
+        database = probe_record_for(path)["database"]
+
+        assert database["config_file"] == path
+        assert "tls_mode" not in database
+        assert "keyfile_path" not in database

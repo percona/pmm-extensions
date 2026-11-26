@@ -351,6 +351,33 @@ def parse_cluster_role(argv, config_path):
     return None
 
 
+def parse_keyfile_path(config_path):
+    """Read the keyFile path a mongod runs under, without a login.
+
+    Reads ``security.keyFile`` from the configuration file, the same credential-free
+    source :func:`parse_cluster_role` reads for the cluster role; only the path is
+    taken, never the keyFile's secret contents. A quoted value is read without its
+    quotes.
+
+    :param config_path: The configuration file the process was started with.
+    :return: The keyFile path, or ``None`` when the file names none.
+    """
+    if not config_path:
+        return None
+    try:
+        with open(config_path, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line.startswith("keyFile"):
+                    continue
+                remainder = line[len("keyFile") :].lstrip()
+                if remainder.startswith(":"):
+                    return remainder[1:].split("#")[0].strip().strip("\"'") or None
+    except OSError:
+        return None
+    return None
+
+
 def parse_config_options(config_path):
     """Return the allowlisted mongod config options as a flat dotted map.
 
@@ -818,9 +845,14 @@ def probe(target, config, host_facts, processes=(), versions=None):
         record["database"] = None
         return record
 
-    config_hash = config_sha256(
-        parse_config_options(process.get("config_path") if process else None)
-    )
+    config_path = process.get("config_path") if process else None
+    options = parse_config_options(config_path)
+    config_facts = {
+        "config_file": config_path,
+        "config_sha256": config_sha256(options),
+        "tls_mode": options.get("net.tls.mode"),
+        "keyfile_path": parse_keyfile_path(config_path),
+    }
     try:
         record["database"] = collect_database_facts(
             target,
@@ -839,12 +871,13 @@ def probe(target, config, host_facts, processes=(), versions=None):
         record["error_code"] = None
         record["database"] = None
 
-    if config_hash is not None:
+    present = {key: value for key, value in config_facts.items() if value}
+    if present:
         database = record.get("database")
         if not isinstance(database, dict):
             database = {}
             record["database"] = database
-        database["config_sha256"] = config_hash
+        database.update(present)
     return record
 
 

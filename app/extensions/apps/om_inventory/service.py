@@ -1483,11 +1483,12 @@ def _scan_terminal_status(observed: int, total: int) -> ProbeRunStatus:
 
 
 #: The probe-record fields a scan keeps as public facts: OS and kernel identity,
-#: process liveness, the installed binary, and MongoDB topology, version and state.
-#: Every other field a record carries is left unclassified so ``ingestible_facts``
-#: drops it fail-closed - a process ``argv`` or ``config_path`` (credentials and
-#: paths), ``database.raw`` (the raw command output, with keyFile and TLS paths),
-#: the database error detail, the host name, and the repository and readiness facts.
+#: process liveness, the installed binary, MongoDB topology, version and state, and
+#: the config file's own non-secret facts - its path, the TLS mode and the keyFile
+#: path (the path alone, never the keyFile's secret contents). Every other field a
+#: record carries is left unclassified so ``ingestible_facts`` drops it fail-closed -
+#: a process ``argv`` (credentials), ``database.raw`` (the raw command output), the
+#: database error detail, the host name, and the repository and readiness facts.
 PROBE_FACT_ALLOWLIST: frozenset[str] = frozenset(
     {
         "system.os_name",
@@ -1509,6 +1510,9 @@ PROBE_FACT_ALLOWLIST: frozenset[str] = frozenset(
         "database.set_name",
         "database.state",
         "database.config_sha256",
+        "database.config_file",
+        "database.tls_mode",
+        "database.keyfile_path",
     }
 )
 
