@@ -23,9 +23,10 @@ and collects, for every target named in the task config:
   to be its own;
 * the installed version of the binary *that* process runs;
 * a handful of **unauthenticated** database commands, when ``probe_database`` is set.
-  The payload offers no credentials: ``buildInfo`` and ``hello`` answer before any
-  login, and the cluster role is read from the server's config file or command line
-  instead, so no credential file lives on the host.
+  The payload offers no credentials: ``hello`` answers before any login, and so does
+  ``buildInfo`` up to MongoDB 8.0; from 8.1, a server with authentication enabled
+  refuses ``buildInfo``. The cluster role is read from the server's config file or
+  command line instead, so no credential file lives on the host.
 
 Once per dispatch, for the host itself:
 
@@ -493,10 +494,10 @@ def binary_version(program, cache):
 def build_uri(target, connect_timeout_ms):
     """Return the connection URI for one target.
 
-    No credentials are ever spliced in: the payload runs only the commands a mongod
-    answers before any login. ``directConnection=true`` makes those commands report
-    *this* node rather than whichever member the driver would otherwise elect to talk
-    to; per-node facts are the point.
+    No credentials are ever spliced in: the payload never logs in.
+    ``directConnection=true`` makes its commands report *this* node rather than
+    whichever member the driver would otherwise elect to talk to; per-node facts are
+    the point.
 
     :param target: The target mapping carrying ``host`` and ``port``.
     :param connect_timeout_ms: Connect and server-selection timeout.
@@ -529,8 +530,9 @@ def collect_database_facts(target, connect_timeout_ms):
     """Return facts read from the database for one target, or why there are none.
 
     The payload offers no credentials: after ``ping`` it runs only ``buildInfo`` and
-    ``hello``, which a mongod answers before any login, including an arbiter, so no
-    credential file lives on the host.
+    ``hello``. Every mongod, an arbiter included, answers ``hello`` before any login.
+    From MongoDB 8.1, a server with authentication enabled refuses ``buildInfo``; the
+    refusal is kept in ``command_errors`` and the running version stays unset.
 
     Failing to reach the database is a target-level failure: the result carries
     ``error`` (see :func:`describe_database_error`), ``error_type`` (the exception
@@ -579,7 +581,8 @@ def query_database(uri):
         # otherwise surface only as per-command errors and leave the record ``ok``.
         # It also costs one connect timeout instead of one per command.
         admin.command("ping")
-        # Only the commands a mongod answers before any login.
+        # No login: hello always answers, buildInfo only up to MongoDB 8.0 when the
+        # server has authentication enabled.
         for key, command in (
             ("build_info", "buildInfo"),
             ("hello", "hello"),

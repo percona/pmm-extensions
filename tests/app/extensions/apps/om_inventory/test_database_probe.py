@@ -16,10 +16,11 @@
 """Test the credential-free database probe and how an unreachable database fails.
 
 The probe offers no login: it runs only ``ping``, ``buildInfo`` and ``hello``, which
-a mongod answers before authenticating. ``MongoClient`` connects lazily, so ``ping``
-is where a refused connection surfaces; were the first command a fact read, the
-failure would become a command error, the record would stay ``status: ok``, and a
-mongod nobody could reach would be stored as freshly probed.
+a mongod answers before authenticating, except ``buildInfo`` on MongoDB 8.1 and later
+with authentication enabled. ``MongoClient`` connects lazily, so ``ping`` is where a
+refused connection surfaces; were the first command a fact read, the failure would
+become a command error, the record would stay ``status: ok``, and a mongod nobody
+could reach would be stored as freshly probed.
 
 pymongo is not installed where these tests run - it is the payload's own requirement,
 installed on the node - so a stand-in module is put in its place.
@@ -212,20 +213,25 @@ class TestCollectDatabaseFacts:
     def test_one_failing_fact_command_on_a_reachable_server_is_not_an_error(
         self,
     ) -> None:
-        """Keep a refused ``hello`` a command error only, not the target's error."""
+        """Keep a refused ``buildInfo`` a command error only, not the target's error.
+
+        MongoDB 8.1 and later refuse ``buildInfo`` before a login when authentication
+        is enabled, and still answer ``hello``.
+        """
 
         def answer(name: str) -> dict[str, Any]:
-            if name == "hello":
-                raise OperationFailure("Unauthorized", UNAUTHORIZED)
             if name == "buildInfo":
-                return {"version": "6.0.14"}
+                raise OperationFailure("Unauthorized", UNAUTHORIZED)
+            if name == "hello":
+                return {"isWritablePrimary": True}
             return {}
 
         facts = collect(MagicMock(side_effect=answer))
 
         assert "error" not in facts
-        assert facts["db_version"] == "6.0.14"
-        assert list(facts["command_errors"]) == ["hello"]
+        assert facts["db_version"] is None
+        assert facts["is_writable_primary"] is True
+        assert list(facts["command_errors"]) == ["build_info"]
 
 
 class TestDescribeDatabaseError:
