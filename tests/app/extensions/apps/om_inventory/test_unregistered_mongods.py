@@ -127,6 +127,16 @@ class TestParsePort:
         """Survive a config file it cannot open, rather than aborting the host."""
         assert parse_port("/usr/bin/mongod", "/nonexistent/mongod.conf") is None
 
+    def test_a_byte_that_is_not_utf8_is_not_fatal(self, tmp_path) -> None:
+        """Read the port past a Latin-1 comment rather than abort the host.
+
+        :param tmp_path: pytest's temporary directory.
+        """
+        config = tmp_path / "mongod.conf"
+        config.write_bytes(b"# caf\xe9\nnet:\n" + f"  port: {SHARD_PORT}\n".encode())
+
+        assert parse_port("/usr/bin/mongod", str(config)) == SHARD_PORT
+
 
 def process(port: int | None, program: str = "mongod", pid: int = 1) -> dict:
     """Build one server process as the payload reports it.

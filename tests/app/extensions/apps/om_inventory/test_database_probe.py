@@ -13,15 +13,17 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-"""Test that a database the payload cannot query is reported as a failure.
+"""Test the credential-free database probe and how an unreachable database fails.
 
-``MongoClient`` connects lazily, so the first command is where a refused connection
-or a rejected password surfaces. If that command were one of the per-command fact
-reads, the failure would become command errors, the record would stay
-``status: ok``, and a mongod nobody could query would be stored as freshly probed.
+The probe offers no login: it runs only ``ping``, ``buildInfo`` and ``hello``, which
+a mongod answers before authenticating, except ``buildInfo`` on MongoDB 8.1 and later
+with authentication enabled. ``MongoClient`` connects lazily, so ``ping`` is where a
+refused connection surfaces; were the first command a fact read, the failure would
+become a command error, the record would stay ``status: ok``, and a mongod nobody
+could reach would be stored as freshly probed.
 
-pymongo is not installed where these tests run - it is the payload's own
-requirement, installed on the node - so a stand-in module is put in its place.
+pymongo is not installed where these tests run - it is the payload's own requirement,
+installed on the node - so a stand-in module is put in its place.
 """
 
 import sys
@@ -29,13 +31,18 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import call, MagicMock, patch
+
+import pytest
 
 from app.extensions.apps.om_inventory.payload import probe as payload
 from app.extensions.apps.om_inventory.payload.probe import (
-    AUTHENTICATION_FAILED,
+    build_uri,
+    CLUSTER_ROLE_CONFIGSVR,
+    CLUSTER_ROLE_SHARDSVR,
     collect_database_facts,
     describe_database_error,
+    parse_cluster_role,
     STATUS_FAILED,
     STATUS_OK,
 )
@@ -45,8 +52,6 @@ TARGET = {"service": "rs0-0", "service_id": "svc-1", "host": "node00", "port": 2
 NO_REPLICATION = 76
 #: MongoDB's ``Unauthorized``, for a command a client that did not log in may not run.
 UNAUTHORIZED = 13
-#: MongoDB's ``CommandNotFound``.
-NO_SUCH_COMMAND = 59
 
 
 class PyMongoError(Exception):
@@ -86,13 +91,10 @@ CONFIGURED_TIMEOUTS = (
 )
 
 
-def fake_pymongo(
-    command: MagicMock, anonymous: MagicMock | None = None
-) -> dict[str, ModuleType]:
-    """Build ``pymongo`` and ``pymongo.errors`` modules around command mocks.
+def fake_pymongo(command: MagicMock) -> dict[str, ModuleType]:
+    """Build ``pymongo`` and ``pymongo.errors`` modules around one command mock.
 
     :param command: What ``client.admin.command`` does.
-    :param anonymous: What it does instead for a URI without credentials, if given.
     :return: The modules, keyed as ``sys.modules`` holds them.
     """
     errors = ModuleType("pymongo.errors")
@@ -100,10 +102,9 @@ def fake_pymongo(
     errors.OperationFailure = OperationFailure  # ty: ignore[unresolved-attribute]
     module = ModuleType("pymongo")
 
-    def connect(uri: str) -> MagicMock:
+    def connect(_uri: str) -> MagicMock:
         client = MagicMock()
-        logs_in = anonymous is None or "@" in uri
-        client.admin.command = command if logs_in else anonymous
+        client.admin.command = command
         return client
 
     module.MongoClient = MagicMock(  # ty: ignore[unresolved-attribute]
@@ -113,126 +114,91 @@ def fake_pymongo(
     return {"pymongo": module, "pymongo.errors": errors}
 
 
-def rejecting() -> MagicMock:
-    """Reject every login, as a server without the user does.
-
-    :return: The ``client.admin.command`` mock.
-    """
-    return MagicMock(
-        side_effect=OperationFailure("Authentication failed.", AUTHENTICATION_FAILED)
-    )
-
-
-def unauthenticated(*, arbiter: bool) -> MagicMock:
-    """Answer as a member does over the network to a client that did not log in.
+def answering(*, arbiter: bool = False, version: str = "7.0.45-24") -> MagicMock:
+    """Answer ``ping``, ``buildInfo`` and ``hello`` as a reachable mongod does.
 
     :param arbiter: Whether ``hello`` reports ``arbiterOnly``.
+    :param version: The ``buildInfo`` version to report.
     :return: The ``client.admin.command`` mock.
     """
 
     def answer(name: str) -> dict[str, Any]:
-        if name in ("getCmdLineOpts", "replSetGetStatus"):
-            raise OperationFailure("Unauthorized", UNAUTHORIZED)
-        if name in ("hello", "isMaster"):
-            return {"arbiterOnly": True} if arbiter else {"isWritablePrimary": True}
         if name == "buildInfo":
-            return {"version": "7.0.45-24"}
+            return {"version": version}
+        if name == "hello":
+            return {"arbiterOnly": True} if arbiter else {"isWritablePrimary": True}
         return {}
 
     return MagicMock(side_effect=answer)
 
 
-def collect(command: MagicMock, anonymous: MagicMock | None = None) -> dict[str, Any]:
+def collect(command: MagicMock) -> dict[str, Any]:
     """Run :func:`collect_database_facts` against the stand-in driver.
 
     :param command: What ``client.admin.command`` does.
-    :param anonymous: What it does instead for a URI without credentials, if given.
     :return: The summarised facts.
     """
-    with patch.dict(sys.modules, fake_pymongo(command, anonymous)):
-        return collect_database_facts(TARGET, "root:wrong@", "admin", 500)
+    with patch.dict(sys.modules, fake_pymongo(command)):
+        return collect_database_facts(TARGET, 500)
 
 
 def build_record(
-    modules: Mapping[str, ModuleType | None], tmp_path: Path
-) -> tuple[dict[str, Any], Path]:
+    modules: Mapping[str, ModuleType | None],
+) -> dict[str, Any]:
     """Run the payload's per-target :func:`~payload.probe` with ``modules`` imported.
 
-    The credentials come from a real file, and the installed version from the
-    per-dispatch cache ``probe`` already takes, so no binary is asked.
+    No credentials file is written or configured: the probe connects without a login.
 
     :param modules: What ``sys.modules`` holds for ``pymongo`` and its errors.
-    :param tmp_path: Where to write the credentials file.
-    :return: The record the payload would print, and the credentials file's path.
+    :return: The record the payload would print.
     """
-    credentials = tmp_path / ".mongodb_uri"
-    credentials.write_text("mongodb://root:wrong@node00:27017\n", encoding="utf-8")
     with patch.dict(sys.modules, modules):
-        record = payload.probe(
-            TARGET,
-            {"credentials_path": str(credentials)},
-            {},
-            versions={None: "6.0.14"},
-        )
-    return record, credentials
+        return payload.probe(TARGET, {}, {}, versions={None: "6.0.14"})
 
 
 class TestCollectDatabaseFacts:
-    """Assert a database that cannot be reached is the target's error."""
+    """Assert the payload queries without credentials and reports what it reached."""
 
-    def test_a_rejected_password_is_the_target_s_error(self) -> None:
-        """Report an authentication failure as the error, with its type and code."""
-        command = rejecting()
+    def test_the_connection_uri_carries_no_credentials(self) -> None:
+        """Build a credential-free URI: no ``user:pass@`` is ever spliced in."""
+        uri = build_uri(TARGET, 500)
+        assert "@" not in uri
+        assert uri.startswith("mongodb://node00:27017/")
+        assert "directConnection=true" in uri
 
-        facts = collect(command, unauthenticated(arbiter=False))
+    def test_a_reachable_server_is_read_and_has_no_error(self) -> None:
+        """Run only ``ping``, ``buildInfo`` and ``hello``, each once, with no login."""
+        command = answering(version="7.0.45-24")
 
-        assert facts["error"] == "the credentials for user root were rejected"
-        assert facts["error_type"] == "OperationFailure"
-        assert facts["error_code"] == AUTHENTICATION_FAILED
-        # Not four command errors restating it.
-        assert "command_errors" not in facts
-        command.assert_called_once_with("ping")
+        facts = collect(command)
 
-    def test_an_arbiter_is_read_without_the_credentials(self) -> None:
-        """Read an arbiter without the credentials, and keep what it refuses."""
-        command = rejecting()
+        assert "error" not in facts
+        assert facts["db_version"] == "7.0.45-24"
+        assert facts["is_writable_primary"] is True
+        assert command.call_args_list == [
+            call("ping"),
+            call("buildInfo"),
+            call("hello"),
+        ]
 
-        facts = collect(command, unauthenticated(arbiter=True))
+    def test_an_arbiter_is_read_without_a_login(self) -> None:
+        """Read an arbiter's ``hello`` without credentials; it answers before auth."""
+        facts = collect(answering(arbiter=True))
 
         assert "error" not in facts
         assert facts["is_arbiter"] is True
-        assert facts["db_version"] == "7.0.45-24"
-        assert sorted(facts["command_errors"]) == ["cmd_line_opts", "repl_set_status"]
-        command.assert_not_called()
 
-    def test_a_server_that_refuses_the_question_is_read_with_the_credentials(
-        self,
-    ) -> None:
-        """Log in as before when the unauthenticated ``isMaster`` is refused."""
-        anonymous = MagicMock(
-            side_effect=OperationFailure("no such command: 'isMaster'", NO_SUCH_COMMAND)
-        )
-        command = MagicMock(
-            side_effect=lambda name: {"version": "4.2.8"} if name == "buildInfo" else {}
-        )
-
-        facts = collect(command, anonymous)
-
-        assert "error" not in facts
-        assert facts["db_version"] == "4.2.8"
-
-    def test_a_host_without_credentials_connects_once(self) -> None:
-        """Skip the arbiter question when there is no login to withhold."""
-        modules = fake_pymongo(unauthenticated(arbiter=True))
+    def test_a_host_connects_exactly_once(self) -> None:
+        """Open one connection: there is no arbiter pre-check to make a second."""
+        modules = fake_pymongo(answering(arbiter=True))
 
         with patch.dict(sys.modules, modules):
-            facts = collect_database_facts(TARGET, "", "admin", 500)
+            collect_database_facts(TARGET, 500)
 
-        assert facts["is_arbiter"] is True
         assert modules["pymongo"].MongoClient.call_count == 1
 
     def test_an_unreachable_server_is_the_target_s_error(self) -> None:
-        """Report a refused connection as the error, and wait for it only once."""
+        """Report a refused connection on the first command as the error."""
         command = MagicMock(
             side_effect=ServerSelectionTimeoutError("node00:27017: Connection refused")
         )
@@ -242,43 +208,34 @@ class TestCollectDatabaseFacts:
         assert facts["error"] == "could not connect to node00:27017: Connection refused"
         assert facts["error_type"] == "ServerSelectionTimeoutError"
         assert facts["error_code"] is None
-        command.assert_called_once_with("isMaster")
+        command.assert_called_once_with("ping")
 
-    def test_one_failing_command_on_a_reachable_server_is_not_an_error(self) -> None:
-        """Keep a standalone's refused ``replSetGetStatus`` a command error only."""
+    def test_one_failing_fact_command_on_a_reachable_server_is_not_an_error(
+        self,
+    ) -> None:
+        """Keep a refused ``buildInfo`` a command error only, not the target's error.
+
+        MongoDB 8.1 and later refuse ``buildInfo`` before a login when authentication
+        is enabled, and still answer ``hello``.
+        """
 
         def answer(name: str) -> dict[str, Any]:
-            if name == "replSetGetStatus":
-                raise OperationFailure("not running with --replSet", NO_REPLICATION)
             if name == "buildInfo":
-                return {"version": "6.0.14"}
+                raise OperationFailure("Unauthorized", UNAUTHORIZED)
+            if name == "hello":
+                return {"isWritablePrimary": True}
             return {}
 
         facts = collect(MagicMock(side_effect=answer))
 
         assert "error" not in facts
-        assert facts["db_version"] == "6.0.14"
-        assert list(facts["command_errors"]) == ["repl_set_status"]
+        assert facts["db_version"] is None
+        assert facts["is_writable_primary"] is True
+        assert list(facts["command_errors"]) == ["build_info"]
 
 
 class TestDescribeDatabaseError:
     """Assert the stored reason says what to fix, not what the driver saw."""
-
-    def test_a_rejected_password_names_the_user_and_where_it_was_read(self) -> None:
-        """Point at the file to fix, not at the server's reply document."""
-        err = OperationFailure(
-            "Authentication failed., full error: {'ok': 0.0, 'errmsg': "
-            "'Authentication failed.', 'code': 18, 'codeName': 'AuthenticationFailed'}",
-            AUTHENTICATION_FAILED,
-        )
-
-        described = describe_database_error(
-            err, TARGET, "pmm%40ops:secret@", "/root/.mongodb_uri", 5000
-        )
-
-        assert described == (
-            "the credentials for user pmm@ops (from /root/.mongodb_uri) were rejected"
-        )
 
     def test_a_server_that_never_answered_names_its_address_and_the_wait(
         self,
@@ -286,7 +243,7 @@ class TestDescribeDatabaseError:
         """Replace the topology description with the address and the timeout."""
         err = ServerSelectionTimeoutError("No servers found yet" + TOPOLOGY)
 
-        described = describe_database_error(err, TARGET, "", None, 5000)
+        described = describe_database_error(err, TARGET, 5000)
 
         assert described == "no answer from node00:27017 within 5s"
 
@@ -296,7 +253,7 @@ class TestDescribeDatabaseError:
             "node00:27017: timed out" + CONFIGURED_TIMEOUTS + TOPOLOGY
         )
 
-        described = describe_database_error(err, TARGET, "", None, 5000)
+        described = describe_database_error(err, TARGET, 5000)
 
         assert described == "no answer from node00:27017 within 5s"
 
@@ -310,7 +267,7 @@ class TestDescribeDatabaseError:
             + TOPOLOGY
         )
 
-        described = describe_database_error(err, TARGET, "", None, 5000)
+        described = describe_database_error(err, TARGET, 5000)
 
         assert (
             described
@@ -325,51 +282,197 @@ class TestDescribeDatabaseError:
             {"errmsg": "command ping requires authentication", "code": UNAUTHORIZED},
         )
 
-        described = describe_database_error(err, TARGET, "", None, 5000)
+        described = describe_database_error(err, TARGET, 5000)
 
         assert described == "command ping requires authentication"
+
+
+class TestParseClusterRole:
+    """Assert the config-server role is read credential-free, file or argv."""
+
+    def test_configsvr_from_the_config_file(self, tmp_path: Path) -> None:
+        """Read ``sharding.clusterRole`` from the config file the probe already opens."""
+        config = tmp_path / "mongod.conf"
+        config.write_text(
+            "net:\n  port: 27019\nsharding:\n  clusterRole: configsvr\n",
+            encoding="utf-8",
+        )
+
+        role = parse_cluster_role(f"/usr/bin/mongod --config {config}", str(config))
+
+        assert role == CLUSTER_ROLE_CONFIGSVR
+
+    def test_shardsvr_from_the_config_file(self, tmp_path: Path) -> None:
+        """Read a shard server's role from the config file as well."""
+        config = tmp_path / "mongod.conf"
+        config.write_text("sharding:\n  clusterRole: shardsvr\n", encoding="utf-8")
+
+        assert (
+            parse_cluster_role(f"mongod --config {config}", str(config))
+            == CLUSTER_ROLE_SHARDSVR
+        )
+
+    @pytest.mark.parametrize(
+        "value", ['"configsvr"', "'configsvr'"], ids=["double", "single"]
+    )
+    def test_a_quoted_role_is_read_without_its_quotes(
+        self, tmp_path: Path, value: str
+    ) -> None:
+        """Read a YAML-quoted ``sharding.clusterRole`` as the role it quotes."""
+        config = tmp_path / "mongod.conf"
+        config.write_text(f"sharding:\n  clusterRole: {value}\n", encoding="utf-8")
+
+        assert (
+            parse_cluster_role(f"mongod --config {config}", str(config))
+            == CLUSTER_ROLE_CONFIGSVR
+        )
+
+    def test_a_role_flag_inside_a_path_is_not_the_flag(self, tmp_path: Path) -> None:
+        """Read the file's role when ``--configsvr`` only appears inside a path."""
+        config = tmp_path / "mongod--configsvr.conf"
+        config.write_text("sharding:\n  clusterRole: shardsvr\n", encoding="utf-8")
+
+        assert (
+            parse_cluster_role(f"mongod --config {config}", str(config))
+            == CLUSTER_ROLE_SHARDSVR
+        )
+
+    def test_an_unknown_role_reads_as_none(self, tmp_path: Path) -> None:
+        """Report no role when the file names a value that is neither role."""
+        config = tmp_path / "mongod.conf"
+        config.write_text("sharding:\n  clusterRole: router\n", encoding="utf-8")
+
+        assert parse_cluster_role(f"mongod --config {config}", str(config)) is None
+
+    @pytest.mark.parametrize(
+        "line",
+        ["#clusterRole: configsvr", "# clusterRole: configsvr"],
+        ids=["unspaced", "spaced"],
+    )
+    def test_a_commented_out_role_reads_as_none(
+        self, tmp_path: Path, line: str
+    ) -> None:
+        """Ignore a ``clusterRole`` line that is commented out."""
+        config = tmp_path / "mongod.conf"
+        config.write_text(f"sharding:\n  {line}\n", encoding="utf-8")
+
+        assert parse_cluster_role(f"mongod --config {config}", str(config)) is None
+
+    def test_an_inline_comment_is_not_part_of_the_role(self, tmp_path: Path) -> None:
+        """Read the role in front of a trailing comment."""
+        config = tmp_path / "mongod.conf"
+        config.write_text(
+            "sharding:\n  clusterRole: configsvr # the config replica set\n",
+            encoding="utf-8",
+        )
+
+        assert (
+            parse_cluster_role(f"mongod --config {config}", str(config))
+            == CLUSTER_ROLE_CONFIGSVR
+        )
+
+    def test_a_missing_config_file_reads_as_none(self, tmp_path: Path) -> None:
+        """Report no role, rather than fail, when the config file cannot be opened."""
+        config = tmp_path / "missing.conf"
+
+        assert parse_cluster_role(f"mongod --config {config}", str(config)) is None
+
+    def test_a_byte_that_is_not_utf8_does_not_hide_the_role(
+        self, tmp_path: Path
+    ) -> None:
+        """Read the role past a Latin-1 comment rather than fail the whole host."""
+        config = tmp_path / "mongod.conf"
+        config.write_bytes(
+            b"net:\n  port: 27019 # caf\xe9\nsharding:\n  clusterRole: configsvr\n"
+        )
+
+        assert (
+            parse_cluster_role(f"mongod --config {config}", str(config))
+            == CLUSTER_ROLE_CONFIGSVR
+        )
+
+    def test_configsvr_from_argv_needs_no_config_file(self) -> None:
+        """Take ``--configsvr`` straight off the command line without reading a file."""
+        assert (
+            parse_cluster_role("/usr/bin/mongod --configsvr", None)
+            == CLUSTER_ROLE_CONFIGSVR
+        )
+
+    @pytest.mark.parametrize(
+        ("flag", "declared", "role"),
+        [
+            ("--configsvr", "shardsvr", CLUSTER_ROLE_CONFIGSVR),
+            ("--shardsvr", "configsvr", CLUSTER_ROLE_SHARDSVR),
+        ],
+        ids=["configsvr", "shardsvr"],
+    )
+    def test_a_role_flag_on_argv_wins_over_the_config_file(
+        self, tmp_path: Path, flag: str, declared: str, role: str
+    ) -> None:
+        """Take the role from argv when the config file declares a different one."""
+        config = tmp_path / "mongod.conf"
+        config.write_text(f"sharding:\n  clusterRole: {declared}\n", encoding="utf-8")
+
+        assert (
+            parse_cluster_role(f"mongod --config {config} {flag}", str(config)) == role
+        )
+
+    def test_a_plain_mongod_has_no_cluster_role(self, tmp_path: Path) -> None:
+        """Report no role when neither argv nor the config file declares one."""
+        config = tmp_path / "mongod.conf"
+        config.write_text("net:\n  port: 27017\n", encoding="utf-8")
+
+        assert parse_cluster_role(f"mongod --config {config}", str(config)) is None
 
 
 class TestProbeRecord:
     """Assert how a database failure shapes the record the payload prints."""
 
-    def test_a_database_error_fails_the_record_and_carries_its_type(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_database_error_fails_the_record_and_carries_its_type(self) -> None:
         """Mark the record failed, with the type and code beside the message."""
-        modules = fake_pymongo(rejecting(), unauthenticated(arbiter=False))
+        command = MagicMock(
+            side_effect=ServerSelectionTimeoutError("node00:27017: Connection refused")
+        )
 
-        record, credentials = build_record(modules, tmp_path)
+        record = build_record(fake_pymongo(command))
 
         assert record["status"] == STATUS_FAILED
-        assert record["error"] == (
-            f"the credentials for user root (from {credentials}) were rejected"
+        assert (
+            record["error"] == "could not connect to node00:27017: Connection refused"
         )
-        assert record["error_type"] == "OperationFailure"
-        assert record["error_code"] == AUTHENTICATION_FAILED
+        assert record["error_type"] == "ServerSelectionTimeoutError"
+        assert record["error_code"] is None
 
-    def test_a_failure_outside_the_driver_carries_the_same_keys(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_failure_outside_the_driver_carries_the_same_keys(self) -> None:
         """Give a payload that cannot import pymongo a type and a ``None`` code too."""
-        record, _ = build_record({"pymongo": None, "pymongo.errors": None}, tmp_path)
+        record = build_record({"pymongo": None, "pymongo.errors": None})
 
         assert record["status"] == STATUS_FAILED
         assert record["error_type"] == "ModuleNotFoundError"
         assert record["error_code"] is None
         assert record["database"] is None
 
-    def test_a_queried_database_leaves_the_record_ok(self, tmp_path: Path) -> None:
+    def test_a_queried_database_leaves_the_record_ok(self) -> None:
         """Leave a record whose database answered unmarked."""
-        command = MagicMock(
-            side_effect=lambda name: (
-                {"version": "6.0.14"} if name == "buildInfo" else {}
-            )
-        )
-
-        record, _ = build_record(fake_pymongo(command), tmp_path)
+        record = build_record(fake_pymongo(answering(version="6.0.14")))
 
         assert record["status"] == STATUS_OK
         assert "error" not in record
         assert record["database"]["db_version"] == "6.0.14"
         assert record["binary_version"] == "6.0.14"
+
+    def test_a_credential_file_in_home_is_never_used(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Connect without the login a ``~/.mongodb_uri`` on the host would offer."""
+        (tmp_path / ".mongodb_uri").write_text(
+            "mongodb://user:p%40ss@node00:27017/admin\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+        modules = fake_pymongo(answering())
+
+        record = build_record(modules)
+
+        assert record["status"] == STATUS_OK
+        uri = modules["pymongo"].MongoClient.call_args.args[0]
+        assert "@" not in uri

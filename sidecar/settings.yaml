@@ -46,9 +46,8 @@ default:
       - TasksSettings.PRE_EXECUTION_CONNECTIVITY_CHECK
       - TasksSettings.LOG_RETENTION_DAYS
       - TasksSettings.PENDING_ALLOCATION_TIMEOUT_SECONDS
-      # CREDENTIALS_PATH is deliberately absent: it names a file read off the
-      # *monitored* host, not a setting of PMM Extensions' own behavior. SCHEDULE is a nested
-      # submodel, so each overridable leaf is listed under its __-delimited path.
+      # SCHEDULE is a nested submodel, so each overridable leaf is listed under its
+      # __-delimited path.
       - OmInventorySettings.AUTO_SCAN
       - OmInventorySettings.SCHEDULE__every
       - OmInventorySettings.SCHEDULE__period
