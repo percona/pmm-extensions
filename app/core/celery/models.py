@@ -131,7 +131,7 @@ def reject_unmanageable_period(value: IntervalSchedule) -> IntervalSchedule:
             f"'{period.value}'" for period in Period if period in MANAGEABLE_PERIODS
         )
         raise ValueError(
-            f"Invalid period '{value.period}' for IntervalSchedule. Valid periods"
+            f"Invalid period '{value.period.value}' for IntervalSchedule. Valid periods"
             f" are: {valid}."
         )
     return value
