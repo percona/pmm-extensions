@@ -33,7 +33,7 @@ live until there is a second caller to justify one.
 import asyncio
 import logging
 from collections import Counter
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager, AsyncExitStack
 from dataclasses import dataclass
 from dataclasses import field as dc_field
@@ -57,6 +57,7 @@ from app.extensions.apps.om_inventory.crud import (
     conflict_detail,
     conflicting_run,
     fail_running_run,
+    get_service,
     ProbeRunManager,
     prune_runs,
     RUN_LEASE,
@@ -77,6 +78,7 @@ from app.extensions.apps.om_inventory.enumeration import (
     list_inventory_nodes,
 )
 from app.extensions.apps.om_inventory.inventory import (
+    DEFAULT_MONGODB_PORT,
     InventoryService,
     list_mongodb_services,
 )
@@ -84,18 +86,24 @@ from app.extensions.apps.om_inventory.mapping import (
     ExecutorState,
     get_executor_states,
     map_services,
+    MappedService,
     usable_executor_hosts,
 )
 from app.extensions.apps.om_inventory.models import (
     NodeResolution,
+    OmService,
     ProbeRun,
     ProbeRunStatus,
     ScanFailure,
+    ScanProfile,
+    ScanSubject,
 )
+from app.extensions.apps.om_inventory.observations import ingest_collected
 from app.extensions.apps.om_inventory.payload.probe import (
     CLUSTER_ROLE_CONFIGSVR,
     STATUS_FAILED,
 )
+from app.extensions.apps.shared.om.classification import FactClass
 from app.extensions.config import extensions_settings
 from app.extensions.db import get_async_session_maker
 from app.inventory.config import inventory_settings
@@ -108,6 +116,9 @@ SWITCHED_OFF_DETAIL = "Operations Inventory is switched off"
 
 AUTO_SCAN_OFF_DETAIL = "Automatic scans are off"
 """Why a scheduled sweep was skipped while ``AUTO_SCAN`` is off."""
+
+SCAN_SYSTEMD_UNITS: tuple[str, ...] = ("mongod", "pbm-agent")
+"""The systemd units a scan reads with ``systemctl show`` on each member's host."""
 
 HEARTBEAT_INTERVAL = RUN_LEASE / 4
 """How often a sweep writes its run to show it is alive."""
@@ -1424,5 +1435,376 @@ async def run_probe(
         outcome.total,
         outcome.resolved,
         outcome.answered,
+    )
+    return run_id
+
+
+async def _finish_scan(
+    session: AsyncSession,
+    run_id: UUID,
+    status: ProbeRunStatus,
+    *,
+    services_total: int = 0,
+    services_answered: int = 0,
+) -> None:
+    """Record a scan run's terminal status and service counts, unless already final.
+
+    :param session: The database session.
+    :param run_id: The run to finish.
+    :param status: The terminal status to write.
+    :param services_total: Subjects this scan asked for that carried a service id.
+    :param services_answered: ...of which returned a usable service record.
+    """
+    await ProbeRunManager.update_running(
+        session,
+        run_id,
+        {
+            "status": status,
+            "finished_at": utc_now(),
+            "services_total": services_total,
+            "services_answered": services_answered,
+        },
+    )
+
+
+def _scan_terminal_status(observed: int, total: int) -> ProbeRunStatus:
+    """Pick a scan's terminal status from how many subjects it observed.
+
+    :param observed: Subjects whose facts were collected and stored.
+    :param total: Subjects the scan was asked to collect.
+    :return: ``FAILED`` when none were observed, including a scan with no subjects,
+        ``SUCCESS`` when every subject was, and ``PARTIAL`` when some were.
+    """
+    if observed == 0:
+        return ProbeRunStatus.FAILED
+    if observed == total:
+        return ProbeRunStatus.SUCCESS
+    return ProbeRunStatus.PARTIAL
+
+
+#: The probe-record fields a scan keeps as public facts: OS and kernel identity,
+#: process liveness, the installed binary, MongoDB topology, version and state, and
+#: the config file's own non-secret facts - its path, the TLS mode and the keyFile
+#: path (the path alone, never the keyFile's secret contents). Every other field a
+#: record carries is left unclassified so ``ingestible_facts`` drops it fail-closed -
+#: a process ``argv`` (credentials), ``database.raw`` (the raw command output), the
+#: database error detail, the host name, and the repository and readiness facts.
+PROBE_FACT_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "system.os_name",
+        "system.os_id",
+        "system.os_version_id",
+        "system.kernel",
+        "system.arch",
+        "process.running",
+        "process.program",
+        "process.pid",
+        "process.uptime_sec",
+        "repo.reachable",
+        "install_readiness.package_manager",
+        "install_readiness.package_manager_present",
+        "install_readiness.data_dir_free_bytes",
+        "install_readiness.no_mongod",
+        "binary_version",
+        "database.db_version",
+        "database.git_version",
+        "database.vendor",
+        "database.storage_engine",
+        "database.is_writable_primary",
+        "database.is_arbiter",
+        "database.set_name",
+        "database.state",
+        "database.config_sha256",
+        "database.config_file",
+        "database.tls_mode",
+        "database.keyfile_path",
+    }
+)
+
+
+def _scan_target(subject: ScanSubject, service: OmService | None) -> MappedService:
+    """Build the probe target for one subject from its host and known port.
+
+    The subject carries the identity a managed scan needs on its own — the host to
+    reach and the service id the record is keyed by — so the cached ``service`` is
+    only an enrichment, and a subject with none is still a target. The port is taken
+    from the subject first, then the cached service, then the MongoDB default, so a
+    member the monitored sweep has not yet recorded is still probed on its own port.
+    The probe is dispatched to the subject's ``host`` and connects to its
+    ``connect_host`` when it carries one, otherwise to ``host``.
+
+    :param subject: The subject to probe, carrying the dispatch host, an optional
+        connect host that overrides it for the MongoDB connection, the key its
+        observation lands under, and the port when pmm-managed sent one.
+    :param service: The cached service for the subject, or ``None`` when the monitored
+        sweep has not recorded it; it supplies a name and a port fallback only.
+    :return: The subject's service paired with its host, as the probe dispatches one.
+    """
+    cached_port = service.port if service is not None else None
+    cached_name = service.name if service is not None else None
+    inventory_service = InventoryService(
+        service_id=None,
+        external_id=subject.service_id,
+        name=cached_name or subject.subject_key,
+        port=subject.port or cached_port or DEFAULT_MONGODB_PORT,
+        node_name=None,
+        node_address=subject.connect_host or subject.host,
+    )
+    return MappedService(inventory_service, subject.host, NodeResolution.ADDRESS)
+
+
+def _flatten_record(record: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
+    """Flatten a probe record's nested facts to a flat ``dotted.name`` map.
+
+    :param record: The parsed probe record, or a sub-document of it.
+    :param prefix: The dotted path of the sub-document being flattened.
+    :return: Every leaf value keyed by its dotted path.
+    """
+    flat: dict[str, Any] = {}
+    for key, value in record.items():
+        name = f"{prefix}{key}"
+        if isinstance(value, dict):
+            flat.update(_flatten_record(value, f"{name}."))
+        else:
+            flat[name] = value
+    return flat
+
+
+def _probe_facts_from_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Classify a subject's probe record into the facts and classes a scan folds in.
+
+    Every leaf is carried as a fact; only the fields in :data:`PROBE_FACT_ALLOWLIST`
+    are classified :attr:`FactClass.PUBLIC`, so every other field is dropped
+    fail-closed when the observation is ingested.
+
+    :param record: The subject's parsed probe record.
+    :return: The ``facts`` and ``classes`` mapping ``ingest_collected`` folds in.
+    """
+    facts = _flatten_record(record)
+    classes = {name: FactClass.PUBLIC for name in facts if name in PROBE_FACT_ALLOWLIST}
+    return {"facts": facts, "classes": classes}
+
+
+def _install_readiness_facts(host_record: Mapping[str, Any]) -> dict[str, Any]:
+    """Classify an install node's readiness facts from the host's own probe record.
+
+    An install node has no service, so its readiness is the host-level OS, repository,
+    package-manager, free-space and process facts the payload collects for every host,
+    not a service record's replica-set and database facts. Two booleans are derived so
+    the consumer gates on a ready-or-not fact rather than reconstructing the polarity:
+    ``package_manager_present`` and ``no_mongod``.
+
+    :param host_record: The host's own parsed probe record.
+    :return: The ``facts`` and ``classes`` mapping ``ingest_collected`` folds in.
+    """
+    install_readiness = dict(host_record.get("install_readiness") or {})
+    process = host_record.get("process") or {}
+    install_readiness["package_manager_present"] = (
+        install_readiness.get("package_manager") is not None
+    )
+    install_readiness["no_mongod"] = not process.get("running")
+    readiness = {
+        "system": host_record.get("system") or {},
+        "repo": host_record.get("repo") or {},
+        "install_readiness": install_readiness,
+        "process": process,
+    }
+    return _probe_facts_from_record(readiness)
+
+
+async def _ingest_subjects(
+    session: AsyncSession,
+    subjects: list[ScanSubject],
+    results: dict[str, HostProbeResult],
+    *,
+    profile: ScanProfile,
+    scan_id: UUID,
+    collected_at: datetime,
+) -> tuple[int, int]:
+    """Store one observation per subject that answered, counting what answered.
+
+    A subject whose host did not answer, or that carries a service id whose service
+    returned no usable record, is left unstored: the store keeps the newer of two
+    results, so writing a host-only document for a member whose service facts did not
+    come back would replace a prior complete observation with a degraded one. A
+    subject with no service id is host-only by design, and its host record is its
+    answer. The counts reflect what answered rather than which write won a race, so a
+    complete answer the store superseded with a newer one still counts.
+
+    :param session: The session to record through; committed here.
+    :param subjects: The members the scan collected on.
+    :param results: The probe results, keyed by host.
+    :param profile: The scan profile the observations belong to.
+    :param scan_id: The run the observations cite, and the run the miss logs name.
+    :param collected_at: When the scan began.
+    :return: How many subjects answered and, of those, how many carried a service id
+        whose service returned a usable record.
+    :raises sqlalchemy.exc.DBAPIError: When a subject's observation write is refused.
+    """
+    observed = 0
+    answered_services = 0
+    for subject in subjects:
+        result = results.get(subject.host)
+        if result is None or result.host_record is None:
+            logger.info(
+                "OM inventory: scan %s subject %s host %s did not answer",
+                scan_id,
+                subject.subject_key,
+                subject.host,
+            )
+            continue
+        host_record = result.host_record
+        if profile is ScanProfile.INSTALL_CHECK:
+            probe_facts = _install_readiness_facts(host_record)
+        else:
+            record = (
+                result.records.get(subject.service_id)
+                if subject.service_id is not None
+                else None
+            )
+            if subject.service_id is not None and not _answered(record):
+                logger.info(
+                    "OM inventory: scan %s subject %s service %s returned no usable "
+                    "record; keeping any prior observation",
+                    scan_id,
+                    subject.subject_key,
+                    subject.service_id,
+                )
+                continue
+            probe_facts = (
+                _probe_facts_from_record(record) if record is not None else None
+            )
+        await ingest_collected(
+            session,
+            subject_kind=subject.subject_kind,
+            subject_key=subject.subject_key,
+            profile=profile,
+            scan_id=scan_id,
+            collected_at=collected_at,
+            systemd_units=host_record.get("systemd_units") or {},
+            pbm_status=host_record.get("pbm_status"),
+            probe_facts=probe_facts,
+        )
+        observed += 1
+        if subject.service_id is not None:
+            answered_services += 1
+    await session.commit()
+    return observed, answered_services
+
+
+async def run_scan(run_id: UUID) -> UUID:
+    """Run one requested scan and record its subjects' observations.
+
+    The run row and its subjects are created by ``POST /scans`` before the work
+    starts, so this renews the lease, reads the subjects back off the row, dispatches
+    the probe to each subject's host under :data:`SCAN_SYSTEMD_UNITS` to capture its
+    systemd and PBM output, folds in the subject's probe facts (the host's readiness
+    facts under the ``install_check`` profile, otherwise the service's replica-set,
+    version and process facts), and stores one observation per subject through
+    :func:`~app.extensions.apps.om_inventory.observations.ingest_collected`. A scan
+    handed no subjects terminates at once as ``FAILED``, having scanned nothing.
+
+    :param run_id: The scan run's id, created by the scans endpoint.
+    :return: The run's id.
+    :raises sqlalchemy.exc.DBAPIError: When a subject's observation write is refused.
+    """
+    session_maker = get_async_session_maker()
+    async with session_maker() as session:
+        if not await touch_run(session, run_id):
+            logger.info(
+                "OM inventory: scan %s not started -- it is no longer running", run_id
+            )
+            return run_id
+        run = await ProbeRunManager.get(session, id=run_id)
+        if run is None:
+            return run_id
+        subjects = [ScanSubject.model_validate(subject) for subject in run.subjects]
+        profile = run.profile
+        # Every subject carrying a service id becomes a probe target, so its replset,
+        # version and process facts come back alongside its systemd and PBM output —
+        # the cached service is an enrichment, not a precondition, so a member the
+        # monitored sweep has not yet recorded is still probed.
+        targets: list[MappedService] = []
+        for subject in subjects:
+            if subject.service_id is None:
+                logger.info(
+                    "OM inventory: scan %s subject %s carries no service id; "
+                    "collecting host facts only",
+                    run_id,
+                    subject.subject_key,
+                )
+                continue
+            service = await get_service(session, subject.service_id)
+            if service is None and subject.port is None:
+                logger.info(
+                    "OM inventory: scan %s subject %s service %s is not cached and "
+                    "the request carried no port; probing the MongoDB default port",
+                    run_id,
+                    subject.subject_key,
+                    subject.service_id,
+                )
+            targets.append(_scan_target(subject, service))
+
+    if not subjects:
+        async with session_maker() as session:
+            await _finish_scan(session, run_id, ProbeRunStatus.FAILED)
+        logger.info(
+            "OM inventory: scan %s failed -- it was asked to scan nothing", run_id
+        )
+        return run_id
+
+    collected_at = utc_now()
+    token = get_internal_token()
+    observed = 0
+    answered_services = 0
+    try:
+        async with _heartbeat(run_id):
+            async with _held_clients() as (_, tasks_api):
+                with tasks_api.auth(token):
+                    results = await probe_all(
+                        tasks_api,
+                        targets,
+                        executor_hosts={subject.host for subject in subjects},
+                        run_id=run_id,
+                        scan_units=list(SCAN_SYSTEMD_UNITS),
+                    )
+            async with session_maker() as session:
+                observed, answered_services = await _ingest_subjects(
+                    session,
+                    subjects,
+                    results,
+                    profile=profile,
+                    scan_id=run_id,
+                    collected_at=collected_at,
+                )
+    except RunLostError:
+        logger.warning(
+            "OM inventory: scan %s stopped -- it was failed while it ran", run_id
+        )
+        return run_id
+    except Exception as exc:
+        logger.exception("OM inventory: scan %s failed", run_id)
+        await _fail_run(run_id, str(exc))
+        return run_id
+
+    status = _scan_terminal_status(observed, len(subjects))
+    services_total = sum(1 for subject in subjects if subject.service_id is not None)
+    async with session_maker() as session:
+        await _finish_scan(
+            session,
+            run_id,
+            status,
+            services_total=services_total,
+            services_answered=answered_services,
+        )
+    logger.info(
+        "OM inventory: scan %s %s -- %d of %d subject(s) observed, %d of %d "
+        "service(s) answered",
+        run_id,
+        status,
+        observed,
+        len(subjects),
+        answered_services,
+        services_total,
     )
     return run_id

@@ -35,12 +35,15 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.db.crud import BaseSQLModelManager
 from app.core.utils.date_time import make_datetime_utc, utc_now
 from app.extensions.apps.om_inventory.models import (
+    ObservationSubjectKind,
     ObservedEntity,
     OmHost,
+    OmObservation,
     OmService,
     ProbeRun,
     ProbeRunStatus,
     ScanFailure,
+    ScanProfile,
 )
 
 RUN_LEASE = timedelta(minutes=2)
@@ -195,6 +198,15 @@ class OmServiceManager(BaseSQLModelManager):
     """
 
     Model = OmService
+
+
+class OmObservationManager(BaseSQLModelManager):
+    """Manage :class:`OmObservation` CRUD operations.
+
+    :cvar Model: The SQLModel class this manager is responsible for.
+    """
+
+    Model = OmObservation
 
 
 def has_service_clause() -> Any:
@@ -447,6 +459,40 @@ async def get_service(session: AsyncSession, service_id: str) -> OmService | Non
     return await OmServiceManager.first(session, service_id=service_id)
 
 
+async def get_observation(
+    session: AsyncSession,
+    subject_kind: ObservationSubjectKind,
+    subject_key: str,
+    profile: ScanProfile,
+) -> OmObservation | None:
+    """Return the current observation for a subject under a profile.
+
+    :param session: The database session.
+    :param subject_kind: What ``subject_key`` names.
+    :param subject_key: The opaque key pmm-managed sent with the scan request.
+    :param profile: The scan profile the facts were collected under.
+    :return: The observation, or ``None`` when no scan has reported the subject.
+    """
+    return await OmObservationManager.first(
+        session,
+        subject_kind=subject_kind,
+        subject_key=subject_key,
+        profile=profile,
+    )
+
+
+async def run_by_idempotency_key(
+    session: AsyncSession, idempotency_key: str
+) -> ProbeRun | None:
+    """Return the scan run already recorded under an idempotency key.
+
+    :param session: The database session.
+    :param idempotency_key: The key a scan request carried.
+    :return: The run fulfilling the key, or ``None`` when none has.
+    """
+    return await ProbeRunManager.first(session, idempotency_key=idempotency_key)
+
+
 async def delete_host(session: AsyncSession, host: OmHost) -> None:
     """Delete one host row and the services on it.
 
@@ -574,6 +620,12 @@ async def prune_runs(session: AsyncSession, keep: int) -> int:
     which then raises in ``finalise`` on a run that no longer exists. A row nothing
     has finished writing is not history yet.
 
+    A run still named by a current observation is kept too: ``OmObservation.scan_id``
+    cascades on delete, so pruning the run that last wrote a member's observation
+    would delete the observation with it, leaving the member with no facts and no
+    replacement. A later scan rewrites the observation under its own run, which frees
+    the old one to be pruned.
+
     :param session: The database session.
     :param keep: How many runs to keep.
     :return: The number deleted.
@@ -581,10 +633,12 @@ async def prune_runs(session: AsyncSession, keep: int) -> int:
     survivors = (
         select(ProbeRun.id).order_by(col(ProbeRun.started_at).desc()).limit(keep)
     )
+    referenced = select(OmObservation.scan_id)
     result = await session.exec(
         delete(ProbeRun).where(  # type: ignore[call-overload]
             col(ProbeRun.id).not_in(survivors),
             col(ProbeRun.status) != ProbeRunStatus.RUNNING,
+            col(ProbeRun.id).not_in(referenced),
         )
     )
     await session.commit()
@@ -658,15 +712,19 @@ async def conflicting_run(
     session: AsyncSession,
     node_ids: list[str] | None,
     *,
+    profile: ScanProfile = ScanProfile.MONITORED,
     exclude: UUID | None = None,
     stale_after: timedelta,
 ) -> ProbeRun | None:
-    """Return the in-flight run that already holds these hosts, if any.
+    """Return the in-flight run of this profile that already holds these hosts, if any.
 
-    Single-flight is judged **per host**, not globally: with a ten-minute schedule a
-    global refusal would reject a one-host refresh exactly when someone wants one. A
-    run with no scope covers everything, so it overlaps whatever is asked — including
-    another full refresh.
+    Single-flight is judged **per host and per profile**, not globally: with a
+    ten-minute schedule a global refusal would reject a one-host refresh exactly when
+    someone wants one. A run with no scope covers every host, so it overlaps whatever
+    is asked — including another full refresh. Only a run of the same profile
+    conflicts: a monitored sweep and a managed scan send different payloads to a host,
+    so they never collide on the Tasks layer and must not block each other, or a
+    cluster scanned on its cadence would starve the estate sweep that feeds it.
 
     Lives here rather than in the API handler because **both** paths need it. The
     handler is the obvious caller, but the scheduled sweep enters through Celery and
@@ -700,6 +758,8 @@ async def conflicting_run(
 
     :param session: The database session.
     :param node_ids: The hosts being asked for, or ``None`` / empty for the estate.
+    :param profile: The asking run's profile; only in-flight runs of the same profile
+        can conflict, and it defaults to the monitored sweep that owns this guard.
     :param exclude: A run to ignore — the caller's own, when it has already been
         created. Without it a task would find its own row and refuse itself.
     :param stale_after: How old an in-flight run may be before it is presumed dead.
@@ -709,6 +769,8 @@ async def conflicting_run(
     own = await session.get(ProbeRun, exclude) if exclude is not None else None
     now = utc_now()
     for in_flight in await running_runs(session):
+        if in_flight.profile != profile:
+            continue
         if exclude is not None and in_flight.id == exclude:
             continue
         if await fail_lost_run(session, in_flight, now):

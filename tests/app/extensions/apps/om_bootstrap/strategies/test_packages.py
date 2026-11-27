@@ -2401,3 +2401,18 @@ class TestBindIpReachesLoopback:
     ) -> None:
         """Leave the wildcards alone: beside 127.0.0.1, mongod breaks on either."""
         assert _with_loopback(bind_ip) == expected
+
+
+class TestInstallManifest:
+    """Pin the repo, packages and control unit a packages install reports for uninstall."""
+
+    def test_reports_the_channel_package_and_unit(self) -> None:
+        """Report the PSMDB channel, the package installed and the systemd unit."""
+        manifest = packages.install_manifest("8.0")
+        assert manifest.repo == "psmdb-80"
+        assert manifest.packages == [packages.PSMDB_PACKAGE]
+        assert manifest.control_unit == packages.MONGOD_UNIT
+
+    def test_reads_the_channel_from_the_major_version(self) -> None:
+        """Select the channel from major.minor, so a patch version maps the same."""
+        assert packages.install_manifest("8.0.4").repo == "psmdb-80"

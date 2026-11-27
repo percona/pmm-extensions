@@ -47,6 +47,7 @@ import base64
 import json
 import posixpath
 import shlex
+from dataclasses import dataclass
 
 from app.extensions.apps.om_bootstrap.releases import (
     major_minor,
@@ -85,7 +86,15 @@ CONFIG_PATH = "/etc/mongod.conf"
 #: deletes it.
 OWNERSHIP_MARKER_PATH = "/etc/mongod.om-bootstrap"
 
-#: The packages ``percona-server-mongodb`` pulls in, as an awk regex over package
+#: The metapackage ``install_package`` installs and ``purge_package`` removes, and
+#: the single name :func:`install_manifest` reports as this run's package.
+PSMDB_PACKAGE = "percona-server-mongodb"
+
+#: The systemd unit the packaged install creates, which ``start_service`` enables
+#: and restarts and :func:`install_manifest` reports as this run's control unit.
+MONGOD_UNIT = "mongod"
+
+#: The packages :data:`PSMDB_PACKAGE` pulls in, as an awk regex over package
 #: names. apt's unused list can hold anything orphaned on the host, so rollback
 #: purges only the PSMDB packages in it.
 _PSMDB_PACKAGES_ERE = "^percona-(server-mongodb-|mongodb-mongosh$|telemetry-agent$)"
@@ -225,6 +234,34 @@ def _psmdb_channel(mongodb_version: str) -> str:
     :return: The channel name ``percona-release setup`` expects.
     """
     return f"psmdb-{major_minor(mongodb_version).replace('.', '')}"
+
+
+@dataclass(frozen=True, slots=True)
+class InstallManifest:
+    """Carry what a packages install leaves on a host, for a later uninstall.
+
+    :param repo: The PSMDB release channel ``configure_repository`` enables, e.g.
+        ``"psmdb-80"``.
+    :param packages: The packages ``install_package`` installs.
+    :param control_unit: The systemd unit controlling mongod.
+    """
+
+    repo: str
+    packages: list[str]
+    control_unit: str
+
+
+def install_manifest(mongodb_version: str) -> InstallManifest:
+    """Return the repo, packages and control unit a packages install leaves behind.
+
+    :param mongodb_version: The version the run installs, which selects the channel.
+    :return: The manifest a later uninstall removes the install by.
+    """
+    return InstallManifest(
+        repo=_psmdb_channel(mongodb_version),
+        packages=[PSMDB_PACKAGE],
+        control_unit=MONGOD_UNIT,
+    )
 
 
 def _shell_step(body: str, *, timeout_s: int = 30) -> StepAction:
@@ -493,7 +530,7 @@ def _mongod_diagnostics(spec: BootstrapSpec) -> str:
             '  echo "mongod did not come up; its journal and log say:" >&2',
             "  if command -v journalctl >/dev/null 2>&1; then",
             (
-                "    journalctl -u mongod --no-pager -o cat"
+                f"    journalctl -u {MONGOD_UNIT} --no-pager -o cat"
                 f" -n {JOURNAL_TAIL_LINES} >&2 || true"
             ),
             "  fi",
@@ -952,7 +989,7 @@ class PackagesInstallStrategy:
         install = "apt-get install -y" if pkg_manager == "apt-get" else "dnf install -y"
         return _shell_step(
             f"printf '%s\\n' {shlex.quote(run_id)} > {OWNERSHIP_MARKER_PATH}\n"
-            f"{install} percona-server-mongodb",
+            f"{install} {PSMDB_PACKAGE}",
             timeout_s=300,
         )
 
@@ -1071,8 +1108,8 @@ class PackagesInstallStrategy:
         """
         return _shell_step(
             f"{_mongod_diagnostics(spec)}\n"
-            "systemctl enable mongod\n"
-            f"{_run_or_explain('systemctl restart mongod')}\n",
+            f"systemctl enable {MONGOD_UNIT}\n"
+            f"{_run_or_explain(f'systemctl restart {MONGOD_UNIT}')}\n",
             timeout_s=60,
         )
 
@@ -1336,7 +1373,7 @@ class PackagesInstallStrategy:
         """
         config = _mongod_config(spec, host, with_auth=True)
         command = (
-            f"cat > {CONFIG_PATH} <<'MONGOD_CONF' && systemctl restart mongod "
+            f"cat > {CONFIG_PATH} <<'MONGOD_CONF' && systemctl restart {MONGOD_UNIT} "
             f"&& {_wait_for_mongod_command(spec.port)}\n{config}MONGOD_CONF\n"
         )
         return _shell_step(
@@ -1445,7 +1482,7 @@ class PackagesInstallStrategy:
         :return: The step action.
         """
         return _owned_step(
-            "systemctl disable --now mongod || true", run_id, timeout_s=60
+            f"systemctl disable --now {MONGOD_UNIT} || true", run_id, timeout_s=60
         )
 
     def _rollback_remove_config(self, spec: BootstrapSpec, run_id: str) -> StepAction:  # noqa: ARG002
@@ -1488,7 +1525,7 @@ class PackagesInstallStrategy:
         if pkg_manager == "apt-get":
             remove = "\n".join(
                 [
-                    "apt-get remove -y --purge percona-server-mongodb || true",
+                    f"apt-get remove -y --purge {PSMDB_PACKAGE} || true",
                     (
                         "unused=$(apt-get -s autoremove 2>/dev/null"
                         f" | awk -v re={shlex.quote(_PSMDB_PACKAGES_ERE)}"
@@ -1500,7 +1537,7 @@ class PackagesInstallStrategy:
         else:
             remove = (
                 "dnf remove -y --setopt=clean_requirements_on_remove=True "
-                "percona-server-mongodb || true"
+                f"{PSMDB_PACKAGE} || true"
             )
         return _owned_step(remove, run_id, timeout_s=120)
 
