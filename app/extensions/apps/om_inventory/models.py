@@ -47,17 +47,27 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
-from sqlalchemy import Column, ForeignKey, Index, JSON, Text, text
+from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    JSON,
+    Text,
+    text,
+    UniqueConstraint,
+)
 from sqlalchemy import Enum as EnumField
 from sqlalchemy.dialects import postgresql
 from sqlmodel import Field as SQLField
 from sqlmodel import SQLModel
 from sqlmodel.sql.sqltypes import AutoString
 
-from app.core.db.models import BaseUUIDSQLModel, DateTimeWithTimezone
+from app.core.db.models import BaseSQLModel, BaseUUIDSQLModel, DateTimeWithTimezone
 from app.core.utils.date_time import utc_now
-from app.core.utils.fields import UTCDatetime
+from app.core.utils.fields import NonEmptyStr, TcpPort, UTCDatetime
 
 #: The symbolic schema every table here declares. See the module docstring for why it
 #: is spelled rather than imported.
@@ -180,6 +190,46 @@ class ScanFailure(StrEnum):
     DATABASE_AUTH_FAILED = "database_auth_failed"
     DATABASE_ERROR = "database_error"
     UNKNOWN = "unknown"
+
+
+class ScanProfile(StrEnum):
+    """Name the scan profile a run and its observations belong to.
+
+    A run's profile picks the fact set and credential a scan uses, and keys the
+    document each subject's facts land in, so one subject's facts under different
+    profiles never overwrite each other. ``MONITORED`` is the estate sweep, which
+    writes :class:`OmHost`/:class:`OmService` and never an observation; the other
+    four write :class:`OmObservation`.
+    """
+
+    MONITORED = "monitored"
+    IMPORT_CHECK = "import_check"
+    MANAGED = "managed"
+    INSTALL_CHECK = "install_check"
+    UNINSTALL_CHECK = "uninstall_check"
+
+    @classmethod
+    def observation_profiles(cls) -> frozenset["ScanProfile"]:
+        """Return the profiles that write an observation, every one but ``MONITORED``.
+
+        :return: The profiles an :class:`OmObservation` may carry.
+        """
+        return frozenset(cls) - {cls.MONITORED}
+
+
+class ObservationSubjectKind(StrEnum):
+    """Name what an observation is keyed to within a profile.
+
+    An opaque subject key pmm-managed sends with the scan request is read under
+    one of these kinds: a cluster member, a pre-confirm import candidate (keyed by
+    operation id and host), a replica set, a cluster, or a pre-cluster install node.
+    """
+
+    MEMBER = "member"
+    IMPORT_CANDIDATE = "import_candidate"
+    REPLICA_SET = "replica_set"
+    CLUSTER = "cluster"
+    INSTALL_NODE = "install_node"
 
 
 class ObservedEntity(SQLModel):
@@ -430,6 +480,8 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
         the run was only ever asked about one host — and because the single-flight
         guard has nothing to compare against.
     :param error: The failure detail when the sweep itself raised.
+    :param idempotency_key: The key a scan request carried, so a retried request
+        fulfils once; ``None`` for the scheduled estate sweep, which carries none.
     """
 
     __tablename__ = "om_inventory_run"
@@ -443,6 +495,13 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
         # derives the name from the declared table, schema token included.
         Index("ix_om_inventory_run_started_at", "started_at"),
         Index("ix_om_inventory_run_status", "status"),
+        # The composite-FK target OmObservation references, so an observation can
+        # cite only a run of its own profile.
+        UniqueConstraint("id", "profile", name="uq_om_inventory_run_id_profile"),
+        # A scan request fulfils once: a repeat with the same key finds this run
+        # rather than starting a second. NULLs are distinct, so the scheduled sweep's
+        # absent key never collides with another's.
+        Index("ix_om_inventory_run_idempotency_key", "idempotency_key", unique=True),
         {"schema": OM_SCHEMA},
     )
 
@@ -459,6 +518,20 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
             nullable=False,
         ),
     )
+    profile: ScanProfile = SQLField(
+        default=ScanProfile.MONITORED,
+        sa_column=Column(
+            EnumField(
+                ScanProfile,
+                native_enum=False,
+                create_constraint=True,
+                values_callable=lambda members: [member.value for member in members],
+            ),
+            nullable=False,
+            server_default=ScanProfile.MONITORED.value,
+        ),
+    )
+    requested_by_operation: UUID | None = SQLField(default=None)
 
     services_total: int = SQLField(default=0)
     services_resolved: int = SQLField(default=0)
@@ -510,7 +583,99 @@ class ProbeRun(BaseUUIDSQLModel, table=True):
             nullable=True,
         ),
     )
+    # The members a scan collects on, resolved by pmm-managed and sent with the scan
+    # request, so the run's worker reads them back here rather than from the request.
+    # Shaped like ``nodes``: a non-null JSON list defaulting to ``[]``, since the
+    # monitored sweep carries none and an operation scan may resolve to none.
+    subjects: list[dict[str, Any]] = SQLField(
+        default_factory=list,
+        sa_column=Column(
+            JSON().with_variant(postgresql.JSONB(astext_type=Text()), "postgresql"),
+            nullable=False,
+            server_default=text("('[]')"),
+        ),
+    )
     error: str | None = SQLField(default=None)
+    idempotency_key: str | None = SQLField(default=None, sa_type=Text)
+
+
+class OmObservation(BaseSQLModel, table=True):
+    """Record one subject's current facts for one scan profile.
+
+    One document per ``(subject_kind, subject_key, profile)`` natural key, which is
+    the conflict target :func:`om_observation_put` dedupes on and never
+    ``MONITORED`` (the estate sweep writes :class:`OmHost`/:class:`OmService`).
+    ``facts`` is secret-free by contract: the classifier drops secret and
+    unclassified values on the host before ingestion, so neither a secret nor a
+    hash of one ever lands here. The inherited integer ``id`` is a surrogate key
+    the convention requires.
+
+    :param subject_kind: What the ``subject_key`` names.
+    :param subject_key: The opaque key pmm-managed sends with the scan request.
+    :param profile: The scan profile these facts were collected under.
+    :param scan_id: The :class:`ProbeRun` that produced them; its profile must
+        match this one through the composite foreign key.
+    :param collected_at: When the host collected the facts; a later one never loses
+        to an earlier stored one.
+    :param facts: The non-secret facts, as a JSON document.
+    :param digest: A hash over the non-secret facts, for change detection.
+    """
+
+    __tablename__ = "om_observation"
+    __table_args__ = (
+        UniqueConstraint(
+            "subject_kind",
+            "subject_key",
+            "profile",
+            name="uq_om_observation_subject",
+        ),
+        ForeignKeyConstraint(
+            ("scan_id", "profile"),
+            (
+                f"{OM_SCHEMA}.om_inventory_run.id",
+                f"{OM_SCHEMA}.om_inventory_run.profile",
+            ),
+            name="fk_om_observation_run",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "profile <> 'monitored'", name="ck_om_observation_not_monitored"
+        ),
+        {"schema": OM_SCHEMA},
+    )
+
+    subject_kind: ObservationSubjectKind = SQLField(
+        sa_column=Column(
+            EnumField(
+                ObservationSubjectKind,
+                native_enum=False,
+                create_constraint=True,
+                values_callable=lambda members: [member.value for member in members],
+            ),
+            nullable=False,
+        ),
+    )
+    subject_key: str = SQLField(sa_type=Text, nullable=False)
+    profile: ScanProfile = SQLField(
+        sa_column=Column(
+            EnumField(
+                ScanProfile,
+                native_enum=False,
+                create_constraint=True,
+                values_callable=lambda members: [member.value for member in members],
+            ),
+            nullable=False,
+        ),
+    )
+    scan_id: UUID = SQLField(nullable=False)
+    collected_at: UTCDatetime = SQLField(sa_type=DateTimeWithTimezone, nullable=False)
+    facts: dict[str, Any] = SQLField(
+        sa_column=Column(
+            JSON().with_variant(postgresql.JSONB(astext_type=Text()), "postgresql"),
+            nullable=False,
+        ),
+    )
+    digest: str = SQLField(sa_type=Text, nullable=False)
 
 
 # api_routes.py's request/response DTOs, moved here to match the sibling apps'
@@ -787,3 +952,90 @@ class HostResponse(FreshnessResponse):
     address: str | None = None
     executor_host: str | None = None
     services: list[ServiceResponse] = Field(default_factory=list)
+
+
+class ScanSubject(BaseModel):
+    """Name one host a scan collects facts on, and the key its observation lands under.
+
+    pmm-managed resolves a cluster or operation to its live members and sends one of
+    these per member: the observation key it will read the facts back under, and the
+    host address the facts are collected on. ``service_id`` is PMM's service id, equal
+    to :attr:`OmService.external_id`, when the member maps to one.
+
+    :param subject_kind: What ``subject_key`` names.
+    :param subject_key: The key pmm-managed reads this member's observation back under.
+    :param host: The member's host, where its probe is dispatched and, unless
+        ``connect_host`` overrides it, where the scan connects to collect its facts.
+    :param connect_host: The host the scan connects to, when it differs from the
+        dispatch ``host``; ``None`` connects to ``host``.
+    :param service_id: PMM's service id for the member, or ``None`` when it has none.
+    :param port: The port the member's mongod listens on, as pmm-managed registered
+        it; ``None`` falls back to the service's cached port and then the MongoDB
+        default, so the scan does not depend on the monitored sweep having run.
+    """
+
+    subject_kind: ObservationSubjectKind
+    subject_key: NonEmptyStr
+    host: NonEmptyStr
+    connect_host: NonEmptyStr | None = None
+    service_id: str | None = None
+    port: TcpPort | None = None
+
+
+class ScanWrite(BaseModel):
+    """Ask om_inventory to scan one subject under a profile.
+
+    pmm-managed posts this to request a scan: the profile picks the fact set and the
+    credential, the idempotency key folds a retried request into one fulfilment, and
+    the subject is named as a driver operation or a managed cluster, exactly one of
+    the two. ``subjects`` is that subject resolved to the members a scan collects on;
+    it is empty while a subject's member resolution is not yet wired, and the run then
+    terminates with nothing scanned. The ``monitored`` profile is the estate sweep and
+    has its own path, so it is not a scan a request may ask for.
+
+    :param profile: The scan profile, one of the observation profiles and never
+        ``monitored``.
+    :param idempotency_key: The key that makes a retried request fulfil once.
+    :param operation_id: The driver operation the scan is for, when the subject is an
+        operation.
+    :param cluster_id: The managed cluster the scan is for, when the subject is a
+        cluster.
+    :param subjects: The members to collect facts on, each with the key its
+        observation lands under; empty when the subject resolves to none.
+    """
+
+    profile: ScanProfile
+    idempotency_key: NonEmptyStr
+    operation_id: str | None = None
+    cluster_id: str | None = None
+    subjects: list[ScanSubject] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_subject_and_profile(self) -> "ScanWrite":
+        """Require a scan profile and exactly one subject.
+
+        :return: The validated request.
+        :raises ValueError: When the profile is ``monitored`` or the request names
+            neither or both of an operation and a cluster.
+        """
+        if self.profile not in ScanProfile.observation_profiles():
+            raise ValueError("profile must name a scan, not the monitored sweep")
+        if (self.operation_id is None) == (self.cluster_id is None):
+            raise ValueError("exactly one of operation_id or cluster_id is required")
+        return self
+
+
+class ObservationResponse(BaseModel):
+    """Return one subject's current facts and when they were collected.
+
+    The single ``collected_at`` dates every fact in ``facts``; pmm-managed's start
+    gate drops a fact older than its declared max age, so the age must travel with the
+    facts. The facts are secret-free by contract, classified on the host before they
+    were stored.
+
+    :param facts: The subject's non-secret facts, by fact name.
+    :param collected_at: When the host collected them.
+    """
+
+    facts: dict[str, Any] = Field(default_factory=dict)
+    collected_at: UTCDatetime

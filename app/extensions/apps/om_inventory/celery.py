@@ -26,7 +26,7 @@ from uuid import UUID
 
 from app.celery import celery
 from app.extensions.app_drain import owned_by
-from app.extensions.apps.om_inventory.service import run_probe
+from app.extensions.apps.om_inventory.service import run_probe, run_scan
 
 logger = logging.getLogger(__name__)
 
@@ -60,4 +60,21 @@ def run_om_probe(
             automatic=automatic,
         )
     )
+    return str(resolved)
+
+
+@owned_by("om_inventory")
+@celery.task
+def run_om_scan(run_id: str) -> str:
+    """Run one requested scan and return its id.
+
+    Enqueued by the scans endpoint with an already-created run id, so the caller is
+    answered before the scan's host work begins, the same way the trigger endpoint
+    hands :func:`run_om_probe` a run id.
+
+    :param run_id: The scan run's id, created by ``POST /scans``.
+    :return: The run's id, as a string.
+    """
+    # ty-attr-ok: Celery installs `loop` at runtime.
+    resolved = celery.loop.run_until_complete(run_scan(UUID(run_id)))
     return str(resolved)

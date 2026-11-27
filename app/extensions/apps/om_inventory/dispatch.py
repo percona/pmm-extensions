@@ -346,38 +346,42 @@ def record_key(service_id: str | None, service_name: str | None) -> str:
     return service_id or service_name or ""
 
 
-def build_config(entries: list[MappedService]) -> str:
+def build_config(
+    entries: list[MappedService], scan_units: list[str] | None = None
+) -> str:
     """Build the payload config for one executor host's targets.
 
     :param entries: The resolved services this host serves.
+    :param scan_units: The systemd units a scan reads with ``systemctl show``; its
+        presence also turns on the ``pbm status`` read. ``None`` on the monitored
+        sweep, which leaves the config, and so the payload's work, unchanged.
     :return: The JSON config placed in ``meta.config``.
     """
-    return json.dumps(
-        {
-            "targets": [
-                {
-                    "service": entry.service.name,
-                    # PMM's service id, echoed back by the payload on this target's
-                    # record and what parse_ndjson / _record_for key on — see
-                    # record_key. The name alone is not unique per node.
-                    "service_id": entry.service.external_id,
-                    # The node name is preferred over the address: in a sidecar
-                    # deployment pmm-agent registers the node with its own container
-                    # address while naming it after the database container, so the
-                    # address reaches the agent where nothing listens on the DB port.
-                    "host": entry.service.node_name or entry.service.node_address,
-                    "port": entry.service.port,
-                }
-                for entry in entries
-            ],
-            "probe_database": om_inventory_settings.PROBE_DATABASE,
-            "connect_timeout_ms": om_inventory_settings.CONNECT_TIMEOUT * 1000,
-            "repo_url": om_inventory_settings.REPO_URL,
-            "repo_timeout": om_inventory_settings.REPO_TIMEOUT,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    config: dict[str, Any] = {
+        "targets": [
+            {
+                "service": entry.service.name,
+                # PMM's service id, echoed back by the payload on this target's
+                # record and what parse_ndjson / _record_for key on — see
+                # record_key. The name alone is not unique per node.
+                "service_id": entry.service.external_id,
+                # The node name is preferred over the address: in a sidecar
+                # deployment pmm-agent registers the node with its own container
+                # address while naming it after the database container, so the
+                # address reaches the agent where nothing listens on the DB port.
+                "host": entry.service.node_name or entry.service.node_address,
+                "port": entry.service.port,
+            }
+            for entry in entries
+        ],
+        "probe_database": om_inventory_settings.PROBE_DATABASE,
+        "connect_timeout_ms": om_inventory_settings.CONNECT_TIMEOUT * 1000,
+        "repo_url": om_inventory_settings.REPO_URL,
+        "repo_timeout": om_inventory_settings.REPO_TIMEOUT,
+    }
+    if scan_units is not None:
+        config["scan_units"] = list(scan_units)
+    return json.dumps(config, separators=(",", ":"), sort_keys=True)
 
 
 def parse_ndjson(
@@ -607,6 +611,7 @@ async def probe_host(
     executor_host: str,
     entries: list[MappedService],
     run_id: UUID | None = None,
+    scan_units: list[str] | None = None,
 ) -> HostProbeResult:
     """Dispatch the probe to one executor host and collect its records.
 
@@ -617,6 +622,8 @@ async def probe_host(
     :param executor_host: The host to run on.
     :param entries: The resolved services this host serves.
     :param run_id: The run dispatching it, stored as :data:`RUN_META_KEY`.
+    :param scan_units: The systemd units a scan reads on the host; ``None`` on the
+        monitored sweep, which leaves the dispatch unchanged.
     :return: The host's probe outcome.
     """
     result = HostProbeResult(executor_host=executor_host)
@@ -631,7 +638,7 @@ async def probe_host(
                     json={
                         "meta": {
                             "target": executor_host,
-                            "config": build_config(entries),
+                            "config": build_config(entries, scan_units),
                             "requirements": REQUIREMENTS,
                             "_job_id_prefix": JOB_ID_PREFIX,
                             **({RUN_META_KEY: str(run_id)} if run_id else {}),
@@ -739,6 +746,7 @@ async def probe_all(
     executor_hosts: Iterable[str] = (),
     on_host_done: Callable[[HostProbeResult], Awaitable[None]] | None = None,
     run_id: UUID | None = None,
+    scan_units: list[str] | None = None,
 ) -> dict[str, HostProbeResult]:
     """Probe every executor host in reach, concurrently.
 
@@ -757,6 +765,8 @@ async def probe_all(
     :param on_host_done: Called with each host's result as it comes back, for a
         caller reporting progress.
     :param run_id: The run dispatching the probes, passed to :func:`probe_host`.
+    :param scan_units: The systemd units a scan reads, passed to :func:`probe_host`;
+        ``None`` on the monitored sweep.
     :return: One result per executor host, keyed by host.
     """
     grouped = group_by_executor(mapped)
@@ -773,7 +783,9 @@ async def probe_all(
 
     async def guarded(host: str, entries: list[MappedService]) -> HostProbeResult:
         async with semaphore:
-            result = await probe_host(tasks_api, host, entries, run_id=run_id)
+            result = await probe_host(
+                tasks_api, host, entries, run_id=run_id, scan_units=scan_units
+            )
         if on_host_done is not None:
             await on_host_done(result)
         return result

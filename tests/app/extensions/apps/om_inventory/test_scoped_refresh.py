@@ -61,8 +61,11 @@ from app.extensions.apps.om_inventory.inventory import InventoryService
 from app.extensions.apps.om_inventory.mapping import ExecutorState, MappedService
 from app.extensions.apps.om_inventory.models import (
     NodeResolution,
+    ObservationSubjectKind,
+    OmObservation,
     ProbeRun,
     ProbeRunStatus,
+    ScanProfile,
 )
 from app.extensions.apps.om_inventory.service import (
     finalise,
@@ -628,6 +631,31 @@ class TestTheScheduleRespectsSingleFlight:
         assert blocking.id == in_flight.id
 
     @pytest.mark.asyncio
+    async def test_a_managed_scan_does_not_block_the_monitored_sweep(
+        self, session: AsyncSession
+    ) -> None:
+        """Let the estate sweep run while a managed scan is in flight on some hosts.
+
+        A managed scan and the monitored sweep send different payloads to a host, so
+        they never collide on the Tasks layer; blocking the sweep would let clusters
+        scanned on their cadence starve the sweep that feeds them.
+
+        :param session: The database session.
+        """
+        await ProbeRunManager.save(
+            session, ProbeRun(scope=None, profile=ScanProfile.MANAGED)
+        )
+
+        blocking = await conflicting_run(
+            session,
+            None,
+            profile=ScanProfile.MONITORED,
+            stale_after=timedelta(minutes=30),
+        )
+
+        assert blocking is None
+
+    @pytest.mark.asyncio
     async def test_a_run_does_not_refuse_itself(self, session: AsyncSession) -> None:
         """Exclude a run's own id so it does not conflict with itself.
 
@@ -924,3 +952,43 @@ class TestPruningKeepsWhatIsStillRunning:
 
         assert deleted == PRUNED
         assert len(await recent_runs(session)) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_run_a_current_observation_names_survives(
+        self, session: AsyncSession
+    ) -> None:
+        """Keep a run a current observation still points at, past the retention window.
+
+        ``OmObservation.scan_id`` cascades on delete, so pruning the run that last
+        wrote a member's observation would delete the observation with it, leaving the
+        member with no facts and no replacement.
+
+        :param session: The database session.
+        """
+        kept = await ProbeRunManager.save(
+            session, ProbeRun(scope=None, profile=ScanProfile.MANAGED)
+        )
+        kept.status = ProbeRunStatus.SUCCESS
+        kept.started_at = utc_now() - timedelta(minutes=9)
+        await ProbeRunManager.save(session, kept)
+        session.add(
+            OmObservation(
+                subject_kind=ObservationSubjectKind.MEMBER,
+                subject_key="m-1",
+                profile=ScanProfile.MANAGED,
+                scan_id=kept.id,
+                collected_at=utc_now(),
+                facts={},
+                digest="d",
+            )
+        )
+        await session.commit()
+        for index in range(3):
+            done = await ProbeRunManager.save(session, ProbeRun(scope=None))
+            done.status = ProbeRunStatus.SUCCESS
+            done.started_at = utc_now() - timedelta(minutes=index)
+            await ProbeRunManager.save(session, done)
+
+        await prune_runs(session, keep=1)
+
+        assert await ProbeRunManager.first(session, id=kept.id) is not None

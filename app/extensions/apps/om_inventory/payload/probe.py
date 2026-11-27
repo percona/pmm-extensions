@@ -63,6 +63,7 @@ pip requirements by the dispatcher. It is imported lazily so that a run with
 ``probe_database`` false works on a host without it.
 """
 
+import hashlib
 import json
 import os
 import platform
@@ -75,6 +76,28 @@ import urllib.request
 from typing import Any
 
 DEFAULT_CONNECT_TIMEOUT_MS = 5000
+
+#: Non-secret mongod config options tracked in ``config_sha256``, as dotted paths.
+#: The hashed projection keeps only these, so a secret-bearing option (a keyFile or
+#: TLS/LDAP path or password) is never read, shipped, or hashed. The install's own
+#: config file writes net/storage/security/replication/processManagement/systemLog;
+#: dbPath, keyFile and the log path are carried as their own member facts instead.
+#: A set literal, not ``frozenset(...)``: the minifier aliases a ``frozenset`` call
+#: used twice, which collides with ``find_unregistered``'s own default.
+CONFIG_ALLOWLIST = {
+    "net.bindIp",
+    "net.port",
+    "net.tls.mode",
+    "storage.engine",
+    "replication.replSetName",
+    "sharding.clusterRole",
+    "security.authorization",
+    "security.clusterAuthMode",
+    "processManagement.fork",
+    "processManagement.pidFilePath",
+    "systemLog.destination",
+    "systemLog.logAppend",
+}
 
 #: Where an install puts mongod's data unless told otherwise: om_bootstrap's
 #: default ``data_path``, and the install form's. Free space is measured here, as
@@ -326,6 +349,95 @@ def parse_cluster_role(argv, config_path):
     except OSError:
         return None
     return None
+
+
+def parse_keyfile_path(config_path):
+    """Read the keyFile path a mongod runs under, without a login.
+
+    Reads ``security.keyFile`` from the configuration file, the same credential-free
+    source :func:`parse_cluster_role` reads for the cluster role; only the path is
+    taken, never the keyFile's secret contents. A quoted value is read without its
+    quotes.
+
+    :param config_path: The configuration file the process was started with.
+    :return: The keyFile path, or ``None`` when the file names none.
+    """
+    if not config_path:
+        return None
+    try:
+        with open(config_path, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line.startswith("keyFile"):
+                    continue
+                remainder = line[len("keyFile") :].lstrip()
+                if remainder.startswith(":"):
+                    return remainder[1:].split("#")[0].strip().strip("\"'") or None
+    except OSError:
+        return None
+    return None
+
+
+def parse_config_options(config_path):
+    """Return the allowlisted mongod config options as a flat dotted map.
+
+    Reads the configuration file line by line, tracking block nesting by indentation,
+    and keeps only the options named in :data:`CONFIG_ALLOWLIST`; a secret-bearing
+    option is never retained, so nothing secret is hashed or shipped. A quoted value
+    keeps its text without the quotes, and an inline ``#`` comment is dropped.
+
+    :param config_path: The configuration file the process was started with.
+    :return: The allowlisted options, keyed by dotted path.
+    """
+    if not config_path:
+        return {}
+    try:
+        with open(config_path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return {}
+    options = {}
+    stack = []
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        key, _, remainder = stripped.partition(":")
+        key = key.strip().strip("\"'")
+        value = remainder.strip()
+        if not value:
+            stack.append((indent, key))
+            continue
+        parents = []
+        for _, parent_key in stack:
+            parents.append(parent_key)
+        parents.append(key)
+        dotted = ".".join(parents)
+        if dotted in CONFIG_ALLOWLIST:
+            options[dotted] = value.split(" #")[0].strip().strip("\"'")
+    return options
+
+
+def config_sha256(options):
+    """Hash the allowlisted config projection canonically, or ``None`` when empty.
+
+    Matches ``app.extensions.apps.shared.om.classification.config_sha256``: the hex
+    SHA-256 of the projection's canonical JSON, so the scan and the payload agree on a
+    config's digest. Returns ``None`` when no allowlisted option was read, so an
+    unreadable config yields no fact rather than the digest of an empty projection.
+
+    :param options: The allowlisted options from :func:`parse_config_options`.
+    :return: The hex digest, or ``None`` when ``options`` is empty.
+    """
+    if not options:
+        return None
+    canonical = json.dumps(options, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 
 def collect_server_processes():
@@ -733,6 +845,14 @@ def probe(target, config, host_facts, processes=(), versions=None):
         record["database"] = None
         return record
 
+    config_path = process.get("config_path") if process else None
+    options = parse_config_options(config_path)
+    config_facts = {
+        "config_file": config_path,
+        "config_sha256": config_sha256(options),
+        "tls_mode": options.get("net.tls.mode"),
+        "keyfile_path": parse_keyfile_path(config_path),
+    }
     try:
         record["database"] = collect_database_facts(
             target,
@@ -750,6 +870,14 @@ def probe(target, config, host_facts, processes=(), versions=None):
         record["error_type"] = error_type
         record["error_code"] = None
         record["database"] = None
+
+    present = {key: value for key, value in config_facts.items() if value}
+    if present:
+        database = record.get("database")
+        if not isinstance(database, dict):
+            database = {}
+            record["database"] = database
+        database.update(present)
     return record
 
 
@@ -968,7 +1096,7 @@ def main():
 
     # ``service: null`` is what marks this the host's own record. The consumer keys
     # service records by name, so a record with no name cannot be mistaken for one.
-    host_record = {
+    host_record: dict[str, Any] = {
         "service": None,
         "collected_at": int(time.time()),
         "status": STATUS_OK,
@@ -996,6 +1124,19 @@ def main():
     host_record["unregistered_mongods"] = find_unregistered(
         processes, targets, matched_process_pids(processes, targets)
     )
+
+    # A scan request also carries the systemd units and PBM status it reads; the
+    # monitored sweep sends no scan_units, so this is skipped and its record unchanged.
+    scan_units = config.get("scan_units")
+    if scan_units:
+        systemd_units = {}
+        for unit in scan_units:
+            output = run_command(["systemctl", "show", unit])
+            if output is not None:
+                systemd_units[unit] = output
+        host_record["systemd_units"] = systemd_units
+        host_record["pbm_status"] = run_command(["pbm", "status", "--out", "json"])
+
     print(json.dumps(host_record, default=str), flush=True)
 
     for target in targets:
