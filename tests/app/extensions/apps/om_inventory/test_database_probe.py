@@ -30,7 +30,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import call, MagicMock, patch
 
 import pytest
 
@@ -166,7 +166,7 @@ class TestCollectDatabaseFacts:
         assert "directConnection=true" in uri
 
     def test_a_reachable_server_is_read_and_has_no_error(self) -> None:
-        """Read ``buildInfo`` and ``hello`` from a server that answers, with no login."""
+        """Run only ``ping``, ``buildInfo`` and ``hello``, each once, with no login."""
         command = answering(version="7.0.45-24")
 
         facts = collect(command)
@@ -174,9 +174,11 @@ class TestCollectDatabaseFacts:
         assert "error" not in facts
         assert facts["db_version"] == "7.0.45-24"
         assert facts["is_writable_primary"] is True
-        command.assert_any_call("ping")
-        command.assert_any_call("buildInfo")
-        command.assert_any_call("hello")
+        assert command.call_args_list == [
+            call("ping"),
+            call("buildInfo"),
+            call("hello"),
+        ]
 
     def test_an_arbiter_is_read_without_a_login(self) -> None:
         """Read an arbiter's ``hello`` without credentials; it answers before auth."""

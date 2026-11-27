@@ -87,8 +87,7 @@ class OmInventorySettings(BaseYamlSettings):
         a switch-on that asks for a sweep still gets one while ``AUTO_SCAN`` is on.
     :param PROBE_DATABASE: Whether the payload connects to mongod and runs the
         unauthenticated ``buildInfo`` and ``hello`` commands. It never offers
-        credentials; the facts that need a login are read by PMM through pmm-agent.
-        ``False`` collects process and OS facts only - and still yields
+        credentials. ``False`` collects process and OS facts only - and still yields
         ``installed_version``, the field this app exists for.
     :param REPO_URL: The file each host fetches to prove it can reach Percona's
         repository. Configurable because an air-gapped estate mirrors it somewhere

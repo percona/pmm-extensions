@@ -24,8 +24,8 @@ and collects, for every target named in the task config:
 * the installed version of the binary *that* process runs;
 * a handful of **unauthenticated** database commands, when ``probe_database`` is set.
   The payload offers no credentials: ``buildInfo`` and ``hello`` answer before any
-  login, and the facts that need one (``clusterRole``, ``storage_engine``) are read
-  by PMM through pmm-agent instead, so no credential file lives on the host.
+  login, and the cluster role is read from the server's config file or command line
+  instead, so no credential file lives on the host.
 
 Once per dispatch, for the host itself:
 
@@ -494,10 +494,9 @@ def build_uri(target, connect_timeout_ms):
     """Return the connection URI for one target.
 
     No credentials are ever spliced in: the payload runs only the commands a mongod
-    answers before any login, and the facts that need one are read by PMM through
-    pmm-agent instead. ``directConnection=true`` makes those commands report *this*
-    node rather than whichever member the driver would otherwise elect to talk to;
-    per-node facts are the point.
+    answers before any login. ``directConnection=true`` makes those commands report
+    *this* node rather than whichever member the driver would otherwise elect to talk
+    to; per-node facts are the point.
 
     :param target: The target mapping carrying ``host`` and ``port``.
     :param connect_timeout_ms: Connect and server-selection timeout.
@@ -529,10 +528,9 @@ def build_uri(target, connect_timeout_ms):
 def collect_database_facts(target, connect_timeout_ms):
     """Return facts read from the database for one target, or why there are none.
 
-    The payload offers no credentials: it runs only ``buildInfo`` and ``hello``, which
-    a mongod answers before any login, including an arbiter. The facts that need a
-    login (``clusterRole``, ``storage_engine``) are read by PMM through pmm-agent, so
-    no credential file lives on the host.
+    The payload offers no credentials: after ``ping`` it runs only ``buildInfo`` and
+    ``hello``, which a mongod answers before any login, including an arbiter, so no
+    credential file lives on the host.
 
     Failing to reach the database is a target-level failure: the result carries
     ``error`` (see :func:`describe_database_error`), ``error_type`` (the exception
@@ -577,14 +575,11 @@ def query_database(uri):
     client = MongoClient(uri)
     try:
         admin = client.admin
-        # Ping first: ``MongoClient`` is lazy, so an unreachable server or a
-        # rejected password would otherwise surface only as per-command errors and
-        # leave the record ``ok``. It also costs one connect timeout instead of one
-        # per command.
+        # Ping first: ``MongoClient`` is lazy, so an unreachable server would
+        # otherwise surface only as per-command errors and leave the record ``ok``.
+        # It also costs one connect timeout instead of one per command.
         admin.command("ping")
-        # Only the commands a mongod answers before any login. The facts that need
-        # one (``clusterRole``, ``storage_engine``) are read by PMM through pmm-agent,
-        # so the payload carries no credential file to offer.
+        # Only the commands a mongod answers before any login.
         for key, command in (
             ("build_info", "buildInfo"),
             ("hello", "hello"),
