@@ -302,5 +302,5 @@ async def spa_logout(
     _clear_refresh_cookie(response)
     try:
         await User.invalidate_oauth_token(user.access_token)
-    except (KeyError, ValidationError):
+    except KeyError, ValidationError:
         logger.debug("Failed to invalidate OAuth token", exc_info=True)

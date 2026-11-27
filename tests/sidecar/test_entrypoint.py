@@ -27,6 +27,7 @@ from uuid import uuid4
 import pytest
 from cryptography.fernet import Fernet
 
+from tests.conftest import require_bash_4
 from tests.sidecar.conftest import (
     ENTRYPOINT,
     schema_steps,
@@ -98,16 +99,19 @@ STOP_HONOURED_SECONDS = 5
 
 STUB_ENCRYPTION_HELPER = """import os
 import sys
+import time
 
 with open(os.environ["FAKE_ENCRYPTION_ARGV"], "w", encoding="utf-8") as handle:
     handle.write("\\n".join(sys.argv))
+time.sleep(float(os.environ["FAKE_ENCRYPTION_WAIT"]))
 sys.stdout.write(os.environ["FAKE_ENCRYPTION_STDOUT"])
 sys.exit(int(os.environ["FAKE_ENCRYPTION_EXIT"]))
 """
 """A stand-in for the encryption-key helper.
 
 Written to its own argv file rather than sharing the mint helper's, because the
-cases below turn on *whether* each helper ran at all.
+cases below turn on *whether* each helper ran at all. Like the mint helper's
+stand-in, it records its argv before it waits.
 """
 
 
@@ -194,6 +198,7 @@ class FakeContainer:
             **({} if encryption_key is None else {"ENCRYPTION_KEY": encryption_key}),
             **inputs,
         }
+        require_bash_4()
         return subprocess.run(
             [str(self.app_dir / ENTRYPOINT.name)],
             env=environment,
@@ -203,13 +208,20 @@ class FakeContainer:
         )
 
     def _base_environment(
-        self, *, token: str, exit_code: int, helper_wait: float = 0
+        self,
+        *,
+        token: str,
+        exit_code: int,
+        helper_wait: float = 0,
+        encryption_wait: float = 0,
     ) -> dict[str, str]:
         """Return the environment every entrypoint run shares.
 
         :param token: What the stub mint helper prints.
         :param exit_code: What the stub mint helper exits with.
         :param helper_wait: Seconds the stub mint helper waits before it answers.
+        :param encryption_wait: Seconds the stub encryption helper waits before
+            it answers.
         :return: The environment, with a supplied key and no encryption key.
         """
         return {
@@ -222,25 +234,45 @@ class FakeContainer:
             "FAKE_HELPER_EXIT": str(exit_code),
             "FAKE_HELPER_WAIT": str(helper_wait),
             "FAKE_ENCRYPTION_ARGV": str(self._encryption_argv_file),
+            "FAKE_ENCRYPTION_WAIT": str(encryption_wait),
         }
 
-    def spawn(self, *, helper_wait: float = 0, **inputs: str) -> subprocess.Popen[str]:
+    def spawn(
+        self,
+        *,
+        helper_wait: float = 0,
+        encryption_key: str | None = SUPPLIED_ENCRYPTION_KEY,
+        encryption_wait: float = 0,
+        **inputs: str,
+    ) -> subprocess.Popen[str]:
         """Start the entrypoint and return it while it runs.
 
-        It runs in a session of its own, so a case can end the stub helper along
+        It runs in a session of its own, so a case can end the stub helpers along
         with it: outside a container nothing reaps a child the entrypoint leaves.
 
         :param helper_wait: Seconds the stub mint helper waits before it answers.
+        :param encryption_key: The key the deployment supplies, or ``None`` to
+            supply none, which sends the entrypoint to its helper.
+        :param encryption_wait: Seconds the stub encryption helper waits before
+            it answers.
         :param inputs: Deployment inputs to place in the environment.
         :return: The running entrypoint.
         """
+        require_bash_4()
         return subprocess.Popen(
             [str(self.app_dir / ENTRYPOINT.name)],
             env={
                 **self._base_environment(
-                    token=MINTED_TOKEN, exit_code=0, helper_wait=helper_wait
+                    token=MINTED_TOKEN,
+                    exit_code=0,
+                    helper_wait=helper_wait,
+                    encryption_wait=encryption_wait,
                 ),
-                "ENCRYPTION_KEY": SUPPLIED_ENCRYPTION_KEY,
+                "FAKE_ENCRYPTION_STDOUT": MINTED_ENCRYPTION_KEY,
+                "FAKE_ENCRYPTION_EXIT": "0",
+                **(
+                    {} if encryption_key is None else {"ENCRYPTION_KEY": encryption_key}
+                ),
                 **inputs,
             },
             stdout=subprocess.PIPE,
@@ -256,6 +288,14 @@ class FakeContainer:
         :return: Whether it has recorded its argv.
         """
         return self._argv_file.exists()
+
+    @property
+    def encryption_helper_started(self) -> bool:
+        """Return whether the stub encryption helper has begun to run.
+
+        :return: Whether it has recorded its argv.
+        """
+        return self._encryption_argv_file.exists()
 
     @property
     def supervised_environment(self) -> dict[str, str]:
@@ -456,6 +496,30 @@ def test_a_stop_is_honoured_while_the_token_helper_waits(container: FakeContaine
     assert status == STOPPED_BY_TERM
     assert not container.reached_supervisord
     assert not container.token_sentinel.exists()
+
+
+def test_a_stop_is_honoured_while_the_encryption_helper_waits(
+    container: FakeContainer,
+):
+    """End the wait for the databases on a stop, while the key helper still runs.
+
+    On a start that has to mint, the helper waits for as long as PMM's
+    PostgreSQL does not answer. Captured by command substitution, it would be a
+    foreground command, and the handler would run only once it returned.
+    """
+    process = container.spawn(
+        encryption_key=None, encryption_wait=HELPER_STILL_WAITING_SECONDS
+    )
+    deadline = time.monotonic() + STOP_HONOURED_SECONDS
+    while not container.encryption_helper_started and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert container.encryption_helper_started
+
+    status = stop(process)
+
+    assert status == STOPPED_BY_TERM
+    assert not container.helper_started
+    assert not container.reached_supervisord
 
 
 def test_an_explicit_token_still_outranks_the_mint(container: FakeContainer):

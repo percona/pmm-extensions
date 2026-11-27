@@ -275,7 +275,7 @@ def restrict_fixture(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
 
 
 @pytest_asyncio.fixture(name="session")
-async def session_fixture() -> AsyncGenerator[AsyncSession, None]:
+async def session_fixture() -> AsyncGenerator[AsyncSession]:
     """Create an in-memory SQLite async session for override tests."""
     # scaffolding-dup-ok: this duplication predates the change that
     # re-annotated the fixture's return type; promoting it against

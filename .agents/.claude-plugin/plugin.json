@@ -1,0 +1,9 @@
+{
+  "name": "pmm-extensions",
+  "description": "Build, port and maintain PMM Extensions apps with an AI assistant.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Percona"
+  },
+  "license": "AGPL-3.0-or-later"
+}

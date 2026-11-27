@@ -242,7 +242,7 @@ async def _fetch_latest_pbm_status(
     """
     try:
         pbm_status_id = pbm_status_tasks[0]["id"]
-    except (IndexError, KeyError, TypeError):
+    except IndexError, KeyError, TypeError:
         return None
     tail = ""
     try:
@@ -255,7 +255,7 @@ async def _fetch_latest_pbm_status(
             log_data = json.loads(log_entry)
             if log_data.get("type") == TaskLogType.STDOUT and log_data.get("msg"):
                 tail = (tail + log_data["msg"])[-PBM_LATEST_STATUS_TAIL_BYTES:]
-    except (ClientResponseError, HTTPException, ValueError, KeyError):
+    except ClientResponseError, HTTPException, ValueError, KeyError:
         logger.exception(
             "Failed to fetch latest_status for backup_mongo task %s",
             pbm_status_id,

@@ -17,58 +17,42 @@
 """Ensure Nomad dispatch payloads stay under the 16 KiB limit after minify+gzip."""
 
 import argparse
-import contextlib
-import gzip
-import io
 import sys
-
-try:
-    from python_minifier import minify
-except ModuleNotFoundError:
-    minify = None
+from pathlib import Path
 
 NOMAD_PAYLOAD_SIZE_LIMIT = 16384
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def payload_size(path: str) -> int:
-    """Return the minify+gzip size in bytes of the Python file at ``path``.
+    """Return the size in bytes of the Python file at ``path`` as dispatch sends it.
 
-    The source is minified with ``python_minifier`` (falling back to the
-    original text on ``SyntaxError``) then gzip-compressed.
+    The file goes through dispatch's own minify and gzip helpers, so a source
+    dispatch leaves unminified is measured unminified here too.
 
     :param path: Payload file path.
-    :return: Minify+gzip size in bytes.
+    :return: The gzip-compressed size in bytes.
     :raises SystemExit: When ``python_minifier`` is not importable.
     """
-    if minify is None:
+    repo_root = str(REPO_ROOT)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    try:
+        from app.tasks.execution.utils import (  # noqa: PLC0415
+            gzip_compress,
+            minify_file_content,
+        )
+    except ModuleNotFoundError as err:
+        if err.name != "python_minifier":
+            raise
         raise SystemExit(
             "python_minifier is not installed for this Python interpreter.\n"
             "Use the project venv interpreter, or let make resolve it:\n"
             "  make check-nomad-payload-size ARGS='--report <path>...'"
-        )
+        ) from err
 
     with open(path, encoding="utf-8") as f:  # noqa: PTH123
-        src = f.read()
-    with contextlib.suppress(SyntaxError):
-        src = minify(
-            src,
-            remove_annotations=True,
-            remove_pass=True,
-            remove_literal_statements=True,
-            combine_imports=True,
-            hoist_literals=True,
-            rename_locals=True,
-            rename_globals=True,
-            remove_object_base=True,
-            remove_asserts=True,
-            remove_debug=True,
-            remove_explicit_return_none=True,
-            remove_builtin_exception_brackets=True,
-        )
-    buf = io.BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
-        gz.write(src.encode("utf-8"))
-    return len(buf.getvalue())
+        return len(gzip_compress(minify_file_content(f.read())))
 
 
 def check_payload(path: str) -> tuple[str, int] | None:

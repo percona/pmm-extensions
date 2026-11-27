@@ -282,7 +282,7 @@ When the task finishes, check the result yourself:
 1. Open the run under **Execution History** and read its output. PMM Extensions 3.10.0 can show a restore as successful when the output says "Restore failed for this host".
 2. Query the restored server and confirm that the data is there.
 
-The same form restores a backup that PMM Extensions took but does not list. This happens on a database host whose disk is more than 80% full. The backup is on disk, and PMM Extensions records no location for it.
+The same form restores a backup that PMM Extensions took but does not list. PMM Extensions 3.10.0 does not list a backup that it took on a database host whose disk is more than 80% full. The backup is on disk, and its record has no location.
 
 ## Next steps
 

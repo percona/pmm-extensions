@@ -221,7 +221,7 @@ def find_ref_marker(
     return _find_marker(metadata, _REF_TYPES)
 
 
-def iter_service_refs(model: type["AppFormModel"]) -> Iterator[ServiceRef]:
+def iter_service_refs(model: type[AppFormModel]) -> Iterator[ServiceRef]:
     """Yield every ``ServiceRef`` marker declared by ``model``.
 
     Walk the model's top-level fields and the branch models of any
@@ -828,7 +828,7 @@ def _build_scalar_field(
     return field_class(**common)
 
 
-def _derive_field_specs(model: type["AppFormModel"]) -> list[_FieldSpec]:
+def _derive_field_specs(model: type[AppFormModel]) -> list[_FieldSpec]:
     """Return one :class:`_FieldSpec` per model field, in declaration order.
 
     Skip a field carrying a :class:`Hidden` marker before the ``Ui`` requirement
@@ -861,7 +861,7 @@ def _derive_field_specs(model: type["AppFormModel"]) -> list[_FieldSpec]:
     return specs
 
 
-def _runtime_form_fields(model: type["AppFormModel"]) -> list[BaseField | OneOfGroup]:
+def _runtime_form_fields(model: type[AppFormModel]) -> list[BaseField | OneOfGroup]:
     """Return runtime rule-plan fields, using one-of groups where required.
 
     Gate-only :class:`StringField` projections are enough for ordinary leaves.
@@ -955,7 +955,7 @@ def _validate_parent_pointers(sections: list[FormSection]) -> None:
 
 
 def derive_form_sections(
-    model: type["AppFormModel"], layout: FormLayout
+    model: type[AppFormModel], layout: FormLayout
 ) -> list[FormSection]:
     """Return the form sections derived from ``model``, ordered by ``model``.
 
@@ -1024,7 +1024,7 @@ def derive_form_sections(
 
 
 def derive_app_schema(
-    model: type["AppFormModel"],
+    model: type[AppFormModel],
     layout: FormLayout,
     *,
     name: str,
@@ -1089,7 +1089,7 @@ def derive_app_schema(
     )
 
 
-def build_runtime_schema(model: type["AppFormModel"]) -> AppSchema:
+def build_runtime_schema(model: type[AppFormModel]) -> AppSchema:
     """Return a single-section ``AppSchema`` for runtime rule-plan extraction.
 
     Section-scoped and plugin-scoped rules are hoisted to plugin scope because

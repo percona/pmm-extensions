@@ -68,7 +68,7 @@ AlertDetailBuilder = Callable[["TaskHistory"], Awaitable[OwnerAlertDetails | Non
 
 
 async def build_owner_alert_details(
-    history: "TaskHistory",
+    history: TaskHistory,
 ) -> OwnerAlertDetails | None:
     """Build plugin-specific failure-alert details for the given history.
 
@@ -88,7 +88,7 @@ async def build_owner_alert_details(
         return None
     try:
         builder: AlertDetailBuilder = resolve_hook(path)
-    except (ImportError, AttributeError, ValueError):
+    except ImportError, AttributeError, ValueError:
         logger.exception("Failed to resolve alert detail builder %r.", path)
         return None
     try:

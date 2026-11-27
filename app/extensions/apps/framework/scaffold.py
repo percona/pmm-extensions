@@ -131,28 +131,20 @@ class ScaffoldConfig:
     """Carry every resolved field the templates and registration render against.
 
     A config built via :meth:`defaults` from just ``name`` + ``flavor`` fills every
-    other field with today's defaults, so the render is byte-identical to the
-    pre-wizard scaffolder.
+    other field with its default.
 
     :param name: The validated module name.
     :param flavor: The flavor to render.
     :param display_name: The human-facing label (title-cased from ``name`` unless
         overridden).
     :param item_display_name: The name for one record the app's create form
-        produces, in mid-sentence form. Defaults to ``display_name``, which
-        :func:`~app.extensions.apps.framework.conformance.check_item_display_names_declared`
-        rejects for the ``task`` flavor — the only one whose rendered app declares
-        a create form — so an unedited task scaffold fails the conformance suite
-        until its author names the record. Nothing consults that detector at
-        registration time; it runs over the registry from the test suite. The
-        ``base`` and ``script`` flavors render ``forms=[]`` at the app level and
-        are skipped, and a ``script_source`` app's schema can never gain form
-        sections, so for it the app-level noun is unenforced rather than deferred.
+        produces, in mid-sentence form. Defaults per
+        :func:`_default_item_display_names`: ``"<display_name> task"`` for the
+        ``task`` flavor, and ``display_name`` for the ``base`` and ``script``
+        flavors, which render ``forms=[]`` at the app level and are skipped by
+        :func:`~app.extensions.apps.framework.conformance.check_item_display_names_declared`.
     :param item_display_name_plural: The name for several such records. Defaults
-        by pluralising a declared singular (same Django-style rules as
-        :func:`~app.extensions.apps.framework.schema.pluralize_item_display_name`);
-        when the singular is also unset, defaults to ``display_name`` so the
-        conformance detector still trips an unedited task scaffold.
+        per :func:`_default_item_display_name_plural`.
     :param description: The plugin description; ``None`` for the ``base`` flavor,
         whose ``BaseApp`` has no description field.
     :param service_type: The ``ServiceTypeEnum`` member name for the task form's
@@ -191,20 +183,22 @@ class ScaffoldConfig:
 
     @classmethod
     def defaults(cls, name: str, flavor: Flavor) -> ScaffoldConfig:
-        """Build a config from ``name`` + ``flavor``, filling today's defaults.
+        """Build a config from ``name`` + ``flavor``, filling every default.
 
         :param name: The module name.
         :param flavor: The flavor to render.
-        :return: A config whose every non-identity field holds the pre-wizard
-            default, so the render stays byte-identical.
+        :return: A config whose every non-identity field holds its default.
         """
         display_name = _derive_display_name(name)
+        item_display_name, item_display_name_plural = _default_item_display_names(
+            flavor, display_name
+        )
         return cls(
             name=name,
             flavor=flavor,
             display_name=display_name,
-            item_display_name=display_name,
-            item_display_name_plural=display_name,
+            item_display_name=item_display_name,
+            item_display_name_plural=item_display_name_plural,
             description=_default_description(flavor, display_name),
             service_type="MYSQL",
             nav_icon=None,
@@ -932,24 +926,45 @@ def _validate_script_path(parser: argparse.ArgumentParser, value: str) -> Path:
     return path
 
 
+def _default_item_display_names(flavor: Flavor, display_name: str) -> tuple[str, str]:
+    """Return the record nouns an unset flag or prompt resolves to.
+
+    The ``task`` flavor is the only one whose rendered app declares a create
+    form, and
+    :func:`~app.extensions.apps.framework.conformance.check_item_display_names_declared`
+    rejects a noun equal to the display name, so its default names the record
+    after the app. The other flavors keep the display name.
+
+    :param flavor: The flavor being scaffolded.
+    :param display_name: The resolved app title.
+    :return: The singular and plural record nouns to seed into the generated app.
+    """
+    if flavor is Flavor.TASK:
+        return f"{display_name} task", f"{display_name} tasks"
+    return display_name, display_name
+
+
 def _default_item_display_name_plural(
-    display_name: str, item_display_name: str, *, singular_declared: bool
+    flavor: Flavor, display_name: str, item_display_name: str
 ) -> str:
     """Return the scaffold plural default for an unresolved plural flag/prompt.
 
-    Mirrors :func:`~app.extensions.apps.framework.schema._fill_item_display_names`:
-    pluralise only when the author declared a singular; otherwise keep
-    ``display_name`` so an unedited scaffold still trips the conformance
-    detector. Imports the pluraliser lazily so this module's import graph
-    stays stdlib-only until a config is actually resolved.
+    A singular left at its default takes the default plural, and a singular
+    equal to the app title keeps the title, mirroring
+    :func:`~app.extensions.apps.framework.schema._fill_item_display_names`. Any
+    other singular is one the author declared, and is pluralised. The pluraliser
+    is imported lazily so this module's import graph stays stdlib-only until an
+    author-declared noun needs it.
 
+    :param flavor: The flavor being scaffolded.
     :param display_name: The resolved app title.
-    :param item_display_name: The resolved singular (declared or title fallback).
-    :param singular_declared: Whether the resolved singular differs from
-        ``display_name`` (the same signal both resolve paths use).
+    :param item_display_name: The resolved singular (declared or defaulted).
     :return: The plural to seed into the generated app.
     """
-    if not singular_declared:
+    default_singular, default_plural = _default_item_display_names(flavor, display_name)
+    if item_display_name == default_singular:
+        return default_plural
+    if item_display_name == display_name:
         return display_name
     from app.extensions.apps.framework.schema import (  # noqa: PLC0415 - module imports stdlib only
         pluralize_item_display_name,
@@ -975,13 +990,11 @@ def _resolve_non_interactive(
     flavor = args.type or Flavor.TASK
     _reject_flavor_incompatible_flags(parser, args, flavor)
     display_name = args.display_name or _derive_display_name(args.name)
-    item_display_name = args.item_display_name or display_name
+    item_display_name = (
+        args.item_display_name or _default_item_display_names(flavor, display_name)[0]
+    )
     item_display_name_plural = args.item_display_name_plural or (
-        _default_item_display_name_plural(
-            display_name,
-            item_display_name,
-            singular_declared=item_display_name != display_name,
-        )
+        _default_item_display_name_plural(flavor, display_name, item_display_name)
     )
     description = (
         args.description
@@ -1074,12 +1087,11 @@ def _resolve_interactive(
             "Display name", default=_derive_display_name(name)
         )
         item_display_name = args.item_display_name or prompt_cls.ask(
-            "Record name (singular)", default=display_name
+            "Record name (singular)",
+            default=_default_item_display_names(flavor, display_name)[0],
         )
         plural_default = _default_item_display_name_plural(
-            display_name,
-            item_display_name,
-            singular_declared=item_display_name != display_name,
+            flavor, display_name, item_display_name
         )
         item_display_name_plural = args.item_display_name_plural or prompt_cls.ask(
             "Record name (plural)", default=plural_default
@@ -1320,7 +1332,14 @@ def resolve_config(
 
 
 def _print_summary(result: ScaffoldResult) -> None:
-    """Summarize where the app was written and how to manage it.
+    """Summarize where the app was written, what to commit, and how to ship it.
+
+    The registration the scaffolder writes is the one the test suite reads, and
+    that suite also wants the new app's API snapshots and the regenerated API
+    client, which ``make regen-specs`` writes. The summary names that step
+    rather than running it, because it needs the frontend toolchain.
+    ``sidecar/settings.yaml`` decides which apps the image ships, so the summary
+    prints the line to add there instead of writing it.
 
     :param result: The scaffold outcome to summarise.
     """
@@ -1343,8 +1362,17 @@ def _print_summary(result: ScaffoldResult) -> None:
         f"  tests: {result.tests_dir}\n"
         f"{payload_note}"
         f"{script_note}"
-        f"\n{registration} Manage it from the Apps page in the sidebar "
-        "(/admin/apps) once you have filled in the skeleton.\n"
+        f"\n{registration}\n"
+        "\nBefore you commit, create the app's API snapshots and regenerate the "
+        "API client:\n"
+        "      make regen-specs\n"
+        "Commit the files it writes under tests/app/extensions/snapshots/ and "
+        "frontend/packages/api/ with the app.\n"
+        "See docs/how-to/update-api-snapshots.md.\n"
+        "\nTo run the app inside PMM, add this line under EXTENSIONS.APPS in "
+        "sidecar/settings.yaml:\n"
+        f"      - MODULE_NAME: {result.name}\n"
+        "Then follow docs/how-to/run-in-local-pmm.md.\n"
     )
 
 

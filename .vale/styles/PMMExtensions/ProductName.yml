@@ -1,0 +1,7 @@
+extends: existence
+message: "Write 'PMM Extensions', not '%s'."
+level: error
+ignorecase: false
+tokens:
+  - '(?<!standalone )SEP'
+  - '(?<!PMM )Extensions'

@@ -1,0 +1,13 @@
+{
+  "name": "percona-pmm-extensions",
+  "owner": {
+    "name": "Percona"
+  },
+  "plugins": [
+    {
+      "name": "pmm-extensions",
+      "source": "./.agents",
+      "description": "Build, port and maintain PMM Extensions apps with an AI assistant."
+    }
+  ]
+}

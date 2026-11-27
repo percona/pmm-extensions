@@ -272,7 +272,7 @@ class CeleryExecutor(BaseExecutor):
         self,
         queue_item: TaskHistory,  # noqa: ARG002
         start_offsets: dict[str, dict[str, int]] | None = None,  # noqa: ARG002
-    ) -> AsyncGenerator[TaskLog, None]:
+    ) -> AsyncGenerator[TaskLog]:
         """Return an empty live-log stream for Celery tasks.
 
         Celery tasks finish synchronously inside ``dispatch_task``, so the
@@ -299,7 +299,7 @@ class CeleryExecutor(BaseExecutor):
         chunk_size: int = 1024 * 1024,  # noqa: ARG002
         *,
         anonymize: bool = True,  # noqa: ARG002
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Raise NotImplementedError.
 
         Celery tasks do not produce downloadable files.

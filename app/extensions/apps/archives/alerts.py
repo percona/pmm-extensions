@@ -202,7 +202,7 @@ def parse_archiver_purge_config(config_yaml: str | None) -> ArchiverPurgeFields 
         return None
     try:
         config = yaml.safe_load(config_yaml)
-    except (yaml.YAMLError, TypeError):
+    except yaml.YAMLError, TypeError:
         return None
     if not isinstance(config, dict):
         return None
@@ -298,7 +298,7 @@ def build_archiver_description(
     return anonymize_text(redact_secrets(block), entities)
 
 
-def _effective_entities(history: "TaskHistory") -> set[PIIEntity]:
+def _effective_entities(history: TaskHistory) -> set[PIIEntity]:
     """Return the PII entities to scrub, preferring the history-level mask.
 
     Falls back to the owning task's mask when the history has none, matching
@@ -383,7 +383,7 @@ def _reconstruct_error_tail(chunks: list[str]) -> str | None:
 
 
 async def build_owner_alert_details(
-    history: "TaskHistory",
+    history: TaskHistory,
 ) -> OwnerAlertDetails | None:
     """Build archiver failure-alert details for the given history.
 

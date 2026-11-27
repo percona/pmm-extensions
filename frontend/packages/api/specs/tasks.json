@@ -413,6 +413,7 @@
           },
           "name": {
             "default": "",
+            "maxLength": 255,
             "title": "Name",
             "type": "string"
           },
@@ -724,6 +725,7 @@
             "type": "string"
           },
           "name": {
+            "maxLength": 255,
             "title": "Name",
             "type": "string"
           },

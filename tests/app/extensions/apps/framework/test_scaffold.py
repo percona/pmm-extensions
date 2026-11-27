@@ -63,7 +63,6 @@ from app.extensions.apps.framework.conformance import (
     check_view_fields_reference_real_fields,
 )
 from app.extensions.apps.framework.registry import build_app_registry
-from app.extensions.apps.framework.schema import ITEM_DISPLAY_NAME_KEYS
 from app.extensions.apps.nav_icons import NavIcon
 from app.extensions.config import App, ExtensionsSettings
 from app.extensions.deps import get_current_user, IsApiAuthenticated
@@ -166,7 +165,7 @@ def _force_wizard(
     *,
     prompt_answers: dict[str, object] | None = None,
     confirm: object = True,
-) -> "_WizardStub":
+) -> _WizardStub:
     """Force the interactive branch and stub the ``rich`` prompt seams.
 
     :param monkeypatch: The pytest monkeypatch fixture.
@@ -595,19 +594,65 @@ def test_registers_app_disabled(tmp_settings: Path) -> None:
         )
 
 
-def test_summary_points_to_apps_page_without_changelog(
-    tmp_settings: Path, capsys: pytest.CaptureFixture[str]
+def test_summary_names_the_sidecar_settings_line(
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Assert the summary points at the Apps page and omits a changelog command."""
-    name = "_scaffold_smoke_summary"
-    try:
-        assert scaffold.main(["--name", name, "--type", "task"]) == 0
-        out = capsys.readouterr().out
-        assert "/admin/apps" in out
-        assert "changelog" not in out.lower()
-    finally:
-        shutil.rmtree(scaffold.PLUGINS_DIR / name, ignore_errors=True)
-        shutil.rmtree(scaffold.TESTS_DIR / name, ignore_errors=True)
+    """Print the line that ships the app in the sidecar image, and no page PMM lacks."""
+    result = scaffold.ScaffoldResult(
+        name="diskfree",
+        flavor=scaffold.Flavor.TASK,
+        app_dir=scaffold.PLUGINS_DIR / "diskfree",
+        tests_dir=scaffold.TESTS_DIR / "diskfree",
+        written=[],
+        settings_changed=True,
+        enabled=False,
+        payload_written=None,
+        script_written=None,
+    )
+
+    scaffold._print_summary(result)
+
+    out = capsys.readouterr().out
+    assert "sidecar/settings.yaml" in out
+    assert "- MODULE_NAME: diskfree" in out
+    assert "/admin/apps" not in out
+    assert "changelog" not in out.lower()
+
+
+@pytest.mark.parametrize(
+    "settings_changed",
+    [
+        pytest.param(True, id="newly registered"),
+        pytest.param(False, id="already registered"),
+    ],
+)
+def test_summary_names_the_snapshot_step(
+    capsys: pytest.CaptureFixture[str], *, settings_changed: bool
+) -> None:
+    """Tell the contributor to create and commit the new app's API snapshots.
+
+    Without them six snapshot and spec-freshness tests fail, so the step is
+    printed whether or not this run changed the settings.
+    """
+    result = scaffold.ScaffoldResult(
+        name="diskfree",
+        flavor=scaffold.Flavor.TASK,
+        app_dir=scaffold.PLUGINS_DIR / "diskfree",
+        tests_dir=scaffold.TESTS_DIR / "diskfree",
+        written=[],
+        settings_changed=settings_changed,
+        enabled=False,
+        payload_written=None,
+        script_written=None,
+    )
+
+    scaffold._print_summary(result)
+
+    out = capsys.readouterr().out
+    assert "make regen-specs" in out
+    assert "tests/app/extensions/snapshots/" in out
+    assert "frontend/packages/api/" in out
+    assert "docs/how-to/update-api-snapshots.md" in out
 
 
 def test_summary_notes_preexisting_registration(
@@ -622,7 +667,7 @@ def test_summary_notes_preexisting_registration(
         assert scaffold.main(["--name", name, "--type", "task"]) == 0
         out = capsys.readouterr().out
         assert "already registered" in out.lower()
-        assert "/admin/apps" in out
+        assert "sidecar/settings.yaml" in out
     finally:
         shutil.rmtree(scaffold.PLUGINS_DIR / name, ignore_errors=True)
         shutil.rmtree(scaffold.TESTS_DIR / name, ignore_errors=True)
@@ -1391,17 +1436,40 @@ def test_makefile_forwards_item_display_names(tmp_path: Path) -> None:
         _cleanup(name)
 
 
-@pytest.mark.parametrize("flavor", list(scaffold.Flavor))
-def test_record_display_names_default_to_the_display_name(
+def test_default_record_noun_differs_from_the_display_name() -> None:
+    """Name a task app's record after the app, so an unedited scaffold conforms."""
+    config = scaffold.ScaffoldConfig.defaults("diskfree", scaffold.Flavor.TASK)
+
+    assert config.item_display_name == "Diskfree task"
+    assert config.item_display_name_plural == "Diskfree tasks"
+
+
+def test_default_record_noun_follows_the_display_name_flag() -> None:
+    """Derive the default record noun from a supplied display name."""
+    config = _config_from_args(
+        [
+            "--name",
+            "demo",
+            "--type",
+            "task",
+            "--display-name",
+            "Disk Free",
+            "--no-input",
+        ]
+    )
+
+    assert config.item_display_name == "Disk Free task"
+    assert config.item_display_name_plural == "Disk Free tasks"
+
+
+@pytest.mark.parametrize("flavor", [scaffold.Flavor.SCRIPT, scaffold.Flavor.BASE])
+def test_record_display_names_default_to_the_display_name_without_a_create_form(
     flavor: scaffold.Flavor,
 ) -> None:
-    """Seed both record names from the display name when the author supplies neither.
+    """Seed both record names from the display name on a flavor with no create form.
 
-    The default is deliberately the value the conformance detector rejects, so a
-    ``task``-flavored scaffold — the only flavor whose rendered app declares a
-    create form — fails the conformance suite until its author names the record.
-    The other two flavors render ``forms=[]`` at the app level and are skipped by
-    the detector, so for them the default just stands.
+    The ``script`` and ``base`` flavors render ``forms=[]`` at the app level, so
+    the conformance detector skips them and the display name stands.
     """
     config = _config_from_args(["--name", "demo", "--type", flavor.value, "--no-input"])
 
@@ -1519,15 +1587,14 @@ def test_record_display_names_rendered_into_every_declaration_site(
     assert plural_carriers == expected_carriers
 
 
-def test_default_nouns_make_a_task_scaffold_fail_the_conformance_detector(
+def test_default_nouns_make_a_task_scaffold_pass_the_conformance_detector(
     tmp_settings: Path,
 ) -> None:
-    """Pin the enforcement the defaults exist to trigger, end to end.
+    """Clear the detector on an unedited task scaffold, end to end.
 
-    The defaults are only useful if an unedited task scaffold actually trips
-    ``check_item_display_names_declared``. Asserting that the rendered source
-    carries the app title would only restate the template; this runs the detector
-    over the schema the generated app derives.
+    Asserting that the rendered source carries a noun would only restate the
+    template; this runs ``check_item_display_names_declared`` over the schema the
+    generated app derives.
     """
     name = "_scaffold_detector_task"
     config = _config_from_args(["--name", name, "--type", "task", "--no-input"])
@@ -1538,12 +1605,20 @@ def test_default_nouns_make_a_task_scaffold_fail_the_conformance_detector(
             mode="json", by_alias=True, exclude_none=True
         )
 
-    flagged = sorted(
-        key
-        for key in ITEM_DISPLAY_NAME_KEYS
-        if any(repr(key) in m for m in check_item_display_names_declared(payload))
-    )
-    assert flagged == sorted(ITEM_DISPLAY_NAME_KEYS)
+    assert check_item_display_names_declared(payload) == []
+
+
+def test_task_scaffold_gives_the_app_its_own_owner(tmp_settings: Path) -> None:
+    """Scope a task app's list to its own tasks, not to every owner's."""
+    name = "_scaffold_owner_task"
+
+    with _scaffolded(name, scaffold.Flavor.TASK) as result:
+        models = (result.app_dir / "models.py").read_text()
+        app = (result.app_dir / "app.py").read_text()
+
+    assert 'OWNER = "_SCAFFOLD_OWNER_TASK"' in models
+    assert "owner=OWNER" in app
+    assert "ANY_OWNER" not in app
 
 
 def test_declared_nouns_make_a_task_scaffold_pass_the_conformance_detector(

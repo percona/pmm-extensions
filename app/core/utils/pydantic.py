@@ -70,7 +70,7 @@ class CustomFieldMetadata(NamedTuple):
     value: Any
 
     @classmethod
-    def from_dict(cls, data: dict[Any, Any]) -> list["CustomFieldMetadata"]:
+    def from_dict(cls, data: dict[Any, Any]) -> list[CustomFieldMetadata]:
         """Create a list of CustomFieldMetadata instances from a dictionary.
 
         :param data: A dictionary containing key-value pairs to be converted into
@@ -84,7 +84,7 @@ class CustomFieldMetadata(NamedTuple):
     @classmethod
     def from_field(
         cls, field: FieldInfo, *, strict: bool = False
-    ) -> list["CustomFieldMetadata"]:
+    ) -> list[CustomFieldMetadata]:
         """Extract custom metadata from a Pydantic field.
 
         :param field: The Pydantic field from which to extract metadata.
@@ -118,7 +118,7 @@ class CustomFieldMetadata(NamedTuple):
         return cls.to_dict(*cls.from_field(field, strict=strict))
 
     @staticmethod
-    def to_dict(*metadata: "CustomFieldMetadata") -> dict[Any, Any]:
+    def to_dict(*metadata: CustomFieldMetadata) -> dict[Any, Any]:
         """Convert a list of CustomFieldMetadata instances to a dictionary.
 
         :param metadata: A variable number of CustomFieldMetadata instances.

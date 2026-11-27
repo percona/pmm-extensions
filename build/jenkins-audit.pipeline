@@ -16,12 +16,6 @@ pipeline {
 			name: 'defaultCmd',
 			defaultValue: '--log-level=DEBUG'
 		)
-		choice(
-			name: 'pyVersion',
-			choices: [
-				'3.11'
-			]
-		)
 	}
 
 	options {
@@ -34,13 +28,16 @@ pipeline {
 		CMD = "${defaultCmd}"
 
 		POETRY_VIRTUALENVS_IN_PROJECT = "true"
-		PYTHON = "python${pyVersion}"
-		PYTHON_VERSION = "${pyVersion}"
+
+		// Pinned to match the python:*-slim tag in Containerfile.base.
+		PYTHON_VERSION = "3.14.10"
+		PYTHON_BUILD_TAG = "20261110"
+		PYTHON = "python3.14"
 
 		// Pinned to match .github/workflows/ci.yml.
 		NODE_VERSION = "22.13.0"
 		PNPM_VERSION = "11.1.2"
-		PATH = "${env.WORKSPACE}/build/node/bin:${env.PATH}"
+		PATH = "${env.WORKSPACE}/build/python/bin:${env.WORKSPACE}/build/node/bin:${env.PATH}"
 
 		RELEASE_VER = "${releaseTag}"
 
@@ -78,16 +75,38 @@ pipeline {
 					set -o errexit
 					set -o pipefail
 
-					${PYTHON} -m venv venv
-					ln -s venv .venv
-					venv/bin/${PYTHON} -m pip install --no-cache -U pip wheel
+					PY_TARBALL="cpython-${PYTHON_VERSION}+${PYTHON_BUILD_TAG}-x86_64-unknown-linux-gnu-install_only.tar.gz"
+					PY_RELEASE="https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_BUILD_TAG}"
+					PY_TMP="$(mktemp -d)"
+					curl -fsSL -o "${PY_TMP}/${PY_TARBALL}" "${PY_RELEASE}/${PY_TARBALL}"
+					curl -fsSL "${PY_RELEASE}/SHA256SUMS" \
+						| grep " ${PY_TARBALL}$" \
+						| (cd "${PY_TMP}" && sha256sum --check --status)
+					tar -xzf "${PY_TMP}/${PY_TARBALL}" -C "${PY_TMP}"
+					rm -rf build/python
+					mkdir -p build
+					mv "${PY_TMP}/python" build/python
+					rm -rf "${PY_TMP}"
+					${PYTHON} --version
 
-					${PYTHON} -m venv build/venv
-					build/venv/bin/${PYTHON} -m pip install --no-cache -U pip wheel 'poetry==2.4.1'
+					# An older releaseTag (a patch branched from a pre-3.14 tag) caps
+					# requires-python below 3.14, so it installs on the agent's 3.11.
+					VENV_PYTHON="${PYTHON}"
+					if grep -qE '^requires-python = ".*<3\\.([0-9]|1[0-4])(\\.[0-9]+)?"' pyproject.toml; then
+						VENV_PYTHON=python3.11
+					fi
+					${VENV_PYTHON} --version
+
+					${VENV_PYTHON} -m venv venv
+					ln -s venv .venv
+					venv/bin/python -m pip install --no-cache -U pip wheel
+
+					${VENV_PYTHON} -m venv build/venv
+					build/venv/bin/python -m pip install --no-cache -U pip wheel 'poetry==2.4.1'
 					# Pre-install so Poetry's project-scoped plugin self-install
 					# never runs — that solver hits PyPI live and trips
 					# `solver.min-release-age` in poetry.toml on fresh transitives.
-					build/venv/bin/${PYTHON} -m pip install --no-cache 'poetry-plugin-export>=1.9.0,<2.0.0'
+					build/venv/bin/python -m pip install --no-cache 'poetry-plugin-export>=1.9.0,<2.0.0'
 					build/venv/bin/poetry check --lock --strict
 					build/venv/bin/poetry install --with audit
 
@@ -118,9 +137,8 @@ pipeline {
 
 			steps {
 				echo 'Running pre-commit ..'
-				// `language: system` hooks shell out to bare `python3`, so the agent's
-				// 3.9 gets the repo's 3.10+ syntax unless the venv leads PATH. CI has
-				// no such gap: setup-python makes 3.11 ambient there.
+				// `language: system` hooks shell out to bare `python3` and import the
+				// project's dependencies, so the venv must lead PATH.
 				withEnv(["PATH+VENV=${env.WORKSPACE}/venv/bin"]) {
 					sh '''
 						set -o errexit
